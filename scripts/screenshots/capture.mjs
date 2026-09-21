@@ -35,11 +35,112 @@ async function shoot(page, target, file) {
   console.log(`  ✓ ${file} (${kb} KB)`);
 }
 
+/**
+ * The two hero shots show the document chip and the status bar's kernel
+ * readiness, which the shared `populate()` deliberately does not post (the
+ * webview tests assert the chip is NOT rendered before its first message). The
+ * values are what a real session of this fixture would show: `bull.stp` opened
+ * with its three sidecar edits unsaved, OCCT having loaded it and — once a mesh
+ * exists — Gmsh having generated one.
+ */
+async function heroChrome(page, { gmsh }) {
+  await post(page, { type: "documentInfo", name: "bull.stp", path: "/work/bull.stp", format: "step", dirty: true, unsavedEdits: 3 });
+  await post(page, {
+    type: "kernelStatus",
+    state: { occt: "ready", gmsh: gmsh ? "ready" : "idle", meshio: "idle", ftetwild: "idle" },
+  });
+  // The same library the fe-mesh-panel shot posts, so the Preset picker reads
+  // like a session that has the built-in starters rather than the pre-hydration
+  // placeholder. Display only: nothing is applied or written.
+  await post(page, {
+    type: "meshingPresets",
+    presets: [
+      { name: "balanced", description: null, unit: "mm", engine: "gmsh", readOnly: true },
+      { name: "my-coarse", description: "Shop preset", unit: "mm", engine: "gmsh" },
+    ],
+  });
+  await sleep(150);
+}
+
+/**
+ * Sum of triangle areas for one face of the fixture geometry, in the fixture's
+ * own units — what a real `entityFactsResult` would report for a planar face
+ * (exact for a plane, which is the only kind the hero shot asks about).
+ */
+function fixtureFaceArea(faceId) {
+  const geo = fixture("geometry");
+  const mesh = geo.meshes.find((m) => m.faceId === faceId);
+  if (!mesh) return null;
+  // Copy out of the Buffer: a small Buffer's `.buffer` is the process-wide 8KB
+  // pool, so viewing it directly reads unrelated bytes (and a non-4-aligned
+  // offset throws) — the same trap gltfParser.ts documents.
+  const bytes = (b64) => {
+    const b = Buffer.from(b64, "base64");
+    return new Uint8Array(b).buffer;
+  };
+  const pos = new Float32Array(bytes(mesh.positions));
+  const idx = new Uint32Array(bytes(mesh.indices));
+  let area = 0;
+  for (let t = 0; t < idx.length; t += 3) {
+    const [a, b, c] = [idx[t], idx[t + 1], idx[t + 2]].map((i) => [pos[3 * i], pos[3 * i + 1], pos[3 * i + 2]]);
+    const u = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+    const v = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
+    const cx = u[1] * v[2] - u[2] * v[1];
+    const cy = u[2] * v[0] - u[0] * v[2];
+    const cz = u[0] * v[1] - u[1] * v[0];
+    area += 0.5 * Math.hypot(cx, cy, cz);
+  }
+  return area;
+}
+
+/**
+ * Stages the main hero shot like the design mockup: Edits collapsed, and a face
+ * selected so the selection pill shows. Harness-only — nothing here is persisted.
+ * The pill is driven the way a real session drives it: a genuine click on the
+ * canvas posts a real `entityFactsRequest`, and the reply carries that request's
+ * own id and the picked face's own area (summed from the fixture triangles), so
+ * the picture is the real card with real numbers, not a mock-up.
+ */
+async function heroSelection(page) {
+  await page.click("#edits-header > .panel-chevron");
+  await page.click("#select-menu");
+  await page.click("#sel-toggle");
+  await page.click('.sel-mode[data-mode="surface"]');
+  await page.click("#select-menu"); // close it, so the next canvas click is a pick
+  await sleep(150);
+  const box = await page.locator("#app").boundingBox();
+  await page.mouse.click(box.x + box.width * 0.55, box.y + box.height * 0.5);
+  await sleep(300);
+  const req = await page.evaluate(() => (window.__sent ?? []).filter((m) => m.type === "entityFactsRequest").at(-1) ?? null);
+  if (!req) throw new Error("heroSelection: the click did not select a face (no entityFactsRequest)");
+  const area = fixtureFaceArea(req.entityId);
+  await post(page, {
+    type: "entityFactsResult",
+    requestId: req.requestId,
+    facts: {
+      entityId: req.entityId, kind: "face",
+      bbox: { min: [0, 0, 0], max: [1, 1, 0], diagonal: Math.SQRT2 },
+      center: [0, 0, 0], area, length: null,
+      normal: [0, 0, 1], planeOrigin: [0, 0, 0], surfaceType: "plane",
+      surfaceParams: { kind: "plane", origin: [0, 0, 0], normal: [0, 0, 1] }, curveType: null,
+    },
+  });
+  // The pointer is still over the model, so the readout in the status bar keeps
+  // showing (as in the mockup), but the hover tooltip that follows a pick mode would
+  // sit on top of the orientation cube — drop just that.
+  await page.evaluate(() => document.getElementById("hover-tip")?.classList.add("hidden"));
+  await sleep(200);
+}
+
 // ── Shot list ────────────────────────────────────────────────────────────
 const SHOTS = [
   {
     file: "viewer-main.png",
-    setup: async (page) => { await populate(page); },
+    setup: async (page) => {
+      await populate(page);
+      await heroChrome(page, { gmsh: false });
+      await heroSelection(page);
+    },
     target: {}, // full UI with model + panels
   },
   { file: "toolbar.png", setup: populate, target: { sel: "#toolbar" } },
@@ -69,10 +170,29 @@ const SHOTS = [
     // picker row made the panel wider (left-clipped at x=830) and the new
     // rows made it taller (Screenshot… half-cut at height 400) — now
     // x 830→770 / height 400→470 — plus one more row for Zoom to selection
-    // (470→500).
-    target: { clip: { x: 770, y: 30, width: 590, height: 500 } },
+    // (470→500). The trigger chevrons became icons (chrome redesign, pass 3),
+    // which widened the toolbar and pushed the View panel's left edge to
+    // x=766.9 — the clip went 770→750.
+    target: { clip: { x: 750, y: 30, width: 610, height: 500 } },
   })),
   { file: "view-controls.png", setup: populate, target: { sel: "#view-controls" } },
+  {
+    // The "⋯" overflow popover. It hangs ABOVE the dock and outside the dock's own
+    // box, so `sel: "#view-controls"` would crop it away entirely — hence a fixed
+    // `clip`, with the usual silent-cut hazard (a popover that grows just gets
+    // cut off and the run still prints ✓). `webview-test/run.mjs` mirrors this
+    // rectangle in "chrome: the overflow popover fits its screenshot clip", so
+    // growing it fails a test instead. The dock is bottom-centred over the canvas
+    // in a 1360x900 viewport and the popover is right-anchored to the "⋯" at its
+    // end, so this covers the popover and the dock row beneath it.
+    file: "view-controls-more.png",
+    setup: async (page) => {
+      await populate(page);
+      await page.click("#vc-more");
+      await sleep(200);
+    },
+    target: { clip: { x: 630, y: 470, width: 680, height: 430 } },
+  },
   { file: "components-tree.png", setup: populate, target: { sel: "#tree-panel" } },
   {
     // The Standard Parts panel talks to the real step.parts network API in
@@ -83,6 +203,11 @@ const SHOTS = [
     file: "standard-parts-panel.png",
     setup: async (page) => {
       await populate(page);
+      // Standard Parts lives inside the Advanced group, which ships collapsed
+      // — without opening it the field is in a `display: none` subtree and
+      // the fill below waits out its timeout.
+      await page.click("#advanced-header > .panel-chevron");
+      await page.waitForSelector("#standard-parts-query", { state: "visible" });
       await page.fill("#standard-parts-query", "hex bolt");
       await page.click("#standard-parts-search-btn");
       const requestId = await page.waitForFunction(() => {
@@ -222,6 +347,7 @@ const SHOTS = [
     setup: async (page) => {
       await populate(page);
       await post(page, fixture("meshingResult"));
+      await heroChrome(page, { gmsh: true });
       await sleep(900);
     },
     target: {},

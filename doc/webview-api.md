@@ -8,6 +8,9 @@ The webview runs in a Chromium browser context. These modules are bundled into `
 | --- | --- |
 | `src/webview/main.ts` | Entry point, VS Code API, message routing, UI wiring |
 | `src/webview/dropdownMenu.ts` | Shared open/close/outside-click/Escape plumbing for the File ▾ and toolbar dropdown menus |
+| `src/webview/dockStats.ts` | Pure text formatters for the status bar and chip — entity counts, FE-mesh stats (full and the FE Mesh header's short `1,248 el`), live cursor position, and the chip's `N unsaved edits` (unit-tested) |
+| `src/uiGlyphs.ts` | Hand-authored `currentColor` line glyphs (chevron, search, eye, copy, trash, layers, …) for the sidebar, status bar and dock — deliberately separate from the generated `toolbarIcons.ts` (unit-tested) |
+| `src/kernelActivity.ts` | Pure kernel-readiness rules behind the status bar's `OCCT ready · Gmsh ready`: which kernels each pipeline call touches, the state reducer, and the display text (unit-tested) |
 | `src/webview/collapsiblePanels.ts` | The sidebar-section registry, its `.view.json` sanitizer, and the chevron wiring (partly unit-tested) |
 | `src/webview/sidebarResizer.ts` | The sidebar's width clamps and its drag/keyboard resize handle: `--side-width` on `<body>` is the single shared fact `#side{width}` and `#view-controls`' centring both read (partly unit-tested) |
 | `src/webview/viewer.ts` | Three.js scene, camera, rendering, orientation + transform gizmos |
@@ -149,10 +152,13 @@ Returns `true` if the root has more than one child (or any grandchild). The tree
 Collapses any sidebar section down to just its header, so the interface can be reduced to the panels actually in use. State persists per document in `<model>.view.json` (`ViewState.collapsedPanels`).
 
 ```typescript
-const COLLAPSIBLE_PANELS: readonly { panel: string; header: string }[]   // the ten sections, in #side order
+const COLLAPSIBLE_PANELS: readonly { panel: string; header: string }[]   // the twelve sections, in #side order
+const ADVANCED_CHILDREN: readonly string[]                               // the seven the Advanced group wraps
 
 function sanitizeCollapsedPanels(ids: unknown): string[]
 function setupCollapsiblePanels(onChange: () => void): CollapsiblePanelsHandle | null
+function advancedCountLabel(available: number, total: number): string    // "7" | "5 of 7"
+function setupAdvancedGroupCount(): void
 
 interface CollapsiblePanelsHandle {
   getCollapsed(): string[];
@@ -162,8 +168,11 @@ interface CollapsiblePanelsHandle {
 
 - **Markup contract**: every section is `#x-panel > #x-header.panel-header > button.panel-chevron`, with the chevron as the header's first child. It must be a **sibling** of `#x-title`, never nested inside it — `TreePanel` overwrites `#tree-title.textContent` on every render and would wipe a nested chevron.
 - **A dedicated chevron button, not a click-anywhere header.** Every header already holds action buttons (Isolate/New, Undo/Redo/Clear, Generate/Export/Clear plus two `<select>`s, Compute, Check/Promote/Repair, …) and `#tree-header` additionally holds `<input id="tree-filter">`, which a header-wide handler would toggle on every keystroke's click. A button is also focusable and carries `aria-expanded`.
-- **Three independent visibility mechanisms act on these panels and must not fight**: `#tree-panel.visible` (whether the Components tree is shown at all), the `hidden` property on `#mesh-health-panel`/`#region-fit-panel`/`#primitives-panel`/`#clash-panel` (source-format eligibility), and `.collapsed`. The first two set `display` on the *panel*; the collapse CSS therefore never does — it only hides the panel's own non-header children (`#side > .collapsed > :not(.panel-header)`) and drops the panel to `flex: 0 0 auto`. That last part is load-bearing for `#parts-panel`/`#edits-panel`, the two `flex: 1` panels, where a collapsed header would otherwise still claim its share of the column.
+- **Three independent visibility mechanisms act on these panels and must not fight**: `#tree-panel.visible` (whether the Components tree is shown at all), the `hidden` property on `#mesh-health-panel`/`#region-fit-panel`/`#primitives-panel`/`#clash-panel` (source-format eligibility), and `.collapsed`. The first two set `display` on the *panel*; the collapse CSS therefore never does — it only hides the panel's own non-header children (`#side .side-section.collapsed > :not(.panel-header)`) and drops the panel to `flex: 0 0 auto`. That last part is load-bearing for `#parts-panel`/`#edits-panel`, the two `flex: 1` panels, where a collapsed header would otherwise still claim its share of the column.
 - The `:not(.panel-header)` child selector rather than `#x-body` because the panels are not uniform: `#meshing-panel` has four body siblings (progress/body/status/quality) and `#standard-parts-panel` three (search-row/body/status).
+- **The Advanced group** (`#advanced-group`) wraps the seven read-only/library sections in `#advanced-body`, under two `.advanced-subhead` labels (Analysis, Library). It is a registry entry like any other, so collapsing it persists the same way; it ships **collapsed**, which is the point of the group. Its children keep their own entries and stay independently collapsible.
+- **Why the collapse CSS keys off `.side-section` rather than `#side > .collapsed`**: nesting seven sections one level deeper broke the direct-child selector, and loosening it to `#side .collapsed` would have caught `.tree-list.collapsed` and `.part-entities.collapsed` too, hiding the tree and the per-part entity lists. The `#side` prefix on the class rule is also required, not decoration — `#parts-panel`/`#edits-panel` set `flex: 1` by id at (1,0,0), which beats a bare `.side-section.collapsed` at (0,2,0), leaving a "collapsed" panel still claiming its share of the column.
+- **`setupAdvancedGroupCount` observes the `hidden` attribute** rather than exposing a refresh the four gating panels must each call: eligibility is recomputed from several sites at times this module does not control, and a hand-maintained call list drifts. `advancedCountLabel` is the pure half, so the wording is testable apart from the DOM.
 - **Returns `null`, never throws**, when the sidebar is missing — same reason as `setupDropdown` below.
 - `setCollapsed` is the restore path and deliberately does not fire `onChange`, the same silent-`load()` contract `PartsModel`/`PlanesModel` follow, so reopening a document cannot rewrite the sidecar it just read.
 - `#variables-section` is deliberately **not** collapsible here: it is nested inside the already-scrolling `#edits-scroll`, and the FE Mesh panel's "Advanced settings" chevron is the precedent to copy if nested collapse is ever wanted.
@@ -754,6 +763,22 @@ otherwise would be unsupportable. Positions are 1-based op numbers, matching the
 
 ### Wiring
 
+`Viewer.setPointerWorldHandler(cb)` is a second consumer of the SAME hover listener, added for the
+dock's cursor readout: `cb([x, y, z] | null)` receives the surface point under the pointer in the
+**model's own frame** (the world hit is converted with `model.worldToLocal`, which undoes the
+Z-up root rotation), in millimetres. It always raycasts against *surface* meshes whatever the pick
+mode is — in Line or Point mode the nearest "hit" would be a snapped edge or vertex, and the
+readout should say where the cursor is on the part. **It works with selection mode off** — the
+listener used to bail out whenever no pick mode was set, which is the normal state — so
+`onHoverPointerMove` now does one raycast and only proceeds to the entity-hover path when a pick
+mode is active; the tooltip behaviour is unchanged. `null` means the pointer left the model.
+`src/webview/dockStats.ts` (pure, unit-tested) formats what the status bar shows:
+`formatEntityCounts`, `formatMeshStats` (`mesh 51,200 el · min SICN 0.412`; `formatMeshStatsLong` spells out the node count for its tooltip), and `formatCursor` (`x 142.06  y -18.40  z 27.00 mm`, converted to the Units dropdown's
+unit), plus `formatMeshHeaderStat` (the FE Mesh section header's `1,248 el`) and `unsavedEditsLabel`
+(the chip's `3 unsaved edits`). The spans live in the full-width `#statusbar` (a sibling of `#layout`,
+so it never overlaps the canvas), which also holds `#kernel-status`; `main.ts` finds them by id, so
+moving them out of the dock needed no wiring change.
+
 `Viewer.setEntityHoverHandler(cb)` is a hover pick path parallel to
 `setEntityPickHandler` — registering one is also what attaches the `pointermove`/`pointerleave`
 listeners (there was no `pointermove` on the canvas at all before this). It reuses the click path's
@@ -1199,7 +1224,7 @@ Every `update()` fires `onChange`, wired in `main.ts` to post `meshingChanged` (
 
 ### `MeshingPanel`
 
-Manages the `#meshing-panel` DOM, top to bottom: a large-mesh warning strip (`#meshing-warning`, its icon from `TOOLBAR_ICONS.warning` — see `doc/extension-host-api.md`'s `src/toolbarIcons.ts` section — set via `innerHTML` since it's mixed with formatted text, not `textContent`); the primary size control (Coarse/Medium/Fine preset buttons, a coarser→finer log-scale slider driving `sizeMax`, and a `Size: X · ~N elements` readout); a "Part sizes" section mirroring the Parts panel's per-part `meshSize` inputs (hidden while no parts exist); a collapsed-by-default "Advanced settings" section with the raw options form (dimension, size min/max, 2D/3D algorithm dropdowns, element shape, element order, optimize checkbox, STL angle) — plus a Generate button, an export-format `<select>` (populated from `MESH_EXPORT_FORMATS` in `src/meshExportFormats.ts` — one shared registry instead of one button per format), an export-**unit** `<select>` (`#meshing-export-unit`, populated from `DISPLAY_UNITS` in `src/lengthUnits.ts`, defaulting to `"mm"`) + Export button, a Clear button, and a status line. Pure DOM, no business logic (size math delegates to `meshSizeHeuristics.ts`), no `prompt()`/`alert()` (VS Code webviews block those — same constraint as the Parts/Edits panels).
+Manages the `#meshing-panel` DOM, top to bottom: a large-mesh warning strip (`#meshing-warning`, its icon from `TOOLBAR_ICONS.warning` — see `doc/extension-host-api.md`'s `src/toolbarIcons.ts` section — set via `innerHTML` since it's mixed with formatted text, not `textContent`); the primary size control (an `Element size … 12.9 mm · ~1.2k el` readout above a coarser→finer log-scale slider driving `sizeMax`, with its COARSER/FINER ends beneath and the Coarse/Medium/Fine presets as a segmented control — the preset nearest the current size reads as selected); Engine and Saved presets side by side; a "Part sizes" section — now the only place a Part's `meshSize` is edited (hidden while no parts exist); a collapsed-by-default "Advanced settings" section with the raw options form (dimension, size min/max, 2D/3D algorithm dropdowns, element shape, element order, optimize checkbox, STL angle) — plus, in the body rather than the header, a full-width Generate button with Clear (and Worst) beside it at the top, and — relocated to the very END of the body by the constructor, after the Advanced settings and Mesh ops sections — an export row: an export-format `<select>` (populated from `MESH_EXPORT_FORMATS` in `src/meshExportFormats.ts` — one shared registry instead of one button per format), an export-**unit** `<select>` (`#meshing-export-unit`, populated from `DISPLAY_UNITS` in `src/lengthUnits.ts`, defaulting to `"mm"`) and an Export button; the header carries only the title and `#meshing-header-stat` (the element count, once a mesh exists); and a status line. Pure DOM, no business logic (size math delegates to `meshSizeHeuristics.ts`), no `prompt()`/`alert()` (VS Code webviews block those — same constraint as the Parts/Edits panels).
 
 ```typescript
 interface ModelExtents { size: [number, number, number]; diagonal: number }

@@ -119,6 +119,8 @@ export class MeshingPanel {
   private readonly warningEl: HTMLElement;
   private readonly sizeSlider: HTMLInputElement;
   private readonly sliderReadout: HTMLElement;
+  /** Coarse / Medium / Fine, kept so the one nearest the current size can read as selected. */
+  private readonly presetButtons: Array<{ key: keyof typeof PRESET_DIVISORS; el: HTMLButtonElement }> = [];
   private readonly partsSection: HTMLElement;
   private readonly partsBody: HTMLElement;
 
@@ -173,6 +175,11 @@ export class MeshingPanel {
     this.exportUnitSelect = panel.querySelector("#meshing-export-unit")!;
     this.exportBtn = panel.querySelector("#meshing-export")!;
     this.clearBtn = panel.querySelector("#meshing-clear")!;
+    // The static markup puts the action rows at the top of the body. The export row
+    // belongs at the END (it acts on the result of everything above it), so it is
+    // lifted out here and re-appended after the last section further down.
+    const exportRow = panel.querySelector<HTMLElement>("#meshing-export-row");
+    if (exportRow) exportRow.remove();
 
     for (const format of MESH_EXPORT_FORMATS) {
       const opt = document.createElement("option");
@@ -219,6 +226,7 @@ export class MeshingPanel {
         this.commitSizeMax(this.extents.diagonal / PRESET_DIVISORS[key]);
       });
       presetRow.appendChild(btn);
+      this.presetButtons.push({ key, el: btn });
     }
     sizeSection.appendChild(presetRow);
 
@@ -255,10 +263,21 @@ export class MeshingPanel {
     sliderRow.appendChild(finerLabel);
     sizeSection.appendChild(sliderRow);
 
-    this.sliderReadout = document.createElement("div");
-    this.sliderReadout.className = "meshing-slider-readout";
+    // "Element size            12.9 mm" — label left, value right, ABOVE the slider
+    // (CSS `order` puts it there; the DOM keeps the original sequence). The value
+    // element is `sliderReadout`, so every existing write to it lands in the right
+    // place.
+    const readoutRow = document.createElement("div");
+    readoutRow.className = "meshing-readout-row";
+    const readoutLabel = document.createElement("span");
+    readoutLabel.className = "meshing-readout-label";
+    readoutLabel.textContent = "Element size";
+    readoutRow.appendChild(readoutLabel);
+    this.sliderReadout = document.createElement("span");
+    this.sliderReadout.className = "meshing-slider-readout ui-num";
     this.sliderReadout.textContent = "—";
-    sizeSection.appendChild(this.sliderReadout);
+    readoutRow.appendChild(this.sliderReadout);
+    sizeSection.appendChild(readoutRow);
 
     this.body.appendChild(sizeSection);
 
@@ -279,7 +298,13 @@ export class MeshingPanel {
     this.engineSelect.addEventListener("change", () => {
       cb.onOptionsChange({ engine: this.engineSelect.value as MeshOptions["engine"] });
     });
-    this.body.appendChild(engineSection);
+    // Engine and Preset sit side by side (two columns, label above each select) —
+    // both are one-line choices, and stacking them full-width cost a whole screen
+    // row each. CSS lays out `.meshing-pair`; the DOM order is engine, then preset.
+    const pair = document.createElement("div");
+    pair.className = "meshing-pair";
+    pair.appendChild(engineSection);
+    this.body.appendChild(pair);
 
     // ── Saved presets (named, reusable option bundles) ──
     // A `<select>` over the merged (user + bundled-starter) library the host
@@ -301,7 +326,7 @@ export class MeshingPanel {
     this.presetSelect.id = "meshing-preset-select";
     this.presetSelect.title = "A saved preset — sizes convert from its authored unit on apply; names describe density intent, never a quality guarantee";
     const presetBtnRow = document.createElement("div");
-    presetBtnRow.className = "meshing-field";
+    presetBtnRow.className = "meshing-field meshing-preset-actions";
     this.presetApplyBtn = document.createElement("button");
     this.presetApplyBtn.type = "button";
     this.presetApplyBtn.textContent = "Apply";
@@ -326,7 +351,7 @@ export class MeshingPanel {
     presetBtnRow.appendChild(this.presetDeleteBtn);
     presetForm.appendChild(presetBtnRow);
     presetSection.appendChild(presetForm);
-    this.body.appendChild(presetSection);
+    pair.appendChild(presetSection);
     this.presetSelect.addEventListener("change", () => this.syncPresetButtons());
     // Pre-hydration state (before the host's `meshingPresets` post arrives):
     // an explicit placeholder rather than an empty box, with Apply disabled
@@ -587,6 +612,12 @@ export class MeshingPanel {
     opsForm.appendChild(this.meshOpsStatus);
     this.meshOpsSection.appendChild(opsForm);
     this.body.appendChild(this.meshOpsSection);
+
+    // ── Export row (format · unit · Export) — LAST in the body. It acts on the
+    // result of every option above it (Part sizes, Advanced settings), so it
+    // closes the panel the way the design mockup has it, rather than sitting
+    // between the options and their advanced half. ──
+    if (exportRow) this.body.appendChild(exportRow);
     this.meshOpsSelect.addEventListener("change", () => this.syncMeshOpsParams());
     this.syncMeshOpsParams();
   }
@@ -829,13 +860,22 @@ export class MeshingPanel {
       row.appendChild(name);
 
       const input = document.createElement("input");
-      input.type = "number";
+      // A text field with a decimal keypad hint (the Edits panel's convention), not
+      // `type="number"`: a number input renders its value through the OS locale, so
+      // 4.0231 read "4,0231" on a Spanish machine — and it cannot show a rounded
+      // value while keeping the exact one. Shown to 3 significant figures like the
+      // slider readout; the exact stored value rides along in the tooltip and is
+      // only replaced when the user commits an edit (`change` never fires for an
+      // untouched field, so display rounding cannot rewrite the sidecar).
+      input.type = "text";
+      input.inputMode = "decimal";
       input.className = "meshing-num meshing-part-size";
-      input.title = "Target mesh size for this part (blank = inherit global)";
+      input.title =
+        part.meshSize != null
+          ? `Target mesh size for this part: ${part.meshSize} (blank = inherit global)`
+          : "Target mesh size for this part (blank = inherit global)";
       input.placeholder = "global";
-      input.min = "0";
-      input.step = "any";
-      input.value = part.meshSize != null ? String(part.meshSize) : "";
+      input.value = part.meshSize != null ? formatSize(part.meshSize) : "";
       input.addEventListener("change", () => {
         const raw = input.value.trim();
         const n = raw === "" ? undefined : Number(raw);
@@ -975,6 +1015,23 @@ export class MeshingPanel {
       this.sizeSlider.value = String(Math.round(sizeToSlider(options.sizeMax, this.extents.diagonal) * 1000));
     }
     this.refreshSizeReadout(hasSize ? options.sizeMax : null);
+    this.markActivePreset(hasSize ? options.sizeMax : null);
+  }
+
+  /**
+   * Lights the Coarse/Medium/Fine button whose size the current `sizeMax` matches
+   * (within 2% — the presets are `diagonal / N`, and a value that went through the
+   * slider's 0.1% steps or a round trip through the sidecar will not be bit-equal).
+   * A size between presets lights none: a segmented control that always shows one
+   * selected would claim a preset the size was never set to.
+   */
+  private markActivePreset(size: number | null): void {
+    for (const { key, el } of this.presetButtons) {
+      const target = this.extents ? this.extents.diagonal / PRESET_DIVISORS[key] : NaN;
+      const on = size !== null && Number.isFinite(target) && Math.abs(size - target) <= target * 0.02;
+      el.classList.toggle("active", on);
+      el.setAttribute("aria-pressed", on ? "true" : "false");
+    }
   }
 
   /** Updates the size + estimated-element-count readout and the large-mesh warning. */
@@ -989,14 +1046,15 @@ export class MeshingPanel {
       // view-controls Appearance group's display-unit selector (a display-only
       // rescale of Mass Properties/Measurement; mesh-size options are never
       // rescaled, see `src/webview/units.ts`'s doc comment).
-      this.sliderReadout.textContent = `Size: ${formatSize(size)} mm`;
+      this.sliderReadout.textContent = `${formatSize(size)} mm`;
       this.warningEl.hidden = true;
       return;
     }
     const dimension = this.lastOptions?.dimension ?? 3;
     const shape = this.lastOptions?.elementShape ?? "simplex";
     const estimate = estimateElementCount(this.extents.size, size, dimension, shape);
-    this.sliderReadout.textContent = `Size: ${formatSize(size)} mm · ${formatCount(estimate)} elements`;
+    this.sliderReadout.textContent = `${formatSize(size)} mm · ${formatCount(estimate)} el`;
+    this.sliderReadout.title = `Estimated element count: ${formatCount(estimate)}`;
     if (estimate > LARGE_ELEMENT_COUNT) {
       this.warningEl.innerHTML = `<span class="toolbar-icon">${TOOLBAR_ICONS.warning}</span> Estimated ${formatCount(estimate)} elements — generation may be slow or run out of memory.`;
       this.warningEl.hidden = false;

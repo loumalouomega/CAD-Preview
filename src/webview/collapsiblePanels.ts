@@ -21,12 +21,21 @@
  * the camera/display-mode/clip state — see `ViewState.collapsedPanels`.
  */
 
-/** The eleven collapsible sidebar sections, in `#side` source order. */
+/**
+ * The twelve collapsible sidebar sections, in `#side` source order.
+ *
+ * `advanced-group` is a GROUP rather than a leaf section: it wraps the seven
+ * entries after it (the read-only analysis sections plus the two library
+ * ones). It carries its own id here because collapsing it is persisted like
+ * any other section, and its children keep theirs because each stays
+ * independently collapsible inside it.
+ */
 export const COLLAPSIBLE_PANELS: readonly { readonly panel: string; readonly header: string }[] = [
   { panel: "tree-panel", header: "tree-header" },
   { panel: "parts-panel", header: "parts-header" },
   { panel: "edits-panel", header: "edits-header" },
   { panel: "meshing-panel", header: "meshing-header" },
+  { panel: "advanced-group", header: "advanced-header" },
   { panel: "mass-panel", header: "mass-header" },
   { panel: "clash-panel", header: "clash-header" },
   { panel: "mesh-health-panel", header: "mesh-health-header" },
@@ -61,7 +70,8 @@ export interface CollapsiblePanelsHandle {
 function reflect(panel: HTMLElement, chevron: HTMLElement | null, collapsed: boolean): void {
   panel.classList.toggle("collapsed", collapsed);
   if (!chevron) return;
-  chevron.textContent = collapsed ? "▸" : "▾";
+  // The chevron is an SVG glyph rotated by CSS off `aria-expanded`, so nothing
+  // here rewrites its content.
   chevron.setAttribute("aria-expanded", collapsed ? "false" : "true");
   chevron.setAttribute("title", collapsed ? "Expand section" : "Collapse section");
 }
@@ -103,4 +113,60 @@ export function setupCollapsiblePanels(onChange: () => void): CollapsiblePanelsH
       for (const { panel, chevron } of found) reflect(panel, chevron, wanted.has(panel.id));
     },
   };
+}
+
+/** The sections the Advanced group wraps, in `#advanced-body` source order. */
+export const ADVANCED_CHILDREN: readonly string[] = [
+  "mass-panel",
+  "clash-panel",
+  "mesh-health-panel",
+  "region-fit-panel",
+  "primitives-panel",
+  "macros-panel",
+  "standard-parts-panel",
+];
+
+/**
+ * Text for the Advanced header's availability badge.
+ *
+ * Four of the seven children are gated on source format and hide themselves at
+ * runtime (Mesh Health and Region fit want a mesh source, Clash and Primitives
+ * a B-rep one), so a collapsed group would otherwise give no hint whether
+ * opening it is worth the click. Pure, so the wording is unit-testable apart
+ * from the DOM that feeds it.
+ */
+export function advancedCountLabel(available: number, total: number): string {
+  return available === total ? String(total) : `${available} of ${total}`;
+}
+
+/**
+ * Keeps `#advanced-count` truthful as children hide and show themselves.
+ *
+ * Observes the `hidden` attribute rather than exposing a refresh the four
+ * gating panels must each remember to call: eligibility is recomputed from
+ * several sites (`geometry`, `loadUrl`, `loadMeshBytes`) at times this module
+ * does not control, and a hand-maintained call list is exactly the kind of
+ * thing that drifts. Same reasoning as `main.ts`'s aria-label mirror, which
+ * had to become an observer for dynamically-built rows.
+ *
+ * Returns without wiring anything when the group is absent, for the same
+ * reason `setupCollapsiblePanels` does: callers sit in `main.ts`'s shared
+ * setup `try`, where a throw would block the `ready` handshake.
+ */
+export function setupAdvancedGroupCount(): void {
+  const body = document.getElementById("advanced-body");
+  const badge = document.getElementById("advanced-count");
+  if (!body || !badge) return;
+
+  const children = ADVANCED_CHILDREN.map((id) => document.getElementById(id)).filter(
+    (el): el is HTMLElement => el !== null
+  );
+  if (children.length === 0) return;
+
+  const refresh = (): void => {
+    badge.textContent = advancedCountLabel(children.filter((el) => !el.hidden).length, children.length);
+  };
+
+  new MutationObserver(refresh).observe(body, { subtree: true, attributes: true, attributeFilter: ["hidden"] });
+  refresh();
 }

@@ -63,6 +63,41 @@ const eq = (a, b) => JSON.stringify(a) === JSON.stringify(b);
  */
 const viewportBox = (page) => page.locator("#app").boundingBox();
 
+/**
+ * Takes a screenshot with the transient `#status` toast masked.
+ *
+ * Every pixel helper in this file measures the CANVAS — camera framing, cap
+ * coverage, scene colours — and the toast is not part of any of those. It used
+ * to be harmless by accident: it was centred on the whole body while the dock
+ * centres on the canvas, and sat directly behind the dock, so it painted over
+ * pixels that were already non-background and changed no count. Once it was
+ * moved clear of the dock (so it is actually readable) it started adding ~7,000
+ * real pixels to whichever capture happened to be taken while it was showing,
+ * and `zoom to selection: empty selection…` — which deliberately triggers a
+ * "No selection" toast — tripped its `< 0.001` tolerance on it.
+ *
+ * `visibility: hidden` rather than `display: none` so layout, and therefore
+ * every other element's position, is untouched by the mask.
+ */
+async function shotWithoutToast(page, take) {
+  await page.evaluate(() => {
+    const el = document.getElementById("status");
+    if (!el) return;
+    el.dataset.prevVis = el.style.visibility;
+    el.style.visibility = "hidden";
+  });
+  try {
+    return await take();
+  } finally {
+    await page.evaluate(() => {
+      const el = document.getElementById("status");
+      if (!el) return;
+      el.style.visibility = el.dataset.prevVis ?? "";
+      delete el.dataset.prevVis;
+    });
+  }
+}
+
 /** A dropdown is open when its panel has lost the `hidden` CLASS (not the attribute). */
 const dropdownOpen = (page, id) =>
   page.evaluate((i) => {
@@ -153,6 +188,7 @@ test("bootstrap: ready posted, canvas mounted with real dimensions", async (page
  */
 test("panels: every documented panel id exists and is populated", async (page) => {
   await populate(page);
+  await openAdvanced(page);
   const ids = [
     "menubar", "toolbar", "app", "view-controls",
     "tree-panel", "tree-body",
@@ -621,7 +657,7 @@ test("framing: the model occupies a sane fraction of the viewport", async (page)
   await page.keyboard.press("Escape");
   await sleep(400);
 
-  const shot = (await page.locator("#app").screenshot()).toString("base64");
+  const shot = (await shotWithoutToast(page, () => page.locator("#app").screenshot())).toString("base64");
   const stats = await page.evaluate(
     async (b64) =>
       new Promise((resolve, reject) => {
@@ -669,7 +705,7 @@ test("framing: the model occupies a sane fraction of the viewport", async (page)
  * decode in-page via the framing-invariant helper above.
  */
 async function viewportModelStats(page) {
-  const shot = (await page.locator("#app").screenshot()).toString("base64");
+  const shot = (await shotWithoutToast(page, () => page.locator("#app").screenshot())).toString("base64");
   return page.evaluate(
     async (b64) =>
       new Promise((resolve, reject) => {
@@ -705,6 +741,46 @@ async function gridOff(page) {
   await page.click("#grid");
   await page.keyboard.press("Escape");
   await sleep(400);
+}
+
+/**
+ * Expands the Advanced group.
+ *
+ * It ships COLLAPSED — that is the whole point of the group, so the sidebar's
+ * top level holds only the four sections that edit the document. Every test
+ * touching Mass Properties, Clash, Mesh Health, Region fit, Primitives, Macros
+ * or Standard Parts must open it first, or the element it wants is inside a
+ * `display: none` subtree and Playwright waits out its timeout on a node that
+ * will never be actionable.
+ *
+ * Idempotent, so a test may call it without knowing whether an earlier step
+ * already opened the group.
+ */
+/**
+ * Opens the dock's "⋯" overflow popover if it is not already open.
+ *
+ * Rotate/Pan, Clip ▸ Face / 3 Pts, the whole Planes authoring UI, background,
+ * opacity, Grid size and Colour by field live behind it, so a test that issues a
+ * REAL Playwright click or fill on one of them needs it open first — otherwise
+ * Playwright waits out its 30s actionability timeout on a `display: none`
+ * subtree. Only real interactions need this: a read or click done inside
+ * `page.evaluate` bypasses actionability and works whether or not it is open,
+ * which is why only two existing tests needed it.
+ *
+ * Idempotent, because any `Escape` closes every registered dropdown and a test
+ * may have pressed one since it last opened this.
+ */
+async function openDockMore(page) {
+  if (!(await dropdownOpen(page, "vc-more-dropdown"))) await page.click("#vc-more");
+  await sleep(80);
+}
+
+async function openAdvanced(page) {
+  const collapsed = await page.evaluate(
+    () => document.getElementById("advanced-group")?.classList.contains("collapsed") ?? false
+  );
+  if (collapsed) await page.click("#advanced-header > .panel-chevron");
+  await sleep(120);
 }
 
 /** Selects the single smallest face via the filter form; returns the status text. */
@@ -1132,6 +1208,515 @@ test("dropdowns: clicking an open trigger's inner icon closes it", async (page) 
   assert((await isOpen()) === false, "clicking the trigger's inner icon closes it (does not reopen)");
 });
 
+/**
+ * Clip-drift guards for the two FIXED-clip documentation screenshots.
+ *
+ * `scripts/screenshots/capture.mjs` shoots the File menu with a hardcoded
+ * `clip {x:0, y:0, width:320, height:439}` and the four toolbar dropdowns with a
+ * shared `clip {x:750, y:30, width:610, height:500}`. A dropdown that grows, or
+ * a toolbar that moves, silently CUTS the last entry off — the run still exits
+ * 0 and still prints `✓ file-menu.png`. That failure has been realised twice
+ * already (250 → 285 → 342 → 371 → 410 → 439, and 830 → 770 → 750 / 300 → 500).
+ *
+ * These mirror those two rectangles exactly, so any change that would mis-crop
+ * a PNG now fails a test instead. Each assertion message prints the MEASURED
+ * box, so re-measuring a clip after a deliberate layout change is a read of the
+ * failure text rather than a guess. If one of these fails: measure, then update
+ * BOTH this test and the clip in `capture.mjs` together.
+ */
+const FILE_MENU_CLIP = { x: 0, y: 0, width: 320, height: 439 };
+const TOOLBAR_MENU_CLIP = { x: 750, y: 30, width: 610, height: 500 };
+
+const panelBox = (page, id) =>
+  page.evaluate((i) => {
+    const r = document.getElementById(i)?.getBoundingClientRect();
+    return r ? { left: r.left, top: r.top, right: r.right, bottom: r.bottom } : null;
+  }, id);
+
+const fits = (box, clip) =>
+  box !== null &&
+  box.left >= clip.x &&
+  box.top >= clip.y &&
+  box.right <= clip.x + clip.width &&
+  box.bottom <= clip.y + clip.height;
+
+const fmtBox = (b) =>
+  b === null
+    ? "missing"
+    : `left ${b.left.toFixed(1)}, top ${b.top.toFixed(1)}, right ${b.right.toFixed(1)}, bottom ${b.bottom.toFixed(1)}`;
+
+test("chrome: the File menu panel fits file-menu.png's fixed clip", async (page) => {
+  await populate(page);
+  await page.click("#file-menu");
+  await sleep(150);
+  const box = await panelBox(page, "file-dropdown");
+  const c = FILE_MENU_CLIP;
+  assert(
+    fits(box, c),
+    `#file-dropdown must sit inside clip {x:${c.x}, y:${c.y}, w:${c.width}, h:${c.height}} ` +
+      `(measured: ${fmtBox(box)}) — update capture.mjs's file-menu clip if this is deliberate`
+  );
+});
+
+for (const name of ["view", "select", "measure", "markup"]) {
+  test(`chrome: the ${name} dropdown fits the shared toolbar-menu clip`, async (page) => {
+    await populate(page);
+    await page.click(`#${name}-menu`);
+    await sleep(150);
+    const box = await panelBox(page, `${name}-dropdown`);
+    const c = TOOLBAR_MENU_CLIP;
+    assert(
+      fits(box, c),
+      `#${name}-dropdown must sit inside clip {x:${c.x}, y:${c.y}, w:${c.width}, h:${c.height}} ` +
+        `(measured: ${fmtBox(box)}) — update the shared clip in capture.mjs if this is deliberate`
+    );
+  });
+}
+
+/**
+ * `hidden` on these three carried no effect for a long time, and the assertion
+ * style is the whole reason it went unnoticed: checking `el.hidden === true`
+ * passes while the element is plainly on screen. Each has an author `display`
+ * rule (`.vc-row` / `.vc-group` are `display: flex`) that beats the UA's
+ * `[hidden] { display: none }` regardless of specificity — origin is checked
+ * before specificity. `offsetParent === null` is what "genuinely not rendered"
+ * looks like, so that is what this asserts.
+ *
+ * A B-rep document is the right fixture: Colour by field is meshio++-only, and
+ * the Midplane… row only appears after its toggle is clicked.
+ */
+test("dock: elements carrying `hidden` are genuinely not rendered", async (page) => {
+  await populate(page);
+  const state = await page.evaluate(() =>
+    Object.fromEntries(
+      ["plane-entry", "plane-mid", "vc-colorfield-group", "vc-colorfield-legend"].map((id) => {
+        const el = document.getElementById(id);
+        return [id, { hasHidden: el?.hidden === true, rendered: el ? el.offsetParent !== null : null }];
+      })
+    )
+  );
+  for (const [id, s] of Object.entries(state)) {
+    assert(s.hasHidden, `#${id} still carries the hidden attribute (precondition)`);
+    assert(s.rendered === false, `#${id} is genuinely not rendered while hidden (rendered: ${s.rendered})`);
+  }
+});
+
+/**
+ * The menubar's document chip. The host half (which transitions post, and the
+ * dirty predicate) is covered by the integration suite; this covers what only
+ * a real DOM can: that it is genuinely NOT rendered before the first message
+ * (the `[hidden]` override — an empty pill in the menubar is the failure), that
+ * a hostile filename is text and never markup, that it fits the 34px menubar
+ * every fixed screenshot clip is derived from, and that it does not shift the
+ * File menu (`file-menu.png`'s clip assumes it sits at the viewport origin).
+ */
+/**
+ * The dock's status row: entity counts, FE-mesh stats and the live cursor position.
+ *
+ * The cursor readout is the piece with a real trap in it — `Viewer.onHoverPointerMove`
+ * used to bail out whenever no pick mode was set, which is the NORMAL state, so a
+ * readout wired to it would have stayed blank for exactly the users who never turn
+ * selection on. Every assertion below therefore runs with selection OFF.
+ */
+test("dock status: counts follow the geometry, the mesh stat follows the overlay", async (page) => {
+  await populate(page);
+  const geo = fixture("geometry");
+  const text = (id) =>
+    page.evaluate((i) => {
+      const el = document.getElementById(i);
+      return el && el.offsetParent !== null ? el.textContent : null;
+    }, id);
+
+  const expected = `${geo.meshes.length.toLocaleString("en-US")} face${geo.meshes.length === 1 ? "" : "s"} · ${geo.edges.length.toLocaleString("en-US")} edge${geo.edges.length === 1 ? "" : "s"} · ${(geo.points?.length ?? 0).toLocaleString("en-US")} point${(geo.points?.length ?? 0) === 1 ? "" : "s"}`;
+  assert((await text("vc-count-entities")) === expected, `the counts read straight off the geometry message (want ${JSON.stringify(expected)}, got ${JSON.stringify(await text("vc-count-entities"))})`);
+  assert((await text("vc-count-mesh")) === null, "no FE-mesh stat is rendered before a mesh exists (the [hidden] override holds)");
+
+  await post(page, fixture("meshingResult"));
+  await sleep(500);
+  assert(
+    (await text("vc-count-mesh")) === "mesh 10,000 el",
+    `the mesh stat reports the result's own element count in the short form, and the node count lives in the tooltip (got ${JSON.stringify(await text("vc-count-mesh"))})`
+  );
+
+  await page.click("#meshing-clear");
+  await sleep(300);
+  assert((await text("vc-count-mesh")) === null, "Clear removes the stat along with the overlay it described");
+
+  // Regenerating and then loading a new model must also drop it: the overlay is
+  // disposed by setModel(), so a surviving stat would describe a mesh that is gone.
+  await post(page, fixture("meshingResult"));
+  await sleep(500);
+  assert((await text("vc-count-mesh")) !== null, "the stat comes back with a new result");
+  await post(page, geo);
+  await sleep(400);
+  assert((await text("vc-count-mesh")) === null, "loading a model drops the stat of the overlay it disposed");
+});
+
+test("dock status: the cursor readout works with selection OFF, follows the Units dropdown, and clears when the pointer leaves", async (page) => {
+  await populate(page);
+  const selActive = await page.evaluate(() => document.getElementById("sel-toggle")?.classList.contains("active") ?? false);
+  assert(selActive === false, "precondition: selection mode is off (the normal state, and the one the old hover path ignored)");
+
+  const cursor = () =>
+    page.evaluate(() => {
+      const el = document.getElementById("vc-cursor");
+      return el && el.offsetParent !== null && el.textContent ? el.textContent : null;
+    });
+  assert((await cursor()) === null, "no coordinates before the pointer enters the model");
+
+  const box = await viewportBox(page);
+  await page.mouse.move(box.x + box.width / 2 - 20, box.y + box.height / 2, { steps: 4 });
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2, { steps: 4 });
+  await sleep(250);
+  const mm = await cursor();
+  assert(
+    mm !== null && /^x -?\d+\.\d{2}  y -?\d+\.\d{2}  z -?\d+\.\d{2} mm$/.test(mm),
+    `hovering the model shows X/Y/Z in mm with selection off (got ${JSON.stringify(mm)})`
+  );
+
+  // The Units dropdown drives it like Mass Properties: 25.4 mm is one inch, so the
+  // same point read back in inches must be the mm value / 25.4. Reading it WITHOUT
+  // moving the pointer also proves the readout re-renders on a unit change instead
+  // of waiting for the next mouse-move.
+  await page.selectOption("#vc-unit", "in");
+  await sleep(150);
+  const inch = await cursor();
+  const nums = (t) => [...t.matchAll(/-?\d+\.\d{3}/g)].map((m) => parseFloat(m[0]));
+  assert(inch !== null && inch.endsWith(" in"), `the unit suffix follows the dropdown (got ${JSON.stringify(inch)})`);
+  const [mmN, inN] = [nums(mm), nums(inch)];
+  assert(
+    mmN.every((v, i) => Math.abs(v - inN[i] * 25.4) < 0.05),
+    `the inch readout is the mm readout / 25.4 (mm ${JSON.stringify(mmN)}, in ${JSON.stringify(inN)})`
+  );
+  await page.selectOption("#vc-unit", "mm");
+
+  // Leaving the model must clear it — stale coordinates beside a pointer that is
+  // no longer there read as a live measurement of nothing.
+  await page.mouse.move(box.x + box.width / 2, box.y - 40);
+  await sleep(250);
+  assert((await cursor()) === null, "leaving the viewport clears the readout");
+});
+
+test("doc chip: hidden until fed, then renders name/format/dirty inside the menubar", async (page) => {
+  await populate(page);
+  const rects = () =>
+    page.evaluate(() => {
+      const box = (id) => {
+        const b = document.getElementById(id)?.getBoundingClientRect();
+        return b ? { left: b.left, top: b.top, right: b.right, bottom: b.bottom, width: b.width, height: b.height } : null;
+      };
+      return {
+        chip: box("doc-chip"),
+        menubar: box("menubar"),
+        fileMenu: box("file-menu"),
+        body: document.body.getBoundingClientRect().width,
+        chipRendered: document.getElementById("doc-chip")?.offsetParent !== null,
+        dotRendered: document.getElementById("doc-chip-dirty")?.offsetParent !== null,
+        badgeRendered: document.getElementById("doc-chip-format")?.offsetParent !== null,
+        name: document.getElementById("doc-chip-name")?.textContent ?? null,
+        format: document.getElementById("doc-chip-format")?.textContent ?? null,
+        title: document.getElementById("doc-chip")?.title ?? null,
+        badgeTransform: getComputedStyle(document.getElementById("doc-chip-format")).textTransform,
+      };
+    });
+
+  const before = await rects();
+  assert(before.chipRendered === false, "the chip is genuinely not rendered before any documentInfo arrives");
+
+  await post(page, { type: "documentInfo", name: "bracket.step", path: "/tmp/parts/bracket.step", format: "step", dirty: true });
+  await sleep(80);
+  const shown = await rects();
+  assert(shown.chipRendered === true, "the chip renders once documentInfo arrives");
+  assert(shown.name === "bracket.step", `it shows the file name (got ${JSON.stringify(shown.name)})`);
+  assert(shown.format === "step" && shown.badgeTransform === "uppercase", "the format badge carries the code and displays uppercase");
+  assert(shown.title === "/tmp/parts/bracket.step", "hovering the chip reveals the full path");
+  assert(shown.dotRendered === true, "the unsaved-edits dot renders when dirty");
+
+  assert(
+    shown.chip.top >= shown.menubar.top && shown.chip.bottom <= shown.menubar.bottom,
+    `the chip sits inside the menubar (chip ${shown.chip.top.toFixed(1)}–${shown.chip.bottom.toFixed(1)}, menubar ${shown.menubar.top.toFixed(1)}–${shown.menubar.bottom.toFixed(1)})`
+  );
+  // Compare to the MEASURED baseline, not a hardcoded 34: the bar is `height: 34px`
+  // plus a 1px border, so it is 35px outer, and a first version of this
+  // assertion that assumed 34 failed on the untouched layout. What matters is
+  // that the chip does not change it — #toolbar's `top: 42px` and every fixed
+  // screenshot clip are derived from this height.
+  assert(
+    Math.abs(shown.menubar.height - before.menubar.height) < 0.5,
+    `the chip did not grow the menubar (${before.menubar.height} -> ${shown.menubar.height})`
+  );
+  assert(
+    Math.abs(shown.fileMenu.left - before.fileMenu.left) < 0.5,
+    `the File menu did not move when the chip appeared (${before.fileMenu.left} -> ${shown.fileMenu.left})`
+  );
+
+  await post(page, { type: "documentInfo", name: "bracket.step", path: "/tmp/parts/bracket.step", format: "step", dirty: false });
+  await sleep(80);
+  assert((await rects()).dotRendered === false, "the dot is genuinely not rendered once the document is clean");
+
+  await post(page, { type: "documentInfo", name: "mystery.xyz", path: "/tmp/mystery.xyz", format: null, dirty: false });
+  await sleep(80);
+  const unrouted = await rects();
+  assert(unrouted.badgeRendered === false, "a null format leaves no empty badge behind");
+  assert(unrouted.name === "mystery.xyz", "an unrouted file still shows its name");
+
+  // A file NAME is untrusted, document-derived text.
+  const hostile = '<img src=x onerror="window.__chipPwned=1">';
+  await post(page, { type: "documentInfo", name: hostile, path: "/tmp/x", format: "stl", dirty: false });
+  await sleep(120);
+  const inj = await page.evaluate(() => ({
+    imgs: document.querySelectorAll("#doc-chip img").length,
+    pwned: window.__chipPwned ?? null,
+    text: document.getElementById("doc-chip-name")?.textContent,
+  }));
+  assert(inj.imgs === 0 && inj.pwned === null, "a filename containing markup is rendered as text, never parsed");
+  assert(inj.text === hostile, "the raw string is preserved verbatim as text");
+
+  // A very long name must ellipsize, not push the chip past half the bar.
+  await post(page, { type: "documentInfo", name: "a-really-quite-long-assembly-file-name-".repeat(8) + ".step", path: "/x", format: "step", dirty: true });
+  await sleep(80);
+  const long = await rects();
+  assert(
+    long.chip.width <= long.body * 0.5 + 2,
+    `a long name is capped at half the menubar (chip ${long.chip.width.toFixed(0)}px of ${long.body.toFixed(0)}px)`
+  );
+  assert(
+    Math.abs(long.menubar.height - before.menubar.height) < 0.5,
+    `a long name does not wrap the menubar taller (${before.menubar.height} -> ${long.menubar.height})`
+  );
+});
+
+/**
+ * The one-row dock and its "⋯" overflow popover.
+ *
+ * The restructure's whole safety argument is that every control KEPT ITS ID: the
+ * four setup functions (view controls, appearance, clipping, planes) query
+ * globally by id/class, so moving a node is invisible to them and renaming one
+ * silently kills its control (`getElementById` returns null, the wiring is
+ * skipped, and nothing throws). That is the first thing pinned here.
+ */
+const DOCK_MORE_CLIP = { x: 700, y: 400, width: 660, height: 500 }; // mirrors capture.mjs view-controls-more.png
+
+test("dock: every control keeps its id — inline ones render, moved ones sit inside the closed popover", async (page) => {
+  await populate(page);
+  const MOVED = [
+    "rot-up", "rot-left", "rot-right", "rot-down",
+    "pan-up", "pan-left", "pan-right", "pan-down",
+    "clip-from-face", "clip-from-points",
+    "plane-save", "plane-add", "plane-mid-toggle",
+    "plane-entry", "plane-entry-point", "plane-entry-normal", "plane-entry-ok",
+    "plane-mid", "plane-mid-a", "plane-mid-b", "plane-mid-ok", "planes-list",
+    "vc-background", "vc-opacity", "vc-grid-size",
+    "vc-colorfield-group", "vc-colorfield-select", "vc-colorfield-legend",
+    "vc-colorfield-gradient", "vc-colorfield-min", "vc-colorfield-max",
+  ];
+  const INLINE = [
+    "vc-toggle", "display-mode-group", "clip-offset", "clip-toggle",
+    "vc-ortho", "vc-unit", "view-fit", "view-reset", "zoom-in", "zoom-out", "vc-more",
+  ];
+  const state = await page.evaluate(
+    ({ moved, inline }) => {
+      const dd = document.getElementById("vc-more-dropdown");
+      const probe = (id) => {
+        const el = document.getElementById(id);
+        return { exists: el !== null, inPopover: !!el && !!dd && dd.contains(el), rendered: !!el && el.offsetParent !== null };
+      };
+      return {
+        moved: Object.fromEntries(moved.map((id) => [id, probe(id)])),
+        inline: Object.fromEntries(inline.map((id) => [id, probe(id)])),
+        // `#clip-custom` is `hidden` until a custom normal exists, so it is only checked for existence.
+        clipCustom: probe("clip-custom"),
+        popoverOpen: dd ? !dd.classList.contains("hidden") : null,
+      };
+    },
+    { moved: MOVED, inline: INLINE }
+  );
+  assert(state.popoverOpen === false, "the popover starts closed");
+  const missing = [...MOVED, ...INLINE].filter((id) => !(state.moved[id] ?? state.inline[id]).exists);
+  assert(missing.length === 0, `no control lost its id (missing: ${JSON.stringify(missing)})`);
+  assert(state.clipCustom.exists, "#clip-custom still exists (hidden until a custom normal is derived)");
+  const notInside = MOVED.filter((id) => !state.moved[id].inPopover);
+  assert(notInside.length === 0, `every moved control lives inside #vc-more-dropdown (not: ${JSON.stringify(notInside)})`);
+  const leaked = MOVED.filter((id) => state.moved[id].rendered);
+  assert(leaked.length === 0, `no moved control is rendered while the popover is closed (rendered: ${JSON.stringify(leaked)})`);
+  const hidden = INLINE.filter((id) => !state.inline[id].rendered);
+  assert(hidden.length === 0, `every inline control is rendered in the bar (hidden: ${JSON.stringify(hidden)})`);
+});
+
+test("dock: one compact row at a normal width; wraps rather than overflows when the editor is narrow", async (page) => {
+  await populate(page);
+  const measure = () =>
+    page.evaluate(() => {
+      const box = (id) => {
+        const b = document.getElementById(id)?.getBoundingClientRect();
+        return b ? { top: b.top, bottom: b.bottom, left: b.left, right: b.right, height: b.height, width: b.width } : null;
+      };
+      const mid = (id) => {
+        const b = box(id);
+        return b ? (b.top + b.bottom) / 2 : null;
+      };
+      const INLINE = ["display-mode-group", "clip-toggle", "vc-ortho", "vc-unit", "view-fit", "zoom-in", "vc-more"];
+      const dock = box("view-controls");
+      // The dock now also holds the status row (counts / cursor), which is always
+      // present, so "one row or wrapped" is a property of the CONTROLS row, not of
+      // the whole dock's height.
+      const rowEl = document.querySelector(".vc-dock-row")?.getBoundingClientRect();
+      return {
+        dock,
+        row: rowEl ? { height: rowEl.height } : null,
+        side: box("side"),
+        centres: ["display-mode-group", "clip-toggle", "vc-ortho", "vc-unit", "view-fit", "vc-more"].map(mid),
+        // Controls whose box pokes OUT of the dock's own box. A `nowrap` row keeps
+        // the dock's rect capped while its contents spill past the edge, so the
+        // dock's height/left alone cannot detect that — this is the check that can.
+        overflowing: INLINE.filter((id) => {
+          const b = box(id);
+          return b && (b.right > dock.right + 1 || b.left < dock.left - 1);
+        }),
+      };
+    });
+  const wide = await measure();
+  assert(wide.overflowing.length === 0, `no control pokes out of the dock at 1360px (${JSON.stringify(wide.overflowing)})`);
+  // The old dock was ~330px tall (eight column groups). One controls row is ~30px;
+  // two would be ~60, so 46 separates "one row" from "it wrapped" with room.
+  assert(wide.row && wide.row.height < 46, `the controls row is one line at 1360px (height ${wide.row?.height.toFixed(0)}px)`);
+  const spread = Math.max(...wide.centres) - Math.min(...wide.centres);
+  assert(spread < 6, `the inline controls share a line (vertical centres span ${spread.toFixed(1)}px)`);
+
+  await page.setViewportSize({ width: 820, height: 900 });
+  await sleep(250);
+  const narrow = await measure();
+  assert(
+    narrow.dock.left >= narrow.side.right - 1,
+    `at 820px the bar still clears the sidebar (bar ${narrow.dock.left.toFixed(0)} vs sidebar ${narrow.side.right.toFixed(0)})`
+  );
+  assert(
+    narrow.overflowing.length === 0,
+    `at 820px no control pokes out of the dock — it wraps instead (overflowing: ${JSON.stringify(narrow.overflowing)})`
+  );
+  assert(
+    narrow.row.height > wide.row.height + 10,
+    `at 820px the row WRAPPED (${wide.row.height.toFixed(0)}px -> ${narrow.row.height.toFixed(0)}px) — the guarantee engaged rather than the bar overflowing`
+  );
+});
+
+test("dock: the #status toast clears the dock at a normal width AND when the dock wraps", async (page) => {
+  await populate(page);
+  // An EMPTY toast collapses to a zero rect at (0,0), which trivially clears
+  // anything — the first version of this test passed with "toast bottom 0". Give it
+  // real text and assert it actually rendered before measuring.
+  await post(page, { type: "status", text: "Exported to /tmp/some/long/path/file.step" });
+  await sleep(150);
+  const gap = () =>
+    page.evaluate(() => {
+      const st = document.getElementById("status").getBoundingClientRect();
+      const dk = document.getElementById("view-controls").getBoundingClientRect();
+      return { statusBottom: st.bottom, statusH: st.height, dockTop: dk.top, dockH: dk.height, overlapsX: st.left < dk.right && st.right > dk.left };
+    });
+  const wide = await gap();
+  assert(wide.statusH > 10, `precondition: the toast actually rendered (height ${wide.statusH})`);
+  assert(
+    wide.statusBottom <= wide.dockTop,
+    `at 1360px the toast sits above the dock (toast bottom ${wide.statusBottom.toFixed(0)}, dock top ${wide.dockTop.toFixed(0)})`
+  );
+  await page.setViewportSize({ width: 820, height: 900 });
+  await sleep(250);
+  const narrow = await gap();
+  assert(narrow.dockH > wide.dockH + 10, `precondition: the dock wrapped at 820px (${wide.dockH.toFixed(0)} -> ${narrow.dockH.toFixed(0)}px)`);
+  assert(
+    narrow.statusBottom <= narrow.dockTop,
+    `at 820px, with the dock wrapped, the toast still clears it (toast bottom ${narrow.statusBottom.toFixed(0)}, dock top ${narrow.dockTop.toFixed(0)})`
+  );
+});
+
+test("dock: the overflow popover opens upward, clears the dock and the sidebar, and fits its screenshot clip", async (page) => {
+  await populate(page);
+  const rects = () =>
+    page.evaluate(() => {
+      const r = (id) => {
+        const b = document.getElementById(id)?.getBoundingClientRect();
+        return b ? { left: b.left, top: b.top, right: b.right, bottom: b.bottom, height: b.height } : null;
+      };
+      return { dd: r("vc-more-dropdown"), dock: r("view-controls"), side: r("side"), body: document.body.getBoundingClientRect().width };
+    });
+  const closed = await rects();
+  await page.click("#vc-more");
+  await sleep(150);
+  const open = await rects();
+  const fmt = (b) => (b ? `${b.left.toFixed(0)},${b.top.toFixed(0)}–${b.right.toFixed(0)},${b.bottom.toFixed(0)}` : "missing");
+
+  assert(
+    Math.abs(open.dock.height - closed.dock.height) < 0.5,
+    `opening the popover does not resize the dock (${closed.dock.height} -> ${open.dock.height})`
+  );
+  assert(
+    open.dd.bottom <= open.dock.top,
+    `the popover clears the dock's top rim instead of overlapping it (popover ${fmt(open.dd)}, dock ${fmt(open.dock)})`
+  );
+  assert(
+    open.dd.left >= open.side.right - 1 && open.dd.right <= open.body - 4,
+    `the popover stays on the canvas at 1360px (popover ${fmt(open.dd)}, sidebar right ${open.side.right.toFixed(0)})`
+  );
+  const c = DOCK_MORE_CLIP;
+  assert(
+    open.dd.left >= c.x && open.dd.top >= c.y && open.dd.right <= c.x + c.width && open.dd.bottom <= c.y + c.height,
+    `the popover fits view-controls-more.png's fixed clip {x:${c.x}, y:${c.y}, w:${c.width}, h:${c.height}} ` +
+      `(measured ${fmt(open.dd)}) — update capture.mjs's clip if this is deliberate`
+  );
+
+  // Narrow editor: a popover wider than the room left of the "⋯" would run under the sidebar.
+  await page.setViewportSize({ width: 820, height: 900 });
+  await sleep(250);
+  const narrow = await rects();
+  assert(
+    narrow.dd.left >= narrow.side.right - 1 && narrow.dd.right <= narrow.body - 4,
+    `at 820px the popover still clears the sidebar and stays on screen (popover ${fmt(narrow.dd)}, sidebar right ${narrow.side.right.toFixed(0)}, body ${narrow.body.toFixed(0)})`
+  );
+});
+
+test("keyboard: the dock overflow opens on click, arrows move focus inside it, Escape closes and refocuses the trigger", async (page) => {
+  await populate(page);
+  const state = () =>
+    page.evaluate(() => ({
+      expanded: document.getElementById("vc-more").getAttribute("aria-expanded"),
+      inPanel: document.getElementById("vc-more-dropdown").contains(document.activeElement),
+      activeId: document.activeElement?.id ?? "",
+    }));
+  await page.click("#vc-more");
+  assert((await state()).expanded === "true", "clicking the trigger opens the popover (aria-expanded=true)");
+  await page.keyboard.press("ArrowDown");
+  assert((await state()).inPanel, "ArrowDown moves focus into the popover");
+  // Every popover button is disabled, hidden or a real control — arrow nav skips the hidden ones.
+  const focused = await page.evaluate(() => {
+    const el = document.activeElement;
+    return { rendered: el?.offsetParent !== null, disabled: el?.hasAttribute("disabled") ?? true };
+  });
+  assert(focused.rendered && !focused.disabled, "focus lands on a rendered, enabled control (hidden/disabled ones are skipped)");
+  await page.keyboard.press("Escape");
+  const after = await state();
+  assert(after.expanded === "false", "Escape closes the popover");
+  assert(after.activeId === "vc-more", `Escape returns focus to the trigger (got "${after.activeId}")`);
+});
+
+test("dock: collapsing the bar closes an open popover and keeps the toggle's aria-label truthful", async (page) => {
+  await populate(page);
+  const read = () =>
+    page.evaluate(() => ({
+      expanded: document.getElementById("vc-more").getAttribute("aria-expanded"),
+      label: document.getElementById("vc-toggle").getAttribute("aria-label"),
+      collapsed: document.getElementById("view-controls").classList.contains("collapsed"),
+    }));
+  await page.click("#vc-more");
+  assert((await read()).expanded === "true", "the popover is open before collapsing");
+  await page.click("#vc-toggle");
+  const collapsed = await read();
+  assert(collapsed.collapsed, "the bar collapsed");
+  assert(collapsed.expanded === "false", "collapsing closed the popover — no stale aria-expanded left over a display:none subtree");
+  assert(collapsed.label === "Show controls", `the toggle's aria-label follows its title (got "${collapsed.label}")`);
+  await page.click("#vc-toggle");
+  assert((await read()).label === "Hide controls", "and flips back when expanded");
+});
+
 test("dropdowns: dismissing a menu over the markup canvas draws no stroke", async (page) => {
   await populate(page);
   await page.click("#markup-menu");
@@ -1165,9 +1750,11 @@ test("dropdowns: dismissing a menu over the markup canvas draws no stroke", asyn
  */
 async function dominantColors(page, topN = 6) {
   const box = await viewportBox(page);
-  const shot = await page.screenshot({
-    clip: { x: box.x + 8, y: box.y + 8, width: box.width - 16, height: box.height - 16 },
-  });
+  const shot = await shotWithoutToast(page, () =>
+    page.screenshot({
+      clip: { x: box.x + 8, y: box.y + 8, width: box.width - 16, height: box.height - 16 },
+    })
+  );
   return page.evaluate(
     async ({ b64, topN }) => {
       const blob = await (await fetch(`data:image/png;base64,${b64}`)).blob();
@@ -1397,6 +1984,36 @@ test("inspector card: selection requests facts, and the reply renders per classi
   );
   assert(req !== null, "clicking a face posts an entityFactsRequest");
   assert((await cardShown()) === true, "selecting a face renders the inspector card");
+
+  // It lives top-right with the other selection-state chrome, so the property
+  // worth pinning is that it CLEARS its neighbours: the toolbar above it, the
+  // measurement readout row that shares the corner, and the sidebar. Nothing
+  // else measured this — a card that overlapped the toolbar would pass every
+  // other assertion in this test, because they all read text, not geometry.
+  const rects = await page.evaluate(() => {
+    const r = (id) => {
+      const b = document.getElementById(id)?.getBoundingClientRect();
+      return b ? { left: b.left, top: b.top, right: b.right, bottom: b.bottom } : null;
+    };
+    return { card: r("inspector-card"), toolbar: r("toolbar"), readout: r("measure-readout-row"), side: r("side") };
+  });
+  const fmt = (b) => (b ? `${b.left.toFixed(0)},${b.top.toFixed(0)}–${b.right.toFixed(0)},${b.bottom.toFixed(0)}` : "missing");
+  assert(
+    rects.card !== null && rects.toolbar !== null && rects.card.top >= rects.toolbar.bottom,
+    `the inspector card sits below the toolbar (card ${fmt(rects.card)}, toolbar ${fmt(rects.toolbar)})`
+  );
+  assert(
+    rects.card !== null && rects.side !== null && rects.card.left >= rects.side.right,
+    `the inspector card does not cover the sidebar (card ${fmt(rects.card)}, sidebar ${fmt(rects.side)})`
+  );
+  // The readout row collapses to zero size until a measurement exists, so this is
+  // satisfied by its top edge alone today — but it is the collision this
+  // placement was chosen to avoid, and it starts guarding in earnest the moment
+  // the row has content (its bottom edge is then ~26px below its top).
+  assert(
+    rects.readout === null || rects.readout.bottom <= rects.card.top,
+    `the inspector card clears the measurement readout row (card ${fmt(rects.card)}, readout ${fmt(rects.readout)})`
+  );
   assert(
     req !== null && typeof req.requestId === "string" && /^(face|solid)-\d+$/.test(req.entityId),
     `the request carries a requestId and the picked entity id (got ${JSON.stringify(req)})`
@@ -1424,6 +2041,29 @@ test("inspector card: selection requests facts, and the reply renders per classi
   await sleep(120);
   assert((await cardTitle()) === "Planar face", `a plane renders as "Planar face" (got ${await cardTitle()})`);
   assert((await cardKeys()).includes("Normal"), "a planar face shows its Normal row");
+
+  // The pill: one line up front — id · descriptor · the one measure — with the
+  // fact rows behind a disclosure. The rows are built either way (the assertions
+  // around this block read them while collapsed), so what changes is what shows.
+  {
+    const pill = () =>
+      page.evaluate(() => ({
+        text: document.querySelector("#inspector-card .insp-summary")?.textContent?.trim() ?? null,
+        detailsShown: document.querySelector("#inspector-card .insp-details")?.offsetParent !== null,
+        expanded: document.querySelector("#inspector-card .insp-toggle")?.getAttribute("aria-expanded") ?? null,
+      }));
+    const p0 = await pill();
+    assert(
+      p0.text !== null && p0.text.includes(req.entityId) && p0.text.includes("planar") && p0.text.includes("1.00 mm²"),
+      `the pill's summary line names the entity, its class and its area (got ${JSON.stringify(p0.text)})`
+    );
+    assert(p0.detailsShown === false && p0.expanded === "false", "the fact rows are collapsed behind the pill's disclosure by default");
+    await page.click("#inspector-card .insp-toggle");
+    const p1 = await pill();
+    assert(p1.detailsShown === true && p1.expanded === "true", "the disclosure reveals the fact rows");
+    await page.click("#inspector-card .insp-toggle");
+    assert((await pill()).detailsShown === false, "and hides them again");
+  }
 
   // A cylinder has no single normal — EntityFacts returns null and the row must
   // be ABSENT, not blank. This is the whole point of the card.
@@ -1762,7 +2402,9 @@ test("context menu: volume mode says why it has no groups instead of showing a b
 test("collapse: every sidebar section has a working chevron", async (page) => {
   await populate(page);
   const panels = [
-    "tree-panel", "parts-panel", "edits-panel", "meshing-panel", "mass-panel",
+    "tree-panel", "parts-panel", "edits-panel", "meshing-panel",
+    "advanced-group",
+    "mass-panel",
     "clash-panel",
     "mesh-health-panel", "region-fit-panel", "primitives-panel", "macros-panel", "standard-parts-panel",
   ];
@@ -1833,8 +2475,62 @@ test("collapse: hides EVERY body sibling, not just #x-body", async (page) => {
   );
 });
 
+test("advanced: the group ships collapsed, hides its seven children, and opens on its chevron", async (page) => {
+  await populate(page);
+
+  // Collapsed by default is the entire point: the sidebar's top level should
+  // hold only the four sections that EDIT the document.
+  const shut = await page.evaluate(() => {
+    const ids = [
+      "mass-panel", "clash-panel", "mesh-health-panel", "region-fit-panel",
+      "primitives-panel", "macros-panel", "standard-parts-panel",
+    ];
+    return {
+      collapsed: document.getElementById("advanced-group").classList.contains("collapsed"),
+      bodyShown: document.getElementById("advanced-body").offsetParent !== null,
+      headerShown: document.getElementById("advanced-header").offsetParent !== null,
+      anyChildShown: ids.some((id) => document.getElementById(id)?.offsetParent != null),
+      // The four that stay top-level must NOT have been swept into the group.
+      topLevel: ["tree-panel", "parts-panel", "edits-panel", "meshing-panel"].every(
+        (id) => !document.getElementById("advanced-body").contains(document.getElementById(id))
+      ),
+    };
+  });
+  assert(shut.collapsed, "the group starts collapsed");
+  assert(shut.headerShown, "its header is still visible while collapsed");
+  assert(!shut.bodyShown, "its body is hidden while collapsed");
+  assert(!shut.anyChildShown, "none of the seven children render while it is collapsed");
+  assert(shut.topLevel, "Components/Parts/Edits/FE Mesh stayed OUT of the group");
+
+  // The badge must report availability, not the raw child count: on this
+  // B-rep fixture Mesh Health and Region fit gate themselves out.
+  const badge = await page.evaluate(() => document.getElementById("advanced-count").textContent.trim());
+  assert(badge === "5 of 7", `the badge counts only the available children (got ${JSON.stringify(badge)})`);
+
+  await openAdvanced(page);
+  const open = await page.evaluate(() => ({
+    collapsed: document.getElementById("advanced-group").classList.contains("collapsed"),
+    mass: document.getElementById("mass-panel").offsetParent !== null,
+    macros: document.getElementById("macros-panel").offsetParent !== null,
+    // Still gated — opening the group must not reveal an ineligible section.
+    meshHealth: document.getElementById("mesh-health-panel").offsetParent !== null,
+    subheads: Array.from(document.querySelectorAll("#advanced-body .advanced-subhead")).map((n) =>
+      n.textContent.trim()
+    ),
+  }));
+  assert(!open.collapsed, "the chevron expands the group");
+  assert(open.mass && open.macros, "its eligible children render once open");
+  assert(!open.meshHealth, "a source-gated child stays hidden even with the group open");
+  assert(
+    eq(open.subheads, ["Analysis", "Library"]),
+    `the children are grouped under two subheads (got ${JSON.stringify(open.subheads)})`
+  );
+});
+
 test("collapse: state is saved to and restored from view state", async (page) => {
   await populate(page);
+  await openAdvanced(page);
+  await sleep(700); // let the group's own autosave land before __sent is cleared
   await page.evaluate(() => (window.__sent.length = 0));
   await page.click("#mass-header > .panel-chevron");
   await sleep(900); // VIEW_SAVE_DEBOUNCE_MS is 500
@@ -1889,6 +2585,7 @@ test("collapse: state is saved to and restored from view state", async (page) =>
 
 test("gated panels: Mesh Health and Region fit stay hidden for a B-rep source", async (page) => {
   await populate(page); // the fixture is bull.stp — a B-rep, so both are ineligible
+  await openAdvanced(page); // open the group, so this tests [hidden] and not the collapse
   const shown = await page.evaluate(() => ({
     meshHealth: document.getElementById("mesh-health-panel").getBoundingClientRect().height,
     regionFit: document.getElementById("region-fit-panel").getBoundingClientRect().height,
@@ -1909,6 +2606,7 @@ test("gated panels: Mesh Health and Region fit stay hidden for a B-rep source", 
 
 test("clash: B-rep source shows the section with Part dropdowns populated", async (page) => {
   await populate(page); // bull.stp — B-rep, so the section is eligible
+  await openAdvanced(page);
   const state = await page.evaluate(() => ({
     shown: document.getElementById("clash-panel")?.offsetParent !== null,
     a: Array.from(document.getElementById("clash-a").options).map((o) => o.value),
@@ -1923,6 +2621,7 @@ test("clash: B-rep source shows the section with Part dropdowns populated", asyn
 
 test("clash: Check posts clashCheckRequest; the reply renders; a stale reply is ignored", async (page) => {
   await populate(page);
+  await openAdvanced(page);
   await page.selectOption("#clash-a", "Body");
   await page.selectOption("#clash-b", "Contact faces");
   await page.click("#clash-check");
@@ -1962,6 +2661,7 @@ test("clash: Check posts clashCheckRequest; the reply renders; a stale reply is 
 
 test("clash: Check-all posts one request and renders named pairs with the screened badge", async (page) => {
   await populate(page);
+  await openAdvanced(page);
   await page.click("#clash-check-all");
   const req = await page.evaluate(() =>
     (window.__sent ?? []).filter((m) => m.type === "clashCheckAllRequest").at(-1) ?? null
@@ -1994,6 +2694,7 @@ test("clash: Check-all posts one request and renders named pairs with the screen
 
 test("clash: a partial all-pairs result labels itself partial and never as clash-free", async (page) => {
   await populate(page);
+  await openAdvanced(page);
   await page.click("#clash-check-all");
   const req = await page.evaluate(() =>
     (window.__sent ?? []).filter((m) => m.type === "clashCheckAllRequest").at(-1) ?? null
@@ -2026,6 +2727,7 @@ test("clash: a partial all-pairs result labels itself partial and never as clash
 
 test("clash: the same Part twice is refused without a host round trip", async (page) => {
   await populate(page);
+  await openAdvanced(page);
   const before = await page.evaluate(() => (window.__sent ?? []).filter((m) => m.type === "clashCheckRequest").length);
   await page.selectOption("#clash-a", "Body");
   await page.selectOption("#clash-b", "Body");
@@ -2042,6 +2744,7 @@ test("clash: the hidden attribute genuinely hides the section", async (page) => 
   // set while an author `display` rule beat it, so the "hidden" panel still
   // rendered. Assert RENDERED height, not the attribute.
   await populate(page);
+  await openAdvanced(page);
   const height = await page.evaluate(() => {
     const el = document.getElementById("clash-panel");
     el.hidden = true;
@@ -2092,6 +2795,7 @@ const PRIMITIVE_BOX_REPORT = {
 
 test("primitives: B-rep source shows the section; Recognize posts a well-formed request", async (page) => {
   await populate(page); // bull.stp — B-rep, so the section is eligible
+  await openAdvanced(page);
   const shown = await page.evaluate(() => document.getElementById("primitives-panel")?.offsetParent !== null);
   assert(shown, "the Primitives section is genuinely rendered for a B-rep source");
   await page.evaluate(() => (window.__sent.length = 0));
@@ -2104,6 +2808,7 @@ test("primitives: B-rep source shows the section; Recognize posts a well-formed 
 
 test("primitives: reply renders recognized + unrecognized rows; a stale reply is ignored", async (page) => {
   await populate(page);
+  await openAdvanced(page);
   await page.click("#primitives-recognize");
   const req = await page.evaluate(() =>
     (window.__sent ?? []).filter((m) => m.type === "primitiveRecognizeRequest").at(-1) ?? null
@@ -2136,6 +2841,7 @@ test("primitives: reply renders recognized + unrecognized rows; a stale reply is
 
 test("primitives: Apply pushes the emitted ops via editsChanged", async (page) => {
   await populate(page);
+  await openAdvanced(page);
   await page.click("#primitives-recognize");
   const req = await page.evaluate(() =>
     (window.__sent ?? []).filter((m) => m.type === "primitiveRecognizeRequest").at(-1) ?? null
@@ -2169,6 +2875,7 @@ test("primitives: Apply pushes the emitted ops via editsChanged", async (page) =
 test("primitives: the hidden attribute genuinely hides the section", async (page) => {
   // Same regression shape as the clash `[hidden]` test above.
   await populate(page);
+  await openAdvanced(page);
   const height = await page.evaluate(() => {
     const el = document.getElementById("primitives-panel");
     el.hidden = true;
@@ -2609,8 +3316,13 @@ async function hideGrid(page) {
  */
 const setPanelHidden = (page, hidden) =>
   page.evaluate((h) => {
-    const el = document.getElementById("view-controls");
-    if (el) el.style.display = h ? "none" : "";
+    // Everything painted over `#app` that carries live, pointer- or reply-driven
+    // content: the dock (which also holds the cursor readout), the selection pill,
+    // and the measurement readout line.
+    for (const id of ["view-controls", "inspector-card", "measure-readout-row"]) {
+      const el = document.getElementById(id);
+      if (el) el.style.display = h ? "none" : "";
+    }
   }, hidden);
 
 /**
@@ -2623,7 +3335,7 @@ const setPanelHidden = (page, hidden) =>
  * readback returns all-black without `preserveDrawingBuffer`).
  */
 async function frameSignature(page) {
-  const shot = (await page.locator("#app").screenshot()).toString("base64");
+  const shot = (await shotWithoutToast(page, () => page.locator("#app").screenshot())).toString("base64");
   return page.evaluate(async (b64) => {
     const bmp = await createImageBitmap(await (await fetch(`data:image/png;base64,${b64}`)).blob());
     const c = document.createElement("canvas");
@@ -2657,7 +3369,7 @@ async function frameSignature(page) {
  * `14,99,156`), the background, and every grey.
  */
 async function magentaFraction(page) {
-  const shot = (await page.locator("#app").screenshot()).toString("base64");
+  const shot = (await shotWithoutToast(page, () => page.locator("#app").screenshot())).toString("base64");
   return page.evaluate(async (b64) => {
     const bmp = await createImageBitmap(await (await fetch(`data:image/png;base64,${b64}`)).blob());
     const c = document.createElement("canvas");
@@ -2957,6 +3669,7 @@ test("clip P6: Clip ▸ Face applies a plane, and refuses a non-planar face", as
   });
   const clickAndReply = async (over) => {
     await page.evaluate(() => (window.__sent.length = 0));
+    await openDockMore(page);
     await page.click("#clip-from-face");
     await sleep(250);
     const requestId = await page.evaluate(() => {
@@ -3188,6 +3901,7 @@ test("planes P1: a stored plane renders, and Use applies it as the clip", async 
 
   // Numeric entry — the only way to author a plane with no geometry to pick.
   await page.evaluate(() => (window.__sent.length = 0));
+  await openDockMore(page);
   await page.click("#plane-add");
   await page.fill("#plane-entry-point", "1, 2, 3");
   await page.fill("#plane-entry-normal", "0,0,0");
@@ -3382,6 +4096,7 @@ async function runPartsSearch(page, q) {
 
 test("thumbs: fetched thumbnails render beside the right rows; missing ones keep text", async (page) => {
   await populate(page);
+  await openAdvanced(page);
   const req = await runPartsSearch(page, "bolt");
   assert(req !== null && typeof req?.requestId === "string", "search posts a standardPartsSearchRequest");
   await post(page, {
@@ -3426,6 +4141,7 @@ test("thumbs: fetched thumbnails render beside the right rows; missing ones keep
 
 test("thumbs: a stale-generation reply decorates nothing", async (page) => {
   await populate(page);
+  await openAdvanced(page);
   const reqA = await runPartsSearch(page, "bolt");
   await post(page, {
     type: "standardPartsSearchResult",
@@ -3479,6 +4195,7 @@ test("thumbs: a stale-generation reply decorates nothing", async (page) => {
 
 test("thumbs: a thumbnail for an unknown id is dropped silently", async (page) => {
   await populate(page);
+  await openAdvanced(page);
   const req = await runPartsSearch(page, "bolt");
   await post(page, {
     type: "standardPartsSearchResult",
@@ -3559,7 +4276,7 @@ test("sidebar: a viewState post restores and clamps the width, and a garbage val
   await apply("garbage");
   await sleep(120);
   const fallback = await page.evaluate(() => document.getElementById("side").clientWidth);
-  assert(fallback === 220, `a non-numeric width falls back to the 220 default (got ${fallback}px)`);
+  assert(fallback === 272, `a non-numeric width falls back to the SIDEBAR_DEFAULT_PX default (got ${fallback}px)`);
 });
 
 test("sidebar: #view-controls never covers the sidebar's clickable panels", async (page) => {
@@ -3676,6 +4393,528 @@ test("keyboard: Escape cancels an inline Parts rename without committing the hal
   await page.evaluate(() => document.querySelector(".part-name").focus());
   await page.keyboard.press("Escape");
 });
+
+/**
+ * Chrome redesign, pass 3 — the sidebar, status bar and chip changes that the
+ * mockup asked for. Each assertion is about RENDERED state (offsetParent, boxes),
+ * never a class name: the file documents an instance where every class-based
+ * check passed while the element was plainly visible.
+ */
+test("doc chip: reports how many unsaved edits, and nothing when clean", async (page) => {
+  await populate(page);
+  const read = () =>
+    page.evaluate(() => {
+      const el = document.getElementById("doc-chip-unsaved");
+      const chip = document.getElementById("doc-chip").getBoundingClientRect();
+      const bar = document.getElementById("menubar").getBoundingClientRect();
+      return { text: el.textContent, rendered: el.offsetParent !== null, inside: chip.top >= bar.top && chip.bottom <= bar.bottom };
+    });
+  await post(page, { type: "documentInfo", name: "bracket.step", path: "/x/bracket.step", format: "step", dirty: true, unsavedEdits: 3 });
+  await sleep(80);
+  const three = await read();
+  assert(three.text === "3 unsaved edits" && three.rendered, `the chip counts the unsaved edits (got ${JSON.stringify(three.text)}, rendered ${three.rendered})`);
+  assert(three.inside, "the longer chip still fits inside the menubar");
+
+  await post(page, { type: "documentInfo", name: "bracket.step", path: "/x/bracket.step", format: "step", dirty: true, unsavedEdits: 1 });
+  await sleep(80);
+  assert((await read()).text === "1 unsaved edit", "singular for one");
+
+  await post(page, { type: "documentInfo", name: "bracket.step", path: "/x/bracket.step", format: "step", dirty: false, unsavedEdits: 3 });
+  await sleep(80);
+  const clean = await read();
+  assert(clean.text === "" && clean.rendered === false, "a clean document shows no count, even if a stale number rides along (the dirty flag wins)");
+
+  await post(page, { type: "documentInfo", name: "old-host.step", path: "/x", format: "step", dirty: true });
+  await sleep(80);
+  assert((await read()).rendered === false, "a payload from a host without the field renders no count rather than 'undefined'");
+});
+
+test("status bar: sits below the canvas, holds the facts, and clears the dock", async (page) => {
+  await populate(page);
+  const geo = () =>
+    page.evaluate(() => {
+      const r = (id) => {
+        const b = document.getElementById(id)?.getBoundingClientRect();
+        return b ? { left: b.left, top: b.top, right: b.right, bottom: b.bottom, width: b.width, height: b.height } : null;
+      };
+      return {
+        bar: r("statusbar"),
+        app: r("app"),
+        dock: r("view-controls"),
+        side: r("side"),
+        kernel: r("kernel-status"),
+        vh: window.innerHeight,
+        factsInside: ["vc-count-entities", "vc-count-mesh", "vc-cursor"].every((id) => document.getElementById("statusbar")?.contains(document.getElementById(id))),
+        oldRowGone: document.getElementById("vc-status") === null,
+      };
+    });
+  const g = await geo();
+  assert(g.factsInside, "the counts, mesh stat and cursor readout live in the status bar");
+  assert(g.oldRowGone, "the dock no longer carries its own status row");
+  assert(Math.abs(g.bar.bottom - g.vh) < 1.5, `the bar is the bottom edge of the window (bottom ${g.bar.bottom.toFixed(1)} of ${g.vh})`);
+  assert(g.app.bottom <= g.bar.top + 1, `the canvas ends where the bar begins — the bar never overlaps it (app bottom ${g.app.bottom.toFixed(1)}, bar top ${g.bar.top.toFixed(1)})`);
+  assert(g.dock.bottom <= g.bar.top, `the dock floats clear of the bar (dock bottom ${g.dock.bottom.toFixed(1)}, bar top ${g.bar.top.toFixed(1)})`);
+  assert(Math.abs(g.kernel.width - g.side.width) < 1.5, `kernel readiness sits under the sidebar's own width (${g.kernel.width.toFixed(0)} vs ${g.side.width.toFixed(0)})`);
+
+  const kernel = () =>
+    page.evaluate(() => ({
+      text: document.getElementById("kernel-status-text").textContent,
+      tone: document.getElementById("kernel-status").dataset.tone,
+    }));
+  const idle = { occt: "idle", gmsh: "idle", meshio: "idle", ftetwild: "idle" };
+  await post(page, { type: "kernelStatus", state: idle });
+  await sleep(60);
+  let k = await kernel();
+  assert(k.text === "Kernels idle" && k.tone === "idle", `idle kernels read as such, not as a fault (got ${JSON.stringify(k)})`);
+  await post(page, { type: "kernelStatus", state: { ...idle, occt: "ready", gmsh: "loading" } });
+  await sleep(60);
+  k = await kernel();
+  assert(k.text === "OCCT ready · Gmsh loading…" && k.tone === "loading", `only active kernels are listed, and a loading one sets the tone (got ${JSON.stringify(k)})`);
+  await post(page, { type: "kernelStatus", state: { ...idle, occt: "ready", gmsh: "ready" } });
+  await sleep(60);
+  k = await kernel();
+  assert(k.text === "OCCT ready · Gmsh ready" && k.tone === "ready", `both ready (got ${JSON.stringify(k)})`);
+
+  // Narrow editor: the dock wraps, the bar must still clear it.
+  await page.setViewportSize({ width: 820, height: 900 });
+  await sleep(250);
+  const n = await geo();
+  assert(n.dock.bottom <= n.bar.top, `at 820px the wrapped dock still clears the bar (dock bottom ${n.dock.bottom.toFixed(1)}, bar top ${n.bar.top.toFixed(1)})`);
+  assert(n.bar.right <= 820.5 && n.bar.width >= 819, "the bar spans the narrow window without overflowing it");
+});
+
+test("components: the filter box is behind a search button and clears when closed", async (page) => {
+  await populate(page);
+  const state = () =>
+    page.evaluate(() => ({
+      inputShown: document.getElementById("tree-filter").offsetParent !== null,
+      expanded: document.getElementById("tree-search").getAttribute("aria-expanded"),
+      rows: document.querySelectorAll("#tree-body .tree-row").length,
+    }));
+  const s0 = await state();
+  assert(s0.inputShown === false && s0.expanded === "false", "the filter input is genuinely not rendered until asked for");
+  assert(s0.rows > 0, "precondition: the tree has rows");
+
+  await page.click("#tree-search");
+  const s1 = await state();
+  assert(s1.inputShown === true && s1.expanded === "true", "the search button reveals the filter input");
+  const focused = await page.evaluate(() => document.activeElement?.id);
+  assert(focused === "tree-filter", `and focuses it (focus on ${focused})`);
+
+  await page.fill("#tree-filter", "zzz-no-such-component");
+  await sleep(80);
+  assert((await state()).rows === 0, "a filter that matches nothing empties the list");
+
+  await page.keyboard.press("Escape");
+  await sleep(80);
+  const s2 = await state();
+  assert(s2.inputShown === false, "Escape closes the filter box");
+  assert(s2.rows === s0.rows, `closing it clears the filter, so no hidden box keeps hiding rows (${s2.rows} vs ${s0.rows})`);
+  const back = await page.evaluate(() => document.activeElement?.id);
+  assert(back === "tree-search", `and returns focus to the search button (focus on ${back})`);
+});
+
+test("parts: compact rows — no size field, quiet actions, entity lists start collapsed", async (page) => {
+  await populate(page);
+  const rows = () =>
+    page.evaluate(() => {
+      const shown = (el) => !!el && el.offsetParent !== null;
+      return [...document.querySelectorAll("#parts-body .part-item")].map((item) => {
+        const row = item.querySelector(".part-row");
+        const btns = [...row.querySelectorAll("button.part-btn")];
+        const list = item.querySelector(".part-entities");
+        return {
+          hasSizeField: !!row.querySelector(".part-meshsize"),
+          badge: row.querySelector(".part-badge")?.textContent ?? null,
+          eyeShown: shown(row.querySelector(".part-eye")),
+          actionsShown: btns.filter((b) => !b.classList.contains("part-eye")).map(shown),
+          actionCount: btns.filter((b) => !b.classList.contains("part-eye")).length,
+          listCollapsed: list ? getComputedStyle(list).display === "none" : null,
+        };
+      });
+    });
+  const before = await rows();
+  assert(before.length >= 3, `precondition: the fixture defines Parts (got ${before.length})`);
+  for (const r of before) {
+    assert(r.hasSizeField === false, "a row has no size field — that lives in FE Mesh › Part sizes");
+    assert(/^\d+ · \d+ · \d+( · \d+)?$/.test(r.badge), `the count reads 'v · s · l' (got ${JSON.stringify(r.badge)})`);
+    assert(r.eyeShown, "the eye is always visible");
+    assert(r.actionCount === 2 && r.actionsShown.every((v) => v === false), "assign and delete are not rendered at rest — but exist, so tests and keyboard can reach them");
+    assert(r.listCollapsed !== false, "an entity list, when present, starts collapsed");
+  }
+  await page.hover("#parts-body .part-row");
+  await sleep(60);
+  const hovered = await page.evaluate(() =>
+    [...document.querySelector("#parts-body .part-row").querySelectorAll("button.part-btn:not(.part-eye)")].map((b) => b.offsetParent !== null)
+  );
+  assert(hovered.length === 2 && hovered.every(Boolean), "hovering a row reveals its assign and delete actions");
+});
+
+test("edits and FE Mesh headers: a count badge, a stat, and the actions moved into the body", async (page) => {
+  await populate(page);
+  const opCount = fixture("edits").ops.length;
+  const edits = await page.evaluate(() => {
+    const el = document.getElementById("edits-count");
+    return { text: el.textContent, rendered: el.offsetParent !== null };
+  });
+  assert(edits.text === String(opCount) && edits.rendered, `the Edits header shows the history length (want ${opCount}, got ${JSON.stringify(edits.text)})`);
+  await post(page, { type: "edits", ops: [], variables: [], bakedThrough: 0 });
+  await sleep(120);
+  assert(
+    await page.evaluate(() => document.getElementById("edits-count").offsetParent === null),
+    "an empty history leaves no badge behind"
+  );
+
+  const layout = await page.evaluate(() => {
+    const panel = document.getElementById("meshing-panel");
+    const body = document.getElementById("meshing-body");
+    const gen = document.getElementById("meshing-generate");
+    const kids = [...body.children].map((c) => c.id || c.className);
+    return {
+      generateInBody: body.contains(gen),
+      generateInHeader: document.getElementById("meshing-header").contains(gen),
+      generateWidth: gen.getBoundingClientRect().width,
+      bodyWidth: body.getBoundingClientRect().width,
+      exportAfterParts: (() => {
+        const row = document.getElementById("meshing-export-row");
+        const parts = document.getElementById("meshing-part-sizes");
+        return !!row && !!parts && !!(parts.compareDocumentPosition(row) & Node.DOCUMENT_POSITION_FOLLOWING);
+      })(),
+      exportInBody: body.contains(document.getElementById("meshing-export")),
+      kids,
+      panelOk: !!panel,
+    };
+  });
+  assert(layout.generateInBody && !layout.generateInHeader, "Generate lives in the body now, not the header");
+  assert(layout.generateWidth > layout.bodyWidth * 0.6, `Generate is the full-width primary button (${layout.generateWidth.toFixed(0)} of ${layout.bodyWidth.toFixed(0)}px)`);
+  assert(layout.exportInBody && layout.exportAfterParts, "the export row sits below the Part sizes");
+
+  const stat = () =>
+    page.evaluate(() => {
+      const el = document.getElementById("meshing-header-stat");
+      return { text: el.textContent.trim(), rendered: el.offsetParent !== null };
+    });
+  assert((await stat()).rendered === false, "no header stat before a mesh exists");
+  await post(page, fixture("meshingResult"));
+  await sleep(500);
+  const s1 = await stat();
+  assert(s1.rendered && s1.text === "10,000 el", `the header stat reports the element count (got ${JSON.stringify(s1)})`);
+  await page.click("#meshing-clear");
+  await sleep(300);
+  assert((await stat()).rendered === false, "Clear removes the header stat with the overlay");
+});
+
+
+/**
+ * Chrome redesign, pass 4 — the remaining gaps to the mockup. As in pass 3, every
+ * assertion reads RENDERED state (boxes, computed style), never a class name.
+ */
+test("components: the title stays 'Components', and an assembly row counts its solids", async (page) => {
+  await populate(page);
+  const read = () =>
+    page.evaluate(() => ({
+      title: document.getElementById("tree-title").textContent,
+      tip: document.getElementById("tree-title").title,
+      rows: [...document.querySelectorAll("#tree-body .tree-row")].map((r) => ({
+        label: r.querySelector(".tree-label")?.textContent,
+        badge: r.querySelector(".tree-badge")?.textContent ?? null,
+        badgeTitle: r.querySelector(".tree-badge")?.title ?? null,
+        hasKids: !!r.parentElement.querySelector(":scope > .tree-list"),
+      })),
+    }));
+  const r = await read();
+  assert(r.title === "Components", `the section title is not replaced by the root's label (got ${JSON.stringify(r.title)})`);
+  assert(r.tip.length > 0, `the root's label moved to the title's tooltip (got ${JSON.stringify(r.tip)})`);
+  const group = r.rows.find((x) => x.hasKids);
+  assert(group && group.badge !== null && /^\d+$/.test(group.badge) && group.badgeTitle === "Solids in this assembly",
+    `an assembly row shows how many solids it holds (got ${JSON.stringify(group)})`);
+  const leaf = r.rows.find((x) => !x.hasKids);
+  assert(leaf && leaf.badgeTitle === "Faces", `a leaf row's count is its face count (got ${JSON.stringify(leaf)})`);
+});
+
+test("parts: the panel hugs its rows instead of leaving an empty gap", async (page) => {
+  await populate(page);
+  const m = await page.evaluate(() => {
+    const panel = document.getElementById("parts-panel").getBoundingClientRect();
+    const head = document.getElementById("parts-header").getBoundingClientRect();
+    const rows = [...document.querySelectorAll("#parts-body .part-row")].map((r) => r.getBoundingClientRect());
+    const rowsH = rows.reduce((a, r) => a + r.height, 0);
+    return { panel: panel.height, head: head.height, rowsH, n: rows.length };
+  });
+  assert(m.n >= 3, `precondition: three parts (got ${m.n})`);
+  // Header + rows, with generous allowance for borders and the list's own padding —
+  // the failure being pinned is a panel that is HUNDREDS of pixels taller than that.
+  assert(m.panel <= m.head + m.rowsH + 40, `Parts is as tall as its content, not the spare column (panel ${m.panel.toFixed(0)}px vs header+rows ${(m.head + m.rowsH).toFixed(0)}px)`);
+});
+
+test("edits body: Variables + New is a ghost button, and the tabs are segmented tracks", async (page) => {
+  await populate(page);
+  const st = await page.evaluate(() => {
+    const bg = (el) => getComputedStyle(el).backgroundColor;
+    const isClear = (c) => c === "rgba(0, 0, 0, 0)" || c === "transparent";
+    const active = document.querySelector(".edits-tab.active");
+    const idle = document.querySelector(".edits-tab:not(.active)");
+    const btn = document.getElementById("variables-add");
+    const track = document.querySelector(".edits-tabs");
+    return {
+      addClear: isClear(bg(btn)),
+      addBorder: getComputedStyle(btn).borderTopWidth,
+      idleClear: isClear(bg(idle)),
+      activeBg: bg(active),
+      trackBg: bg(track),
+      // a solid VS Code button blue would equal the primary button's colour
+      primaryBg: bg(document.getElementById("parts-new")),
+    };
+  });
+  assert(st.addClear && st.addBorder !== "0px", `Variables + New is transparent with a thin border, not a browser-default white button (bg clear ${st.addClear}, border ${st.addBorder})`);
+  assert(st.idleClear, "an inactive tab is transparent inside the track");
+  assert(st.activeBg !== st.primaryBg, `the active tab is a lifted segment, not the solid primary-button blue (${st.activeBg} vs ${st.primaryBg})`);
+  assert(st.trackBg !== "rgba(0, 0, 0, 0)", "the tabs sit on an inset track");
+});
+
+test("FE Mesh: a Part size reads to three figures, with no locale comma", async (page) => {
+  await populate(page);
+  const vals = await page.evaluate(() =>
+    [...document.querySelectorAll("#meshing-part-sizes .meshing-part-size")].map((i) => ({ v: i.value, type: i.type, tip: i.title }))
+  );
+  assert(vals.length === 3, `three Part size fields (got ${vals.length})`);
+  assert(vals.every((x) => x.type === "text"), "they are text fields — a number input renders through the OS locale");
+  const sized = vals.find((x) => x.v !== "");
+  assert(sized && sized.v === "4.02", `the sized part shows 3 significant figures with a dot (got ${JSON.stringify(sized)})`);
+  assert(sized.tip.includes("4.0231"), "the exact stored value stays available in the tooltip");
+  assert(vals.every((x) => !x.v.includes(",")), "no value contains a locale comma");
+});
+
+test("dock: the collapse control sits at the end of the bar, after the overflow button", async (page) => {
+  await populate(page);
+  const m = await page.evaluate(() => {
+    const r = (id) => document.getElementById(id).getBoundingClientRect();
+    const toggle = r("vc-toggle");
+    const more = r("vc-more");
+    const modes = [...document.querySelectorAll(".display-mode-btn .toolbar-icon")].map((e) => e.offsetParent !== null);
+    return { toggleLeft: toggle.left, moreRight: more.right, modesShowIcon: modes.some(Boolean), modeCount: modes.length };
+  });
+  assert(m.toggleLeft >= m.moreRight - 1, `the collapse control follows ⋯ (toggle left ${m.toggleLeft.toFixed(0)}, ⋯ right ${m.moreRight.toFixed(0)})`);
+  assert(m.modeCount === 5 && !m.modesShowIcon, "the display modes are text-only segments");
+  await page.click("#vc-toggle");
+  await sleep(80);
+  const collapsedRendered = await page.evaluate(() => document.getElementById("vc-toggle").offsetParent !== null);
+  assert(collapsedRendered, "the collapse control is still reachable once the bar is collapsed");
+});
+
+test("toolbar: sidebar-sized type and line glyphs on the buttons", async (page) => {
+  await populate(page);
+  const m = await page.evaluate(() => {
+    const fs = (sel) => parseFloat(getComputedStyle(document.querySelector(sel)).fontSize);
+    return {
+      toolbar: fs("#toolbar"),
+      side: fs("#side"),
+      fitGlyph: document.querySelectorAll("#fit .ui-glyph svg").length,
+      viewGlyphs: document.querySelectorAll("#view-menu .ui-glyph svg").length,
+      fitIcon: document.querySelectorAll("#fit .toolbar-icon").length,
+      h: document.getElementById("fit").getBoundingClientRect().height,
+    };
+  });
+  assert(m.toolbar <= m.side + 1, `the toolbar is no larger than the sidebar's type (toolbar ${m.toolbar}px, sidebar ${m.side}px) — it used to inherit the browser's 16px`);
+  assert(m.fitGlyph === 1 && m.fitIcon === 0, "Fit uses the line glyph, not the generated icon");
+  assert(m.viewGlyphs === 2, "a trigger carries its own glyph and a chevron");
+  assert(m.h >= 26 && m.h <= 32, `toolbar buttons are a compact 28px (got ${m.h})`);
+});
+
+
+/**
+ * Chrome redesign, pass 5 — the last gaps to the mockup. Rendered state, not class names.
+ */
+test("selection: a selected Part-coloured face keeps its hue family, with a visible tint", async (page) => {
+  await populate(page);
+  await gridOff(page);
+  // Nothing hovering over the model, no dock/pill/readout over the canvas.
+  await setPanelHidden(page, true);
+  const orange = (colors) => colors.find(([k]) => {
+    const [r, g, b] = k.split(",").map(Number);
+    return r > 150 && r > b + 60 && r >= g; // the fixture's orange Part, shaded
+  });
+  const before = await dominantColors(page, 12);
+  const base = orange(before);
+  assert(base, `precondition: an orange Part-coloured face is on screen (top colours ${JSON.stringify(before.slice(0, 4))})`);
+  await setPanelHidden(page, false);
+
+  await enablePicking(page, "surface");
+  const box = await viewportBox(page);
+  // The big orange top face sits just off the viewport centre in the framed fixture.
+  await page.mouse.click(box.x + box.width * 0.55, box.y + box.height * 0.5);
+  await sleep(400);
+  assert(
+    await page.evaluate(() => (window.__sent ?? []).some((m) => m.type === "entityFactsRequest")),
+    "precondition: the click selected a face"
+  );
+  await page.mouse.move(box.x + 4, box.y + box.height - 4); // off the model
+  await sleep(150);
+  await setPanelHidden(page, true);
+  const after = await dominantColors(page, 12);
+  await setPanelHidden(page, false);
+
+  const [br, , bb] = base[0].split(",").map(Number);
+  const tinted = after.find(([k]) => {
+    const [r, g, b] = k.split(",").map(Number);
+    return !before.some(([bk]) => bk === k) && r > b && b > bb - 5 && r > br - 10;
+  });
+  assert(
+    tinted,
+    `a selected orange face stays orange-family (red still above blue) rather than turning lilac (before ${JSON.stringify(before.slice(0, 3))}, after ${JSON.stringify(after.slice(0, 4))})`
+  );
+  const [tr, , tb] = tinted[0].split(",").map(Number);
+  assert(tb > bb, `and it is visibly tinted toward the accent (blue ${bb} -> ${tb})`);
+  assert(tr > tb, `never past the point where blue overtakes red (red ${tr}, blue ${tb}) — the failure was a lilac (200,160,250)`);
+});
+
+test("dock and toolbar: a lifted grey display mode, a blue clip axis, and a divider", async (page) => {
+  await populate(page);
+  const m = await page.evaluate(() => {
+    const bg = (sel) => getComputedStyle(document.querySelector(sel)).backgroundColor;
+    const r = (sel) => document.querySelector(sel).getBoundingClientRect();
+    const div = document.querySelector("#toolbar .tb-div");
+    const fe = r("#meshing-toggle");
+    const view = r("#view-menu");
+    const d = div?.getBoundingClientRect();
+    return {
+      mode: bg(".display-mode-btn.active"),
+      axis: bg(".clip-axis.active"),
+      primary: bg("#parts-new"),
+      divRendered: !!div && div.offsetParent !== null,
+      divBetween: !!d && d.left >= fe.right - 1 && d.right <= view.left + 1,
+    };
+  });
+  assert(m.mode !== m.primary, `the active display mode is not the solid button-blue (${m.mode} vs ${m.primary})`);
+  assert(m.axis === m.primary, `the active clip axis keeps the button-blue (${m.axis} vs ${m.primary})`);
+  assert(m.divRendered && m.divBetween, "a hairline divides the plain buttons from the menu triggers");
+});
+
+test("sidebar: a collapsed section stacks no double rule, and the Advanced card has its tile", async (page) => {
+  await populate(page);
+  await page.click("#edits-header > .panel-chevron");
+  await sleep(100);
+  const m = await page.evaluate(() => {
+    const w = (sel, prop) => getComputedStyle(document.querySelector(sel))[prop];
+    const tile = document.getElementById("advanced-icon");
+    const count = document.getElementById("advanced-count");
+    return {
+      collapsedBottom: w("#edits-header", "borderBottomWidth"),
+      tileBg: getComputedStyle(tile).backgroundColor,
+      tileW: tile.getBoundingClientRect().width,
+      countBg: getComputedStyle(count).backgroundColor,
+      countMono: getComputedStyle(count).fontFamily.toLowerCase().includes("mono") || getComputedStyle(count).fontFamily.includes("ui-monospace"),
+    };
+  });
+  assert(m.collapsedBottom === "0px", `a collapsed header has no bottom border, so it cannot double the next section's rule (got ${m.collapsedBottom})`);
+  assert(m.tileW >= 22 && m.tileBg !== "rgba(0, 0, 0, 0)", `the Advanced icon sits in a filled tile (width ${m.tileW}, bg ${m.tileBg})`);
+  assert(m.countBg === "rgba(0, 0, 0, 0)", `the 5-of-7 badge is an outline, not a solid pill (bg ${m.countBg})`);
+});
+
+
+test("sidebar: every section header carries the same rounded icon tile, between chevron and title", async (page) => {
+  await populate(page);
+  await openAdvanced(page);
+  const headers = await page.evaluate(() => {
+    const ids = [
+      "tree-header", "parts-header", "edits-header", "meshing-header", "advanced-header", "mass-header",
+      "clash-header", "mesh-health-header", "region-fit-header", "primitives-header", "macros-header", "standard-parts-header",
+    ];
+    return ids.map((id) => {
+      const h = document.getElementById(id);
+      const chev = h?.querySelector(".panel-chevron");
+      const icon = h?.querySelector(":scope > .panel-icon");
+      const title = h?.querySelector(".panel-title");
+      const b = icon?.getBoundingClientRect();
+      return {
+        id,
+        present: !!h && !!icon,
+        hasGlyph: !!icon?.querySelector("svg path, svg circle, svg rect"),
+        ordered: !!chev && !!icon && !!title &&
+          !!(chev.compareDocumentPosition(icon) & Node.DOCUMENT_POSITION_FOLLOWING) &&
+          !!(icon.compareDocumentPosition(title) & Node.DOCUMENT_POSITION_FOLLOWING),
+        ariaHidden: icon?.getAttribute("aria-hidden") === "true",
+        // A source-gated section (Clash, Mesh Health, Region fit, Primitives) is
+        // legitimately not rendered for some formats — size is only checked for a
+        // tile that is actually on screen.
+        rendered: !!icon && icon.offsetParent !== null,
+        w: b?.width ?? 0,
+        h: b?.height ?? 0,
+        svgMarkup: icon?.innerHTML ?? "",
+      };
+    });
+  });
+  for (const x of headers) {
+    assert(x.present, `#${x.id} has an icon tile`);
+    assert(x.hasGlyph && x.ariaHidden, `#${x.id}'s tile holds a drawn glyph and is hidden from assistive tech (it is decoration — the title names the section)`);
+    assert(x.ordered, `#${x.id}: chevron, then icon, then title`);
+    if (x.rendered) assert(Math.abs(x.w - 22) < 0.6 && Math.abs(x.h - 22) < 0.6, `#${x.id}'s tile is the shared 22px (got ${x.w}x${x.h})`);
+  }
+  assert(headers.filter((x) => x.rendered).length >= 8, `most tiles are on screen for a B-rep document (rendered: ${headers.filter((x) => x.rendered).length})`);
+  const glyphs = headers.map((x) => x.svgMarkup);
+  assert(new Set(glyphs).size === glyphs.length, "every section has its OWN glyph — no two headers share an icon");
+});
+
+
+/**
+ * Chrome redesign, pass 7 — the last visible gaps. Rendered state, not class names.
+ */
+test("FE Mesh: preset actions share the PRESET label's line, and the export row closes the panel", async (page) => {
+  await populate(page);
+  const m = await page.evaluate(() => {
+    const r = (el) => el.getBoundingClientRect();
+    const section = document.querySelector(".meshing-pair .meshing-section");
+    const label = section.querySelector(".meshing-label");
+    const actions = section.querySelector(".meshing-preset-actions");
+    const apply = [...actions.querySelectorAll("button")].find((b) => b.textContent === "Apply");
+    // The label's BOX stretches the whole column (a flex item in a column), so
+    // horizontal collision is measured against its TEXT, via a Range.
+    const range = document.createRange();
+    range.selectNodeContents(label);
+    const [l, a] = [range.getBoundingClientRect(), r(actions)];
+    const overlapV = Math.min(l.bottom, a.bottom) - Math.max(l.top, a.top);
+    const select = section.querySelector("select");
+    const body = document.getElementById("meshing-body");
+    const visibleKids = [...body.children].filter((c) => c.offsetParent !== null);
+    return {
+      overlapV, labelH: l.height,
+      overlapH: Math.min(l.right, a.right) - Math.max(l.left, a.left),
+      actionsAboveSelect: a.bottom <= r(select).top + 1,
+      applyShown: apply.offsetParent !== null,
+      lastId: visibleKids.at(-1)?.id ?? null,
+      exportInside: !!document.getElementById("meshing-export-row")?.contains(document.getElementById("meshing-export")),
+    };
+  });
+  assert(m.overlapV >= m.labelH * 0.5, `the actions sit on the PRESET label's line (vertical overlap ${m.overlapV.toFixed(1)}px of ${m.labelH.toFixed(1)}px)`);
+  assert(m.overlapH <= 0, `and do not collide with the label (horizontal overlap ${m.overlapH.toFixed(1)}px)`);
+  assert(m.actionsAboveSelect && m.applyShown, "above the select, still rendered and clickable");
+  assert(m.lastId === "meshing-export-row" && m.exportInside, `the export row is the last thing in the panel body (last visible child: ${m.lastId})`);
+});
+
+test("toolbar and tree: a selected item is a quiet lifted background, not the saturated blue", async (page) => {
+  await populate(page);
+  // Turn selection mode on so the Select trigger is `.active`, and select a tree row.
+  await page.click("#select-menu");
+  await page.click("#sel-toggle");
+  await page.click("#select-menu");
+  await page.click("#tree-body .tree-row >> nth=0");
+  await sleep(120);
+  const m = await page.evaluate(() => {
+    const cs = (sel) => getComputedStyle(document.querySelector(sel));
+    return {
+      triggerActive: document.getElementById("select-menu").classList.contains("active"),
+      triggerBg: cs("#select-menu").backgroundColor,
+      triggerOutline: cs("#select-menu").outlineStyle,
+      treeBg: cs("#tree-body .tree-row.selected").backgroundColor,
+      primary: getComputedStyle(document.getElementById("parts-new")).backgroundColor,
+      toggleBg: cs("#sel-toggle").backgroundColor,
+    };
+  });
+  assert(m.triggerActive, "precondition: the Select trigger is active");
+  assert(m.triggerOutline === "none" && m.triggerBg !== "rgba(0, 0, 0, 0)", `an active trigger is a lifted background without an outline (bg ${m.triggerBg}, outline ${m.triggerOutline})`);
+  assert(m.treeBg !== m.primary && m.treeBg !== "rgb(9, 71, 113)", `a selected tree row is not the saturated selection blue (${m.treeBg})`);
+});
+
 
 async function main() {
   if (!nodeSupportsPlaywright()) {

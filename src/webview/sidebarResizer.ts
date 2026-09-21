@@ -21,8 +21,16 @@ export const SIDEBAR_MIN_PX = 176;
 /** Anything wider steals more canvas than an inspection sidebar is worth. */
 export const SIDEBAR_MAX_PX = 420;
 
-/** The pre-resizer fixed width; widths equal to this are never serialized. */
-export const SIDEBAR_DEFAULT_PX = 220;
+/**
+ * Widths equal to this are never serialized, so an untouched sidebar leaves
+ * `.view.json` byte-stable.
+ *
+ * Raised from the pre-resizer 220: at that width the FE Mesh part-size rows
+ * cannot fit a part name, its size field and the Grade button without
+ * wrapping, and a wrapped row is what pushed the sidebar's lower panels past
+ * their own box once already.
+ */
+export const SIDEBAR_DEFAULT_PX = 272;
 
 /**
  * Clamps a sidecar/drag width into `[SIDEBAR_MIN_PX, SIDEBAR_MAX_PX]`.

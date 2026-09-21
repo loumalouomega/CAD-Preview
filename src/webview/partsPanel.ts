@@ -1,5 +1,5 @@
 import type { Part } from "../protocol";
-import { TOOLBAR_ICONS } from "../toolbarIcons";
+import { UI_GLYPHS } from "../uiGlyphs";
 import type { VisibilityState } from "./visibilityState";
 
 export interface PartsPanelCallbacks {
@@ -8,7 +8,6 @@ export interface PartsPanelCallbacks {
   onRemovePart: (index: number) => void;
   onRename: (index: number, name: string) => void;
   onRecolor: (index: number, color: string) => void;
-  onMeshSize: (index: number, size: number | undefined) => void;
   onRemoveEntity: (index: number, entityType: "volume" | "surface" | "line" | "point", entityId: string) => void;
   onSelectPart: (index: number | null) => void;
   /** Toggles whether this part's entities are hidden (display-only, never persisted). */
@@ -21,8 +20,11 @@ export interface PartsPanelCallbacks {
 
 /**
  * Renders the editable Parts list: per-part colour swatch, inline-editable name,
- * entity counts, an "assign current selection" action, delete, and an expandable
- * list of assigned entities. VS Code webviews block `prompt()`, so renaming uses
+ * a compact `volumes · surfaces · lines` count and a visibility eye; the "assign
+ * current selection" and delete actions appear on hover/focus only (they stay in
+ * the DOM and keyboard-reachable), and the expandable list of assigned entities
+ * starts collapsed. A part's target mesh size is edited in the FE Mesh panel's
+ * "Part sizes" section, not here. VS Code webviews block `prompt()`, so renaming uses
  * an inline `<input>` rather than a dialog. Selecting a part row highlights its
  * entities via {@link PartsPanelCallbacks.onSelectPart}. `visibility` is read-only
  * here — it's owned by `main.ts`, this panel only queries it to paint the eye
@@ -90,7 +92,11 @@ export class PartsPanel {
     const chevron = document.createElement("span");
     chevron.className = "part-chevron";
     const total = part.volumes.length + part.surfaces.length + part.lines.length + part.points.length;
-    chevron.textContent = total > 0 ? "▾" : " ";
+    // Entity lists start COLLAPSED — a part with a dozen faces would otherwise
+    // push every other part off the screen. The glyph is rotated by CSS from the
+    // `collapsed` class, so toggling never rewrites text.
+    chevron.innerHTML = total > 0 ? UI_GLYPHS.chevronDown : "";
+    chevron.classList.add("collapsed");
     row.appendChild(chevron);
 
     const swatch = document.createElement("input");
@@ -125,47 +131,34 @@ export class PartsPanel {
     name.addEventListener("click", (e) => e.stopPropagation());
     row.appendChild(name);
 
-    const meshSize = document.createElement("input");
-    meshSize.type = "number";
-    meshSize.className = "part-meshsize";
-    meshSize.title = "Target mesh size for local refinement (optional)";
-    meshSize.placeholder = "size";
-    meshSize.min = "0";
-    meshSize.step = "any";
-    meshSize.value = part.meshSize != null ? String(part.meshSize) : "";
-    meshSize.addEventListener("change", () => {
-      const raw = meshSize.value.trim();
-      const n = raw === "" ? undefined : Number(raw);
-      this.cb.onMeshSize(index, n !== undefined && Number.isFinite(n) && n > 0 ? n : undefined);
-    });
-    meshSize.addEventListener("click", (e) => e.stopPropagation());
-    row.appendChild(meshSize);
-
     const badge = document.createElement("span");
     badge.className = "part-badge";
-    badge.textContent = `${part.volumes.length}/${part.surfaces.length}/${part.lines.length}/${part.points.length}`;
-    badge.title = "volumes / surfaces / lines / points";
+    // "1 · 0 · 0" — points only when there are any, since almost no part has them.
+    const counts = [part.volumes.length, part.surfaces.length, part.lines.length];
+    if (part.points.length > 0) counts.push(part.points.length);
+    badge.textContent = counts.join(" · ");
+    badge.title = part.points.length > 0 ? "volumes · surfaces · lines · points" : "volumes · surfaces · lines";
     row.appendChild(badge);
 
     const hidden = this.visibility.isPartHidden(index);
     const eye = document.createElement("button");
     eye.className = "part-btn part-eye";
     eye.classList.toggle("hidden-off", hidden);
-    eye.textContent = hidden ? "🙈" : "👁";
+    eye.innerHTML = hidden ? UI_GLYPHS.eyeOff : UI_GLYPHS.eye;
     eye.title = hidden ? "Show this part" : "Hide this part";
     eye.addEventListener("click", (e) => { e.stopPropagation(); this.cb.onToggleVisible(index); });
     row.appendChild(eye);
 
     const assign = document.createElement("button");
     assign.className = "part-btn";
-    assign.textContent = "＋";
+    assign.innerHTML = UI_GLYPHS.plus;
     assign.title = "Assign current selection to this part";
     assign.addEventListener("click", (e) => { e.stopPropagation(); this.cb.onAssign(index); });
     row.appendChild(assign);
 
     const del = document.createElement("button");
     del.className = "part-btn";
-    del.innerHTML = TOOLBAR_ICONS.close;
+    del.innerHTML = UI_GLYPHS.trash;
     del.title = "Delete part";
     del.addEventListener("click", (e) => { e.stopPropagation(); this.cb.onRemovePart(index); });
     row.appendChild(del);
@@ -174,11 +167,12 @@ export class PartsPanel {
 
     const sub = this.buildEntities(part, index);
     if (sub) {
+      sub.classList.add("collapsed");
       item.appendChild(sub);
       chevron.addEventListener("click", (e) => {
         e.stopPropagation();
         const collapsed = sub.classList.toggle("collapsed");
-        chevron.textContent = collapsed ? "▸" : "▾";
+        chevron.classList.toggle("collapsed", collapsed);
       });
     }
 
@@ -218,7 +212,7 @@ export class PartsPanel {
 
       const rm = document.createElement("button");
       rm.className = "entity-remove";
-      rm.innerHTML = TOOLBAR_ICONS.close;
+      rm.innerHTML = UI_GLYPHS.trash;
       rm.title = "Remove from part";
       rm.addEventListener("click", (e) => { e.stopPropagation(); this.cb.onRemoveEntity(index, type, id); });
       li.appendChild(rm);

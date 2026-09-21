@@ -2,7 +2,8 @@ import * as THREE from "three";
 import { Viewer } from "./viewer";
 import { refreshPalette } from "./palette";
 import { buildEntityReferenceIndex, QUERYABLE_PANEL_FORMS } from "./opCatalog";
-import { hoverContent, inspectorContent } from "./entityExplain";
+import { hoverContent, inspectorContent, summaryLine } from "./entityExplain";
+import { UI_GLYPHS } from "../uiGlyphs";
 import { MacrosPanel } from "./macrosPanel";
 import { selectionGroupsFor } from "./selectionGroups";
 import { loadMeshFromUrl } from "./meshLoaders";
@@ -86,7 +87,18 @@ import { pointDistance, polylineLength, angleBetweenVectors, circleRadiusFromArc
 import { convertLength, convertLengthBasedProperties, convertVolume, displayUnitFromUnitName, type DisplayUnit, type LengthBasedProperties } from "./units";
 import type { EntityFacts, ExactMeasureKind } from "../entityFacts";
 import { isDisplayMode, type DisplayMode } from "./displayMode";
-import { setupCollapsiblePanels, type CollapsiblePanelsHandle } from "./collapsiblePanels";
+import { setupCollapsiblePanels, setupAdvancedGroupCount, type CollapsiblePanelsHandle } from "./collapsiblePanels";
+import {
+  formatEntityCounts,
+  formatMeshStats,
+  formatMeshStatsLong,
+  formatMeshHeaderStat,
+  formatCursor,
+  unsavedEditsLabel,
+  type EntityCounts,
+  type MeshStats,
+} from "./dockStats";
+import { describeKernelState } from "../kernelActivity";
 import { setupSidebarResizer, clampSidebarWidth, SIDEBAR_DEFAULT_PX, type SidebarResizerHandle } from "./sidebarResizer";
 // Value import, safe the same way `sidebarResizer` above is: `viewStateSidecar`
 // is pure (no vscode, no three.js value import — only `import type` on
@@ -156,6 +168,32 @@ document.getElementById("tree-filter")?.addEventListener("input", (e) => {
   treePanel.filter((e.target as HTMLInputElement).value);
 });
 
+// The filter box stays hidden until the header's search button asks for it — a
+// permanent input made the Components header the busiest in the sidebar. Closing
+// it clears the filter, so a hidden box can never keep hiding rows.
+{
+  const filterInput = document.getElementById("tree-filter") as HTMLInputElement | null;
+  const searchBtn = document.getElementById("tree-search");
+  const setFilterOpen = (open: boolean): void => {
+    if (!filterInput || !searchBtn) return;
+    filterInput.hidden = !open;
+    searchBtn.setAttribute("aria-expanded", open ? "true" : "false");
+    if (open) filterInput.focus();
+    else if (filterInput.value !== "") {
+      filterInput.value = "";
+      treePanel.filter("");
+    }
+  };
+  searchBtn?.addEventListener("click", () => setFilterOpen(!!filterInput?.hidden));
+  filterInput?.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") {
+      e.stopPropagation();
+      setFilterOpen(false);
+      searchBtn?.focus();
+    }
+  });
+}
+
 // ── Parts / selection state ──────────────────────────────────────────────
 const selection = new SelectionSet();
 let previewPartIndex: number | null = null;
@@ -185,7 +223,6 @@ const partsPanel = new PartsPanel(
     onRemovePart: (index) => partsModel.remove(index),
     onRename: (index, name) => partsModel.rename(index, name),
     onRecolor: (index, color) => partsModel.recolor(index, color),
-    onMeshSize: (index, size) => partsModel.setMeshSize(index, size),
     onRemoveEntity: (index, type, id) => partsModel.removeEntity(index, type, id),
     onSelectPart: (index) => {
       previewPartIndex = index;
@@ -545,6 +582,10 @@ function renderEditsUi(): void {
   // point anyway.
   editsPanel.render(ops, editsModel.canUndo, editsModel.canRedo, lastOpOutcomes, editsModel.redoList(), lastOpBuckets, editsModel.savePoint);
   variablesPanel.render(variablesModel.list(), values, errors, variableUsage());
+  // The history length beside the section title, so it reads while collapsed.
+  // Empty (not "0") when there are no ops, so the badge collapses away.
+  const editsCount = document.getElementById("edits-count");
+  if (editsCount) editsCount.textContent = ops.length > 0 ? String(ops.length) : "";
 }
 
 /** The most recent replay's per-op outcomes (see `editOps.ts`'s
@@ -1152,6 +1193,7 @@ const meshingPanel = new MeshingPanel(document.getElementById("meshing-panel")!,
   onClear: () => {
     viewer.setMeshOverlay(null);
     viewer.setWorstElementsOverlay(null);
+    renderDockMeshStats(null); // the overlay these stats described is gone
     // Same toggle-truthfulness invariant as `meshingResult`/`meshingError`
     // below: Clear disposes the overlay, so the toggle must stop claiming "on".
     meshingEnabled = false;
@@ -1312,6 +1354,52 @@ function setDisplayUnit(unit: DisplayUnit): void {
       unit
     );
   renderClashResults();
+  renderDockCursor(); // the readout follows the Units dropdown like Mass Properties does
+}
+
+// ── Dock status row ──────────────────────────────────────────────────────
+// Facts about the loaded document, shown in `#vc-status` inside the dock (so the
+// webview tests, which hide the whole dock for exact-pixel comparisons, exclude
+// this live text automatically). The wording lives in `dockStats.ts`, pure and
+// unit-tested; this is only the DOM half. Every setter tolerates missing
+// elements — a stripped-down harness must not be able to throw from here.
+
+function setDockText(id: string, text: string): void {
+  const el = document.getElementById(id);
+  if (el) el.textContent = text;
+}
+
+/** Entity counts for a B-rep document; `null` for a mesh source, which has no
+ * `geometry` message to count and whose face count would be facet-split anyway. */
+function renderDockEntityCounts(counts: EntityCounts | null): void {
+  setDockText("vc-count-entities", counts ? formatEntityCounts(counts) : "");
+}
+
+/** FE-mesh stats; `null` hides the span. Called with `null` from every place that
+ * replaces the model (the overlay is disposed with it) and from the panel's Clear. */
+function renderDockMeshStats(stats: MeshStats | null): void {
+  const el = document.getElementById("vc-count-mesh");
+  if (!el) return;
+  el.textContent = stats ? formatMeshStats(stats) : "";
+  el.title = stats ? formatMeshStatsLong(stats) : "";
+  el.hidden = stats === null;
+  // The same fact, shortened, in the FE Mesh section header so it reads while the
+  // section is collapsed.
+  const headerStat = document.getElementById("meshing-header-stat");
+  const headerText = document.getElementById("meshing-header-stat-text");
+  if (headerStat && headerText) {
+    headerText.textContent = stats ? formatMeshHeaderStat(stats) : "";
+    headerStat.hidden = stats === null;
+  }
+}
+
+/** The last point reported under the pointer, in the model's frame, in mm. Kept raw
+ * (not pre-formatted) so a Units change can re-render it without waiting for the
+ * pointer to move. */
+let lastCursorMm: [number, number, number] | null = null;
+
+function renderDockCursor(): void {
+  setDockText("vc-cursor", formatCursor(lastCursorMm, currentDisplayUnit));
 }
 
 /** Caches the raw (mm) result and renders it converted to `currentDisplayUnit`. */
@@ -2650,6 +2738,10 @@ function rebuildMeshModel(opts?: { autoFit?: boolean }): void {
   lastOpBuckets = null; // produced-face classification is B-rep only (no host replay for meshes)
   const model = splitMeshesIntoFacets(edited, ops.length === 0 ? importedRegionInfo?.triangleRegion : undefined);
   viewer.setModel(model, opts);
+  renderDockEntityCounts(null); // a mesh source has no B-rep counts to report
+  renderDockMeshStats(null); // setModel() disposed the FE-mesh overlay these described
+  lastCursorMm = null;
+  renderDockCursor();
   cancelOpPreview(); // setModel() already cleared the overlay; this also kills any pending/in-flight preview request
   explodePreviewBases = null; // stale references to the just-replaced model's objects
   gizmoTargets = null; // ditto — a fresh drag re-resolves targets from the new model
@@ -2754,6 +2846,14 @@ viewer.setEntityHoverHandler((result) => {
   showHoverTip(result.entityId, lastHoverPointer.x, lastHoverPointer.y);
 });
 
+// The dock's live cursor coordinates. Independent of pick mode — the hover tooltip
+// above only exists in selection mode, but a position readout is not a picking
+// feature and must work with selection off, which is the normal state.
+viewer.setPointerWorldHandler((p) => {
+  lastCursorMm = p;
+  renderDockCursor();
+});
+
 function hideInspectorCard(): void {
   entityFactsRequestId = null; // a newer/cleared selection supersedes any in-flight reply
   inspectorEl?.classList.add("hidden");
@@ -2784,6 +2884,39 @@ function renderInspectorCard(entityId: string, facts: EntityFacts | null, error?
   if (!inspectorEl) return;
   inspectorEl.textContent = "";
 
+  // The pill: one line — dot · id · descriptor · the one measure that matters —
+  // with the full fact rows behind a disclosure. The rows are ALWAYS built (just
+  // not displayed while closed), so the card's content is the same whether or not
+  // anyone opened it; only how much of it is shown changes.
+  const summary = document.createElement("div");
+  summary.className = "insp-summary";
+  const dot = document.createElement("span");
+  dot.className = "ui-dot ui-dot-accent";
+  dot.setAttribute("aria-hidden", "true");
+  const summaryId = document.createElement("span");
+  summaryId.className = "insp-sum-id ui-num";
+  summaryId.textContent = entityId;
+  const summaryDesc = document.createElement("span");
+  summaryDesc.className = "insp-sum-desc";
+  const summaryMeasure = document.createElement("span");
+  summaryMeasure.className = "insp-sum-measure ui-num";
+  const toggle = document.createElement("button");
+  toggle.type = "button";
+  toggle.className = "insp-toggle";
+  toggle.title = "Show or hide the full details";
+  toggle.setAttribute("aria-label", "Show or hide the full details");
+  toggle.innerHTML = UI_GLYPHS.chevronDown;
+  toggle.setAttribute("aria-expanded", inspectorOpen ? "true" : "false");
+  toggle.addEventListener("click", () => {
+    inspectorOpen = !inspectorOpen;
+    inspectorEl?.classList.toggle("open", inspectorOpen);
+    toggle.setAttribute("aria-expanded", inspectorOpen ? "true" : "false");
+  });
+  summary.append(dot, summaryId, summaryDesc, summaryMeasure, toggle);
+  inspectorEl.append(summary);
+
+  const details = document.createElement("div");
+  details.className = "insp-details";
   const title = document.createElement("div");
   title.className = "insp-title";
   const name = document.createElement("span");
@@ -2791,19 +2924,24 @@ function renderInspectorCard(entityId: string, facts: EntityFacts | null, error?
   id.className = "insp-id";
   id.textContent = entityId;
   title.append(name, id);
-  inspectorEl.append(title);
+  details.append(title);
 
   if (error) {
     name.textContent = "Unavailable";
+    summaryDesc.textContent = "unavailable";
     const note = document.createElement("div");
     note.className = "insp-note";
     note.textContent = error;
-    inspectorEl.append(note);
+    details.append(note);
   } else if (!facts) {
     name.textContent = "Inspecting…";
+    summaryDesc.textContent = "inspecting…";
   } else {
     const content = inspectorContent(facts);
     name.textContent = content.title;
+    const line1 = summaryLine(facts);
+    summaryDesc.textContent = line1.descriptor;
+    summaryMeasure.textContent = line1.measure;
     for (const row of content.rows) {
       const line = document.createElement("div");
       line.className = "insp-row";
@@ -2814,11 +2952,18 @@ function renderInspectorCard(entityId: string, facts: EntityFacts | null, error?
       v.className = "insp-val";
       v.textContent = row.value;
       line.append(k, v);
-      inspectorEl.append(line);
+      details.append(line);
     }
   }
+  inspectorEl.append(details);
+  inspectorEl.classList.toggle("open", inspectorOpen);
   inspectorEl.classList.remove("hidden");
 }
+
+/** Whether the selection pill's detail rows are expanded. Module state, not per
+ * render: the card is rebuilt on every selection change, and a user who opened it
+ * should not have to reopen it for each face they click. */
+let inspectorOpen = false;
 
 function setStatus(text: string, isError = false): void {
   statusEl.textContent = text;
@@ -3446,10 +3591,24 @@ document.getElementById("tree-toggle")?.addEventListener("click", () => {
 function setupViewControls(): void {
   const panel = document.getElementById("view-controls");
   const toggle = document.getElementById("vc-toggle");
+  // The overflow popover ("⋯" at the end of the dock row). Registered like every
+  // toolbar menu, so single-open, outside-click dismissal that does not leak to
+  // the canvas, Escape-returns-focus and arrow navigation all come for free — this
+  // one call is the entire JS cost of the popover. Its contents are the controls
+  // that moved off the bar; they keep their ids, so the setup functions below (and
+  // setupClippingControls / setupPlanesControls / setupAppearanceControls, which
+  // run later) find them exactly as before. `null` when the markup is absent.
+  const moreMenu = setupDropdown("vc-more", "vc-more-dropdown");
   toggle?.addEventListener("click", () => {
     const collapsed = panel?.classList.toggle("collapsed") ?? false;
-    toggle.textContent = collapsed ? "⌃" : "⌄";
+    // The chevron is one SVG glyph; CSS flips it off `#view-controls.collapsed`.
     toggle.title = collapsed ? "Show controls" : "Hide controls";
+    // The glyph flips but an aria-label does not follow `title`, so a screen
+    // reader kept announcing "Hide controls" over a collapsed bar.
+    toggle.setAttribute("aria-label", toggle.title);
+    // The popover lives inside the body that just got display:none — close it, or
+    // its trigger keeps a stale aria-expanded="true".
+    if (collapsed) moreMenu?.close();
   });
 
   let rotateStep = 45;
@@ -4267,6 +4426,7 @@ try {
   // layout picker — the toggle has to ask for the save itself rather than
   // relying on `viewer.onViewChanged`.
   collapsiblePanels = setupCollapsiblePanels(scheduleViewSave);
+  setupAdvancedGroupCount();
   // Sidebar resize handle. The callback is the USER-facing path only: the
   // resizer already applied `--side-width` itself (it is the one authority on
   // that var), so the callback just reflows the canvas — a window `resize`
@@ -4700,6 +4860,10 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
         setStatus("Building geometry…");
         const group = buildGroupFromEncoded(msg.meshes, msg.edges, msg.points);
         viewer.setModel(group, { autoFit: msg.autoFit });
+        renderDockEntityCounts({ faces: msg.meshes.length, edges: msg.edges.length, points: msg.points?.length ?? 0 });
+        renderDockMeshStats(null); // setModel() disposed the FE-mesh overlay these described
+        lastCursorMm = null;
+        renderDockCursor();
         cancelOpPreview(); // setModel() cleared the overlay; kill any pending/in-flight preview too
         explodePreviewBases = null; // stale references to the just-replaced model's objects
         gizmoTargets = null; // ditto — a fresh drag re-resolves targets from the new model
@@ -4936,6 +5100,41 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
         if (bg) bg.value = msg.background;
       }
       break;
+
+    case "documentInfo": {
+      // The menubar's document chip. Everything goes through textContent /
+      // title — the name is a filename, i.e. untrusted document-derived text,
+      // and must never reach innerHTML. A missing element (a stripped-down
+      // harness) is a no-op rather than a throw, like every other setup here.
+      const chip = document.getElementById("doc-chip");
+      const name = document.getElementById("doc-chip-name");
+      const format = document.getElementById("doc-chip-format");
+      const dot = document.getElementById("doc-chip-dirty");
+      const unsaved = document.getElementById("doc-chip-unsaved");
+      if (!chip || !name || !format || !dot) break;
+      name.textContent = msg.name;
+      format.textContent = msg.format ?? "";
+      chip.title = msg.path;
+      dot.hidden = !msg.dirty;
+      // "3 unsaved edits" — a count, never a verdict. Empty when clean, so the
+      // span collapses instead of leaving a gap in the chip.
+      if (unsaved) unsaved.textContent = unsavedEditsLabel(msg.dirty ? msg.unsavedEdits : 0);
+      chip.hidden = false;
+      break;
+    }
+
+    case "kernelStatus": {
+      // The status bar's kernel readiness. Text and tone come from the pure
+      // describeKernelState so the wording is unit-tested; this is only the DOM
+      // half, tolerant of a stripped-down harness like every other setter here.
+      const box = document.getElementById("kernel-status");
+      const text = document.getElementById("kernel-status-text");
+      if (!box || !text) break;
+      const d = describeKernelState(msg.state);
+      text.textContent = d.text;
+      box.dataset.tone = d.tone;
+      break;
+    }
 
     case "screenshotRequest":
       try {
@@ -5357,6 +5556,7 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
     case "meshingResult":
       meshingPanel.setBusy(false);
       viewer.setMeshOverlay(buildFEMesh(msg.positions, msg.indices, msg.edges, msg.elementGroups));
+      renderDockMeshStats({ nodes: msg.nodeCount, elements: msg.elementCount, minQuality: msg.quality?.min });
       // A successful generate always results in a visible overlay, so bring the
       // toggle's state in sync here (rather than optimistically in `onGenerate`,
       // before the async round-trip even completes) — that way a failed generate

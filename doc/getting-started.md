@@ -104,19 +104,30 @@ New Blank Model only ever creates new files: if you point it at a path that alre
 
 Opening a STEP/IGES/BREP/CSG/SCAD file for the first time (or reopening one after an external change) shows a native VS Code progress notification with a **Cancel** button while OpenCascade parses and tessellates it. Clicking Cancel stops the result from being applied — the toolbar status line immediately shows "Cancelled" — though the underlying computation, once started, always finishes in the background regardless; a subsequent edit or reopen starts a fresh load. Routine edits (adding/undoing an operation) don't show this notification — with the model already parsed, they're normally near-instant and stay on the lightweight toolbar status line only.
 
+### The Advanced Group
+
+Every section header reads chevron · icon · title, so a collapsed sidebar is still scannable by icon. The sidebar's top level holds only the four sections that **edit** the document — Components, Parts, Edits, FE Mesh. Everything that only *reports* on it, or pulls from a library, lives under a single collapsible **Advanced** group at the bottom:
+
+| Advanced ▸ | Sections |
+| --- | --- |
+| **Analysis** | Mass Properties, Clash, Mesh Health, Region fit, Primitives |
+| **Library** | Macros, Standard Parts |
+
+Advanced starts collapsed. Its header carries a badge counting how many of its seven sections apply to the current file (`5 of 7` on a STEP source, where Mesh Health and Region fit want a mesh; a plain `7` when all of them apply), so you can tell whether opening it is worth the click without opening it. Each section inside keeps its own chevron and collapses independently, exactly as before — the group simply adds one more level.
+
 ### Collapsing Sidebar Sections
 
-Every sidebar section — Components, Parts, Edits, FE Mesh, Mass Properties, Clash, Mesh Health, Region fit, Primitives, Macros, Standard Parts — has a chevron at the left of its header. Click it to collapse that section down to just its header, and again to expand it. Sections collapse independently, so you can reduce the sidebar to only what you're actually working with; collapsing the two `flex`-growing panels (Parts, Edits) hands their space back to the rest rather than leaving a gap.
+Every sidebar section — and the Advanced group itself — has a chevron at the left of its header. Click it to collapse that section down to just its header, and again to expand it. Sections collapse independently, so you can reduce the sidebar to only what you're actually working with; collapsing the two `flex`-growing panels (Parts, Edits) hands their space back to the rest rather than leaving a gap.
 
 The collapsed/expanded layout is remembered **per document**, in the same `<model>.view.json` sidecar that already stores the camera, display mode and clip plane, so reopening a file restores the sidebar exactly as you left it. Merely opening a document never creates that file — only an actual change does.
 
-Sections that don't apply to the current file (Clash and Primitives are shown only for a STEP/IGES/BREP source; Mesh Health and Region fit only for a native STL/OBJ/PLY/glTF source) are hidden entirely rather than collapsed, independently of this.
+Sections that don't apply to the current file (Clash and Primitives are shown only for a STEP/IGES/BREP source; Mesh Health and Region fit only for a native STL/OBJ/PLY/glTF source) are hidden entirely rather than collapsed, independently of this — the Advanced badge is what tells you how many were left out.
 
 ### Resizing the Sidebar
 
 Drag the thin handle at the sidebar's right edge (or hover/focus it — it highlights) to resize the whole column between a workspace-usable minimum and maximum. The handle is also keyboard-operable when focused: **ArrowLeft**/**ArrowRight** step the width, **Home**/**End** jump to the minimum/maximum. The chosen width is remembered per document in the same `<model>.view.json` sidecar (like the collapse state), with the pre-resizer 220px width treated as "default" — an unresized document never grows a `sidebarWidth` entry just from being opened.
 
-The floating view-controls panel is centred over the 3D view and abreast of the sidebar, so resizing the sidebar never hides the panel's controls; if the control bar would be wider than the remaining canvas, its groups wrap onto further rows inside it rather than covering nearby panels.
+The floating view-controls dock is centred over the 3D view and abreast of the sidebar, so resizing the sidebar never hides its controls; if the control row would be wider than the remaining canvas, it wraps onto a second row inside the dock rather than covering nearby panels.
 
 ### Keyboard Use
 
@@ -216,16 +227,26 @@ Click **View ▾ → Screenshot…** in the toolbar (or run **CAD Preview: Scree
 
 Open **Markup ▾** in the toolbar and click **Markup mode** to start drawing review notes directly over the 3D view — "this boss", "gap here" — without leaving the viewer. Pick a tool from the row below it (**Freehand**, **Line**, **Arrow**, **Rectangle**, **Circle**, or **Eraser**) and a stroke colour from the swatch, then click-drag on the view to draw. **Undo**/**Redo** step through your strokes one at a time; **Clear** removes them all. Annotations are session-only — never saved to any sidecar or the CAD file — but they ARE baked into the next Screenshot you take (see above), so you can mark up a view and export the annotated image in one flow. Loading a different model clears any existing annotations; switching display mode, applying an edit, or rotating/panning the view does not. Erasing a stroke with the **Eraser** tool is immediate and does not go through Undo/Redo. Toggle **Markup mode** off to resume orbiting/panning/picking normally — while it is active, clicks draw instead of orbiting the camera. The **Markup ▾** trigger stays highlighted while the mode is on, even after the menu closes.
 
-### View-Controls Panel
+### The View-Controls Dock
 
-The collapsible panel at the bottom-right provides discrete camera controls without a mouse:
+The floating dock at the bottom of the 3D view holds the controls you reach for while orbiting. It is one compact row with a **⋯** button at its right end that opens a popover for the controls used less often. (The counts, mesh stats and cursor position that used to sit under it moved to the full-width [status bar](#the-document-chip-and-status-bar) along the bottom of the window.)
 
-- **⌄ / ⌃ toggle** — Collapse or expand the panel.
+| Where | Controls |
+|---|---|
+| **In the row** | Icon **navigation** — reset view, fit, zoom out, zoom in — then the **Display** modes (Shaded / Wire / X-Ray / Hidden / Flat, as text segments), the **Clip** plane (its on/off toggle, then X / Y / Z and the offset slider), **Persp / Ortho**, and the **Units** dropdown. A small chevron at the very end of the bar collapses the whole dock |
+| **Behind ⋯** | **Rotate** and **Pan** arrow pads, clip **Face** / **3 Pts**, the **Planes** group, background colour, opacity, **Grid size**, and **Colour by field** (shown only for a meshio++ source that declares one) |
+
+Nothing was removed — every control that used to sit in the tall two-tier panel is still one click away. The popover opens upward, stays on the canvas rather than covering the sidebar, closes on **Escape** or an outside click, and is arrow-key navigable like the toolbar menus. On a narrow editor the row wraps onto a second line instead of overflowing.
+
+**Colours follow your VS Code theme.** The dock, toolbar, chip and status bar use the theme's own colours (light, dark, and high-contrast all work); only the model's own colours — background, faces, edges — come from the separate scene palette.
+
+The panel's remaining controls in detail:
+
 - **Rotate buttons** — Step the camera by 15°, 45°, or 90° around the azimuth or elevation.
 - **Pan buttons** — Shift the camera target by a fraction of the viewport.
-- **Zoom buttons** — Dolly in or out by a fixed factor.
-- **Fit** — Same as the toolbar Fit button (reframe in current orientation).
-- **Ctr** — Reset to the default isometric view `(1, 0.8, 1)` and reframe.
+- **Zoom buttons** (magnifier − / +) — Dolly in or out by a fixed factor.
+- **Fit** (frame icon) — Same as the toolbar Fit button (reframe in current orientation).
+- **Reset** (circular-arrow icon) — Reset to the default isometric view `(1, 0.8, 1)` and reframe.
 - **Clip group** — Enable a live section/clipping plane, then drag the offset slider to sweep it across the model's bounding box (`-1` = the min-side face, `0` = centre, `1` = the max side), measured along whichever normal is active. The cross-section is solid-filled, not see-through, and also applies to the FE Mesh overlay when shown. Turning it off instantly restores the full model.
 
   The plane can be **any** direction, not just an axis:
@@ -240,9 +261,18 @@ The collapsible panel at the bottom-right provides discrete camera controls with
 - **Appearance group** — A background-colour swatch (live preview only — the session-only override always wins over the [`cadPreview.background` setting](#settings) until you reload), an opacity slider for the whole model, a **Persp / Ortho** button toggling between perspective and orthographic projection (orbit/pan/zoom, picking, and the orientation cube all keep working under either projection), a **Units** dropdown (mm/cm/m/in/ft, see [Units](#units) below), and a **Grid size** field controlling the [Transform Gizmo](#transform-gizmo)'s Snap to grid increment (see **View ▾** above — unrelated to the display grid's own Grid toggle). For a meshio++-imported source that declares point or cell scalar data (temperatures, stresses, …), a **Colour by field** dropdown also appears here — picking a field paints the model as a viridis colour ramp with a min/max legend; picking "None" reverts. Background/opacity/units/grid-size/colour-by-field stay session-only (never exported/persisted); colour-by-field additionally resets whenever an edit is applied, since a field's values only stay meaningful for the model's original, unedited geometry.
 - **Display group** — Five mutually exclusive rendering modes, replacing the old standalone Wireframe toolbar toggle: **Shaded** (the default, lit faces), **Wire** (faces rendered as a mesh of lines), **X-Ray** (translucent faces so edges show through), **Hidden** (edges of occluded geometry shown faintly through solid faces, full-strength where actually visible), and **Flat** (unlit, constant-colour faces — no lighting gradient, useful for reading true part colours without shading artifacts).
 
-![The view-controls panel: stepped Rotate (15/45/90°), Pan, Zoom, Fit/Ctr, Clip, Planes, Appearance, and Display.](/screenshots/view-controls.png)
+![The view-controls dock: icon navigation, Display modes, Clip, Persp/Ortho and Units in one row, with the ⋯ overflow button at the right.](/screenshots/view-controls.png)
+
+![The ⋯ popover open above the dock: Rotate and Pan pads, clip Face / 3 Pts, Planes, and Appearance.](/screenshots/view-controls-more.png)
 
 **The camera direction/up vector, Persp/Ortho, Display mode, and the Clip plane are all saved automatically** to a `<model>.view.json` sidecar and restored the next time you open the same file, so reopening a large assembly picks up right where you left off instead of always resetting to the default isometric — see [View State Sidecar](./file-formats.md#view-state-sidecar-modelviewjson) for the format. Applying an edit reframes in your CURRENT direction rather than snapping back to the saved (or default) one. Background colour, opacity, the Units dropdown, and Colour by field remain purely session-only, as does explode-preview state (the *committed* `explode` op itself is saved in `.edits.json` like any other edit).
+
+### The Document Chip and Status Bar
+
+Two small readouts report facts about the open document without asking you to do anything:
+
+- **Document chip** — at the right end of the menu bar: the file name, a small format badge (`STEP`, `STL`, …), and — when the document has **unsaved edits**, meaning an edit-op tail that a save would bake into the source file — a dot and the count (`3 unsaved edits`). It reads the same rule the editor tab's own dirty dot does, so the two agree while you edit and save; hover the chip for the full path. Two moments where it can differ from the tab, both intentional: on opening a file whose sidecar already holds edits that haven't been saved into the source, the chip shows the dot straight away (the tab stays clean until you change something), and after undoing back to the save point the chip's dot clears while the tab's dot stays until you save or revert (VS Code has no way to un-dirty a tab from an undo).
+- **Status bar** — the full-width strip along the bottom of the window. At its left, under the sidebar, **kernel readiness** (`OCCT ready · Gmsh ready`): which of the WebAssembly kernels (OCCT, Gmsh, meshio++, fTetWild) this session has actually used. They load lazily on first use, so a document that never needs one — a plain STL open, for instance — honestly reads `Kernels idle`; a kernel shows *ready* only after a call that needed it has succeeded, and goes back to idle if the worker is cancelled or restarts. To the right of that: **entity counts** for a B-rep document (`36 faces · 98 edges · 64 points`, the entities you can pick), the **FE-mesh stats** once you generate one (`mesh 51,200 el · min SICN 0.412` — hover it for the node count too; the full quality histogram stays in the FE Mesh panel), and the **live cursor position** (`x 142.06  y -18.40  z 27.00 mm`) in the model's own frame, following the **Units** dropdown. The position appears while the pointer is over the model and clears when it leaves; it works whether or not selection mode is on. Counts are shown for B-rep documents only — a mesh file has no comparable count that wouldn't change with how its facets are split — and there is deliberately no *solid* count, since sketch faces would make it off by one.
 
 ### Explaining the geometry under the cursor
 
@@ -254,7 +284,7 @@ ids in the sidecar are exactly the ids under your cursor. It says *mentions*, no
 deliberately — ids are positional, so the same `face-12` in two different ops can refer to
 different geometry once an op in between renumbers things.
 
-**Clicking** additionally opens an inspector card in the bottom-left corner, classifying the entity
+**Clicking** additionally opens an inspector card in the top-right corner of the view, classifying the entity
 analytically: a planar / cylindrical / conical / spherical / toroidal face, or a straight /
 circular / elliptical / spline edge. It lists **only the measurements that classification gives
 meaning to** — a plane gets its area, normal, and a point on its plane; a cylinder gets no normal
@@ -341,7 +371,7 @@ For multi-solid STEP/IGES assemblies or glTF scenes with multiple meshes, the co
 
 For STEP sources specifically, the tree reflects the file's own **real assembly structure** when it has one — nested "Assembly"/"Component" groups matching how the file's author organized it, instead of always flattening every solid into one list (product/component *names* aren't shown — they're unreadable in this build's OCCT WASM — and an assembly wrapper with no real internal structure, or a source with none at all, falls back to the flat list exactly as before). A group-header row (an "Assembly N" line) is informational only — clicking it or its eye-toggle has no effect; only a leaf ("Solid N") row highlights/hides, exactly like every row always has.
 
-Type into the filter field above the tree to narrow the list to rows whose name matches (case-insensitive substring) — matching rows and their ancestors stay visible so a match is never hidden inside a collapsed-looking branch; clear the field to show everything again. Each leaf row also has an eye-toggle to hide/show that solid/mesh (and its edges/points) in the 3D view — a display-only toggle, same as the Parts panel's (see below), never saved to a sidecar.
+Click the **search icon** in the Components header to reveal a filter field and narrow the list to rows whose name matches (case-insensitive substring) — matching rows and their ancestors stay visible so a match is never hidden inside a collapsed-looking branch. **Escape** (or the search icon again) closes the field and clears the filter, so a hidden box never keeps hiding rows. The section stays titled **Components** (the source format is on the document chip). Rows show a cube for an assembly group and a box for a solid; a solid's right-hand number is its face count and an assembly's is how many solids it holds (hover either for which). Each row also has an eye-toggle, shown when you hover or focus the row (and always while something is hidden), to hide/show that solid/mesh (and its edges/points) in the 3D view — a display-only toggle, same as the Parts panel's (see below), never saved to a sidecar.
 
 ![The Components tree, showing the STEP root and its solid with a face-count badge.](/screenshots/components-tree.png)
 
@@ -376,11 +406,11 @@ To assign geometry to a part:
 2. Click entities in the 3D view to select them — they highlight blue. Shift-click to add or remove from the selection; a plain click selects just one; clicking empty space clears the selection.
 3. Click **＋ New** in the Parts panel to create a part, then click the **＋** on that part's row to assign the current selection to it.
 
-Each part has an editable name, a colour swatch (click to recolour), an eye-toggle to hide/show just that part's entities, and a `v/s/l/p` badge counting its volumes / surfaces / lines / points. Assigned entities are painted in the part's colour in the 3D view. Expand a part to see and remove individual entities; click a part row to highlight all of its entities. The **✕** on a part deletes it.
+Each part is a compact row: a colour swatch (click to recolour), an editable name, a `1 · 0 · 0` count of its volumes · surfaces · lines (a fourth number appears only if it has points), and an eye-toggle to hide/show just that part's entities. The **＋** (assign the current selection) and delete buttons appear when you hover the row or focus into it. Assigned entities are painted in the part's colour in the 3D view. Click the chevron to expand a part (entity lists start collapsed) and remove individual entities; click a part row to highlight all of its entities. A part's target mesh size is edited in the FE Mesh panel's **Part sizes** section.
 
-The panel header's **⊙ Isolate** button shows only the currently-selected part's entities, hiding everything else; click it again (or select a different part and click it again) to clear isolation. Isolating composes with the per-row eye-toggles rather than overriding them — a part you'd already hidden stays hidden after you clear isolation. Like the eye-toggles, isolation is display-only and is never written to `<model>.parts.json`.
+The panel header's **Isolate** button (target icon) shows only the currently-selected part's entities, hiding everything else; click it again (or select a different part and click it again) to clear isolation. Isolating composes with the per-row eye-toggles rather than overriding them — a part you'd already hidden stays hidden after you clear isolation. Like the eye-toggles, isolation is display-only and is never written to `<model>.parts.json`.
 
-The header's **Copy BOM** button copies the bill of materials — one row per part (name, entity counts, volume/area) as tab-separated text, ready to paste into a spreadsheet — computed live over the current model. It is enabled only for a B-rep source with at least one part defined (mesh sources have no per-part rows to compute).
+The header's **Copy BOM** button (copy icon) copies the bill of materials — one row per part (name, entity counts, volume/area) as tab-separated text, ready to paste into a spreadsheet — computed live over the current model. It is enabled only for a B-rep source with at least one part defined (mesh sources have no per-part rows to compute).
 
 **Parts usually survive topology-changing edits.** Ops like Boolean, Fillet, and feature modeling rebuild the model's face/edge numbering, but CAD Preview automatically tries to re-match each part's assigned entities to their new numbering by geometry (same location, same area/length) right after you apply such an edit — so a part assigned to a face before a fillet elsewhere on the model typically keeps pointing at the right face afterward, with no action needed. This is a best-effort match, not a guarantee: an entity that genuinely merges or disappears (two faces fused into one by a Boolean, for instance) can't be matched to anything and is quietly dropped from the part, same as reopening a file with a stale reference. Undoing or removing an earlier op doesn't trigger a re-match (only applying a new one does).
 
@@ -508,8 +538,8 @@ The **FE Mesh** panel (below the Edits panel) generates a finite-element mesh (n
 
 To generate a mesh:
 
-1. Pick a target element size with the **coarser→finer slider** (or a **Coarse/Medium/Fine** preset). The default is derived from the model's bounding box (diagonal / 20), and the readout below the slider shows the current size plus a rough estimate of how many elements it will produce. Fine-grained options (dimension, algorithms, element shape, element order, …) live in the collapsed **Advanced settings** section.
-2. Click **▶ Generate**. The overlay appears and the panel's status line shows `Nodes: N · Elements: M · 3.2 s`, or an error message if generation fails. Below the status line, a quality summary reports the minimum and mean element quality (Gmsh's `minSICN` metric, 0–1, higher is better) plus a small histogram of the distribution — useful for spotting a generate that technically succeeded but produced a lot of sliver elements. If any elements scored below 0.20 (for a **3D** mesh), a **Worst** button appears next to **Clear** and lights up automatically, highlighting those elements in bright red — visible even where they're buried inside the model, so you don't need to clip or cut away anything to find them.
+1. Pick a target element size with the **coarser→finer slider** (or a **Coarse/Medium/Fine** preset). The default is derived from the model's bounding box (diagonal / 20), and the readout above the slider shows the current size plus a rough estimate of how many elements it will produce (the preset nearest the current size is highlighted). Fine-grained options (dimension, algorithms, element shape, element order, …) live in the collapsed **Advanced settings** section.
+2. Click **▶ Generate** (the full-width button at the top of the panel; the header shows the element count once a mesh exists). The overlay appears and the panel's status line shows `Nodes: N · Elements: M · 3.2 s`, or an error message if generation fails. Below the status line, a quality summary reports the minimum and mean element quality (Gmsh's `minSICN` metric, 0–1, higher is better) plus a small histogram of the distribution — useful for spotting a generate that technically succeeded but produced a lot of sliver elements. If any elements scored below 0.20 (for a **3D** mesh), a **Worst** button appears next to **Clear** and lights up automatically, highlighting those elements in bright red — visible even where they're buried inside the model, so you don't need to clip or cut away anything to find them.
 3. Click **FE Mesh** in the toolbar to show/hide the overlay without discarding it; click **Worst** to show/hide just the worst-element highlight; click **Clear** in the panel to remove everything.
 
 <div style="display:flex; gap:1rem; flex-wrap:wrap; align-items:flex-start;">
@@ -523,10 +553,10 @@ To generate a mesh:
 | --- | --- |
 | **Coarser→finer slider** | The primary control: sets the target element size (`Mesh.MeshSizeMax`), log-scaled between bbox-diagonal/5 (coarsest) and /200 (finest). The readout shows the size and an order-of-magnitude element-count estimate; a warning appears above the panel when the estimate exceeds ~1M elements |
 | **Coarse / Medium / Fine** | One-click presets: element size = bbox diagonal / 10, / 20 (the default), / 50 |
-| **Saved presets** | Named, reusable option bundles (global settings only — Part sizing stays in the document): a picker over your own `cad-preview-mesh-presets.json` (beside the model, shared by every model in its folder) plus the built-in starters (`coarse-preview`, `balanced`, `fine-detail`, `robust-repair`). **Apply** writes the preset's options — sizes converted from its authored unit into mm — as the document's settings (nothing is generated); **Save current…** records the current options (prompts for a name); **Delete** removes your own preset (built-ins show no Delete button). Fields the preset's engine ignores are reported, not silently dropped; preset names describe density intent, never a mesh-quality guarantee. The same library is visible to `list_mesh_presets` / `apply_mesh_preset` headlessly |
-| **Part sizes** | One size input per defined Part (visible once parts exist) — the same per-part target size as the Parts panel's input, mirrored here; blank inherits the global size. A **Grade** toggle beside each part reveals a distance-graded band (Wall size / Far size / Near dist / Far dist): elements stay at the wall size within the near distance of the part's own entities, grow to the far size at the far distance, and stay there beyond it — for meshing toward a wall, unlike the flat size which only refines *inside* the part. B-rep sources only |
+| **Saved presets** | (Sits beside **Engine**, with **Apply · Save… · Delete** on the PRESET label's own line.) Named, reusable option bundles (global settings only — Part sizing stays in the document): a picker over your own `cad-preview-mesh-presets.json` (beside the model, shared by every model in its folder) plus the built-in starters (`coarse-preview`, `balanced`, `fine-detail`, `robust-repair`). **Apply** writes the preset's options — sizes converted from its authored unit into mm — as the document's settings (nothing is generated); **Save current…** records the current options (prompts for a name); **Delete** removes your own preset (built-ins show no Delete button). Fields the preset's engine ignores are reported, not silently dropped; preset names describe density intent, never a mesh-quality guarantee. The same library is visible to `list_mesh_presets` / `apply_mesh_preset` headlessly |
+| **Part sizes** | One size input per defined Part (visible once parts exist) — the only place a Part's target size is edited (shown to three significant figures; hover for the exact value); blank inherits the global size. A **Grade** toggle beside each part reveals a distance-graded band (Wall size / Far size / Near dist / Far dist): elements stay at the wall size within the near distance of the part's own entities, grow to the far size at the far distance, and stay there beyond it — for meshing toward a wall, unlike the flat size which only refines *inside* the part. B-rep sources only |
 | **Engine** | **Gmsh** (default) or **fTetWild** — an alternative volume mesher for a dirty mesh-format 3D source (holes, self-intersections, non-manifold edges) that Gmsh's own boundary reclassification rejects or silently produces no elements for. Under fTetWild, Size min / 2D-3D algorithm / Element order / Element shape / STL angle are all greyed (unused); the size slider still applies, via fTetWild's own envelope/target-edge-length settings under Advanced, plus three optional flags: **manifold surface** (force a manifold boundary), **coarsen** (fewer, larger tets), and **no interior filter** (skip interior/exterior filtering — returns a hull fill, not the part interior; inspection only). Requesting fTetWild for a B-rep source or a non-3D dimension falls back to Gmsh automatically |
-| **Advanced settings** (collapsed) | The raw Gmsh options below — expand to reveal them ([shown here](/screenshots/fe-mesh-advanced.png)) |
+| **Advanced settings** (collapsed) | The raw Gmsh options below — expand to reveal them ([shown here](/screenshots/fe-mesh-advanced.png)). The export row (format · unit · **Export**) always closes the panel, below this section |
 | **Dimension** | 1D (edges only), 2D (surface triangulation), or 3D (volume tetrahedralization) |
 | **Size min / max** | Bounds on generated element size (`Mesh.MeshSizeMin`/`Mesh.MeshSizeMax`); **Size max** is the same value the slider drives, shown numerically (clearing it restores the bbox-derived default) |
 | **2D algorithm / 3D algorithm** | The Gmsh meshing algorithm to use for each dimension |

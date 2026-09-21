@@ -84,6 +84,86 @@ body.vscode-high-contrast-light {
   --cad-light-ground: #d0d0d0;
 }
 
+/* ── Chrome metrics ─────────────────────────────────────────────────────
+ *
+ * `--ui-*` is the OPPOSITE of `--cad-*` above, and the two must never cross:
+ *
+ *   --cad-*  scene DATA. Read by `palette.ts` via getComputedStyle, fed to THREE
+ *            materials, byte-identical to PALETTE_FALLBACKS. Never styles chrome.
+ *   --ui-*   chrome METRICS ONLY — radii, spacing, elevation, type scale, control
+ *            heights. It carries NO COLOUR.
+ *
+ * Every chrome colour still resolves through `var(--vscode-*, <literal>)`, which
+ * is what makes light and high-contrast themes work with no per-theme chrome
+ * rules at all. Keeping colour out of this layer is what keeps that true — a
+ * `--ui-surface: #191c20` here would hardcode a dark palette into a light theme.
+ *
+ * The screenshot harness defines only 13 of the `--vscode-*` variables this file
+ * consumes, so `--ui-font-mono` carries a literal tail rather than relying on
+ * `--vscode-editor-font-family` being set. No web font: the webview CSP is
+ * `default-src 'none'` with no `font-src`, so a font could not load anyway.
+ * `font-variant-numeric: tabular-nums` (see `.ui-num`) gives aligned digits with
+ * no download. */
+:root {
+  /* Radii — replace the literal 3/4/5/6px scattered through this file. */
+  --ui-r-xs: 3px; /* swatches, ticks, inline chips */
+  --ui-r-sm: 5px; /* buttons, segments, inputs */
+  --ui-r-md: 8px; /* cards: dropdowns, hover tip, inspector */
+  --ui-r-lg: 12px; /* floating docks */
+  --ui-r-pill: 999px; /* badges */
+
+  /* Spacing — 4px base; 2 and 6 are the half-steps this file already uses. */
+  --ui-s-0: 2px;
+  --ui-s-1: 4px;
+  --ui-s-2: 6px;
+  --ui-s-3: 8px;
+  --ui-s-4: 12px;
+  --ui-s-5: 16px;
+  --ui-s-6: 24px;
+
+  /* Elevation — literal rgba, deliberately NOT a theme colour. `--ui-elev-2` is
+   * byte-identical to the `0 2px 8px rgba(0,0,0,.36)` this file already repeated
+   * on the dropdowns, hover tip and inspector card. */
+  --ui-elev-1: 0 1px 2px rgba(0, 0, 0, 0.28);
+  --ui-elev-2: 0 2px 8px rgba(0, 0, 0, 0.36);
+  --ui-elev-3: 0 6px 20px rgba(0, 0, 0, 0.44);
+
+  /* Type */
+  --ui-font: var(--vscode-font-family, sans-serif);
+  --ui-font-mono: var(--vscode-editor-font-family, ui-monospace, monospace);
+  --ui-fs-micro: 9px;
+  --ui-fs-label: 10px;
+  --ui-fs-sm: 11px;
+  --ui-fs-md: 12px;
+  --ui-fs-lg: 13px;
+  --ui-fs-xl: 14px;
+  --ui-lh: 1.45;
+  --ui-track-caps: 0.06em;
+
+  /* Control metrics */
+  --ui-h-ctl: 24px;
+  --ui-statusbar-h: 24px;
+}
+
+/* Elevation is the one metric that must react to theme: a near-black drop shadow
+ * reads as grime on a light ground — the same reasoning the `--cad-light-ground`
+ * override above gives. Same source-order constraint as the --cad-* blocks:
+ * `.vscode-high-contrast-light` sets BOTH classes on body, so listing the pair
+ * together here is what makes the light values win for it. */
+body.vscode-light,
+body.vscode-high-contrast-light {
+  --ui-elev-1: 0 1px 2px rgba(0, 0, 0, 0.12);
+  --ui-elev-2: 0 2px 8px rgba(0, 0, 0, 0.16);
+  --ui-elev-3: 0 6px 20px rgba(0, 0, 0, 0.22);
+}
+
+/* Aligned digits with no font download. Used on every numeric readout so a
+ * changing value does not reflow its row. */
+.ui-num {
+  font-family: var(--ui-font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
 html,
 body {
   margin: 0;
@@ -158,21 +238,21 @@ body {
 #side {
   display: none;
   flex-direction: column;
-  /* `--side-width` is set by `sidebarResizer.ts` on <body> (default 220, the
-   * pre-resizer fixed width); the restorer and the #view-controls centring
+  /* `--side-width` is set by `sidebarResizer.ts` on <body> (default 272, its
+   * SIDEBAR_DEFAULT_PX); the restorer and the #view-controls centring
    * rule below read the same property, so they can never disagree. `min-width`
    * clamps to the same floor, so a drag can't shrink a long panel title into
    * a stripped scrollbar-only column even if the var is hand-edited in DevTools. */
-  width: var(--side-width, 220px);
-  min-width: var(--side-width, 220px);
+  width: var(--side-width, 272px);
+  min-width: var(--side-width, 272px);
   /* The resize handle is positioned against #side's own right edge. */
   position: relative;
   flex-shrink: 0;
   background: var(--vscode-sideBar-background, #252526);
   border-right: 1px solid var(--vscode-sideBar-border, #3c3c3c);
   overflow: hidden;
-  font-family: var(--vscode-font-family, sans-serif);
-  font-size: 12px;
+  font-family: var(--ui-font);
+  font-size: var(--ui-fs-md);
   color: var(--vscode-foreground, #ccc);
 }
 
@@ -238,7 +318,7 @@ body.sidebar-resizing {
   align-items: center;
   justify-content: space-between;
   padding: 6px 8px;
-  font-size: 11px;
+  font-size: var(--ui-fs-sm);
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.05em;
@@ -273,20 +353,49 @@ body.sidebar-resizing {
 
    `flex: 0 0 auto` is load-bearing for `#parts-panel` and `#edits-panel`
    only — both are `flex: 1`, so without it a collapsed header would still
-   claim its share of the column. The rest are already `flex-shrink: 0`. */
-#side > .collapsed > :not(.panel-header) {
+   claim its share of the column. The rest are already `flex-shrink: 0`.
+
+   Keyed off `.side-section`, NOT `#side > .collapsed`. The direct-child form
+   stopped working the moment the Advanced group nested seven sections one
+   level deeper, and simply loosening it to `#side .collapsed` would be worse
+   than useless: `.tree-list.collapsed` and `.part-entities.collapsed` both
+   live inside `#side` and would have their children hidden too, silently
+   breaking the tree and the per-part entity lists. A class set only on real
+   sidebar sections cannot over-match that way.
+
+   The `#side` prefix is REQUIRED, not decoration. `#parts-panel`/`#edits-panel`
+   set `flex: 1` by id, (1,0,0); a bare `.side-section.collapsed` is (0,2,0)
+   and loses to it, so the body hid but the panel went on claiming its share of
+   the column — collapsed in every visible respect except the one that frees
+   space. The old `#side > .collapsed` was (1,1,0) and won by the same margin
+   this restores. */
+#side .side-section.collapsed > :not(.panel-header) {
   display: none;
 }
 
-#side > .collapsed {
+#side .side-section.collapsed {
   flex: 0 0 auto;
+}
+
+/* Titles sit left, always. `.panel-header` is `justify-content: space-between`
+   and the headers hold wildly different numbers of action buttons, so without
+   a growing title the text drifted to the centre in `#mass-header`/`#clash-header`
+   and to the right in `#meshing-header`/`#standard-parts-header` — three
+   different alignments down one column. Ellipsis rather than wrap so a long
+   title cannot grow the header's height at a narrow sidebar width. */
+.panel-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .panel-chevron {
   width: 12px;
   flex-shrink: 0;
   font: inherit;
-  font-size: 9px;
+  font-size: var(--ui-fs-micro);
   line-height: 1;
   padding: 0;
   margin-right: 2px;
@@ -301,6 +410,85 @@ body.sidebar-resizing {
   opacity: 1;
 }
 
+/* ── Advanced group ─────────────────────────────────────────────────────
+   One collapsible wrapper around the read-only analysis sections and the two
+   library ones, so the sidebar's top level holds only the four that EDIT the
+   document. Deliberately themed from `--vscode-*` variables rather than the
+   fixed hexes the mockup used: this chrome has to survive light and
+   high-contrast themes, which a hardcoded dark palette would break (the same
+   reason the generated toolbar icons are `currentColor`-based). */
+#advanced-group {
+  flex-shrink: 0;
+  border-top: 1px solid var(--vscode-sideBar-border, #3c3c3c);
+}
+
+/* The group header reads as a level above its children: full-strength
+   foreground where a leaf header uses the dimmer section-header colour. */
+#advanced-header {
+  color: var(--vscode-foreground, #ccc);
+}
+
+/* Count of children available for THIS source format. Four of the seven gate
+   themselves on it, so a collapsed group would otherwise give no hint whether
+   opening it is worth the click. Text comes from `advancedCountLabel`. */
+#advanced-count {
+  flex-shrink: 0;
+  padding: 1px 6px;
+  border-radius: var(--ui-r-md);
+  font-size: var(--ui-fs-label);
+  font-weight: 600;
+  letter-spacing: 0;
+  /* `.panel-header` uppercases its whole subtree, which turned the badge into
+     "5 OF 7". The count is a sentence fragment, not a section label. */
+  text-transform: none;
+  font-variant-numeric: tabular-nums;
+  background: var(--vscode-badge-background, #4d4d4d);
+  color: var(--vscode-badge-foreground, #fff);
+}
+
+#advanced-count:empty {
+  display: none;
+}
+
+/* Children are inset so the nesting is legible at a glance without a border
+   per row. The inset is on the body, not each panel, so a child's own
+   `[hidden]` rule still collapses it away cleanly. */
+#advanced-body {
+  padding-left: 6px;
+  border-left: 2px solid var(--vscode-sideBar-border, #3c3c3c);
+  margin-left: 8px;
+}
+
+/* Analysis / Library. A plain label, not a collapsible section — grouping
+   seven items under two headings is what makes the list scannable. */
+.advanced-subhead {
+  padding: 8px 8px 3px 8px;
+  font-size: var(--ui-fs-label);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  opacity: 0.6;
+}
+
+/* A subhead directly followed by nothing visible (every section under it
+   gated out for this source) would otherwise leave a dangling label. */
+.advanced-subhead:last-child {
+  display: none;
+}
+
+/* Inside the group the leaf headers drop their own top border — the body's
+   left rail already carries the grouping, and per-row borders on top of it
+   read as noise. */
+#advanced-body .panel-header {
+  border-bottom: none;
+}
+
+#advanced-body #mass-header,
+#advanced-body #mesh-health-header,
+#advanced-body #macros-header {
+  border-top: none;
+}
+
 #tree-header {
   gap: 6px;
 }
@@ -309,13 +497,13 @@ body.sidebar-resizing {
   flex: 1;
   min-width: 0;
   font: inherit;
-  font-size: 11px;
+  font-size: var(--ui-fs-sm);
   text-transform: none;
   letter-spacing: normal;
   color: var(--vscode-input-foreground, #ccc);
   background: var(--vscode-input-background, #1e1e1e);
   border: 1px solid var(--vscode-input-border, #3c3c3c);
-  border-radius: 3px;
+  border-radius: var(--ui-r-xs);
   padding: 2px 5px;
 }
 #tree-filter:focus {
@@ -328,7 +516,7 @@ body.sidebar-resizing {
   border: none;
   color: var(--vscode-foreground, #ccc);
   cursor: pointer;
-  font-size: 13px;
+  font-size: var(--ui-fs-lg);
   padding: 0 2px;
   line-height: 1;
   opacity: 0.7;
@@ -376,7 +564,7 @@ body.sidebar-resizing {
 
 .tree-chevron {
   flex-shrink: 0;
-  font-size: 10px;
+  font-size: var(--ui-fs-label);
   width: 12px;
   text-align: center;
   color: var(--vscode-foreground, #aaa);
@@ -393,7 +581,7 @@ body.sidebar-resizing {
 }
 
 .tree-badge {
-  font-size: 10px;
+  font-size: var(--ui-fs-label);
   opacity: 0.55;
   flex-shrink: 0;
 }
@@ -401,7 +589,7 @@ body.sidebar-resizing {
 .tree-eye {
   flex-shrink: 0;
   font: inherit;
-  font-size: 11px;
+  font-size: var(--ui-fs-sm);
   line-height: 1;
   width: 18px;
   height: 18px;
@@ -409,7 +597,7 @@ body.sidebar-resizing {
   color: var(--vscode-foreground, #ccc);
   background: transparent;
   border: none;
-  border-radius: 3px;
+  border-radius: var(--ui-r-xs);
   cursor: pointer;
   opacity: 0.5;
 }
@@ -430,11 +618,13 @@ body.sidebar-resizing {
   align-items: center;
   height: 34px;
   padding: 0 6px;
-  background: var(--vscode-menubar-selectionBackground, var(--vscode-editorWidget-background, #333));
+  /* (A second `background` line used to sit above this one. A declaration
+   * containing `var()` is always valid at parse time, so the later one won every
+   * time and the earlier was dead — removed, no visual change.) */
   background: var(--vscode-editorGroupHeader-tabsBackground, var(--vscode-editorWidget-background, #252526));
   border-bottom: 1px solid var(--vscode-editorWidget-border, #454545);
-  font-family: var(--vscode-font-family, sans-serif);
-  font-size: 13px;
+  font-family: var(--ui-font);
+  font-size: var(--ui-fs-lg);
   z-index: 20;
 }
 
@@ -455,13 +645,86 @@ body.sidebar-resizing {
   color: var(--vscode-foreground, #ccc);
   background: transparent;
   border: none;
-  border-radius: 3px;
+  border-radius: var(--ui-r-xs);
   cursor: pointer;
 }
 
 #file-menu:hover,
 #file-menu[aria-expanded="true"] {
   background: var(--vscode-toolbar-hoverBackground, rgba(90, 93, 94, 0.31));
+}
+
+/* ── Document chip ──────────────────────────────────────────────────────
+ * Which file this is, its format, and whether it carries unsaved edits — fed by
+ * the `documentInfo` message. Pushed right with `margin-left: auto` and NOT by
+ * `justify-content: space-between` on #menubar: that would re-centre the File
+ * menu whenever the chip appears, and `file-menu.png`'s fixed clip assumes the
+ * File menu sits at the viewport origin.
+ *
+ * It must fit inside #menubar's 34px: #toolbar's `top: 42px` and the four fixed
+ * toolbar-menu screenshot clips (y: 30) are all derived from that height. */
+#doc-chip {
+  margin-left: auto;
+  /* border-box so `max-width: 50%` caps the OUTER width. Content-box excluded the
+   * padding and border, and a long name overshot half the bar by ~18px. */
+  box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--ui-s-2);
+  min-width: 0;
+  max-width: 50%;
+  padding: var(--ui-s-0) var(--ui-s-3);
+  font-size: var(--ui-fs-sm);
+  color: var(--vscode-foreground, #ccc);
+  border: 1px solid var(--vscode-editorWidget-border, #454545);
+  border-radius: var(--ui-r-pill);
+}
+
+/* MANDATORY: `#doc-chip`'s `display: inline-flex` is an author rule and beats
+ * the UA's `[hidden] { display: none }` regardless of specificity, so without
+ * this the empty pill would sit in the menubar before the first `documentInfo`
+ * arrives — the same defect class as every other `[hidden]` override in this
+ * file. `#id[attr]` (1,1,0) beats `#id` (1,0,0). */
+#doc-chip[hidden],
+#doc-chip-dirty[hidden] {
+  display: none;
+}
+
+#doc-chip-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* A small pill for a short code (a format, a count). Colours are the theme's own
+ * badge variables, so it follows light and high-contrast for free. */
+.ui-badge {
+  flex-shrink: 0;
+  padding: 0 var(--ui-s-2);
+  border-radius: var(--ui-r-pill);
+  font-size: var(--ui-fs-micro);
+  font-weight: 600;
+  line-height: 1.6;
+  text-transform: uppercase;
+  letter-spacing: var(--ui-track-caps);
+  background: var(--vscode-badge-background, #4d4d4d);
+  color: var(--vscode-badge-foreground, #fff);
+}
+
+/* A null format has no code to show — do not leave an empty pill behind. */
+.ui-badge:empty {
+  display: none;
+}
+
+/* "Unsaved edits". No animation: nothing here may be rAF- or timer-driven, and
+ * a pulsing dot would make the exact-pixel test families nondeterministic. */
+.ui-dot {
+  flex-shrink: 0;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--vscode-gitDecoration-modifiedResourceForeground, var(--vscode-charts-yellow, #e2c08d));
 }
 
 .tb-dropdown {
@@ -474,8 +737,8 @@ body.sidebar-resizing {
   background: var(--vscode-menu-background, var(--vscode-editorWidget-background, #252526));
   color: var(--vscode-menu-foreground, var(--vscode-foreground, #ccc));
   border: 1px solid var(--vscode-menu-border, var(--vscode-editorWidget-border, #454545));
-  border-radius: 5px;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.36);
+  border-radius: var(--ui-r-md);
+  box-shadow: var(--ui-elev-2);
   z-index: 30;
 }
 
@@ -512,7 +775,7 @@ body.sidebar-resizing {
   color: inherit;
   background: transparent;
   border: none;
-  border-radius: 3px;
+  border-radius: var(--ui-r-xs);
   text-align: left;
   cursor: pointer;
 }
@@ -551,7 +814,7 @@ body.sidebar-resizing {
   align-items: center;
   gap: 8px;
   padding: 4px 12px;
-  font-size: 12px;
+  font-size: var(--ui-fs-md);
 }
 
 /* Geometric selection filters (the "Query-based selection filters" feature) — a predicate
@@ -563,12 +826,12 @@ body.sidebar-resizing {
 #toolbar .tb-dropdown .tb-filter select,
 #toolbar .tb-dropdown .tb-filter input[type="text"] {
   font: inherit;
-  font-size: 12px;
+  font-size: var(--ui-fs-md);
   padding: 3px 6px;
   color: var(--vscode-input-foreground, #ccc);
   background: var(--vscode-input-background, #3c3c3c);
   border: 1px solid var(--vscode-input-border, #3c3c3c);
-  border-radius: 3px;
+  border-radius: var(--ui-r-xs);
 }
 #toolbar .tb-dropdown .tb-filter select:disabled,
 #toolbar .tb-dropdown .tb-filter input:disabled {
@@ -578,7 +841,7 @@ body.sidebar-resizing {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  font-size: 11px;
+  font-size: var(--ui-fs-sm);
   cursor: pointer;
   user-select: none;
 }
@@ -611,7 +874,7 @@ body.sidebar-resizing {
 #toolbar .tb-dropdown .bookmark-row .bookmark-act {
   flex: 0 0 auto;
   padding: 6px 5px;
-  font-size: 11px;
+  font-size: var(--ui-fs-sm);
   opacity: 0.7;
 }
 #toolbar .tb-dropdown .bookmark-row .bookmark-act:hover {
@@ -619,7 +882,7 @@ body.sidebar-resizing {
 }
 #toolbar .tb-dropdown .bookmark-empty {
   padding: 2px 12px 4px;
-  font-size: 12px;
+  font-size: var(--ui-fs-md);
   opacity: 0.6;
 }
 #bookmark-name-row {
@@ -634,41 +897,64 @@ body.sidebar-resizing {
 #bookmark-name-row input,
 #bookmark-list .bookmark-row input.bookmark-rename-input {
   font: inherit;
-  font-size: 12px;
+  font-size: var(--ui-fs-md);
   flex: 1 1 auto;
   min-width: 0;
   padding: 3px 6px;
   color: var(--vscode-input-foreground, #ccc);
   background: var(--vscode-input-background, #3c3c3c);
   border: 1px solid var(--vscode-input-border, #3c3c3c);
-  border-radius: 3px;
+  border-radius: var(--ui-r-xs);
 }
 
 /* ── Toolbar ────────────────────────────────────────────────────────── */
 
 /* Above #view-controls (10) and #markup-canvas (5) so an open dropdown panel
  * paints over both. #menubar stays at 20 but never overlaps geometrically. */
+/* One floating container instead of seven loose solid-blue buttons. The blue is
+ * now reserved for what is actually ON (see the `.active` rules below), so the
+ * eye lands on state rather than on chrome. Every colour is a `--vscode-*`
+ * variable, so a light or high-contrast theme gets its own container for free. */
 #toolbar {
   position: absolute;
   top: 42px;
   right: 8px;
   display: flex;
-  gap: 4px;
+  align-items: center;
+  gap: var(--ui-s-0);
+  padding: var(--ui-s-0);
   z-index: 15;
+  /* Explicit, because `#toolbar` never had one: it inherited whatever the page
+   * default was. Real VS Code injects a sans body font, so nobody saw it there —
+   * but the screenshot harness does not, and every toolbar image in the docs
+   * rendered in the browser's default SERIF. Identical value in the real
+   * extension, so this is a no-op there. */
+  font-family: var(--ui-font);
+  background: var(--vscode-editorWidget-background, rgba(30, 30, 30, 0.85));
+  border: 1px solid var(--vscode-editorWidget-border, #454545);
+  border-radius: var(--ui-r-md);
+  box-shadow: var(--ui-elev-2);
 }
 
+/* Ghost. NOTE the specificity: this is (1,0,1,1) and paints EVERY descendant
+ * button, which is why the menu-item, mode-toggle and 1-of-N segment rules
+ * further down carry an `#toolbar` / `.tb-dropdown` prefix to out-specify it.
+ * Do not "simplify" those selectors. */
 #toolbar button {
   font: inherit;
   padding: 4px 10px;
-  color: var(--vscode-button-foreground, #fff);
-  background: var(--vscode-button-background, #0e639c);
-  border: none;
-  border-radius: 3px;
+  color: var(--vscode-foreground, #ccc);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--ui-r-sm);
   cursor: pointer;
 }
 
+/* Hover/focus only — no transition. Two exact-pixel test families compare
+ * captures taken seconds apart, and a running transition makes them
+ * nondeterministic. */
 #toolbar button:hover {
-  background: var(--vscode-button-hoverBackground, #1177bb);
+  background: var(--vscode-toolbar-hoverBackground, rgba(90, 93, 94, 0.31));
 }
 
 /* A dropdown trigger. `.active` means "the mode behind this menu is currently
@@ -683,7 +969,7 @@ body.sidebar-resizing {
 }
 
 #toolbar .tb-menu[aria-expanded="true"] {
-  background: var(--vscode-button-hoverBackground, #1177bb);
+  background: var(--vscode-toolbar-hoverBackground, rgba(90, 93, 94, 0.31));
 }
 
 #toolbar .tb-menu.active {
@@ -723,14 +1009,15 @@ body.sidebar-resizing {
   position: absolute;
   bottom: 8px;
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   gap: 8px;
   padding: 8px 14px;
   z-index: 10;
   background: var(--vscode-editorWidget-background, rgba(30, 30, 30, 0.85));
   border: 1px solid var(--vscode-editorWidget-border, #454545);
-  border-radius: 6px;
-  font-family: var(--vscode-font-family, sans-serif);
+  border-radius: var(--ui-r-lg);
+  box-shadow: var(--ui-elev-3);
+  font-family: var(--ui-font);
   color: var(--vscode-foreground, #ccc);
   /* Centred over the CANVAS, not the editor pane: the sidebar is the first
    * flex child of #layout, so a plain `left: 50%` of the body shifted the bar
@@ -748,9 +1035,9 @@ body.sidebar-resizing {
    * the bar peaked at 1290px once (the nested-planes comment inside
    * viewerDom.ts) — so the cap plus `#vc-body`'s wrap keeps overflow groups
    * inside the app region instead of painting over the sidebar. */
-  left: calc((100% + var(--side-width, 220px)) / 2);
+  left: calc((100% + var(--side-width, 272px)) / 2);
   transform: translateX(-50%);
-  max-width: calc(100% - var(--side-width, 220px) - 40px);
+  max-width: calc(100% - var(--side-width, 272px) - 40px);
 }
 /* `:has` only: the fallback when the sidebar is NOT visible — it occupies no
  * layout, so mid-point reverts to the whole-body centre. */
@@ -788,13 +1075,13 @@ body:not(:has(#side.visible)) #view-controls {
 
 .vc-collapse {
   font: inherit;
-  font-size: 13px;
+  font-size: var(--ui-fs-lg);
   line-height: 1;
   padding: 2px 6px;
   color: var(--vscode-foreground, #ccc);
   background: transparent;
   border: none;
-  border-radius: 3px;
+  border-radius: var(--ui-r-xs);
   cursor: pointer;
   opacity: 0.7;
 }
@@ -812,7 +1099,7 @@ body:not(:has(#side.visible)) #view-controls {
 }
 
 .vc-label {
-  font-size: 10px;
+  font-size: var(--ui-fs-label);
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.06em;
@@ -827,21 +1114,23 @@ body:not(:has(#side.visible)) #view-controls {
 .seg-btn,
 .clip-axis,
 .display-mode-btn,
+.vc-nav-btn,
 .vc-arrow,
 #view-controls .vc-row button {
   font: inherit;
-  font-size: 12px;
+  font-size: var(--ui-fs-md);
   line-height: 1;
   color: var(--vscode-button-foreground, #fff);
   background: var(--vscode-button-secondaryBackground, #3a3d41);
   border: none;
-  border-radius: 3px;
+  border-radius: var(--ui-r-xs);
   cursor: pointer;
 }
 
 .seg-btn,
 .clip-axis,
-.display-mode-btn {
+.display-mode-btn,
+.vc-nav-btn {
   padding: 3px 7px;
   /* Every one of these is icon + short label; without this the group wraps
    * mid-word ("X-Ray" splitting at the hyphen) instead of at button
@@ -858,6 +1147,7 @@ body:not(:has(#side.visible)) #view-controls {
 .seg-btn:hover,
 .clip-axis:hover,
 .display-mode-btn:hover,
+.vc-nav-btn:hover,
 .vc-arrow:hover,
 #view-controls .vc-row button:hover {
   background: var(--vscode-button-hoverBackground, #1177bb);
@@ -872,14 +1162,54 @@ body:not(:has(#side.visible)) #view-controls {
   vertical-align: middle;
 }
 
+/* Segmented controls. `.vc-segments` is exactly three groups — Rotate steps,
+ * Clip axes, Display modes — and each is a 1-of-N choice, so it reads as ONE
+ * inset track with the selected segment lifted out in the accent colour, rather
+ * than N loose grey buttons. Colours are all `--vscode-*`, so the track follows
+ * the theme.
+ *
+ * These are (0,2,0)/(0,3,0) and sit AFTER the shared base + hover rules above on
+ * purpose: `.seg-btn:hover` is (0,2,0) and would otherwise repaint every
+ * non-active segment solid blue. The arrow cross (`.vc-arrow`) and the
+ * `.vc-row` buttons are NOT segments and keep the base look. */
+.vc-segments {
+  gap: 0;
+  padding: var(--ui-s-0);
+  background: var(--vscode-input-background, #3c3c3c);
+  border-radius: var(--ui-r-sm);
+}
+
+.vc-segments .seg-btn,
+.vc-segments .clip-axis,
+.vc-segments .display-mode-btn,
+.vc-segments .vc-nav-btn {
+  color: var(--vscode-foreground, #ccc);
+  background: transparent;
+  border-radius: calc(var(--ui-r-sm) - var(--ui-s-0));
+}
+
+.vc-segments .seg-btn:not(.active):hover,
+.vc-segments .clip-axis:not(.active):hover,
+.vc-segments .display-mode-btn:not(.active):hover,
+.vc-segments .vc-nav-btn:not(.active):hover {
+  background: var(--vscode-toolbar-hoverBackground, rgba(90, 93, 94, 0.31));
+}
+
+.vc-segments .seg-btn.active,
+.vc-segments .clip-axis.active,
+.vc-segments .display-mode-btn.active {
+  color: var(--vscode-button-foreground, #fff);
+  background: var(--vscode-button-background, #0e639c);
+}
+
 #clip-toggle {
   font: inherit;
-  font-size: 11px;
+  font-size: var(--ui-fs-sm);
   padding: 3px 8px;
   color: var(--vscode-button-foreground, #fff);
   background: var(--vscode-button-secondaryBackground, #3a3d41);
   border: none;
-  border-radius: 3px;
+  border-radius: var(--ui-r-xs);
   cursor: pointer;
 }
 #clip-toggle.active {
@@ -934,7 +1264,7 @@ input[type="range"]#clip-offset.meshing-slider {
   height: 22px;
   padding: 0;
   border: 1px solid var(--vscode-input-border, #3c3c3c);
-  border-radius: 3px;
+  border-radius: var(--ui-r-xs);
   background: none;
   cursor: pointer;
 }
@@ -953,11 +1283,11 @@ input[type="range"]#vc-opacity.meshing-slider {
 
 #vc-unit {
   font: inherit;
-  font-size: 12px;
+  font-size: var(--ui-fs-md);
   color: var(--vscode-input-foreground, #ccc);
   background: var(--vscode-input-background, #1e1e1e);
   border: 1px solid var(--vscode-input-border, #3c3c3c);
-  border-radius: 3px;
+  border-radius: var(--ui-r-xs);
   padding: 3px 4px;
 }
 #vc-unit:focus {
@@ -967,12 +1297,12 @@ input[type="range"]#vc-opacity.meshing-slider {
 
 .vc-num {
   font: inherit;
-  font-size: 12px;
+  font-size: var(--ui-fs-md);
   width: 52px;
   color: var(--vscode-input-foreground, #ccc);
   background: var(--vscode-input-background, #1e1e1e);
   border: 1px solid var(--vscode-input-border, #3c3c3c);
-  border-radius: 3px;
+  border-radius: var(--ui-r-xs);
   padding: 3px 4px;
 }
 .vc-num:focus {
@@ -980,13 +1310,186 @@ input[type="range"]#vc-opacity.meshing-slider {
   border-color: var(--vscode-focusBorder, #007fd4);
 }
 
+/* ── One-row dock + overflow popover ────────────────────────────────────
+ *
+ * The everyday controls sit in ONE row (`.vc-dock-row`); the rest live in a
+ * popover behind `#vc-more`. Nothing was removed — every control kept its id, and
+ * the four setup functions in main.ts all query globally by id/class, so moving
+ * a node is invisible to them (renaming one would break all four).
+ *
+ * The row is the PREFERENCE and its wrapping is the GUARANTEE. `#vc-body` keeps
+ * `width: max-content; max-width: 100%` (above, unchanged), and this row wraps
+ * when the cap is narrower than its natural width, so at a narrow editor it
+ * becomes two rows instead of running under the sidebar. A webview test pins that
+ * at 820px. NEVER give this row `nowrap` or an `overflow-x` scroll. */
+.vc-dock-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--ui-s-2) var(--ui-s-3);
+  min-width: 0;
+}
+
+/* The dock row and the status line under it, as one column. #vc-body is a
+ * wrapping flex ROW, so without this wrapper they would sit side by side. */
+.vc-stack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ui-s-2);
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+#vc-cursor {
+  margin-left: auto;
+  min-width: 40ch;
+  text-align: right;
+}
+
+/* FE-mesh stats follow the entity counts; a hairline divider keeps the two facts
+ * from reading as one run-on sentence ("64 points 2,685 nodes"). No `display` is set
+ * here, but the [hidden] override is explicit anyway so a later layout tweak to this
+ * rule can never leave it showing with no mesh. */
+#vc-count-mesh {
+  padding-left: var(--ui-s-4);
+  border-left: 1px solid var(--vscode-editorWidget-border, #454545);
+}
+#vc-count-mesh[hidden] {
+  display: none;
+}
+
+/* A hairline between clusters. Decorative (aria-hidden in the markup). */
+.vc-div {
+  flex-shrink: 0;
+  align-self: center;
+  width: 1px;
+  height: var(--ui-h-ctl);
+  background: var(--vscode-editorWidget-border, #454545);
+}
+
+/* A label + its controls, inline (Clip). The old column `.vc-group` stacked the
+ * label ABOVE, which is exactly what made the bar tall. */
+.vc-inline-group {
+  display: flex;
+  align-items: center;
+  gap: var(--ui-s-2);
+}
+
+/* Standalone controls in the row match the segmented tracks' 24px height so the
+ * row reads as one line rather than a mix of 22px and 26px pieces. `#clip-toggle`
+ * is (1,0,0) like its original rule further up, so being later in the file is
+ * what makes this win. `.active` on both stays (1,1,0) and is untouched. */
+#vc-ortho,
+#clip-toggle {
+  box-sizing: border-box;
+  height: var(--ui-h-ctl);
+  padding: 0 var(--ui-s-3);
+  font: inherit;
+  font-size: var(--ui-fs-md);
+  line-height: 1;
+  color: var(--vscode-foreground, #ccc);
+  background: transparent;
+  border: 1px solid var(--vscode-editorWidget-border, #454545);
+  border-radius: var(--ui-r-sm);
+  cursor: pointer;
+}
+#vc-ortho:hover,
+#clip-toggle:hover {
+  background: var(--vscode-toolbar-hoverBackground, rgba(90, 93, 94, 0.31));
+}
+
+#vc-unit {
+  box-sizing: border-box;
+  height: var(--ui-h-ctl);
+  border-radius: var(--ui-r-sm);
+}
+
+/* The overflow trigger. Deliberately a bare glyph button: the popover behind it
+ * is the affordance. */
+#vc-more {
+  box-sizing: border-box;
+  width: var(--ui-h-ctl);
+  height: var(--ui-h-ctl);
+  padding: 0;
+  font: inherit;
+  font-size: var(--ui-fs-xl);
+  line-height: 1;
+  color: var(--vscode-foreground, #ccc);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--ui-r-sm);
+  cursor: pointer;
+}
+#vc-more:hover,
+#vc-more[aria-expanded="true"] {
+  background: var(--vscode-toolbar-hoverBackground, rgba(90, 93, 94, 0.31));
+}
+
+/* The popover. It opens UPWARD (the dock is bottom-anchored) and is anchored to
+ * the DOCK, not to the "⋯" button.
+ *
+ * Anchoring to the button is what a first version did, and it broke twice: `100%`
+ * was the height of the button's wrapper, which sits INSIDE the dock's padding, so
+ * the popover overlapped the dock's top rim; and when the row wraps at a narrow
+ * editor the button lands on the LAST row's left side, so a popover right-anchored
+ * to it ran leftward straight under the sidebar (x 129 against a sidebar edge of
+ * 273 at 820px — caught by the webview test, not by eye). The dock's own extent is
+ * already capped to stay off the sidebar, so a popover confined to it inherits
+ * that, and `bottom: 100%` of the dock clears its top edge however many rows it
+ * has. `#vc-more-wrap` therefore drops its `position: relative` (below), which
+ * makes #view-controls the containing block.
+ *
+ * !! NEVER put `display` in this rule !!  It is (1,1,0). `.tb-dropdown` supplies
+ * `display: flex` and `.tb-dropdown.hidden` (0,2,0) supplies `display: none`;
+ * both stay class-level so they resolve by source order. Adding `display` here
+ * would out-rank `.hidden` (an id outranks any number of classes) and leave the
+ * popover permanently open — the same defect class as every `[hidden]` override
+ * in this file, except it would survive `aria-expanded` toggling. */
+#view-controls .tb-dropdown {
+  top: auto;
+  bottom: calc(100% + var(--ui-s-2));
+  right: 0;
+  left: auto;
+  max-width: min(360px, 52vw);
+  max-height: min(60vh, 420px);
+  overflow-y: auto;
+  gap: var(--ui-s-3);
+  padding: var(--ui-s-3);
+}
+
+/* `.tb-menu-wrap` is `position: relative`, which would make THIS wrapper the
+ * popover's containing block. Static hands that role to #view-controls (already
+ * `position: absolute`), so the popover is placed against the dock. An id beats
+ * the class, so no `!important` is needed. */
+#vc-more-wrap {
+  position: static;
+}
+
+/* Inside the popover the groups stack as a labelled list, not as bar columns. */
+#vc-more-dropdown .vc-group {
+  align-items: flex-start;
+  gap: var(--ui-s-2);
+}
+
+/* A label beside its control (Grid size) sat on a different baseline than the
+ * input; centre the row's items. */
+#vc-more-dropdown .vc-row {
+  align-items: center;
+}
+
+/* Rotate and Pan side by side — two 3x3 crosses stacked would double the height. */
+.vc-pair {
+  display: flex;
+  gap: var(--ui-s-5);
+}
+
 #vc-colorfield-select {
   font: inherit;
-  font-size: 12px;
+  font-size: var(--ui-fs-md);
   color: var(--vscode-input-foreground, #ccc);
   background: var(--vscode-input-background, #1e1e1e);
   border: 1px solid var(--vscode-input-border, #3c3c3c);
-  border-radius: 3px;
+  border-radius: var(--ui-r-xs);
   padding: 3px 4px;
   max-width: 160px;
 }
@@ -1011,25 +1514,49 @@ input[type="range"]#vc-opacity.meshing-slider {
 
 #vc-colorfield-min,
 #vc-colorfield-max {
-  font-size: 10px;
+  font-size: var(--ui-fs-label);
   opacity: 0.8;
   white-space: nowrap;
 }
 
 /* ── Status bar ─────────────────────────────────────────────────────── */
 
+/* A transient toast. Its id, its `textContent` and `setStatus()` are FROZEN —
+ * roughly a dozen webview-test assertions read `#status`'s text — so only its
+ * placement changes here.
+ *
+ * It used to be `left: 50%` of the whole body while `#view-controls` centres
+ * over the CANVAS, so the two disagreed by half the sidebar width, and both sat
+ * in the same bottom corner at the same z-index (the later DOM node painted over
+ * the bar's bottom row). Same centring maths as the bar, lifted clear of it, and
+ * one z-index above it — a toast is transient, so if it ever does overlap the
+ * bar it should be the readable one. Still below `#toolbar` (15). */
 #status {
   position: absolute;
-  left: 50%;
-  bottom: 16px;
+  left: calc((100% + var(--side-width, 272px)) / 2);
+  /* Clears the dock INCLUDING its wrapped shape: the dock is one controls row plus
+   * the status row (~71px) at an ordinary width, but wraps to ~131px in a narrow
+   * editor, and a fixed offset cannot follow that. 132px is sized for the two-row
+   * wrap (the worst the dock's own wrap test allows). The cost is a ~70px float
+   * above a single-row dock, which is the right side to err on — a toast painted
+   * over the dock's controls swallows clicks. Pinned at both widths by a
+   * test:webview case. */
+  bottom: calc(var(--ui-s-5) + 132px);
   transform: translateX(-50%);
-  padding: 6px 12px;
-  border-radius: 4px;
-  font-family: var(--vscode-font-family, sans-serif);
-  font-size: 12px;
+  padding: var(--ui-s-2) var(--ui-s-4);
+  border-radius: var(--ui-r-md);
+  box-shadow: var(--ui-elev-2);
+  font-family: var(--ui-font);
+  font-size: var(--ui-fs-md);
   color: var(--vscode-foreground, #ccc);
   background: var(--vscode-editorWidget-background, rgba(0, 0, 0, 0.6));
-  z-index: 10;
+  z-index: 14;
+}
+
+/* Sidebar hidden: it occupies no layout, so the mid-point reverts to the body
+ * centre — the same `:has` fallback `#view-controls` uses above. */
+body:not(:has(#side.visible)) #status {
+  left: 50%;
 }
 
 #status.error {
@@ -1054,12 +1581,12 @@ input[type="range"]#vc-opacity.meshing-slider {
 #parts-isolate,
 #parts-copy-bom {
   font: inherit;
-  font-size: 11px;
+  font-size: var(--ui-fs-sm);
   padding: 2px 6px;
   color: var(--vscode-button-foreground, #fff);
   background: var(--vscode-button-background, #0e639c);
   border: none;
-  border-radius: 3px;
+  border-radius: var(--ui-r-xs);
   cursor: pointer;
 }
 #parts-new:hover,
@@ -1100,7 +1627,7 @@ input[type="range"]#vc-opacity.meshing-slider {
 
 .part-chevron {
   flex-shrink: 0;
-  font-size: 10px;
+  font-size: var(--ui-fs-label);
   width: 12px;
   text-align: center;
   opacity: 0.7;
@@ -1112,7 +1639,7 @@ input[type="range"]#vc-opacity.meshing-slider {
   height: 16px;
   padding: 0;
   border: 1px solid var(--vscode-sideBar-border, #3c3c3c);
-  border-radius: 3px;
+  border-radius: var(--ui-r-xs);
   background: none;
   cursor: pointer;
 }
@@ -1126,7 +1653,7 @@ input[type="range"]#vc-opacity.meshing-slider {
   color: inherit;
   background: transparent;
   border: 1px solid transparent;
-  border-radius: 3px;
+  border-radius: var(--ui-r-xs);
   padding: 1px 3px;
 }
 .part-name:hover { border-color: var(--vscode-input-border, #3c3c3c); }
@@ -1136,26 +1663,8 @@ input[type="range"]#vc-opacity.meshing-slider {
   border-color: var(--vscode-focusBorder, #007fd4);
 }
 
-.part-meshsize {
-  flex-shrink: 0;
-  width: 44px;
-  font: inherit;
-  font-size: 10px;
-  color: inherit;
-  background: transparent;
-  border: 1px solid transparent;
-  border-radius: 3px;
-  padding: 1px 3px;
-}
-.part-meshsize:hover { border-color: var(--vscode-input-border, #3c3c3c); }
-.part-meshsize:focus {
-  outline: none;
-  background: var(--vscode-input-background, #1e1e1e);
-  border-color: var(--vscode-focusBorder, #007fd4);
-}
-
 .part-badge {
-  font-size: 10px;
+  font-size: var(--ui-fs-label);
   opacity: 0.6;
   flex-shrink: 0;
 }
@@ -1166,7 +1675,7 @@ input[type="range"]#vc-opacity.meshing-slider {
   align-items: center;
   justify-content: space-between;
   padding: 4px 8px;
-  font-size: 10px;
+  font-size: var(--ui-fs-label);
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.05em;
@@ -1193,7 +1702,7 @@ input[type="range"]#vc-opacity.meshing-slider {
   color: inherit;
   background: transparent;
   border: 1px solid transparent;
-  border-radius: 3px;
+  border-radius: var(--ui-r-xs);
   padding: 1px 3px;
 }
 .variable-name { flex: 1; }
@@ -1214,7 +1723,7 @@ input[type="range"]#vc-opacity.meshing-slider {
 
 .variable-value {
   flex-shrink: 0;
-  font-size: 10px;
+  font-size: var(--ui-fs-label);
   opacity: 0.6;
   max-width: 64px;
   overflow: hidden;
@@ -1229,7 +1738,7 @@ input[type="range"]#vc-opacity.meshing-slider {
 /* Inline expression-evaluation failure under an op param form. */
 .expr-error-msg {
   padding: 2px 6px;
-  font-size: 10px;
+  font-size: var(--ui-fs-label);
   color: var(--vscode-errorForeground, #f48771);
 }
 
@@ -1245,7 +1754,7 @@ input[type="range"]#vc-opacity.meshing-slider {
 }
 .compose-query-result {
   flex-basis: 100%;
-  font-size: 10px;
+  font-size: var(--ui-fs-label);
   opacity: 0.8;
   padding: 2px 0;
 }
@@ -1257,7 +1766,7 @@ input[type="range"]#vc-opacity.meshing-slider {
 .part-btn {
   flex-shrink: 0;
   font: inherit;
-  font-size: 12px;
+  font-size: var(--ui-fs-md);
   line-height: 1;
   width: 18px;
   height: 18px;
@@ -1265,7 +1774,7 @@ input[type="range"]#vc-opacity.meshing-slider {
   color: var(--vscode-foreground, #ccc);
   background: transparent;
   border: none;
-  border-radius: 3px;
+  border-radius: var(--ui-r-xs);
   cursor: pointer;
   opacity: 0.7;
 }
@@ -1295,14 +1804,14 @@ input[type="range"]#vc-opacity.meshing-slider {
   flex: 1;
   overflow: hidden;
   text-overflow: ellipsis;
-  font-size: 11px;
+  font-size: var(--ui-fs-sm);
   opacity: 0.85;
 }
 
 .entity-remove {
   flex-shrink: 0;
   font: inherit;
-  font-size: 11px;
+  font-size: var(--ui-fs-sm);
   line-height: 1;
   padding: 0 2px;
   color: var(--vscode-foreground, #ccc);
@@ -1348,13 +1857,13 @@ input[type="range"]#vc-opacity.meshing-slider {
 #primitives-actions button,
 #mass-refresh {
   font: inherit;
-  font-size: 11px;
+  font-size: var(--ui-fs-sm);
   line-height: 1;
   padding: 2px 6px;
   color: var(--vscode-foreground, #ccc);
   background: transparent;
   border: 1px solid transparent;
-  border-radius: 3px;
+  border-radius: var(--ui-r-xs);
   cursor: pointer;
   opacity: 0.85;
 }
@@ -1379,12 +1888,12 @@ input[type="range"]#vc-opacity.meshing-slider {
 
 .meshing-export-select {
   font: inherit;
-  font-size: 11px;
+  font-size: var(--ui-fs-sm);
   max-width: 120px;
   color: var(--vscode-input-foreground, #ccc);
   background: var(--vscode-input-background, #1e1e1e);
   border: 1px solid var(--vscode-input-border, #3c3c3c);
-  border-radius: 3px;
+  border-radius: var(--ui-r-xs);
   padding: 1px 3px;
 }
 .meshing-export-select:focus {
@@ -1465,13 +1974,13 @@ input[type="range"]#vc-opacity.meshing-slider {
 .meshing-reset {
   margin-top: 6px;
   font: inherit;
-  font-size: 10px;
+  font-size: var(--ui-fs-label);
   line-height: 1;
   padding: 3px 6px;
   color: var(--vscode-foreground, #ccc);
   background: transparent;
   border: 1px solid var(--vscode-panel-border, rgba(255, 255, 255, 0.2));
-  border-radius: 3px;
+  border-radius: var(--ui-r-xs);
   cursor: pointer;
   opacity: 0.85;
 }
@@ -1483,7 +1992,7 @@ input[type="range"]#vc-opacity.meshing-slider {
 .meshing-label {
   flex-shrink: 0;
   width: 72px;
-  font-size: 10px;
+  font-size: var(--ui-fs-label);
   opacity: 0.7;
 }
 
@@ -1493,11 +2002,11 @@ input[type="range"]#vc-opacity.meshing-slider {
   flex: 1;
   min-width: 28px;
   font: inherit;
-  font-size: 11px;
+  font-size: var(--ui-fs-sm);
   color: var(--vscode-input-foreground, #ccc);
   background: var(--vscode-input-background, #1e1e1e);
   border: 1px solid var(--vscode-input-border, #3c3c3c);
-  border-radius: 3px;
+  border-radius: var(--ui-r-xs);
   padding: 1px 3px;
 }
 .meshing-select:focus,
@@ -1510,11 +2019,11 @@ input[type="range"]#vc-opacity.meshing-slider {
 #meshing-warning {
   margin-bottom: 6px;
   padding: 4px 6px;
-  font-size: 10px;
+  font-size: var(--ui-fs-label);
   color: var(--vscode-inputValidation-warningForeground, var(--vscode-editorWarning-foreground, #cca700));
   background: var(--vscode-inputValidation-warningBackground, rgba(204, 167, 0, 0.12));
   border: 1px solid var(--vscode-inputValidation-warningBorder, #cca700);
-  border-radius: 3px;
+  border-radius: var(--ui-r-xs);
 }
 
 /* ── Primary size control: presets + coarser→finer slider + readout ── */
@@ -1533,12 +2042,12 @@ input[type="range"]#vc-opacity.meshing-slider {
 .meshing-preset {
   flex: 1;
   font: inherit;
-  font-size: 10px;
+  font-size: var(--ui-fs-label);
   padding: 2px 0;
   color: var(--vscode-button-secondaryForeground, #ccc);
   background: var(--vscode-button-secondaryBackground, #3a3d41);
   border: 1px solid var(--vscode-input-border, #3c3c3c);
-  border-radius: 3px;
+  border-radius: var(--ui-r-xs);
   cursor: pointer;
 }
 .meshing-preset:hover {
@@ -1553,7 +2062,7 @@ input[type="range"]#vc-opacity.meshing-slider {
 
 .meshing-slider-end {
   flex-shrink: 0;
-  font-size: 9px;
+  font-size: var(--ui-fs-micro);
   opacity: 0.6;
 }
 
@@ -1590,7 +2099,7 @@ input[type="range"].meshing-slider:focus {
 }
 
 .meshing-slider-readout {
-  font-size: 10px;
+  font-size: var(--ui-fs-label);
   opacity: 0.75;
 }
 
@@ -1600,7 +2109,7 @@ input[type="range"].meshing-slider:focus {
 }
 
 .meshing-section-title {
-  font-size: 10px;
+  font-size: var(--ui-fs-label);
   opacity: 0.7;
   margin: 4px 0 2px;
 }
@@ -1613,7 +2122,7 @@ input[type="range"].meshing-slider:focus {
   margin: 4px 0 2px;
   padding: 0;
   font: inherit;
-  font-size: 10px;
+  font-size: var(--ui-fs-label);
   color: inherit;
   opacity: 0.8;
   background: none;
@@ -1652,7 +2161,7 @@ input[type="range"].meshing-slider:focus {
 .meshing-part-name {
   flex: 1;
   min-width: 0;
-  font-size: 11px;
+  font-size: var(--ui-fs-sm);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1665,12 +2174,12 @@ input[type="range"].meshing-slider:focus {
 .meshing-part-grade-toggle {
   flex-shrink: 0;
   font: inherit;
-  font-size: 9px;
+  font-size: var(--ui-fs-micro);
   padding: 1px 4px;
   color: var(--vscode-button-secondaryForeground, #ccc);
   background: var(--vscode-button-secondaryBackground, #3a3d41);
   border: 1px solid var(--vscode-input-border, #3c3c3c);
-  border-radius: 3px;
+  border-radius: var(--ui-r-xs);
   cursor: pointer;
 }
 .meshing-part-grade-toggle:hover {
@@ -1709,7 +2218,7 @@ input[type="range"].meshing-slider:focus {
   display: flex;
   align-items: center;
   gap: 3px;
-  font-size: 9px;
+  font-size: var(--ui-fs-micro);
   opacity: 0.8;
 }
 .meshing-part-grading-field input {
@@ -1718,13 +2227,13 @@ input[type="range"].meshing-slider:focus {
 
 .meshing-part-grading-error {
   flex-basis: 100%;
-  font-size: 9px;
+  font-size: var(--ui-fs-micro);
   color: var(--vscode-errorForeground, #f48771);
 }
 
 #meshing-status {
   padding: 4px 8px;
-  font-size: 10px;
+  font-size: var(--ui-fs-label);
   opacity: 0.75;
   border-top: 1px solid var(--vscode-sideBar-border, #3c3c3c);
 }
@@ -1740,7 +2249,7 @@ input[type="range"].meshing-slider:focus {
 }
 
 .meshing-quality-summary {
-  font-size: 10px;
+  font-size: var(--ui-fs-label);
   opacity: 0.75;
   margin-bottom: 4px;
 }
@@ -1761,7 +2270,7 @@ input[type="range"].meshing-slider:focus {
 }
 
 .meshing-quality-worst {
-  font-size: 10px;
+  font-size: var(--ui-fs-label);
   margin-top: 4px;
   color: var(--vscode-errorForeground, #f48771);
 }
@@ -1822,7 +2331,7 @@ input[type="range"].meshing-slider:focus {
 }
 
 #clash-vs {
-  font-size: 11px;
+  font-size: var(--ui-fs-sm);
   opacity: 0.75;
 }
 
@@ -1865,7 +2374,7 @@ input[type="range"].meshing-slider:focus {
 }
 
 .mesh-health-component-title {
-  font-size: 11px;
+  font-size: var(--ui-fs-sm);
   font-weight: 600;
   opacity: 0.85;
   padding-bottom: 2px;
@@ -1888,14 +2397,14 @@ input[type="range"].meshing-slider:focus {
 }
 
 .region-fit-header {
-  font-size: 11px;
+  font-size: var(--ui-fs-sm);
   font-weight: 600;
   opacity: 0.85;
   padding-bottom: 2px;
 }
 
 .region-fit-message {
-  font-size: 11px;
+  font-size: var(--ui-fs-sm);
   opacity: 0.7;
   padding: 6px 0;
 }
@@ -1906,7 +2415,7 @@ input[type="range"].meshing-slider:focus {
 }
 
 .region-fit-warning {
-  font-size: 10px;
+  font-size: var(--ui-fs-label);
   opacity: 0.65;
   padding: 2px 0;
 }
@@ -1916,7 +2425,7 @@ input[type="range"].meshing-slider:focus {
   flex-direction: column;
   padding: 3px 0;
   border-bottom: 1px solid var(--vscode-sideBar-border, #3c3c3c);
-  font-size: 11px;
+  font-size: var(--ui-fs-sm);
 }
 
 .region-fit-candidate:last-child {
@@ -1961,14 +2470,14 @@ input[type="range"].meshing-slider:focus {
 }
 
 .primitives-solid-title {
-  font-size: 11px;
+  font-size: var(--ui-fs-sm);
   font-weight: 600;
   opacity: 0.85;
   padding-bottom: 2px;
 }
 
 .primitives-message {
-  font-size: 11px;
+  font-size: var(--ui-fs-sm);
   opacity: 0.7;
   padding: 6px 0;
 }
@@ -1982,7 +2491,7 @@ input[type="range"].meshing-slider:focus {
   display: flex;
   justify-content: space-between;
   gap: 8px;
-  font-size: 11px;
+  font-size: var(--ui-fs-sm);
   padding: 1px 0;
 }
 
@@ -2019,11 +2528,11 @@ input[type="range"].meshing-slider:focus {
   flex: 1;
   min-width: 0;
   font: inherit;
-  font-size: 11px;
+  font-size: var(--ui-fs-sm);
   color: var(--vscode-input-foreground, #ccc);
   background: var(--vscode-input-background, #1e1e1e);
   border: 1px solid var(--vscode-input-border, #3c3c3c);
-  border-radius: 3px;
+  border-radius: var(--ui-r-xs);
   padding: 2px 5px;
 }
 #standard-parts-query:focus {
@@ -2033,11 +2542,11 @@ input[type="range"].meshing-slider:focus {
 
 #standard-parts-search-btn {
   flex-shrink: 0;
-  font-size: 11px;
+  font-size: var(--ui-fs-sm);
   background: var(--vscode-button-secondaryBackground, #3a3d41);
   color: var(--vscode-button-secondaryForeground, #ccc);
   border: none;
-  border-radius: 3px;
+  border-radius: var(--ui-r-xs);
   padding: 2px 8px;
   cursor: pointer;
 }
@@ -2052,7 +2561,7 @@ input[type="range"].meshing-slider:focus {
 
 #standard-parts-status {
   padding: 2px 8px 6px;
-  font-size: 11px;
+  font-size: var(--ui-fs-sm);
   opacity: 0.75;
   flex-shrink: 0;
 }
@@ -2085,17 +2594,17 @@ input[type="range"].meshing-slider:focus {
   height: 48px;
   object-fit: contain;
   flex-shrink: 0;
-  border-radius: 3px;
+  border-radius: var(--ui-r-xs);
   background: var(--vscode-editor-background, transparent);
 }
 
 .standard-part-name {
-  font-size: 11px;
+  font-size: var(--ui-fs-sm);
   font-weight: 600;
 }
 
 .standard-part-desc {
-  font-size: 10px;
+  font-size: var(--ui-fs-label);
   opacity: 0.75;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -2105,7 +2614,7 @@ input[type="range"].meshing-slider:focus {
 }
 
 .standard-part-meta {
-  font-size: 10px;
+  font-size: var(--ui-fs-label);
   opacity: 0.6;
 }
 
@@ -2117,11 +2626,11 @@ input[type="range"].meshing-slider:focus {
 }
 
 .standard-part-insert {
-  font-size: 10px;
+  font-size: var(--ui-fs-label);
   background: var(--vscode-button-background, #0e639c);
   color: var(--vscode-button-foreground, #fff);
   border: none;
-  border-radius: 3px;
+  border-radius: var(--ui-r-xs);
   padding: 2px 8px;
   cursor: pointer;
 }
@@ -2133,7 +2642,7 @@ input[type="range"].meshing-slider:focus {
   justify-content: space-between;
   gap: 8px;
   padding: 2px 0;
-  font-size: 11px;
+  font-size: var(--ui-fs-sm);
 }
 
 .mass-label {
@@ -2146,7 +2655,7 @@ input[type="range"].meshing-slider:focus {
 
 .mass-message {
   padding: 4px 0;
-  font-size: 11px;
+  font-size: var(--ui-fs-sm);
   opacity: 0.75;
 }
 
@@ -2165,7 +2674,7 @@ input[type="range"].meshing-slider:focus {
   justify-content: space-between;
   gap: 8px;
   padding: 2px 0;
-  font-size: 11px;
+  font-size: var(--ui-fs-sm);
 }
 
 .mesh-health-label {
@@ -2178,7 +2687,7 @@ input[type="range"].meshing-slider:focus {
 
 .mesh-health-message {
   padding: 4px 0;
-  font-size: 11px;
+  font-size: var(--ui-fs-sm);
   opacity: 0.75;
 }
 
@@ -2189,7 +2698,7 @@ input[type="range"].meshing-slider:focus {
 
 .edits-empty {
   padding: 8px;
-  font-size: 11px;
+  font-size: var(--ui-fs-sm);
   opacity: 0.6;
 }
 
@@ -2211,7 +2720,7 @@ input[type="range"].meshing-slider:focus {
 
 .edit-index {
   flex-shrink: 0;
-  font-size: 10px;
+  font-size: var(--ui-fs-label);
   opacity: 0.5;
   width: 18px;
   text-align: right;
@@ -2221,14 +2730,14 @@ input[type="range"].meshing-slider:focus {
   flex: 1;
   overflow: hidden;
   text-overflow: ellipsis;
-  font-size: 11px;
+  font-size: var(--ui-fs-sm);
   opacity: 0.9;
 }
 
 .edit-remove {
   flex-shrink: 0;
   font: inherit;
-  font-size: 10px;
+  font-size: var(--ui-fs-label);
   line-height: 1;
   width: 16px;
   height: 16px;
@@ -2236,7 +2745,7 @@ input[type="range"].meshing-slider:focus {
   color: var(--vscode-foreground, #ccc);
   background: transparent;
   border: none;
-  border-radius: 3px;
+  border-radius: var(--ui-r-xs);
   cursor: pointer;
   opacity: 0;
 }
@@ -2259,7 +2768,7 @@ input[type="range"].meshing-slider:focus {
 .edit-row-baked .edit-index { opacity: 0.5; }
 .edit-baked-mark {
   flex-shrink: 0;
-  font-size: 11px;
+  font-size: var(--ui-fs-sm);
   line-height: 1;
   opacity: 0.6;
 }
@@ -2274,13 +2783,13 @@ input[type="range"].meshing-slider:focus {
 .edit-row-pending:hover .edit-label { opacity: 0.7; }
 .edit-pending-mark {
   flex-shrink: 0;
-  font-size: 11px;
+  font-size: var(--ui-fs-sm);
   line-height: 1;
   opacity: 0.45;
 }
 .edit-skip-warning {
   flex-shrink: 0;
-  font-size: 11px;
+  font-size: var(--ui-fs-sm);
   line-height: 1;
   color: var(--vscode-editorWarning-foreground, var(--vscode-list-warningForeground, #cca700));
   cursor: help;
@@ -2295,7 +2804,7 @@ input[type="range"].meshing-slider:focus {
   flex-shrink: 0;
   margin-left: auto;
   font: inherit;
-  font-size: 9px;
+  font-size: var(--ui-fs-micro);
   line-height: 1;
   padding: 2px 4px;
   color: var(--vscode-descriptionForeground, #999);
@@ -2328,12 +2837,12 @@ input[type="range"].meshing-slider:focus {
 
 .compose-apply {
   font: inherit;
-  font-size: 11px;
+  font-size: var(--ui-fs-sm);
   padding: 2px 8px;
   color: var(--vscode-button-foreground, #fff);
   background: var(--vscode-button-background, #0e639c);
   border: none;
-  border-radius: 3px;
+  border-radius: var(--ui-r-xs);
   cursor: pointer;
 }
 .compose-apply:hover { background: var(--vscode-button-hoverBackground, #1177bb); }
@@ -2347,7 +2856,7 @@ input[type="range"].meshing-slider:focus {
 .compose-label {
   flex-shrink: 0;
   width: 44px;
-  font-size: 10px;
+  font-size: var(--ui-fs-label);
   opacity: 0.7;
 }
 
@@ -2356,11 +2865,11 @@ input[type="range"].meshing-slider:focus {
   flex: 1;
   min-width: 28px;
   font: inherit;
-  font-size: 11px;
+  font-size: var(--ui-fs-sm);
   color: var(--vscode-input-foreground, #ccc);
   background: var(--vscode-input-background, #1e1e1e);
   border: 1px solid var(--vscode-input-border, #3c3c3c);
-  border-radius: 3px;
+  border-radius: var(--ui-r-xs);
   padding: 1px 3px;
 }
 .compose-num:focus {
@@ -2373,23 +2882,23 @@ input[type="range"].meshing-slider:focus {
   flex: 1;
   min-width: 28px;
   font: inherit;
-  font-size: 11px;
+  font-size: var(--ui-fs-sm);
   color: var(--vscode-dropdown-foreground, #ccc);
   background: var(--vscode-dropdown-background, #3c3c3c);
   border: 1px solid var(--vscode-dropdown-border, #3c3c3c);
-  border-radius: 3px;
+  border-radius: var(--ui-r-xs);
   padding: 1px 3px;
 }
 
 .compose-bool-a {
   display: block;
-  font-size: 10px;
+  font-size: var(--ui-fs-label);
   opacity: 0.7;
   margin-top: 2px;
 }
 
 .compose-hint {
-  font-size: 10px;
+  font-size: var(--ui-fs-label);
   opacity: 0.6;
   padding: 2px 0;
 }
@@ -2407,19 +2916,19 @@ input[type="range"].meshing-slider:focus {
 .edits-subtab {
   flex: 1;
   font: inherit;
-  font-size: 11px;
+  font-size: var(--ui-fs-sm);
   text-transform: uppercase;
   letter-spacing: 0.04em;
   padding: 3px 0;
   color: var(--vscode-foreground, #ccc);
   background: var(--vscode-button-secondaryBackground, #3a3d41);
   border: none;
-  border-radius: 3px;
+  border-radius: var(--ui-r-xs);
   cursor: pointer;
   opacity: 0.75;
 }
 .edits-subtab {
-  font-size: 10px;
+  font-size: var(--ui-fs-label);
   padding: 2px 0;
 }
 .edits-tab:hover,
@@ -2433,7 +2942,7 @@ input[type="range"].meshing-slider:focus {
 .edits-subtab.disabled { opacity: 0.4; pointer-events: none; }
 
 .op-cat-title {
-  font-size: 9px;
+  font-size: var(--ui-fs-micro);
   text-transform: uppercase;
   letter-spacing: 0.06em;
   opacity: 0.55;
@@ -2456,7 +2965,7 @@ input[type="range"].meshing-slider:focus {
   color: var(--vscode-foreground, #ccc);
   background: var(--vscode-button-secondaryBackground, #3a3d41);
   border: 1px solid transparent;
-  border-radius: 3px;
+  border-radius: var(--ui-r-xs);
   cursor: pointer;
 }
 .op-btn:hover { background: var(--vscode-button-secondaryHoverBackground, #45494e); }
@@ -2469,7 +2978,7 @@ input[type="range"].meshing-slider:focus {
 
 .op-icon {
   display: inline-flex;
-  font-size: 14px;
+  font-size: var(--ui-fs-xl);
   line-height: 1;
 }
 .op-icon svg {
@@ -2478,7 +2987,7 @@ input[type="range"].meshing-slider:focus {
 }
 
 .op-name {
-  font-size: 9px;
+  font-size: var(--ui-fs-micro);
   line-height: 1.1;
   max-width: 100%;
   overflow: hidden;
@@ -2502,12 +3011,12 @@ input[type="range"].meshing-slider:focus {
 .point-remove,
 .point-add {
   font: inherit;
-  font-size: 10px;
+  font-size: var(--ui-fs-label);
   padding: 1px 5px;
   color: var(--vscode-foreground, #ccc);
   background: var(--vscode-button-secondaryBackground, #3a3d41);
   border: none;
-  border-radius: 3px;
+  border-radius: var(--ui-r-xs);
   cursor: pointer;
 }
 .point-remove:disabled { opacity: 0.35; cursor: default; }
@@ -2585,7 +3094,7 @@ input[type="range"].meshing-slider:focus {
   height: 22px;
   padding: 0;
   border: 1px solid var(--vscode-input-border, #3c3c3c);
-  border-radius: 3px;
+  border-radius: var(--ui-r-xs);
   background: none;
   cursor: pointer;
 }
@@ -2598,7 +3107,12 @@ input[type="range"].meshing-slider:focus {
 
 #measure-readout-row {
   position: absolute;
-  top: 74px;
+  /* Toolbar bottom + a gap. The toolbar is now a padded, bordered container
+   * (top: 42px, ~35px tall, so its bottom edge is ~77px); this sat at 74px back
+   * when the toolbar was a bare strip of buttons and would now overlap it by
+   * ~3px the moment a measurement appeared. Nothing else about this row's
+   * geometry changed. */
+  top: 84px;
   right: 8px;
   z-index: 12;
   display: flex;
@@ -2609,10 +3123,10 @@ input[type="range"].meshing-slider:focus {
 
 #measure-readout {
   padding: 2px 6px;
-  border-radius: 3px;
+  border-radius: var(--ui-r-xs);
   background: var(--vscode-editorWidget-background, rgba(30, 30, 30, 0.85));
   text-align: right;
-  font-size: 11px;
+  font-size: var(--ui-fs-sm);
   color: var(--vscode-foreground, #ccc);
   opacity: 0.9;
 }
@@ -2627,13 +3141,13 @@ input[type="range"].meshing-slider:focus {
 #measure-pin-btn {
   flex-shrink: 0;
   font: inherit;
-  font-size: 11px;
+  font-size: var(--ui-fs-sm);
   line-height: 1;
   padding: 2px 6px;
   color: var(--vscode-foreground, #ccc);
   background: var(--vscode-editorWidget-background, rgba(30, 30, 30, 0.85));
   border: 1px solid var(--vscode-widget-border, #3c3c3c);
-  border-radius: 3px;
+  border-radius: var(--ui-r-xs);
   cursor: pointer;
   opacity: 0.9;
 }
@@ -2669,18 +3183,18 @@ input[type="range"].meshing-slider:focus {
   display: flex;
   align-items: center;
   gap: 2px;
-  font-size: 10px;
+  font-size: var(--ui-fs-label);
   color: var(--vscode-foreground, #ccc);
   opacity: 0.9;
 }
 .measure-tol-field input {
   width: 52px;
   padding: 1px 4px;
-  font-size: 11px;
+  font-size: var(--ui-fs-sm);
   color: var(--vscode-input-foreground, #ccc);
   background: var(--vscode-input-background, rgba(30, 30, 30, 0.85));
   border: 1px solid var(--vscode-widget-border, #3c3c3c);
-  border-radius: 3px;
+  border-radius: var(--ui-r-xs);
 }
 /* An out-of-tolerance toleranced pin's list row — same derived-tone idea the
  * overlay label uses (the annotation stores facts; this is presentation). */
@@ -2700,7 +3214,7 @@ input[type="range"].meshing-slider:focus {
 #annotations-list:empty::before {
   content: "No pinned measurements yet.";
   padding: 4px 12px 6px;
-  font-size: 11px;
+  font-size: var(--ui-fs-sm);
   opacity: 0.6;
 }
 .annotation-row {
@@ -2708,7 +3222,7 @@ input[type="range"].meshing-slider:focus {
   align-items: center;
   gap: 6px;
   padding: 3px 8px;
-  font-size: 12px;
+  font-size: var(--ui-fs-md);
 }
 .annotation-row-text {
   flex: 1 1 auto;
@@ -2735,7 +3249,7 @@ input[type="range"].meshing-slider:focus {
   align-items: center;
   gap: 6px;
   padding: 2px 0;
-  font-size: 12px;
+  font-size: var(--ui-fs-md);
 }
 .plane-row-name {
   flex: 1 1 auto;
@@ -2758,6 +3272,22 @@ input[type="range"].meshing-slider:focus {
    asserting the class passed. Here it left two text inputs on screen and grew
    the bottom control bar wide enough to cover the sidebar. */
 #plane-entry[hidden] {
+  display: none;
+}
+/* Three MORE instances of the same defect, all in the same bar, all missed when
+   `#plane-entry` was fixed — each carries `hidden` in `viewerDom.ts` and each has
+   an author `display` rule that beats the UA's `[hidden]`:
+     #plane-mid             `.vc-row   { display: flex }`  — two empty selects and
+                            an Add button, meant to appear only after "Midplane…"
+     #vc-colorfield-group   `.vc-group { display: flex }`  — a whole "Colour by
+                            field" column, meant for meshio++ sources only
+     #vc-colorfield-legend  `.vc-row`                      — its gradient legend
+   Found by looking at a screenshot of a B-rep document, where all three were
+   plainly on screen. `#id[attr]` (1,1,0) beats both the id rule (1,0,0) and the
+   class rules (0,1,0). Keep these with `#plane-entry[hidden]` above. */
+#plane-mid[hidden],
+#vc-colorfield-group[hidden],
+#vc-colorfield-legend[hidden] {
   display: none;
 }
 /* Two vectors on one row: each must shrink rather than push the Add button
@@ -2784,15 +3314,16 @@ input[type="range"].meshing-slider:focus {
    * the cursor, so without this it would sit directly under the pointer. */
   pointer-events: none;
   padding: 3px 7px;
-  border-radius: 3px;
-  font-family: var(--vscode-editor-font-family, monospace);
-  font-size: 11px;
-  line-height: 1.45;
+  border-radius: var(--ui-r-sm);
+  font-family: var(--ui-font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: var(--ui-fs-sm);
+  line-height: var(--ui-lh);
   white-space: pre;
   color: var(--vscode-foreground, #ccc);
   background: var(--vscode-editorWidget-background, rgba(0, 0, 0, 0.72));
   border: 1px solid var(--vscode-editorWidget-border, #454545);
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.36);
+  box-shadow: var(--ui-elev-2);
 }
 
 /* There is NO global `.hidden` rule in this file — each consumer defines its
@@ -2816,18 +3347,28 @@ input[type="range"].meshing-slider:focus {
 #inspector-card {
   position: absolute;
   z-index: 12;
-  left: 8px;
-  bottom: 8px;
+  /* Top-right, under the toolbar and the measurement readout, where it reads as
+   * "what is selected" alongside the other selection-state chrome — it used to sit
+   * bottom-left, where the sidebar's edge and the view controls competed with it.
+   * `top` is measured from #app (which starts BELOW the 34px menubar), not from
+   * the page: the toolbar's bottom edge is ~77px on the page = ~43px here, the
+   * readout row below it ends ~76px here, so 86px clears both.
+   *
+   * Same content, same round trip, same B-rep-only gate — this is a move and a
+   * restyle, not a new component (the selection-driven `entityFactsRequest` and
+   * `renderInspectorCard` are unchanged). */
+  right: 8px;
+  top: 86px;
   min-width: 168px;
-  max-width: min(34vw, 320px);
+  max-width: min(28vw, 260px);
   padding: 6px 9px;
-  border-radius: 4px;
-  font-family: var(--vscode-font-family, sans-serif);
-  font-size: 11px;
+  border-radius: var(--ui-r-md);
+  font-family: var(--ui-font);
+  font-size: var(--ui-fs-sm);
   color: var(--vscode-foreground, #ccc);
   background: var(--vscode-editorWidget-background, rgba(0, 0, 0, 0.72));
   border: 1px solid var(--vscode-editorWidget-border, #454545);
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.36);
+  box-shadow: var(--ui-elev-2);
 }
 
 #inspector-card .insp-title {
@@ -2839,7 +3380,8 @@ input[type="range"].meshing-slider:focus {
 }
 
 #inspector-card .insp-id {
-  font-family: var(--vscode-editor-font-family, monospace);
+  font-family: var(--ui-font-mono);
+  font-variant-numeric: tabular-nums;
   opacity: 0.7;
   font-weight: 400;
 }
@@ -2855,7 +3397,8 @@ input[type="range"].meshing-slider:focus {
 }
 
 #inspector-card .insp-val {
-  font-family: var(--vscode-editor-font-family, monospace);
+  font-family: var(--ui-font-mono);
+  font-variant-numeric: tabular-nums;
 }
 
 #inspector-card .insp-note {
@@ -2880,7 +3423,7 @@ input[type="range"].meshing-slider:focus {
   padding: 4px 8px;
   opacity: 0.7;
   font-style: italic;
-  font-size: 11px;
+  font-size: var(--ui-fs-sm);
 }
 
 /* ── Macros panel (saved parameterized scripts) ──────────────────────────── */
@@ -2892,7 +3435,7 @@ input[type="range"].meshing-slider:focus {
 .macros-empty,
 .macros-status {
   opacity: 0.75;
-  font-size: 11px;
+  font-size: var(--ui-fs-sm);
   padding: 2px 0 4px;
 }
 
@@ -2921,11 +3464,11 @@ input[type="range"].meshing-slider:focus {
 
 .macro-btn {
   font: inherit;
-  font-size: 11px;
+  font-size: var(--ui-fs-sm);
   color: var(--vscode-button-secondaryForeground, #ccc);
   background: var(--vscode-button-secondaryBackground, #3a3d41);
   border: none;
-  border-radius: 3px;
+  border-radius: var(--ui-r-xs);
   padding: 1px 6px;
   cursor: pointer;
 }
@@ -2943,21 +3486,1118 @@ input[type="range"].meshing-slider:focus {
 .macro-param-name {
   min-width: 54px;
   opacity: 0.75;
-  font-size: 11px;
+  font-size: var(--ui-fs-sm);
 }
 
 .macro-param-input {
   flex: 1;
   min-width: 0;
   font: inherit;
-  font-size: 11px;
+  font-size: var(--ui-fs-sm);
   color: var(--vscode-input-foreground, #ccc);
   background: var(--vscode-input-background, #1e1e1e);
   border: 1px solid var(--vscode-input-border, #3c3c3c);
-  border-radius: 3px;
+  border-radius: var(--ui-r-xs);
   padding: 1px 4px;
 }
 .macro-param-input:focus {
   outline: none;
   border-color: var(--vscode-focusBorder, #007fd4);
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+ * Chrome redesign, pass 3 — match the approved mockup
+ * ══════════════════════════════════════════════════════════════════════════
+ *
+ * Appended LAST on purpose. Most of what follows restyles a control an earlier
+ * block already styled at the same specificity, and source order is what makes
+ * these win — so do not "tidy" this block upward. Same rules as the rest of the
+ * chrome: colours only from `var(--vscode-*)`, metrics from `--ui-*`, and no
+ * transitions or animation (two exact-pixel test families compare captures taken
+ * seconds apart).
+ *
+ * Every element added here that carries an author `display` also carries its
+ * `[hidden]` override in the same rule group — the defect class this file
+ * documents several times over. */
+
+/* Hand-authored line glyphs (src/uiGlyphs.ts). Sized in px, not em: they sit in
+ * buttons of very different font sizes and must read the same everywhere. */
+.ui-glyph {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  vertical-align: middle;
+}
+.ui-glyph svg {
+  width: 14px;
+  height: 14px;
+}
+
+/* Small status dots. `.ui-dot` (the unsaved-edits yellow) is defined above; these
+ * are the other two meanings. */
+.ui-dot-ok {
+  background: var(--vscode-testing-iconPassed, var(--vscode-charts-green, #73c991));
+}
+.ui-dot-accent {
+  background: var(--vscode-focusBorder, #3b82f6);
+}
+
+/* ── Sidebar chevrons: one glyph, rotated by state ─────────────────────── */
+
+.panel-chevron {
+  width: 18px;
+  height: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin-right: 0;
+}
+.panel-chevron svg {
+  width: 14px;
+  height: 14px;
+}
+.panel-chevron[aria-expanded="false"] svg {
+  transform: rotate(-90deg);
+}
+
+.tree-chevron,
+.part-chevron {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.tree-chevron svg,
+.part-chevron svg {
+  width: 12px;
+  height: 12px;
+}
+.tree-chevron.collapsed svg,
+.part-chevron.collapsed svg {
+  transform: rotate(-90deg);
+}
+
+/* Header icon buttons and the one filled primary button. */
+.panel-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  font: inherit;
+  color: var(--vscode-foreground, #ccc);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--ui-r-sm);
+  cursor: pointer;
+  opacity: 0.85;
+}
+.panel-icon-btn:hover:not(:disabled) {
+  opacity: 1;
+  background: var(--vscode-toolbar-hoverBackground, rgba(90, 93, 94, 0.31));
+}
+.panel-icon-btn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+.panel-icon-btn.active {
+  opacity: 1;
+  background: var(--vscode-inputValidation-infoBackground, #063b49);
+  border-color: var(--vscode-focusBorder, #007fd4);
+}
+.panel-icon-btn[hidden] {
+  display: none;
+}
+
+.panel-primary-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--ui-s-1);
+  height: 24px;
+  padding: 0 var(--ui-s-3);
+  font: inherit;
+  font-size: var(--ui-fs-sm);
+  font-weight: 600;
+  color: var(--vscode-button-foreground, #fff);
+  background: var(--vscode-button-background, #0e639c);
+  border: none;
+  border-radius: var(--ui-r-sm);
+  cursor: pointer;
+}
+.panel-primary-btn:hover:not(:disabled) {
+  background: var(--vscode-button-hoverBackground, #1177bb);
+}
+.panel-primary-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* ── Menubar: File pill and the document chip ──────────────────────────── */
+
+#file-menu {
+  padding: 3px 10px;
+  border: 1px solid var(--vscode-editorWidget-border, #454545);
+  border-radius: var(--ui-r-sm);
+}
+#file-menu .ui-glyph svg {
+  width: 12px;
+  height: 12px;
+  opacity: 0.7;
+}
+
+/* "3 unsaved edits" — a fact, in the muted foreground; empty when clean, so the
+ * span collapses instead of leaving a stray separator. */
+#doc-chip-unsaved {
+  flex-shrink: 0;
+  white-space: nowrap;
+  font-family: var(--ui-font-mono);
+  font-size: var(--ui-fs-label);
+  color: var(--vscode-descriptionForeground, var(--vscode-foreground, #ccc));
+}
+#doc-chip-unsaved:empty {
+  display: none;
+}
+#doc-chip-unsaved::before {
+  content: "· ";
+}
+
+/* ── Components tree ───────────────────────────────────────────────────── */
+
+/* The filter input appears when the header's search button asks for it. */
+#tree-filter[hidden] {
+  display: none;
+}
+#tree-search[aria-expanded="true"] {
+  opacity: 1;
+  background: var(--vscode-toolbar-hoverBackground, rgba(90, 93, 94, 0.31));
+}
+/* The close button is a rarely-wanted action: shown on header hover/focus only,
+ * so the resting header is a title and one search icon. */
+#tree-panel:not(:hover):not(:focus-within) #tree-close {
+  display: none;
+}
+
+.tree-kind {
+  flex-shrink: 0;
+  display: inline-flex;
+  opacity: 0.75;
+}
+.tree-kind svg {
+  width: 14px;
+  height: 14px;
+}
+.tree-label {
+  min-width: 0;
+}
+.tree-badge {
+  margin-left: auto;
+  padding-right: var(--ui-s-1);
+  opacity: 0.6;
+}
+/* The eye shows on hover/focus, and always for a hidden node (so "why is that
+ * gone" is visible without hunting). It stays in layout, so a row never reflows. */
+.tree-eye {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+}
+.tree-eye svg {
+  width: 14px;
+  height: 14px;
+}
+.tree-row:hover .tree-eye,
+.tree-row:focus-within .tree-eye,
+.tree-eye:focus-visible {
+  opacity: 0.7;
+}
+.tree-row .tree-eye:hover,
+.tree-row .tree-eye.hidden-off {
+  opacity: 1;
+}
+
+/* ── Parts ─────────────────────────────────────────────────────────────── */
+
+#parts-header-actions {
+  gap: var(--ui-s-1);
+  align-items: center;
+}
+/* Beats the older filled-button block on #parts-isolate/#parts-copy-bom, which
+ * shares the ids: same specificity as `#parts-new`, later in the file. */
+#parts-isolate,
+#parts-copy-bom {
+  padding: 0;
+  background: transparent;
+  color: var(--vscode-foreground, #ccc);
+}
+#parts-isolate:hover:not(:disabled),
+#parts-copy-bom:hover:not(:disabled) {
+  background: var(--vscode-toolbar-hoverBackground, rgba(90, 93, 94, 0.31));
+}
+#parts-isolate.active {
+  background: var(--vscode-inputValidation-infoBackground, #063b49);
+  outline: none;
+  border-color: var(--vscode-focusBorder, #007fd4);
+}
+#parts-new {
+  padding: 0 var(--ui-s-3);
+  font-weight: 600;
+  background: var(--vscode-button-background, #0e639c);
+}
+#parts-new:hover {
+  background: var(--vscode-button-hoverBackground, #1177bb);
+}
+
+.part-row {
+  height: 28px;
+  gap: var(--ui-s-2);
+  border-left: 2px solid transparent;
+}
+.part-item.selected > .part-row {
+  border-left-color: var(--vscode-focusBorder, #007fd4);
+}
+.part-swatch {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+}
+.part-swatch::-webkit-color-swatch {
+  border-radius: 50%;
+}
+.part-badge {
+  font-family: var(--ui-font-mono);
+  font-variant-numeric: tabular-nums;
+  opacity: 0.55;
+}
+.part-btn svg,
+.part-eye svg {
+  width: 14px;
+  height: 14px;
+}
+.part-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+/* Assign and delete are quiet until the row is in play (pointer over it, or
+ * keyboard focus inside it). They stay in the DOM and reachable — focusing the
+ * name field is what reveals them for a keyboard user. */
+.part-row:not(:hover):not(:focus-within) .part-btn:not(.part-eye) {
+  display: none;
+}
+.entity-row {
+  padding-left: 40px;
+}
+.entity-remove svg {
+  width: 12px;
+  height: 12px;
+}
+
+/* ── Edits header ──────────────────────────────────────────────────────── */
+
+#edits-title {
+  flex: 0 1 auto;
+}
+#edits-count {
+  display: inline-block;
+  min-width: 14px;
+  margin-left: var(--ui-s-2);
+  padding: 0 var(--ui-s-2);
+  border-radius: var(--ui-r-pill);
+  font-size: var(--ui-fs-label);
+  font-weight: 600;
+  line-height: 1.6;
+  text-align: center;
+  text-transform: none;
+  letter-spacing: 0;
+  font-variant-numeric: tabular-nums;
+  background: var(--vscode-badge-background, #4d4d4d);
+  color: var(--vscode-badge-foreground, #fff);
+}
+#edits-count:empty {
+  display: none;
+}
+#edits-header {
+  gap: 0;
+}
+/* A spacer so the action icons stay right-aligned now the title no longer grows. */
+#edits-actions {
+  margin-left: auto;
+}
+#edits-actions button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+}
+#edits-actions button svg {
+  width: 14px;
+  height: 14px;
+}
+
+/* ── FE Mesh ───────────────────────────────────────────────────────────── */
+
+#meshing-header-stat {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--ui-s-2);
+  flex-shrink: 0;
+  font-size: var(--ui-fs-sm);
+  font-weight: 400;
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--vscode-testing-iconPassed, var(--vscode-charts-green, #73c991));
+}
+#meshing-header-stat[hidden] {
+  display: none;
+}
+
+/* Generate is the panel's primary action: a full-width button, with Clear (and
+ * Worst, when there is something to warn about) as trailing icons. */
+#meshing-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--ui-s-2);
+  flex-wrap: nowrap;
+  margin-bottom: var(--ui-s-3);
+}
+#meshing-actions #meshing-generate {
+  flex: 1;
+  height: 30px;
+  opacity: 1;
+  padding: 0 var(--ui-s-3);
+  font-size: var(--ui-fs-md);
+  color: var(--vscode-button-foreground, #fff);
+  background: var(--vscode-button-background, #0e639c);
+  border: none;
+}
+#meshing-actions #meshing-generate:hover:not(:disabled) {
+  background: var(--vscode-button-hoverBackground, #1177bb);
+}
+#meshing-actions #meshing-generate:disabled {
+  opacity: 0.5;
+}
+#meshing-actions .panel-icon-btn {
+  width: 30px;
+  height: 30px;
+  padding: 0;
+}
+#meshing-worst-toggle.active {
+  color: var(--vscode-errorForeground, #f48771);
+  border-color: currentColor;
+}
+
+/* The element-size block: label + value, the slider, its COARSER/FINER ends, then
+ * the presets as one segmented track. The DOM keeps the original sequence
+ * (presets, slider, readout); `order` re-sequences it without touching the JS. */
+.meshing-size {
+  gap: var(--ui-s-2);
+  margin-bottom: var(--ui-s-3);
+}
+.meshing-readout-row {
+  order: 1;
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--ui-s-3);
+}
+.meshing-readout-label {
+  font-size: var(--ui-fs-md);
+}
+.meshing-readout-row .meshing-slider-readout {
+  font-size: var(--ui-fs-md);
+  opacity: 1;
+  white-space: nowrap;
+}
+.meshing-slider-row {
+  order: 2;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  grid-template-areas:
+    "slider slider"
+    "coarser finer";
+  row-gap: var(--ui-s-1);
+}
+.meshing-slider-row > input[type="range"] {
+  grid-area: slider;
+}
+.meshing-slider-row > .meshing-slider-end:first-child {
+  grid-area: coarser;
+}
+.meshing-slider-row > .meshing-slider-end:last-child {
+  grid-area: finer;
+  text-align: right;
+}
+.meshing-slider-end {
+  font-size: var(--ui-fs-micro);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: var(--ui-track-caps);
+}
+.meshing-preset-row {
+  order: 3;
+  gap: 0;
+  padding: var(--ui-s-0);
+  background: var(--vscode-input-background, #3c3c3c);
+  border: 1px solid var(--vscode-input-border, transparent);
+  border-radius: var(--ui-r-sm);
+}
+.meshing-preset {
+  padding: 4px 0;
+  font-size: var(--ui-fs-sm);
+  color: var(--vscode-foreground, #ccc);
+  background: transparent;
+  border: none;
+  border-radius: calc(var(--ui-r-sm) - var(--ui-s-0));
+}
+.meshing-preset:hover {
+  background: var(--vscode-toolbar-hoverBackground, rgba(90, 93, 94, 0.31));
+}
+.meshing-preset.active {
+  color: var(--vscode-foreground, #fff);
+  background: var(--vscode-list-inactiveSelectionBackground, var(--vscode-button-secondaryBackground, #3a3d41));
+  font-weight: 600;
+}
+
+/* Engine and Preset, side by side, label above each. */
+.meshing-pair {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--ui-s-2) var(--ui-s-3);
+  margin-bottom: var(--ui-s-3);
+}
+.meshing-pair .meshing-form,
+.meshing-pair .meshing-section {
+  min-width: 0;
+  margin: 0;
+}
+.meshing-pair .meshing-field:not(.meshing-preset-actions) {
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--ui-s-1);
+}
+.meshing-pair .meshing-label {
+  width: auto;
+  font-size: var(--ui-fs-micro);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: var(--ui-track-caps);
+}
+.meshing-pair .meshing-select {
+  width: 100%;
+  flex: none;
+  padding: 5px 6px;
+  border-radius: var(--ui-r-sm);
+}
+/* "Saved presets" would only repeat the PRESET label right under it. */
+.meshing-pair .meshing-section-title {
+  display: none;
+}
+/* Apply / Save… / Delete: a compact row under the Preset select. */
+.meshing-preset-actions {
+  gap: var(--ui-s-1);
+  margin-top: var(--ui-s-1);
+}
+.meshing-preset-actions button {
+  flex: 1;
+  padding: 2px 0;
+  font: inherit;
+  font-size: var(--ui-fs-label);
+  color: var(--vscode-foreground, #ccc);
+  background: transparent;
+  border: 1px solid var(--vscode-input-border, var(--vscode-editorWidget-border, #454545));
+  border-radius: var(--ui-r-xs);
+  cursor: pointer;
+}
+.meshing-preset-actions button:hover:not(:disabled) {
+  background: var(--vscode-toolbar-hoverBackground, rgba(90, 93, 94, 0.31));
+}
+.meshing-preset-actions button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.meshing-preset-actions button[hidden] {
+  display: none;
+}
+
+/* Part sizes: dot · name · value · Grade. */
+.meshing-section-title {
+  font-size: var(--ui-fs-micro);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: var(--ui-track-caps);
+}
+.meshing-part-size {
+  text-align: right;
+  font-family: var(--ui-font-mono);
+  font-variant-numeric: tabular-nums;
+  background: transparent;
+  border-color: transparent;
+}
+.meshing-part-size:hover {
+  border-color: var(--vscode-input-border, #3c3c3c);
+}
+.meshing-part-size:focus {
+  background: var(--vscode-input-background, #1e1e1e);
+  border-color: var(--vscode-focusBorder, #007fd4);
+}
+
+/* Export row: format · unit · Export, one line under the part sizes. */
+#meshing-export-row {
+  display: flex;
+  align-items: center;
+  gap: var(--ui-s-2);
+  margin: var(--ui-s-3) 0;
+  padding-top: var(--ui-s-3);
+  border-top: 1px solid var(--vscode-sideBar-border, #3c3c3c);
+}
+#meshing-export-row #meshing-export-format {
+  flex: 1;
+  min-width: 0;
+  max-width: none;
+}
+#meshing-export-row #meshing-export-unit {
+  flex: 0 0 auto;
+  width: 54px;
+}
+#meshing-export-row .meshing-export-select {
+  padding: 4px 4px;
+  border-radius: var(--ui-r-sm);
+}
+#meshing-export {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--ui-s-1);
+  flex-shrink: 0;
+  height: 26px;
+  padding: 0 var(--ui-s-3);
+  font: inherit;
+  font-size: var(--ui-fs-sm);
+  color: var(--vscode-foreground, #ccc);
+  background: transparent;
+  border: 1px solid var(--vscode-input-border, var(--vscode-editorWidget-border, #454545));
+  border-radius: var(--ui-r-sm);
+  cursor: pointer;
+}
+#meshing-export:hover {
+  background: var(--vscode-toolbar-hoverBackground, rgba(90, 93, 94, 0.31));
+}
+
+/* ── Advanced group: a card ────────────────────────────────────────────── */
+
+#advanced-group {
+  margin: var(--ui-s-3);
+  border: 1px solid var(--vscode-sideBar-border, #3c3c3c);
+  border-radius: var(--ui-r-md);
+  background: var(--vscode-sideBarSectionHeader-background, transparent);
+}
+#advanced-header {
+  border-bottom: none;
+  border-top: none;
+}
+.panel-icon {
+  display: inline-flex;
+  flex-shrink: 0;
+  margin-right: var(--ui-s-2);
+  opacity: 0.8;
+}
+.panel-icon svg {
+  width: 16px;
+  height: 16px;
+}
+
+/* ── Toolbar: trigger chevrons ─────────────────────────────────────────── */
+
+#toolbar .tb-menu .ui-glyph svg {
+  width: 12px;
+  height: 12px;
+  opacity: 0.7;
+}
+/* A mode that is ON reads as a filled accent pill, like FE Mesh in the mockup. */
+#toolbar #meshing-toggle.active,
+#toolbar #sel-toggle.active {
+  color: var(--vscode-button-foreground, #fff);
+  background: var(--vscode-button-background, #0e639c);
+  border-color: transparent;
+}
+
+/* ── Selection pill ────────────────────────────────────────────────────── */
+
+#inspector-card {
+  width: max-content;
+  min-width: 0;
+  max-width: min(46vw, 460px);
+  padding: 0;
+  border-radius: var(--ui-r-pill);
+  overflow: hidden;
+}
+#inspector-card.open {
+  border-radius: var(--ui-r-md);
+}
+#inspector-card .insp-summary {
+  display: flex;
+  align-items: center;
+  gap: var(--ui-s-2);
+  padding: var(--ui-s-2) var(--ui-s-2) var(--ui-s-2) var(--ui-s-4);
+  white-space: nowrap;
+}
+#inspector-card .insp-sum-desc {
+  opacity: 0.75;
+}
+#inspector-card .insp-sum-desc::before,
+#inspector-card .insp-sum-measure:not(:empty)::before {
+  content: "· ";
+  opacity: 0.6;
+}
+#inspector-card .insp-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  margin-left: var(--ui-s-1);
+  color: inherit;
+  background: transparent;
+  border: none;
+  border-radius: 50%;
+  cursor: pointer;
+  opacity: 0.7;
+}
+#inspector-card .insp-toggle:hover {
+  opacity: 1;
+  background: var(--vscode-toolbar-hoverBackground, rgba(90, 93, 94, 0.31));
+}
+#inspector-card .insp-toggle svg {
+  width: 14px;
+  height: 14px;
+}
+#inspector-card.open .insp-toggle svg {
+  transform: rotate(180deg);
+}
+/* The full fact rows stay in the DOM (built every time) and are shown on demand. */
+#inspector-card .insp-details {
+  display: none;
+  padding: 0 var(--ui-s-4) var(--ui-s-3);
+  border-top: 1px solid var(--vscode-editorWidget-border, #454545);
+}
+#inspector-card.open .insp-details {
+  display: block;
+}
+#inspector-card .insp-title {
+  margin: var(--ui-s-2) 0 var(--ui-s-1);
+}
+
+/* ── Dock: icon navigation, and the Clip group re-ordered ──────────────── */
+
+.vc-nav {
+  display: flex;
+  align-items: center;
+  gap: var(--ui-s-0);
+}
+.vc-nav .vc-nav-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  color: var(--vscode-foreground, #ccc);
+  background: transparent;
+  border-radius: var(--ui-r-sm);
+}
+.vc-nav .vc-nav-btn:hover {
+  background: var(--vscode-toolbar-hoverBackground, rgba(90, 93, 94, 0.31));
+}
+.vc-nav .vc-nav-btn svg,
+.vc-nav .vc-nav-btn .toolbar-icon {
+  width: 15px;
+  height: 15px;
+}
+.vc-nav .vc-nav-btn .toolbar-icon svg {
+  width: 15px;
+  height: 15px;
+}
+
+/* ── Status bar ────────────────────────────────────────────────────────── */
+
+#statusbar {
+  flex-shrink: 0;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  height: var(--ui-statusbar-h);
+  font-family: var(--ui-font);
+  font-size: var(--ui-fs-label);
+  white-space: nowrap;
+  color: var(--vscode-descriptionForeground, var(--vscode-foreground, #ccc));
+  background: var(--vscode-editorGroupHeader-tabsBackground, var(--vscode-editorWidget-background, #252526));
+  border-top: 1px solid var(--vscode-editorWidget-border, #454545);
+}
+/* Kernel readiness sits under the sidebar's own width, so the facts begin exactly
+ * where the canvas does. With the sidebar hidden it simply hugs its text. */
+#kernel-status {
+  box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--ui-s-2);
+  align-self: stretch;
+  padding: 0 var(--ui-s-3);
+  border-right: 1px solid var(--vscode-editorWidget-border, #454545);
+  overflow: hidden;
+}
+body:has(#side.visible) #kernel-status {
+  width: var(--side-width, 272px);
+  flex-shrink: 0;
+}
+#kernel-status-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+#kernel-status-dot {
+  background: var(--vscode-disabledForeground, #858585);
+}
+#kernel-status[data-tone="ready"] #kernel-status-dot {
+  background: var(--vscode-testing-iconPassed, var(--vscode-charts-green, #73c991));
+}
+#kernel-status[data-tone="loading"] #kernel-status-dot {
+  background: var(--vscode-editorWarning-foreground, #cca700);
+}
+#statusbar #vc-count-entities {
+  padding-left: var(--ui-s-4);
+}
+#statusbar #vc-count-mesh {
+  margin-left: var(--ui-s-4);
+}
+#statusbar #vc-cursor {
+  margin-left: auto;
+  padding-right: var(--ui-s-4);
+  min-width: 34ch;
+}
+#statusbar #vc-count-entities:empty,
+#statusbar #vc-cursor:empty {
+  min-width: 0;
+}
+
+/* The status bar takes a row off the bottom of the viewport, and the dock and the
+ * toast are anchored to that bottom edge — so both lift by its height. */
+#view-controls {
+  bottom: calc(var(--ui-s-3) + var(--ui-statusbar-h));
+}
+#status {
+  bottom: calc(var(--ui-s-5) + 132px + var(--ui-statusbar-h));
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+ * Chrome redesign, pass 4 — the remaining gaps to the mockup
+ * ══════════════════════════════════════════════════════════════════════════
+ * Appended after pass 3 for the same reason it was: source order is what makes
+ * these win over the earlier block at equal specificity. */
+
+/* ── Toolbar: sidebar-sized type, line glyphs ──────────────────────────── */
+
+/* #toolbar had no font-size, so it inherited the browser's 16px — about a third
+ * larger than every other piece of chrome. */
+#toolbar {
+  font-size: var(--ui-fs-md);
+}
+/* Only the DIRECT toolbar buttons and the four trigger buttons — never the menu
+ * items inside the dropdowns, whose box sizes feed two fixed screenshot clips. */
+#toolbar > button,
+#toolbar > .tb-menu-wrap > .tb-menu {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--ui-s-2);
+  height: 28px;
+  padding: 0 var(--ui-s-3);
+}
+#toolbar > button .ui-glyph:first-child svg,
+#toolbar > .tb-menu-wrap > .tb-menu .ui-glyph:first-child svg {
+  width: 15px;
+  height: 15px;
+  opacity: 1;
+}
+#toolbar > .tb-menu-wrap > .tb-menu .ui-glyph:last-child svg {
+  width: 12px;
+  height: 12px;
+  opacity: 0.7;
+}
+/* The menubar's File pill uses the same glyph size. */
+#file-menu .ui-glyph:first-child svg {
+  width: 15px;
+  height: 15px;
+  opacity: 1;
+}
+
+/* ── Components ────────────────────────────────────────────────────────── */
+
+.tree-badge {
+  font-size: var(--ui-fs-label);
+}
+
+/* ── Parts: hug the rows instead of claiming the column ────────────────── */
+
+/* `flex: 1` made Parts eat every spare pixel, leaving a wide empty gap under three
+ * short rows. It now sizes to its content and only shrinks (and scrolls) when the
+ * column runs short. The collapse rule (`#side .side-section.collapsed`, a higher
+ * specificity) still wins for a collapsed panel. */
+#parts-panel {
+  flex: 0 1 auto;
+  min-height: 0;
+}
+#parts-body {
+  flex: 0 1 auto;
+  max-height: 100%;
+}
+/* A quieter selection than the saturated active-list blue. */
+.part-item.selected > .part-row {
+  background: var(--vscode-list-inactiveSelectionBackground, rgba(90, 93, 94, 0.31));
+  color: inherit;
+}
+
+/* ── Edits body ────────────────────────────────────────────────────────── */
+
+#variables-add {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--ui-s-1);
+  height: 22px;
+  padding: 0 var(--ui-s-3);
+  font: inherit;
+  font-size: var(--ui-fs-sm);
+  color: var(--vscode-foreground, #ccc);
+  background: transparent;
+  border: 1px solid var(--vscode-input-border, var(--vscode-editorWidget-border, #454545));
+  border-radius: var(--ui-r-sm);
+  cursor: pointer;
+}
+#variables-add:hover {
+  background: var(--vscode-toolbar-hoverBackground, rgba(90, 93, 94, 0.31));
+}
+#variables-title {
+  font-size: var(--ui-fs-micro);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: var(--ui-track-caps);
+}
+
+/* GEOMETRY/EDIT and 2D/3D as inset tracks with a lifted active segment — the same
+ * recipe as the dock's segments and the mesh size presets, not solid button-blue
+ * blocks. */
+.edits-tabs,
+.edits-subtabs {
+  gap: 0;
+  padding: var(--ui-s-0);
+  background: var(--vscode-input-background, #3c3c3c);
+  border: 1px solid var(--vscode-input-border, transparent);
+  border-radius: var(--ui-r-sm);
+}
+.edits-subtabs {
+  margin-top: var(--ui-s-1);
+}
+.edits-tab,
+.edits-subtab {
+  background: transparent;
+  border-radius: calc(var(--ui-r-sm) - var(--ui-s-0));
+  opacity: 0.8;
+}
+.edits-tab:hover,
+.edits-subtab:hover {
+  background: var(--vscode-toolbar-hoverBackground, rgba(90, 93, 94, 0.31));
+}
+.edits-tab.active,
+.edits-subtab.active {
+  color: var(--vscode-foreground, #fff);
+  background: var(--vscode-list-inactiveSelectionBackground, var(--vscode-button-secondaryBackground, #3a3d41));
+  font-weight: 600;
+  opacity: 1;
+}
+
+/* ── FE Mesh: quieter preset actions ───────────────────────────────────── */
+
+.meshing-preset-actions {
+  justify-content: flex-end;
+  gap: var(--ui-s-3);
+}
+.meshing-preset-actions button {
+  flex: 0 0 auto;
+  padding: 0 var(--ui-s-1);
+  color: var(--vscode-textLink-foreground, #3794ff);
+  background: transparent;
+  border: none;
+}
+.meshing-preset-actions button:hover:not(:disabled) {
+  background: transparent;
+  text-decoration: underline;
+}
+.meshing-preset-actions button:disabled {
+  color: var(--vscode-foreground, #ccc);
+}
+/* Room under the last block so a scrolled panel never ends flush against the
+ * export row's edge. */
+#meshing-body {
+  padding-bottom: var(--ui-s-3);
+}
+
+/* ── Dock: shorter, text-only modes, the collapse control at the end ───── */
+
+#view-controls {
+  padding: var(--ui-s-2) var(--ui-s-4);
+  gap: var(--ui-s-2);
+}
+/* The toggle stays a direct child of #view-controls (it must survive the body
+ * collapsing), so it moves to the END of the bar by `order` rather than by markup. */
+#view-controls > .vc-collapse {
+  order: 2;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+}
+#view-controls > .vc-collapse:hover {
+  opacity: 1;
+  background: var(--vscode-toolbar-hoverBackground, rgba(90, 93, 94, 0.31));
+}
+.vc-collapse svg {
+  width: 14px;
+  height: 14px;
+}
+#view-controls.collapsed .vc-collapse svg {
+  transform: rotate(180deg);
+}
+/* The mockup's modes are plain text segments. Icons stay in the DOM (and the
+ * titles carry the meaning), they just do not draw at this size. */
+.display-mode-btn .toolbar-icon {
+  display: none;
+}
+.vc-segments .seg-btn,
+.vc-segments .clip-axis,
+.vc-segments .display-mode-btn {
+  padding: 2px 8px;
+}
+.vc-nav .vc-nav-btn {
+  width: 26px;
+  height: 26px;
+}
+
+/* ── Sidebar column: borders and room ──────────────────────────────────── */
+
+/* `#meshing-panel` and `#meshing-header` each carried a top border, which stacked
+ * into one heavy 2px rule above FE Mesh. The panel's is the one that stays. */
+#meshing-header {
+  border-top: none;
+}
+/* The 45% cap exists so FE Mesh cannot crush an EXPANDED Edits panel. With Edits
+ * collapsed there is nothing to protect, and the cap only made the panel scroll
+ * with its last row cut in half — so it relaxes (still bounded, so an expanded
+ * Advanced group below stays reachable). */
+#side:has(#edits-panel.collapsed) #meshing-panel {
+  max-height: 70%;
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+ * Chrome redesign, pass 5 — the last gaps to the mockup
+ * ══════════════════════════════════════════════════════════════════════════
+ * Appended last for the same source-order reason as passes 3 and 4. */
+
+/* Toolbar: a hairline between the always-visible buttons and the menu triggers. */
+.tb-div {
+  flex-shrink: 0;
+  align-self: center;
+  width: 1px;
+  height: 18px;
+  margin: 0 var(--ui-s-1);
+  background: var(--vscode-editorWidget-border, #454545);
+}
+
+/* Dock: the active DISPLAY MODE is a lifted grey segment — the same recipe the
+ * mesh size presets and the Edits tabs use — and only the clip axis keeps the
+ * button-blue, which is what makes "the thing that is on" stand out from "the
+ * mode you are in". */
+.vc-segments .display-mode-btn.active {
+  color: var(--vscode-foreground, #fff);
+  background: var(--vscode-list-inactiveSelectionBackground, var(--vscode-button-secondaryBackground, #3a3d41));
+  font-weight: 600;
+}
+
+/* Status bar: the cursor readout is shorter now ("x 142.06  y -18.40  z 27.00 mm"). */
+#statusbar #vc-cursor {
+  min-width: 30ch;
+}
+
+/* Sidebar rules. A section header carried a bottom border and the next section a
+ * top border, and a COLLAPSED section shows nothing between them — so the two
+ * stacked into one heavy 2px line. A collapsed header drops its bottom border;
+ * the next section's top border is then the single hairline. */
+#side .side-section.collapsed > .panel-header {
+  border-bottom: none;
+}
+
+/* Advanced card: the icon in a small rounded tile, and a quiet mono count. */
+/* One rounded tile per sidebar section header (chevron · icon · title). The same
+ * class serves every header, Advanced included — it started life as
+ * `#advanced-icon`, so the id survives in the markup but no rule keys off it. */
+.panel-icon {
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: var(--ui-r-sm);
+  background: var(--vscode-input-background, #3c3c3c);
+  opacity: 1;
+}
+.panel-icon svg {
+  width: 14px;
+  height: 14px;
+}
+#advanced-count {
+  font-family: var(--ui-font-mono);
+  font-weight: 400;
+  color: var(--vscode-descriptionForeground, var(--vscode-foreground, #ccc));
+  background: transparent;
+  border: 1px solid var(--vscode-editorWidget-border, #454545);
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+ * Chrome redesign, pass 7 — the last visible gaps to the mockup
+ * ══════════════════════════════════════════════════════════════════════════ */
+
+/* Preset actions share the PRESET label's line (right-aligned) instead of taking a
+ * row of their own under the select. Positioned against the preset column. */
+.meshing-pair .meshing-section {
+  position: relative;
+}
+.meshing-pair .meshing-preset-actions {
+  position: absolute;
+  top: 0;
+  right: 0;
+  margin: 0;
+  gap: var(--ui-s-2);
+  line-height: 1;
+}
+.meshing-pair .meshing-preset-actions button {
+  padding: 0;
+  font-size: var(--ui-fs-micro);
+  line-height: 1.3;
+}
+
+/* An active menu TRIGGER (a mode behind a menu, e.g. selection mode) is a quiet
+ * lifted background, not an info-blue fill with an outline. The dot stays: it is
+ * the cue that survives light themes, where a lifted background is faint. The two
+ * plain toggles (#meshing-toggle, #sel-toggle) keep their accent fill. */
+#toolbar .tb-menu.active {
+  background: var(--vscode-list-inactiveSelectionBackground, rgba(90, 93, 94, 0.31));
+  outline: none;
+}
+
+/* A selected Components row: the same quiet lifted background as a Parts row. */
+.tree-row.selected {
+  background: var(--vscode-list-inactiveSelectionBackground, rgba(90, 93, 94, 0.31));
+  color: inherit;
+  border-radius: var(--ui-r-xs);
 }

@@ -260,4 +260,65 @@ describe("createKernelClient", () => {
       expect(child.killed).toEqual([]);
     });
   });
+  describe("kernel readiness (status bar)", () => {
+    const call = (client: ReturnType<typeof createKernelClient>, fn: "loadBRep" | "generateMesh") =>
+      (client[fn] as (...a: unknown[]) => Promise<unknown>)("/ext");
+
+    it("starts idle and reports loading → ready around a call that needs OCCT", async () => {
+      const client = createKernelClient("/ext");
+      const seen: string[] = [];
+      client.onKernelState((s) => seen.push(s.occt));
+      expect(client.kernelState().occt).toBe("idle");
+      const p = call(client, "loadBRep");
+      await Promise.resolve();
+      expect(client.kernelState().occt).toBe("loading");
+      const child = fakeChildren[0];
+      reply(child, lastRequest(child).id, {});
+      await p;
+      expect(client.kernelState().occt).toBe("ready");
+      expect(client.kernelState().gmsh).toBe("idle");
+      expect(seen).toEqual(["loading", "ready"]);
+    });
+
+    it("a rejected first call leaves the kernel idle, not stuck loading", async () => {
+      const client = createKernelClient("/ext");
+      const p = call(client, "generateMesh");
+      await Promise.resolve();
+      const child = fakeChildren[0];
+      replyError(child, lastRequest(child).id, "boom");
+      await expect(p).rejects.toThrow("boom");
+      expect(client.kernelState().gmsh).toBe("idle");
+    });
+
+    it("killing the child (cancel / watchdog / crash) resets every kernel to idle", async () => {
+      const client = createKernelClient("/ext");
+      const p = call(client, "loadBRep");
+      await Promise.resolve();
+      const child = fakeChildren[0];
+      reply(child, lastRequest(child).id, {});
+      await p;
+      expect(client.kernelState().occt).toBe("ready");
+      client.cancelCurrent();
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(client.kernelState().occt).toBe("idle");
+    });
+
+    it("does not notify for a call that touches no kernel, and unsubscribes cleanly", async () => {
+      const client = createKernelClient("/ext");
+      let n = 0;
+      const off = client.onKernelState(() => n++);
+      const p = client.isRenderAvailable();
+      await Promise.resolve();
+      reply(fakeChildren[0], lastRequest(fakeChildren[0]).id, { available: true });
+      await p;
+      expect(n).toBe(0);
+      off();
+      const q = call(client, "loadBRep");
+      await Promise.resolve();
+      reply(fakeChildren[0], lastRequest(fakeChildren[0]).id, {});
+      await q;
+      expect(n).toBe(0);
+    });
+  });
 });

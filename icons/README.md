@@ -1,6 +1,6 @@
 # Icon sources
 
-This directory holds two TikZ-drawn icon sets and an SVG application mark for CAD-Preview. The two panel/toolbar sets follow the same visual language (`line width=1.3pt, line cap=round, line join=round, >=Stealth, x=1mm,y=1mm` on the `tikzpicture`, canvas coordinates roughly -13..13) **and the same currentColor SVG pipeline** (`svgIconPostProcess.mjs`, shared by both generator scripts); the extension icon is a separate, full-color design built and wired very differently — see whichever section applies before editing.
+This directory holds two TikZ-drawn icon sets and an SVG application mark for CAD-Preview. (A third, small set — the sidebar/status-bar chevrons, eye, search, copy, trash and similar line glyphs in `src/uiGlyphs.ts` — is hand-authored SVG and deliberately **not** part of this pipeline: it needs no LaTeX, and keeping it out means `src/toolbarIcons.ts` stays wholly generated.) The two panel/toolbar sets follow the same visual language (`line width=1.3pt, line cap=round, line join=round, >=Stealth, x=1mm,y=1mm` on the `tikzpicture`, canvas coordinates roughly -13..13) **and the same currentColor SVG pipeline** (`svgIconPostProcess.mjs`, shared by both generator scripts); the extension icon is a separate, full-color design built and wired very differently — see whichever section applies before editing.
 
 |  | `tikz/` (Edits panel) | `tikz-ui/` (toolbar/panels) | `../images/icon.svg` (extension icon) |
 | --- | --- | --- | --- |

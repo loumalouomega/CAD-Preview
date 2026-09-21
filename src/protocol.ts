@@ -7,6 +7,7 @@ import type { ViewerDefaults } from "./viewerDefaults";
 import type { MassProperties } from "./massProperties";
 import type { QualitySummary } from "./meshQuality";
 import type { DisplayUnit } from "./lengthUnits";
+import type { KernelState } from "./kernelActivity";
 import type { EntityFacts, ExactMeasureKind, ExactMeasureResult, InterferenceResult, InterferencePairResult } from "./entityFacts";
 import type { DisplayMode } from "./webview/displayMode";
 import type { ClipPlaneState } from "./webview/clipping";
@@ -470,6 +471,46 @@ export type HostToWebview =
     }
   | { type: "meshingError"; message: string }
   | ({ type: "viewerDefaults" } & ViewerDefaults)
+  /** What the menubar's document chip shows: which file this is, what format it
+   * routed as, and whether it carries unsaved edits. Nothing else carried any of
+   * this to the webview before — the tab title and dirty dot are VS Code's own
+   * chrome, outside the webview.
+   *
+   * `dirty` is EXACTLY "an unbaked op tail on a source this build can bake back"
+   * (`currentEdits.length > currentBakedThrough` on step/iges/brep/stl/obj/ply),
+   * the same predicate that fires VS Code's dirty event. It is sent whenever that
+   * can change, deduplicated host-side, so a repeat post is never a signal.
+   * NOT "any sidecar pending autosave" — those are covered by the ~500ms
+   * debounce and never dirty the document.
+   *
+   * Deliberately NOT the same as the tab's dot in two cases, and in both the chip
+   * is the accurate one about the SOURCE FILE:
+   *   - at open: a document whose sidecar already holds an unbaked tail (say, ops
+   *     an agent appended over MCP) is `dirty: true` here, while VS Code shows the
+   *     tab clean until the next edit. The edits ARE saved — to the sidecar — but
+   *     the source file on disk does not contain them.
+   *   - undoing back to the save point makes this `false` at once, but VS Code
+   *     only clears its own dot on a save or revert. */
+  | {
+      type: "documentInfo";
+      /** Basename, e.g. "bracket.step". */
+      name: string;
+      /** Full filesystem path — the chip's hover title only. */
+      path: string;
+      /** The routed format, or null for a file this build does not route. */
+      format: CadFormat | null;
+      dirty: boolean;
+      /** How many ops in the history are not yet baked into the source file —
+       * `currentEdits.length - currentBakedThrough`, and 0 whenever `dirty` is
+       * false (a format that cannot bake counts none, matching the predicate
+       * that decides `dirty`). The chip's "N unsaved edits". */
+      unsavedEdits: number;
+    }
+  /** Which kernels the host has used so far — the status bar's "OCCT ready ·
+   * Gmsh ready". Sent in the `ready` handshake and on every change; the state is
+   * inferred from calls, so a kernel is `ready` only after a call that needs it
+   * has succeeded (see `kernelActivity.ts`). */
+  | { type: "kernelStatus"; state: KernelState }
   | { type: "screenshotRequest"; requestId: string }
   | {
       type: "standardPartsSearchResult";
