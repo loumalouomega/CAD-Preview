@@ -773,7 +773,7 @@ listener used to bail out whenever no pick mode was set, which is the normal sta
 `onHoverPointerMove` now does one raycast and only proceeds to the entity-hover path when a pick
 mode is active; the tooltip behaviour is unchanged. `null` means the pointer left the model.
 `src/webview/dockStats.ts` (pure, unit-tested) formats what the status bar shows:
-`formatEntityCounts`, `formatMeshStats`, and `formatCursor` (which converts to the Units dropdown's
+`formatEntityCounts`, `formatMeshStats` (`mesh 51,200 el · min SICN 0.412`; `formatMeshStatsLong` spells out the node count for its tooltip), and `formatCursor` (`x 142.06  y -18.40  z 27.00 mm`, converted to the Units dropdown's
 unit), plus `formatMeshHeaderStat` (the FE Mesh section header's `1,248 el`) and `unsavedEditsLabel`
 (the chip's `3 unsaved edits`). The spans live in the full-width `#statusbar` (a sibling of `#layout`,
 so it never overlaps the canvas), which also holds `#kernel-status`; `main.ts` finds them by id, so

@@ -51,13 +51,25 @@ export interface MeshStats {
 }
 
 /**
- * "12,480 nodes · 51,200 elements · min SICN 0.412".
+ * "mesh 51,200 el · min SICN 0.412" — the status bar's short form.
  *
- * The quality figure is the minimum only. `renderQuality` in the FE Mesh panel
- * already draws the full histogram, and a second renderer in a one-line strip
- * would be a guaranteed-to-drift duplicate of it.
+ * Elements and the worst quality only: the bar has room for one clause, and those
+ * are the two numbers that say how heavy and how sound the mesh is. The quality
+ * figure is the minimum only — `renderQuality` in the FE Mesh panel already draws
+ * the full histogram, and a second renderer in a one-line strip would be a
+ * guaranteed-to-drift duplicate of it.
  */
 export function formatMeshStats(m: MeshStats): string {
+  const parts = [`mesh ${GROUPED.format(m.elements)} el`];
+  if (typeof m.minQuality === "number" && Number.isFinite(m.minQuality)) {
+    parts.push(`min SICN ${m.minQuality.toFixed(3)}`);
+  }
+  return parts.join(" · ");
+}
+
+/** "12,480 nodes · 51,200 elements · min SICN 0.412" — the same facts spelled out,
+ * for the status bar item's tooltip (the node count lives only here). */
+export function formatMeshStatsLong(m: MeshStats): string {
   const parts = [count(m.nodes, "node", "nodes"), count(m.elements, "element", "elements")];
   if (typeof m.minQuality === "number" && Number.isFinite(m.minQuality)) {
     parts.push(`min SICN ${m.minQuality.toFixed(3)}`);
@@ -82,7 +94,7 @@ export function unsavedEditsLabel(n: number): string {
 }
 
 /**
- * "X 142.060  Y -18.400  Z 27.000 mm", or "" when there is no point.
+ * "x 142.06  y -18.40  z 27.00 mm", or "" when there is no point.
  *
  * `mmPoint` is in the model's OWN frame, in millimetres (the cascade unit) — the
  * caller converts a world-space hit into that frame first, because a Z-up file
@@ -90,14 +102,16 @@ export function unsavedEditsLabel(n: number): string {
  * converted to the display unit here, so the Units dropdown drives this readout
  * the same way it drives Mass Properties and Measurement.
  *
- * Plain hyphen-minus rather than U+2212: a coordinate is something people copy
- * into other tools, and a typographic minus does not parse there.
+ * Two decimals: this is a hover readout of a triangulated surface, and a third
+ * decimal only showed tessellation noise. Plain hyphen-minus rather than U+2212:
+ * a coordinate is something people copy into other tools, and a typographic minus
+ * does not parse there.
  */
 export function formatCursor(mmPoint: readonly [number, number, number] | null, unit: DisplayUnit): string {
   if (!mmPoint) return "";
   if (!mmPoint.every((v) => Number.isFinite(v))) return "";
   const [x, y, z] = mmPoint.map((v) => convertLength(v, unit));
-  // `-0.000` reads as a sign error; collapse it.
-  const fmt = (v: number) => (Object.is(v, -0) || Math.abs(v) < 0.0005 ? 0 : v).toFixed(3);
-  return `X ${fmt(x)}  Y ${fmt(y)}  Z ${fmt(z)} ${unit}`;
+  // `-0.00` reads as a sign error; collapse it.
+  const fmt = (v: number) => (Object.is(v, -0) || Math.abs(v) < 0.005 ? 0 : v).toFixed(2);
+  return `x ${fmt(x)}  y ${fmt(y)}  z ${fmt(z)} ${unit}`;
 }

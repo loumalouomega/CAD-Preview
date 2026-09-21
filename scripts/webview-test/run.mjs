@@ -1334,8 +1334,8 @@ test("dock status: counts follow the geometry, the mesh stat follows the overlay
   await post(page, fixture("meshingResult"));
   await sleep(500);
   assert(
-    (await text("vc-count-mesh")) === "2,685 nodes · 10,000 elements",
-    `the mesh stat reports the result's own node/element counts (got ${JSON.stringify(await text("vc-count-mesh"))})`
+    (await text("vc-count-mesh")) === "mesh 10,000 el",
+    `the mesh stat reports the result's own element count in the short form, and the node count lives in the tooltip (got ${JSON.stringify(await text("vc-count-mesh"))})`
   );
 
   await page.click("#meshing-clear");
@@ -1370,7 +1370,7 @@ test("dock status: the cursor readout works with selection OFF, follows the Unit
   await sleep(250);
   const mm = await cursor();
   assert(
-    mm !== null && /^X -?\d+\.\d{3}  Y -?\d+\.\d{3}  Z -?\d+\.\d{3} mm$/.test(mm),
+    mm !== null && /^x -?\d+\.\d{2}  y -?\d+\.\d{2}  z -?\d+\.\d{2} mm$/.test(mm),
     `hovering the model shows X/Y/Z in mm with selection off (got ${JSON.stringify(mm)})`
   );
 
@@ -4719,6 +4719,96 @@ test("toolbar: sidebar-sized type and line glyphs on the buttons", async (page) 
   assert(m.fitGlyph === 1 && m.fitIcon === 0, "Fit uses the line glyph, not the generated icon");
   assert(m.viewGlyphs === 2, "a trigger carries its own glyph and a chevron");
   assert(m.h >= 26 && m.h <= 32, `toolbar buttons are a compact 28px (got ${m.h})`);
+});
+
+
+/**
+ * Chrome redesign, pass 5 — the last gaps to the mockup. Rendered state, not class names.
+ */
+test("selection: a selected Part-coloured face keeps its hue family, with a visible tint", async (page) => {
+  await populate(page);
+  await gridOff(page);
+  // Nothing hovering over the model, no dock/pill/readout over the canvas.
+  await setPanelHidden(page, true);
+  const orange = (colors) => colors.find(([k]) => {
+    const [r, g, b] = k.split(",").map(Number);
+    return r > 150 && r > b + 60 && r >= g; // the fixture's orange Part, shaded
+  });
+  const before = await dominantColors(page, 12);
+  const base = orange(before);
+  assert(base, `precondition: an orange Part-coloured face is on screen (top colours ${JSON.stringify(before.slice(0, 4))})`);
+  await setPanelHidden(page, false);
+
+  await enablePicking(page, "surface");
+  const box = await viewportBox(page);
+  // The big orange top face sits just off the viewport centre in the framed fixture.
+  await page.mouse.click(box.x + box.width * 0.55, box.y + box.height * 0.5);
+  await sleep(400);
+  assert(
+    await page.evaluate(() => (window.__sent ?? []).some((m) => m.type === "entityFactsRequest")),
+    "precondition: the click selected a face"
+  );
+  await page.mouse.move(box.x + 4, box.y + box.height - 4); // off the model
+  await sleep(150);
+  await setPanelHidden(page, true);
+  const after = await dominantColors(page, 12);
+  await setPanelHidden(page, false);
+
+  const [br, , bb] = base[0].split(",").map(Number);
+  const tinted = after.find(([k]) => {
+    const [r, g, b] = k.split(",").map(Number);
+    return !before.some(([bk]) => bk === k) && r > b && b > bb - 5 && r > br - 10;
+  });
+  assert(
+    tinted,
+    `a selected orange face stays orange-family (red still above blue) rather than turning lilac (before ${JSON.stringify(before.slice(0, 3))}, after ${JSON.stringify(after.slice(0, 4))})`
+  );
+  const [tr, , tb] = tinted[0].split(",").map(Number);
+  assert(tb > bb, `and it is visibly tinted toward the accent (blue ${bb} -> ${tb})`);
+  assert(tr > tb, `never past the point where blue overtakes red (red ${tr}, blue ${tb}) — the failure was a lilac (200,160,250)`);
+});
+
+test("dock and toolbar: a lifted grey display mode, a blue clip axis, and a divider", async (page) => {
+  await populate(page);
+  const m = await page.evaluate(() => {
+    const bg = (sel) => getComputedStyle(document.querySelector(sel)).backgroundColor;
+    const r = (sel) => document.querySelector(sel).getBoundingClientRect();
+    const div = document.querySelector("#toolbar .tb-div");
+    const fe = r("#meshing-toggle");
+    const view = r("#view-menu");
+    const d = div?.getBoundingClientRect();
+    return {
+      mode: bg(".display-mode-btn.active"),
+      axis: bg(".clip-axis.active"),
+      primary: bg("#parts-new"),
+      divRendered: !!div && div.offsetParent !== null,
+      divBetween: !!d && d.left >= fe.right - 1 && d.right <= view.left + 1,
+    };
+  });
+  assert(m.mode !== m.primary, `the active display mode is not the solid button-blue (${m.mode} vs ${m.primary})`);
+  assert(m.axis === m.primary, `the active clip axis keeps the button-blue (${m.axis} vs ${m.primary})`);
+  assert(m.divRendered && m.divBetween, "a hairline divides the plain buttons from the menu triggers");
+});
+
+test("sidebar: a collapsed section stacks no double rule, and the Advanced card has its tile", async (page) => {
+  await populate(page);
+  await page.click("#edits-header > .panel-chevron");
+  await sleep(100);
+  const m = await page.evaluate(() => {
+    const w = (sel, prop) => getComputedStyle(document.querySelector(sel))[prop];
+    const tile = document.getElementById("advanced-icon");
+    const count = document.getElementById("advanced-count");
+    return {
+      collapsedBottom: w("#edits-header", "borderBottomWidth"),
+      tileBg: getComputedStyle(tile).backgroundColor,
+      tileW: tile.getBoundingClientRect().width,
+      countBg: getComputedStyle(count).backgroundColor,
+      countMono: getComputedStyle(count).fontFamily.toLowerCase().includes("mono") || getComputedStyle(count).fontFamily.includes("ui-monospace"),
+    };
+  });
+  assert(m.collapsedBottom === "0px", `a collapsed header has no bottom border, so it cannot double the next section's rule (got ${m.collapsedBottom})`);
+  assert(m.tileW >= 22 && m.tileBg !== "rgba(0, 0, 0, 0)", `the Advanced icon sits in a filled tile (width ${m.tileW}, bg ${m.tileBg})`);
+  assert(m.countBg === "rgba(0, 0, 0, 0)", `the 5-of-7 badge is an outline, not a solid pill (bg ${m.countBg})`);
 });
 
 

@@ -41,6 +41,16 @@ import { shouldSkipAutoReframe, type FitSphere } from "./reframePolicy";
  * (`palette.ts`); resolved per call so a theme change takes effect on the next
  * `renderSelection()`, which `main.ts`'s `refreshColors()` already runs. */
 const selectionColor = (): number => paletteColor("accent");
+/**
+ * How strongly a selected FACE glows in the accent colour. Full strength (1)
+ * added a whole blue channel on top of the face's own colour, so an orange
+ * Part-coloured face turned lilac and no longer read as belonging to its Part.
+ * At this strength the face keeps its hue family with a visible tint; the pill
+ * and the thin edges/points (which still swap to the full accent) carry the rest.
+ */
+const SELECTION_EMISSIVE = 0.08;
+/** Flat mode's unlit material has no emissive — mix the accent in this far instead. */
+const SELECTION_FLAT_MIX = 0.3;
 
 /** Hover raycasts are throttled to roughly one per frame — `pointermove` can
  * fire far more often than that, and each raycast re-collects targets. */
@@ -1973,10 +1983,13 @@ export class Viewer {
         // standard shaded material) — fall back to the same direct-colour
         // swap technique edges/points already use for selection.
         if ("emissive" in mat) {
-          (mat as THREE.MeshStandardMaterial).emissive.setHex(on ? selectionColor() : 0x000000);
+          const std = mat as THREE.MeshStandardMaterial;
+          std.emissive.setHex(on ? selectionColor() : 0x000000);
+          std.emissiveIntensity = on ? SELECTION_EMISSIVE : 1;
         } else {
           const base = (ud.baseColor as number | undefined) ?? defaultFaceColor();
-          (mat as THREE.MeshBasicMaterial).color.setHex(on ? selectionColor() : base);
+          const c = (mat as THREE.MeshBasicMaterial).color.setHex(base);
+          if (on) c.lerp(new THREE.Color(selectionColor()), SELECTION_FLAT_MIX);
         }
       } else if (obj instanceof THREE.Line && ud.entityType === "line") {
         const mat = obj.material as THREE.LineBasicMaterial;

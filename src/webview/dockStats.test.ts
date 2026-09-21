@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { formatEntityCounts, formatMeshStats, formatMeshHeaderStat, formatCursor, unsavedEditsLabel } from "./dockStats";
+import { formatEntityCounts, formatMeshStats, formatMeshStatsLong, formatMeshHeaderStat, formatCursor, unsavedEditsLabel } from "./dockStats";
 
 describe("formatEntityCounts", () => {
   it("reads as a plain list of facts", () => {
@@ -25,20 +25,28 @@ describe("formatEntityCounts", () => {
 });
 
 describe("formatMeshStats", () => {
-  it("reports nodes, elements and the worst element", () => {
-    expect(formatMeshStats({ nodes: 12480, elements: 51200, minQuality: 0.4123 })).toBe(
-      "12,480 nodes · 51,200 elements · min SICN 0.412"
-    );
+  it("is the short form: elements and the worst element", () => {
+    expect(formatMeshStats({ nodes: 12480, elements: 51200, minQuality: 0.4123 })).toBe("mesh 51,200 el · min SICN 0.412");
   });
 
   it("omits the quality when the mesher returned none, rather than printing NaN or 0", () => {
-    expect(formatMeshStats({ nodes: 10, elements: 4 })).toBe("10 nodes · 4 elements");
-    expect(formatMeshStats({ nodes: 10, elements: 4, minQuality: Number.NaN })).toBe("10 nodes · 4 elements");
-    expect(formatMeshStats({ nodes: 10, elements: 4, minQuality: Number.POSITIVE_INFINITY })).toBe("10 nodes · 4 elements");
+    expect(formatMeshStats({ nodes: 10, elements: 4 })).toBe("mesh 4 el");
+    expect(formatMeshStats({ nodes: 10, elements: 4, minQuality: Number.NaN })).toBe("mesh 4 el");
+    expect(formatMeshStats({ nodes: 10, elements: 4, minQuality: Number.POSITIVE_INFINITY })).toBe("mesh 4 el");
   });
 
   it("keeps a genuine zero quality — a degenerate element is a fact, not an absence", () => {
-    expect(formatMeshStats({ nodes: 4, elements: 1, minQuality: 0 })).toBe("4 nodes · 1 element · min SICN 0.000");
+    expect(formatMeshStats({ nodes: 4, elements: 1, minQuality: 0 })).toBe("mesh 1 el · min SICN 0.000");
+  });
+});
+
+describe("formatMeshStatsLong", () => {
+  it("spells the facts out, node count included — the tooltip's form", () => {
+    expect(formatMeshStatsLong({ nodes: 12480, elements: 51200, minQuality: 0.4123 })).toBe(
+      "12,480 nodes · 51,200 elements · min SICN 0.412"
+    );
+    expect(formatMeshStatsLong({ nodes: 10, elements: 4 })).toBe("10 nodes · 4 elements");
+    expect(formatMeshStatsLong({ nodes: 4, elements: 1, minQuality: 0 })).toBe("4 nodes · 1 element · min SICN 0.000");
   });
 });
 
@@ -52,23 +60,23 @@ describe("formatCursor", () => {
     expect(formatCursor([Number.POSITIVE_INFINITY, 0, 0], "mm")).toBe("");
   });
 
-  it("prints millimetres as-is with three decimals and the unit", () => {
-    expect(formatCursor([142.06, -18.4, 27], "mm")).toBe("X 142.060  Y -18.400  Z 27.000 mm");
+  it("prints millimetres as-is with two decimals and the unit", () => {
+    expect(formatCursor([142.06, -18.4, 27], "mm")).toBe("x 142.06  y -18.40  z 27.00 mm");
   });
 
   it("converts to the display unit — the Units dropdown drives this readout too", () => {
     // 25.4 mm is exactly one inch.
-    expect(formatCursor([25.4, 50.8, 0], "in")).toBe("X 1.000  Y 2.000  Z 0.000 in");
-    expect(formatCursor([1000, 0, 0], "m")).toBe("X 1.000  Y 0.000  Z 0.000 m");
+    expect(formatCursor([25.4, 50.8, 0], "in")).toBe("x 1.00  y 2.00  z 0.00 in");
+    expect(formatCursor([1000, 0, 0], "m")).toBe("x 1.00  y 0.00  z 0.00 m");
   });
 
   it("never prints a negative zero", () => {
-    expect(formatCursor([-0, -0.0001, 0], "mm")).toBe("X 0.000  Y 0.000  Z 0.000 mm");
+    expect(formatCursor([-0, -0.0001, 0], "mm")).toBe("x 0.00  y 0.00  z 0.00 mm");
   });
 
   it("uses a plain hyphen-minus, which pastes into other tools", () => {
     const out = formatCursor([-1, 0, 0], "mm");
-    expect(out).toContain("-1.000");
+    expect(out).toContain("-1.00");
     expect(out).not.toContain("−");
   });
 });

@@ -290,6 +290,7 @@ export function viewerBodyHtml(): string {
     <button id="fit" title="Fit to view">${glyph("maximize")} Fit</button>
     <button id="tree-toggle" title="Toggle component tree" style="display:none">${glyph("gitFork")} Tree</button>
     <button id="meshing-toggle" title="Toggle FE mesh overlay">${glyph("grid3")} FE Mesh</button>
+    <span class="tb-div" aria-hidden="true"></span>
     <div class="tb-menu-wrap">
       <button id="view-menu" class="tb-menu" title="View options" aria-haspopup="true" aria-expanded="false">${glyph("eye")} View ${glyph("chevronDown")}</button>
       <div id="view-dropdown" class="tb-dropdown hidden" role="menu">

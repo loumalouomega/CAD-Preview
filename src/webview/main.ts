@@ -91,6 +91,7 @@ import { setupCollapsiblePanels, setupAdvancedGroupCount, type CollapsiblePanels
 import {
   formatEntityCounts,
   formatMeshStats,
+  formatMeshStatsLong,
   formatMeshHeaderStat,
   formatCursor,
   unsavedEditsLabel,
@@ -1380,6 +1381,7 @@ function renderDockMeshStats(stats: MeshStats | null): void {
   const el = document.getElementById("vc-count-mesh");
   if (!el) return;
   el.textContent = stats ? formatMeshStats(stats) : "";
+  el.title = stats ? formatMeshStatsLong(stats) : "";
   el.hidden = stats === null;
   // The same fact, shortened, in the FE Mesh section header so it reads while the
   // section is collapsed.

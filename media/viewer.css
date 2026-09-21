@@ -4499,3 +4499,63 @@ body:has(#side.visible) #kernel-status {
 #side:has(#edits-panel.collapsed) #meshing-panel {
   max-height: 70%;
 }
+
+/* ══════════════════════════════════════════════════════════════════════════
+ * Chrome redesign, pass 5 — the last gaps to the mockup
+ * ══════════════════════════════════════════════════════════════════════════
+ * Appended last for the same source-order reason as passes 3 and 4. */
+
+/* Toolbar: a hairline between the always-visible buttons and the menu triggers. */
+.tb-div {
+  flex-shrink: 0;
+  align-self: center;
+  width: 1px;
+  height: 18px;
+  margin: 0 var(--ui-s-1);
+  background: var(--vscode-editorWidget-border, #454545);
+}
+
+/* Dock: the active DISPLAY MODE is a lifted grey segment — the same recipe the
+ * mesh size presets and the Edits tabs use — and only the clip axis keeps the
+ * button-blue, which is what makes "the thing that is on" stand out from "the
+ * mode you are in". */
+.vc-segments .display-mode-btn.active {
+  color: var(--vscode-foreground, #fff);
+  background: var(--vscode-list-inactiveSelectionBackground, var(--vscode-button-secondaryBackground, #3a3d41));
+  font-weight: 600;
+}
+
+/* Status bar: the cursor readout is shorter now ("x 142.06  y -18.40  z 27.00 mm"). */
+#statusbar #vc-cursor {
+  min-width: 30ch;
+}
+
+/* Sidebar rules. A section header carried a bottom border and the next section a
+ * top border, and a COLLAPSED section shows nothing between them — so the two
+ * stacked into one heavy 2px line. A collapsed header drops its bottom border;
+ * the next section's top border is then the single hairline. */
+#side .side-section.collapsed > .panel-header {
+  border-bottom: none;
+}
+
+/* Advanced card: the icon in a small rounded tile, and a quiet mono count. */
+#advanced-icon {
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: var(--ui-r-sm);
+  background: var(--vscode-input-background, #3c3c3c);
+  opacity: 1;
+}
+#advanced-icon svg {
+  width: 14px;
+  height: 14px;
+}
+#advanced-count {
+  font-family: var(--ui-font-mono);
+  font-weight: 400;
+  color: var(--vscode-descriptionForeground, var(--vscode-foreground, #ccc));
+  background: transparent;
+  border: 1px solid var(--vscode-editorWidget-border, #454545);
+}

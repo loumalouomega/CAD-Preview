@@ -787,6 +787,19 @@ A fourth pass, again against the user's mockup, decided with them first: **line 
 - **Verified**: 22 new `test:webview` checks (503 total). Two bug injections, each confirmed to fail exactly the intended assertions before reverting (the Parts flex rule; the tree title overwrite).
 - **Verification gap, stated plainly**: no Extension Development Host session — the feel of the smaller toolbar, the new glyphs in light and high-contrast themes, and the collapse chevron's placement in a real editor are F5-only.
 
+### Pass 5 — the last gaps to the mockup
+
+Decided with the user first: the selection becomes a **subtle tint** (everywhere, not just in screenshots), the status bar adopts the **mockup's wording**, and the orientation cube stays untouched.
+
+- **A selected face no longer turns lilac.** `renderSelection` added the accent as `emissive` at full strength, so the fixture's orange Part `(195,106,50)` became `(202,163,250)` — blue overtook red and the face stopped reading as its Part. `SELECTION_EMISSIVE = 0.08` (and back to `1` when deselected, so a material is never left dim) keeps it orange-family with a visible tint; Flat mode, whose unlit `MeshBasicMaterial` has no emissive, lerps the base colour toward the accent by `SELECTION_FLAT_MIX = 0.3` instead. Lines and points still swap to the full accent — they are thin, and the full colour is what makes them legible. **Bug-injected**: setting the strength back to 1 reproduces exactly `(202,163,250)` and fails the hue assertion.
+- **Status wording**: `mesh 10,000 el · min SICN 0.412` (the node count moved to the item's tooltip via `formatMeshStatsLong`) and `x 110.19  y 31.75  z 51.29 mm` (lowercase axes, two decimals — a third decimal on a hover readout of a triangulated surface only showed tessellation noise; the unit stays, since a coordinate is copied into other tools).
+- **The active display mode is a lifted grey segment; only the clip axis keeps button-blue** — which is what makes "the mode you are in" read differently from "the thing that is on". A `.tb-div` hairline now separates Fit/Tree/FE Mesh from the menu triggers (`aria-hidden`, no title, so the icon-only aria audit ignores it).
+- **The heavy double rule between collapsed Edits and FE Mesh** was a collapsed header's bottom border stacking on the next section's top border with nothing between them; a collapsed header now drops its bottom border.
+- **Advanced card**: the icon in a 24px rounded tile and an outlined mono `5 of 7`, matching the mockup.
+- **Hero shot**: posts the preset library so the Preset picker reads `balanced` instead of the pre-hydration "No saved presets" (display only — nothing applied or written).
+- **Verified**: 11 new `test:webview` checks (514 total); two bug injections (selection strength; the active-mode rule), each failing exactly its intended assertions before reverting.
+- **Verification gap, stated plainly**: how a 0.35 tint reads in light and high-contrast themes — where the accent and the face colours differ from the dark-theme fixture — is F5-only.
+
 ## Collapsible sidebar sections
 
 Ten sections (`#tree-panel`, `#parts-panel`, `#edits-panel`, `#meshing-panel`, `#mass-panel`, `#clash-panel`, `#mesh-health-panel`, `#region-fit-panel`, `#macros-panel`, `#standard-parts-panel`) stacked in a fixed 220px column, all always expanded. Each now collapses to just its header, independently, persisted per document.

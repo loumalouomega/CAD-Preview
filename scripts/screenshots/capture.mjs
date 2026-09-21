@@ -49,6 +49,16 @@ async function heroChrome(page, { gmsh }) {
     type: "kernelStatus",
     state: { occt: "ready", gmsh: gmsh ? "ready" : "idle", meshio: "idle", ftetwild: "idle" },
   });
+  // The same library the fe-mesh-panel shot posts, so the Preset picker reads
+  // like a session that has the built-in starters rather than the pre-hydration
+  // placeholder. Display only: nothing is applied or written.
+  await post(page, {
+    type: "meshingPresets",
+    presets: [
+      { name: "balanced", description: null, unit: "mm", engine: "gmsh", readOnly: true },
+      { name: "my-coarse", description: "Shop preset", unit: "mm", engine: "gmsh" },
+    ],
+  });
   await sleep(150);
 }
 
