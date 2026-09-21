@@ -176,8 +176,8 @@ export class MeshingPanel {
     this.exportBtn = panel.querySelector("#meshing-export")!;
     this.clearBtn = panel.querySelector("#meshing-clear")!;
     // The static markup puts the action rows at the top of the body. The export row
-    // belongs BELOW the Part sizes (it acts on the result of everything above it),
-    // so it is lifted out here and re-appended after them further down.
+    // belongs at the END (it acts on the result of everything above it), so it is
+    // lifted out here and re-appended after the last section further down.
     const exportRow = panel.querySelector<HTMLElement>("#meshing-export-row");
     if (exportRow) exportRow.remove();
 
@@ -376,9 +376,6 @@ export class MeshingPanel {
     this.partsBody.className = "meshing-section-body";
     this.partsSection.appendChild(this.partsBody);
     this.body.appendChild(this.partsSection);
-
-    // ── Export row (format · unit · Export) — below the Part sizes it acts on ──
-    if (exportRow) this.body.appendChild(exportRow);
 
     // ── Advanced settings (collapsed by default) ──
     const advSection = document.createElement("div");
@@ -615,6 +612,12 @@ export class MeshingPanel {
     opsForm.appendChild(this.meshOpsStatus);
     this.meshOpsSection.appendChild(opsForm);
     this.body.appendChild(this.meshOpsSection);
+
+    // ── Export row (format · unit · Export) — LAST in the body. It acts on the
+    // result of every option above it (Part sizes, Advanced settings), so it
+    // closes the panel the way the design mockup has it, rather than sitting
+    // between the options and their advanced half. ──
+    if (exportRow) this.body.appendChild(exportRow);
     this.meshOpsSelect.addEventListener("change", () => this.syncMeshOpsParams());
     this.syncMeshOpsParams();
   }

@@ -807,6 +807,15 @@ Every section header now reads chevron · icon tile · title, the way the Advanc
 - **The tile is 22px, not the 24px Advanced originally used.** Header action buttons are 24px, so a 24px tile would have made the action-less headers (FE Mesh, Mass Properties) taller than the ones with buttons.
 - **The test walks all twelve headers**, checks chevron → icon → title order, `aria-hidden`, a drawn glyph, and that no two sections share a glyph. Size is asserted only for a tile that is actually rendered: Clash, Mesh Health, Region fit and Primitives are source-gated and legitimately not on screen for some formats. **Bug-injected two ways** — removing Standard Parts' tile, and giving Parts the same glyph as Mass Properties — each failing exactly the intended assertions.
 
+### Pass 7 — the last visible gaps
+
+- **FE Mesh preset actions share the PRESET label's line** (`position: absolute; top: 0; right: 0` against the preset column) instead of taking a row of their own; no JS or markup change, so every id, title and handler is untouched. The webview test measures the label's **text** with a `Range`, not its box — the label is a flex item in a column, so its box stretches the whole column and reads as colliding with anything on its line (the first version of the assertion failed for exactly that reason).
+- **The export row is appended last in `MeshingPanel`'s constructor**, after Advanced settings and Mesh ops, so it closes the panel; the pass-3 constructor comment ("below the Part sizes") was updated with it.
+- **The selection pill's measure uses two decimals with a fixed `en-US` grouping** (`8,119.27 mm²`), like `dockStats.ts`'s `GROUPED`; the detail rows keep `num()`'s full precision — the pill is a glance and the rows are the precise view.
+- **An active menu trigger is a quiet lifted background with no outline** (the dot stays — it is the cue that survives light themes); the two plain toggles keep their accent fill. **A selected Components row uses the same quiet background as a Parts row.**
+- **Verified**: 7 new `test:webview` checks (569 total); two bug injections (dropping the absolute positioning; moving the export row back), each failing exactly the intended assertions before reverting.
+- **Deliberately not changed**, recorded so it is not "fixed" later: the dock's collapse chevron and the Edits trash button (both functional controls the mockup happens not to draw), the pill's disclosure chevron (the only way to the fact rows), and the hero shot's mesh state (the mockup shows mesh stats without a generated overlay — staging it would put numbers in the picture that no real session produces).
+
 ## Collapsible sidebar sections
 
 Ten sections (`#tree-panel`, `#parts-panel`, `#edits-panel`, `#meshing-panel`, `#mass-panel`, `#clash-panel`, `#mesh-health-panel`, `#region-fit-panel`, `#macros-panel`, `#standard-parts-panel`) stacked in a fixed 220px column, all always expanded. Each now collapses to just its header, independently, persisted per document.

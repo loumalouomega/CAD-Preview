@@ -188,19 +188,19 @@ describe("inspectorContent — analytic surface parameters", () => {
 describe("summaryLine", () => {
   it("a planar face reads id · descriptor with its area", () => {
     const l = summaryLine({ ...base, entityId: "face-12", surfaceType: "plane", area: 1840 });
-    expect(l).toEqual({ id: "face-12", descriptor: "planar", measure: "1840 mm²" });
+    expect(l).toEqual({ id: "face-12", descriptor: "planar", measure: "1,840.00 mm²" });
   });
 
   it("an edge reports its length, not an area", () => {
     const l = summaryLine({ ...base, entityId: "edge-4", kind: "edge", curveType: "circle", length: 31.4159 });
-    expect(l).toEqual({ id: "edge-4", descriptor: "circular", measure: "31.416 mm" });
+    expect(l).toEqual({ id: "edge-4", descriptor: "circular", measure: "31.42 mm" });
   });
 
   it("a vertex reports its position and a solid its surface area", () => {
     expect(summaryLine({ ...base, entityId: "point-0", kind: "point", center: [1, 2, 3] }).measure).toBe("1, 2, 3");
     const s = summaryLine({ ...base, entityId: "solid-0", kind: "solid", area: 600 });
     expect(s.descriptor).toBe("solid");
-    expect(s.measure).toBe("600 mm²");
+    expect(s.measure).toBe("600.00 mm²");
   });
 
   it("omits the measure when the facts carry none rather than inventing one", () => {

@@ -145,14 +145,21 @@ export function inspectorContent(facts: EntityFacts): InspectorContent {
  * descriptor ("planar", "circular"), and the ONE measure that matters for the
  * kind — area for a face or solid, length for an edge, position for a vertex.
  */
+/**
+ * The pill's number style: two decimals, grouped, with a FIXED locale (like
+ * `dockStats.ts`'s `GROUPED`) so the same document reads the same everywhere. The
+ * pill is a glance; the detail rows below it keep `num()`'s full precision.
+ */
+const PILL = new Intl.NumberFormat("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
 export function summaryLine(facts: EntityFacts): { id: string; descriptor: string; measure: string } {
   const { title } = inspectorContent(facts);
   // "Planar face" -> "planar"; a bare "Face"/"Edge"/"Solid"/"Vertex" stays as is.
   const descriptor = title.replace(/ (face|edge)$/, "").toLowerCase();
   let measure = "";
   if (facts.kind === "point") measure = vec(facts.center);
-  else if (facts.kind === "edge" && facts.length !== null) measure = `${num(facts.length)} mm`;
-  else if (facts.area !== null) measure = `${num(facts.area)} mm²`;
+  else if (facts.kind === "edge" && facts.length !== null) measure = `${PILL.format(facts.length)} mm`;
+  else if (facts.area !== null) measure = `${PILL.format(facts.area)} mm²`;
   return { id: facts.entityId, descriptor, measure };
 }
 

@@ -2054,7 +2054,7 @@ test("inspector card: selection requests facts, and the reply renders per classi
       }));
     const p0 = await pill();
     assert(
-      p0.text !== null && p0.text.includes(req.entityId) && p0.text.includes("planar") && p0.text.includes("1 mm²"),
+      p0.text !== null && p0.text.includes(req.entityId) && p0.text.includes("planar") && p0.text.includes("1.00 mm²"),
       `the pill's summary line names the entity, its class and its area (got ${JSON.stringify(p0.text)})`
     );
     assert(p0.detailsShown === false && p0.expanded === "false", "the fact rows are collapsed behind the pill's disclosure by default");
@@ -4853,6 +4853,66 @@ test("sidebar: every section header carries the same rounded icon tile, between 
   assert(headers.filter((x) => x.rendered).length >= 8, `most tiles are on screen for a B-rep document (rendered: ${headers.filter((x) => x.rendered).length})`);
   const glyphs = headers.map((x) => x.svgMarkup);
   assert(new Set(glyphs).size === glyphs.length, "every section has its OWN glyph — no two headers share an icon");
+});
+
+
+/**
+ * Chrome redesign, pass 7 — the last visible gaps. Rendered state, not class names.
+ */
+test("FE Mesh: preset actions share the PRESET label's line, and the export row closes the panel", async (page) => {
+  await populate(page);
+  const m = await page.evaluate(() => {
+    const r = (el) => el.getBoundingClientRect();
+    const section = document.querySelector(".meshing-pair .meshing-section");
+    const label = section.querySelector(".meshing-label");
+    const actions = section.querySelector(".meshing-preset-actions");
+    const apply = [...actions.querySelectorAll("button")].find((b) => b.textContent === "Apply");
+    // The label's BOX stretches the whole column (a flex item in a column), so
+    // horizontal collision is measured against its TEXT, via a Range.
+    const range = document.createRange();
+    range.selectNodeContents(label);
+    const [l, a] = [range.getBoundingClientRect(), r(actions)];
+    const overlapV = Math.min(l.bottom, a.bottom) - Math.max(l.top, a.top);
+    const select = section.querySelector("select");
+    const body = document.getElementById("meshing-body");
+    const visibleKids = [...body.children].filter((c) => c.offsetParent !== null);
+    return {
+      overlapV, labelH: l.height,
+      overlapH: Math.min(l.right, a.right) - Math.max(l.left, a.left),
+      actionsAboveSelect: a.bottom <= r(select).top + 1,
+      applyShown: apply.offsetParent !== null,
+      lastId: visibleKids.at(-1)?.id ?? null,
+      exportInside: !!document.getElementById("meshing-export-row")?.contains(document.getElementById("meshing-export")),
+    };
+  });
+  assert(m.overlapV >= m.labelH * 0.5, `the actions sit on the PRESET label's line (vertical overlap ${m.overlapV.toFixed(1)}px of ${m.labelH.toFixed(1)}px)`);
+  assert(m.overlapH <= 0, `and do not collide with the label (horizontal overlap ${m.overlapH.toFixed(1)}px)`);
+  assert(m.actionsAboveSelect && m.applyShown, "above the select, still rendered and clickable");
+  assert(m.lastId === "meshing-export-row" && m.exportInside, `the export row is the last thing in the panel body (last visible child: ${m.lastId})`);
+});
+
+test("toolbar and tree: a selected item is a quiet lifted background, not the saturated blue", async (page) => {
+  await populate(page);
+  // Turn selection mode on so the Select trigger is `.active`, and select a tree row.
+  await page.click("#select-menu");
+  await page.click("#sel-toggle");
+  await page.click("#select-menu");
+  await page.click("#tree-body .tree-row >> nth=0");
+  await sleep(120);
+  const m = await page.evaluate(() => {
+    const cs = (sel) => getComputedStyle(document.querySelector(sel));
+    return {
+      triggerActive: document.getElementById("select-menu").classList.contains("active"),
+      triggerBg: cs("#select-menu").backgroundColor,
+      triggerOutline: cs("#select-menu").outlineStyle,
+      treeBg: cs("#tree-body .tree-row.selected").backgroundColor,
+      primary: getComputedStyle(document.getElementById("parts-new")).backgroundColor,
+      toggleBg: cs("#sel-toggle").backgroundColor,
+    };
+  });
+  assert(m.triggerActive, "precondition: the Select trigger is active");
+  assert(m.triggerOutline === "none" && m.triggerBg !== "rgba(0, 0, 0, 0)", `an active trigger is a lifted background without an outline (bg ${m.triggerBg}, outline ${m.triggerOutline})`);
+  assert(m.treeBg !== m.primary && m.treeBg !== "rgb(9, 71, 113)", `a selected tree row is not the saturated selection blue (${m.treeBg})`);
 });
 
 
