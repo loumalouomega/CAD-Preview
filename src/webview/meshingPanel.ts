@@ -857,13 +857,22 @@ export class MeshingPanel {
       row.appendChild(name);
 
       const input = document.createElement("input");
-      input.type = "number";
+      // A text field with a decimal keypad hint (the Edits panel's convention), not
+      // `type="number"`: a number input renders its value through the OS locale, so
+      // 4.0231 read "4,0231" on a Spanish machine — and it cannot show a rounded
+      // value while keeping the exact one. Shown to 3 significant figures like the
+      // slider readout; the exact stored value rides along in the tooltip and is
+      // only replaced when the user commits an edit (`change` never fires for an
+      // untouched field, so display rounding cannot rewrite the sidecar).
+      input.type = "text";
+      input.inputMode = "decimal";
       input.className = "meshing-num meshing-part-size";
-      input.title = "Target mesh size for this part (blank = inherit global)";
+      input.title =
+        part.meshSize != null
+          ? `Target mesh size for this part: ${part.meshSize} (blank = inherit global)`
+          : "Target mesh size for this part (blank = inherit global)";
       input.placeholder = "global";
-      input.min = "0";
-      input.step = "any";
-      input.value = part.meshSize != null ? String(part.meshSize) : "";
+      input.value = part.meshSize != null ? formatSize(part.meshSize) : "";
       input.addEventListener("change", () => {
         const raw = input.value.trim();
         const n = raw === "" ? undefined : Number(raw);

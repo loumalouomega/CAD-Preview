@@ -4605,6 +4605,123 @@ test("edits and FE Mesh headers: a count badge, a stat, and the actions moved in
 });
 
 
+/**
+ * Chrome redesign, pass 4 — the remaining gaps to the mockup. As in pass 3, every
+ * assertion reads RENDERED state (boxes, computed style), never a class name.
+ */
+test("components: the title stays 'Components', and an assembly row counts its solids", async (page) => {
+  await populate(page);
+  const read = () =>
+    page.evaluate(() => ({
+      title: document.getElementById("tree-title").textContent,
+      tip: document.getElementById("tree-title").title,
+      rows: [...document.querySelectorAll("#tree-body .tree-row")].map((r) => ({
+        label: r.querySelector(".tree-label")?.textContent,
+        badge: r.querySelector(".tree-badge")?.textContent ?? null,
+        badgeTitle: r.querySelector(".tree-badge")?.title ?? null,
+        hasKids: !!r.parentElement.querySelector(":scope > .tree-list"),
+      })),
+    }));
+  const r = await read();
+  assert(r.title === "Components", `the section title is not replaced by the root's label (got ${JSON.stringify(r.title)})`);
+  assert(r.tip.length > 0, `the root's label moved to the title's tooltip (got ${JSON.stringify(r.tip)})`);
+  const group = r.rows.find((x) => x.hasKids);
+  assert(group && group.badge !== null && /^\d+$/.test(group.badge) && group.badgeTitle === "Solids in this assembly",
+    `an assembly row shows how many solids it holds (got ${JSON.stringify(group)})`);
+  const leaf = r.rows.find((x) => !x.hasKids);
+  assert(leaf && leaf.badgeTitle === "Faces", `a leaf row's count is its face count (got ${JSON.stringify(leaf)})`);
+});
+
+test("parts: the panel hugs its rows instead of leaving an empty gap", async (page) => {
+  await populate(page);
+  const m = await page.evaluate(() => {
+    const panel = document.getElementById("parts-panel").getBoundingClientRect();
+    const head = document.getElementById("parts-header").getBoundingClientRect();
+    const rows = [...document.querySelectorAll("#parts-body .part-row")].map((r) => r.getBoundingClientRect());
+    const rowsH = rows.reduce((a, r) => a + r.height, 0);
+    return { panel: panel.height, head: head.height, rowsH, n: rows.length };
+  });
+  assert(m.n >= 3, `precondition: three parts (got ${m.n})`);
+  // Header + rows, with generous allowance for borders and the list's own padding —
+  // the failure being pinned is a panel that is HUNDREDS of pixels taller than that.
+  assert(m.panel <= m.head + m.rowsH + 40, `Parts is as tall as its content, not the spare column (panel ${m.panel.toFixed(0)}px vs header+rows ${(m.head + m.rowsH).toFixed(0)}px)`);
+});
+
+test("edits body: Variables + New is a ghost button, and the tabs are segmented tracks", async (page) => {
+  await populate(page);
+  const st = await page.evaluate(() => {
+    const bg = (el) => getComputedStyle(el).backgroundColor;
+    const isClear = (c) => c === "rgba(0, 0, 0, 0)" || c === "transparent";
+    const active = document.querySelector(".edits-tab.active");
+    const idle = document.querySelector(".edits-tab:not(.active)");
+    const btn = document.getElementById("variables-add");
+    const track = document.querySelector(".edits-tabs");
+    return {
+      addClear: isClear(bg(btn)),
+      addBorder: getComputedStyle(btn).borderTopWidth,
+      idleClear: isClear(bg(idle)),
+      activeBg: bg(active),
+      trackBg: bg(track),
+      // a solid VS Code button blue would equal the primary button's colour
+      primaryBg: bg(document.getElementById("parts-new")),
+    };
+  });
+  assert(st.addClear && st.addBorder !== "0px", `Variables + New is transparent with a thin border, not a browser-default white button (bg clear ${st.addClear}, border ${st.addBorder})`);
+  assert(st.idleClear, "an inactive tab is transparent inside the track");
+  assert(st.activeBg !== st.primaryBg, `the active tab is a lifted segment, not the solid primary-button blue (${st.activeBg} vs ${st.primaryBg})`);
+  assert(st.trackBg !== "rgba(0, 0, 0, 0)", "the tabs sit on an inset track");
+});
+
+test("FE Mesh: a Part size reads to three figures, with no locale comma", async (page) => {
+  await populate(page);
+  const vals = await page.evaluate(() =>
+    [...document.querySelectorAll("#meshing-part-sizes .meshing-part-size")].map((i) => ({ v: i.value, type: i.type, tip: i.title }))
+  );
+  assert(vals.length === 3, `three Part size fields (got ${vals.length})`);
+  assert(vals.every((x) => x.type === "text"), "they are text fields — a number input renders through the OS locale");
+  const sized = vals.find((x) => x.v !== "");
+  assert(sized && sized.v === "4.02", `the sized part shows 3 significant figures with a dot (got ${JSON.stringify(sized)})`);
+  assert(sized.tip.includes("4.0231"), "the exact stored value stays available in the tooltip");
+  assert(vals.every((x) => !x.v.includes(",")), "no value contains a locale comma");
+});
+
+test("dock: the collapse control sits at the end of the bar, after the overflow button", async (page) => {
+  await populate(page);
+  const m = await page.evaluate(() => {
+    const r = (id) => document.getElementById(id).getBoundingClientRect();
+    const toggle = r("vc-toggle");
+    const more = r("vc-more");
+    const modes = [...document.querySelectorAll(".display-mode-btn .toolbar-icon")].map((e) => e.offsetParent !== null);
+    return { toggleLeft: toggle.left, moreRight: more.right, modesShowIcon: modes.some(Boolean), modeCount: modes.length };
+  });
+  assert(m.toggleLeft >= m.moreRight - 1, `the collapse control follows ⋯ (toggle left ${m.toggleLeft.toFixed(0)}, ⋯ right ${m.moreRight.toFixed(0)})`);
+  assert(m.modeCount === 5 && !m.modesShowIcon, "the display modes are text-only segments");
+  await page.click("#vc-toggle");
+  await sleep(80);
+  const collapsedRendered = await page.evaluate(() => document.getElementById("vc-toggle").offsetParent !== null);
+  assert(collapsedRendered, "the collapse control is still reachable once the bar is collapsed");
+});
+
+test("toolbar: sidebar-sized type and line glyphs on the buttons", async (page) => {
+  await populate(page);
+  const m = await page.evaluate(() => {
+    const fs = (sel) => parseFloat(getComputedStyle(document.querySelector(sel)).fontSize);
+    return {
+      toolbar: fs("#toolbar"),
+      side: fs("#side"),
+      fitGlyph: document.querySelectorAll("#fit .ui-glyph svg").length,
+      viewGlyphs: document.querySelectorAll("#view-menu .ui-glyph svg").length,
+      fitIcon: document.querySelectorAll("#fit .toolbar-icon").length,
+      h: document.getElementById("fit").getBoundingClientRect().height,
+    };
+  });
+  assert(m.toolbar <= m.side + 1, `the toolbar is no larger than the sidebar's type (toolbar ${m.toolbar}px, sidebar ${m.side}px) — it used to inherit the browser's 16px`);
+  assert(m.fitGlyph === 1 && m.fitIcon === 0, "Fit uses the line glyph, not the generated icon");
+  assert(m.viewGlyphs === 2, "a trigger carries its own glyph and a chevron");
+  assert(m.h >= 26 && m.h <= 32, `toolbar buttons are a compact 28px (got ${m.h})`);
+});
+
+
 async function main() {
   if (!nodeSupportsPlaywright()) {
     // Not a failure: playwright-core would `process.exit(1)` at module load, so

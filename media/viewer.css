@@ -4290,3 +4290,212 @@ body:has(#side.visible) #kernel-status {
 #status {
   bottom: calc(var(--ui-s-5) + 132px + var(--ui-statusbar-h));
 }
+
+/* ══════════════════════════════════════════════════════════════════════════
+ * Chrome redesign, pass 4 — the remaining gaps to the mockup
+ * ══════════════════════════════════════════════════════════════════════════
+ * Appended after pass 3 for the same reason it was: source order is what makes
+ * these win over the earlier block at equal specificity. */
+
+/* ── Toolbar: sidebar-sized type, line glyphs ──────────────────────────── */
+
+/* #toolbar had no font-size, so it inherited the browser's 16px — about a third
+ * larger than every other piece of chrome. */
+#toolbar {
+  font-size: var(--ui-fs-md);
+}
+/* Only the DIRECT toolbar buttons and the four trigger buttons — never the menu
+ * items inside the dropdowns, whose box sizes feed two fixed screenshot clips. */
+#toolbar > button,
+#toolbar > .tb-menu-wrap > .tb-menu {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--ui-s-2);
+  height: 28px;
+  padding: 0 var(--ui-s-3);
+}
+#toolbar > button .ui-glyph:first-child svg,
+#toolbar > .tb-menu-wrap > .tb-menu .ui-glyph:first-child svg {
+  width: 15px;
+  height: 15px;
+  opacity: 1;
+}
+#toolbar > .tb-menu-wrap > .tb-menu .ui-glyph:last-child svg {
+  width: 12px;
+  height: 12px;
+  opacity: 0.7;
+}
+/* The menubar's File pill uses the same glyph size. */
+#file-menu .ui-glyph:first-child svg {
+  width: 15px;
+  height: 15px;
+  opacity: 1;
+}
+
+/* ── Components ────────────────────────────────────────────────────────── */
+
+.tree-badge {
+  font-size: var(--ui-fs-label);
+}
+
+/* ── Parts: hug the rows instead of claiming the column ────────────────── */
+
+/* `flex: 1` made Parts eat every spare pixel, leaving a wide empty gap under three
+ * short rows. It now sizes to its content and only shrinks (and scrolls) when the
+ * column runs short. The collapse rule (`#side .side-section.collapsed`, a higher
+ * specificity) still wins for a collapsed panel. */
+#parts-panel {
+  flex: 0 1 auto;
+  min-height: 0;
+}
+#parts-body {
+  flex: 0 1 auto;
+  max-height: 100%;
+}
+/* A quieter selection than the saturated active-list blue. */
+.part-item.selected > .part-row {
+  background: var(--vscode-list-inactiveSelectionBackground, rgba(90, 93, 94, 0.31));
+  color: inherit;
+}
+
+/* ── Edits body ────────────────────────────────────────────────────────── */
+
+#variables-add {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--ui-s-1);
+  height: 22px;
+  padding: 0 var(--ui-s-3);
+  font: inherit;
+  font-size: var(--ui-fs-sm);
+  color: var(--vscode-foreground, #ccc);
+  background: transparent;
+  border: 1px solid var(--vscode-input-border, var(--vscode-editorWidget-border, #454545));
+  border-radius: var(--ui-r-sm);
+  cursor: pointer;
+}
+#variables-add:hover {
+  background: var(--vscode-toolbar-hoverBackground, rgba(90, 93, 94, 0.31));
+}
+#variables-title {
+  font-size: var(--ui-fs-micro);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: var(--ui-track-caps);
+}
+
+/* GEOMETRY/EDIT and 2D/3D as inset tracks with a lifted active segment — the same
+ * recipe as the dock's segments and the mesh size presets, not solid button-blue
+ * blocks. */
+.edits-tabs,
+.edits-subtabs {
+  gap: 0;
+  padding: var(--ui-s-0);
+  background: var(--vscode-input-background, #3c3c3c);
+  border: 1px solid var(--vscode-input-border, transparent);
+  border-radius: var(--ui-r-sm);
+}
+.edits-subtabs {
+  margin-top: var(--ui-s-1);
+}
+.edits-tab,
+.edits-subtab {
+  background: transparent;
+  border-radius: calc(var(--ui-r-sm) - var(--ui-s-0));
+  opacity: 0.8;
+}
+.edits-tab:hover,
+.edits-subtab:hover {
+  background: var(--vscode-toolbar-hoverBackground, rgba(90, 93, 94, 0.31));
+}
+.edits-tab.active,
+.edits-subtab.active {
+  color: var(--vscode-foreground, #fff);
+  background: var(--vscode-list-inactiveSelectionBackground, var(--vscode-button-secondaryBackground, #3a3d41));
+  font-weight: 600;
+  opacity: 1;
+}
+
+/* ── FE Mesh: quieter preset actions ───────────────────────────────────── */
+
+.meshing-preset-actions {
+  justify-content: flex-end;
+  gap: var(--ui-s-3);
+}
+.meshing-preset-actions button {
+  flex: 0 0 auto;
+  padding: 0 var(--ui-s-1);
+  color: var(--vscode-textLink-foreground, #3794ff);
+  background: transparent;
+  border: none;
+}
+.meshing-preset-actions button:hover:not(:disabled) {
+  background: transparent;
+  text-decoration: underline;
+}
+.meshing-preset-actions button:disabled {
+  color: var(--vscode-foreground, #ccc);
+}
+/* Room under the last block so a scrolled panel never ends flush against the
+ * export row's edge. */
+#meshing-body {
+  padding-bottom: var(--ui-s-3);
+}
+
+/* ── Dock: shorter, text-only modes, the collapse control at the end ───── */
+
+#view-controls {
+  padding: var(--ui-s-2) var(--ui-s-4);
+  gap: var(--ui-s-2);
+}
+/* The toggle stays a direct child of #view-controls (it must survive the body
+ * collapsing), so it moves to the END of the bar by `order` rather than by markup. */
+#view-controls > .vc-collapse {
+  order: 2;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+}
+#view-controls > .vc-collapse:hover {
+  opacity: 1;
+  background: var(--vscode-toolbar-hoverBackground, rgba(90, 93, 94, 0.31));
+}
+.vc-collapse svg {
+  width: 14px;
+  height: 14px;
+}
+#view-controls.collapsed .vc-collapse svg {
+  transform: rotate(180deg);
+}
+/* The mockup's modes are plain text segments. Icons stay in the DOM (and the
+ * titles carry the meaning), they just do not draw at this size. */
+.display-mode-btn .toolbar-icon {
+  display: none;
+}
+.vc-segments .seg-btn,
+.vc-segments .clip-axis,
+.vc-segments .display-mode-btn {
+  padding: 2px 8px;
+}
+.vc-nav .vc-nav-btn {
+  width: 26px;
+  height: 26px;
+}
+
+/* ── Sidebar column: borders and room ──────────────────────────────────── */
+
+/* `#meshing-panel` and `#meshing-header` each carried a top border, which stacked
+ * into one heavy 2px rule above FE Mesh. The panel's is the one that stays. */
+#meshing-header {
+  border-top: none;
+}
+/* The 45% cap exists so FE Mesh cannot crush an EXPANDED Edits panel. With Edits
+ * collapsed there is nothing to protect, and the cap only made the panel scroll
+ * with its last row cut in half — so it relaxes (still bounded, so an expanded
+ * Advanced group below stays reachable). */
+#side:has(#edits-panel.collapsed) #meshing-panel {
+  max-height: 70%;
+}

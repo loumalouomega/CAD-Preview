@@ -3599,7 +3599,7 @@ function setupViewControls(): void {
   const moreMenu = setupDropdown("vc-more", "vc-more-dropdown");
   toggle?.addEventListener("click", () => {
     const collapsed = panel?.classList.toggle("collapsed") ?? false;
-    toggle.textContent = collapsed ? "⌃" : "⌄";
+    // The chevron is one SVG glyph; CSS flips it off `#view-controls.collapsed`.
     toggle.title = collapsed ? "Show controls" : "Hide controls";
     // The glyph flips but an aria-label does not follow `title`, so a screen
     // reader kept announcing "Hide controls" over a collapsed bar.

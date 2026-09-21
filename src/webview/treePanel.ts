@@ -29,7 +29,10 @@ export class TreePanel {
   render(root: TreeNode): void {
     this.selectedId = null;
     this.root = root;
-    this.titleEl.textContent = root.label;
+    // The section title stays "Components" (a fixed label in the markup). The root's
+    // own label — the source format — is on the document chip already, so it moves
+    // to a tooltip here instead of replacing the title.
+    this.titleEl.title = root.label;
 
     const children = root.children ?? [];
     if (children.length === 0) {
@@ -117,6 +120,15 @@ export class TreePanel {
         const badge = document.createElement("span");
         badge.className = "tree-badge ui-num";
         badge.textContent = String(node.faceCount);
+        badge.title = "Faces";
+        row.appendChild(badge);
+      } else if (hasChildren) {
+        // An assembly group has no face count of its own; show how many solids it
+        // holds, in the same right-hand column.
+        const badge = document.createElement("span");
+        badge.className = "tree-badge ui-num";
+        badge.textContent = String(descendantLeafIds(this.root?.children ?? [], node.id).length);
+        badge.title = "Solids in this assembly";
         row.appendChild(badge);
       }
 

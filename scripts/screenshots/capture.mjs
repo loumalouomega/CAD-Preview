@@ -52,6 +52,76 @@ async function heroChrome(page, { gmsh }) {
   await sleep(150);
 }
 
+/**
+ * Sum of triangle areas for one face of the fixture geometry, in the fixture's
+ * own units — what a real `entityFactsResult` would report for a planar face
+ * (exact for a plane, which is the only kind the hero shot asks about).
+ */
+function fixtureFaceArea(faceId) {
+  const geo = fixture("geometry");
+  const mesh = geo.meshes.find((m) => m.faceId === faceId);
+  if (!mesh) return null;
+  // Copy out of the Buffer: a small Buffer's `.buffer` is the process-wide 8KB
+  // pool, so viewing it directly reads unrelated bytes (and a non-4-aligned
+  // offset throws) — the same trap gltfParser.ts documents.
+  const bytes = (b64) => {
+    const b = Buffer.from(b64, "base64");
+    return new Uint8Array(b).buffer;
+  };
+  const pos = new Float32Array(bytes(mesh.positions));
+  const idx = new Uint32Array(bytes(mesh.indices));
+  let area = 0;
+  for (let t = 0; t < idx.length; t += 3) {
+    const [a, b, c] = [idx[t], idx[t + 1], idx[t + 2]].map((i) => [pos[3 * i], pos[3 * i + 1], pos[3 * i + 2]]);
+    const u = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+    const v = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
+    const cx = u[1] * v[2] - u[2] * v[1];
+    const cy = u[2] * v[0] - u[0] * v[2];
+    const cz = u[0] * v[1] - u[1] * v[0];
+    area += 0.5 * Math.hypot(cx, cy, cz);
+  }
+  return area;
+}
+
+/**
+ * Stages the main hero shot like the design mockup: Edits collapsed, and a face
+ * selected so the selection pill shows. Harness-only — nothing here is persisted.
+ * The pill is driven the way a real session drives it: a genuine click on the
+ * canvas posts a real `entityFactsRequest`, and the reply carries that request's
+ * own id and the picked face's own area (summed from the fixture triangles), so
+ * the picture is the real card with real numbers, not a mock-up.
+ */
+async function heroSelection(page) {
+  await page.click("#edits-header > .panel-chevron");
+  await page.click("#select-menu");
+  await page.click("#sel-toggle");
+  await page.click('.sel-mode[data-mode="surface"]');
+  await page.click("#select-menu"); // close it, so the next canvas click is a pick
+  await sleep(150);
+  const box = await page.locator("#app").boundingBox();
+  await page.mouse.click(box.x + box.width * 0.55, box.y + box.height * 0.5);
+  await sleep(300);
+  const req = await page.evaluate(() => (window.__sent ?? []).filter((m) => m.type === "entityFactsRequest").at(-1) ?? null);
+  if (!req) throw new Error("heroSelection: the click did not select a face (no entityFactsRequest)");
+  const area = fixtureFaceArea(req.entityId);
+  await post(page, {
+    type: "entityFactsResult",
+    requestId: req.requestId,
+    facts: {
+      entityId: req.entityId, kind: "face",
+      bbox: { min: [0, 0, 0], max: [1, 1, 0], diagonal: Math.SQRT2 },
+      center: [0, 0, 0], area, length: null,
+      normal: [0, 0, 1], planeOrigin: [0, 0, 0], surfaceType: "plane",
+      surfaceParams: { kind: "plane", origin: [0, 0, 0], normal: [0, 0, 1] }, curveType: null,
+    },
+  });
+  // The pointer is still over the model, so the readout in the status bar keeps
+  // showing (as in the mockup), but the hover tooltip that follows a pick mode would
+  // sit on top of the orientation cube — drop just that.
+  await page.evaluate(() => document.getElementById("hover-tip")?.classList.add("hidden"));
+  await sleep(200);
+}
+
 // ── Shot list ────────────────────────────────────────────────────────────
 const SHOTS = [
   {
@@ -59,6 +129,7 @@ const SHOTS = [
     setup: async (page) => {
       await populate(page);
       await heroChrome(page, { gmsh: false });
+      await heroSelection(page);
     },
     target: {}, // full UI with model + panels
   },

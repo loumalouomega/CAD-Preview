@@ -21,7 +21,7 @@ function icon(id: keyof typeof TOOLBAR_ICONS): string {
 export function viewerBodyHtml(): string {
   return /* html */ `<div id="menubar">
     <div id="file-menu-wrap" class="tb-menu-wrap">
-      <button id="file-menu" class="tb-menu" title="File menu" aria-haspopup="true" aria-expanded="false">${icon("home")} File ${glyph("chevronDown")}</button>
+      <button id="file-menu" class="tb-menu" title="File menu" aria-haspopup="true" aria-expanded="false">${glyph("home")} File ${glyph("chevronDown")}</button>
       <div id="file-dropdown" class="tb-dropdown hidden" role="menu">
         <button id="menu-new" role="menuitem" title="Start an empty model you can build from scratch with the Edits panel — writes a new .brep file, then opens it">${icon("add")} New Blank Model…</button>
         <div class="tb-sep"></div>
@@ -287,11 +287,11 @@ export function viewerBodyHtml(): string {
     <span id="vc-cursor" class="ui-num" title="Cursor position on the model, in the current display unit"></span>
   </div>
   <div id="toolbar">
-    <button id="fit" title="Fit to view">${icon("fit")} Fit</button>
-    <button id="tree-toggle" title="Toggle component tree" style="display:none">${icon("tree")} Tree</button>
-    <button id="meshing-toggle" title="Toggle FE mesh overlay">${icon("feMesh")} FE Mesh</button>
+    <button id="fit" title="Fit to view">${glyph("maximize")} Fit</button>
+    <button id="tree-toggle" title="Toggle component tree" style="display:none">${glyph("gitFork")} Tree</button>
+    <button id="meshing-toggle" title="Toggle FE mesh overlay">${glyph("grid3")} FE Mesh</button>
     <div class="tb-menu-wrap">
-      <button id="view-menu" class="tb-menu" title="View options" aria-haspopup="true" aria-expanded="false">${icon("view")} View ${glyph("chevronDown")}</button>
+      <button id="view-menu" class="tb-menu" title="View options" aria-haspopup="true" aria-expanded="false">${glyph("eye")} View ${glyph("chevronDown")}</button>
       <div id="view-dropdown" class="tb-dropdown hidden" role="menu">
         <button id="grid" role="menuitemcheckbox" aria-checked="false" title="Toggle the grid and axis helpers">${icon("grid")} Grid</button>
         <button id="edges" role="menuitemcheckbox" aria-checked="true" title="Toggle edge visibility">${icon("edges")} Edges</button>
@@ -323,7 +323,7 @@ export function viewerBodyHtml(): string {
       </div>
     </div>
     <div class="tb-menu-wrap">
-      <button id="select-menu" class="tb-menu" title="Pick entities in the view to assign to a part" aria-haspopup="true" aria-expanded="false">${icon("select")} Select ${glyph("chevronDown")}</button>
+      <button id="select-menu" class="tb-menu" title="Pick entities in the view to assign to a part" aria-haspopup="true" aria-expanded="false">${glyph("pointer")} Select ${glyph("chevronDown")}</button>
       <div id="select-dropdown" class="tb-dropdown hidden" role="menu">
         <button id="sel-toggle" role="menuitemcheckbox" aria-checked="false" title="Toggle selection mode">${icon("select")} Selection mode</button>
         <div id="select-group" class="tb-row" title="What a click picks">
@@ -350,7 +350,7 @@ export function viewerBodyHtml(): string {
       </div>
     </div>
     <div class="tb-menu-wrap">
-      <button id="measure-menu" class="tb-menu" title="Measure distances, lengths, angles, and radii" aria-haspopup="true" aria-expanded="false">${icon("measure")} Measure ${glyph("chevronDown")}</button>
+      <button id="measure-menu" class="tb-menu" title="Measure distances, lengths, angles, and radii" aria-haspopup="true" aria-expanded="false">${glyph("ruler")} Measure ${glyph("chevronDown")}</button>
       <div id="measure-dropdown" class="tb-dropdown hidden" role="menu">
         <button id="measure-toggle" role="menuitemcheckbox" aria-checked="false" title="Toggle measure mode">${icon("measure")} Measure mode</button>
         <div id="measure-tool" class="tb-row" title="Measurement tool">
@@ -366,7 +366,7 @@ export function viewerBodyHtml(): string {
       </div>
     </div>
     <div class="tb-menu-wrap">
-      <button id="markup-menu" class="tb-menu" title="Draw review annotations over the 3D view" aria-haspopup="true" aria-expanded="false">${icon("markup")} Markup ${glyph("chevronDown")}</button>
+      <button id="markup-menu" class="tb-menu" title="Draw review annotations over the 3D view" aria-haspopup="true" aria-expanded="false">${glyph("pencil")} Markup ${glyph("chevronDown")}</button>
       <div id="markup-dropdown" class="tb-dropdown hidden" role="menu">
         <button id="markup-toggle" role="menuitemcheckbox" aria-checked="false" title="Toggle markup mode">${icon("markup")} Markup mode</button>
         <div id="markup-tool" class="tb-row" title="Markup tool">
@@ -398,7 +398,7 @@ export function viewerBodyHtml(): string {
     <button id="measure-pin-btn" title="Pin this measurement as a persisted annotation — survives closing the file, re-anchored across edits" hidden>${icon("save")} Pin</button>
   </div>
   <div id="view-controls">
-    <button id="vc-toggle" class="vc-collapse" title="Hide controls" aria-label="Hide controls">⌄</button>
+    <button id="vc-toggle" class="vc-collapse" title="Hide controls" aria-label="Hide controls">${glyph("chevronDown")}</button>
     <div id="vc-body">
     <!-- One row of the everyday controls. The rest sit behind the overflow button
          at the end, in a popover. Nothing here was removed: every control kept its
@@ -414,7 +414,7 @@ export function viewerBodyHtml(): string {
     <div class="vc-dock-row">
       <div class="vc-nav" id="vc-nav" role="group" aria-label="Navigate">
         <button id="view-reset" class="vc-nav-btn" title="Reset to default view" aria-label="Reset to default view">${glyph("rotateCcw")}</button>
-        <button id="view-fit" class="vc-nav-btn" title="Fit to view" aria-label="Fit to view">${icon("fit")}</button>
+        <button id="view-fit" class="vc-nav-btn" title="Fit to view" aria-label="Fit to view">${glyph("maximize")}</button>
         <button id="zoom-out" class="vc-nav-btn" title="Zoom out" aria-label="Zoom out">${glyph("zoomOut")}</button>
         <button id="zoom-in" class="vc-nav-btn" title="Zoom in" aria-label="Zoom in">${glyph("zoomIn")}</button>
       </div>
