@@ -156,6 +156,42 @@ describe("createKernelClient", () => {
     await expect(p2).resolves.toEqual({ available: true });
   });
 
+  it("cancels a queued owned job without interrupting the active owner's call", async () => {
+    const client = createKernelClient("/ext");
+    const active = client.runOwnedJob({ ownerId: "tab-a", requestId: "mesh-a" }, () => client.isRenderAvailable());
+    const queued = client.runOwnedJob({ ownerId: "tab-b", requestId: "mesh-b" }, () => client.isRenderAvailable());
+    await Promise.resolve(); await Promise.resolve();
+    const child = fakeChildren[0];
+    expect(child.sent).toHaveLength(1);
+    expect(client.jobStatus("tab-b", "mesh-b")?.state).toBe("queued");
+    expect(client.cancelOwnedJob("tab-b", "mesh-b")?.state).toBe("cancelled");
+    expect(child.killed).toEqual([]);
+    reply(child, child.sent[0].id, { available: true });
+    await expect(active).resolves.toEqual({ available: true });
+    await expect(queued).rejects.toThrow(/cancelled by owner tab-b/);
+    expect(child.sent).toHaveLength(1);
+    expect(client.jobStatus("tab-a", "mesh-a")?.state).toBe("succeeded");
+  });
+
+  it("kills only the active request with the matching owner and request ID", async () => {
+    const client = createKernelClient("/ext");
+    const active = client.runOwnedJob({ ownerId: "tab-a", requestId: "mesh-a" }, () => client.isRenderAvailable());
+    const queued = client.runOwnedJob({ ownerId: "tab-b", requestId: "mesh-b" }, () => client.isRenderAvailable());
+    await Promise.resolve(); await Promise.resolve();
+    const firstChild = fakeChildren[0];
+    expect(client.cancelOwnedJob("wrong-owner", "mesh-a")).toBeUndefined();
+    expect(client.cancelOwnedJob("tab-a", "mesh-a")?.state).toBe("cancelling");
+    await expect(active).rejects.toThrow();
+    await Promise.resolve(); await Promise.resolve();
+    expect(firstChild.killed).toEqual(["SIGKILL"]);
+    expect(client.jobStatus("tab-a", "mesh-a")?.state).toBe("cancelled");
+    const secondChild = fakeChildren[1];
+    expect(secondChild.sent).toHaveLength(1);
+    reply(secondChild, secondChild.sent[0].id, { available: false });
+    await expect(queued).resolves.toEqual({ available: false });
+    expect(client.jobStatus("tab-b", "mesh-b")?.state).toBe("succeeded");
+  });
+
   it("an unexpected child exit rejects any still-pending request", async () => {
     const client = createKernelClient("/ext");
     const promise = client.isRenderAvailable();

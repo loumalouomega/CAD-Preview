@@ -51,6 +51,7 @@ export interface MeshingPanelCallbacks {
    * forwarded. */
   onPartMeshGrading: (index: number, grading: MeshGrading | undefined) => void;
   onGenerate: () => void;
+  onCancel: (requestId: string) => void;
   /** Export in the format/unit currently picked in the two `<select>`s. `unit`
    * is a real geometric scale applied before Gmsh ever sees the geometry
    * (mirroring the model Export command's own unit conversion) — "mm" is
@@ -111,6 +112,7 @@ export class MeshingPanel {
   private readonly qualityEl: HTMLElement;
   private readonly progressEl: HTMLElement;
   private readonly generateBtn: HTMLButtonElement;
+  private readonly cancelBtn: HTMLButtonElement;
   private readonly exportFormatSelect: HTMLSelectElement;
   private readonly exportUnitSelect: HTMLSelectElement;
   private readonly exportBtn: HTMLButtonElement;
@@ -171,6 +173,7 @@ export class MeshingPanel {
     this.qualityEl = panel.querySelector("#meshing-quality")!;
     this.progressEl = panel.querySelector("#meshing-progress")!;
     this.generateBtn = panel.querySelector("#meshing-generate")!;
+    this.cancelBtn = panel.querySelector("#meshing-cancel")!;
     this.exportFormatSelect = panel.querySelector("#meshing-export-format")!;
     this.exportUnitSelect = panel.querySelector("#meshing-export-unit")!;
     this.exportBtn = panel.querySelector("#meshing-export")!;
@@ -199,6 +202,10 @@ export class MeshingPanel {
     }
 
     this.generateBtn.addEventListener("click", () => cb.onGenerate());
+    this.cancelBtn.addEventListener("click", () => {
+      const requestId = this.cancelBtn.dataset.requestId;
+      if (requestId) cb.onCancel(requestId);
+    });
     this.exportBtn.addEventListener("click", () =>
       cb.onExport(this.exportFormatSelect.value as MeshExportFormatId, this.exportUnitSelect.value as DisplayUnit)
     );
@@ -986,12 +993,16 @@ export class MeshingPanel {
    * shows the indeterminate `#meshing-progress` bar, since GMSH's `generate()`
    * is a single opaque call with no fractional progress to report.
    */
-  setBusy(busy: boolean): void {
+  setBusy(busy: boolean, requestId?: string, message = "Generating…"): void {
     this.generateBtn.disabled = busy;
+    this.exportBtn.disabled = busy;
+    this.cancelBtn.disabled = !busy || !requestId;
+    if (busy && requestId) this.cancelBtn.dataset.requestId = requestId;
+    else delete this.cancelBtn.dataset.requestId;
     this.progressEl.classList.toggle("active", busy);
     if (busy) {
       this.statusEl.classList.remove("meshing-status-error");
-      this.statusEl.textContent = "Generating…";
+      this.statusEl.textContent = message;
     }
   }
 

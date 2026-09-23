@@ -1,4 +1,5 @@
 import * as vscode from "vscode";
+import { randomUUID } from "node:crypto";
 import { routeFile } from "./fileRouter";
 import { createKernelClient, type KernelClient } from "./kernelClient";
 import { normalizeTessellationQuality, tessellationParamsFor } from "./tessellationQuality";
@@ -1735,39 +1736,44 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
 
       if (msg.type === "meshingGenerate") {
         try {
-          const input = await this.resolveMeshInput(document.uri, route, currentEdits, msg.stl, "mm", currentBakedThrough);
-          if (!input) {
-            post({ type: "meshingError", message: "No mesh geometry available: missing STL data." });
-            return;
-          }
-          const { parts, options } = await this.resolveMeshPartsAndOptions(document.uri, input, msg.options);
-          const startedAt = Date.now();
-          const result = await this.pipeline.generateMesh(this.context.extensionPath, input, options, parts);
-          post({
-            type: "meshingResult",
-            positions: encodeBuffer(result.positions),
-            indices: encodeBuffer(result.indices),
-            edges: encodeBuffer(result.edges),
-            elementGroups: result.elementGroups,
-            nodeCount: result.nodeCount,
-            elementCount: result.elementCount,
-            elapsedMs: Date.now() - startedAt,
-            quality: result.quality,
-            worstElements: result.worstElements && {
-              indices: encodeBuffer(result.worstElements.indices),
-              threshold: result.worstElements.threshold,
-              shownCount: result.worstElements.shownCount,
-              belowThresholdCount: result.worstElements.belowThresholdCount,
-            },
+          await this.pipeline.runOwnedJob({ ownerId: documentKey, requestId: msg.requestId }, async () => {
+            const input = await this.resolveMeshInput(document.uri, route, currentEdits, msg.stl, "mm", currentBakedThrough);
+            if (!input) throw new Error("No mesh geometry available: missing STL data.");
+            const { parts, options } = await this.resolveMeshPartsAndOptions(document.uri, input, msg.options);
+            const startedAt = Date.now();
+            const result = await this.pipeline.generateMesh(this.context.extensionPath, input, options, parts);
+            post({
+              type: "meshingResult", requestId: msg.requestId,
+              positions: encodeBuffer(result.positions),
+              indices: encodeBuffer(result.indices),
+              edges: encodeBuffer(result.edges),
+              elementGroups: result.elementGroups,
+              nodeCount: result.nodeCount,
+              elementCount: result.elementCount,
+              elapsedMs: Date.now() - startedAt,
+              quality: result.quality,
+              worstElements: result.worstElements && {
+                indices: encodeBuffer(result.worstElements.indices),
+                threshold: result.worstElements.threshold,
+                shownCount: result.worstElements.shownCount,
+                belowThresholdCount: result.worstElements.belowThresholdCount,
+              },
+            });
           });
         } catch (err) {
-          post({ type: "meshingError", message: (err as Error).message });
+          post({ type: "meshingError", requestId: msg.requestId, message: (err as Error).message });
         }
         return;
       }
 
+      if (msg.type === "meshingCancel") {
+        const job = this.pipeline.cancelOwnedJob(documentKey, msg.requestId);
+        if (job) post({ type: "status", text: job.state === "cancelled" ? "Meshing cancelled." : "Cancelling meshing job…" });
+        return;
+      }
+
       if (msg.type === "meshingExport") {
-        await this.runMeshExport(document.uri, route, currentEdits, msg.target, msg.options, msg.stl, msg.unit ?? "mm", post, currentBakedThrough);
+        await this.runMeshExport(document.uri, route, currentEdits, msg.target, msg.options, msg.stl, msg.unit ?? "mm", post, currentBakedThrough, msg.requestId);
         return;
       }
 
@@ -3768,14 +3774,14 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
     unit: DisplayUnit,
     post: (msg: HostToWebview) => void,
     /** Tier 0: leading baked-op count — the meshing STEP re-export replays the tail. */
-    bakedThrough = 0
+    bakedThrough = 0,
+    requestId: string = randomUUID()
   ): Promise<void> {
+    try {
+      await this.pipeline.runOwnedJob({ ownerId: uri.toString(), requestId }, async () => {
       try {
         const input = await this.resolveMeshInput(uri, route, ops, stl, unit, bakedThrough);
-        if (!input) {
-          post({ type: "meshingError", message: "No mesh geometry available: missing STL data." });
-          return;
-        }
+        if (!input) throw new Error("No mesh geometry available: missing STL data.");
         const { parts, options } = await this.resolveMeshPartsAndOptions(uri, input, meshOptions, unit);
         if (target === "msh") {
           const result = await this.pipeline.generateMesh(this.context.extensionPath, input, options, parts);
@@ -3896,7 +3902,12 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
         }
       } catch (err) {
         post({ type: "error", message: `Export failed: ${(err as Error).message}` });
+        throw err;
       }
+      });
+    } finally {
+      post({ type: "meshingJobSettled", requestId });
+    }
   }
 
   /**

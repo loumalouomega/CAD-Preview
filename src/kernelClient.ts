@@ -21,6 +21,8 @@
  */
 
 import { fork, type ChildProcess } from "child_process";
+import { AsyncLocalStorage } from "node:async_hooks";
+import { randomUUID } from "node:crypto";
 import * as path from "path";
 import { marshal, unmarshal, type KernelRequest, type KernelResponse } from "./kernelIpc";
 import {
@@ -73,6 +75,11 @@ export interface KernelClient extends DocumentPipeline {
    * currently running. Also what the per-call watchdog timeout below uses
    * internally on a hang. */
   cancelCurrent(): void;
+  /** Runs a group of serialized kernel calls under one stable document/job identity. */
+  runOwnedJob<T>(identity: { ownerId: string; requestId: string }, action: () => Promise<T>): Promise<T>;
+  /** Owner-scoped, idempotent lifecycle lookup/cancellation for an owned job. */
+  jobStatus(ownerId: string, requestId: string): KernelJobRecord | undefined;
+  cancelOwnedJob(ownerId: string, requestId: string): KernelJobRecord | undefined;
   /** The kernels' inferred readiness (see `kernelActivity.ts`) — a snapshot. */
   kernelState(): KernelState;
   /** Subscribes to readiness changes; returns an unsubscribe. Fires only when
@@ -80,10 +87,19 @@ export interface KernelClient extends DocumentPipeline {
   onKernelState(listener: (state: KernelState) => void): () => void;
 }
 
+export interface KernelJobRecord {
+  version: 1; jobId: string; ownerId: string; requestId: string;
+  state: "queued" | "running" | "cancelling" | "succeeded" | "failed" | "cancelled";
+  startedAt?: number; finishedAt?: number; message?: string;
+}
+
+interface OwnedJobContext { key: string; record: KernelJobRecord }
+
 interface PendingEntry {
   resolve: (value: unknown) => void;
   reject: (err: Error) => void;
   timer: ReturnType<typeof setTimeout>;
+  jobKey?: string;
 }
 
 /** No real operation should ever take this long — `scripts/perf/baseline.json`'s
@@ -99,6 +115,9 @@ export function createKernelClient(extensionPath: string, options?: { timeoutMs?
   let child: ChildProcess | null = null;
   let nextId = 1;
   const pending = new Map<number, PendingEntry>();
+  const jobs = new Map<string, KernelJobRecord>();
+  const jobStorage = new AsyncLocalStorage<OwnedJobContext>();
+  let activeJobKey: string | undefined;
   // A single-slot chain: each new call's request is only SENT after the
   // previous one has settled (resolved or rejected) — see the file doc
   // comment for why serializing is both correct and sufficient here.
@@ -122,6 +141,7 @@ export function createKernelClient(extensionPath: string, options?: { timeoutMs?
     if (entry) {
       clearTimeout(entry.timer);
       pending.delete(id);
+      if (entry.jobKey === activeJobKey) activeJobKey = undefined;
     }
     return entry;
   }
@@ -166,8 +186,17 @@ export function createKernelClient(extensionPath: string, options?: { timeoutMs?
   }
 
   function callKernel(fn: string, args: unknown[]): Promise<unknown> {
+    const job = jobStorage.getStore();
     const run = (): Promise<unknown> =>
       new Promise<unknown>((resolve, reject) => {
+        if (job && (job.record.state === "cancelling" || job.record.state === "cancelled")) {
+          reject(new Error(`CAD job ${job.record.requestId} was cancelled by owner ${job.record.ownerId}.`));
+          return;
+        }
+        if (job) {
+          job.record.state = "running";
+          job.record.startedAt ??= Date.now();
+        }
         const id = nextId++;
         const timer = setTimeout(() => {
           takePending(id);
@@ -189,7 +218,9 @@ export function createKernelClient(extensionPath: string, options?: { timeoutMs?
             reject(err);
           },
           timer,
+          jobKey: job?.key,
         });
+        activeJobKey = job?.key;
         const request: KernelRequest = { id, fn, args: args.map(marshal) };
         getChild().send(request, (err) => {
           if (err) takePending(id)?.reject(err instanceof Error ? err : new Error(String(err)));
@@ -255,6 +286,49 @@ export function createKernelClient(extensionPath: string, options?: { timeoutMs?
     exportDrawingSheet: (...args) => callKernel("exportDrawingSheet", args) as ReturnType<Pipeline["exportDrawingSheet"]>,
     buildPrimitivesFile: (...args) => callKernel("buildPrimitivesFile", args) as ReturnType<Pipeline["buildPrimitivesFile"]>,
     cancelCurrent: killCurrentChild,
+    runOwnedJob: async <T>(identity: { ownerId: string; requestId: string }, action: () => Promise<T>): Promise<T> => {
+      if (!identity.ownerId.trim() || !identity.requestId.trim()) throw new Error("Owned CAD jobs require stable ownerId and requestId values.");
+      const key = `${identity.ownerId}\u0000${identity.requestId}`;
+      if (jobs.has(key)) throw new Error(`CAD job ${identity.requestId} was already registered for this owner.`);
+      const record: KernelJobRecord = { version: 1, jobId: randomUUID(), ownerId: identity.ownerId, requestId: identity.requestId, state: "queued" };
+      jobs.set(key, record);
+      while (jobs.size > 500) {
+        const first = jobs.entries().next().value as [string, KernelJobRecord] | undefined;
+        if (!first || ["queued", "running", "cancelling"].includes(first[1].state)) break;
+        jobs.delete(first[0]);
+      }
+      return jobStorage.run({ key, record }, async () => {
+        try {
+          const value = await action();
+          if (record.state === "cancelling" || record.state === "cancelled") throw new Error(`CAD job ${record.requestId} was cancelled by owner ${record.ownerId}.`);
+          record.state = "succeeded";
+          record.finishedAt = Date.now();
+          return value;
+        } catch (error) {
+          record.state = record.state === "cancelling" || record.state === "cancelled" ? "cancelled" : "failed";
+          record.finishedAt = Date.now();
+          record.message = error instanceof Error ? error.message : String(error);
+          throw error;
+        }
+      });
+    },
+    jobStatus: (ownerId, requestId) => {
+      const record = jobs.get(`${ownerId}\u0000${requestId}`);
+      return record ? structuredClone(record) : undefined;
+    },
+    cancelOwnedJob: (ownerId, requestId) => {
+      const key = `${ownerId}\u0000${requestId}`;
+      const record = jobs.get(key);
+      if (!record) return undefined;
+      if (record.state === "queued") {
+        record.state = "cancelled";
+        record.finishedAt = Date.now();
+      } else if (record.state === "running") {
+        record.state = "cancelling";
+        if (activeJobKey === key) killCurrentChild();
+      }
+      return structuredClone(record);
+    },
     kernelState: () => kernels,
     onKernelState: (listener) => {
       kernelListeners.add(listener);

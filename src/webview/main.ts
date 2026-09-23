@@ -1171,12 +1171,20 @@ const meshingPanel = new MeshingPanel(document.getElementById("meshing-panel")!,
   onPartMeshSize: (index, size) => partsModel.setMeshSize(index, size),
   onPartMeshGrading: (index, grading) => partsModel.setMeshGrading(index, grading),
   onGenerate: async () => {
-    meshingPanel.setBusy(true);
-    post({ type: "meshingGenerate", options: meshingModel.get(), stl: await currentStlIfMeshSource() });
+    const stl = await currentStlIfMeshSource();
+    const requestId = crypto.randomUUID();
+    currentMeshJobRequestId = requestId;
+    meshingPanel.setBusy(true, requestId, "Generating…");
+    post({ type: "meshingGenerate", requestId, options: meshingModel.get(), stl });
   },
   onExport: async (format, unit) => {
-    post({ type: "meshingExport", target: format, options: meshingModel.get(), stl: await currentStlIfMeshSource(), unit });
+    const stl = await currentStlIfMeshSource();
+    const requestId = crypto.randomUUID();
+    currentMeshJobRequestId = requestId;
+    meshingPanel.setBusy(true, requestId, "Generating and exporting…");
+    post({ type: "meshingExport", requestId, target: format, options: meshingModel.get(), stl, unit });
   },
+  onCancel: (requestId) => post({ type: "meshingCancel", requestId }),
   onMeshOps: (ops) => {
     const requestId = `${Date.now()}-${Math.random()}`;
     meshioOpsRequestId = requestId;
@@ -4818,6 +4826,7 @@ try {
 // displayed" on the button, keeping the toggle's visual state truthful instead
 // of only ever being flipped by the click handler itself.
 let meshingEnabled = false;
+let currentMeshJobRequestId: string | null = null;
 let meshingToggle: HTMLElement | null = null;
 // Mirrors `meshingEnabled`/`meshingToggle` above, for the worst-quality-
 // elements highlight overlay — a separate on/off state since a user may want
@@ -5554,6 +5563,8 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
       break;
 
     case "meshingResult":
+      if (msg.requestId !== currentMeshJobRequestId) break;
+      currentMeshJobRequestId = null;
       meshingPanel.setBusy(false);
       viewer.setMeshOverlay(buildFEMesh(msg.positions, msg.indices, msg.edges, msg.elementGroups));
       renderDockMeshStats({ nodes: msg.nodeCount, elements: msg.elementCount, minQuality: msg.quality?.min });
@@ -5592,10 +5603,18 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
       break;
 
     case "meshingError":
+      if (msg.requestId !== currentMeshJobRequestId) break;
+      currentMeshJobRequestId = null;
       // Nothing new was displayed on failure — leave `meshingEnabled`/the toggle's
       // state exactly as it was (whatever overlay, if any, was already shown stays).
       meshingPanel.setBusy(false);
       meshingPanel.render(meshingModel.get(), { error: msg.message });
+      break;
+
+    case "meshingJobSettled":
+      if (msg.requestId !== currentMeshJobRequestId) break;
+      currentMeshJobRequestId = null;
+      meshingPanel.setBusy(false);
       break;
   }
 });
