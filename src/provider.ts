@@ -3779,6 +3779,10 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
   ): Promise<void> {
     try {
       await this.pipeline.runOwnedJob({ ownerId: uri.toString(), requestId }, async () => {
+      const assertJobActive = () => {
+        const state = this.pipeline.jobStatus(uri.toString(), requestId)?.state;
+        if (state === "cancelling" || state === "cancelled") throw new Error(`CAD job ${requestId} was cancelled.`);
+      };
       try {
         const input = await this.resolveMeshInput(uri, route, ops, stl, unit, bakedThrough);
         if (!input) throw new Error("No mesh geometry available: missing STL data.");
@@ -3789,8 +3793,9 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
             uri,
             "msh",
             "GMSH Mesh",
-            async () => Buffer.from(result.mshText, "utf8"),
-            post
+            async () => { assertJobActive(); return Buffer.from(result.mshText, "utf8"); },
+            post,
+            assertJobActive
           );
         } else if (target === "geoUnrolled") {
           const geo = await this.pipeline.exportGeoUnrolled(this.context.extensionPath, input, options, parts);
@@ -3799,6 +3804,7 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
             "geo_unrolled",
             "GMSH Unrolled Geometry",
             async (saveUri) => {
+              assertJobActive();
               if (!geo.xao) return Buffer.from(geo.text, "utf8");
               // B-rep geometry can't be textually unrolled — gmsh.write() emitted a
               // `Merge "<memfs path>.xao";` stub. Write the real content (the XAO
@@ -3811,7 +3817,8 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
               const fixedText = geo.text.replace(/Merge "[^"]*\.xao";/, `Merge "${xaoName}";`);
               return Buffer.from(fixedText, "utf8");
             },
-            post
+            post,
+            assertJobActive
           );
         } else if (target === "mdpaElements" || target === "mdpaGeometries") {
           // Kratos MDPA is hand-serialized (no gmsh.write() support at all — see
@@ -3828,8 +3835,9 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
             uri,
             format.extension,
             format.filterLabel,
-            async () => Buffer.from(text, "utf8"),
-            post
+            async () => { assertJobActive(); return Buffer.from(text, "utf8"); },
+            post,
+            assertJobActive
           );
         } else if (meshExportFormat(target)?.via === "meshio") {
           // meshio++ bridge — registry-driven (`meshExportFormats.ts`'s
@@ -3868,6 +3876,7 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
             format.extension,
             format.filterLabel,
             async (saveUri) => {
+              assertJobActive();
               if (!companion) return Buffer.from(bytes);
               // Companion file — written beside the chosen save path under
               // the matching stem. Whether the primary also needs editing is
@@ -3884,7 +3893,8 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
               const fixedText = Buffer.from(bytes).toString("utf8").split(companion.name).join(companionName);
               return Buffer.from(fixedText, "utf8");
             },
-            post
+            post,
+            assertJobActive
           );
         } else {
           // Every other registered format (VTK/UNV/Abaqus/Nastran/SU2/etc.) — a
@@ -3896,8 +3906,9 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
             uri,
             format.extension,
             format.filterLabel,
-            async () => Buffer.from(text, "utf8"),
-            post
+            async () => { assertJobActive(); return Buffer.from(text, "utf8"); },
+            post,
+            assertJobActive
           );
         }
       } catch (err) {
@@ -3971,7 +3982,8 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
     ext: string,
     filterLabel: string,
     getBytes: (saveUri: vscode.Uri) => Promise<Uint8Array>,
-    post: (msg: HostToWebview) => void
+    post: (msg: HostToWebview) => void,
+    beforeWrite?: () => void
   ): Promise<void> {
     const baseName = uri.path.slice(uri.path.lastIndexOf("/") + 1).replace(/\.[^.]+$/, "");
     const defaultUri = vscode.Uri.joinPath(uri, "..", `${baseName}.${ext}`);
@@ -3984,6 +3996,7 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
 
     try {
       const bytes = await getBytes(saveUri);
+      beforeWrite?.();
       await vscode.workspace.fs.writeFile(saveUri, bytes);
       post({ type: "status", text: `Exported to ${saveUri.fsPath}` });
     } catch (err) {
