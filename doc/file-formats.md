@@ -454,6 +454,8 @@ Written beside an exported FE mesh when you ask for one (the FE Mesh panel's **H
 - **`subModelPart`** sizes are exactly what the Kratos MDPA writer emits (absent for hex-dominant meshes, which MDPA cannot represent).
 - The group and coverage facts come from one extra, deterministic meshing pass with the same input and options as the export.
 
+Queue-managed exports may choose a project-owned path with `handoffPath`. The manifest keeps the fields above and also publishes the shared version-1 contract fields: `exportId`, an external `source` reference with `revision`, `replayRevision`, effective `units` and `options`, `engine`/`engineVersion`, revisioned `artifacts`, named `groups`, and `boundaryCoverage`. This lets a study manager validate and attach the export without discarding CAD Preview's richer Part and kernel details.
+
 ## Export
 
 The **File ▸ Export…** menu item (or Ctrl+E) converts the currently displayed model into a compatible format and saves it via a native VS Code save dialog. The available targets depend on the source file's pipeline (`exportTargetsFor()` in `src/exportTargets.ts`):

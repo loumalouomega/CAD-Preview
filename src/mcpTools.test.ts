@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import * as fs from "fs/promises";
 import * as os from "os";
 import * as path from "path";
+import { createHash } from "node:crypto";
 import {
   describeCapabilities,
   allOpKinds,
@@ -30,6 +31,8 @@ import {
   downloadStandardPartTool,
   generateMeshTool,
   exportMeshTool,
+  cadJobStatusTool,
+  cadJobCancelTool,
   checkHandoffManifestTool,
   generatePrepReportTool,
   compareMeshRefinementTool,
@@ -493,8 +496,8 @@ function fakePipeline(overrides: Partial<Pipeline> = {}): Pipeline {
   } as Pipeline;
 }
 
-function ctx(pipeline: Pipeline = fakePipeline()): ToolContext {
-  return { pipeline, extensionPath: dir };
+function ctx(pipeline: Pipeline = fakePipeline(), jobControl?: ToolContext["jobControl"]): ToolContext {
+  return { pipeline, extensionPath: dir, ...(jobControl ? { jobControl } : {}) };
 }
 
 beforeEach(async () => {
@@ -3160,6 +3163,58 @@ describe("compare_mesh_refinement", () => {
 });
 
 describe("export_mesh", () => {
+  it("writes an owner-scoped execution receipt and the version-1 handoff contract before dispatch", async () => {
+    const runOwnedJob = vi.fn(async (_identity: { ownerId: string; requestId: string; jobId?: string }, action: () => Promise<unknown>) => action());
+    const control = {
+      runOwnedJob,
+      jobStatus: vi.fn(),
+      cancelOwnedJob: vi.fn(),
+    } as unknown as NonNullable<ToolContext["jobControl"]>;
+    const c = ctx(fakePipeline(), control);
+    const outputPath = path.join(dir, "queue-run", "beam.mdpa");
+    const handoffPath = path.join(dir, "queue-run", "handoff.json");
+    const receiptPath = path.join(dir, "queue-run", "cad-execution.json");
+    await setPart({ path: stpModel, name: "Inlet", surfaces: ["face-1"] });
+    const result = await exportMeshTool(c, {
+      path: stpModel,
+      format: "mdpaElements",
+      outputPath,
+      handoffPath,
+      ownerId: "study-1",
+      requestId: "mesh-task-1",
+      receiptPath,
+    });
+
+    expect(runOwnedJob).toHaveBeenCalledWith(expect.objectContaining({ ownerId: "study-1", requestId: "mesh-task-1" }), expect.any(Function));
+    expect((result as typeof result & { execution: { state: string } }).execution).toMatchObject({ version: 1, ownerId: "study-1", requestId: "mesh-task-1", operation: "export_mesh", state: "succeeded" });
+    const receipt = JSON.parse(await fs.readFile(receiptPath, "utf8"));
+    expect(receipt.source).toMatchObject({ kind: "external", path: stpModel, revision: createHash("sha256").update(await fs.readFile(stpModel)).digest("hex") });
+    expect(receipt.replayRevision).toMatch(/^[0-9a-f]{64}$/);
+    expect(receipt.artifacts.map((artifact: { role: string }) => artifact.role)).toEqual(["mesh", "handoff"]);
+    const handoff = JSON.parse(await fs.readFile(handoffPath, "utf8"));
+    expect(handoff).toMatchObject({
+      version: 1,
+      exportId: expect.any(String),
+      source: { kind: "external", path: stpModel, revision: receipt.source.revision },
+      replayRevision: expect.any(String),
+      units: { length: "mm", scale: 1 },
+      options: expect.any(Object),
+      engine: "gmsh",
+      engineVersion: expect.any(String),
+      artifacts: [{ role: "mesh", reference: { kind: "external", path: outputPath, revision: expect.any(String) } }],
+      groups: [{ name: "Inlet" }],
+      boundaryCoverage: { state: "available", unassignedSurfaceCount: 2 },
+    });
+    expect(await cadJobStatusTool(c, { receiptPath, ownerId: "study-1", requestId: "mesh-task-1" })).toMatchObject({ state: "succeeded" });
+    await expect(cadJobStatusTool(c, { receiptPath, ownerId: "another-study", requestId: "mesh-task-1" })).rejects.toThrow(/does not match/);
+    expect((await cadJobCancelTool(c, { receiptPath, ownerId: "study-1", requestId: "mesh-task-1" })).state).toBe("succeeded");
+    await expect(exportMeshTool(c, {
+      path: stpModel, format: "mdpaElements", outputPath, handoffPath,
+      ownerId: "study-1", requestId: "mesh-task-1", receiptPath,
+    })).rejects.toThrow(/already exists.*refusing to dispatch/i);
+    expect(runOwnedJob).toHaveBeenCalledTimes(1);
+  });
+
   it("routes msh through generateMesh's mshText", async () => {
     const c = ctx();
     const out = path.join(dir, "out.msh");

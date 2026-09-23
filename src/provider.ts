@@ -1,4 +1,6 @@
 import * as vscode from "vscode";
+import { AsyncLocalStorage } from "node:async_hooks";
+import { randomUUID } from "node:crypto";
 import { routeFile } from "./fileRouter";
 import { showDrawingSheetForm } from "./drawingSheetForm";
 import { resolveSheetSettings, type ResolvedSheetSettings, type SheetSettingsInput } from "./sheetSettings";
@@ -166,6 +168,14 @@ async function resolveMeshioCompanionsFor(uri: vscode.Uri, basename: string, mes
 interface PendingExport {
   resolve: (result: { data: string; binary: boolean }) => void;
   reject: (err: Error) => void;
+}
+
+interface MeshingJobScope {
+  documentKey: string;
+  requestId: string;
+  owner: string;
+  controller: AbortController;
+  state: "running" | "cancelling";
 }
 
 /**
@@ -371,16 +381,61 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
 
   /** Per-document owner-scoped views of `pipeline`, keyed by `uri.toString()`. */
   private readonly scopedPipelines = new Map<string, ScopedPipeline>();
+  private readonly meshingJobScope = new AsyncLocalStorage<MeshingJobScope>();
+  private readonly meshingJobs = new Map<string, MeshingJobScope>();
 
   /** The owner-scoped pipeline for one document (memoized; dropped on dispose). */
   private docPipeline(uri: vscode.Uri): ScopedPipeline {
     const key = uri.toString();
+    const meshJob = this.meshingJobScope.getStore();
+    if (meshJob?.documentKey === key) {
+      return this.pipeline.withJob({ owner: meshJob.owner, signal: meshJob.controller.signal, timeoutMs: kernelTimeoutMs() });
+    }
     let scoped = this.scopedPipelines.get(key);
     if (!scoped) {
       scoped = this.pipeline.withJob({ owner: key, timeoutMs: kernelTimeoutMs() });
       this.scopedPipelines.set(key, scoped);
     }
     return scoped;
+  }
+
+  private meshingJobKey(uri: vscode.Uri, requestId: string): string {
+    return `${uri.toString()}\0${requestId}`;
+  }
+
+  private async runMeshingJob<T>(uri: vscode.Uri, requestId: string, post: (msg: HostToWebview) => void, action: () => Promise<T>): Promise<T> {
+    if (!requestId.trim()) throw new Error("Meshing jobs require a request id.");
+    const documentKey = uri.toString();
+    const key = this.meshingJobKey(uri, requestId);
+    if (this.meshingJobs.has(key)) throw new Error(`Meshing request ${requestId} is already active for this document.`);
+    const job: MeshingJobScope = {
+      documentKey,
+      requestId,
+      owner: `mesh:${documentKey}:${requestId}`,
+      controller: new AbortController(),
+      state: "running",
+    };
+    this.meshingJobs.set(key, job);
+    try {
+      return await this.meshingJobScope.run(job, action);
+    } finally {
+      if (this.meshingJobs.get(key) === job) this.meshingJobs.delete(key);
+      try { post({ type: "meshingJobSettled", requestId }); } catch { /* The editor may have closed while the kernel call settled. */ }
+    }
+  }
+
+  private cancelMeshingJob(uri: vscode.Uri, requestId: string): MeshingJobScope | undefined {
+    const job = this.meshingJobs.get(this.meshingJobKey(uri, requestId));
+    if (!job || job.state === "cancelling") return job;
+    job.state = "cancelling";
+    job.controller.abort(new JobCancelledError("meshing job"));
+    this.pipeline.cancel({ owner: job.owner });
+    return job;
+  }
+
+  private assertMeshingJobActive(): void {
+    const job = this.meshingJobScope.getStore();
+    if (job?.controller.signal.aborted) throw new JobCancelledError("meshing job");
   }
 
   /**
@@ -1709,6 +1764,9 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
       // `handleOpPreview` replays under).
       // Drop this tab's queued/running kernel work first — nothing will read it.
       docPipeline.cancel();
+      for (const job of this.meshingJobs.values()) {
+        if (job.documentKey === documentKey) this.cancelMeshingJob(document.uri, job.requestId);
+      }
       this.scopedPipelines.delete(documentKey);
       void this.pipeline.disposeBRepCacheForDocument(documentKey);
       void this.pipeline.disposeBRepCacheForDocument(`${documentKey}::oppreview`);
@@ -2034,39 +2092,46 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
 
       if (msg.type === "meshingGenerate") {
         try {
-          const input = await this.resolveMeshInput(document.uri, route, currentEdits, msg.stl, "mm", currentBakedThrough);
-          if (!input) {
-            post({ type: "meshingError", message: "No mesh geometry available: missing STL data." });
-            return;
-          }
-          const { parts, options } = await this.resolveMeshPartsAndOptions(document.uri, input, msg.options);
-          const startedAt = Date.now();
-          const result = await docPipeline.generateMesh(this.context.extensionPath, input, options, parts);
-          post({
-            type: "meshingResult",
-            positions: encodeBuffer(result.positions),
-            indices: encodeBuffer(result.indices),
-            edges: encodeBuffer(result.edges),
-            elementGroups: result.elementGroups,
-            nodeCount: result.nodeCount,
-            elementCount: result.elementCount,
-            elapsedMs: Date.now() - startedAt,
-            quality: result.quality,
-            worstElements: result.worstElements && {
-              indices: encodeBuffer(result.worstElements.indices),
-              threshold: result.worstElements.threshold,
-              shownCount: result.worstElements.shownCount,
-              belowThresholdCount: result.worstElements.belowThresholdCount,
-            },
+          await this.runMeshingJob(document.uri, msg.requestId, post, async () => {
+            const input = await this.resolveMeshInput(document.uri, route, currentEdits, msg.stl, "mm", currentBakedThrough);
+            if (!input) throw new Error("No mesh geometry available: missing STL data.");
+            const { parts, options } = await this.resolveMeshPartsAndOptions(document.uri, input, msg.options);
+            const startedAt = Date.now();
+            const result = await this.docPipeline(document.uri).generateMesh(this.context.extensionPath, input, options, parts);
+            this.assertMeshingJobActive();
+            post({
+              type: "meshingResult",
+              requestId: msg.requestId,
+              positions: encodeBuffer(result.positions),
+              indices: encodeBuffer(result.indices),
+              edges: encodeBuffer(result.edges),
+              elementGroups: result.elementGroups,
+              nodeCount: result.nodeCount,
+              elementCount: result.elementCount,
+              elapsedMs: Date.now() - startedAt,
+              quality: result.quality,
+              worstElements: result.worstElements && {
+                indices: encodeBuffer(result.worstElements.indices),
+                threshold: result.worstElements.threshold,
+                shownCount: result.worstElements.shownCount,
+                belowThresholdCount: result.worstElements.belowThresholdCount,
+              },
+            });
           });
         } catch (err) {
-          post({ type: "meshingError", message: (err as Error).message });
+          post({ type: "meshingError", requestId: msg.requestId, message: (err as Error).message });
         }
         return;
       }
 
+      if (msg.type === "meshingCancel") {
+        const job = this.cancelMeshingJob(document.uri, msg.requestId);
+        if (job) post({ type: "status", text: "Cancelling meshing job…" });
+        return;
+      }
+
       if (msg.type === "meshingExport") {
-        await this.runMeshExport(document.uri, route, currentEdits, msg.target, msg.options, msg.stl, msg.unit ?? "mm", post, currentBakedThrough, msg.manifest === true);
+        await this.runMeshExport(document.uri, route, currentEdits, msg.target, msg.options, msg.stl, msg.unit ?? "mm", post, currentBakedThrough, msg.manifest === true, msg.requestId);
         return;
       }
 
@@ -4199,8 +4264,10 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
     /** Tier 0: leading baked-op count — the meshing STEP re-export replays the tail. */
     bakedThrough = 0,
     /** Also write `<output>.handoff.json` beside the saved mesh (roadmap "Simulation handoff manifest and boundary coverage"). */
-    manifest = false
+    manifest = false,
+    requestId: string = randomUUID()
   ): Promise<void> {
+    await this.runMeshingJob(uri, requestId, post, async () => {
       // Every file this export writes (primary first), for the manifest.
       const writtenFiles: Array<{ uri: vscode.Uri; bytes: Uint8Array }> = [];
       const captured =
@@ -4211,14 +4278,14 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
           return bytes;
         };
       const writeCompanion = async (companionUri: vscode.Uri, bytes: Uint8Array) => {
+        this.assertMeshingJobActive();
         await vscode.workspace.fs.writeFile(companionUri, bytes);
         writtenFiles.push({ uri: companionUri, bytes });
       };
       try {
         const input = await this.resolveMeshInput(uri, route, ops, stl, unit, bakedThrough);
         if (!input) {
-          post({ type: "meshingError", message: "No mesh geometry available: missing STL data." });
-          return;
+          throw new Error("No mesh geometry available: missing STL data.");
         }
         const { parts, options } = await this.resolveMeshPartsAndOptions(uri, input, meshOptions, unit);
         if (target === "msh") {
@@ -4339,6 +4406,7 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
           );
         }
         if (manifest && writtenFiles.length > 0 && route) {
+          this.assertMeshingJobActive();
           const onDisk = await readEdits(uri);
           const handoff = await buildExportHandoffManifest(
             { pipeline: this.docPipeline(uri), extensionPath: this.context.extensionPath },
@@ -4363,8 +4431,9 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
           });
         }
       } catch (err) {
-        post({ type: "error", message: `Export failed: ${(err as Error).message}` });
+        post({ type: "error", message: this.meshingJobScope.getStore()?.controller.signal.aborted ? "Meshing export cancelled." : `Export failed: ${(err as Error).message}` });
       }
+    });
   }
 
   /**
@@ -4440,7 +4509,9 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
     if (!saveUri) return;
 
     try {
+      this.assertMeshingJobActive();
       const bytes = await getBytes(saveUri);
+      this.assertMeshingJobActive();
       await vscode.workspace.fs.writeFile(saveUri, bytes);
       post({ type: "status", text: `Exported to ${saveUri.fsPath}` });
     } catch (err) {

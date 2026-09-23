@@ -18,6 +18,7 @@
 import * as fs from "fs/promises";
 import * as fsSync from "fs";
 import * as path from "path";
+import { createHash, randomUUID } from "node:crypto";
 import {
   validateEditOp,
   BREP_ONLY_OPS,
@@ -180,7 +181,7 @@ import {
 import { buildPreprocessZip, readPreprocessZip } from "./preprocessArchive";
 import { bomTsv, type BomRow } from "./bomExport";
 import { batchTsv, runBatch, type CollisionPolicy } from "./batchExport";
-import { buildHandoffManifest, checkHandoffManifest, type HandoffManifest, parseHandoffManifest, replayFingerprint, serializeHandoffManifest, HANDOFF_MANIFEST_SUFFIX } from "./handoffManifest";
+import { buildHandoffManifest, checkHandoffManifest, type HandoffManifest, parseHandoffManifest, replayFingerprint, HANDOFF_MANIFEST_SUFFIX } from "./handoffManifest";
 import { kernelVersions } from "./kernelVersions";
 import { sha256Hex } from "./hash";
 import { renderPrepReportHtml, serializePrepReport, type PrepReport, type ReportImage, type ReportSection } from "./prepReport";
@@ -254,6 +255,44 @@ export interface ToolContext {
   pipeline: Pipeline;
   /** Directory containing `dist/opencascade.wasm.wasm` + `dist/gmsh-core.wasm`. */
   extensionPath: string;
+  /** Optional owner-scoped runner controls. Standalone calls remain supported without them. */
+  jobControl?: OwnedJobControl;
+}
+
+export type OwnedJobState = "queued" | "running" | "cancelling" | "succeeded" | "failed" | "cancelled";
+
+export interface OwnedJobRecord {
+  version: 1;
+  jobId: string;
+  ownerId: string;
+  requestId: string;
+  state: OwnedJobState;
+  startedAt?: number;
+  finishedAt?: number;
+  message?: string;
+}
+
+export interface OwnedJobControl {
+  runOwnedJob<T>(identity: { ownerId: string; requestId: string; jobId?: string }, action: () => Promise<T>): Promise<T>;
+  jobStatus(ownerId: string, requestId: string): OwnedJobRecord | undefined;
+  cancelOwnedJob(ownerId: string, requestId: string): OwnedJobRecord | undefined;
+}
+
+export interface ExecutionReceiptV1 {
+  version: 1;
+  ownerId: string;
+  requestId: string;
+  jobId: string;
+  operation: "export_mesh";
+  state: OwnedJobState | "uncertain";
+  createdAt: string;
+  updatedAt: string;
+  source: { kind: "external"; path: string; revision: string };
+  replayRevision: string;
+  arguments: { format: string; outputPath: string; handoffPath?: string; unit: string; options: MeshOptions };
+  statusLookup: { tool: "job_status"; receiptPath: string };
+  artifacts: Array<{ role: "mesh" | "handoff"; reference: { kind: "external"; path: string; revision: string } }>;
+  message?: string;
 }
 
 /**
@@ -4654,7 +4693,7 @@ export function rewriteGeoMerge(text: string, xaoName: string): string {
 
 export async function exportMeshTool(
   ctx: ToolContext,
-  params: { path: string; format: string; outputPath: string; options?: Partial<MeshOptions>; unit?: string; manifest?: boolean },
+  params: { path: string; format: string; outputPath: string; options?: Partial<MeshOptions>; unit?: string; manifest?: boolean; handoffPath?: string; ownerId?: string; requestId?: string; receiptPath?: string },
   onProgress?: ProgressCallback
 ) {
   const modelPath = params.path;
@@ -4669,23 +4708,194 @@ export async function exportMeshTool(
   assertNotSourcePath(modelPath, outputPath);
   const warnings: string[] = [];
   const unit = resolveExportMeshUnit(params.unit, warnings);
+  const handoffRequested = params.manifest === true || params.handoffPath !== undefined;
+  const manifestPath = params.handoffPath ? path.resolve(params.handoffPath) : handoffRequested ? `${outputPath}${HANDOFF_MANIFEST_SUFFIX}` : undefined;
+  if (manifestPath && [modelPath, outputPath].some((candidate) => path.resolve(candidate) === manifestPath)) {
+    throw new Error("The handoff path must be separate from the source and mesh output.");
+  }
+  let persistResolvedOptions: ((options: MeshOptions) => Promise<void>) | undefined;
 
+  const execute = async () => {
   const input = await resolveMeshInputHeadless(ctx, modelPath, route, warnings, unit);
   const base = await effectiveMeshOptions(modelPath, params.options);
   const { parts, options } = await resolveMeshPartsAndOptionsHeadless(modelPath, input, base, warnings, unit);
+  await persistResolvedOptions?.(options);
 
   // Same start/done-only scoping as generate_mesh — no mid-call hook exists.
   onProgress?.({ progress: 0, total: 1, message: `Generating + exporting to ${format.id}...` });
   const written = await writeMeshExportFormat(ctx, modelPath, route, input, options, parts, format, outputPath, unit, warnings);
 
-  let manifestPath: string | null = null;
-  if (params.manifest) {
+  let writtenManifestPath: string | null = null;
+  if (handoffRequested && manifestPath) {
     onProgress?.({ progress: 0.5, total: 1, message: "Writing handoff manifest..." });
-    manifestPath = await writeHandoffManifest(ctx, modelPath, route, input, options, parts, format.id, written, unit, warnings);
+    writtenManifestPath = await writeHandoffManifest(ctx, modelPath, route, input, options, parts, format.id, written, unit, warnings, manifestPath);
   }
   const sizes = await Promise.all(written.map(async (p) => ({ path: p, bytes: (await fs.stat(p)).size })));
   onProgress?.({ progress: 1, total: 1, message: "Done" });
-  return { format: format.id, written: sizes, ...(params.manifest ? { manifest: manifestPath } : {}), warnings };
+  return { format: format.id, written: sizes, ...(params.manifest ? { manifest: writtenManifestPath } : {}), ...(params.handoffPath ? { handoff: writtenManifestPath } : {}), warnings };
+  };
+
+  const managed = [params.ownerId, params.requestId, params.receiptPath].some((value) => value !== undefined);
+  if (!managed) return execute();
+  if (!params.ownerId?.trim() || !params.requestId?.trim() || !params.receiptPath?.trim()) {
+    throw new Error("Queue-managed export_mesh requires ownerId, requestId, and receiptPath together.");
+  }
+  if (!ctx.jobControl) throw new Error("This CAD runner does not support owner-scoped mesh jobs.");
+  const receiptPath = path.resolve(params.receiptPath);
+  if ([modelPath, outputPath, manifestPath].some((candidate) => candidate && path.resolve(candidate) === receiptPath)) {
+    throw new Error("The execution receipt path must be separate from the source, mesh artifacts, and handoff manifest.");
+  }
+  const baseOptions = await effectiveMeshOptions(modelPath, params.options);
+  const now = new Date().toISOString();
+  const jobId = randomUUID();
+  const receipt: ExecutionReceiptV1 = {
+    version: 1,
+    ownerId: params.ownerId,
+    requestId: params.requestId,
+    jobId,
+    operation: "export_mesh",
+    state: "queued",
+    createdAt: now,
+    updatedAt: now,
+    source: { kind: "external", path: path.resolve(modelPath), revision: await hashFile(modelPath) },
+    replayRevision: await fingerprintReplayInputs(modelPath),
+    arguments: {
+      format: format.id,
+      outputPath,
+      ...(manifestPath ? { handoffPath: manifestPath } : {}),
+      unit,
+      options: baseOptions,
+    },
+    statusLookup: { tool: "job_status", receiptPath },
+    artifacts: [],
+  };
+  persistResolvedOptions = async (options) => {
+    receipt.arguments.options = options;
+    receipt.updatedAt = new Date().toISOString();
+    await writeJsonAtomic(receiptPath, receipt);
+  };
+  await createJsonAtomicNoReplace(receiptPath, receipt);
+  try {
+    receipt.state = "running";
+    receipt.updatedAt = new Date().toISOString();
+    await writeJsonAtomic(receiptPath, receipt);
+    const result = await ctx.jobControl.runOwnedJob({ ownerId: params.ownerId, requestId: params.requestId, jobId }, execute);
+    receipt.state = "succeeded";
+    receipt.updatedAt = new Date().toISOString();
+    receipt.artifacts = await collectExecutionArtifacts(outputPath, format.id, manifestPath);
+    await writeJsonAtomic(receiptPath, receipt);
+    return { ...result, execution: receipt };
+  } catch (error) {
+    const live = ctx.jobControl.jobStatus(params.ownerId, params.requestId);
+    receipt.state = live?.state === "cancelled" || live?.state === "cancelling" ? "cancelled" : "failed";
+    receipt.updatedAt = new Date().toISOString();
+    receipt.message = live?.message ?? (error instanceof Error ? error.message : String(error));
+    receipt.artifacts = await collectExecutionArtifacts(outputPath, format.id, manifestPath);
+    await writeJsonAtomic(receiptPath, receipt);
+    throw error;
+  }
+}
+
+async function collectExecutionArtifacts(
+  outputPath: string,
+  format: string,
+  handoffPath?: string
+): Promise<ExecutionReceiptV1["artifacts"]> {
+  const outputs = [outputPath, ...(format === "geoUnrolled" ? [`${outputPath}.xao`] : []), ...(handoffPath ? [handoffPath] : [])];
+  const artifacts: ExecutionReceiptV1["artifacts"] = [];
+  for (const file of outputs) {
+    try {
+      const revision = await hashFile(file);
+      artifacts.push({
+        role: file === handoffPath ? "handoff" : "mesh",
+        reference: { kind: "external", path: path.resolve(file), revision },
+      });
+    } catch { /* A failed writer may leave some companion artifacts absent. */ }
+  }
+  return artifacts;
+}
+
+async function createJsonAtomicNoReplace(file: string, value: unknown): Promise<void> {
+  await fs.mkdir(path.dirname(file), { recursive: true });
+  const temporary = `${file}.${process.pid}.${randomUUID()}.tmp`;
+  await fs.writeFile(temporary, JSON.stringify(value, null, 2) + "\n", { flag: "wx" });
+  try {
+    await fs.link(temporary, file);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "EEXIST") {
+      throw new Error(`Execution receipt already exists at ${file}; refusing to dispatch the request again.`);
+    }
+    throw error;
+  } finally {
+    await fs.unlink(temporary).catch(() => undefined);
+  }
+}
+
+async function writeJsonAtomic(file: string, value: unknown): Promise<void> {
+  await fs.mkdir(path.dirname(file), { recursive: true });
+  const temporary = `${file}.${process.pid}.${randomUUID()}.tmp`;
+  await fs.writeFile(temporary, JSON.stringify(value, null, 2) + "\n", { flag: "wx" });
+  await fs.rename(temporary, file);
+}
+
+export async function cadJobStatusTool(ctx: ToolContext, params: { receiptPath: string; ownerId: string; requestId: string }) {
+  const receipt = await readExecutionReceipt(params.receiptPath, params.ownerId, params.requestId);
+  const active = ctx.jobControl?.jobStatus(params.ownerId, params.requestId);
+  if (active) {
+    if (["succeeded", "failed", "cancelled"].includes(active.state) && ["queued", "running", "cancelling"].includes(receipt.state)) {
+      return { ...receipt, state: "uncertain", message: "The runner is terminal, but its final artifact receipt has not committed yet. Check again before attaching or retrying." };
+    }
+    return { ...receipt, state: active.state, ...(active.message ? { message: active.message } : {}) };
+  }
+  if (["queued", "running", "cancelling"].includes(receipt.state)) {
+    return { ...receipt, state: "uncertain", message: "The runner has no live record for this receipt. Do not resubmit automatically; inspect artifacts and reconcile this request." };
+  }
+  return receipt;
+}
+
+export async function cadJobCancelTool(ctx: ToolContext, params: { receiptPath: string; ownerId: string; requestId: string }) {
+  const receipt = await readExecutionReceipt(params.receiptPath, params.ownerId, params.requestId);
+  if (!["queued", "running", "cancelling"].includes(receipt.state)) return receipt;
+  const record = ctx.jobControl?.cancelOwnedJob(params.ownerId, params.requestId);
+  if (!record) {
+    return { ...receipt, state: "uncertain", message: "No live runner record matches this owner and request; cancellation could not be confirmed." };
+  }
+  if (["succeeded", "failed", "cancelled"].includes(record.state)) {
+    return { ...receipt, state: "uncertain", message: "The runner is terminal, but its final artifact receipt has not committed yet. Check status before attaching or retrying." };
+  }
+  // The export request owns receipt persistence. Avoid racing its terminal
+  // update from this separate cancellation request.
+  return { ...receipt, state: record.state, ...(record.message ? { message: record.message } : {}) };
+}
+
+async function readExecutionReceipt(receiptPath: string, ownerId: string, requestId: string): Promise<ExecutionReceiptV1> {
+  const file = path.resolve(receiptPath);
+  const value: unknown = JSON.parse(await fs.readFile(file, "utf8"));
+  if (!value || typeof value !== "object" || (value as { version?: unknown }).version !== 1) {
+    throw new Error(`Unsupported or malformed CAD execution receipt at ${file}; it was left untouched.`);
+  }
+  const receipt = value as ExecutionReceiptV1;
+  if (receipt.ownerId !== ownerId || receipt.requestId !== requestId) {
+    throw new Error("CAD execution receipt ownerId/requestId does not match the requested owner-scoped operation.");
+  }
+  return receipt;
+}
+
+async function hashFile(file: string): Promise<string> {
+  const bytes = await fs.readFile(file);
+  return createHash("sha256").update(bytes).digest("hex");
+}
+
+async function fingerprintReplayInputs(modelPath: string): Promise<string> {
+  const files = [editsSidecarPath(modelPath), partsSidecarPath(modelPath), annotationsSidecarPath(modelPath), planesSidecarPath(modelPath), meshOptionsSidecarPath(modelPath), geoScriptPath(modelPath)];
+  const hash = createHash("sha256");
+  for (const file of files) {
+    hash.update(path.basename(file)).update("\0");
+    try { hash.update(await fs.readFile(file)); }
+    catch { hash.update("<missing>"); }
+    hash.update("\0");
+  }
+  return hash.digest("hex");
 }
 
 /** The replay fingerprint a handoff manifest records for `modelPath` — the
@@ -4750,13 +4960,34 @@ async function writeHandoffManifest(
   formatId: string,
   written: string[],
   unit: DisplayUnit,
-  warnings: string[]
+  warnings: string[],
+  requestedPath?: string
 ): Promise<string> {
   const outputs = await Promise.all(written.map(async (p) => ({ path: p, bytes: new Uint8Array(await fs.readFile(p)) })));
   const manifest = await buildExportHandoffManifest(ctx, modelPath, route, input, options, parts, formatId, outputs, unit);
-  const manifestPath = `${written[0]}${HANDOFF_MANIFEST_SUFFIX}`;
+  const manifestPath = path.resolve(requestedPath ?? `${written[0]}${HANDOFF_MANIFEST_SUFFIX}`);
   assertNotSourcePath(modelPath, manifestPath);
-  await fs.writeFile(manifestPath, serializeHandoffManifest(manifest), "utf8");
+  const exportId = randomUUID();
+  const portable = {
+    ...manifest,
+    exportId,
+    source: { ...manifest.source, kind: "external" as const, revision: manifest.source.sha256 },
+    replayRevision: manifest.replay.fingerprint,
+    units: { length: manifest.unit.unit, scale: manifest.unit.scaleFactor },
+    options: manifest.meshOptions,
+    engine: manifest.engineUsed,
+    engineVersion: manifest.kernels["@loumalouomega/gmsh-wasm"] ?? "unavailable",
+    engineVersionSource: "CAD Preview build kernel package metadata",
+    artifacts: manifest.outputs.map((output) => ({
+      role: "mesh" as const,
+      ownerId: exportId,
+      reference: { kind: "external" as const, path: path.resolve(output.path), revision: output.sha256 },
+    })),
+    groups: manifest.parts.flatMap((part) => part.groups.map((group) => ({ name: part.name, ...group }))),
+    boundaryCoverage: { state: "available" as const, ...manifest.coverage },
+    findings: [...manifest.notes],
+  };
+  await fs.writeFile(manifestPath, JSON.stringify(portable, null, 2) + "\n", "utf8");
   if (route.strategy === "occt" && manifest.coverage.unresolvedParts.length > 0) {
     warnings.push(`Handoff manifest: Part(s) ${manifest.coverage.unresolvedParts.join(", ")} resolved to no physical group.`);
   }

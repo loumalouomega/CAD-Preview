@@ -17,7 +17,7 @@ import * as path from "path";
 // ordering live in `harness.mjs`, shared with `../webview-test/run.mjs` — see
 // that module's header for why this one is factored out when `mcp-smoke`/`perf`
 // deliberately are not.
-import { ROOT, LAUNCH_ARGS, fixture, sleep, startServer, openHarness, post, populate } from "./harness.mjs";
+import { ROOT, LAUNCH_ARGS, fixture, sleep, startServer, openHarness, post, postMeshingResult, populate } from "./harness.mjs";
 
 const OUT = path.join(ROOT, "doc", "public", "screenshots");
 const IMAGES = path.join(ROOT, "images");
@@ -350,7 +350,7 @@ const SHOTS = [
     file: "mesh-overlay.png",
     setup: async (page) => {
       await populate(page);
-      await post(page, fixture("meshingResult"));
+      await postMeshingResult(page);
       await heroChrome(page, { gmsh: true });
       await sleep(900);
     },

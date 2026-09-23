@@ -18,13 +18,14 @@ console.debug = console.error.bind(console);
 /* eslint-enable no-console */
 
 import * as path from "path";
+import { randomUUID } from "node:crypto";
 import { McpServer, ResourceTemplate } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import type { RequestHandlerExtra } from "@modelcontextprotocol/sdk/shared/protocol.js";
 import type { ServerRequest, ServerNotification } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import { AsyncLocalStorage } from "async_hooks";
-import { createKernelClient, type JobOptions, type ScopedPipeline } from "./kernelClient";
+import { createKernelClient, JobCancelledError, type JobOptions, type ScopedPipeline } from "./kernelClient";
 import { KERNELS_BY_FUNCTION } from "./kernelActivity";
 import {
   describeCapabilities,
@@ -84,6 +85,8 @@ import {
   setMeshOptions,
   generateMeshTool,
   exportMeshTool,
+  cadJobStatusTool,
+  cadJobCancelTool,
   compareMeshRefinementTool,
   estimateMeshBudgetTool,
   analyzePassagesTool,
@@ -96,6 +99,8 @@ import {
   savePreprocessTool,
   loadPreprocessTool,
   type ToolContext,
+  type OwnedJobControl,
+  type OwnedJobRecord,
   type ProgressCallback,
 } from "./mcpTools";
 import { HOLE_STANDARDS } from "./holeStandards";
@@ -129,8 +134,67 @@ const extensionPath = process.env.CAD_PREVIEW_ROOT ?? path.join(__dirname, "..")
 const kernelClient = createKernelClient(extensionPath);
 const jobScope = new AsyncLocalStorage<JobOptions>();
 const scopedByJob = new WeakMap<JobOptions, ScopedPipeline>();
+const ownedJobs = new Map<string, { record: OwnedJobRecord; controller?: AbortController }>();
+const ownedJobKey = (ownerId: string, requestId: string) => `${ownerId}\0${requestId}`;
+const jobControl: OwnedJobControl = {
+  async runOwnedJob<T>(identity: { ownerId: string; requestId: string; jobId?: string }, action: () => Promise<T>) {
+    if (!identity.ownerId.trim() || !identity.requestId.trim()) throw new Error("Owned CAD jobs require stable ownerId and requestId values.");
+    const key = ownedJobKey(identity.ownerId, identity.requestId);
+    if (ownedJobs.has(key)) throw new Error("A CAD job with this ownerId/requestId is already recorded; refusing to dispatch it again.");
+    const record: OwnedJobRecord = {
+      version: 1,
+      jobId: identity.jobId ?? randomUUID(),
+      ownerId: identity.ownerId,
+      requestId: identity.requestId,
+      state: "queued",
+    };
+    const controller = new AbortController();
+    const parentSignal = jobScope.getStore()?.signal;
+    const abortFromParent = () => controller.abort(parentSignal?.reason);
+    if (parentSignal?.aborted) abortFromParent();
+    else parentSignal?.addEventListener("abort", abortFromParent, { once: true });
+    ownedJobs.set(key, { record, controller });
+    while (ownedJobs.size > 500) {
+      const oldest = ownedJobs.entries().next().value as [string, { record: OwnedJobRecord; controller?: AbortController }] | undefined;
+      if (!oldest || ["queued", "running", "cancelling"].includes(oldest[1].record.state)) break;
+      ownedJobs.delete(oldest[0]);
+    }
+    record.state = "running";
+    record.startedAt = Date.now();
+    try {
+      const result = await jobScope.run({ owner: `owned-cad-${key}`, signal: controller.signal }, action);
+      record.state = "succeeded";
+      return result;
+    } catch (error) {
+      record.state = controller.signal.aborted || error instanceof JobCancelledError ? "cancelled" : "failed";
+      record.message = error instanceof Error ? error.message : String(error);
+      throw error;
+    } finally {
+      record.finishedAt = Date.now();
+      controller.signal.removeEventListener("abort", abortFromParent);
+      const entry = ownedJobs.get(key);
+      if (entry) delete entry.controller;
+    }
+  },
+  jobStatus(ownerId, requestId) {
+    const entry = ownedJobs.get(ownedJobKey(ownerId, requestId));
+    return entry ? { ...entry.record } : undefined;
+  },
+  cancelOwnedJob(ownerId, requestId) {
+    const key = ownedJobKey(ownerId, requestId);
+    const entry = ownedJobs.get(key);
+    if (!entry) return undefined;
+    if (entry.record.state === "queued" || entry.record.state === "running") {
+      entry.record.state = "cancelling";
+      entry.controller?.abort(new JobCancelledError("export_mesh"));
+      kernelClient.cancel({ owner: `owned-cad-${key}` });
+    }
+    return { ...entry.record };
+  },
+};
 const ctx: ToolContext = {
   extensionPath,
+  jobControl,
   pipeline: new Proxy(kernelClient, {
     get(target, key, receiver) {
       const opts = jobScope.getStore();
@@ -1401,7 +1465,7 @@ server.registerTool(
   "export_mesh",
   {
     description:
-      "Generate a mesh and write it to outputPath in the given format (format ids from describe_capabilities: mdpaElements, mdpaGeometries, msh, msh2, geoUnrolled, vtk, unv, inp, bdf, su2, mesh, stl, diff, off). geoUnrolled also writes a required .xao companion beside the output for B-rep sources. Optional unit (mm|cm|m|in|ft, default mm) applies a real geometric scale to the meshed geometry BEFORE Gmsh ever sees it (mirroring export_brep's unit param), with sizeMin/sizeMax and any per-part meshSize proportionally rescaled to match — generate_mesh (and the interactive Generate button) always stay native mm; this only affects export_mesh's written file. Emits notifications/progress at start and completion if you set _meta.progressToken (start/done only — see generate_mesh's note).",
+      "Generate a mesh and write it to outputPath in the given format (format ids from describe_capabilities: mdpaElements, mdpaGeometries, msh, msh2, geoUnrolled, vtk, unv, inp, bdf, su2, mesh, stl, diff, off). geoUnrolled also writes a required .xao companion beside the output for B-rep sources. Optional unit (mm|cm|m|in|ft, default mm) applies a real geometric scale to the meshed geometry BEFORE Gmsh ever sees it (mirroring export_brep's unit param), with sizeMin/sizeMax and any per-part meshSize proportionally rescaled to match — generate_mesh (and the interactive Generate button) always stay native mm; this only affects export_mesh's written file. Optional handoffPath writes a versioned simulation handoff contract for the selected export. For queue-managed dispatch, supply ownerId, requestId and receiptPath together: a durable receipt is written before dispatch, exposes artifact revisions and refuses duplicate receipt paths. Emits notifications/progress at start and completion if you set _meta.progressToken (start/done only — see generate_mesh's note).",
     inputSchema: {
       path: modelPath,
       format: z.string().describe("Mesh export format id"),
@@ -1412,14 +1476,44 @@ server.registerTool(
         .boolean()
         .optional()
         .describe("Also write <output>.handoff.json: source + edit-history fingerprints, effective options and unit, engine and kernel versions, output hashes, and per-Part physical groups with boundary coverage (costs one extra deterministic meshing pass)"),
+      handoffPath: z.string().optional().describe("Explicit absolute path for a version-1 simulation handoff contract."),
+      ownerId: z.string().optional().describe("Stable study/queue owner; required with requestId and receiptPath for durable execution tracking."),
+      requestId: z.string().optional().describe("Stable queue task identity; required with ownerId and receiptPath for durable execution tracking."),
+      receiptPath: z.string().optional().describe("Absolute path for the atomic execution receipt. Reusing an existing receipt refuses dispatch."),
     },
   },
   wrap(
     (
-      args: { path: string; format: string; outputPath: string; options?: Record<string, unknown>; unit?: string; manifest?: boolean },
+      args: { path: string; format: string; outputPath: string; options?: Record<string, unknown>; unit?: string; manifest?: boolean; handoffPath?: string; ownerId?: string; requestId?: string; receiptPath?: string },
       onProgress
     ) => exportMeshTool(ctx, { ...args, options: args.options as Partial<MeshOptions> | undefined }, onProgress)
   )
+);
+
+server.registerTool(
+  "job_status",
+  {
+    description: "Read a version-1 CAD execution receipt by exact ownerId/requestId. A receipt with no live runner record after restart is uncertain and must not be resubmitted automatically.",
+    inputSchema: {
+      receiptPath: z.string().describe("Absolute path to the execution receipt written by queue-managed export_mesh"),
+      ownerId: z.string().describe("Exact owner that dispatched the job"),
+      requestId: z.string().describe("Exact stable request id that dispatched the job"),
+    },
+  },
+  wrap((args: { receiptPath: string; ownerId: string; requestId: string }) => cadJobStatusTool(ctx, args))
+);
+
+server.registerTool(
+  "job_cancel",
+  {
+    description: "Cancel a live CAD export only when receiptPath, ownerId and requestId all match; returns the owner-scoped lifecycle state.",
+    inputSchema: {
+      receiptPath: z.string().describe("Absolute path to the execution receipt written by queue-managed export_mesh"),
+      ownerId: z.string().describe("Exact owner that dispatched the job"),
+      requestId: z.string().describe("Exact stable request id that dispatched the job"),
+    },
+  },
+  wrap((args: { receiptPath: string; ownerId: string; requestId: string }) => cadJobCancelTool(ctx, args))
 );
 
 server.registerTool(
@@ -1576,6 +1670,13 @@ server.registerTool(
 );
 
 async function main(): Promise<void> {
+  // A non-TTY stdin ReadStream can be unreferenced while idle under Node's
+  // stdio pipe implementation. Keep the MCP process alive until its client
+  // closes the input stream, then release the timer normally.
+  const stdinKeepAlive = setInterval(() => undefined, 2_000_000_000);
+  const releaseStdinKeepAlive = () => clearInterval(stdinKeepAlive);
+  process.stdin.once("end", releaseStdinKeepAlive);
+  process.stdin.once("close", releaseStdinKeepAlive);
   await server.connect(new StdioServerTransport());
   console.error(`cad-preview MCP server ready (extensionPath: ${extensionPath})`);
 }

@@ -446,6 +446,7 @@ export type HostToWebview =
   | { type: "viewState"; view: ViewState | null }
   | {
       type: "meshingResult";
+      requestId: string;
       positions: string;
       indices: string;
       /** True element-edge line segments (base64 `Uint32Array` index pairs) for
@@ -471,7 +472,8 @@ export type HostToWebview =
         belowThresholdCount: number;
       };
     }
-  | { type: "meshingError"; message: string }
+  | { type: "meshingError"; requestId: string; message: string }
+  | { type: "meshingJobSettled"; requestId: string }
   | ({ type: "viewerDefaults" } & ViewerDefaults)
   /** What the menubar's document chip shows: which file this is, what format it
    * routed as, and whether it carries unsaved edits. Nothing else carried any of
@@ -752,8 +754,9 @@ export type WebviewToHost =
   | { type: "exportResult"; requestId: string; data: string; binary: boolean }
   | { type: "exportError"; requestId: string; message: string }
   | { type: "meshingChanged"; options: MeshOptions }
-  | { type: "meshingGenerate"; options: MeshOptions; stl?: string }
-  | { type: "meshingExport"; target: MeshExportFormatId; options: MeshOptions; stl?: string; unit?: DisplayUnit; manifest?: boolean }
+  | { type: "meshingGenerate"; requestId: string; options: MeshOptions; stl?: string }
+  | { type: "meshingExport"; requestId: string; target: MeshExportFormatId; options: MeshOptions; stl?: string; unit?: DisplayUnit; manifest?: boolean }
+  | { type: "meshingCancel"; requestId: string }
   /** Apply a saved meshing preset by name — the host resolves the merged
    * (user + bundled) library itself, converts units, and writes the
    * document's `.mesh.json` (+ regenerated `.geo`), re-posting

@@ -34,6 +34,7 @@ import {
   startServer,
   openHarness,
   post,
+  postMeshingResult,
   populate,
 } from "../screenshots/harness.mjs";
 
@@ -353,7 +354,7 @@ test("overlays: meshingResult lights the toggle and hides model faces; Clear rev
   const before = await page.evaluate(() => document.getElementById("meshing-toggle")?.classList.contains("active"));
   assert(before === false, "the FE Mesh toggle starts inactive");
 
-  await post(page, fixture("meshingResult"));
+  await postMeshingResult(page);
   await sleep(700);
   const on = await page.evaluate(() => document.getElementById("meshing-toggle")?.classList.contains("active"));
   assert(on === true, "posting meshingResult lights the FE Mesh toggle");
@@ -1331,7 +1332,7 @@ test("dock status: counts follow the geometry, the mesh stat follows the overlay
   assert((await text("vc-count-entities")) === expected, `the counts read straight off the geometry message (want ${JSON.stringify(expected)}, got ${JSON.stringify(await text("vc-count-entities"))})`);
   assert((await text("vc-count-mesh")) === null, "no FE-mesh stat is rendered before a mesh exists (the [hidden] override holds)");
 
-  await post(page, fixture("meshingResult"));
+  await postMeshingResult(page);
   await sleep(500);
   assert(
     (await text("vc-count-mesh")) === "mesh 10,000 el",
@@ -1344,7 +1345,7 @@ test("dock status: counts follow the geometry, the mesh stat follows the overlay
 
   // Regenerating and then loading a new model must also drop it: the overlay is
   // disposed by setModel(), so a surviving stat would describe a mesh that is gone.
-  await post(page, fixture("meshingResult"));
+  await postMeshingResult(page);
   await sleep(500);
   assert((await text("vc-count-mesh")) !== null, "the stat comes back with a new result");
   await post(page, geo);
@@ -3061,6 +3062,12 @@ test("handoff manifest: the Export checkbox adds manifest:true to meshingExport,
     return !!l && l.offsetParent !== null && !!document.getElementById("meshing-export-row")?.contains(l);
   });
   assert(visible, "the Handoff manifest toggle renders inside the export row");
+  // Export now owns a request-scoped busy state; settle the first host request
+  // before starting the second one so the button is enabled just as it would
+  // be after a real export completes.
+  if (typeof plain?.requestId === "string") {
+    await post(page, { type: "meshingJobSettled", requestId: plain.requestId });
+  }
   await page.evaluate(() => {
     document.getElementById("meshing-export-manifest").checked = true;
     document.getElementById("meshing-export").click();
@@ -3944,7 +3951,7 @@ test("clip V3: the overlay toggle preserves the cap in both states", async (page
   const onModel = await magentaFraction(page);
   assert(onModel > CAP_FLOOR, `the model clip is capped (got ${onModel.toFixed(4)})`);
 
-  await post(page, fixture("meshingResult"));
+  await postMeshingResult(page);
   await sleep(700);
   const onOverlay = await magentaFraction(page);
   assert(onOverlay > CAP_FLOOR, `the overlay clip is capped too (got ${onOverlay.toFixed(4)})`);
@@ -4712,7 +4719,7 @@ test("edits and FE Mesh headers: a count badge, a stat, and the actions moved in
       return { text: el.textContent.trim(), rendered: el.offsetParent !== null };
     });
   assert((await stat()).rendered === false, "no header stat before a mesh exists");
-  await post(page, fixture("meshingResult"));
+  await postMeshingResult(page);
   await sleep(500);
   const s1 = await stat();
   assert(s1.rendered && s1.text === "10,000 el", `the header stat reports the element count (got ${JSON.stringify(s1)})`);

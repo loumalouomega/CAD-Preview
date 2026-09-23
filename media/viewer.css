@@ -3945,11 +3945,12 @@ input[type="range"].meshing-slider:focus {
   display: flex;
   align-items: center;
   gap: var(--ui-s-2);
-  flex-wrap: nowrap;
+  flex-wrap: wrap;
   margin-bottom: var(--ui-s-3);
 }
 #meshing-actions #meshing-generate {
   flex: 1;
+  min-width: 66%;
   height: 30px;
   opacity: 1;
   padding: 0 var(--ui-s-3);
@@ -3963,6 +3964,9 @@ input[type="range"].meshing-slider:focus {
 }
 #meshing-actions #meshing-generate:disabled {
   opacity: 0.5;
+}
+#meshing-actions .panel-icon-btn[hidden] {
+  display: none;
 }
 #meshing-actions .panel-icon-btn {
   width: 30px;

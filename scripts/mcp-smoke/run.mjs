@@ -127,6 +127,10 @@ async function callRaw(name, args) {
 
 /** tools/call wrapper: unwraps + JSON-parses the first (text) content block. */
 async function call(name, args) {
+  // `load_model` is read-only and the OCCT worker self-resets after a rare
+  // accumulated-heap WASM abort. Retrying this operation does not duplicate
+  // any side effect, and lets later fixtures start from the reset kernel.
+  if (name === "load_model") return callWithCleanRetry(name, args, () => {});
   const result = await callRaw(name, args);
   return JSON.parse(result.content?.[0]?.text ?? "");
 }
@@ -177,7 +181,7 @@ async function callWithCleanRetry(name, args, resetState) {
   if (!/kernel has been reset/i.test(message)) fail(`${name} returned an error: ${message}`);
   console.error(`  (transient: ${name} hit a WASM abort, kernel auto-reset — resetting state and retrying once) ${message}`);
   resetState();
-  return call(name, args);
+  return JSON.parse((await callRaw(name, args)).content?.[0]?.text ?? "");
 }
 
 /** Max absolute coordinate magnitude across every node in a Gmsh MSH 4.1
@@ -250,8 +254,8 @@ try {
   assert(capsText.length > 100, "resources/read cad-preview://capabilities returns JSON text");
 
   const tools = (await request("tools/list", {})).tools.map((t) => t.name);
-  assert(tools.length === 65, `tools/list exposes 65 tools (got ${tools.length}: ${tools.join(", ")})`);
-  for (const t of ["list_workspace_models", "check_interference_all", "generate_bom", "generate_hole_table", "render_ops_prefix", "check_tolerance", "inspect_meshio_fields", "pin_annotation", "import_svg", "save_mesh_preset", "list_mesh_presets", "apply_mesh_preset", "compare_mesh_refinement", "export_tessellated_stl", "estimate_mesh_budget", "analyze_passages", "measure_mesh_deviation", "save_sheet_template", "list_sheet_templates", "batch_export", "check_handoff_manifest", "generate_prep_report"]) {
+  assert(tools.length === 67, `tools/list exposes 67 tools (got ${tools.length}: ${tools.join(", ")})`);
+  for (const t of ["list_workspace_models", "check_interference_all", "generate_bom", "generate_hole_table", "render_ops_prefix", "check_tolerance", "inspect_meshio_fields", "pin_annotation", "import_svg", "save_mesh_preset", "list_mesh_presets", "apply_mesh_preset", "compare_mesh_refinement", "export_tessellated_stl", "estimate_mesh_budget", "analyze_passages", "measure_mesh_deviation", "save_sheet_template", "list_sheet_templates", "batch_export", "check_handoff_manifest", "generate_prep_report", "job_status", "job_cancel"]) {
     assert(tools.includes(t), `tools/list exposes ${t}`);
   }
 
@@ -6381,8 +6385,16 @@ try {
     await call("set_part", { path: hm, name: "Ghost", surfaces: ["face-99"] });
     await call("set_part", { path: hm, name: "Empty" });
     const out = path.join(dir, "handoff.mdpa");
-    const r = await call("export_mesh", { path: hm, format: "mdpaElements", outputPath: out, unit: "in", options: { sizeMin: 0, sizeMax: 1.5, dimension: 3 }, manifest: true });
+    const receiptPath = path.join(dir, "handoff.execution.json");
+    const ownerId = "mcp-smoke-study";
+    const requestId = "mcp-smoke-handoff-export";
+    const r = await call("export_mesh", { path: hm, format: "mdpaElements", outputPath: out, unit: "in", options: { sizeMin: 0, sizeMax: 1.5, dimension: 3 }, manifest: true, ownerId, requestId, receiptPath });
     assert(r.manifest === `${out}.handoff.json` && fs.existsSync(r.manifest), "export_mesh writes <output>.handoff.json");
+    assert(r.execution?.state === "succeeded" && fs.existsSync(receiptPath), "queue-managed export writes a terminal execution receipt");
+    const jobStatus = await call("job_status", { receiptPath, ownerId, requestId });
+    assert(jobStatus.state === "succeeded" && jobStatus.jobId === r.execution.jobId, "job_status resolves the same completed owner/request receipt");
+    const cancelled = await call("job_cancel", { receiptPath, ownerId, requestId });
+    assert(cancelled.state === "succeeded", "job_cancel does not change an already completed job");
     const m = JSON.parse(fs.readFileSync(r.manifest, "utf8"));
     assert(m.unit.unit === "in" && Math.abs(m.unit.scaleFactor - 1 / 25.4) < 1e-12, "the unit conversion is recorded");
     assert(m.notes.filter((n) => /scaled by/.test(n)).length === 1, "…and stated exactly once");

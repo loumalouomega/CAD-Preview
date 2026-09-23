@@ -156,6 +156,39 @@ describe("createKernelClient", () => {
     await expect(p2).resolves.toEqual({ available: true });
   });
 
+  it("cancels a queued owner's kernel work without interrupting the active owner's call", async () => {
+    const client = createKernelClient("/ext");
+    const active = client.withJob({ owner: "tab-a" }).isRenderAvailable();
+    const queued = client.withJob({ owner: "tab-b" }).isRenderAvailable();
+    await Promise.resolve(); await Promise.resolve();
+    const child = fakeChildren[0];
+    expect(child.sent).toHaveLength(1);
+    expect(client.jobs().find((job) => job.owner === "tab-b")?.state).toBe("queued");
+    expect(client.cancel({ owner: "tab-b" })).toBe(1);
+    expect(child.killed).toEqual([]);
+    reply(child, child.sent[0].id, { available: true });
+    await expect(active).resolves.toEqual({ available: true });
+    await expect(queued).rejects.toThrow(/cancelled/);
+    expect(child.sent).toHaveLength(1);
+  });
+
+  it("kills only the active owner's kernel request", async () => {
+    const client = createKernelClient("/ext");
+    const active = client.withJob({ owner: "tab-a" }).isRenderAvailable();
+    const queued = client.withJob({ owner: "tab-b" }).isRenderAvailable();
+    await Promise.resolve(); await Promise.resolve();
+    const firstChild = fakeChildren[0];
+    expect(client.cancel({ owner: "wrong-owner" })).toBe(0);
+    expect(client.cancel({ owner: "tab-a" })).toBe(1);
+    await expect(active).rejects.toThrow();
+    await Promise.resolve(); await Promise.resolve();
+    expect(firstChild.killed).toEqual(["SIGKILL"]);
+    const secondChild = fakeChildren[1];
+    expect(secondChild.sent).toHaveLength(1);
+    reply(secondChild, secondChild.sent[0].id, { available: false });
+    await expect(queued).resolves.toEqual({ available: false });
+  });
+
   it("an unexpected child exit rejects any still-pending request", async () => {
     const client = createKernelClient("/ext");
     const promise = client.isRenderAvailable();

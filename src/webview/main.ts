@@ -1170,6 +1170,7 @@ const meshingModel = new MeshingModel(() => {
   // stats/error readout rather than showing a result for the old options.
   meshingPanel.render(meshingModel.get());
 });
+let activeMeshingRequestId: string | null = null;
 
 /** Snapshot of the displayed model as base64 STL, for mesh-source documents only. */
 async function currentStlIfMeshSource(): Promise<string | undefined> {
@@ -1192,12 +1193,20 @@ const meshingPanel = new MeshingPanel(document.getElementById("meshing-panel")!,
     post({ type: "meshDeviationRequest", requestId, tolerance, options: meshingModel.get(), stl: await currentStlIfMeshSource() });
   },
   onGenerate: async () => {
-    meshingPanel.setBusy(true);
-    post({ type: "meshingGenerate", options: meshingModel.get(), stl: await currentStlIfMeshSource() });
+    const stl = await currentStlIfMeshSource();
+    const requestId = `${Date.now()}-${Math.random()}`;
+    activeMeshingRequestId = requestId;
+    meshingPanel.setBusy(true, requestId, "Generating…");
+    post({ type: "meshingGenerate", requestId, options: meshingModel.get(), stl });
   },
   onExport: async (format, unit, manifest) => {
-    post({ type: "meshingExport", target: format, options: meshingModel.get(), stl: await currentStlIfMeshSource(), unit, ...(manifest ? { manifest: true } : {}) });
+    const stl = await currentStlIfMeshSource();
+    const requestId = `${Date.now()}-${Math.random()}`;
+    activeMeshingRequestId = requestId;
+    meshingPanel.setBusy(true, requestId, "Exporting mesh…");
+    post({ type: "meshingExport", requestId, target: format, options: meshingModel.get(), stl, unit, ...(manifest ? { manifest: true } : {}) });
   },
+  onCancel: (requestId) => post({ type: "meshingCancel", requestId }),
   onMeshOps: (ops) => {
     const requestId = `${Date.now()}-${Math.random()}`;
     meshioOpsRequestId = requestId;
@@ -5688,7 +5697,7 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
       break;
 
     case "meshingResult":
-      meshingPanel.setBusy(false);
+      if (msg.requestId !== activeMeshingRequestId) break;
       viewer.setMeshOverlay(buildFEMesh(msg.positions, msg.indices, msg.edges, msg.elementGroups));
       renderDockMeshStats({ nodes: msg.nodeCount, elements: msg.elementCount, minQuality: msg.quality?.min });
       // A successful generate always results in a visible overlay, so bring the
@@ -5726,10 +5735,16 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
       break;
 
     case "meshingError":
+      if (msg.requestId !== activeMeshingRequestId) break;
       // Nothing new was displayed on failure — leave `meshingEnabled`/the toggle's
       // state exactly as it was (whatever overlay, if any, was already shown stays).
-      meshingPanel.setBusy(false);
       meshingPanel.render(meshingModel.get(), { error: msg.message });
+      break;
+
+    case "meshingJobSettled":
+      if (msg.requestId !== activeMeshingRequestId) break;
+      activeMeshingRequestId = null;
+      meshingPanel.setBusy(false);
       break;
   }
 });

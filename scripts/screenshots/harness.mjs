@@ -146,6 +146,28 @@ export async function openHarness(page, base) {
 
 export const post = (page, msg) => page.evaluate((m) => window.__post(m), msg);
 
+/** Drive the webview's real Generate callback, then answer that exact request
+ * with the deterministic mesh fixture. Result messages from stale requests
+ * are intentionally ignored by the production UI, so tests and screenshots
+ * must preserve the request/response identity used by the extension host. */
+export async function postMeshingResult(page) {
+  const sentBefore = await page.evaluate(() => window.__sent?.length ?? 0);
+  // Programmatic click also works when a screenshot hides the side panel.
+  await page.evaluate(() => document.getElementById("meshing-generate")?.click());
+  await page.waitForFunction(
+    (start) => window.__sent?.slice(start).some((message) => message.type === "meshingGenerate"),
+    sentBefore,
+    { timeout: 5000 }
+  );
+  const requestId = await page.evaluate(
+    (start) => window.__sent?.slice(start).findLast((message) => message.type === "meshingGenerate")?.requestId,
+    sentBefore
+  );
+  if (typeof requestId !== "string") throw new Error("Generate did not post a mesh request id");
+  await post(page, { ...fixture("meshingResult"), requestId });
+  await post(page, { type: "meshingJobSettled", requestId });
+}
+
 /**
  * Post the full set of fixtures so every panel is populated, then settle.
  *

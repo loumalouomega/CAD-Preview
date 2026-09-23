@@ -55,7 +55,7 @@ The webview runs in a Chromium browser context. These modules are bundled into `
 | `src/webview/meshEdits.ts` | Webview edit engine for mesh formats (Three.js transforms; unit-tested) |
 | `src/webview/meshFacets.ts` | Segment a mesh into coplanar facets → per-face sub-meshes (unit-tested) |
 | `src/webview/meshingModel.ts` | Current FE-mesh `MeshOptions` store, DOM-free (unit-tested) |
-| `src/webview/meshingPanel.ts` | FE Mesh panel DOM — size slider/presets, part sizes, Advanced settings, Generate/Export/Clear, quality histogram |
+| `src/webview/meshingPanel.ts` | FE Mesh panel DOM — size slider/presets, part sizes, Advanced settings, Generate/Export/Cancel/Clear, quality histogram |
 | `src/webview/meshSizeHeuristics.ts` | Pure size-slider math: bbox default, log mapping, element-count estimate (unit-tested) |
 | `src/webview/visibilityState.ts` | Transient Parts hide/isolate + Tree per-node hide state, DOM-free (unit-tested) |
 | `src/webview/treeFilter.ts` | Pure Components-tree label-substring filter + ancestor inclusion (unit-tested) |
@@ -1243,6 +1243,7 @@ interface MeshingPanelCallbacks {
   onPartMeshSize: (index: number, size: number | undefined) => void  // undefined = inherit global
   onGenerate: () => void
   onExport: (format: MeshExportFormatId, unit: DisplayUnit) => void  // format + unit currently picked in the two `<select>`s
+  onCancel: (requestId: string) => void
   onClear: () => void
   onMeshOps: (ops: MeshioOpSpec[]) => void  // one validated op per Run (meshio++ sources only)
 }
@@ -1256,7 +1257,7 @@ class MeshingPanel {
   setMeshioOpsAvailable(enabled: boolean): void
   renderMeshOpsResult(steps: Array<{ op: string; applied: boolean; detail: string }>, warnings: string[]): void
   renderMeshOpsStatus(text: string, isError: boolean): void
-  setBusy(busy: boolean): void
+  setBusy(busy: boolean, requestId?: string, message?: string): void
 }
 ```
 
@@ -1264,13 +1265,15 @@ class MeshingPanel {
 
 The slider commits on `change` (release) only; `input` (mid-drag) refreshes the readout/warning locally so dragging never spams `meshingChanged`. Commits that would drop `sizeMax` below the current `sizeMin` include `sizeMin: 0` in the same patch (guarding `validateMeshOptions`' pair rule). `setModelExtents()` is pushed by `main.ts` on each model load and feeds the readout's element-count estimate and the presets; `setSourceKind("brep")` disables the STL angle field (it only feeds the STL reclassification path), mirroring `editsPanel.setBRepOnly`. `renderParts()` rebuilds the Part sizes rows — `onPartMeshSize` routes to the same `PartsModel.setMeshSize` the Parts panel uses, so the two inputs are views of one value.
 
-`setBusy(true)` disables `#meshing-generate` (a slow WASM call can't be re-triggered mid-flight) and shows the indeterminate `#meshing-progress` bar (CSS keyframe sweep — GMSH's `generate()` is one opaque blocking call with no progress hook to report a real percentage from) plus a `"Generating…"` status line; `setBusy(false)` reverses both. `main.ts`'s `onGenerate` calls `setBusy(true)` before posting `meshingGenerate`, and the `meshingResult`/ `meshingError` handlers call `setBusy(false)` before rendering the outcome. Export (`onExport`) is not wired to `setBusy` — its save-dialog-driven completion surfaces through the generic `status`/`error` messages (`setStatus()`, the toolbar status bar), not this panel.
+`setBusy(true, requestId, message)` disables Generate/Export, enables a Cancel control bound to that request, and shows the indeterminate `#meshing-progress` bar (CSS keyframe sweep — GMSH's `generate()` is one opaque blocking call with no progress hook to report a real percentage from). The host echoes `requestId` on result/error and sends `meshingJobSettled` when an export finishes; stale messages cannot clear or replace another request's state. `main.ts` clears busy state only for the matching identity. Cancellation routes through the document-owned kernel worker job and cannot cancel another tab's mesh operation.
 
 **Mesh ops** (roadmap Tier 1 "Mesh-operations panel for meshio sources") is a section at the bottom of the same panel body: an operation `<select>` (the seven `MESHIO_OP_IDS` from `src/meshioOps.ts` with `MESHIO_OP_LABELS`), per-op parameter rows (keep-ratio / method / iterations / levels / group-size / mode — only the selected op's rows are shown, via `syncMeshOpsParams()`), a **Run op…** button, and a status line. `setMeshioOpsAvailable()` shows it only for a meshio++-imported source (`loadMeshBytes` with `sourceFormat !== "openfoam"` — OpenFOAM's case-staged reader has no `readMesh` path; `geometry` and `loadUrl` both hide it), and `main.ts` resets the `meshioOpsRequestId` latch on every new model load (same stale-response-guard idiom as `meshHealRequestId`). `onMeshOps` posts a one-element `meshioOpsRequest`; `renderMeshOpsResult()` renders the kernel's own per-step detail lines. Pure DOM like the rest of this panel (validation lives in `src/meshioOps.ts`, shared with the host) — no unit test, same convention as `partsPanel.ts`/`meshingPanel.ts` itself.
 
 In `main.ts`, `onGenerate`/`onExport` each independently call an async `currentStlIfMeshSource()` helper before posting (returns `undefined` for B-rep documents, since the host re-exports STEP itself), then post `meshingGenerate`/`meshingExport` with the current `MeshingModel.get()` snapshot plus that optional `stl`; `onExport` additionally forwards its `unit` argument straight onto the outgoing `meshingExport` message's own `unit` field (a real geometric scale applied host-side before Gmsh sees the geometry — `unit` is `"mm"`-default and has no bearing on `meshingGenerate`, which always meshes at native mm; see CLAUDE.md's Meshing section for the full mechanism). `onClear` calls `viewer.setMeshOverlay(null)` AND `viewer.setWorstElementsOverlay(null)` directly, resets both the toolbar toggle's `meshingEnabled`/`.active` state and `#meshing-worst-toggle`'s `worstElementsShown`/`.active`/`hidden` state (same toggle-truthfulness rule `meshingResult`/`meshingError` follow), and re-renders the panel with no status. `#meshing-worst-toggle` itself mirrors `#meshing-toggle`'s wiring pattern exactly (own `let worstElementsShown`/`worstToggle` pair, a click listener calling `viewer.setWorstElementsOverlayVisible()`), but with one difference in the `"meshingResult"` handler: rather than only ever reflecting reality like the base toggle does, it's also auto-shown whenever `msg.worstElements` is present (and auto-hidden — `hidden = true` — otherwise) on every fresh generate, the same "surface a warning by default" framing the large-mesh warning banner already uses; the user can still turn it back off via the toggle.
 
 ---
+
+Each Generate/Export action sends a fresh UUID `requestId`; `onCancel` posts `meshingCancel` with that identity. The host returns correlated results and a `meshingJobSettled` notification, and the webview ignores stale messages after a newer operation starts.
 
 ## `src/webview/meshSizeHeuristics.ts`
 
