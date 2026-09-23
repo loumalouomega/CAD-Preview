@@ -46,6 +46,7 @@ export const KERNELS_BY_FUNCTION: Record<keyof DocumentPipeline, readonly Kernel
   generateMesh: G,
   exportMeshFormat: G,
   exportMdpa: G,
+  computeHandoffFacts: G,
   exportGeoUnrolled: G,
   computeMassProperties: O,
   computeBom: O,
@@ -87,6 +88,9 @@ export const KERNELS_BY_FUNCTION: Record<keyof DocumentPipeline, readonly Kernel
   exportSvgSilhouette: O,
   exportDrawingSheet: O,
   buildPrimitivesFile: O,
+  exportTessellatedStl: O,
+  analyzePassages: O,
+  measureMeshDeviation: G, // OCCT only for a B-rep reference — listed by what it DEFINITELY touches
 };
 
 export function kernelsFor(fn: string): readonly Kernel[] {

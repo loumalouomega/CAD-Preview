@@ -52,3 +52,4 @@ scripts/screenshots/.build/
 # Integration-test bundle output (the downloaded VS Code itself lands in
 # .vscode-test/, already ignored above).
 test/integration/.build/
+scripts/compat/last-run.json

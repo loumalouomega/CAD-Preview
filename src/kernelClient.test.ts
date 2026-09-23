@@ -42,7 +42,7 @@ vi.mock("child_process", () => ({
 
 // Imported AFTER the mock is registered (vi.mock is hoisted by vitest, so
 // this static import already sees the mocked module).
-const { createKernelClient } = await import("./kernelClient");
+const { createKernelClient, JobCancelledError } = await import("./kernelClient");
 
 function reply(child: FakeChild, id: number, result: unknown): void {
   child.emit("message", { id, ok: true, result });
@@ -321,4 +321,98 @@ describe("createKernelClient", () => {
       expect(n).toBe(0);
     });
   });
+  describe("document-scoped jobs (owner / signal / per-call timeout)", () => {
+    it("cancelling owner B never interrupts owner A's running job", async () => {
+      const client = createKernelClient("/ext");
+      const a = client.withJob({ owner: "A" });
+      const b = client.withJob({ owner: "B" });
+      const pa = a.isRenderAvailable();
+      const pb = b.isRenderAvailable();
+      const child = fakeChildren[0];
+      expect(child.sent).toHaveLength(1); // A running, B queued
+      expect(b.cancel).toBeTypeOf("function");
+      b.cancel();
+      await expect(pb).rejects.toBeInstanceOf(JobCancelledError);
+      expect(child.killed).toEqual([]); // A's child survives
+      reply(child, child.sent[0].id, { available: true });
+      await expect(pa).resolves.toEqual({ available: true });
+      expect(child.sent).toHaveLength(1); // B was never sent
+    });
+
+    it("cancelling the running owner kills only its job; queued work of another owner dispatches to a fresh child", async () => {
+      const client = createKernelClient("/ext");
+      const pa = client.withJob({ owner: "A" }).isRenderAvailable();
+      const pb = client.withJob({ owner: "B" }).isRenderAvailable();
+      expect(client.cancel({ owner: "A" })).toBe(1);
+      await expect(pa).rejects.toBeInstanceOf(JobCancelledError);
+      expect(fakeChildren[0].killed).toEqual(["SIGKILL"]);
+      expect(fakeChildren).toHaveLength(2); // B went straight to a respawned child
+      expect(fakeChildren[0].sent).toHaveLength(1);
+      const c2 = fakeChildren[1];
+      expect(lastRequest(c2).fn).toBe("isRenderAvailable");
+      await Promise.resolve();
+      await Promise.resolve(); // the old child's exit arrives late — must not touch B
+      reply(c2, lastRequest(c2).id, { available: false });
+      await expect(pb).resolves.toEqual({ available: false });
+    });
+
+    it("a worker exit settles the running job exactly once and leaves the queue intact", async () => {
+      const client = createKernelClient("/ext");
+      let settledA = 0;
+      const pa = client.isRenderAvailable().then(
+        () => settledA++,
+        () => settledA++
+      );
+      const pb = client.isRenderAvailable();
+      fakeChildren[0].emit("exit", 1, null);
+      fakeChildren[0].emit("exit", 1, null); // duplicate exit/error events
+      fakeChildren[0].emit("error", new Error("again"));
+      await pa;
+      expect(settledA).toBe(1);
+      const c2 = fakeChildren[1];
+      reply(c2, lastRequest(c2).id, { available: true });
+      await expect(pb).resolves.toEqual({ available: true });
+    });
+
+    it("an already-aborted signal rejects without sending; aborting later cancels", async () => {
+      const client = createKernelClient("/ext");
+      const ac = new AbortController();
+      ac.abort();
+      await expect(client.withJob({ signal: ac.signal }).isRenderAvailable()).rejects.toBeInstanceOf(JobCancelledError);
+      expect(fakeChildren).toHaveLength(0);
+      const ac2 = new AbortController();
+      const p = client.withJob({ signal: ac2.signal }).isRenderAvailable();
+      ac2.abort();
+      await expect(p).rejects.toBeInstanceOf(JobCancelledError);
+      expect(fakeChildren[0].killed).toEqual(["SIGKILL"]);
+    });
+
+    it("a per-call timeout overrides the client default, and the next call succeeds", async () => {
+      const client = createKernelClient("/ext", { timeoutMs: 60_000 });
+      await expect(client.withJob({ timeoutMs: 15 }).isRenderAvailable()).rejects.toThrow(/within 15ms/);
+      const p = client.isRenderAvailable();
+      const c2 = fakeChildren[1];
+      reply(c2, lastRequest(c2).id, { available: true });
+      await expect(p).resolves.toEqual({ available: true });
+    });
+
+    it("jobs() / onJobs report queued and running work", async () => {
+      const client = createKernelClient("/ext");
+      const seen: number[] = [];
+      client.onJobs((j) => seen.push(j.length));
+      const pa = client.withJob({ owner: "A" }).isRenderAvailable();
+      const pb = client.withJob({ owner: "B" }).loadBRep("/ext" as never, new Uint8Array() as never, "step" as never);
+      expect(client.jobs().map((j) => [j.owner, j.state, j.fn])).toEqual([
+        ["A", "running", "isRenderAvailable"],
+        ["B", "queued", "loadBRep"],
+      ]);
+      reply(fakeChildren[0], fakeChildren[0].sent[0].id, {});
+      await pa;
+      reply(fakeChildren[0], fakeChildren[0].sent[1].id, {});
+      await pb;
+      expect(client.jobs()).toEqual([]);
+      expect(seen[seen.length - 1]).toBe(0);
+    });
+  });
+
 });

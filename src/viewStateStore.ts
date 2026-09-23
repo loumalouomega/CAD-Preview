@@ -1,5 +1,6 @@
 import * as vscode from "vscode";
 import type { ViewState } from "./protocol";
+import { assertNotDirty } from "./dirtyGuard";
 import { parseViewStateJson, serializeViewStateJson } from "./viewStateSidecar";
 
 /** The sidecar URI for a model: `<model>.view.json` beside the source file. */
@@ -19,6 +20,7 @@ export async function readViewState(modelUri: vscode.Uri): Promise<ViewState | n
 
 /** Writes the sidecar beside the model. The model file itself is never touched. */
 export async function writeViewState(modelUri: vscode.Uri, view: ViewState): Promise<void> {
+  assertNotDirty(viewStateSidecarUri(modelUri));
   const sourceName = modelUri.path.slice(modelUri.path.lastIndexOf("/") + 1);
   const text = serializeViewStateJson(sourceName, view);
   await vscode.workspace.fs.writeFile(viewStateSidecarUri(modelUri), Buffer.from(text, "utf8"));

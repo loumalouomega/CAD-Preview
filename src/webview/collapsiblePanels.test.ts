@@ -50,7 +50,7 @@ describe("COLLAPSIBLE_PANELS matches the shipped DOM", () => {
     expect(new Set(ids)).toEqual(new Set(COLLAPSIBLE_PANELS.map((e) => e.panel)));
   });
 
-  it("nests exactly the seven Advanced children inside #advanced-body", () => {
+  it("nests exactly the eight Advanced children inside #advanced-body", () => {
     const start = html.indexOf('<div id="advanced-body">');
     expect(start).toBeGreaterThan(-1);
     const body = html.slice(start);
@@ -111,7 +111,7 @@ describe("advancedCountLabel", () => {
   });
 
   it("covers the whole Advanced group", () => {
-    expect(ADVANCED_CHILDREN).toHaveLength(7);
+    expect(ADVANCED_CHILDREN).toHaveLength(8);
     // Every child must also be individually collapsible, or its chevron is dead.
     const registered = new Set(COLLAPSIBLE_PANELS.map((e) => e.panel));
     for (const id of ADVANCED_CHILDREN) expect(registered.has(id)).toBe(true);

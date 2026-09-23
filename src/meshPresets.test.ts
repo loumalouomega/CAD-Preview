@@ -75,6 +75,19 @@ describe("parseMeshPresetsJson", () => {
   });
 });
 
+describe("stlExport block", () => {
+  it("round-trips a valid block and drops a malformed one without dropping the preset", () => {
+    const withExport = { ...gmshPreset, stlExport: { targetCellSize: 2, chordalFraction: 0.05, angularDeg: 15 } };
+    expect(parseMeshPresetsJson(JSON.stringify({ version: 1, presets: { balanced: withExport } }))).toEqual({ balanced: withExport });
+    const bad = parseMeshPresetsJson(
+      JSON.stringify({ version: 1, presets: { a: { ...gmshPreset, name: "a", stlExport: { targetCellSize: -1 } }, b: { ...gmshPreset, name: "b", stlExport: { targetCellSize: 3, chordalFraction: 7 } } } })
+    );
+    expect(bad.a.stlExport).toBeUndefined();
+    expect(bad.a.name).toBe("a");
+    expect(bad.b.stlExport).toEqual({ targetCellSize: 3 });
+  });
+});
+
 describe("mergePresetLibraries", () => {
   it("unions bundled and user entries, caller winning collisions", () => {
     const bundled = { a: { ...gmshPreset, name: "a" }, b: { ...gmshPreset, name: "b" } };

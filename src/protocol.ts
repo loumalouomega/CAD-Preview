@@ -16,6 +16,8 @@ import type { StandardPart } from "./stepPartsService";
 import type { MeshHealthReport } from "./meshHeal";
 import type { MeshRegionFit } from "./fitMapping";
 import type { PrimitiveReport } from "./primitiveReport";
+import type { PassageReport } from "./passageAnalysis";
+import type { DeviationReport } from "./meshDeviation";
 import type { MeshioOpSpec } from "./meshioOps";
 import type { BomRow } from "./bomExport";
 import type { AnnotatedTolerance } from "./toleranceBand";
@@ -607,6 +609,18 @@ export type HostToWebview =
    * `meshHealRequest`'s requestId + stale-response-guard idiom. */
   | { type: "primitiveRecognizeResult"; requestId: string; report: PrimitiveReport }
   | { type: "primitiveRecognizeError"; requestId: string; message: string }
+  /** Passages panel (roadmap "Narrow-gap and passage resolution preflight"):
+   * the read-only `analyzePassages` report for the open B-rep, same
+   * requestId + stale-guard idiom. `sizeMax` echoes the global size the
+   * report compared against (null = unbounded). */
+  | { type: "passagesResult"; requestId: string; report: PassageReport; sizeMax: number | null }
+  | { type: "passagesError"; requestId: string; message: string }
+  /** CAD-to-mesh deviation (roadmap "CAD-to-mesh deviation map"): the report
+   * plus the mesh boundary as per-corner positions (base64 Float32, 9 per
+   * triangle) and per-corner distances (base64 Float32, 3 per triangle) for
+   * the colour overlay; `max` is the colour-ramp top. */
+  | { type: "meshDeviationResult"; requestId: string; report: DeviationReport; positions: string; distances: string; max: number }
+  | { type: "meshDeviationError"; requestId: string; message: string }
   /**
    * SpaceMouse 6DOF motion event — raw device units
    * (signed 16-bit per axis, full deflection ≈ ±350), NOT camera deltas.
@@ -739,7 +753,7 @@ export type WebviewToHost =
   | { type: "exportError"; requestId: string; message: string }
   | { type: "meshingChanged"; options: MeshOptions }
   | { type: "meshingGenerate"; options: MeshOptions; stl?: string }
-  | { type: "meshingExport"; target: MeshExportFormatId; options: MeshOptions; stl?: string; unit?: DisplayUnit }
+  | { type: "meshingExport"; target: MeshExportFormatId; options: MeshOptions; stl?: string; unit?: DisplayUnit; manifest?: boolean }
   /** Apply a saved meshing preset by name — the host resolves the merged
    * (user + bundled) library itself, converts units, and writes the
    * document's `.mesh.json` (+ regenerated `.geo`), re-posting
@@ -843,6 +857,13 @@ export type WebviewToHost =
    * reads the source bytes + tail ops itself, so the report always reflects
    * the live model rather than a stale client snapshot. */
   | { type: "primitiveRecognizeRequest"; requestId: string }
+  /** Passages panel: analyze the open B-rep's narrow gaps against the current
+   * mesh size and Parts. The host reads source, tail ops, Parts and the stored
+   * mesh options itself. */
+  | { type: "passagesRequest"; requestId: string; targetCells: number }
+  /** FE Mesh ▸ Deviation: generate with these options (as Generate would) and
+   * measure the boundary against the reference. `stl` as for meshingGenerate. */
+  | { type: "meshDeviationRequest"; requestId: string; tolerance: number; options: MeshOptions; stl?: string }
   | { type: "setCamerasLinked"; enabled: boolean };
 
 /** Encode a typed array to a base64 string for postMessage transport. */

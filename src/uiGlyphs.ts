@@ -66,6 +66,9 @@ export const UI_GLYPHS = {
   ),
   intersect: g('<rect x="3" y="3" width="13" height="13" rx="2"/><rect x="8" y="8" width="13" height="13" rx="2"/>'),
   activity: g('<path d="M22 12h-4l-3 9L9 3l-3 9H2"/>'),
+  // Two walls with a double-headed arrow across the gap between them — the
+  // Passages panel (narrow-gap preflight).
+  gap: g('<path d="M4 3v18"/><path d="M20 3v18"/><path d="M8 12h8"/><path d="m10 9-3 3 3 3"/><path d="m14 9 3 3-3 3"/>'),
   crosshair: g('<circle cx="12" cy="12" r="9"/><path d="M22 12h-4"/><path d="M6 12H2"/><path d="M12 6V2"/><path d="M12 22v-4"/>'),
   shapes: g(
     '<path d="M8.3 10a.7.7 0 0 1-.626-1.079L11.4 3a.7.7 0 0 1 1.198-.043L16.3 8.9a.7.7 0 0 1-.572 1.1Z"/><rect x="3" y="14" width="7" height="7" rx="1"/><circle cx="17.5" cy="17.5" r="3.5"/>'
