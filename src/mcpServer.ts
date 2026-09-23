@@ -79,6 +79,8 @@ import {
   setMeshOptions,
   generateMeshTool,
   exportMeshTool,
+  cadJobStatusTool,
+  cadJobCancelTool,
   compareMeshRefinementTool,
   exportBRepTool,
   saveModelTool,
@@ -108,9 +110,11 @@ const extensionPath = process.env.CAD_PREVIEW_ROOT ?? path.join(__dirname, "..")
 // thrown, regex-detected abort) can no longer poison a later, unrelated
 // call, since the next call after a dead child transparently respawns a
 // fresh one.
+const kernelClient = createKernelClient(extensionPath);
 const ctx: ToolContext = {
   extensionPath,
-  pipeline: createKernelClient(extensionPath),
+  pipeline: kernelClient,
+  jobControl: kernelClient,
 };
 
 const INSTRUCTIONS = [
@@ -1233,7 +1237,7 @@ server.registerTool(
   "export_mesh",
   {
     description:
-      "Generate a mesh and write it to outputPath in the given format (format ids from describe_capabilities: mdpaElements, mdpaGeometries, msh, msh2, geoUnrolled, vtk, unv, inp, bdf, su2, mesh, stl, diff, off). geoUnrolled also writes a required .xao companion beside the output for B-rep sources. Optional unit (mm|cm|m|in|ft, default mm) applies a real geometric scale to the meshed geometry BEFORE Gmsh ever sees it (mirroring export_brep's unit param), with sizeMin/sizeMax and any per-part meshSize proportionally rescaled to match — generate_mesh (and the interactive Generate button) always stay native mm; this only affects the export. Optional handoffPath writes a versioned JSON manifest for MDPA exports with source/replay fingerprints, effective settings, units, engine version, artifact ownership and named CAD groups; boundary coverage is explicitly unavailable. Emits notifications/progress at start and completion if you set _meta.progressToken (start/done only — see generate_mesh's note).",
+      "Generate a mesh and write it to outputPath in the given format (format ids from describe_capabilities: mdpaElements, mdpaGeometries, msh, msh2, geoUnrolled, vtk, unv, inp, bdf, su2, mesh, stl, diff, off). geoUnrolled also writes a required .xao companion beside the output for B-rep sources. Optional unit (mm|cm|m|in|ft, default mm) applies a real geometric scale to the meshed geometry BEFORE Gmsh ever sees it (mirroring export_brep's unit param), with sizeMin/sizeMax and any per-part meshSize proportionally rescaled to match — generate_mesh (and the interactive Generate button) always stay native mm; this only affects the export. Optional handoffPath writes a versioned JSON manifest for MDPA exports with source/replay fingerprints, effective settings, units, engine version, artifact ownership and named CAD groups; boundary coverage is explicitly unavailable. For queue-managed dispatch, supply ownerId, requestId and receiptPath together: the runner writes a versioned durable receipt before dispatch, exposes artifact revisions, and refuses duplicate receipt paths. Emits notifications/progress at start and completion if you set _meta.progressToken (start/done only — see generate_mesh's note).",
     inputSchema: {
       path: modelPath,
       format: z.string().describe("Mesh export format id"),
@@ -1241,14 +1245,45 @@ server.registerTool(
       options: meshOptionsOverride,
       unit: z.string().optional().describe("Export unit: mm | cm | m | in | ft (default mm, no conversion)"),
       handoffPath: z.string().optional().describe("For MDPA only, write a version-1 simulation handoff manifest with source/replay fingerprints, effective settings, units, engine version, owned artifacts and named CAD groups. Boundary coverage is explicitly reported unavailable."),
+      ownerId: z.string().optional().describe("Stable queue/study owner. Required with requestId and receiptPath for durable execution tracking."),
+      requestId: z.string().optional().describe("Stable idempotency/request identity. Required with ownerId and receiptPath for durable execution tracking."),
+      receiptPath: z.string().optional().describe("Absolute path for the atomic version-1 execution receipt. Reusing an existing receipt refuses dispatch."),
     },
   },
   wrap(
     (
-      args: { path: string; format: string; outputPath: string; options?: Record<string, unknown>; unit?: string; handoffPath?: string },
+      args: { path: string; format: string; outputPath: string; options?: Record<string, unknown>; unit?: string; handoffPath?: string; ownerId?: string; requestId?: string; receiptPath?: string },
       onProgress
     ) => exportMeshTool(ctx, { ...args, options: args.options as Partial<MeshOptions> | undefined }, onProgress)
   )
+);
+
+server.registerTool(
+  "cad_job_status",
+  {
+    description:
+      "Read a version-1 CAD execution receipt by exact ownerId/requestId. Live jobs return their runner lifecycle state. A queued/running receipt with no live record is reported as uncertain after a restart; do not resubmit it automatically. Artifact references include content revisions when available.",
+    inputSchema: {
+      receiptPath: z.string().describe("Absolute path to the execution receipt written by queue-managed export_mesh"),
+      ownerId: z.string().describe("Exact owner that dispatched the job"),
+      requestId: z.string().describe("Exact stable request id that dispatched the job"),
+    },
+  },
+  wrap((args: { receiptPath: string; ownerId: string; requestId: string }) => cadJobStatusTool(ctx, args))
+);
+
+server.registerTool(
+  "cad_job_cancel",
+  {
+    description:
+      "Cancel a live CAD job only when receiptPath, ownerId and requestId all match. Returns the owner-scoped lifecycle state. A stale receipt without a live runner record is reported as uncertain; cancellation is never inferred from a different owner or request.",
+    inputSchema: {
+      receiptPath: z.string().describe("Absolute path to the execution receipt written by queue-managed export_mesh"),
+      ownerId: z.string().describe("Exact owner that dispatched the job"),
+      requestId: z.string().describe("Exact stable request id that dispatched the job"),
+    },
+  },
+  wrap((args: { receiptPath: string; ownerId: string; requestId: string }) => cadJobCancelTool(ctx, args))
 );
 
 server.registerTool(

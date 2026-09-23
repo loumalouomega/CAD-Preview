@@ -31,6 +31,8 @@ This project is licensed **GPL-2.0-or-later** (not MIT) because it bundles `@lou
 
 ## Architecture (non-negotiable invariants)
 
+- **Owned FE-mesh jobs.** The webview assigns one request UUID per Generate/Export; `provider.ts` and the standalone MCP server attach stable owner/request IDs to the serialized kernel queue. Cancellation removes only that owner's queued work or terminates only its active worker call. MCP queue-managed `export_mesh` also writes an atomic versioned receipt before dispatch and exposes owner-checked `cad_job_status` / `cad_job_cancel`; after restart, a receipt without a live kernel record is `uncertain` and is never automatically replayed. `doc/protocol.md`, `doc/webview-api.md`, and `doc/mcp-server.md` define the contracts.
+
 - **OpenCascade.js (OCCT WASM) runs in the Node extension host**, never in the webview. The host parses + tessellates B-rep shapes and posts plain typed-array `ArrayBuffer`s (base64-encoded `{positions, indices}`) to the webview. The webview runs **only Three.js**.
 - **Lazy WASM init.** Never call the factory in `activate()`. Initialize it on the first B-rep open and memoize it as a module singleton (`src/occtService.ts`). Opening a pure-mesh file (STL/OBJ/PLY/glTF) must never load the WASM.
 - **Routing.** B-rep (`.step/.stp/.iges/.igs/.brep`) → OCCT pipeline. Mesh (`.stl/.obj/.ply/.gltf/.glb`) → native Three.js loaders via `webview.asWebviewUri`. See `src/fileRouter.ts`.

@@ -64,8 +64,9 @@ These are outcome groupings, not release numbers. Independent small items can sh
 #### Document-scoped jobs and cancellation (**M–L**, host + MCP)
 
 - **Motivation:** `kernelClient.ts` serializes requests through a shared worker; `cancelCurrent()` kills whichever job is running, which may belong to another document.
-- **Phases:** attach an owner and request identity to queued work; remove a cancelled queued job before dispatch; kill only a matching active job; then expose queued/running/cancelled state and configurable operation timeouts. Preserve lazy spawning and automatic cold-cache recovery.
-- **Done when:** cancelling tab B cannot interrupt tab A, queued cancelled work never starts, worker exit settles promises once, and the next request succeeds after cancellation or timeout. MCP cancellation should use the same job identity rather than a separate implementation.
+- **Implemented:** extension and KKSS worker hosts attach owner/request identities to serialized work, cancel only matching queued/active calls and return status; FE Mesh replies echo request IDs. Queue-managed MCP `export_mesh` writes an atomic, versioned receipt with source and artifact revisions, refuses receipt reuse, and exposes `cad_job_status`/`cad_job_cancel` with exact owner checks. A receipt without a live record after restart is uncertain.
+- **Remaining:** add a worker-thread failure/cancellation integration test proving queued owners survive a killed active worker and the replacement worker's caches recover. Existing extension tests cover cross-document cancellation, queue removal, timeout settlement and the following fresh-child call; MCP tests cover receipt creation, duplicate refusal, owner matching and stale-receipt uncertainty.
+- **Done when:** cancelling tab B cannot interrupt tab A, queued cancelled work never starts, worker exit settles promises once, and the next request succeeds after cancellation or timeout across extension, KKSS host and MCP paths.
 
 #### Explicit external-change conflict handling (**M–L**, persistence)
 

@@ -76,7 +76,7 @@ export interface KernelClient extends DocumentPipeline {
    * internally on a hang. */
   cancelCurrent(): void;
   /** Runs a group of serialized kernel calls under one stable document/job identity. */
-  runOwnedJob<T>(identity: { ownerId: string; requestId: string }, action: () => Promise<T>): Promise<T>;
+  runOwnedJob<T>(identity: { ownerId: string; requestId: string; jobId?: string }, action: () => Promise<T>): Promise<T>;
   /** Owner-scoped, idempotent lifecycle lookup/cancellation for an owned job. */
   jobStatus(ownerId: string, requestId: string): KernelJobRecord | undefined;
   cancelOwnedJob(ownerId: string, requestId: string): KernelJobRecord | undefined;
@@ -286,11 +286,11 @@ export function createKernelClient(extensionPath: string, options?: { timeoutMs?
     exportDrawingSheet: (...args) => callKernel("exportDrawingSheet", args) as ReturnType<Pipeline["exportDrawingSheet"]>,
     buildPrimitivesFile: (...args) => callKernel("buildPrimitivesFile", args) as ReturnType<Pipeline["buildPrimitivesFile"]>,
     cancelCurrent: killCurrentChild,
-    runOwnedJob: async <T>(identity: { ownerId: string; requestId: string }, action: () => Promise<T>): Promise<T> => {
+    runOwnedJob: async <T>(identity: { ownerId: string; requestId: string; jobId?: string }, action: () => Promise<T>): Promise<T> => {
       if (!identity.ownerId.trim() || !identity.requestId.trim()) throw new Error("Owned CAD jobs require stable ownerId and requestId values.");
       const key = `${identity.ownerId}\u0000${identity.requestId}`;
       if (jobs.has(key)) throw new Error(`CAD job ${identity.requestId} was already registered for this owner.`);
-      const record: KernelJobRecord = { version: 1, jobId: randomUUID(), ownerId: identity.ownerId, requestId: identity.requestId, state: "queued" };
+      const record: KernelJobRecord = { version: 1, jobId: identity.jobId ?? randomUUID(), ownerId: identity.ownerId, requestId: identity.requestId, state: "queued" };
       jobs.set(key, record);
       while (jobs.size > 500) {
         const first = jobs.entries().next().value as [string, KernelJobRecord] | undefined;

@@ -31,8 +31,14 @@ Every WASM-touching tool call routes through a child process (`dist/kernel-worke
 
 - **A hung or crashed WASM call no longer wedges the whole server.** If the kernel-worker process dies (killed, crashed, or the watchdog timeout below) while a tool call is in flight, that call fails with a clear error (`"kernel worker exited unexpectedly..."` or `"...did not respond within Nms..."`) instead of hanging forever, and the **next** tool call transparently spawns a fresh child and succeeds normally — the server process itself is never affected.
 - **A per-call watchdog timeout (default 5 minutes) kills and respawns the kernel-worker if a call never responds** — closing a real, previously-open failure mode: GMSH's own default 3D meshing algorithm has a documented, confirmed-live indefinite hang under some conditions (see `doc/gmsh-integration.md`'s known limitations), which used to be able to wedge a `generate_mesh` call forever with no recovery. Five minutes is generous relative to any real file this server has been benchmarked against (`scripts/perf/baseline.json`'s largest fixture is ~14s to load, ~27s to mesh) — it should never trip on legitimately large/slow work, only a genuine hang.
-- **Nothing about the tool surface changed.** Every tool, its schema, and its response shape are identical to before this existed.
+- **Ordinary calls retain their existing behavior.** Durable ownership is opt-in through queue-managed `export_mesh` arguments; the status and cancellation tools are additive.
 - If you ever need to diagnose kernel-worker behavior directly, its stderr output is forwarded through the MCP server's own stderr, prefixed `[kernel-worker]`.
+
+## Queue-managed mesh exports and cancellation
+
+Ordinary `export_mesh` calls retain their original one-shot behavior. A queue-managed call supplies `ownerId`, `requestId`, and `receiptPath` together. The server atomically creates a version-1 receipt before entering the kernel runner, uses the supplied identity as the underlying job identity, and refuses to dispatch again when that receipt path already exists. The terminal receipt records source and replay revisions, resolved export arguments, lifecycle state, and content revisions for written mesh/handoff artifacts. The paths in this receipt are explicit external references; an app project can convert them to project-relative references when attaching them.
+
+`cad_job_status` reads a receipt only when both owner and request IDs match. `cad_job_cancel` applies the same check before asking the live kernel worker to cancel queued work or kill the matching active job. After a server restart, a `queued`/`running` receipt with no in-memory runner record returns `uncertain`; the queue must inspect it and must not automatically resubmit. These endpoints track queue-managed `export_mesh` jobs; a plain `generate_mesh` remains a statistics-only one-shot call.
 
 ## Registering with an MCP client
 

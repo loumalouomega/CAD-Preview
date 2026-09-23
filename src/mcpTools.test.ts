@@ -30,6 +30,8 @@ import {
   downloadStandardPartTool,
   generateMeshTool,
   exportMeshTool,
+  cadJobStatusTool,
+  cadJobCancelTool,
   compareMeshRefinementTool,
   exportBRepTool,
   saveModelTool,
@@ -56,6 +58,8 @@ import {
   applyMeshPreset,
   type Pipeline,
   type ToolContext,
+  type OwnedJobRecord,
+  type OwnedJobControl,
   exportDrawingSheetTool,
 } from "./mcpTools";
 import { readEdits, readParts, readAnnotations, readPlanes, writeAnnotations, writeEdits, editsSidecarPath, geoScriptPath, partsSidecarPath, annotationsSidecarPath, planesSidecarPath } from "./mcpSidecars";
@@ -3093,6 +3097,150 @@ describe("compare_mesh_refinement", () => {
 });
 
 describe("export_mesh", () => {
+  it("writes an atomic owner-scoped receipt with source and artifact revisions", async () => {
+    const records = new Map<string, OwnedJobRecord>();
+    const control = {
+      runOwnedJob: vi.fn(async function<T>(identity: { ownerId: string; requestId: string; jobId?: string }, action: () => Promise<T>): Promise<T> {
+        const record: OwnedJobRecord = { version: 1, jobId: identity.jobId!, ownerId: identity.ownerId, requestId: identity.requestId, state: "running" };
+        records.set(`${identity.ownerId}\0${identity.requestId}`, record);
+        const result = await action();
+        record.state = "succeeded";
+        return result;
+      }),
+      jobStatus: vi.fn((ownerId: string, requestId: string) => records.get(`${ownerId}\0${requestId}`)),
+      cancelOwnedJob: vi.fn(),
+    };
+    const c: ToolContext = { ...ctx(), jobControl: control as unknown as OwnedJobControl };
+    const receiptPath = path.join(dir, "runs", "run-1", "cad-execution.json");
+    const outputPath = path.join(dir, "runs", "run-1", "mesh.mdpa");
+    const result = await exportMeshTool(c, {
+      path: stpModel,
+      format: "mdpaElements",
+      outputPath,
+      ownerId: "study-1",
+      requestId: "mesh-1",
+      receiptPath,
+    });
+    const receipt = JSON.parse(await fs.readFile(receiptPath, "utf8"));
+    expect(control.runOwnedJob).toHaveBeenCalledWith(expect.objectContaining({ ownerId: "study-1", requestId: "mesh-1", jobId: expect.any(String) }), expect.any(Function));
+    expect(receipt).toMatchObject({
+      version: 1,
+      ownerId: "study-1",
+      requestId: "mesh-1",
+      operation: "export_mesh",
+      state: "succeeded",
+      source: { kind: "external", path: stpModel, revision: expect.stringMatching(/^[a-f0-9]{64}$/) },
+      replayRevision: expect.stringMatching(/^[a-f0-9]{64}$/),
+      statusLookup: { tool: "cad_job_status", receiptPath },
+      artifacts: [{ role: "mesh", reference: { kind: "external", path: outputPath, revision: expect.stringMatching(/^[a-f0-9]{64}$/) } }],
+    });
+    expect("execution" in result ? result.execution : undefined).toMatchObject({ jobId: receipt.jobId, state: "succeeded" });
+    await expect(cadJobStatusTool(c, { receiptPath, ownerId: "other-study", requestId: "mesh-1" })).rejects.toThrow(/does not match/);
+  });
+
+  it("refuses to dispatch over an existing receipt and preserves its contents", async () => {
+    const receiptPath = path.join(dir, "receipt.json");
+    const prior = JSON.stringify({ version: 90, state: "unknown" });
+    await fs.writeFile(receiptPath, prior);
+    const c: ToolContext = {
+      ...ctx(),
+      jobControl: {
+        runOwnedJob: vi.fn(async (_identity, action) => action()),
+        jobStatus: vi.fn(),
+        cancelOwnedJob: vi.fn(),
+      },
+    };
+    await expect(exportMeshTool(c, {
+      path: stpModel,
+      format: "msh",
+      outputPath: path.join(dir, "out.msh"),
+      ownerId: "study-1",
+      requestId: "request-1",
+      receiptPath,
+    })).rejects.toThrow(/already exists/);
+    expect(await fs.readFile(receiptPath, "utf8")).toBe(prior);
+    expect(c.jobControl!.runOwnedJob).not.toHaveBeenCalled();
+  });
+
+  it("reports a persisted active receipt as uncertain after its runner record is gone", async () => {
+    const records = new Map<string, OwnedJobRecord>();
+    const control = {
+      runOwnedJob: vi.fn(async function<T>(identity: { ownerId: string; requestId: string; jobId?: string }, action: () => Promise<T>): Promise<T> {
+        const record: OwnedJobRecord = { version: 1, jobId: identity.jobId!, ownerId: identity.ownerId, requestId: identity.requestId, state: "running" };
+        records.set(`${identity.ownerId}\0${identity.requestId}`, record);
+        const result = await action();
+        record.state = "succeeded";
+        return result;
+      }),
+      jobStatus: vi.fn((ownerId: string, requestId: string) => records.get(`${ownerId}\0${requestId}`)),
+      cancelOwnedJob: vi.fn(),
+    };
+    const receiptPath = path.join(dir, "receipt.json");
+    await exportMeshTool({ ...ctx(), jobControl: control as unknown as OwnedJobControl }, {
+      path: stpModel, format: "msh", outputPath: path.join(dir, "out.msh"),
+      ownerId: "study-1", requestId: "request-1", receiptPath,
+    });
+    const stored = JSON.parse(await fs.readFile(receiptPath, "utf8"));
+    stored.state = "running";
+    await fs.writeFile(receiptPath, JSON.stringify(stored));
+    const status = await cadJobStatusTool(ctx(), { receiptPath, ownerId: "study-1", requestId: "request-1" });
+    expect(status.state).toBe("uncertain");
+    expect(status.message).toMatch(/Do not resubmit automatically/);
+    await expect(cadJobCancelTool(ctx(), { receiptPath, ownerId: "study-1", requestId: "request-1" })).resolves.toMatchObject({ state: "uncertain" });
+  });
+
+  it("cancels only the matching live owner/request represented by a receipt", async () => {
+    const receiptPath = path.join(dir, "running-receipt.json");
+    const generated = await exportMeshTool({
+      ...ctx(),
+      jobControl: {
+        runOwnedJob: async (_identity, action) => action(),
+        jobStatus: () => undefined,
+        cancelOwnedJob: () => undefined,
+      },
+    }, {
+      path: stpModel, format: "msh", outputPath: path.join(dir, "running.msh"),
+      ownerId: "study-1", requestId: "request-1", receiptPath,
+    });
+    const stored = JSON.parse(await fs.readFile(receiptPath, "utf8"));
+    stored.state = "running";
+    await fs.writeFile(receiptPath, JSON.stringify(stored));
+    const cancelOwnedJob = vi.fn(() => ({ version: 1 as const, jobId: stored.jobId, ownerId: "study-1", requestId: "request-1", state: "cancelling" as const }));
+    const control: OwnedJobControl = {
+      runOwnedJob: async (_identity, action) => action(),
+      jobStatus: () => undefined,
+      cancelOwnedJob,
+    };
+    const result = await cadJobCancelTool({ ...ctx(), jobControl: control }, { receiptPath, ownerId: "study-1", requestId: "request-1" });
+    expect(cancelOwnedJob).toHaveBeenCalledExactlyOnceWith("study-1", "request-1");
+    expect(result).toMatchObject({ jobId: stored.jobId, state: "cancelling" });
+    await expect(cadJobCancelTool({ ...ctx(), jobControl: control }, { receiptPath, ownerId: "other-study", requestId: "request-1" })).rejects.toThrow(/does not match/);
+    expect("execution" in generated ? generated.execution.jobId : undefined).toBe(stored.jobId);
+  });
+
+  it("does not publish a terminal state until artifact revisions reach the durable receipt", async () => {
+    const receiptPath = path.join(dir, "finalizing-receipt.json");
+    await exportMeshTool({ ...ctx(), jobControl: {
+      runOwnedJob: async (_identity, action) => action(), jobStatus: () => undefined, cancelOwnedJob: () => undefined,
+    } }, {
+      path: stpModel, format: "msh", outputPath: path.join(dir, "finalizing.msh"),
+      ownerId: "study-1", requestId: "request-1", receiptPath,
+    });
+    const receipt = JSON.parse(await fs.readFile(receiptPath, "utf8"));
+    receipt.state = "running";
+    receipt.artifacts = [];
+    await fs.writeFile(receiptPath, JSON.stringify(receipt));
+    const terminal = { version: 1 as const, jobId: receipt.jobId, ownerId: "study-1", requestId: "request-1", state: "succeeded" as const };
+    const control: OwnedJobControl = {
+      runOwnedJob: async (_identity, action) => action(), jobStatus: () => terminal, cancelOwnedJob: () => terminal,
+    };
+    await expect(cadJobStatusTool({ ...ctx(), jobControl: control }, { receiptPath, ownerId: "study-1", requestId: "request-1" }))
+      .resolves.toMatchObject({ state: "uncertain", artifacts: [] });
+    await expect(cadJobCancelTool({ ...ctx(), jobControl: control }, { receiptPath, ownerId: "study-1", requestId: "request-1" }))
+      .resolves.toMatchObject({ state: "uncertain", artifacts: [] });
+    expect(JSON.parse(await fs.readFile(receiptPath, "utf8")).state).toBe("running");
+  });
+
   it("writes a versioned MDPA handoff with revisions, effective units, engine identity and honest coverage diagnostics", async () => {
     await fs.writeFile(partsSidecarPath(stpModel), JSON.stringify({
       version: 1,

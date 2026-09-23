@@ -385,9 +385,10 @@ type HostToWebview =
   | { type: 'meshingOptions'; options: MeshOptions }
   | { type: 'meshingPresets'; presets: MeshPresetSummary[] }
   | { type: 'viewState'; view: ViewState | null }
-  | { type: 'meshingResult'; positions: string; indices: string; edges: string; nodeCount: number; elementCount: number;
+  | { type: 'meshingResult'; requestId: string; positions: string; indices: string; edges: string; nodeCount: number; elementCount: number;
       elementGroups: MeshElementGroup[]; elapsedMs: number; quality?: QualitySummary; worstElements?: WorstElementsMsg }
-  | { type: 'meshingError'; message: string }
+  | { type: 'meshingError'; requestId: string; message: string }
+  | { type: 'meshingJobSettled'; requestId: string }
   | ({ type: 'viewerDefaults' } & ViewerDefaults)
   | { type: 'screenshotRequest'; requestId: string }
   | { type: 'standardPartsSearchResult'; requestId: string; items: StandardPart[]; page: number; totalPages: number; total: number }
@@ -652,13 +653,15 @@ In Phase 2 (roadmap "Split view", Phase 2) `view` carries optional `layout` + pe
 
 ### `meshingResult`
 
+Every response echoes the webview's `requestId`; the webview ignores replies that do not match its current FE-mesh operation. `meshingJobSettled` is sent when the host operation finishes, including exports that do not return mesh geometry.
+
 Sent in reply to `meshingGenerate` (and internally by `meshingExport` when the target is `"msh"`) on a successful GMSH run. `positions`/`indices`/`edges` are the base64 `Float32Array`/`Uint32Array` boundary triangulation + true element-edge line buffer, encoded exactly like `EncodedMesh`'s buffers — for a 3D mesh `indices` is the tetrahedra's boundary faces derived host-side, not the tetrahedra themselves. `nodeCount`/`elementCount` are the full node/element counts (not just the displayed boundary triangle count), and `elapsedMs` is the wall-clock duration of the generate call. `elementGroups` partitions `indices` into contiguous per-part runs (`{name, color, indexStart, indexCount}`, with a trailing `name`/`color` = `null` run for triangles not claimed by any part) so the overlay can be built multi-material with per-part colours. The webview calls `viewer.setMeshOverlay(buildFEMesh(msg.positions, msg.indices, msg.edges, msg.elementGroups))` and renders the stats (counts + time) in the panel's status line. `quality` (optional — omitted if it couldn't be computed, e.g. a 1D mesh) is a `{min, mean, histogram}` summary over the mesh's top-dimension elements' `minSICN` quality (via Gmsh's own `getElementQualities` — see `src/gmshService.ts`'s `computeQualityAndWorstElements` for the verified call shape), rendered as a small min/mean line + bar histogram below the FE Mesh panel's status line.
 
 `worstElements` (optional — only ever present for a **3D** generate with at least one element below `threshold`) is a highlight overlay of the mesh's worst-quality elements: `indices` is those elements' own full boundary, ready to index into the SAME `positions` buffer `meshingResult.indices` uses. The webview calls `viewer.setWorstElementsOverlay(buildWorstElementsHighlight(msg.positions, msg.worstElements.indices))`, rendered with a depth-test-disabled "ghost" material (mirroring the Hidden Lines display mode's ghost-line technique) so it stays visible through occluding geometry regardless of true 3D depth — closing the roadmap gap where bad tets are frequently interior and invisible in the boundary-only overlay above. `shownCount`/`belowThresholdCount` differ only when the highlight was capped (`MAX_WORST_ELEMENTS`, prioritizing the lowest-quality elements first); the panel reports both, e.g. "showing worst 2000 of 5300".
 
 ```json
 {
-  "type": "meshingResult", "positions": "AAAA...", "indices": "BBBB...", "edges": "CCCC...",
+  "type": "meshingResult", "requestId": "mesh-request-1", "positions": "AAAA...", "indices": "BBBB...", "edges": "CCCC...",
   "nodeCount": 421, "elementCount": 1893,
   "elementGroups": [
     { "name": "inlet", "color": "#ff0000", "indexStart": 0, "indexCount": 264 },
@@ -672,10 +675,12 @@ Sent in reply to `meshingGenerate` (and internally by `meshingExport` when the t
 
 ### `meshingError`
 
+`requestId` identifies the operation that failed, so a late error cannot replace the status of a newer request.
+
 Sent in reply to `meshingGenerate`/`meshingExport` when GMSH throws or the document has no mesh geometry available yet (e.g. a mesh-format document before the webview has produced an STL snapshot). Rendered as an error string in the FE Mesh panel's status line — it does not use the general `#error-overlay` `error` message.
 
 ```json
-{ "type": "meshingError", "message": "No mesh geometry available: missing STL data." }
+{ "type": "meshingError", "requestId": "mesh-request-1", "message": "No mesh geometry available: missing STL data." }
 ```
 
 ### `viewerDefaults`
@@ -961,8 +966,9 @@ type WebviewToHost =
   | { type: 'exportResult'; requestId: string; data: string; binary: boolean }
   | { type: 'exportError'; requestId: string; message: string }
   | { type: 'meshingChanged'; options: MeshOptions }
-  | { type: 'meshingGenerate'; options: MeshOptions; stl?: string }
-  | { type: 'meshingExport'; target: MeshExportFormatId; options: MeshOptions; stl?: string; unit?: DisplayUnit }
+  | { type: 'meshingGenerate'; requestId: string; options: MeshOptions; stl?: string }
+  | { type: 'meshingExport'; requestId: string; target: MeshExportFormatId; options: MeshOptions; stl?: string; unit?: DisplayUnit }
+  | { type: 'meshingCancel'; requestId: string }
   | { type: 'meshPresetApply'; name: string }
   | { type: 'meshPresetSaveCurrent' }
   | { type: 'meshPresetDelete'; name: string }
@@ -1069,10 +1075,12 @@ Sent whenever the user changes a mesh-options form control in the FE Mesh panel.
 
 ### `meshingGenerate`
 
+The webview includes a new `requestId` for each Generate or Export action. While the request is active, the panel offers Cancel; the host cancels only the active or queued work owned by that document and request. `meshingCancel` carries that same identity.
+
 Sent when the user clicks **▶ Generate** in the FE Mesh panel. Carries the current `MeshOptions` and, for a mesh-format document only, a base64 `stl` field — a fresh snapshot of the currently displayed `THREE.Object3D`, serialized in the webview via the same `exportModel(..., "stl")` helper Export already uses (the host has no B-rep to re-export for a mesh-sourced document, so it has no other way to obtain triangulated geometry for GMSH). B-rep documents omit `stl`; the host re-exports the live OCCT shape to STEP itself. The host replies with `meshingResult` or `meshingError`.
 
 ```json
-{ "type": "meshingGenerate", "options": { "dimension": 3, "sizeMin": 0, "sizeMax": 1e22, "algorithm2D": 6, "algorithm3D": 1, "elementOrder": 1, "optimize": true, "stlAngle": 40 } }
+{ "type": "meshingGenerate", "requestId": "mesh-request-1", "options": { "dimension": 3, "sizeMin": 0, "sizeMax": 1e22, "algorithm2D": 6, "algorithm3D": 1, "elementOrder": 1, "optimize": true, "stlAngle": 40 } }
 ```
 
 ### `meshingExport`
@@ -1080,7 +1088,7 @@ Sent when the user clicks **▶ Generate** in the FE Mesh panel. Carries the cur
 Sent when the user picks a format in the FE Mesh panel's export `<select>` and clicks **📤 Export**. `target` is a `MeshExportFormatId` (see `src/meshExportFormats.ts`'s `MESH_EXPORT_FORMATS` registry, the single source of truth shared by the host and the webview's `<select>` — `"mdpaElements"` is listed first and is therefore the default-selected format) selecting which output to write: `"msh"` runs `generateMesh` and saves the raw `.msh` text; `"geoUnrolled"` calls `exportGeoUnrolled` and saves the `.geo_unrolled` text (handling its XAO companion, see below); `"mdpaElements"`/`"mdpaGeometries"` run `exportMdpa`, a hand-written Kratos MDPA serializer with no `gmsh.write()` involved at all (see `doc/gmsh-integration.md`'s "Kratos MDPA" section); every other id (`"msh2"`, `"vtk"`, `"unv"`, `"inp"`, `"bdf"`, `"su2"`, `"mesh"`, `"stl"`, `"diff"`, `"off"`) runs `exportMeshFormat`, a generic mesh-then-`gmsh.write()` for whatever other Gmsh output formats this WASM build actually supports (confirmed by probing every format Gmsh's writer table recognizes — see `doc/gmsh-integration.md`). Same `options`/optional `stl` payload as `meshingGenerate`, plus an optional `unit` (`DisplayUnit`, default `"mm"`) from the panel's `#meshing-export-unit` `<select>` — a REAL geometric scale applied to the geometry before Gmsh ever sees it (B-rep sources via `exportBRep`'s `scaleFactor`, mesh-format sources via the new `scaleStlBytes`), with `MeshOptions.sizeMin`/`sizeMax` and any per-part `meshSize` proportionally rescaled to match (`scaleMeshOptionsForUnit`/ `scalePartsMeshSizeForUnit`, `src/meshOptions.ts`) — see CLAUDE.md's Meshing section for the full write-up. `unit` is scoped to this message only: `meshingGenerate` always meshes at native mm, since its overlay is display-only with no exported file whose numbers need to mean anything externally. The host prompts a save dialog (reusing the same `promptSaveAndWrite` helper Export uses) and writes the result directly — there is no `meshingResult` reply for this message; failures post the general `error` message instead of `meshingError`.
 
 ```json
-{ "type": "meshingExport", "target": "geoUnrolled", "options": { "dimension": 3, "sizeMin": 0, "sizeMax": 1e22, "algorithm2D": 6, "algorithm3D": 1, "elementOrder": 1, "optimize": true, "stlAngle": 40 }, "unit": "in" }
+{ "type": "meshingExport", "requestId": "mesh-request-2", "target": "geoUnrolled", "options": { "dimension": 3, "sizeMin": 0, "sizeMax": 1e22, "algorithm2D": 6, "algorithm3D": 1, "elementOrder": 1, "optimize": true, "stlAngle": 40 }, "unit": "in" }
 ```
 
 ### `meshingPresets` / `meshPresetApply` / `meshPresetSaveCurrent` / `meshPresetDelete`
