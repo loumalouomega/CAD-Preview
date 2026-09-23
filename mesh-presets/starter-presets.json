@@ -3,7 +3,7 @@
   "presets": {
     "coarse-preview": {
       "name": "coarse-preview",
-      "description": "Fast Gmsh tetrahedral mesh at a 5 mm target size, for a quick first look. Sizes are absolute — scale them to your model's own extent. Names describe density intent only, never a mesh-quality guarantee.",
+      "description": "Fast Gmsh tetrahedral mesh at a 5 mm target size, for a quick first look. Sizes are absolute \u2014 scale them to your model's own extent. Names describe density intent only, never a mesh-quality guarantee.",
       "unit": "mm",
       "engine": "gmsh",
       "options": {
@@ -13,11 +13,15 @@
         "elementOrder": 1,
         "elementShape": "simplex",
         "optimize": true
+      },
+      "stlExport": {
+        "targetCellSize": 5,
+        "chordalFraction": 0.1
       }
     },
     "balanced": {
       "name": "balanced",
-      "description": "Everyday Gmsh tetrahedral mesh at a 1 mm target size. Sizes are absolute — scale them to your model's own extent. Names describe density intent only, never a mesh-quality guarantee.",
+      "description": "Everyday Gmsh tetrahedral mesh at a 1 mm target size. Sizes are absolute \u2014 scale them to your model's own extent. Names describe density intent only, never a mesh-quality guarantee.",
       "unit": "mm",
       "engine": "gmsh",
       "options": {
@@ -27,11 +31,15 @@
         "elementOrder": 1,
         "elementShape": "simplex",
         "optimize": true
+      },
+      "stlExport": {
+        "targetCellSize": 1,
+        "chordalFraction": 0.1
       }
     },
     "fine-detail": {
       "name": "fine-detail",
-      "description": "Dense Gmsh tetrahedral mesh at a 0.25 mm target size, for small features. Expect a large element count on bigger models. Sizes are absolute — scale them to your model's own extent. Names describe density intent only, never a mesh-quality guarantee.",
+      "description": "Dense Gmsh tetrahedral mesh at a 0.25 mm target size, for small features. Expect a large element count on bigger models. Sizes are absolute \u2014 scale them to your model's own extent. Names describe density intent only, never a mesh-quality guarantee.",
       "unit": "mm",
       "engine": "gmsh",
       "options": {
@@ -41,11 +49,15 @@
         "elementOrder": 1,
         "elementShape": "simplex",
         "optimize": true
+      },
+      "stlExport": {
+        "targetCellSize": 0.25,
+        "chordalFraction": 0.1
       }
     },
     "robust-repair": {
       "name": "robust-repair",
-      "description": "fTetWild tetrahedral mesh from the mesh's own bbox-derived sizing — for dirty triangle soups (holes, self-intersections) the Gmsh path cannot classify. Gmsh-only fields such as element order have no effect under this engine.",
+      "description": "fTetWild tetrahedral mesh from the mesh's own bbox-derived sizing \u2014 for dirty triangle soups (holes, self-intersections) the Gmsh path cannot classify. Gmsh-only fields such as element order have no effect under this engine.",
       "unit": "mm",
       "engine": "ftetwild",
       "options": {

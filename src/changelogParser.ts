@@ -4,6 +4,7 @@
  * editOps.ts): the vscode-dependent I/O (reading the file, showing the panel)
  * lives in whatsNew.ts.
  */
+import { escapeHtml } from "./html";
 
 export interface ChangelogEntry {
   readonly version: string;
@@ -58,13 +59,6 @@ export function entriesSince(entries: readonly ChangelogEntry[], lastVersion: st
   return entries.filter((e) => compareVersions(e.version, lastVersion) > 0);
 }
 
-function escapeHtml(text: string): string {
-  return text
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
-}
 
 /** Renders inline `` `code` `` spans within an already-escaped line. */
 function renderInline(escapedLine: string): string {

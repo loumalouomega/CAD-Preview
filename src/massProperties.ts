@@ -1,5 +1,5 @@
 import { getOcct, readShape, wrapOcctFault } from "./occtService";
-import { applyEditsBRep, collectSolids, collectFaces, collectEdges, faceSurfaceInfo } from "./occtOperations";
+import { applyEditsBRep, bboxExtent, collectSolids, collectFaces, collectEdges, faceSurfaceInfo } from "./occtOperations";
 import { volumePropertiesAdaptive, surfacePropertiesAdaptive } from "./brepGProp";
 import type { CadFormat } from "./fileRouter";
 import type { EditOp } from "./editOps";
@@ -34,6 +34,9 @@ export interface MassProperties {
    * NOT about the origin, despite `GProp_GProps` taking no explicit reference
    * point). */
   momentsOfInertia: MomentsOfInertia | null;
+  /** Whole-model call only: the axis-aligned bounding box (mm). Absent for an
+   * entity call or an empty shape. Used by the mesh-budget estimate. */
+  bbox?: { min: [number, number, number]; max: [number, number, number] };
 }
 
 /**
@@ -85,7 +88,14 @@ export async function computeMassProperties(
     const shape = applyEditsBRep(oc, baseShape, ops, cleanup);
 
     if (entityId === null) {
-      return solidProperties(oc, shape, cleanup);
+      const whole: MassProperties = solidProperties(oc, shape, cleanup);
+      try {
+        const ext = bboxExtent(oc, shape, cleanup);
+        if ([...ext.min, ...ext.max].every(Number.isFinite)) whole.bbox = { min: ext.min, max: ext.max };
+      } catch {
+        /* an empty shape has no box — the field stays absent */
+      }
+      return whole;
     }
 
     const solidMatch = /^solid-(\d+)$/.exec(entityId);

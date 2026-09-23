@@ -1,9 +1,14 @@
 .github/**
 .claude/**
+.opencode/**
 .vscode/**
 .vscode-test/**
 src/**
 test/**
+# `.gitignore` excludes the build tree, but the packaged extension runs from
+# `dist/extension.js`; explicitly retain the generated runtime bundle.
+!dist/
+!dist/**
 node_modules/**
 # @loumalouomega/gmsh-wasm must ship as real files, NOT bundled into
 # dist/extension.js — see the comment in gmshService.ts/esbuild.mjs (its
@@ -73,10 +78,12 @@ macros/**
 # Same for `mesh-presets/` (roadmap Tier 1 "Reusable meshing presets"):
 # source ships as `dist/mesh-presets/`, resolved via `bundledMeshPresetsPath`.
 mesh-presets/**
-scripts/screenshots/**
-scripts/mcp-smoke/**
-scripts/perf/**
-scripts/webview-test/**
+# And `sheet-templates/` → `dist/sheet-templates/` (bundledSheetTemplatesPath).
+sheet-templates/**
+# Every dev/test script (screenshots, mcp-smoke, perf, webview-test, compat,
+# reinstall-local.sh) — none is runtime. A per-directory list here let
+# reinstall-local.sh leak into the .vsix until compat:vsix caught it.
+scripts/**
 **/*.ts
 **/*.map
 esbuild.mjs

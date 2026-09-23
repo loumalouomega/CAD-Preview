@@ -274,10 +274,11 @@ interface MeshOptions {
   elementShape: 'simplex' | 'subdivided'  // triangles/tets vs quads/hexes
   optimize: boolean
   stlAngle: number       // classifySurfaces angle, degrees
+  budgetElements?: number // advisory element budget — warns, never blocks; omitted when unset
 }
 ```
 
-The flat options bag for GMSH FE-mesh generation (see [GMSH Integration](./gmsh-integration.md)). `validateMeshOptions` (`src/meshOptions.ts`) is the single tolerance gate — an individually invalid field falls back to `DEFAULT_MESH_OPTIONS` for that field alone, so a hand-edited or partially-corrupt `<model>.mesh.json` sidecar degrades gracefully rather than blocking meshing. Sent host → webview in `meshingOptions` (hydration) and webview → host in `meshingChanged`/`meshingGenerate`/`meshingExport`.
+The flat options bag for GMSH FE-mesh generation (see [GMSH Integration](./gmsh-integration.md)). `validateMeshOptions` (`src/meshOptions.ts`) is the single tolerance gate — an individually invalid field falls back to `DEFAULT_MESH_OPTIONS` for that field alone, so a hand-edited or partially-corrupt `<model>.mesh.json` sidecar degrades gracefully rather than blocking meshing. Sent host → webview in `meshingOptions` (hydration) and webview → host in `meshingChanged`/`meshingGenerate`/`meshingExport`. `meshingExport` also carries an optional `manifest: true` when the FE Mesh panel's **Handoff manifest** box is ticked — the host then writes `<output>.handoff.json` beside the saved mesh and posts a `status` summarizing the Part coverage.
 
 ### `ViewerDefaults` and `MassProperties`
 
@@ -421,6 +422,10 @@ type HostToWebview =
   | { type: 'fitRegionResult'; requestId: string; fit: MeshRegionFit }
   | { type: 'fitRegionError'; requestId: string; message: string }
   | { type: 'primitiveRecognizeResult'; requestId: string; report: PrimitiveReport }
+  | { type: 'passagesResult'; requestId: string; report: PassageReport; sizeMax: number | null }
+  | { type: 'passagesError'; requestId: string; message: string }
+  | { type: 'meshDeviationResult'; requestId: string; report: DeviationReport; positions: string; distances: string; max: number }
+  | { type: 'meshDeviationError'; requestId: string; message: string }
   | { type: 'primitiveRecognizeError'; requestId: string; message: string }
   | { type: 'spacemouse'; motion: { tx: number; ty: number; tz: number; rx: number; ry: number; rz: number }; buttons?: number }
   | { type: 'zoomToSelection' }
@@ -990,6 +995,8 @@ type WebviewToHost =
   | { type: 'bomRequest'; requestId: string }
   | { type: 'fitRegionRequest'; requestId: string; point: [number, number, number] }
   | { type: 'primitiveRecognizeRequest'; requestId: string }
+  | { type: 'passagesRequest'; requestId: string; targetCells: number }
+  | { type: 'meshDeviationRequest'; requestId: string; tolerance: number; options: MeshOptions; stl?: string }
   | { type: 'decomposeExportClicked' }
   | { type: 'decomposeSaveMacroClicked' }
   | { type: 'colorFieldRequest'; requestId: string; field: string; kind: 'point' | 'cell' }
@@ -1290,6 +1297,18 @@ Sent when the Region fit panel's **Pick seed** button is armed and the user clic
 
 ```json
 { "type": "fitRegionRequest", "requestId": "1234-0.56", "point": [5, 5, 0] }
+```
+
+### `meshDeviationRequest` / `meshDeviationResult` / `meshDeviationError`
+
+FE Mesh ▸ Deviation (roadmap "CAD-to-mesh deviation map"). `meshDeviationRequest` carries the absolute `tolerance` (mm), the current `options`, and — for a mesh source — the same `stl` payload `meshingGenerate` sends. The host generates the mesh exactly as Generate would, builds the reference (the CAD's fine tessellation for a B-rep, the raw source triangles otherwise), and runs `measureMeshDeviation`. `meshDeviationResult` carries the `DeviationReport` (forward/reverse/filtered stats, coverage, `regionFailures`, `extraneousFraction`), the boundary as per-corner `positions` (base64 Float32, 9 per triangle) with per-corner `distances` (base64 Float32 — each boundary vertex's distance to the reference), and the colour-ramp top `max`. The webview shows it through the colour-field overlay slot; a stale `requestId` is ignored.
+
+### `passagesRequest` / `passagesResult` / `passagesError`
+
+Sent from the Passages panel (roadmap "Narrow-gap and passage resolution preflight") — the interactive half of `analyze_passages`. B-rep sources only (the panel hides itself for mesh sources). `passagesRequest` carries `targetCells` (cells wanted across a passage); the host reads the source, the unbaked op tail, the current Parts and the stored mesh options itself and runs `analyzePassages`. `passagesResult` carries the `PassageReport` (findings narrowest first — `kind` `annular`/`slot`, `faceA`/`faceB`, exact `width`, `overlap`, `requestedSize`/`sizeSource`, estimated `cellsAcross`, `suggestedSize`, `underResolved` — plus `rejected` coaxial pairs with no axial overlap) and the `sizeMax` it compared against (`null` = unbounded). Correlated by `requestId`; a stale reply is ignored. "Apply local size" is webview-side: it creates/updates a Part named `Passage face-A/face-B` through `PartsModel`, which posts the ordinary `partsChanged`.
+
+```json
+{ "type": "passagesRequest", "requestId": "1234-0.56", "targetCells": 3 }
 ```
 
 ### `primitiveRecognizeRequest` / `decomposeExportClicked` / `decomposeSaveMacroClicked`

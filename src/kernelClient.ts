@@ -21,11 +21,10 @@
  */
 
 import { fork, type ChildProcess } from "child_process";
-import { AsyncLocalStorage } from "node:async_hooks";
-import { randomUUID } from "node:crypto";
 import * as path from "path";
 import { marshal, unmarshal, type KernelRequest, type KernelResponse } from "./kernelIpc";
 import {
+  KERNELS_BY_FUNCTION,
   initialKernelState,
   reduceKernelState,
   type KernelEvent,
@@ -68,18 +67,57 @@ export interface DocumentPipeline extends Pipeline {
   readMeshioFieldValues: typeof readMeshioFieldValues;
 }
 
+/** Per-call scoping for the kernel queue (roadmap "Document-scoped jobs and
+ * cancellation"). `owner` groups jobs so one tab's Cancel can never touch
+ * another tab's work; `signal` (an MCP request's `extra.signal`) cancels the
+ * job when it aborts; `timeoutMs` overrides the client-wide watchdog. */
+export interface JobOptions {
+  owner?: string;
+  signal?: AbortSignal;
+  timeoutMs?: number;
+}
+
+export type JobState = "queued" | "running";
+
+export interface JobInfo {
+  jobId: number;
+  fn: string;
+  owner: string | null;
+  state: JobState;
+}
+
+/** Rejection used for a job that was cancelled — queued jobs are rejected
+ * with this WITHOUT ever being sent to the worker. */
+export class JobCancelledError extends Error {
+  constructor(readonly fn: string) {
+    super(`kernel-worker: "${fn}" was cancelled`);
+    this.name = "JobCancelledError";
+  }
+}
+
+/** A `DocumentPipeline` whose every call carries the same `JobOptions`, plus
+ * `cancel()` for exactly that owner's jobs. */
+export interface ScopedPipeline extends DocumentPipeline {
+  readonly owner: string | null;
+  cancel(): void;
+}
+
 export interface KernelClient extends DocumentPipeline {
-  /** Kills the current child (SIGKILL) — real interruption, not just a
-   * discarded result. Any request already sent to it rejects immediately;
-   * the NEXT call transparently spawns a fresh child. A no-op if no child is
-   * currently running. Also what the per-call watchdog timeout below uses
-   * internally on a hang. */
+  /** Kills whichever job is RUNNING right now (SIGKILL — real interruption,
+   * not a discarded result), regardless of owner. Queued jobs are untouched
+   * and dispatch to a freshly-spawned child. Prefer `cancel({owner})`. */
   cancelCurrent(): void;
-  /** Runs a group of serialized kernel calls under one stable document/job identity. */
-  runOwnedJob<T>(identity: { ownerId: string; requestId: string; jobId?: string }, action: () => Promise<T>): Promise<T>;
-  /** Owner-scoped, idempotent lifecycle lookup/cancellation for an owned job. */
-  jobStatus(ownerId: string, requestId: string): KernelJobRecord | undefined;
-  cancelOwnedJob(ownerId: string, requestId: string): KernelJobRecord | undefined;
+  /** Cancels the matching jobs: a queued match is removed and rejected with
+   * `JobCancelledError` without ever being sent; a running match is rejected
+   * the same way and its child killed. Non-matching jobs are untouched (a
+   * non-matching RUNNING job is never killed). Returns how many matched. */
+  cancel(match: { owner?: string; jobId?: number }): number;
+  /** Returns a pipeline whose calls all carry `opts` (see `JobOptions`). */
+  withJob(opts: JobOptions): ScopedPipeline;
+  /** Snapshot of queued + running jobs, running first. */
+  jobs(): JobInfo[];
+  /** Subscribes to job-list changes; returns an unsubscribe. */
+  onJobs(listener: (jobs: JobInfo[]) => void): () => void;
   /** The kernels' inferred readiness (see `kernelActivity.ts`) — a snapshot. */
   kernelState(): KernelState;
   /** Subscribes to readiness changes; returns an unsubscribe. Fires only when
@@ -87,19 +125,21 @@ export interface KernelClient extends DocumentPipeline {
   onKernelState(listener: (state: KernelState) => void): () => void;
 }
 
-export interface KernelJobRecord {
-  version: 1; jobId: string; ownerId: string; requestId: string;
-  state: "queued" | "running" | "cancelling" | "succeeded" | "failed" | "cancelled";
-  startedAt?: number; finishedAt?: number; message?: string;
-}
-
-interface OwnedJobContext { key: string; record: KernelJobRecord }
-
-interface PendingEntry {
+interface Job {
+  jobId: number;
+  fn: string;
+  args: unknown[];
+  owner: string | null;
+  timeoutMs: number;
   resolve: (value: unknown) => void;
   reject: (err: Error) => void;
-  timer: ReturnType<typeof setTimeout>;
-  jobKey?: string;
+  state: JobState;
+  /** Set once sent: the request id, the child it went to, and its watchdog. */
+  requestId?: number;
+  proc?: ChildProcess;
+  timer?: ReturnType<typeof setTimeout>;
+  cleanupSignal?: () => void;
+  settled: boolean;
 }
 
 /** No real operation should ever take this long — `scripts/perf/baseline.json`'s
@@ -107,51 +147,71 @@ interface PendingEntry {
  * leaves enormous headroom for legitimately large files while still catching
  * the documented GMSH-3D-algorithm-hangs-indefinitely failure mode (CLAUDE.md's
  * Meshing section) in bounded time instead of never. */
-const DEFAULT_TIMEOUT_MS = 5 * 60 * 1000;
+export const DEFAULT_TIMEOUT_MS = 5 * 60 * 1000;
+
+/** Every kernel function name, taken from the compile-time-complete
+ * `KERNELS_BY_FUNCTION` table (a missing key there is already a type error). */
+const KERNEL_FUNCTIONS = Object.keys(KERNELS_BY_FUNCTION) as (keyof DocumentPipeline)[];
 
 /** Creates one independent kernel-worker child + its own request queue. Each caller (the interactive extension host, an MCP server instance) gets its own — no cross-process sharing/daemon. */
 export function createKernelClient(extensionPath: string, options?: { timeoutMs?: number }): KernelClient {
-  const timeoutMs = options?.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const defaultTimeoutMs = options?.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   let child: ChildProcess | null = null;
-  let nextId = 1;
-  const pending = new Map<number, PendingEntry>();
-  const jobs = new Map<string, KernelJobRecord>();
-  const jobStorage = new AsyncLocalStorage<OwnedJobContext>();
-  let activeJobKey: string | undefined;
-  // A single-slot chain: each new call's request is only SENT after the
-  // previous one has settled (resolved or rejected) — see the file doc
-  // comment for why serializing is both correct and sufficient here.
-  let queueTail: Promise<unknown> = Promise.resolve();
+  let nextRequestId = 1;
+  let nextJobId = 1;
+  // One job runs at a time (the kernels are single-threaded per process);
+  // the rest wait in `queue`, in order. Explicit rather than a promise chain
+  // so a queued job can be removed before it is ever sent.
+  const queue: Job[] = [];
+  let active: Job | null = null;
   // Kernel readiness is INFERRED from calls (kernelActivity.ts explains why).
   let kernels: KernelState = initialKernelState();
   const kernelListeners = new Set<(state: KernelState) => void>();
+  const jobListeners = new Set<(jobs: JobInfo[]) => void>();
   function emit(ev: KernelEvent): void {
     const next = reduceKernelState(kernels, ev);
     if (next === kernels) return;
     kernels = next;
     for (const l of [...kernelListeners]) l(kernels);
   }
+  function snapshot(): JobInfo[] {
+    const all = active ? [active, ...queue] : [...queue];
+    return all.map((j) => ({ jobId: j.jobId, fn: j.fn, owner: j.owner, state: j.state }));
+  }
+  function emitJobs(): void {
+    if (jobListeners.size === 0) return;
+    const s = snapshot();
+    for (const l of [...jobListeners]) l(s);
+  }
 
-  /** Removes and returns a pending entry, clearing its watchdog timer — the
-   * one place every settlement path (a real response, a timeout, a send
-   * error, a child exit) goes through, so a timer can never outlive its
-   * entry or fire twice. */
-  function takePending(id: number): PendingEntry | undefined {
-    const entry = pending.get(id);
-    if (entry) {
-      clearTimeout(entry.timer);
-      pending.delete(id);
-      if (entry.jobKey === activeJobKey) activeJobKey = undefined;
+  /** The ONE settlement path for a job: a response, a timeout, a send
+   * error, a child exit or a cancel all come through here, so a promise can
+   * never settle twice and a timer can never outlive its job. */
+  function settle(job: Job, outcome: { ok: true; value: unknown } | { ok: false; error: Error }): void {
+    if (job.settled) return;
+    job.settled = true;
+    if (job.timer) clearTimeout(job.timer);
+    job.cleanupSignal?.();
+    const wasRunning = job === active;
+    if (wasRunning) active = null;
+    else {
+      const i = queue.indexOf(job);
+      if (i >= 0) queue.splice(i, 1);
     }
-    return entry;
+    if (job.state === "running") emit(outcome.ok ? { type: "success", fn: job.fn } : { type: "failure", fn: job.fn });
+    if (outcome.ok) job.resolve(outcome.value);
+    else job.reject(outcome.error);
+    emitJobs();
+    if (wasRunning) pump();
   }
 
-  function rejectAllPending(err: Error): void {
-    for (const id of [...pending.keys()]) takePending(id)?.reject(err);
-  }
-
-  function killCurrentChild(): void {
-    if (child) child.kill("SIGKILL"); // the 'exit' handler below rejects pending + clears `child` for the next call
+  /** Detaches the current child (the NEXT dispatch spawns a fresh one) and
+   * kills it. Detaching first means a queued job dispatched right after a
+   * kill can never be sent to the dying process. */
+  function killChild(proc: ChildProcess | undefined | null): void {
+    if (!proc) return;
+    if (child === proc) child = null;
+    proc.kill("SIGKILL");
   }
 
   function getChild(): ChildProcess {
@@ -169,15 +229,21 @@ export function createKernelClient(extensionPath: string, options?: { timeoutMs?
       console.error(`[kernel-worker] ${chunk.toString().replace(/\n$/, "")}`);
     });
     spawned.on("message", (msg: KernelResponse) => {
-      const entry = takePending(msg.id);
-      if (!entry) return; // a response for a request we've already given up on (timeout/cancel) — ignore
-      if (msg.ok) entry.resolve(unmarshal(msg.result));
-      else entry.reject(new Error(msg.error.message));
+      const job = active;
+      // A response for a request we've already given up on (timeout/cancel) — ignore.
+      if (!job || job.requestId !== msg.id || job.proc !== spawned) return;
+      if (msg.ok) settle(job, { ok: true, value: unmarshal(msg.result) });
+      else settle(job, { ok: false, error: new Error(msg.error.message) });
     });
+    let gone = false;
     const onGone = (err: Error) => {
-      if (child === spawned) child = null; // let the NEXT call respawn
+      if (gone) return;
+      gone = true;
+      if (child === spawned) child = null; // let the NEXT dispatch respawn
       emit({ type: "reset" }); // the kernels died with the child
-      rejectAllPending(err);
+      // Only the job that was actually running ON THIS CHILD fails; queued
+      // jobs were never sent and dispatch to the respawned child.
+      if (active && active.proc === spawned) settle(active, { ok: false, error: err });
     };
     spawned.on("exit", (code, signal) => onGone(new Error(`kernel worker exited unexpectedly (code=${code}, signal=${signal})`)));
     spawned.on("error", onGone);
@@ -185,149 +251,109 @@ export function createKernelClient(extensionPath: string, options?: { timeoutMs?
     return spawned;
   }
 
-  function callKernel(fn: string, args: unknown[]): Promise<unknown> {
-    const job = jobStorage.getStore();
-    const run = (): Promise<unknown> =>
-      new Promise<unknown>((resolve, reject) => {
-        if (job && (job.record.state === "cancelling" || job.record.state === "cancelled")) {
-          reject(new Error(`CAD job ${job.record.requestId} was cancelled by owner ${job.record.ownerId}.`));
-          return;
-        }
-        if (job) {
-          job.record.state = "running";
-          job.record.startedAt ??= Date.now();
-        }
-        const id = nextId++;
-        const timer = setTimeout(() => {
-          takePending(id);
-          reject(
-            new Error(
-              `kernel-worker: "${fn}" did not respond within ${timeoutMs}ms — the kernel likely hung; killing and respawning the worker.`
-            )
-          );
-          killCurrentChild();
-        }, timeoutMs);
-        emit({ type: "start", fn });
-        pending.set(id, {
-          resolve: (value) => {
-            emit({ type: "success", fn });
-            resolve(value);
-          },
-          reject: (err) => {
-            emit({ type: "failure", fn });
-            reject(err);
-          },
-          timer,
-          jobKey: job?.key,
-        });
-        activeJobKey = job?.key;
-        const request: KernelRequest = { id, fn, args: args.map(marshal) };
-        getChild().send(request, (err) => {
-          if (err) takePending(id)?.reject(err instanceof Error ? err : new Error(String(err)));
-        });
+  function pump(): void {
+    if (active || queue.length === 0) return;
+    const job = queue.shift()!;
+    active = job;
+    job.state = "running";
+    const requestId = nextRequestId++;
+    job.requestId = requestId;
+    job.timer = setTimeout(() => {
+      const proc = job.proc;
+      if (proc && child === proc) child = null; // detach BEFORE settle pumps the next job
+      settle(job, {
+        ok: false,
+        error: new Error(
+          `kernel-worker: "${job.fn}" did not respond within ${job.timeoutMs}ms — the kernel likely hung; killing and respawning the worker.`
+        ),
       });
-    // Chain after the previous call regardless of whether it resolved or
-    // rejected — one call's failure must never wedge every call after it.
-    const result = queueTail.then(run, run);
-    queueTail = result.then(
-      () => undefined,
-      () => undefined
-    );
-    return result;
+      killChild(proc);
+    }, job.timeoutMs);
+    emit({ type: "start", fn: job.fn });
+    emitJobs();
+    let proc: ChildProcess;
+    try {
+      proc = getChild();
+    } catch (err) {
+      settle(job, { ok: false, error: err instanceof Error ? err : new Error(String(err)) });
+      return;
+    }
+    job.proc = proc;
+    const request: KernelRequest = { id: requestId, fn: job.fn, args: job.args.map(marshal) };
+    proc.send(request, (err) => {
+      if (err) settle(job, { ok: false, error: err instanceof Error ? err : new Error(String(err)) });
+    });
+  }
+
+  function cancelJob(job: Job): void {
+    const proc = job.state === "running" ? job.proc : undefined;
+    if (proc && child === proc) child = null; // detach BEFORE settle pumps the next job
+    settle(job, { ok: false, error: new JobCancelledError(job.fn) });
+    killChild(proc);
+  }
+
+  function callKernel(fn: string, args: unknown[], opts?: JobOptions): Promise<unknown> {
+    return new Promise<unknown>((resolve, reject) => {
+      const job: Job = {
+        jobId: nextJobId++,
+        fn,
+        args,
+        owner: opts?.owner ?? null,
+        timeoutMs: opts?.timeoutMs ?? defaultTimeoutMs,
+        resolve,
+        reject,
+        state: "queued",
+        settled: false,
+      };
+      const signal = opts?.signal;
+      if (signal?.aborted) {
+        reject(new JobCancelledError(fn));
+        return;
+      }
+      if (signal) {
+        const onAbort = () => cancelJob(job);
+        signal.addEventListener("abort", onAbort, { once: true });
+        job.cleanupSignal = () => signal.removeEventListener("abort", onAbort);
+      }
+      queue.push(job);
+      emitJobs();
+      pump();
+    });
+  }
+
+  function cancel(match: { owner?: string; jobId?: number }): number {
+    const matches = (j: Job) =>
+      (match.jobId === undefined || j.jobId === match.jobId) && (match.owner === undefined || j.owner === match.owner);
+    if (match.jobId === undefined && match.owner === undefined) return 0;
+    const hits = [...queue.filter(matches), ...(active && matches(active) ? [active] : [])];
+    for (const j of hits) cancelJob(j);
+    return hits.length;
+  }
+
+  function methods(opts?: JobOptions): DocumentPipeline {
+    const out: Record<string, (...args: unknown[]) => Promise<unknown>> = {};
+    for (const fn of KERNEL_FUNCTIONS) out[fn] = (...args: unknown[]) => callKernel(fn, args, opts);
+    return out as unknown as DocumentPipeline;
   }
 
   return {
-    loadBRep: (...args) => callKernel("loadBRep", args) as ReturnType<Pipeline["loadBRep"]>,
-    exportBRep: (...args) => callKernel("exportBRep", args) as ReturnType<Pipeline["exportBRep"]>,
-    generateMesh: (...args) => callKernel("generateMesh", args) as ReturnType<Pipeline["generateMesh"]>,
-    getGmshVersion: (...args) => callKernel("getGmshVersion", args) as ReturnType<Pipeline["getGmshVersion"]>,
-    exportMeshFormat: (...args) => callKernel("exportMeshFormat", args) as ReturnType<Pipeline["exportMeshFormat"]>,
-    exportMdpa: (...args) => callKernel("exportMdpa", args) as ReturnType<Pipeline["exportMdpa"]>,
-    exportGeoUnrolled: (...args) => callKernel("exportGeoUnrolled", args) as ReturnType<Pipeline["exportGeoUnrolled"]>,
-    computeMassProperties: (...args) => callKernel("computeMassProperties", args) as ReturnType<Pipeline["computeMassProperties"]>,
-    computeBom: (...args) => callKernel("computeBom", args) as ReturnType<Pipeline["computeBom"]>,
-    computeHoleTable: (...args) => callKernel("computeHoleTable", args) as ReturnType<Pipeline["computeHoleTable"]>,
-    getEntityFacts: (...args) => callKernel("getEntityFacts", args) as ReturnType<Pipeline["getEntityFacts"]>,
-    hitTest: (...args) => callKernel("hitTest", args) as ReturnType<Pipeline["hitTest"]>,
-    measureEntities: (...args) => callKernel("measureEntities", args) as ReturnType<Pipeline["measureEntities"]>,
-    measureExact: (...args) => callKernel("measureExact", args) as ReturnType<Pipeline["measureExact"]>,
-    checkInterference: (...args) => callKernel("checkInterference", args) as ReturnType<Pipeline["checkInterference"]>,
-    checkInterferenceAll: (...args) => callKernel("checkInterferenceAll", args) as ReturnType<Pipeline["checkInterferenceAll"]>,
-    rebindPartsAcrossOps: (...args) => callKernel("rebindPartsAcrossOps", args) as ReturnType<Pipeline["rebindPartsAcrossOps"]>,
-    rebindPartsAcrossSave: (...args) => callKernel("rebindPartsAcrossSave", args) as ReturnType<Pipeline["rebindPartsAcrossSave"]>,
-    resolveBucketSelector: (...args) => callKernel("resolveBucketSelector", args) as ReturnType<Pipeline["resolveBucketSelector"]>,
-    synthesizeSelector: (...args) => callKernel("synthesizeSelector", args) as ReturnType<Pipeline["synthesizeSelector"]>,
-    resolvePartSelectors: (...args) => callKernel("resolvePartSelectors", args) as ReturnType<Pipeline["resolvePartSelectors"]>,
-    renderSnapshot: (...args) => callKernel("renderSnapshot", args) as ReturnType<Pipeline["renderSnapshot"]>,
-    isRenderAvailable: (...args) => callKernel("isRenderAvailable", args) as ReturnType<Pipeline["isRenderAvailable"]>,
-    searchStandardParts: (...args) => callKernel("searchStandardParts", args) as ReturnType<Pipeline["searchStandardParts"]>,
-    downloadStandardPart: (...args) => callKernel("downloadStandardPart", args) as ReturnType<Pipeline["downloadStandardPart"]>,
-    compareModels: (...args) => callKernel("compareModels", args) as ReturnType<Pipeline["compareModels"]>,
-    convertToStlBoundary: (...args) => callKernel("convertToStlBoundary", args) as ReturnType<Pipeline["convertToStlBoundary"]>,
-    convertToStlBoundaryWithRegions: (...args) =>
-      callKernel("convertToStlBoundaryWithRegions", args) as ReturnType<Pipeline["convertToStlBoundaryWithRegions"]>,
-    convertFoamCaseToStlBoundary: (...args) =>
-      callKernel("convertFoamCaseToStlBoundary", args) as ReturnType<Pipeline["convertFoamCaseToStlBoundary"]>,
-    exportViaMeshio: (...args) => callKernel("exportViaMeshio", args) as ReturnType<Pipeline["exportViaMeshio"]>,
-    readMeshioMetadata: (...args) => callKernel("readMeshioMetadata", args) as ReturnType<Pipeline["readMeshioMetadata"]>,
-    readMeshioDataInfo: (...args) => callKernel("readMeshioDataInfo", args) as ReturnType<Pipeline["readMeshioDataInfo"]>,
-    readMeshioProvenance: (...args) => callKernel("readMeshioProvenance", args) as ReturnType<Pipeline["readMeshioProvenance"]>,
-    decimateStlBoundary: (...args) => callKernel("decimateStlBoundary", args) as ReturnType<Pipeline["decimateStlBoundary"]>,
-    runMeshioOps: (...args) => callKernel("runMeshioOps", args) as ReturnType<Pipeline["runMeshioOps"]>,
-    loadBRepCachedForDocument: (...args) => callKernel("loadBRepCachedForDocument", args) as Promise<BRepResult>,
-    disposeBRepCacheForDocument: (...args) => callKernel("disposeBRepCacheForDocument", args) as Promise<void>,
-    readMeshioFieldValues: (...args) => callKernel("readMeshioFieldValues", args) as ReturnType<typeof readMeshioFieldValues>,
-    checkMeshHealth: (...args) => callKernel("checkMeshHealth", args) as ReturnType<Pipeline["checkMeshHealth"]>,
-    recognizePrimitives: (...args) => callKernel("recognizePrimitives", args) as ReturnType<Pipeline["recognizePrimitives"]>,
-    fitMeshRegion: (...args) => callKernel("fitMeshRegion", args) as ReturnType<Pipeline["fitMeshRegion"]>,
-    promoteMeshToBrep: (...args) => callKernel("promoteMeshToBrep", args) as ReturnType<Pipeline["promoteMeshToBrep"]>,
-    repairMesh: (...args) => callKernel("repairMesh", args) as ReturnType<Pipeline["repairMesh"]>,
-    exportSvgSilhouette: (...args) => callKernel("exportSvgSilhouette", args) as ReturnType<Pipeline["exportSvgSilhouette"]>,
-    exportDrawingSheet: (...args) => callKernel("exportDrawingSheet", args) as ReturnType<Pipeline["exportDrawingSheet"]>,
-    buildPrimitivesFile: (...args) => callKernel("buildPrimitivesFile", args) as ReturnType<Pipeline["buildPrimitivesFile"]>,
-    cancelCurrent: killCurrentChild,
-    runOwnedJob: async <T>(identity: { ownerId: string; requestId: string; jobId?: string }, action: () => Promise<T>): Promise<T> => {
-      if (!identity.ownerId.trim() || !identity.requestId.trim()) throw new Error("Owned CAD jobs require stable ownerId and requestId values.");
-      const key = `${identity.ownerId}\u0000${identity.requestId}`;
-      if (jobs.has(key)) throw new Error(`CAD job ${identity.requestId} was already registered for this owner.`);
-      const record: KernelJobRecord = { version: 1, jobId: identity.jobId ?? randomUUID(), ownerId: identity.ownerId, requestId: identity.requestId, state: "queued" };
-      jobs.set(key, record);
-      while (jobs.size > 500) {
-        const first = jobs.entries().next().value as [string, KernelJobRecord] | undefined;
-        if (!first || ["queued", "running", "cancelling"].includes(first[1].state)) break;
-        jobs.delete(first[0]);
-      }
-      return jobStorage.run({ key, record }, async () => {
-        try {
-          const value = await action();
-          if (record.state === "cancelling" || record.state === "cancelled") throw new Error(`CAD job ${record.requestId} was cancelled by owner ${record.ownerId}.`);
-          record.state = "succeeded";
-          record.finishedAt = Date.now();
-          return value;
-        } catch (error) {
-          record.state = record.state === "cancelling" || record.state === "cancelled" ? "cancelled" : "failed";
-          record.finishedAt = Date.now();
-          record.message = error instanceof Error ? error.message : String(error);
-          throw error;
-        }
-      });
+    ...methods(),
+    cancelCurrent: () => {
+      if (active) cancelJob(active);
+      else killChild(child); // nothing running: still recycle the idle child (old contract)
     },
-    jobStatus: (ownerId, requestId) => {
-      const record = jobs.get(`${ownerId}\u0000${requestId}`);
-      return record ? structuredClone(record) : undefined;
-    },
-    cancelOwnedJob: (ownerId, requestId) => {
-      const key = `${ownerId}\u0000${requestId}`;
-      const record = jobs.get(key);
-      if (!record) return undefined;
-      if (record.state === "queued") {
-        record.state = "cancelled";
-        record.finishedAt = Date.now();
-      } else if (record.state === "running") {
-        record.state = "cancelling";
-        if (activeJobKey === key) killCurrentChild();
-      }
-      return structuredClone(record);
+    cancel,
+    withJob: (opts) => ({
+      ...methods(opts),
+      owner: opts.owner ?? null,
+      cancel: () => {
+        if (opts.owner !== undefined) cancel({ owner: opts.owner });
+      },
+    }),
+    jobs: snapshot,
+    onJobs: (listener) => {
+      jobListeners.add(listener);
+      return () => void jobListeners.delete(listener);
     },
     kernelState: () => kernels,
     onKernelState: (listener) => {

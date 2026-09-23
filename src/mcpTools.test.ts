@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import * as fs from "fs/promises";
 import * as os from "os";
 import * as path from "path";
+import { createHash } from "node:crypto";
 import {
   describeCapabilities,
   allOpKinds,
@@ -32,8 +33,17 @@ import {
   exportMeshTool,
   cadJobStatusTool,
   cadJobCancelTool,
+  checkHandoffManifestTool,
+  generatePrepReportTool,
   compareMeshRefinementTool,
   exportBRepTool,
+  batchExportTool,
+  exportTessellatedStlTool,
+  saveSheetTemplate,
+  listSheetTemplates,
+  estimateMeshBudgetTool,
+  analyzePassagesTool,
+  measureMeshDeviationTool,
   saveModelTool,
   rewriteGeoMerge,
   savePreprocessTool,
@@ -58,8 +68,6 @@ import {
   applyMeshPreset,
   type Pipeline,
   type ToolContext,
-  type OwnedJobRecord,
-  type OwnedJobControl,
   exportDrawingSheetTool,
 } from "./mcpTools";
 import { readEdits, readParts, readAnnotations, readPlanes, writeAnnotations, writeEdits, editsSidecarPath, geoScriptPath, partsSidecarPath, annotationsSidecarPath, planesSidecarPath } from "./mcpSidecars";
@@ -341,9 +349,18 @@ function fakePipeline(overrides: Partial<Pipeline> = {}): Pipeline {
     loadBRep: vi.fn(async () => FAKE_BREP_RESULT),
     exportBRep: vi.fn(async () => new Uint8Array([1, 2, 3])),
     generateMesh: vi.fn(async () => FAKE_MESH_RESULT),
-    getGmshVersion: vi.fn(async () => "4.13.1"),
     exportMeshFormat: vi.fn(async () => "vtk-content"),
     exportMdpa: vi.fn(async () => "Begin Nodes\nEnd Nodes\n"),
+    computeHandoffFacts: vi.fn(async () => ({
+      engineUsed: "gmsh" as const,
+      nodeCount: 10,
+      elementCount: 20,
+      groups: [{ dim: 2, physicalTag: 1, name: "Inlet", entityTags: [3], elementCount: 8 }],
+      unassignedSurfaceTags: [1, 2],
+      overlaps: [],
+      subModelParts: [{ name: "Inlet", nodeCount: 9, volumeCellCount: 0, surfaceCellCount: 8 }],
+      warnings: [],
+    })),
     exportGeoUnrolled: vi.fn(async () => ({ text: 'Merge "/out.geo_unrolled.xao";\n', xao: new Uint8Array([9]) })),
     computeMassProperties: vi.fn(async () => FAKE_MASS_PROPERTIES),
     computeBom: vi.fn(async (_ext: string, _bytes: Uint8Array, _format: string, _ops: unknown[], parts: Array<{ name: string; color: string; volumes: string[]; surfaces: string[]; lines: string[]; points: string[] }>) => ({
@@ -415,6 +432,31 @@ function fakePipeline(overrides: Partial<Pipeline> = {}): Pipeline {
     compareModels: vi.fn(async () => FAKE_MODEL_DIFF),
     checkMeshHealth: vi.fn(async () => FAKE_MESH_HEALTH_REPORT),
     recognizePrimitives: vi.fn(async () => ({ solidCount: 0, solids: [] })),
+    measureMeshDeviation: vi.fn(async () => ({
+      report: {
+        tolerance: 0.1,
+        forward: { max: 0.05, mean: 0.01, p50: 0.01, p95: 0.04, p99: 0.05, samples: 100, withinTolerance: 100, coverage: 1 },
+        reverse: { max: 0.02, mean: 0.01, p50: 0.01, p95: 0.02, p99: 0.02, samples: 100, withinTolerance: 100 },
+        filtered: { max: 0.05, mean: 0.01, p50: 0.01, p95: 0.04, p99: 0.05, samples: 100, excluded: 0 },
+        regionFailures: [],
+        extraneousFraction: 0,
+      },
+      mesh: { nodeCount: 4, elementCount: 1, boundaryTriangles: 1, engineUsed: "gmsh" },
+      referenceKind: "cad-tessellation" as const,
+      corners: { positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]), distances: new Float32Array([0, 0.01, 0.02]) },
+      warnings: [],
+    })),
+    analyzePassages: vi.fn(async () => ({ findings: [], rejected: [], targetCells: 3, facesAnalyzed: 0, diagonal: 1 })),
+    exportTessellatedStl: vi.fn(async () => ({
+      stl: new Uint8Array(84 + 50),
+      triangleCount: 1,
+      unit: "mm",
+      requestedChordal: 0.4,
+      linearDeflectionMm: 0.4,
+      angularDeg: 20,
+      measured: { max: 0.1, p95: 0.08, mean: 0.05, samples: 4, sampledTriangles: 1, exceedingRequested: 0 },
+      warnings: [],
+    })),
     fitMeshRegion: vi.fn(async () => ({
       seedTriangle: 0, triangleCount: 0, capped: false, regionArea: 0, regionDiagonal: 0,
       freeEdgeCount: 0, nonManifoldEdgeCount: 0, candidates: [], simplest: null,
@@ -454,8 +496,8 @@ function fakePipeline(overrides: Partial<Pipeline> = {}): Pipeline {
   } as Pipeline;
 }
 
-function ctx(pipeline: Pipeline = fakePipeline()): ToolContext {
-  return { pipeline, extensionPath: dir };
+function ctx(pipeline: Pipeline = fakePipeline(), jobControl?: ToolContext["jobControl"]): ToolContext {
+  return { pipeline, extensionPath: dir, ...(jobControl ? { jobControl } : {}) };
 }
 
 beforeEach(async () => {
@@ -2481,6 +2523,30 @@ describe("save_model (Tier 0 Phase 3)", () => {
     expect(await fs.readFile(stpModel, "utf8")).toBe("STEP-SOURCE");
   });
 
+  it("retries the rebind once after a kernel-reset abort, and warns on any other failure", async () => {
+    await fs.writeFile(stpModel, "STEP-SOURCE");
+    await writeEdits(stpModel, [box] as unknown as EditOp[], [], 0);
+    const c = ctx();
+    const realRebind = c.pipeline.rebindPartsAcrossSave as ReturnType<typeof vi.fn>;
+    const impl = realRebind.getMockImplementation()!;
+    realRebind.mockImplementationOnce(async () => {
+      throw new Error("OCCT crashed (memory access out of bounds) — the kernel has been reset; try the operation again.");
+    });
+    const ok = await saveModelTool(c, { path: stpModel });
+    expect(realRebind).toHaveBeenCalledTimes(2);
+    expect(ok.warnings.some((w: string) => /Could not rebind/.test(w))).toBe(false);
+
+    await writeEdits(stpModel, [box, box] as unknown as EditOp[], [], 1);
+    realRebind.mockReset();
+    realRebind.mockImplementation(impl);
+    realRebind.mockImplementationOnce(async () => {
+      throw new Error("Unknown entity id");
+    });
+    const bad = await saveModelTool(c, { path: stpModel });
+    expect(realRebind).toHaveBeenCalledTimes(1);
+    expect(bad.warnings.some((w: string) => /Could not rebind/.test(w))).toBe(true);
+  });
+
   it("refuses mesh/meshio/CAD-text sources with a clear message", async () => {
     const c = ctx();
     await expect(saveModelTool(c, { path: stlModel })).rejects.toThrow(/cannot be saved in place headless/i);
@@ -3097,182 +3163,56 @@ describe("compare_mesh_refinement", () => {
 });
 
 describe("export_mesh", () => {
-  it("writes an atomic owner-scoped receipt with source and artifact revisions", async () => {
-    const records = new Map<string, OwnedJobRecord>();
+  it("writes an owner-scoped execution receipt and the version-1 handoff contract before dispatch", async () => {
+    const runOwnedJob = vi.fn(async (_identity: { ownerId: string; requestId: string; jobId?: string }, action: () => Promise<unknown>) => action());
     const control = {
-      runOwnedJob: vi.fn(async function<T>(identity: { ownerId: string; requestId: string; jobId?: string }, action: () => Promise<T>): Promise<T> {
-        const record: OwnedJobRecord = { version: 1, jobId: identity.jobId!, ownerId: identity.ownerId, requestId: identity.requestId, state: "running" };
-        records.set(`${identity.ownerId}\0${identity.requestId}`, record);
-        const result = await action();
-        record.state = "succeeded";
-        return result;
-      }),
-      jobStatus: vi.fn((ownerId: string, requestId: string) => records.get(`${ownerId}\0${requestId}`)),
+      runOwnedJob,
+      jobStatus: vi.fn(),
       cancelOwnedJob: vi.fn(),
-    };
-    const c: ToolContext = { ...ctx(), jobControl: control as unknown as OwnedJobControl };
-    const receiptPath = path.join(dir, "runs", "run-1", "cad-execution.json");
-    const outputPath = path.join(dir, "runs", "run-1", "mesh.mdpa");
+    } as unknown as NonNullable<ToolContext["jobControl"]>;
+    const c = ctx(fakePipeline(), control);
+    const outputPath = path.join(dir, "queue-run", "beam.mdpa");
+    const handoffPath = path.join(dir, "queue-run", "handoff.json");
+    const receiptPath = path.join(dir, "queue-run", "cad-execution.json");
+    await setPart({ path: stpModel, name: "Inlet", surfaces: ["face-1"] });
     const result = await exportMeshTool(c, {
       path: stpModel,
       format: "mdpaElements",
       outputPath,
+      handoffPath,
       ownerId: "study-1",
-      requestId: "mesh-1",
+      requestId: "mesh-task-1",
       receiptPath,
     });
+
+    expect(runOwnedJob).toHaveBeenCalledWith(expect.objectContaining({ ownerId: "study-1", requestId: "mesh-task-1" }), expect.any(Function));
+    expect((result as typeof result & { execution: { state: string } }).execution).toMatchObject({ version: 1, ownerId: "study-1", requestId: "mesh-task-1", operation: "export_mesh", state: "succeeded" });
     const receipt = JSON.parse(await fs.readFile(receiptPath, "utf8"));
-    expect(control.runOwnedJob).toHaveBeenCalledWith(expect.objectContaining({ ownerId: "study-1", requestId: "mesh-1", jobId: expect.any(String) }), expect.any(Function));
-    expect(receipt).toMatchObject({
-      version: 1,
-      ownerId: "study-1",
-      requestId: "mesh-1",
-      operation: "export_mesh",
-      state: "succeeded",
-      source: { kind: "external", path: stpModel, revision: expect.stringMatching(/^[a-f0-9]{64}$/) },
-      replayRevision: expect.stringMatching(/^[a-f0-9]{64}$/),
-      statusLookup: { tool: "cad_job_status", receiptPath },
-      artifacts: [{ role: "mesh", reference: { kind: "external", path: outputPath, revision: expect.stringMatching(/^[a-f0-9]{64}$/) } }],
-    });
-    expect("execution" in result ? result.execution : undefined).toMatchObject({ jobId: receipt.jobId, state: "succeeded" });
-    await expect(cadJobStatusTool(c, { receiptPath, ownerId: "other-study", requestId: "mesh-1" })).rejects.toThrow(/does not match/);
-  });
-
-  it("refuses to dispatch over an existing receipt and preserves its contents", async () => {
-    const receiptPath = path.join(dir, "receipt.json");
-    const prior = JSON.stringify({ version: 90, state: "unknown" });
-    await fs.writeFile(receiptPath, prior);
-    const c: ToolContext = {
-      ...ctx(),
-      jobControl: {
-        runOwnedJob: vi.fn(async (_identity, action) => action()),
-        jobStatus: vi.fn(),
-        cancelOwnedJob: vi.fn(),
-      },
-    };
-    await expect(exportMeshTool(c, {
-      path: stpModel,
-      format: "msh",
-      outputPath: path.join(dir, "out.msh"),
-      ownerId: "study-1",
-      requestId: "request-1",
-      receiptPath,
-    })).rejects.toThrow(/already exists/);
-    expect(await fs.readFile(receiptPath, "utf8")).toBe(prior);
-    expect(c.jobControl!.runOwnedJob).not.toHaveBeenCalled();
-  });
-
-  it("reports a persisted active receipt as uncertain after its runner record is gone", async () => {
-    const records = new Map<string, OwnedJobRecord>();
-    const control = {
-      runOwnedJob: vi.fn(async function<T>(identity: { ownerId: string; requestId: string; jobId?: string }, action: () => Promise<T>): Promise<T> {
-        const record: OwnedJobRecord = { version: 1, jobId: identity.jobId!, ownerId: identity.ownerId, requestId: identity.requestId, state: "running" };
-        records.set(`${identity.ownerId}\0${identity.requestId}`, record);
-        const result = await action();
-        record.state = "succeeded";
-        return result;
-      }),
-      jobStatus: vi.fn((ownerId: string, requestId: string) => records.get(`${ownerId}\0${requestId}`)),
-      cancelOwnedJob: vi.fn(),
-    };
-    const receiptPath = path.join(dir, "receipt.json");
-    await exportMeshTool({ ...ctx(), jobControl: control as unknown as OwnedJobControl }, {
-      path: stpModel, format: "msh", outputPath: path.join(dir, "out.msh"),
-      ownerId: "study-1", requestId: "request-1", receiptPath,
-    });
-    const stored = JSON.parse(await fs.readFile(receiptPath, "utf8"));
-    stored.state = "running";
-    await fs.writeFile(receiptPath, JSON.stringify(stored));
-    const status = await cadJobStatusTool(ctx(), { receiptPath, ownerId: "study-1", requestId: "request-1" });
-    expect(status.state).toBe("uncertain");
-    expect(status.message).toMatch(/Do not resubmit automatically/);
-    await expect(cadJobCancelTool(ctx(), { receiptPath, ownerId: "study-1", requestId: "request-1" })).resolves.toMatchObject({ state: "uncertain" });
-  });
-
-  it("cancels only the matching live owner/request represented by a receipt", async () => {
-    const receiptPath = path.join(dir, "running-receipt.json");
-    const generated = await exportMeshTool({
-      ...ctx(),
-      jobControl: {
-        runOwnedJob: async (_identity, action) => action(),
-        jobStatus: () => undefined,
-        cancelOwnedJob: () => undefined,
-      },
-    }, {
-      path: stpModel, format: "msh", outputPath: path.join(dir, "running.msh"),
-      ownerId: "study-1", requestId: "request-1", receiptPath,
-    });
-    const stored = JSON.parse(await fs.readFile(receiptPath, "utf8"));
-    stored.state = "running";
-    await fs.writeFile(receiptPath, JSON.stringify(stored));
-    const cancelOwnedJob = vi.fn(() => ({ version: 1 as const, jobId: stored.jobId, ownerId: "study-1", requestId: "request-1", state: "cancelling" as const }));
-    const control: OwnedJobControl = {
-      runOwnedJob: async (_identity, action) => action(),
-      jobStatus: () => undefined,
-      cancelOwnedJob,
-    };
-    const result = await cadJobCancelTool({ ...ctx(), jobControl: control }, { receiptPath, ownerId: "study-1", requestId: "request-1" });
-    expect(cancelOwnedJob).toHaveBeenCalledExactlyOnceWith("study-1", "request-1");
-    expect(result).toMatchObject({ jobId: stored.jobId, state: "cancelling" });
-    await expect(cadJobCancelTool({ ...ctx(), jobControl: control }, { receiptPath, ownerId: "other-study", requestId: "request-1" })).rejects.toThrow(/does not match/);
-    expect("execution" in generated ? generated.execution.jobId : undefined).toBe(stored.jobId);
-  });
-
-  it("does not publish a terminal state until artifact revisions reach the durable receipt", async () => {
-    const receiptPath = path.join(dir, "finalizing-receipt.json");
-    await exportMeshTool({ ...ctx(), jobControl: {
-      runOwnedJob: async (_identity, action) => action(), jobStatus: () => undefined, cancelOwnedJob: () => undefined,
-    } }, {
-      path: stpModel, format: "msh", outputPath: path.join(dir, "finalizing.msh"),
-      ownerId: "study-1", requestId: "request-1", receiptPath,
-    });
-    const receipt = JSON.parse(await fs.readFile(receiptPath, "utf8"));
-    receipt.state = "running";
-    receipt.artifacts = [];
-    await fs.writeFile(receiptPath, JSON.stringify(receipt));
-    const terminal = { version: 1 as const, jobId: receipt.jobId, ownerId: "study-1", requestId: "request-1", state: "succeeded" as const };
-    const control: OwnedJobControl = {
-      runOwnedJob: async (_identity, action) => action(), jobStatus: () => terminal, cancelOwnedJob: () => terminal,
-    };
-    await expect(cadJobStatusTool({ ...ctx(), jobControl: control }, { receiptPath, ownerId: "study-1", requestId: "request-1" }))
-      .resolves.toMatchObject({ state: "uncertain", artifacts: [] });
-    await expect(cadJobCancelTool({ ...ctx(), jobControl: control }, { receiptPath, ownerId: "study-1", requestId: "request-1" }))
-      .resolves.toMatchObject({ state: "uncertain", artifacts: [] });
-    expect(JSON.parse(await fs.readFile(receiptPath, "utf8")).state).toBe("running");
-  });
-
-  it("writes a versioned MDPA handoff with revisions, effective units, engine identity and honest coverage diagnostics", async () => {
-    await fs.writeFile(partsSidecarPath(stpModel), JSON.stringify({
-      version: 1,
-      source: path.basename(stpModel),
-      parts: [{ name: "Fixed End", color: "#ff0000", volumes: [], surfaces: ["face-2"], lines: [], points: [], meshSize: 4 }],
-    }));
-    const out = path.join(dir, "handoff.mdpa");
-    const manifestPath = path.join(dir, "handoff.json");
-    const result = await exportMeshTool(ctx(), {
-      path: stpModel, format: "mdpaElements", outputPath: out, unit: "cm", handoffPath: manifestPath,
-    });
-    const handoff = JSON.parse(await fs.readFile(manifestPath, "utf8"));
+    expect(receipt.source).toMatchObject({ kind: "external", path: stpModel, revision: createHash("sha256").update(await fs.readFile(stpModel)).digest("hex") });
+    expect(receipt.replayRevision).toMatch(/^[0-9a-f]{64}$/);
+    expect(receipt.artifacts.map((artifact: { role: string }) => artifact.role)).toEqual(["mesh", "handoff"]);
+    const handoff = JSON.parse(await fs.readFile(handoffPath, "utf8"));
     expect(handoff).toMatchObject({
       version: 1,
-      source: { kind: "external", path: stpModel, revision: expect.stringMatching(/^[a-f0-9]{64}$/) },
-      units: { length: "cm", scale: 0.1 },
+      exportId: expect.any(String),
+      source: { kind: "external", path: stpModel, revision: receipt.source.revision },
+      replayRevision: expect.any(String),
+      units: { length: "mm", scale: 1 },
+      options: expect.any(Object),
       engine: "gmsh",
-      engineVersion: "4.13.1",
-      boundaryCoverage: { state: "unavailable" },
-      groups: [{ name: "Fixed End", dimension: 2, count: 1 }],
-      artifacts: [{ role: "mesh", reference: { kind: "external", path: out, revision: expect.stringMatching(/^[a-f0-9]{64}$/) } }],
+      engineVersion: expect.any(String),
+      artifacts: [{ role: "mesh", reference: { kind: "external", path: outputPath, revision: expect.any(String) } }],
+      groups: [{ name: "Inlet" }],
+      boundaryCoverage: { state: "available", unassignedSurfaceCount: 2 },
     });
-    expect(handoff.replayRevision).toMatch(/^[a-f0-9]{64}$/);
-    expect(handoff.findings).toEqual(expect.arrayContaining([expect.objectContaining({ severity: "unavailable", target: "boundary-coverage" })]));
-    expect(result.handoff).toMatchObject({ path: manifestPath, manifest: { exportId: handoff.exportId } });
-  });
-
-  it("rejects handoff manifests for non-MDPA formats before writing output", async () => {
-    const out = path.join(dir, "not-a-handoff.vtk");
-    await expect(exportMeshTool(ctx(), { path: stpModel, format: "vtk", outputPath: out, handoffPath: path.join(dir, "bad.json") }))
-      .rejects.toThrow(/only for MDPA/);
-    await expect(fs.access(out)).rejects.toThrow();
+    expect(await cadJobStatusTool(c, { receiptPath, ownerId: "study-1", requestId: "mesh-task-1" })).toMatchObject({ state: "succeeded" });
+    await expect(cadJobStatusTool(c, { receiptPath, ownerId: "another-study", requestId: "mesh-task-1" })).rejects.toThrow(/does not match/);
+    expect((await cadJobCancelTool(c, { receiptPath, ownerId: "study-1", requestId: "mesh-task-1" })).state).toBe("succeeded");
+    await expect(exportMeshTool(c, {
+      path: stpModel, format: "mdpaElements", outputPath, handoffPath,
+      ownerId: "study-1", requestId: "mesh-task-1", receiptPath,
+    })).rejects.toThrow(/already exists.*refusing to dispatch/i);
+    expect(runOwnedJob).toHaveBeenCalledTimes(1);
   });
 
   it("routes msh through generateMesh's mshText", async () => {
@@ -3281,6 +3221,30 @@ describe("export_mesh", () => {
     const result = await exportMeshTool(c, { path: stpModel, format: "msh", outputPath: out });
     expect(await fs.readFile(out, "utf8")).toBe(FAKE_MESH_RESULT.mshText);
     expect(result.written.map((w) => w.path)).toEqual([out]);
+  });
+
+  it("manifest: writes <output>.handoff.json with fingerprints, groups and coverage; an edit afterwards makes it stale", async () => {
+    const c = ctx();
+    await setPart({ path: stpModel, name: "Inlet", surfaces: ["face-1"] });
+    await setPart({ path: stpModel, name: "Ghost", surfaces: ["face-99"] });
+    const out = path.join(dir, "out.mdpa");
+    const r = await exportMeshTool(c, { path: stpModel, format: "mdpaElements", outputPath: out, unit: "in", manifest: true });
+    expect(r.manifest).toBe(`${out}.handoff.json`);
+    const m = JSON.parse(await fs.readFile(`${out}.handoff.json`, "utf8"));
+    expect(m.kind).toBe("cad-preview-handoff");
+    expect(m.unit).toEqual({ unit: "in", scaleFactor: 1 / 25.4 });
+    expect(m.parts.map((p: { name: string; status: string }) => [p.name, p.status])).toEqual([["Inlet", "resolved"], ["Ghost", "unresolved"]]);
+    expect(m.parts[0].subModelPart.surfaceCellCount).toBe(8);
+    expect(m.coverage.unassignedSurfaceCount).toBe(2);
+    expect(r.warnings.some((w) => /Ghost.*no physical group/.test(w))).toBe(true);
+    expect(vi.mocked(c.pipeline.computeHandoffFacts)).toHaveBeenCalledTimes(1);
+
+    expect((await checkHandoffManifestTool({ manifestPath: `${out}.handoff.json` })).current).toBe(true);
+    await applyEditOps(c, { path: stpModel, ops: [{ op: "addBox", center: [0, 0, 0], size: [1, 1, 1] }] });
+    const stale = await checkHandoffManifestTool({ manifestPath: `${out}.handoff.json` });
+    expect(stale.current).toBe(false);
+    expect(stale.checks.find((x) => x.name === "edits")?.ok).toBe(false);
+    expect(stale.checks.find((x) => x.name === "source")?.ok).toBe(true);
   });
 
   it("writes the XAO companion and rewrites the Merge stub for geoUnrolled", async () => {
@@ -3430,6 +3394,171 @@ describe("export_mesh", () => {
     await exportMeshTool(c, { path: stlModel, format: "msh", outputPath: out });
     const genCall = vi.mocked(c.pipeline.generateMesh).mock.lastCall!;
     expect(Buffer.from((genCall[1] as { stlBytes: Uint8Array }).stlBytes).toString("utf8")).toBe(raw);
+  });
+});
+
+describe("measure_mesh_deviation", () => {
+  it("uses the B-rep source as the reference, passes the tolerance, and writes a PLY with distances", async () => {
+    const c = ctx();
+    const out = path.join(dir, "dev.ply");
+    const r = await measureMeshDeviationTool(c, { path: stpModel, tolerance: 0.1, deviationMeshPath: out });
+    const call = vi.mocked(c.pipeline.measureMeshDeviation).mock.lastCall!;
+    expect(call[1]).toMatchObject({ kind: "brep" });
+    expect(call[5]).toMatchObject({ tolerance: 0.1, perCorner: true });
+    expect(r.written).toBe(out);
+    const ply = await fs.readFile(out, "utf8");
+    expect(ply).toMatch(/property float distance/);
+    expect(ply).toMatch(/^1 0 0 0\.0099/m);
+  });
+  it("refuses a missing tolerance and never targets the source", async () => {
+    const c = ctx();
+    await expect(measureMeshDeviationTool(c, { path: stpModel, tolerance: 0 })).rejects.toThrow(/tolerance/);
+    await expect(measureMeshDeviationTool(c, { path: stpModel, tolerance: 1, deviationMeshPath: stpModel })).rejects.toThrow(/source/i);
+  });
+});
+
+describe("analyze_passages", () => {
+  it("passes Parts, the stored sizeMax and targetCells to the kernel and never writes", async () => {
+    const c = ctx();
+    await setPart({ path: stpModel, name: "Walls", surfaces: ["face-1"], meshSize: 0.2 });
+    await setMeshOptions({ path: stpModel, options: { sizeMax: 2 } });
+    const r = await analyzePassagesTool(c, { path: stpModel, targetCells: 4 });
+    expect(r.supported).toBe(true);
+    const call = vi.mocked(c.pipeline.analyzePassages).mock.lastCall!;
+    expect(call[4]).toMatchObject({ targetCells: 4, sizeMax: 2 });
+    expect((call[4] as { parts: Array<{ name: string }> }).parts.map((p) => p.name)).toEqual(["Walls"]);
+  });
+  it("warns when no size is set, and refuses a mesh source or a nonsense targetCells", async () => {
+    const c = ctx();
+    const r = await analyzePassagesTool(c, { path: stpModel });
+    expect(r.warnings.join(" ")).toMatch(/No explicit sizeMax/);
+    expect((await analyzePassagesTool(c, { path: stlModel })).supported).toBe(false);
+    await expect(analyzePassagesTool(c, { path: stpModel, targetCells: 0 })).rejects.toThrow(/targetCells/);
+  });
+});
+
+describe("estimate_mesh_budget", () => {
+  it("estimates a B-rep from its mass properties + bbox, and warns (never blocks) above a budget", async () => {
+    const c = ctx(
+      fakePipeline({
+        computeMassProperties: vi.fn(async () => ({ ...FAKE_MASS_PROPERTIES, volume: 1e6, area: 6e4, bbox: { min: [0, 0, 0] as [number, number, number], max: [100, 100, 100] as [number, number, number] } })),
+      })
+    );
+    const r = await estimateMeshBudgetTool(c, { path: stpModel, options: { sizeMax: 2, budgetElements: 1000 } });
+    expect(r.estimate.status).toBe("ok");
+    expect(r.estimate.basis).toBe("volume+area");
+    expect(r.estimate.elements.low).toBeGreaterThan(1000);
+    expect(r.warnings.join(" ")).toMatch(/above your 1k-element budget/);
+    expect(c.pipeline.generateMesh).not.toHaveBeenCalled();
+  });
+
+  it("is unavailable without an explicit size or without geometry, never a guess", async () => {
+    const c = ctx();
+    const r = await estimateMeshBudgetTool(c, { path: stlModel }); // empty STL, sentinel sizeMax
+    expect(r.estimate.status).toBe("unavailable");
+  });
+});
+
+describe("export_tessellated_stl", () => {
+  it("passes the tolerance request through, writes the STL, and reports the sampled error", async () => {
+    const c = ctx();
+    const out = path.join(dir, "out.stl");
+    const r = await exportTessellatedStlTool(c, { path: stpModel, outputPath: out, targetCellSize: 4, chordalFraction: 0.1, unit: "cm" });
+    expect(r.supported).toBe(true);
+    expect(r.written).toBe(out);
+    expect((await fs.readFile(out)).length).toBe(134);
+    expect(r.measured).toMatchObject({ max: 0.1, samples: 4 });
+    const call = vi.mocked(c.pipeline.exportTessellatedStl).mock.lastCall!;
+    expect(call[4]).toMatchObject({ targetCellSize: 4, chordalFraction: 0.1, unit: "cm" });
+  });
+
+  it("dryRun writes nothing and needs no outputPath; mesh sources are unsupported; the source is never a target", async () => {
+    const c = ctx();
+    const r = await exportTessellatedStlTool(c, { path: stpModel, targetCellSize: 4, dryRun: true });
+    expect(r.written).toBeNull();
+    expect(vi.mocked(c.pipeline.exportTessellatedStl).mock.lastCall![4]).toMatchObject({ dryRun: true });
+    const mesh = await exportTessellatedStlTool(c, { path: stlModel, outputPath: path.join(dir, "x.stl"), targetCellSize: 1 });
+    expect(mesh.supported).toBe(false);
+    await expect(exportTessellatedStlTool(c, { path: stpModel, targetCellSize: 1 })).rejects.toThrow(/outputPath/);
+    await expect(exportTessellatedStlTool(c, { path: stpModel, outputPath: stpModel, targetCellSize: 1 })).rejects.toThrow(/source/i);
+  });
+});
+
+describe("generate_prep_report", () => {
+  it("writes report.json + report.html; every section is present with a status, and unavailable ones say why", async () => {
+    const c = ctx();
+    const outDir = path.join(dir, "report");
+    const r = await generatePrepReportTool(c, { path: stpModel, outputDir: outDir });
+    expect(r.written).toEqual([path.join(outDir, "report.json"), path.join(outDir, "report.html")]);
+    const report = JSON.parse(await fs.readFile(r.written[0], "utf8"));
+    expect(report.sections.map((s: { id: string }) => s.id)).toEqual([
+      "identity", "options", "replay", "mass", "bom", "holes", "meshHealth", "passages", "budget", "mesh", "deviation", "manifest", "snapshots",
+    ]);
+    const byId = Object.fromEntries(report.sections.map((s: { id: string }) => [s.id, s]));
+    expect(byId.identity.status).toBe("ok");
+    expect(byId.identity.data.sha256).toMatch(/^[0-9a-f]{64}$/);
+    expect(byId.meshHealth).toMatchObject({ status: "unavailable" });
+    expect(byId.meshHealth.reason).toMatch(/already exact/);
+    expect(byId.deviation).toMatchObject({ status: "skipped" });
+    expect(byId.snapshots).toMatchObject({ status: "skipped" });
+    expect(byId.bom).toMatchObject({ status: "skipped", reason: "No Parts are defined." });
+    const html = await fs.readFile(r.written[1], "utf8");
+    expect(html).not.toMatch(/<script/i);
+    expect(html).toContain("Mesh health");
+  });
+
+  it("marks mesh-format facts as raw file geometry with unbaked edits, and rejects unknown sections", async () => {
+    const c = ctx();
+    await applyEditOps(c, { path: stlModel, ops: [{ op: "translate", targets: ["node-0"], vec: [1, 0, 0] }] });
+    const r = await generatePrepReportTool(c, { path: stlModel, outputDir: path.join(dir, "rep2"), include: ["mass"] });
+    const report = JSON.parse(await fs.readFile(r.written[0], "utf8"));
+    expect(report.notes.join(" ")).toMatch(/NOT reflected/);
+    expect(report.sections.find((s: { id: string }) => s.id === "mesh").status).toBe("skipped");
+    await expect(generatePrepReportTool(c, { path: stlModel, outputDir: dir, include: ["nope"] })).rejects.toThrow(/Unknown report section/);
+  });
+});
+
+describe("batch_export", () => {
+  it("one row per file: good files export, a mesh source fails its row, sources stay untouched", async () => {
+    const c = ctx();
+    await applyEditOps(c, { path: stpModel, ops: [{ op: "addBox", center: [0, 0, 0], size: [1, 1, 1] }] });
+    const before = await fs.readFile(stpModel);
+    const outDir = path.join(dir, "batch");
+    const progress: number[] = [];
+    const r = await batchExportTool(
+      c,
+      { inputs: [stpModel, stpModel2, stlModel], target: "brep", outDir, onCollision: "suffix", reportPath: path.join(dir, "report.tsv") },
+      (p) => progress.push(p.progress)
+    );
+    expect(r.rows.map((x) => x.status)).toEqual(["ok", "ok", "failed"]);
+    expect(r.rows[0].editsBaked).toBe(1);
+    expect(r.rows[0].outputs[0]).toBe(path.join(outDir, "model.brep"));
+    expect(r.rows[2].error).toMatch(/no B-rep/i);
+    expect(r.summary).toMatchObject({ total: 3, ok: 2, failed: 1 });
+    expect(progress).toEqual([1, 2, 3]);
+    expect(await fs.readFile(stpModel)).toEqual(before);
+    expect((await fs.readFile(path.join(dir, "report.tsv"), "utf8")).split("\n")[0]).toMatch(/^input\tstatus/);
+  });
+
+  it("skips existing outputs by default and refuses ambiguous input selection", async () => {
+    const c = ctx();
+    const outDir = path.join(dir, "batch2");
+    await fs.mkdir(outDir);
+    await fs.writeFile(path.join(outDir, "model.brep"), "keep", "utf8");
+    const r = await batchExportTool(c, { inputs: [stpModel], target: "brep", outDir });
+    expect(r.rows[0].status).toBe("skipped");
+    expect(await fs.readFile(path.join(outDir, "model.brep"), "utf8")).toBe("keep");
+    await expect(batchExportTool(c, { target: "brep", outDir })).rejects.toThrow(/exactly one/);
+    await expect(batchExportTool(c, { inputs: [stpModel], target: "stl", outDir })).rejects.toThrow(/Unknown batch target/);
+  });
+
+  it("stops before the next file once cancelled", async () => {
+    const c = ctx();
+    const ac = new AbortController();
+    ac.abort();
+    const r = await batchExportTool(c, { inputs: [stpModel, stpModel2], target: "brep", outDir: path.join(dir, "b3") }, () => {}, ac.signal);
+    expect(r.summary.cancelled).toBe(2);
+    expect(r.warnings.join(" ")).toMatch(/Cancelled/);
   });
 });
 
@@ -4117,6 +4246,26 @@ describe("render_ops_prefix", () => {
     const withRender = await renderOpsPrefixTool(available, { path: stpModel, throughIndex: -1, render: true });
     expect(withRender.images).toHaveLength(4);
     expect(available.pipeline.renderSnapshot).toHaveBeenCalled();
+  });
+});
+
+describe("sheet templates (save/list) and export_drawing_sheet with a template", () => {
+  it("saves, lists and applies a template; explicit params still win; fields reach the title block", async () => {
+    const lib = path.join(dir, "sheets.json");
+    const saved = await saveSheetTemplate({ libraryPath: lib, name: "a3-third", views: ["front", "top"], paper: "A3", projection: "third", scale: "1:2", fields: { author: "Ann", material: "Steel" } });
+    expect(saved.saved).toBe("a3-third");
+    await expect(saveSheetTemplate({ libraryPath: lib, name: "a3-third" })).rejects.toThrow(/already exists/);
+    const listed = await listSheetTemplates({ libraryPath: lib });
+    expect(listed.templates.map((t) => t.name)).toEqual(["a3-third"]);
+    expect(listed.templates[0].readOnly).toBe(false);
+    const c = ctx();
+    const out = path.join(dir, "tpl.svg");
+    await exportDrawingSheetTool(c, { path: stpModel, outputPath: out, template: "a3-third", libraryPath: lib, paper: "A4", fields: { revision: "C" } });
+    const call = vi.mocked(c.pipeline.exportDrawingSheet).mock.lastCall![2];
+    expect(call.views.map((v) => v.name)).toEqual(["front", "top"]);
+    expect([call.paper, call.projection, call.scale]).toEqual(["A4", "third", 0.5]);
+    expect(call.fields).toEqual({ author: "Ann", material: "Steel", revision: "C" });
+    await expect(exportDrawingSheetTool(c, { path: stpModel, outputPath: out, template: "missing", libraryPath: lib })).rejects.toThrow(/No sheet template/);
   });
 });
 

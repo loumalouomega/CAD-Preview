@@ -26,7 +26,7 @@ console.debug = console.error.bind(console);
 /* eslint-enable no-console */
 
 import { loadBRep, exportBRep, loadBRepCached, disposeBRepCache, type BRepCacheEntry, type BRepResult } from "./occtService";
-import { generateMesh, getGmshVersion, exportMeshFormat, exportMdpa, exportGeoUnrolled, repairMesh } from "./gmshService";
+import { generateMesh, exportMeshFormat, exportMdpa, computeHandoffFacts, exportGeoUnrolled, repairMesh } from "./gmshService";
 import { computeMassProperties, computeBom, computeHoleTable } from "./massProperties";
 import { getEntityFacts, measureEntities, measureExact, checkInterference, checkInterferenceAll, rebindPartsAcrossOps, rebindPartsAcrossSave, resolveBucketSelector, synthesizeSelector, resolvePartSelectors } from "./entityFacts";
 import { renderSnapshot, isRenderAvailable } from "./renderService";
@@ -49,6 +49,9 @@ import { recognizePrimitives } from "./primitiveReport";
 import { fitMeshRegion } from "./meshRegionFit";
 import { exportSvgSilhouette, exportDrawingSheet } from "./svgSilhouetteHost";
 import { buildPrimitivesFile } from "./primitiveWrite";
+import { exportTessellatedStl } from "./tessellationExport";
+import { analyzePassages } from "./passageAnalysisHost";
+import { measureMeshDeviation } from "./meshDeviationHost";
 import { marshal, unmarshal, type KernelRequest, type KernelResponse } from "./kernelIpc";
 import type { DocumentPipeline } from "./kernelClient";
 import { hitTest } from "./hitTestService";
@@ -109,9 +112,9 @@ const handlers: Record<keyof DocumentPipeline, Handler> = {
   loadBRep: loadBRep as Handler,
   exportBRep: exportBRep as Handler,
   generateMesh: generateMesh as Handler,
-  getGmshVersion: getGmshVersion as Handler,
   exportMeshFormat: exportMeshFormat as Handler,
   exportMdpa: exportMdpa as Handler,
+  computeHandoffFacts: computeHandoffFacts as Handler,
   exportGeoUnrolled: exportGeoUnrolled as Handler,
   computeMassProperties: computeMassProperties as Handler,
   computeBom: computeBom as Handler,
@@ -152,6 +155,9 @@ const handlers: Record<keyof DocumentPipeline, Handler> = {
   exportSvgSilhouette: exportSvgSilhouette as Handler,
   exportDrawingSheet: exportDrawingSheet as Handler,
   buildPrimitivesFile: buildPrimitivesFile as Handler,
+  exportTessellatedStl: exportTessellatedStl as Handler,
+  analyzePassages: analyzePassages as Handler,
+  measureMeshDeviation: measureMeshDeviation as Handler,
 };
 
 process.on("message", (msg: KernelRequest) => {

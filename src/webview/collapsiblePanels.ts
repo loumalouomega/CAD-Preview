@@ -41,6 +41,7 @@ export const COLLAPSIBLE_PANELS: readonly { readonly panel: string; readonly hea
   { panel: "mesh-health-panel", header: "mesh-health-header" },
   { panel: "region-fit-panel", header: "region-fit-header" },
   { panel: "primitives-panel", header: "primitives-header" },
+  { panel: "passages-panel", header: "passages-header" },
   { panel: "macros-panel", header: "macros-header" },
   { panel: "standard-parts-panel", header: "standard-parts-header" },
 ];
@@ -122,6 +123,7 @@ export const ADVANCED_CHILDREN: readonly string[] = [
   "mesh-health-panel",
   "region-fit-panel",
   "primitives-panel",
+  "passages-panel",
   "macros-panel",
   "standard-parts-panel",
 ];

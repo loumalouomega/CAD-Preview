@@ -38,6 +38,7 @@ The webview runs in a Chromium browser context. These modules are bundled into `
 | `src/webview/massPropertiesPanel.ts` | Mass Properties panel DOM — label/value readout, error/status messages |
 | `src/webview/clashPanel.ts` | Clash panel DOM — Part-vs-Part and check-all interference readout (roadmap Tier 1 "Clash panel") |
 | `src/webview/meshHealthPanel.ts` | Mesh Health panel DOM (roadmap "Mesh → B-rep promotion, diagnostic-first", Phase 1 — read-only report, no promotion) |
+| `src/webview/passagesPanel.ts` | Passages panel DOM — Analyze (cells across), per-finding rows (width, estimated cells across, suggested size; hover highlights the face pair), "Apply local size" through `PartsModel` (roadmap "Narrow-gap and passage resolution preflight") |
 | `src/webview/primitivePanel.ts` | Primitives panel DOM — per-solid recognition report + apply/export/save-macro actions (Tier 1 "Primitive-recognition panel") |
 | `src/webview/units.ts` | Display-unit conversion for Mass Properties/Measurement (mm/cm/m/in/ft), presentation-layer only (vscode/DOM-free, unit-tested) |
 | `src/webview/meshMassProperties.ts` | Client-side volume/area/centroid for mesh sources (Three.js triangle math, unit-tested) |

@@ -34,6 +34,7 @@ import {
   startServer,
   openHarness,
   post,
+  postMeshingResult,
   populate,
 } from "../screenshots/harness.mjs";
 
@@ -353,7 +354,7 @@ test("overlays: meshingResult lights the toggle and hides model faces; Clear rev
   const before = await page.evaluate(() => document.getElementById("meshing-toggle")?.classList.contains("active"));
   assert(before === false, "the FE Mesh toggle starts inactive");
 
-  await post(page, fixture("meshingResult"));
+  await postMeshingResult(page);
   await sleep(700);
   const on = await page.evaluate(() => document.getElementById("meshing-toggle")?.classList.contains("active"));
   assert(on === true, "posting meshingResult lights the FE Mesh toggle");
@@ -1331,7 +1332,7 @@ test("dock status: counts follow the geometry, the mesh stat follows the overlay
   assert((await text("vc-count-entities")) === expected, `the counts read straight off the geometry message (want ${JSON.stringify(expected)}, got ${JSON.stringify(await text("vc-count-entities"))})`);
   assert((await text("vc-count-mesh")) === null, "no FE-mesh stat is rendered before a mesh exists (the [hidden] override holds)");
 
-  await post(page, fixture("meshingResult"));
+  await postMeshingResult(page);
   await sleep(500);
   assert(
     (await text("vc-count-mesh")) === "mesh 10,000 el",
@@ -1344,7 +1345,7 @@ test("dock status: counts follow the geometry, the mesh stat follows the overlay
 
   // Regenerating and then loading a new model must also drop it: the overlay is
   // disposed by setModel(), so a surviving stat would describe a mesh that is gone.
-  await post(page, fixture("meshingResult"));
+  await postMeshingResult(page);
   await sleep(500);
   assert((await text("vc-count-mesh")) !== null, "the stat comes back with a new result");
   await post(page, geo);
@@ -2475,7 +2476,7 @@ test("collapse: hides EVERY body sibling, not just #x-body", async (page) => {
   );
 });
 
-test("advanced: the group ships collapsed, hides its seven children, and opens on its chevron", async (page) => {
+test("advanced: the group ships collapsed, hides its eight children, and opens on its chevron", async (page) => {
   await populate(page);
 
   // Collapsed by default is the entire point: the sidebar's top level should
@@ -2483,7 +2484,7 @@ test("advanced: the group ships collapsed, hides its seven children, and opens o
   const shut = await page.evaluate(() => {
     const ids = [
       "mass-panel", "clash-panel", "mesh-health-panel", "region-fit-panel",
-      "primitives-panel", "macros-panel", "standard-parts-panel",
+      "primitives-panel", "passages-panel", "macros-panel", "standard-parts-panel",
     ];
     return {
       collapsed: document.getElementById("advanced-group").classList.contains("collapsed"),
@@ -2499,13 +2500,13 @@ test("advanced: the group ships collapsed, hides its seven children, and opens o
   assert(shut.collapsed, "the group starts collapsed");
   assert(shut.headerShown, "its header is still visible while collapsed");
   assert(!shut.bodyShown, "its body is hidden while collapsed");
-  assert(!shut.anyChildShown, "none of the seven children render while it is collapsed");
+  assert(!shut.anyChildShown, "none of the eight children render while it is collapsed");
   assert(shut.topLevel, "Components/Parts/Edits/FE Mesh stayed OUT of the group");
 
   // The badge must report availability, not the raw child count: on this
   // B-rep fixture Mesh Health and Region fit gate themselves out.
   const badge = await page.evaluate(() => document.getElementById("advanced-count").textContent.trim());
-  assert(badge === "5 of 7", `the badge counts only the available children (got ${JSON.stringify(badge)})`);
+  assert(badge === "6 of 8", `the badge counts only the available children (got ${JSON.stringify(badge)})`);
 
   await openAdvanced(page);
   const open = await page.evaluate(() => ({
@@ -2806,6 +2807,49 @@ test("primitives: B-rep source shows the section; Recognize posts a well-formed 
   assert(req !== null && typeof req.requestId === "string", `clicking Recognize posts a primitiveRecognizeRequest with a requestId (got ${JSON.stringify(req)})`);
 });
 
+const PASSAGE_REPORT = {
+  targetCells: 3,
+  facesAnalyzed: 12,
+  rejected: [],
+  findings: [
+    { kind: "annular", faceA: "face-3", faceB: "face-4", width: 1, overlap: 8, requestedSize: 2, sizeSource: "global", cellsAcross: 0.5, suggestedSize: 1 / 3, underResolved: true },
+    { kind: "slot", faceA: "face-5", faceB: "face-10", width: 12, overlap: 6, requestedSize: 2, sizeSource: "global", cellsAcross: 6, suggestedSize: 4, underResolved: false },
+  ],
+};
+
+test("passages: Analyze posts targetCells; the reply renders findings; Apply creates a sized Part; a stale reply is ignored", async (page) => {
+  await populate(page);
+  await openAdvanced(page);
+  const shown = await page.evaluate(() => document.getElementById("passages-panel")?.offsetParent != null);
+  assert(shown, "the Passages section is available for a B-rep source");
+  await page.fill("#passages-cells", "4");
+  await page.click("#passages-analyze");
+  const req = await page.evaluate(() => (window.__sent ?? []).filter((m) => m.type === "passagesRequest").at(-1) ?? null);
+  assert(req !== null && req.targetCells === 4, `Analyze posts a passagesRequest with the typed cells (got ${JSON.stringify(req)})`);
+  await page.evaluate(([report]) => window.postMessage({ type: "passagesResult", requestId: "stale", report, sizeMax: 2 }, "*"), [PASSAGE_REPORT]);
+  await sleep(150);
+  const stale = await page.evaluate(() => document.getElementById("passages-body")?.textContent ?? "");
+  assert(/Analyzing/.test(stale), `a stale reply renders nothing (got ${JSON.stringify(stale.slice(0, 80))})`);
+  await page.evaluate(([id, report]) => window.postMessage({ type: "passagesResult", requestId: id, report, sizeMax: 2 }, "*"), [req.requestId, PASSAGE_REPORT]);
+  await sleep(200);
+  const view = await page.evaluate(() => ({
+    rows: [...document.querySelectorAll(".passage-row")].map((r) => ({ under: r.classList.contains("under"), text: r.textContent, apply: !!r.querySelector(".passage-apply") })),
+    head: document.querySelector("#passages-body .passages-message")?.textContent ?? "",
+  }));
+  assert(view.rows.length === 2, `both findings render (got ${view.rows.length})`);
+  assert(view.rows[0].under && view.rows[0].apply && /Annular gap 1 mm/.test(view.rows[0].text), `the under-resolved annulus is flagged with an Apply action (got ${JSON.stringify(view.rows[0])})`);
+  assert(!view.rows[1].under && !view.rows[1].apply, "a resolved slot offers no Apply");
+  assert(/estimates/.test(view.head), "the header labels the numbers as estimates");
+  const before = await page.evaluate(() => (window.__sent ?? []).filter((m) => m.type === "partsChanged").length);
+  await page.click(".passage-row.under .passage-apply");
+  await sleep(200);
+  const parts = await page.evaluate(() => (window.__sent ?? []).filter((m) => m.type === "partsChanged").at(-1)?.parts ?? []);
+  const after = await page.evaluate(() => (window.__sent ?? []).filter((m) => m.type === "partsChanged").length);
+  const made = parts.find((p) => p.name === "Passage face-3/face-4");
+  assert(after > before && made, `Apply posts partsChanged with a passage Part (got ${JSON.stringify(parts.map((p) => p.name))})`);
+  assert(made && made.surfaces.includes("face-3") && made.surfaces.includes("face-4") && Math.abs(made.meshSize - 1 / 3) < 1e-12, `the Part carries both faces and the suggested size (got ${JSON.stringify(made)})`);
+});
+
 test("primitives: reply renders recognized + unrecognized rows; a stale reply is ignored", async (page) => {
   await populate(page);
   await openAdvanced(page);
@@ -3005,6 +3049,86 @@ async function populateWithBookmarks(page, bookmarks) {
   await post(page, fixture("edits"));
   await sleep(700);
 }
+
+test("handoff manifest: the Export checkbox adds manifest:true to meshingExport, and its absence adds nothing", async (page) => {
+  await populate(page);
+  const sent = () => page.evaluate(() => (window.__sent ?? []).filter((m) => m.type === "meshingExport").at(-1) ?? null);
+  await page.evaluate(() => document.getElementById("meshing-export").click());
+  await page.waitForTimeout(150);
+  const plain = await sent();
+  assert(plain && !("manifest" in plain), `an unchecked export posts no manifest key (got ${JSON.stringify(plain && Object.keys(plain))})`);
+  const visible = await page.evaluate(() => {
+    const l = document.getElementById("meshing-export-manifest-label");
+    return !!l && l.offsetParent !== null && !!document.getElementById("meshing-export-row")?.contains(l);
+  });
+  assert(visible, "the Handoff manifest toggle renders inside the export row");
+  // Export now owns a request-scoped busy state; settle the first host request
+  // before starting the second one so the button is enabled just as it would
+  // be after a real export completes.
+  if (typeof plain?.requestId === "string") {
+    await post(page, { type: "meshingJobSettled", requestId: plain.requestId });
+  }
+  await page.evaluate(() => {
+    document.getElementById("meshing-export-manifest").checked = true;
+    document.getElementById("meshing-export").click();
+  });
+  await page.waitForTimeout(150);
+  const withManifest = await sent();
+  assert(withManifest?.manifest === true, `a checked export posts manifest: true (got ${JSON.stringify(withManifest?.manifest)})`);
+  await page.evaluate(() => (document.getElementById("meshing-export-manifest").checked = false));
+});
+
+test("mesh deviation: the Deviation button posts a request with the typed tolerance; the reply colours an overlay and summarizes it; a stale reply is ignored", async (page) => {
+  await populate(page);
+  await page.evaluate(() => {
+    const t = document.getElementById("meshing-deviation-tol");
+    if (t) t.value = "0.05";
+  });
+  await page.evaluate(() => document.getElementById("meshing-deviation").click());
+  await sleep(200);
+  const req = await page.evaluate(() => (window.__sent ?? []).filter((m) => m.type === "meshDeviationRequest").at(-1) ?? null);
+  assert(req && req.tolerance === 0.05 && req.options && typeof req.requestId === "string", `Deviation posts a request with the tolerance and the current options (got ${JSON.stringify(req && { tolerance: req.tolerance })})`);
+  const b64 = (arr) => Buffer.from(new Float32Array(arr).buffer).toString("base64");
+  const report = {
+    tolerance: 0.05,
+    forward: { max: 0.24, mean: 0.1, p50: 0.1, p95: 0.2, p99: 0.23, samples: 8000, withinTolerance: 700, coverage: 0.0875 },
+    reverse: { max: 0.01, mean: 0.005, p50: 0.005, p95: 0.009, p99: 0.01, samples: 8000, withinTolerance: 8000 },
+    filtered: { max: 0.24, mean: 0.1, p50: 0.1, p95: 0.2, p99: 0.23, samples: 8000, excluded: 0 },
+    regionFailures: [{ region: "face-0", maxDeviation: 0.24, fractionOver: 0.91, samples: 8000 }],
+    extraneousFraction: 0,
+  };
+  const reply = (id) => ({ type: "meshDeviationResult", requestId: id, report, positions: b64([0, 0, 0, 10, 0, 0, 0, 10, 0]), distances: b64([0, 0.1, 0.24]), max: 0.24 });
+  await page.evaluate((m) => window.postMessage(m, "*"), reply("stale"));
+  await sleep(150);
+  const staleText = await page.evaluate(() => document.getElementById("meshing-status")?.textContent ?? "");
+  assert(/measuring deviation/.test(staleText), `a stale reply changes nothing (got ${JSON.stringify(staleText)})`);
+  await page.evaluate((m) => window.postMessage(m, "*"), reply(req.requestId));
+  await sleep(250);
+  const text = await page.evaluate(() => document.getElementById("meshing-status")?.textContent ?? "");
+  assert(/Deviation: max 0\.24 mm/.test(text) && /worst face-0/.test(text) && /9% within 0\.05 mm/.test(text), `the summary names max, coverage and the worst face (got ${JSON.stringify(text)})`);
+  assert(/sampled estimate/.test(text), "the summary is labelled an estimate");
+});
+
+test("mesh budget: the FE Mesh readout shows a calibrated element range with its basis, and the advisory budget warns", async (page) => {
+  await populate(page);
+  const read = () =>
+    page.evaluate(() => {
+      const r = document.querySelector(".meshing-slider-readout");
+      const w = document.getElementById("meshing-warning") ?? document.querySelector(".meshing-warning");
+      return { text: r?.textContent ?? "", title: r?.getAttribute("title") ?? "", warning: w && !w.hidden ? w.textContent ?? "" : "" };
+    });
+  const before = await read();
+  assert(/\d.*–.*el$/.test(before.text), `the readout shows an element RANGE (got ${JSON.stringify(before.text)})`);
+  assert(/basis: volume\+area/.test(before.title), `the displayed tessellation supplies real volume+area (got ${JSON.stringify(before.title)})`);
+  assert(/memory/.test(before.title) && /(calibrated|rough|uncertain)/.test(before.title), "the tooltip carries memory and confidence");
+  // A tiny advisory budget must WARN (never block) through the same readout.
+  const budget = await page.$("#meshing-budget");
+  assert(!!budget, "the Advanced settings carry an advisory element budget field");
+  await post(page, { type: "meshingOptions", options: { ...fixture("meshingOptions").options, budgetElements: 10 } });
+  await sleep(300);
+  const after = await read();
+  assert(/budget/.test(after.warning), `a budget below the estimate shows the budget warning (got ${JSON.stringify(after.warning)})`);
+});
 
 test("bookmarks: hydrating two bookmarks renders two rows with their names", async (page) => {
   await populate(page);
@@ -3827,7 +3951,7 @@ test("clip V3: the overlay toggle preserves the cap in both states", async (page
   const onModel = await magentaFraction(page);
   assert(onModel > CAP_FLOOR, `the model clip is capped (got ${onModel.toFixed(4)})`);
 
-  await post(page, fixture("meshingResult"));
+  await postMeshingResult(page);
   await sleep(700);
   const onOverlay = await magentaFraction(page);
   assert(onOverlay > CAP_FLOOR, `the overlay clip is capped too (got ${onOverlay.toFixed(4)})`);
@@ -4595,7 +4719,7 @@ test("edits and FE Mesh headers: a count badge, a stat, and the actions moved in
       return { text: el.textContent.trim(), rendered: el.offsetParent !== null };
     });
   assert((await stat()).rendered === false, "no header stat before a mesh exists");
-  await post(page, fixture("meshingResult"));
+  await postMeshingResult(page);
   await sleep(500);
   const s1 = await stat();
   assert(s1.rendered && s1.text === "10,000 el", `the header stat reports the element count (got ${JSON.stringify(s1)})`);
@@ -4956,7 +5080,8 @@ async function main() {
   });
 
   try {
-    for (const c of CASES) {
+    const only = process.env.WEBVIEW_TEST_ONLY; // substring filter for iterating on one case
+    for (const c of CASES.filter((x) => !only || x.name.includes(only))) {
       console.log(`\n${c.name}`);
       const page = await context.newPage();
       // An uncaught exception in the webview is a failure even if every

@@ -224,7 +224,8 @@ See `.github/workflows/ci.yml`. Two jobs:
 6. `npm run test:webview` — Playwright assertions over the real viewer bundle (under `xvfb-run`)
 7. `npm run test:integration` — the host-side suite in a real VS Code (under `xvfb-run`, retried on network flakes)
 8. `npm run package` — produce `.vsix`
-9. Upload `.vsix` as a workflow artifact
+9. `npm run compat:vsix` — assert the packaged archive holds every runtime file the kernel loaders resolve (derived from `.vscodeignore`'s carve-outs) and no dev/test file
+10. Upload `.vsix` as a workflow artifact
 
 **`release`** (only on `v*` tags):
 
@@ -232,6 +233,19 @@ See `.github/workflows/ci.yml`. Two jobs:
 2. `npx vsce package --out cad-preview-<tag>.vsix`
 3. Create a GitHub Release with auto-generated release notes
 4. Attach the `.vsix` as a release asset
+
+## Compatibility corpus
+
+`npm run compat` (`scripts/compat/`) is a table-driven sibling of `mcp:smoke`: each row of `corpus.json` opens a committed fixture, writes a mesh export from `examples/STP/block.stp` and re-opens it, or round-trips a B-rep export through `get_mass_properties` — every import format, every meshio/Gmsh export writer, compound extensions and mixed cells, against the real kernels. Known upstream limitations are rows too: they assert the current failure text and report **FIXED-UPSTREAM** (a finding to record, never a failure) when it stops failing. `--only <substring>` filters rows; the last run's table is written to `scripts/compat/last-run.json` (git-ignored). Timing stays in `npm run perf`.
+
+It is not in CI (it runs the WASM kernels for minutes); run it before and after any kernel dependency change and diff the tables.
+
+**Release checklist, before tagging:**
+
+1. `npm outdated @meshioplusplus/wasm @loumalouomega/gmsh-wasm opencascade.js float-tetwild-wasm` — kernel drift is caught here, not at the next incident.
+2. `npm ci` so the checkout matches the lockfile (a stale `node_modules` silently tests a different artifact).
+3. `npm run compat` — update `corpus.json`'s `verifiedAt` when versions changed, and record any FIXED-UPSTREAM row in `CLAUDE.md`.
+4. `npm run package -- --out cad-preview.vsix && npm run compat:vsix -- cad-preview.vsix`.
 
 ## Dependency Hygiene
 

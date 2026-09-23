@@ -124,12 +124,14 @@ export function viewerBodyHtml(): string {
             <button id="meshing-generate" class="panel-primary-btn" title="Generate mesh">${glyph("play")} Generate</button>
             <button id="meshing-cancel" class="panel-icon-btn" title="Cancel meshing job" aria-label="Cancel meshing job" disabled>×</button>
             <button id="meshing-worst-toggle" class="panel-icon-btn" title="Highlight worst-quality elements" hidden>${icon("warning")}</button>
+            <button id="meshing-deviation" class="panel-icon-btn" title="Measure how far the mesh boundary deviates from the CAD surface (generates with the current options)">${glyph("gap")}</button>
             <button id="meshing-clear" class="panel-icon-btn" title="Clear generated mesh">${glyph("trash")}</button>
           </div>
           <div id="meshing-export-row">
             <select id="meshing-export-format" class="meshing-export-select" title="Export format"></select>
             <select id="meshing-export-unit" class="meshing-export-select" title="Export unit (geometric scale — mm is native, no conversion)"></select>
             <button id="meshing-export" title="Export mesh">${glyph("download")} Export</button>
+            <label id="meshing-export-manifest-label" title="Also write &lt;output&gt;.handoff.json: source and edit fingerprints, options, unit, engine and kernel versions, and how each Part landed in the mesh (one extra meshing pass)"><input type="checkbox" id="meshing-export-manifest" /> Handoff manifest</label>
           </div>
         </div>
         <div id="meshing-status"></div>
@@ -225,6 +227,18 @@ export function viewerBodyHtml(): string {
           </div>
         </div>
         <div id="primitives-body"></div>
+      </div>
+      <div id="passages-panel" class="side-section" hidden>
+        <div id="passages-header" class="panel-header">
+          <button class="panel-chevron" type="button" aria-expanded="true" title="Collapse section">${glyph("chevronDown")}</button>
+          <span class="panel-icon" aria-hidden="true">${glyph("gap")}</span>
+          <span id="passages-title" class="panel-title">Passages</span>
+          <div id="passages-actions">
+            <label id="passages-cells-label" title="Cells wanted across a passage">cells <input id="passages-cells" type="text" inputmode="decimal" value="3" size="2" /></label>
+            <button id="passages-analyze" title="Read-only preflight: measure annular gaps between coaxial cylinders and slots between facing planes, and compare each width with the mesh size requested there">${icon("generate")} Analyze</button>
+          </div>
+        </div>
+        <div id="passages-body"></div>
       </div>
       <div class="advanced-subhead">Library</div>
       <div id="macros-panel" class="side-section">

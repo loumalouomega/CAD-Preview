@@ -283,6 +283,12 @@ The **FE Mesh** panel's finite-element mesh generation settings (via [Gmsh](http
 }
 ```
 
+An optional `budgetElements` (a positive integer) records the advisory element budget the FE Mesh panel and `estimate_mesh_budget`/`generate_mesh` warn against — it never blocks a generate and is omitted entirely when unset, so an untouched sidecar stays byte-stable. It is not a Gmsh option and never reaches the `.geo` script.
+
+**Drawing-sheet templates** (`cad-preview-sheet-templates.json` beside the model, shared by every model in the folder; plus the bundled `dist/sheet-templates/starter-templates.json`) are `{ "version": 1, "templates": { "<name>": { "name", "description"?, "views"?, "projection"?, "paper"?, "scale"?, "title"?, "fields"?, "format"? } } }` — settings only, never geometry. Parsing is tolerant: a malformed entry or field is dropped, never the file.
+
+**Mesh presets** (`cad-preview-mesh-presets.json`, and the bundled `dist/mesh-presets/starter-presets.json`) may carry an optional per-preset `stlExport` block — `{ "targetCellSize": 1, "chordalFraction": 0.1, "angularDeg": 20 }`, in the preset's own `unit` — the mesh-aware STL tolerance `export_tessellated_stl`'s `preset` parameter applies. A malformed block is dropped without dropping the preset.
+
 On the same debounce, `writeGeoScript()` also (re)generates an editable Gmsh `.geo` script beside the sidecar — e.g. `bull.stp` → `bull.stp.geo` — merging the source file and setting one `Mesh.*` option per `MeshOptions` field:
 
 ```
@@ -413,6 +419,42 @@ bull.stp.mesh.json          (only if it exists)
 **File ▸ Load Preprocess…** (Ctrl+Alt+O) is the inverse: pick a `.zip`, then pick a destination path for the restored CAD file (defaulting to the manifest's `source` filename, beside the archive), and CAD-Preview writes the source bytes plus every sidecar the archive contains — named to match the chosen destination, not the archive's original filename — then opens the result. Mesh options (if present) are re-written through the normal `writeMeshOptions`/`writeGeoScript` path, which regenerates `.geo` fresh from them — the archive never packages a raw `.geo` text to restore verbatim in the first place, since neither reader ever did anything with one when it was still packaged (pure dead weight, closed alongside the integrity work above). **The destination's file extension is checked against the archive's own source format** (roadmap "Archive integrity", closed) — restoring a STEP archive to `restored.stl` now fails with a clear error instead of silently succeeding; a same-format alias (`.stp`/`.step`) still compares equal, since both route to the same `FileRoute.format`. Loading an archive never touches the CAD file it was originally saved from — it always creates a separate file at the chosen destination.
 
 The headless MCP server exposes the same behavior as `save_preprocess`/ `load_preprocess` (see [MCP Server](mcp-server.md)), sharing the identical `preprocessArchive.ts` build/read logic — an archive saved from the extension loads via the MCP tool and vice versa.
+
+## Simulation Handoff Manifest (`<mesh>.handoff.json`)
+
+Written beside an exported FE mesh when you ask for one (the FE Mesh panel's **Handoff manifest** box, or `export_mesh`'s `manifest: true`). It is a **receipt**, not a document sidecar: nothing reads it back when the model opens, and deleting it changes nothing. `check_handoff_manifest` compares it with the current files.
+
+```json
+{
+  "version": 1,
+  "kind": "cad-preview-handoff",
+  "createdAt": "2026-09-23T10:00:00.000Z",
+  "source": { "path": "/work/bracket.step", "format": "step", "sha256": "…" },
+  "replay": { "opCount": 3, "bakedThrough": 0, "fingerprint": "…", "editsBaked": true },
+  "unit": { "unit": "in", "scaleFactor": 0.03937007874015748 },
+  "meshOptions": { "sizeMax": 1.5, "dimension": 3, "…": "…" },
+  "engineUsed": "gmsh",
+  "kernels": { "opencascade.js": "1.1.1", "@loumalouomega/gmsh-wasm": "0.3.0", "@meshioplusplus/wasm": "10.21.1", "float-tetwild-wasm": "0.2.0" },
+  "outputs": [{ "path": "/work/bracket.mdpa", "format": "mdpaElements", "sha256": "…" }],
+  "mesh": { "nodeCount": 812, "elementCount": 3120 },
+  "parts": [
+    { "name": "Inlet", "requested": { "volumes": 0, "surfaces": 1, "lines": 0, "points": 0 }, "status": "resolved",
+      "groups": [{ "dim": 2, "physicalTag": 1, "entityCount": 1, "elementCount": 76 }],
+      "subModelPart": { "nodeCount": 50, "volumeCellCount": 0, "surfaceCellCount": 76 } }
+  ],
+  "coverage": { "emptyParts": [], "unresolvedParts": [], "unassignedSurfaceCount": 5, "unassignedSurfaceTags": [2, 3, 4, 5, 6], "overlaps": [] },
+  "notes": ["Geometry and mesh sizes were scaled by 0.0393… (mm → in) at export; meshOptions are recorded in native mm."]
+}
+```
+
+- **`replay.fingerprint`** is a SHA-256 of the full edit history plus the save watermark, so adding, removing, editing or baking an op makes the manifest stale.
+- **`meshOptions`** are always the native-mm values; a unit conversion is recorded once, in `unit` and one note.
+- **Coverage is reported, not judged.** `status` is `resolved` (at least one physical group), `unresolved` (ids given, none landed in a group), or `empty` (no ids). `unassignedSurfaceTags` are Gmsh surface entities in no surface group; `overlaps` are entities in more than one group of the same dimension. Whether any of that matters is the solver setup's call.
+- **Mesh-format sources** carry no Parts into physical groups (there is no entity correlation) and never bake their edits; both are stated in `notes`.
+- **`subModelPart`** sizes are exactly what the Kratos MDPA writer emits (absent for hex-dominant meshes, which MDPA cannot represent).
+- The group and coverage facts come from one extra, deterministic meshing pass with the same input and options as the export.
+
+Queue-managed exports may choose a project-owned path with `handoffPath`. The manifest keeps the fields above and also publishes the shared version-1 contract fields: `exportId`, an external `source` reference with `revision`, `replayRevision`, effective `units` and `options`, `engine`/`engineVersion`, revisioned `artifacts`, named `groups`, and `boundaryCoverage`. This lets a study manager validate and attach the export without discarding CAD Preview's richer Part and kernel details.
 
 ## Export
 

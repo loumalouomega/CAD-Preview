@@ -16,6 +16,7 @@
  * `assertNotSourcePath`).
  */
 import * as fs from "fs/promises";
+import * as fsSync from "fs";
 import * as path from "path";
 import { createHash, randomUUID } from "node:crypto";
 import {
@@ -59,7 +60,6 @@ import {
   applyStlPartSizeOverride,
   scaleMeshOptionsForUnit,
   scalePartsMeshSizeForUnit,
-  type MeshEngine,
   type MeshOptions,
   type MeshGrading,
 } from "./meshOptions";
@@ -113,6 +113,17 @@ import type { MeshRegionFit } from "./fitMapping";
 import { fitConstructionPlane, fitOpForKind, fitStoreWarning, FIT_DERIVED_FROM } from "./fitMapping";
 import { emitPrimitiveOps } from "./primitiveEmit";
 import type { buildPrimitivesFile } from "./primitiveWrite";
+import type { exportTessellatedStl } from "./tessellationExport";
+import { resolveSheetSettings, DEFAULT_SHEET_VIEWS } from "./sheetSettings";
+export { DEFAULT_SHEET_VIEWS };
+import { mergeSheetTemplates, type SheetTemplate } from "./sheetTemplates";
+import type { TitleBlockFields } from "./drawingSheet";
+import type { analyzePassages } from "./passageAnalysisHost";
+import type { measureMeshDeviation } from "./meshDeviationHost";
+import { estimateMeshBudget, budgetWarning, type MeshBudget } from "./meshBudget";
+import { deviationPly } from "./meshDeviation";
+import { triangleMassProperties } from "./triangleMassProperties";
+import { parseStl as parseStlForBudget } from "./stlParser";
 import { parseToWeldedMesh } from "./meshHeal";
 import { meshInspection } from "./meshInspection";
 import { MAX_HEALABLE_TRIANGLES } from "./meshHeal";
@@ -121,7 +132,6 @@ import { weldedMeshToStlBytes } from "./meshComponents";
 import type { exportSvgSilhouette, exportDrawingSheet } from "./svgSilhouetteHost";
 import { normalizeTessellationQuality } from "./tessellationQuality";
 import { SVG_VIEWS, type DimensionSource } from "./svgSilhouette";
-import { PAPER_SIZES, PROJECTION_METHODS, type PaperSize, type ProjectionMethod } from "./drawingSheet";
 import type { hitTest } from "./hitTestService";
 import { NAMED_VIEW_NAMES, orbitDirection, resolveNamedView, type Vec3 } from "./viewDirections";
 import { HOLE_STANDARDS, allHoleSizes, depthPresetsFor, findHoleSize, holeSizesFor, type HoleStandard } from "./holeStandards";
@@ -131,9 +141,10 @@ import type {
   generateMesh,
   exportMeshFormat,
   exportMdpa,
+  computeHandoffFacts,
+  HandoffFacts,
   exportGeoUnrolled,
   repairMesh,
-  getGmshVersion,
   MeshGenerationInput,
   MeshResult,
 } from "./gmshService";
@@ -142,6 +153,9 @@ import {
   readScriptLibrary,
   readBundledMeshPresetLibrary,
   readMeshPresetLibrary,
+  readSheetTemplateLibrary,
+  writeSheetTemplateLibrary,
+  readBundledSheetTemplateLibrary,
   readViewState,
   writeScriptLibrary,
   writeMeshPresetLibrary,
@@ -166,6 +180,11 @@ import {
 } from "./mcpSidecars";
 import { buildPreprocessZip, readPreprocessZip } from "./preprocessArchive";
 import { bomTsv, type BomRow } from "./bomExport";
+import { batchTsv, runBatch, type CollisionPolicy } from "./batchExport";
+import { buildHandoffManifest, checkHandoffManifest, type HandoffManifest, parseHandoffManifest, replayFingerprint, HANDOFF_MANIFEST_SUFFIX } from "./handoffManifest";
+import { kernelVersions } from "./kernelVersions";
+import { sha256Hex } from "./hash";
+import { renderPrepReportHtml, serializePrepReport, type PrepReport, type ReportImage, type ReportSection } from "./prepReport";
 import { holeTableTsv, type HoleTableRow } from "./holeTable";
 import { parsePartsJson } from "./partsSidecar";
 import { parseAnnotationsJson } from "./annotationsSidecar";
@@ -187,9 +206,9 @@ export interface Pipeline {
   loadBRep: typeof loadBRep;
   exportBRep: typeof exportBRep;
   generateMesh: typeof generateMesh;
-  getGmshVersion: typeof getGmshVersion;
   exportMeshFormat: typeof exportMeshFormat;
   exportMdpa: typeof exportMdpa;
+  computeHandoffFacts: typeof computeHandoffFacts;
   exportGeoUnrolled: typeof exportGeoUnrolled;
   computeMassProperties: typeof computeMassProperties;
   computeBom: typeof computeBom;
@@ -227,6 +246,9 @@ export interface Pipeline {
   exportSvgSilhouette: typeof exportSvgSilhouette;
   exportDrawingSheet: typeof exportDrawingSheet;
   buildPrimitivesFile: typeof buildPrimitivesFile;
+  exportTessellatedStl: typeof exportTessellatedStl;
+  analyzePassages: typeof analyzePassages;
+  measureMeshDeviation: typeof measureMeshDeviation;
 }
 
 export interface ToolContext {
@@ -268,7 +290,7 @@ export interface ExecutionReceiptV1 {
   source: { kind: "external"; path: string; revision: string };
   replayRevision: string;
   arguments: { format: string; outputPath: string; handoffPath?: string; unit: string; options: MeshOptions };
-  statusLookup: { tool: "cad_job_status"; receiptPath: string };
+  statusLookup: { tool: "job_status"; receiptPath: string };
   artifacts: Array<{ role: "mesh" | "handoff"; reference: { kind: "external"; path: string; revision: string } }>;
   message?: string;
 }
@@ -2296,6 +2318,59 @@ export async function fitMeshRegionTool(
  * mesh source is rejected the way `inspect` rejects one — a triangle soup has
  * no analytic surface to classify at all.
  */
+// ---------------------------------------------------------------------------
+// analyze_passages (roadmap "Narrow-gap and passage resolution preflight")
+
+/**
+ * Read-only preflight: finds annular gaps between coaxial cylindrical faces
+ * and slots between facing parallel planes, reports each gap's width, the
+ * size the mesher is asked to use there (smallest applicable Part
+ * meshSize/grading sizeAtWall, else the stored or overridden sizeMax), the
+ * ESTIMATED cells across, and the local size that would give `targetCells`.
+ * Mutation is a separate, explicit `set_part` (meshSize on the face pair) —
+ * this tool never writes. B-rep sources only.
+ */
+export async function analyzePassagesTool(
+  ctx: ToolContext,
+  params: { path: string; targetCells?: number; sizeMax?: number; angleDeg?: number; maxFindings?: number }
+) {
+  const modelPath = params.path;
+  const route = requireRoute(modelPath);
+  if (route.strategy !== "occt") {
+    return {
+      format: route.format,
+      supported: false,
+      warnings: [`${route.format} is a mesh source — passage analysis reads exact cylinder/plane parameters a triangle soup does not have.`],
+    };
+  }
+  const targetCells = params.targetCells ?? 3;
+  if (!(Number.isFinite(targetCells) && targetCells >= 1)) throw new Error(`targetCells must be ≥ 1 (got ${params.targetCells})`);
+  const warnings: string[] = [];
+  const src = await readOcctSource(modelPath, route, warnings);
+  if (!src.ok) return { format: route.format, supported: false, warnings: [...warnings, src.reason] };
+  const { ops } = await readEditsResolved(modelPath);
+  const parts = await readParts(modelPath);
+  const stored = await readMeshOptions(modelPath);
+  const sizeMax = params.sizeMax ?? (stored.sizeMax === SIZE_MAX_SENTINEL ? null : stored.sizeMax);
+  if (sizeMax === null) warnings.push("No explicit sizeMax is set — cells across are reported only where a Part sets a local size.");
+  const report = await ctx.pipeline.analyzePassages(ctx.extensionPath, src.bytes, src.format as BRepFormat, ops, {
+    targetCells,
+    sizeMax,
+    parts,
+    tolerances: params.angleDeg !== undefined ? { angleDeg: params.angleDeg } : undefined,
+    maxFindings: params.maxFindings,
+  });
+  return {
+    format: route.format,
+    supported: true,
+    ...report,
+    sizeMax,
+    note:
+      "Widths are exact (analytic faces); cells across is an ESTIMATE from the requested size — a real mesh confirms it. Only coaxial-cylinder annuli and facing-plane slots are recognized; a gap bounded by other surfaces is not reported. Apply a suggestion with set_part (meshSize on the face pair).",
+    warnings,
+  };
+}
+
 export async function recognizePrimitivesTool(
   ctx: ToolContext,
   params: { path: string }
@@ -4420,6 +4495,9 @@ export async function generateMeshTool(
   // Gmsh's generate() has no mid-call progress hook (one opaque blocking WASM
   // call — see CLAUDE.md's Meshing section) — this is start/done signaling
   // only, never a genuine percentage.
+  const estimate = budgetFor(await budgetFactsForInput(ctx, input).catch(() => null), options, parts);
+  const overBudget = budgetWarning(estimate, options.budgetElements);
+  if (overBudget) warnings.push(`${overBudget} (advisory — generating anyway)`);
   onProgress?.({ progress: 0, total: 1, message: "Generating mesh..." });
   const started = Date.now();
   const result = await ctx.pipeline.generateMesh(ctx.extensionPath, input, options, parts);
@@ -4448,8 +4526,159 @@ export async function generateMeshTool(
           belowThresholdCount: result.worstElements.belowThresholdCount,
         }
       : null,
+    // The pre-generation estimate beside the actual counts — so its accuracy
+    // is visible on every run, not just in a calibration table.
+    estimate: { elements: estimate.elements, nodes: estimate.nodes, memoryBytes: estimate.memoryBytes, confidence: estimate.confidence, status: estimate.status },
     options,
     warnings,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// estimate_mesh_budget (roadmap "Mesh size and memory budget preview")
+
+/** The geometry facts the budget estimate needs, from the RESOLVED mesh input
+ * (so edits are baked for a B-rep exactly as the mesher will see them). */
+async function budgetFactsForInput(
+  ctx: ToolContext,
+  input: MeshGenerationInput
+): Promise<{ volume: number | null | undefined; area: number | undefined; bboxSize: [number, number, number] } | null> {
+  if (input.kind === "brep") {
+    const mp = await ctx.pipeline.computeMassProperties(ctx.extensionPath, input.stepBytes, "step", [], null);
+    if (!mp.bbox) return null;
+    const size = [0, 1, 2].map((a) => mp.bbox!.max[a] - mp.bbox!.min[a]) as [number, number, number];
+    return { volume: mp.volume !== null && mp.volume > 0 ? mp.volume : null, area: mp.area ?? undefined, bboxSize: size };
+  }
+  const soup = parseStlForBudget(input.stlBytes);
+  if (soup.length === 0) return null;
+  const min = [Infinity, Infinity, Infinity];
+  const max = [-Infinity, -Infinity, -Infinity];
+  for (let i = 0; i < soup.length; i += 3)
+    for (let a = 0; a < 3; a++) {
+      if (soup[i + a] < min[a]) min[a] = soup[i + a];
+      if (soup[i + a] > max[a]) max[a] = soup[i + a];
+    }
+  const mp = triangleMassProperties(soup);
+  return {
+    volume: mp.watertight && mp.volume > 0 ? mp.volume : null,
+    area: mp.area,
+    bboxSize: [max[0] - min[0], max[1] - min[1], max[2] - min[2]],
+  };
+}
+
+function budgetFor(
+  facts: Awaited<ReturnType<typeof budgetFactsForInput>>,
+  options: MeshOptions,
+  parts: Part[],
+  sizeMax = options.sizeMax
+): MeshBudget {
+  if (!facts) {
+    return {
+      status: "unavailable",
+      reason: "No geometry to estimate from.",
+      elements: { low: 0, high: 0, mid: 0 },
+      nodes: { low: 0, high: 0 },
+      memoryBytes: { low: 0, high: 0 },
+      basis: "bbox",
+      confidence: "uncertain",
+      assumptions: [],
+    };
+  }
+  return estimateMeshBudget({
+    volume: facts.volume,
+    area: facts.area,
+    bboxSize: facts.bboxSize,
+    sizeMax,
+    dimension: options.dimension,
+    elementOrder: options.elementOrder,
+    elementShape: options.elementShape,
+    engine: options.engine,
+    localSizing: parts.some((p) => p.meshSize != null || p.meshGrading != null),
+  });
+}
+
+/**
+ * A cheap, pre-generation element/node count and memory range — never runs
+ * the mesher. Calibrated against real Gmsh runs (see `meshBudget.ts`); the
+ * response states its confidence and assumptions, and an advisory
+ * `budgetElements` (from `options` or the stored mesh options) only warns.
+ */
+export async function estimateMeshBudgetTool(ctx: ToolContext, params: { path: string; options?: Partial<MeshOptions> }) {
+  const modelPath = params.path;
+  const route = requireRoute(modelPath);
+  const warnings: string[] = [];
+  const input = await resolveMeshInputHeadless(ctx, modelPath, route, warnings);
+  const base = await effectiveMeshOptions(modelPath, params.options);
+  const { parts, options } = await resolveMeshPartsAndOptionsHeadless(modelPath, input, base, warnings);
+  const facts = await budgetFactsForInput(ctx, input);
+  const estimate = budgetFor(facts, options, parts);
+  const over = budgetWarning(estimate, options.budgetElements);
+  if (over) warnings.push(over);
+  return {
+    estimate,
+    facts,
+    options: { sizeMax: options.sizeMax, dimension: options.dimension, elementOrder: options.elementOrder, elementShape: options.elementShape, engine: options.engine, budgetElements: options.budgetElements ?? null },
+    note: "An estimate from a calibrated empirical model — not a mesh. generate_mesh reports the actual counts.",
+    warnings,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// measure_mesh_deviation (roadmap "CAD-to-mesh deviation map")
+
+/**
+ * Generates the FE mesh exactly as `generate_mesh` would and measures its
+ * boundary's GEOMETRIC fidelity against the reference (the CAD's own fine
+ * tessellation for a B-rep; the source's raw triangles otherwise) in both
+ * directions. Sampled, not certified — see `meshDeviation.ts`. Optional
+ * `deviationMeshPath` writes a PLY of the boundary with a per-vertex
+ * `distance` property for ParaView/MeshLab.
+ */
+export async function measureMeshDeviationTool(
+  ctx: ToolContext,
+  params: { path: string; tolerance: number; options?: Partial<MeshOptions>; samples?: number; deviationMeshPath?: string },
+  onProgress?: ProgressCallback
+) {
+  const modelPath = params.path;
+  const route = requireRoute(modelPath);
+  if (!(typeof params.tolerance === "number" && params.tolerance > 0)) throw new Error("tolerance must be a positive number (model units)");
+  const warnings: string[] = [];
+  if (params.deviationMeshPath) assertNotSourcePath(modelPath, path.resolve(params.deviationMeshPath));
+  const input = await resolveMeshInputHeadless(ctx, modelPath, route, warnings);
+  const base = await effectiveMeshOptions(modelPath, params.options);
+  const { parts, options } = await resolveMeshPartsAndOptionsHeadless(modelPath, input, base, warnings);
+  let reference: Parameters<Pipeline["measureMeshDeviation"]>[1];
+  if (route.strategy === "occt") {
+    const src = await readOcctSource(modelPath, route, warnings);
+    if (!src.ok) throw new Error(`Cannot measure ${path.basename(modelPath)} — ${src.reason}`);
+    const { ops } = await readEditsResolved(modelPath);
+    reference = { kind: "brep", bytes: src.bytes, format: src.format as "step" | "iges" | "brep" | "csg", ops };
+  } else if (input.kind === "stl") {
+    reference = { kind: "stl", stlBytes: input.stlBytes };
+  } else {
+    throw new Error("No reference surface available for this source.");
+  }
+  onProgress?.({ progress: 0, total: 1, message: "Meshing and measuring deviation..." });
+  const result = await ctx.pipeline.measureMeshDeviation(ctx.extensionPath, reference, input, options, parts, {
+    tolerance: params.tolerance,
+    samples: params.samples,
+    perCorner: !!params.deviationMeshPath,
+  });
+  onProgress?.({ progress: 1, total: 1, message: "Done" });
+  let written: string | null = null;
+  if (params.deviationMeshPath && result.corners) {
+    written = path.resolve(params.deviationMeshPath);
+    const n = result.corners.distances.length;
+    const ply = deviationPly({ positions: result.corners.positions, indices: Array.from({ length: n }, (_, i) => i) }, result.corners.distances);
+    await fs.writeFile(written, ply, "utf8");
+  }
+  return {
+    report: result.report,
+    mesh: result.mesh,
+    referenceKind: result.referenceKind,
+    written,
+    note: "Sampled, not a certified maximum: forward = reference → mesh (a missing/flattened region), reverse = mesh → reference (an extraneous surface). regionFailures and coverage come from the RAW samples; `filtered` only drops Tukey outliers and reports how many.",
+    warnings: [...warnings, ...result.warnings],
   };
 }
 
@@ -4464,7 +4693,7 @@ export function rewriteGeoMerge(text: string, xaoName: string): string {
 
 export async function exportMeshTool(
   ctx: ToolContext,
-  params: { path: string; format: string; outputPath: string; options?: Partial<MeshOptions>; unit?: string; handoffPath?: string; ownerId?: string; requestId?: string; receiptPath?: string },
+  params: { path: string; format: string; outputPath: string; options?: Partial<MeshOptions>; unit?: string; manifest?: boolean; handoffPath?: string; ownerId?: string; requestId?: string; receiptPath?: string },
   onProgress?: ProgressCallback
 ) {
   const modelPath = params.path;
@@ -4477,14 +4706,13 @@ export async function exportMeshTool(
   }
   const outputPath = path.resolve(params.outputPath);
   assertNotSourcePath(modelPath, outputPath);
-  const manifestPath = params.handoffPath ? path.resolve(params.handoffPath) : undefined;
-  if (manifestPath) {
-    if (format.id !== "mdpaElements" && format.id !== "mdpaGeometries") throw new Error("A simulation handoff manifest is available only for MDPA exports.");
-    assertNotSourcePath(modelPath, manifestPath);
-    if (manifestPath === outputPath) throw new Error("The handoff manifest path must be separate from mesh artifacts.");
-  }
   const warnings: string[] = [];
   const unit = resolveExportMeshUnit(params.unit, warnings);
+  const handoffRequested = params.manifest === true || params.handoffPath !== undefined;
+  const manifestPath = params.handoffPath ? path.resolve(params.handoffPath) : handoffRequested ? `${outputPath}${HANDOFF_MANIFEST_SUFFIX}` : undefined;
+  if (manifestPath && [modelPath, outputPath].some((candidate) => path.resolve(candidate) === manifestPath)) {
+    throw new Error("The handoff path must be separate from the source and mesh output.");
+  }
   let persistResolvedOptions: ((options: MeshOptions) => Promise<void>) | undefined;
 
   const execute = async () => {
@@ -4497,55 +4725,14 @@ export async function exportMeshTool(
   onProgress?.({ progress: 0, total: 1, message: `Generating + exporting to ${format.id}...` });
   const written = await writeMeshExportFormat(ctx, modelPath, route, input, options, parts, format, outputPath, unit, warnings);
 
-  const sizes = await Promise.all(written.map(async (p) => ({ path: p, bytes: (await fs.stat(p)).size })));
-  let handoff: { path: string; manifest: Record<string, unknown> } | undefined;
-  if (manifestPath) {
-    const exportId = randomUUID();
-    const sourceRevision = await hashFile(modelPath);
-    const replayRevision = await fingerprintReplayInputs(modelPath);
-    const usedEngine: MeshEngine = options.engine === "ftetwild" && input.kind !== "brep" && options.dimension === 3 ? "ftetwild" : "gmsh";
-    const engineVersion = usedEngine === "gmsh" ? await ctx.pipeline.getGmshVersion(ctx.extensionPath) : "float-tetwild-wasm@0.2.0";
-    const groups = parts.flatMap(part => ([
-      { dim: 3, ids: part.volumes }, { dim: 2, ids: part.surfaces },
-      { dim: 1, ids: part.lines }, { dim: 0, ids: part.points },
-    ].filter(group => group.ids.length > 0).map(group => ({
-      name: part.name,
-      id: `${part.name}:${group.dim}`,
-      dimension: group.dim,
-      count: group.ids.length,
-    }))));
-    const artifacts = await Promise.all(written.map(async file => ({
-      role: "mesh",
-      reference: { kind: "external", path: path.resolve(file), revision: await hashFile(file) },
-      ownerId: exportId,
-    })));
-    const boundaryCoverage = {
-      state: "unavailable",
-      reason: "Boundary-to-mesh coverage is not measured by headless CAD export. Named groups report assigned CAD entities, not verified mesh coverage.",
-    };
-    const manifest: Record<string, unknown> = {
-      version: 1,
-      exportId,
-      source: { kind: "external", path: path.resolve(modelPath), revision: sourceRevision },
-      replayRevision,
-      units: { length: unit, scale: unitScaleFactor(unit) },
-      options,
-      engine: usedEngine,
-      engineVersion,
-      engineVersionSource: usedEngine === "gmsh" ? "runtime General.Version" : "float-tetwild-wasm package build",
-      artifacts,
-      groups,
-      boundaryCoverage,
-      findings: [
-        { severity: "unavailable", message: boundaryCoverage.reason, target: "boundary-coverage" },
-        ...warnings.map(message => ({ severity: "warning", message })),
-      ],
-    };
-    await writeJsonAtomic(manifestPath, manifest);
-    handoff = { path: manifestPath, manifest };
+  let writtenManifestPath: string | null = null;
+  if (handoffRequested && manifestPath) {
+    onProgress?.({ progress: 0.5, total: 1, message: "Writing handoff manifest..." });
+    writtenManifestPath = await writeHandoffManifest(ctx, modelPath, route, input, options, parts, format.id, written, unit, warnings, manifestPath);
   }
+  const sizes = await Promise.all(written.map(async (p) => ({ path: p, bytes: (await fs.stat(p)).size })));
   onProgress?.({ progress: 1, total: 1, message: "Done" });
-  return { format: format.id, written: sizes, ...(handoff ? { handoff } : {}), warnings };
+  return { format: format.id, written: sizes, ...(params.manifest ? { manifest: writtenManifestPath } : {}), ...(params.handoffPath ? { handoff: writtenManifestPath } : {}), warnings };
   };
 
   const managed = [params.ownerId, params.requestId, params.receiptPath].some((value) => value !== undefined);
@@ -4579,7 +4766,7 @@ export async function exportMeshTool(
       unit,
       options: baseOptions,
     },
-    statusLookup: { tool: "cad_job_status", receiptPath },
+    statusLookup: { tool: "job_status", receiptPath },
     artifacts: [],
   };
   persistResolvedOptions = async (options) => {
@@ -4631,8 +4818,7 @@ async function collectExecutionArtifacts(
 async function createJsonAtomicNoReplace(file: string, value: unknown): Promise<void> {
   await fs.mkdir(path.dirname(file), { recursive: true });
   const temporary = `${file}.${process.pid}.${randomUUID()}.tmp`;
-  const body = JSON.stringify(value, null, 2) + "\n";
-  await fs.writeFile(temporary, body, { flag: "wx" });
+  await fs.writeFile(temporary, JSON.stringify(value, null, 2) + "\n", { flag: "wx" });
   try {
     await fs.link(temporary, file);
   } catch (error) {
@@ -4643,6 +4829,13 @@ async function createJsonAtomicNoReplace(file: string, value: unknown): Promise<
   } finally {
     await fs.unlink(temporary).catch(() => undefined);
   }
+}
+
+async function writeJsonAtomic(file: string, value: unknown): Promise<void> {
+  await fs.mkdir(path.dirname(file), { recursive: true });
+  const temporary = `${file}.${process.pid}.${randomUUID()}.tmp`;
+  await fs.writeFile(temporary, JSON.stringify(value, null, 2) + "\n", { flag: "wx" });
+  await fs.rename(temporary, file);
 }
 
 export async function cadJobStatusTool(ctx: ToolContext, params: { receiptPath: string; ownerId: string; requestId: string }) {
@@ -4670,14 +4863,9 @@ export async function cadJobCancelTool(ctx: ToolContext, params: { receiptPath: 
   if (["succeeded", "failed", "cancelled"].includes(record.state)) {
     return { ...receipt, state: "uncertain", message: "The runner is terminal, but its final artifact receipt has not committed yet. Check status before attaching or retrying." };
   }
-  const next = {
-    ...receipt,
-    state: record.state === "cancelled" ? "cancelled" as const : record.state,
-    updatedAt: new Date().toISOString(),
-    ...(record.message ? { message: record.message } : {}),
-  };
-  await writeJsonAtomic(path.resolve(params.receiptPath), next);
-  return next;
+  // The export request owns receipt persistence. Avoid racing its terminal
+  // update from this separate cancellation request.
+  return { ...receipt, state: record.state, ...(record.message ? { message: record.message } : {}) };
 }
 
 async function readExecutionReceipt(receiptPath: string, ownerId: string, requestId: string): Promise<ExecutionReceiptV1> {
@@ -4710,11 +4898,127 @@ async function fingerprintReplayInputs(modelPath: string): Promise<string> {
   return hash.digest("hex");
 }
 
-async function writeJsonAtomic(file: string, value: unknown): Promise<void> {
-  await fs.mkdir(path.dirname(file), { recursive: true });
-  const temporary = `${file}.${process.pid}.${randomUUID()}.tmp`;
-  await fs.writeFile(temporary, JSON.stringify(value, null, 2) + "\n", { flag: "wx" });
-  await fs.rename(temporary, file);
+/** The replay fingerprint a handoff manifest records for `modelPath` — the
+ * full op history plus the save watermark, as `check_handoff_manifest` re-derives it. */
+async function currentReplayFingerprint(modelPath: string): Promise<{ fullOps: EditOp[]; bakedThrough: number; fingerprint: string }> {
+  const { fullOps, bakedThrough } = await readEditsResolved(modelPath);
+  return { fullOps, bakedThrough, fingerprint: replayFingerprint(fullOps, bakedThrough) };
+}
+
+/**
+ * Builds the simulation handoff manifest for an export that just wrote
+ * `outputs` (roadmap "Simulation handoff manifest and boundary coverage").
+ * The group/coverage facts come from one extra deterministic meshing pass
+ * with the SAME input/options/parts the export used — a stated cost of asking
+ * for a manifest. Shared by `export_mesh` and the FE Mesh panel's Export.
+ */
+export async function buildExportHandoffManifest(
+  ctx: ToolContext,
+  modelPath: string,
+  route: FileRoute,
+  input: MeshGenerationInput,
+  options: MeshOptions,
+  parts: Part[],
+  formatId: string,
+  outputs: Array<{ path: string; bytes: Uint8Array }>,
+  unit: DisplayUnit,
+  extraNotes: string[] = []
+): Promise<HandoffManifest> {
+  const facts = await ctx.pipeline.computeHandoffFacts(ctx.extensionPath, input, options, parts);
+  const replay = await currentReplayFingerprint(modelPath);
+  const notes = [...extraNotes];
+  if (route.strategy !== "occt" && replay.fullOps.length > 0) {
+    notes.push(`${replay.fullOps.length} pending edit(s) were NOT baked into this mesh — ${route.format} sources have no host-side edit engine.`);
+  }
+  if (input.kind === "stl" && parts.length > 0) {
+    notes.push("Parts are not carried into physical groups for a mesh-format source (no entity correlation); coverage below reflects that.");
+  }
+  return buildHandoffManifest({
+    createdAt: new Date().toISOString(),
+    source: { path: path.resolve(modelPath), format: route.format, bytes: new Uint8Array(await fs.readFile(modelPath)) },
+    ops: replay.fullOps,
+    bakedThrough: replay.bakedThrough,
+    editsBaked: route.strategy === "occt",
+    unit,
+    scaleFactor: unitScaleFactor(unit),
+    meshOptions: options,
+    kernels: kernelVersions(),
+    outputs: outputs.map((o) => ({ path: path.resolve(o.path), format: formatId, bytes: o.bytes })),
+    parts,
+    facts,
+    notes,
+  });
+}
+
+async function writeHandoffManifest(
+  ctx: ToolContext,
+  modelPath: string,
+  route: FileRoute,
+  input: MeshGenerationInput,
+  options: MeshOptions,
+  parts: Part[],
+  formatId: string,
+  written: string[],
+  unit: DisplayUnit,
+  warnings: string[],
+  requestedPath?: string
+): Promise<string> {
+  const outputs = await Promise.all(written.map(async (p) => ({ path: p, bytes: new Uint8Array(await fs.readFile(p)) })));
+  const manifest = await buildExportHandoffManifest(ctx, modelPath, route, input, options, parts, formatId, outputs, unit);
+  const manifestPath = path.resolve(requestedPath ?? `${written[0]}${HANDOFF_MANIFEST_SUFFIX}`);
+  assertNotSourcePath(modelPath, manifestPath);
+  const exportId = randomUUID();
+  const portable = {
+    ...manifest,
+    exportId,
+    source: { ...manifest.source, kind: "external" as const, revision: manifest.source.sha256 },
+    replayRevision: manifest.replay.fingerprint,
+    units: { length: manifest.unit.unit, scale: manifest.unit.scaleFactor },
+    options: manifest.meshOptions,
+    engine: manifest.engineUsed,
+    engineVersion: manifest.kernels["@loumalouomega/gmsh-wasm"] ?? "unavailable",
+    engineVersionSource: "CAD Preview build kernel package metadata",
+    artifacts: manifest.outputs.map((output) => ({
+      role: "mesh" as const,
+      ownerId: exportId,
+      reference: { kind: "external" as const, path: path.resolve(output.path), revision: output.sha256 },
+    })),
+    groups: manifest.parts.flatMap((part) => part.groups.map((group) => ({ name: part.name, ...group }))),
+    boundaryCoverage: { state: "available" as const, ...manifest.coverage },
+    findings: [...manifest.notes],
+  };
+  await fs.writeFile(manifestPath, JSON.stringify(portable, null, 2) + "\n", "utf8");
+  if (route.strategy === "occt" && manifest.coverage.unresolvedParts.length > 0) {
+    warnings.push(`Handoff manifest: Part(s) ${manifest.coverage.unresolvedParts.join(", ")} resolved to no physical group.`);
+  }
+  return manifestPath;
+}
+
+/**
+ * Re-derives the source hash, the edit-history fingerprint and each output's
+ * hash, and reports whether a handoff manifest still describes them.
+ */
+export async function checkHandoffManifestTool(params: { manifestPath: string }) {
+  const manifestPath = path.resolve(params.manifestPath);
+  const manifest = parseHandoffManifest(await fs.readFile(manifestPath, "utf8"));
+  if (!manifest) throw new Error(`${manifestPath} is not a CAD Preview handoff manifest.`);
+  const hashFile = async (p: string): Promise<string | null> => {
+    try {
+      return sha256Hex(new Uint8Array(await fs.readFile(p)));
+    } catch {
+      return null;
+    }
+  };
+  const sourceSha256 = await hashFile(manifest.source.path);
+  let fingerprint: string | null = null;
+  try {
+    fingerprint = (await currentReplayFingerprint(manifest.source.path)).fingerprint;
+  } catch {
+    fingerprint = null;
+  }
+  const outputs = await Promise.all(manifest.outputs.map(async (o) => ({ path: o.path, sha256: await hashFile(o.path) })));
+  const result = checkHandoffManifest(manifest, { sourceSha256, replayFingerprint: fingerprint, outputs });
+  return { manifestPath, source: manifest.source.path, createdAt: manifest.createdAt, ...result };
 }
 
 /**
@@ -4955,6 +5259,7 @@ export async function compareMeshRefinementTool(
   }
   const base = await effectiveMeshOptions(modelPath, sizeFreeOverride);
   const { parts, options: baseOptions } = await resolveMeshPartsAndOptionsHeadless(modelPath, input, base, warnings);
+  const budgetFacts = await budgetFactsForInput(ctx, input).catch(() => null);
   if (baseOptions.sizeMax === SIZE_MAX_SENTINEL) {
     warnings.push(
       "The stored sizeMax is the unbounded sentinel, but every swept run sets an explicit size anyway — the sentinel only describes what a plain generate_mesh would do."
@@ -5027,7 +5332,11 @@ export async function compareMeshRefinementTool(
     applied = { index: params.applyIndex, size, options: appliedOptions };
   }
 
-  return { runs, tsv: sweepTsv(runs), applied, warnings, note: SWEEP_NOTE };
+  const estimates = params.sizes.map((size) => {
+    const e = budgetFor(budgetFacts, baseOptions, parts, size);
+    return { size, status: e.status, elements: e.elements, confidence: e.confidence };
+  });
+  return { runs, tsv: sweepTsv(runs), estimates, applied, warnings, note: SWEEP_NOTE };
 }
 
 // ---------------------------------------------------------------------------
@@ -5091,6 +5400,103 @@ export async function exportBRepTool(
     editsBaked: fullOps.length,
     unit,
     warnings,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// export_tessellated_stl (roadmap "Mesh-aware surface tessellation export")
+
+/**
+ * Writes a binary STL of the EDITED B-rep at a chordal tolerance derived
+ * from the downstream cell size (`targetCellSize × chordalFraction`, in
+ * `unit`), and reports the SAMPLED chordal error it actually achieved — a
+ * surface-export concern, separate from `generate_mesh`'s direct B-rep path.
+ * `dryRun` only counts triangles (the preview). Mesh sources have no B-rep
+ * to re-tessellate.
+ */
+export async function exportTessellatedStlTool(
+  ctx: ToolContext,
+  params: {
+    path: string;
+    outputPath?: string;
+    targetCellSize?: number;
+    chordalFraction?: number;
+    angularDeg?: number;
+    unit?: string;
+    maxTriangles?: number;
+    sampleBudget?: number;
+    dryRun?: boolean;
+    /** A mesh preset whose `stlExport` block supplies any tolerance field not given explicitly. */
+    preset?: string;
+    libraryPath?: string;
+  }
+) {
+  const modelPath = params.path;
+  const route = requireRoute(modelPath);
+  const warnings: string[] = [];
+  if (params.preset !== undefined) {
+    const user = params.libraryPath ? await readMeshPresetLibrary(params.libraryPath) : {};
+    const bundled = await readBundledMeshPresetLibrary(ctx.extensionPath);
+    const entry = mergePresetLibraries(bundled, user).merged[params.preset];
+    if (!entry) throw new Error(`No mesh preset named "${params.preset}".`);
+    if (!entry.stlExport) throw new Error(`Mesh preset "${params.preset}" has no stlExport block — pass targetCellSize explicitly.`);
+    params = {
+      ...params,
+      targetCellSize: params.targetCellSize ?? entry.stlExport.targetCellSize,
+      chordalFraction: params.chordalFraction ?? entry.stlExport.chordalFraction,
+      angularDeg: params.angularDeg ?? entry.stlExport.angularDeg,
+      unit: params.unit ?? entry.unit,
+    };
+  }
+  if (params.targetCellSize === undefined) throw new Error("targetCellSize is required (or name a preset with an stlExport block)");
+  if (route.strategy !== "occt") {
+    return {
+      format: route.format,
+      supported: false,
+      warnings: [`${route.format} is a mesh-format source with no B-rep to re-tessellate — mesh-aware tessellation export needs STEP/IGES/BREP/CSG.`],
+    };
+  }
+  let unit: DisplayUnit = "mm";
+  if (params.unit != null) {
+    if (!DISPLAY_UNITS.includes(params.unit as DisplayUnit)) {
+      warnings.push(`Unknown unit "${params.unit}" — valid: ${DISPLAY_UNITS.join(", ")}. Falling back to "mm".`);
+    } else unit = params.unit as DisplayUnit;
+  }
+  if (!params.dryRun) {
+    if (!params.outputPath) throw new Error("outputPath is required unless dryRun is set");
+    assertNotSourcePath(modelPath, path.resolve(params.outputPath));
+  }
+  const { ops, fullOps } = await readEditsResolved(modelPath);
+  const src = await readOcctSource(modelPath, route, warnings);
+  if (!src.ok) return { format: route.format, supported: false, warnings: [...warnings, src.reason] };
+  const result = await ctx.pipeline.exportTessellatedStl(ctx.extensionPath, src.bytes, src.format as "step" | "iges" | "brep" | "csg", ops, {
+    targetCellSize: params.targetCellSize!,
+    chordalFraction: params.chordalFraction,
+    angularDeg: params.angularDeg,
+    unit,
+    maxTriangles: params.maxTriangles,
+    sampleBudget: params.sampleBudget,
+    dryRun: params.dryRun,
+  });
+  let written: string | null = null;
+  if (result.stl && !params.dryRun) {
+    written = path.resolve(params.outputPath!);
+    await fs.writeFile(written, result.stl);
+  }
+  return {
+    format: route.format,
+    supported: true,
+    written,
+    bytes: written ? result.stl!.byteLength : 0,
+    triangleCount: result.triangleCount,
+    unit: result.unit,
+    requestedChordal: result.requestedChordal,
+    linearDeflectionMm: result.linearDeflectionMm,
+    angularDeg: result.angularDeg,
+    measured: result.measured,
+    editsBaked: fullOps.length,
+    note: "measured is a sampled estimate (centroid + edge midpoints of a strided subset of triangles vs the exact face), not a certified maximum.",
+    warnings: [...warnings, ...result.warnings],
   };
 }
 
@@ -5165,17 +5571,29 @@ export async function saveModelTool(ctx: ToolContext, params: { path: string }) 
   await writeEdits(modelPath, fullOps, variables, fullOps.length);
   try {
     const newBytes = await readModelBytes(modelPath);
-    const rebindResult = await ctx.pipeline.rebindPartsAcrossSave(
-      ctx.extensionPath,
-      src.bytes,
-      src.format as BRepFormat,
-      fullOps,
-      newBytes,
-      route.format,
-      [],
-      parts,
-      annotations
-    );
+    const newFormat = route.format;
+    const rebind = () =>
+      ctx.pipeline.rebindPartsAcrossSave(
+        ctx.extensionPath,
+        src.bytes,
+        src.format as BRepFormat,
+        fullOps,
+        newBytes,
+        newFormat,
+        [],
+        parts,
+        annotations
+      );
+    // The rebind is read-only over bytes already in hand, so one retry
+    // after a detected (and already reset) WASM abort is safe — a transient
+    // kernel fault must not leave Part/annotation ids silently stale.
+    let rebindResult: Awaited<ReturnType<typeof rebind>>;
+    try {
+      rebindResult = await rebind();
+    } catch (err) {
+      if (!/kernel has been reset/i.test((err as Error)?.message ?? "")) throw err;
+      rebindResult = await rebind();
+    }
     if (rebindResult.parts !== parts) await writeParts(modelPath, rebindResult.parts);
     if (rebindResult.annotations !== annotations) await writeAnnotations(modelPath, rebindResult.annotations);
   } catch (err) {
@@ -5271,8 +5689,6 @@ async function resolveDrawingSource(
   return { source, annotations };
 }
 
-/** Default views of a drawing sheet: the three principal views plus an iso. */
-export const DEFAULT_SHEET_VIEWS = ["front", "top", "right", "iso"] as const;
 
 /**
  * Several views of one model on a single drafting sheet (roadmap "Multi-view
@@ -5289,11 +5705,15 @@ export async function exportDrawingSheetTool(
     format?: string;
     paper?: string;
     projection?: string;
-    scale?: number;
+    scale?: number | string;
     hiddenLines?: boolean;
     creaseAngleDeg?: number;
     tessellationQuality?: string;
     title?: string;
+    fields?: TitleBlockFields;
+    /** A sheet template (bundled starters ∪ `libraryPath`) supplying any setting not given explicitly. */
+    template?: string;
+    libraryPath?: string;
   }
 ) {
   const modelPath = params.path;
@@ -5302,40 +5722,23 @@ export async function exportDrawingSheetTool(
   assertNotSourcePath(modelPath, outputPath);
   const warnings: string[] = [];
 
-  const views: Array<{ name: string; direction: [number, number, number]; up?: [number, number, number] }> = [];
-  for (const requested of params.views ?? DEFAULT_SHEET_VIEWS) {
-    const named = resolveNamedView(requested);
-    if (!named) {
-      warnings.push(`Unknown view "${requested}" — valid: ${NAMED_VIEW_NAMES.join(", ")}. Skipped.`);
-      continue;
-    }
-    if (views.some((v) => v.name === named.canonical)) {
-      warnings.push(`View "${requested}" is repeated — drawn once.`);
-      continue;
-    }
-    views.push({ name: named.canonical, direction: named.direction, ...(named.up ? { up: named.up } : {}) });
+  let template: SheetTemplate | undefined;
+  if (params.template !== undefined) {
+    const { merged } = mergeSheetTemplates(
+      await readBundledSheetTemplateLibrary(ctx.extensionPath),
+      params.libraryPath ? await readSheetTemplateLibrary(params.libraryPath) : {}
+    );
+    template = merged[params.template];
+    if (!template) throw new Error(`No sheet template named "${params.template}" — known: ${Object.keys(merged).sort().join(", ") || "(none)"}.`);
   }
-  if (views.length === 0) throw new Error("No usable view was given — a drawing sheet needs at least one named view.");
-
-  const format = params.format === "dxf" ? ("dxf" as const) : ("svg" as const);
-  if (params.format != null && params.format !== "svg" && params.format !== "dxf") {
-    warnings.push(`Unknown format "${params.format}" — valid: svg, dxf. Falling back to "svg".`);
-  }
-  let paper: PaperSize = "fit";
-  if (params.paper != null) {
-    if ((PAPER_SIZES as readonly string[]).includes(params.paper)) paper = params.paper as PaperSize;
-    else warnings.push(`Unknown paper "${params.paper}" — valid: ${PAPER_SIZES.join(", ")}. Falling back to "fit".`);
-  }
-  let projection: ProjectionMethod = "first";
-  if (params.projection != null) {
-    if ((PROJECTION_METHODS as readonly string[]).includes(params.projection)) projection = params.projection as ProjectionMethod;
-    else warnings.push(`Unknown projection "${params.projection}" — valid: first, third. Falling back to "first".`);
-  }
-  let scale: number | undefined;
-  if (params.scale != null) {
-    if (Number.isFinite(params.scale) && params.scale > 0) scale = params.scale;
-    else warnings.push(`Invalid scale ${params.scale} — must be a positive number (sheet mm per model mm). Choosing one automatically.`);
-  }
+  // One resolver for this tool AND the extension's Export Drawing Sheet form.
+  const settings = resolveSheetSettings(
+    { views: params.views, format: params.format, paper: params.paper, projection: params.projection, scale: params.scale, title: params.title, fields: params.fields },
+    template,
+    { title: path.basename(modelPath) }
+  );
+  warnings.push(...settings.warnings);
+  const { views, format, paper, projection, scale } = settings;
 
   const { source, annotations } = await resolveDrawingSource(modelPath, warnings);
   const result = await ctx.pipeline.exportDrawingSheet(ctx.extensionPath, source, {
@@ -5348,7 +5751,8 @@ export async function exportDrawingSheetTool(
     paper,
     projection,
     scale,
-    title: params.title ?? path.basename(modelPath),
+    title: settings.title,
+    fields: settings.fields,
     date: new Date().toISOString().slice(0, 10),
   });
   await fs.writeFile(outputPath, result.content, "utf8");
@@ -5372,6 +5776,48 @@ export async function exportDrawingSheetTool(
         : []),
       ...result.warnings,
     ],
+  };
+}
+
+// ---------------------------------------------------------------------------
+// save_sheet_template / list_sheet_templates (roadmap "Drawing-sheet settings
+// and reusable templates") — kernel-free, the mesh-preset tools' shape.
+
+export async function saveSheetTemplate(params: {
+  libraryPath: string;
+  name: string;
+  description?: string;
+  views?: string[];
+  format?: string;
+  paper?: string;
+  projection?: string;
+  scale?: number | string;
+  title?: string;
+  fields?: TitleBlockFields;
+  overwrite?: boolean;
+}) {
+  const name = params.name.trim();
+  if (!name) throw new Error("A template needs a name.");
+  const { libraryPath, overwrite, ...rest } = params;
+  // Validate by resolving once — a template no sheet could be drawn from never enters the library.
+  const probe = resolveSheetSettings(rest, undefined, { title: "probe" });
+  const library = await readSheetTemplateLibrary(libraryPath);
+  if (library[name] && !overwrite) throw new Error(`A sheet template named "${name}" already exists in ${libraryPath} — pass overwrite: true to replace it.`);
+  const template: SheetTemplate = { ...rest, name };
+  library[name] = template;
+  await writeSheetTemplateLibrary(libraryPath, library);
+  return { saved: name, libraryPath, template, warnings: probe.warnings };
+}
+
+export async function listSheetTemplates(params: { libraryPath?: string; extensionPath?: string }) {
+  const bundled = params.extensionPath ? await readBundledSheetTemplateLibrary(params.extensionPath) : {};
+  const user = params.libraryPath ? await readSheetTemplateLibrary(params.libraryPath) : {};
+  const { merged, collisions } = mergeSheetTemplates(bundled, user);
+  return {
+    templates: Object.values(merged).map((t) => ({ ...t, readOnly: !(t.name in user) })),
+    bundled: Object.keys(bundled),
+    libraryPath: params.libraryPath ?? null,
+    warnings: collisions.map((n) => `"${n}" in your library shadows the bundled template of the same name.`),
   };
 }
 
@@ -5667,5 +6113,379 @@ export async function downloadStandardPartTool(
     stepUrl: result.value.stepUrl,
     pageUrl: result.value.pageUrl,
     warnings,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// batch_export (roadmap "Batch export with per-file results")
+// ---------------------------------------------------------------------------
+
+/** Batch targets: a B-rep writer, a one-view technical drawing, or a drawing sheet. */
+export const BATCH_TARGETS = ["step", "iges", "brep", "svg", "dxf", "sheet-svg", "sheet-dxf"] as const;
+export type BatchTarget = (typeof BATCH_TARGETS)[number];
+
+function batchTargetExt(target: BatchTarget): string {
+  if (target === "step" || target === "iges" || target === "brep") return EXPORT_EXTENSION[target];
+  return target.endsWith("dxf") ? "dxf" : "svg";
+}
+
+/**
+ * Exports many models one at a time through the SAME single-file tool functions
+ * (`export_brep`, `export_technical_drawing`, `export_drawing_sheet`), so a
+ * batched file is byte-identical to exporting it alone. One bad file is a
+ * failed row, never an aborted batch; sources are never written; outputs
+ * follow an explicit collision policy (default skip). Sequential — the kernel
+ * serializes anyway — and cancellable between files via `signal`.
+ */
+export async function batchExportTool(
+  ctx: ToolContext,
+  params: {
+    inputs?: string[];
+    root?: string;
+    target: string;
+    outDir: string;
+    naming?: string;
+    onCollision?: string;
+    unit?: string;
+    view?: string;
+    template?: string;
+    libraryPath?: string;
+    reportPath?: string;
+  },
+  onProgress: ProgressCallback = () => {},
+  signal?: AbortSignal
+) {
+  if (!(BATCH_TARGETS as readonly string[]).includes(params.target)) {
+    throw new Error(`Unknown batch target "${params.target}" — valid: ${BATCH_TARGETS.join(", ")}.`);
+  }
+  const target = params.target as BatchTarget;
+  const policy = (params.onCollision ?? "skip") as CollisionPolicy;
+  if (!["skip", "suffix", "overwrite"].includes(policy)) {
+    throw new Error(`Unknown onCollision "${params.onCollision}" — valid: skip, suffix, overwrite.`);
+  }
+  if ((params.inputs === undefined) === (params.root === undefined)) {
+    throw new Error("Give exactly one of `inputs` (explicit model paths) or `root` (a folder scanned like list_workspace_models).");
+  }
+  const warnings: string[] = [];
+  let inputs: string[];
+  if (params.root !== undefined) {
+    const listed = await listWorkspaceModels({ root: params.root });
+    inputs = listed.models.map((m) => m.path);
+    warnings.push(...listed.warnings);
+  } else {
+    inputs = params.inputs!.map((p) => path.resolve(p));
+  }
+  const outDir = path.resolve(params.outDir);
+  await fs.mkdir(outDir, { recursive: true });
+
+  const exportOne = async (input: string, outPath: string) => {
+    const route = requireRoute(input);
+    const rowWarnings: string[] = [];
+    // Edits baking is a per-file fact: B-rep writers bake the whole op list;
+    // mesh sources have no host-side edit engine, so their edits never land.
+    const { fullOps } = await readEditsResolved(input);
+    const baked = route.strategy === "occt" ? fullOps.length : 0;
+    if (route.strategy !== "occt" && fullOps.length > 0) {
+      rowWarnings.push(`${fullOps.length} pending edit(s) NOT baked in — ${route.format} sources have no host-side edit engine.`);
+    }
+    let result: { written: string; warnings: string[] };
+    if (target === "step" || target === "iges" || target === "brep") {
+      result = await exportBRepTool(ctx, { path: input, targetFormat: target, outputPath: outPath, unit: params.unit });
+    } else if (target === "svg" || target === "dxf") {
+      result = await exportTechnicalDrawingTool(ctx, { path: input, outputPath: outPath, format: target, view: params.view, unit: params.unit });
+    } else {
+      result = await exportDrawingSheetTool(ctx, {
+        path: input,
+        outputPath: outPath,
+        format: target === "sheet-dxf" ? "dxf" : "svg",
+        template: params.template,
+        libraryPath: params.libraryPath,
+      });
+    }
+    return { outputs: [result.written], editsBaked: baked, warnings: [...rowWarnings, ...result.warnings] };
+  };
+
+  const { rows, summary } = await runBatch(inputs, {
+    outDir,
+    ext: batchTargetExt(target),
+    naming: params.naming,
+    onCollision: policy,
+    exists: (p) => fsSync.existsSync(p),
+    exportOne,
+    isCancelled: () => signal?.aborted === true,
+    onProgress: (done, total, row) =>
+      onProgress({ progress: done, total, message: `${path.basename(row.input)}: ${row.status}` }),
+  });
+  const table = batchTsv(rows);
+  let reportPath: string | undefined;
+  if (params.reportPath) {
+    reportPath = path.resolve(params.reportPath);
+    if (inputs.some((i) => path.resolve(i) === reportPath)) throw new Error("reportPath must not be one of the inputs.");
+    await fs.writeFile(reportPath, table, "utf8");
+  }
+  if (summary.cancelled > 0) warnings.push(`Cancelled — ${summary.cancelled} file(s) were not attempted; outputs already written stay on disk.`);
+  return { target, outDir, rows, summary, table, reportPath, warnings };
+}
+
+// ---------------------------------------------------------------------------
+// generate_prep_report (roadmap "Preparation report bundle")
+// ---------------------------------------------------------------------------
+
+export const PREP_REPORT_SECTIONS = [
+  "identity",
+  "options",
+  "replay",
+  "mass",
+  "bom",
+  "holes",
+  "meshHealth",
+  "passages",
+  "budget",
+  "mesh",
+  "deviation",
+  "manifest",
+  "snapshots",
+] as const;
+export type PrepReportSectionId = (typeof PREP_REPORT_SECTIONS)[number];
+
+const PREP_SECTION_TITLES: Record<PrepReportSectionId, string> = {
+  identity: "Source identity",
+  options: "Effective mesh options",
+  replay: "Edit replay",
+  mass: "Mass properties",
+  bom: "Bill of materials",
+  holes: "Hole table",
+  meshHealth: "Mesh health",
+  passages: "Narrow passages",
+  budget: "Mesh budget estimate",
+  mesh: "Generated mesh",
+  deviation: "CAD-to-mesh deviation",
+  manifest: "Handoff manifest",
+  snapshots: "Snapshots",
+};
+
+/**
+ * Writes `report.json` + a self-contained `report.html` into `outputDir`,
+ * aggregating the preparation facts the single-purpose tools already report.
+ * Each section runs through the SAME tool function an agent would call, so a
+ * report fact can never disagree with the tool's own answer; a section that
+ * cannot run is kept with its status and reason, never dropped. Read-only
+ * towards the model: nothing here writes a sidecar (the meshio edit-replay
+ * section is skipped because `load_model` may auto-create Parts there).
+ */
+export async function generatePrepReportTool(
+  ctx: ToolContext,
+  params: {
+    path: string;
+    outputDir: string;
+    include?: string[];
+    options?: Partial<MeshOptions>;
+    tolerance?: number;
+    manifestPath?: string;
+  },
+  onProgress: ProgressCallback = () => {}
+) {
+  const modelPath = path.resolve(params.path);
+  const route = requireRoute(modelPath);
+  const unknown = (params.include ?? []).filter((id) => !(PREP_REPORT_SECTIONS as readonly string[]).includes(id));
+  if (unknown.length) throw new Error(`Unknown report section(s): ${unknown.join(", ")} — valid: ${PREP_REPORT_SECTIONS.join(", ")}.`);
+  const wanted = new Set<string>(params.include ?? PREP_REPORT_SECTIONS.filter((s) => s !== "snapshots"));
+  wanted.add("identity");
+  const outputDir = path.resolve(params.outputDir);
+  const outJson = path.join(outputDir, "report.json");
+  const outHtml = path.join(outputDir, "report.html");
+  assertNotSourcePath(modelPath, outJson);
+  assertNotSourcePath(modelPath, outHtml);
+
+  const isBrep = route.strategy === "occt";
+  const isMeshFile = COMPARABLE_MESH_FORMATS.has(route.format);
+  const bytes = new Uint8Array(await fs.readFile(modelPath));
+  const replay = await currentReplayFingerprint(modelPath);
+  const parts = await readParts(modelPath);
+  const geometry = isBrep
+    ? `edited B-rep (${replay.fullOps.length} op(s) replayed)`
+    : replay.fullOps.length > 0
+      ? `raw ${route.format} file (${replay.fullOps.length} pending edit(s) NOT baked)`
+      : `raw ${route.format} file`;
+  const units = isBrep ? "mm" : "file units";
+  const sections: ReportSection[] = [];
+  const images: ReportImage[] = [];
+  const notes: string[] = [];
+  const order = PREP_REPORT_SECTIONS.filter((s) => wanted.has(s));
+  let done = 0;
+
+  const skip = (id: PrepReportSectionId, reason: string): ReportSection => ({ id, title: PREP_SECTION_TITLES[id], status: "skipped", reason });
+  const run = async (
+    id: PrepReportSectionId,
+    fn: () => Promise<Omit<ReportSection, "id" | "title">>
+  ): Promise<void> => {
+    onProgress({ progress: done, total: order.length, message: PREP_SECTION_TITLES[id] });
+    if (!wanted.has(id)) {
+      sections.push(skip(id, "Not requested (see `include`)."));
+      return;
+    }
+    try {
+      sections.push({ id, title: PREP_SECTION_TITLES[id], ...(await fn()) });
+    } catch (err) {
+      sections.push({ id, title: PREP_SECTION_TITLES[id], status: "unavailable", reason: ((err as Error)?.message ?? String(err)).split("\n")[0] });
+    }
+    done++;
+  };
+  /** A tool result carrying `supported: false` becomes an unavailable section. */
+  const fromTool = (r: { supported?: boolean; warnings?: string[] }, data: unknown, extra: Partial<ReportSection> = {}) =>
+    r.supported === false
+      ? { status: "unavailable" as const, reason: r.warnings?.[r.warnings.length - 1] ?? "Not supported for this source.", warnings: r.warnings?.slice(0, -1) }
+      : { status: "ok" as const, data, warnings: r.warnings?.length ? r.warnings : undefined, geometry, units, ...extra };
+
+  await run("identity", async () => ({
+    status: "ok",
+    data: {
+      path: modelPath,
+      format: route.format,
+      sizeBytes: bytes.byteLength,
+      sha256: sha256Hex(bytes),
+      editOps: replay.fullOps.length,
+      bakedThrough: replay.bakedThrough,
+      editFingerprint: replay.fingerprint,
+      parts: parts.length,
+    },
+  }));
+
+  const storedOptions = await readMeshOptions(modelPath);
+  const effectiveOptions = { ...storedOptions, ...(params.options ?? {}) };
+  await run("options", async () => ({
+    status: "ok",
+    units: "mm",
+    data: { ...effectiveOptions, sizeMax: effectiveOptions.sizeMax === SIZE_MAX_SENTINEL ? "auto (unbounded)" : effectiveOptions.sizeMax },
+    warnings: params.options ? ["Report-time overrides applied on top of the stored mesh options (nothing was written)."] : undefined,
+  }));
+
+  await run("replay", async () => {
+    if (route.strategy === "meshio") return { status: "skipped", reason: "meshio++ sources replay their edits in the viewer only; load_model is not run here because it may auto-create Parts." };
+    const loaded = (await loadModel(ctx, { path: modelPath })) as Record<string, unknown> & { warnings?: string[] };
+    const skippedOps = (loaded.warnings ?? []).reduce((n, w) => n + Number(/(\d+) of \d+ edit op\(s\) did NOT apply/.exec(w)?.[1] ?? 0), 0);
+    const data = isBrep
+      ? {
+          solids: Array.isArray(loaded.solids) ? loaded.solids.length : null,
+          edges: loaded.edgeCount ?? null,
+          points: loaded.pointCount ?? null,
+          skippedOps,
+        }
+      : { meshEntities: loaded.meshEntities ?? null };
+    return {
+      status: skippedOps > 0 ? "partial" : "ok",
+      reason: skippedOps > 0 ? `${skippedOps} edit op(s) did not apply during replay (see warnings).` : undefined,
+      geometry,
+      data,
+      warnings: loaded.warnings?.length ? loaded.warnings : undefined,
+    };
+  });
+
+  await run("mass", async () => {
+    const r = await getMassProperties(ctx, { path: modelPath });
+    const { format: _f, entityId: _e, supported: _s, warnings: _w, ...facts } = r;
+    return fromTool(r, facts);
+  });
+
+  await run("bom", async () => {
+    if (!isBrep) return { status: "unavailable", reason: "A bill of materials needs B-rep solids." };
+    if (parts.length === 0) return { status: "skipped", reason: "No Parts are defined." };
+    const r = await generateBomTool(ctx, { path: modelPath });
+    return fromTool(r, r.rows);
+  });
+
+  await run("holes", async () => {
+    const r = await generateHoleTableTool(ctx, { path: modelPath });
+    return fromTool(r, r.rows);
+  });
+
+  await run("meshHealth", async () => {
+    if (!isMeshFile) return { status: "unavailable", reason: isBrep ? "A B-rep source is already exact geometry — nothing to heal." : "Mesh health reads STL/OBJ/PLY/glTF files only." };
+    const r = await checkMeshHealthTool(ctx, { path: modelPath });
+    const { format: _f, supported: _s, warnings: _w, ...facts } = r;
+    return fromTool(r, facts);
+  });
+
+  await run("passages", async () => {
+    const r = await analyzePassagesTool(ctx, { path: modelPath });
+    const { format: _f, supported: _s, warnings: _w, ...facts } = r as Record<string, unknown> & { supported?: boolean; warnings?: string[] };
+    return fromTool(r as { supported?: boolean; warnings?: string[] }, facts);
+  });
+
+  let estimate: { elements?: { low: number; high: number } } | null = null;
+  await run("budget", async () => {
+    const r = await estimateMeshBudgetTool(ctx, { path: modelPath, options: params.options });
+    estimate = r.estimate as { elements?: { low: number; high: number } };
+    return { status: "ok", data: { estimate: r.estimate, options: r.options }, units: "mm", warnings: r.warnings.length ? r.warnings : undefined };
+  });
+
+  await run("mesh", async () => {
+    const r = await generateMeshTool(ctx, { path: modelPath, options: params.options });
+    const est = estimate?.elements;
+    return {
+      status: "ok",
+      geometry: isBrep ? "meshed from the edited B-rep" : "meshed from the raw file",
+      units: "mm",
+      data: {
+        engineUsed: r.engineUsed,
+        nodeCount: r.nodeCount,
+        elementCount: r.elementCount,
+        elapsedMs: r.elapsedMs,
+        quality: r.quality,
+        worstElements: r.worstElements,
+        estimatedElements: est ? `${est.low}–${est.high}` : null,
+        actualWithinEstimate: est ? r.elementCount >= est.low && r.elementCount <= est.high : null,
+      },
+      warnings: r.warnings.length ? r.warnings : undefined,
+    };
+  });
+
+  await run("deviation", async () => {
+    if (!(typeof params.tolerance === "number" && params.tolerance > 0)) return { status: "skipped", reason: "Pass `tolerance` (model units) to measure CAD-to-mesh deviation." };
+    const r = await measureMeshDeviationTool(ctx, { path: modelPath, tolerance: params.tolerance, options: params.options });
+    return {
+      status: r.report.regionFailures.length > 0 ? "partial" : "ok",
+      reason: r.report.regionFailures.length > 0 ? `${r.report.regionFailures.length} region(s) exceed the ${params.tolerance} tolerance.` : undefined,
+      geometry: r.referenceKind === "cad-tessellation" ? "mesh vs the CAD's fine tessellation" : "mesh vs the raw source triangles",
+      data: r.report,
+      warnings: r.warnings.length ? r.warnings : undefined,
+    };
+  });
+
+  await run("manifest", async () => {
+    if (!params.manifestPath) return { status: "skipped", reason: "Pass `manifestPath` (a <mesh>.handoff.json) to include its currency check." };
+    const r = await checkHandoffManifestTool({ manifestPath: params.manifestPath });
+    return {
+      status: r.current ? "ok" : "partial",
+      reason: r.current ? undefined : "The manifest no longer describes the current model.",
+      data: { manifestPath: r.manifestPath, createdAt: r.createdAt, current: r.current, checks: r.checks },
+    };
+  });
+
+  await run("snapshots", async () => {
+    const r = await renderSnapshotTool(ctx, { path: modelPath });
+    if (!r.supported) return { status: "unavailable", reason: r.warnings[r.warnings.length - 1] ?? "Renderer unavailable." };
+    images.push(...r.images.map((i) => ({ label: i.label, mimeType: i.mimeType, dataBase64: i.dataBase64 })));
+    return { status: "ok", data: { images: r.images.map((i) => i.label) }, geometry };
+  });
+
+  onProgress({ progress: order.length, total: order.length, message: "Writing report" });
+  if (!isBrep && replay.fullOps.length > 0) notes.push(`${replay.fullOps.length} pending edit(s) are NOT reflected in this report's geometry — ${route.format} sources have no host-side edit engine.`);
+  const report: PrepReport = {
+    version: 1,
+    kind: "cad-preview-prep-report",
+    createdAt: new Date().toISOString(),
+    source: { path: modelPath, format: route.format, sha256: sha256Hex(bytes), sizeBytes: bytes.byteLength },
+    sections,
+    images,
+    notes,
+  };
+  await fs.mkdir(outputDir, { recursive: true });
+  await fs.writeFile(outJson, serializePrepReport(report), "utf8");
+  await fs.writeFile(outHtml, renderPrepReportHtml(report), "utf8");
+  return {
+    written: [outJson, outHtml],
+    sections: sections.map((s) => ({ id: s.id, status: s.status, reason: s.reason ?? null })),
+    warnings: notes,
   };
 }
