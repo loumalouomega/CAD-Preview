@@ -17,6 +17,7 @@
  */
 import * as fs from "fs/promises";
 import * as path from "path";
+import { createHash, randomUUID } from "node:crypto";
 import {
   validateEditOp,
   BREP_ONLY_OPS,
@@ -58,6 +59,7 @@ import {
   applyStlPartSizeOverride,
   scaleMeshOptionsForUnit,
   scalePartsMeshSizeForUnit,
+  type MeshEngine,
   type MeshOptions,
   type MeshGrading,
 } from "./meshOptions";
@@ -131,6 +133,7 @@ import type {
   exportMdpa,
   exportGeoUnrolled,
   repairMesh,
+  getGmshVersion,
   MeshGenerationInput,
   MeshResult,
 } from "./gmshService";
@@ -184,6 +187,7 @@ export interface Pipeline {
   loadBRep: typeof loadBRep;
   exportBRep: typeof exportBRep;
   generateMesh: typeof generateMesh;
+  getGmshVersion: typeof getGmshVersion;
   exportMeshFormat: typeof exportMeshFormat;
   exportMdpa: typeof exportMdpa;
   exportGeoUnrolled: typeof exportGeoUnrolled;
@@ -4422,7 +4426,7 @@ export function rewriteGeoMerge(text: string, xaoName: string): string {
 
 export async function exportMeshTool(
   ctx: ToolContext,
-  params: { path: string; format: string; outputPath: string; options?: Partial<MeshOptions>; unit?: string },
+  params: { path: string; format: string; outputPath: string; options?: Partial<MeshOptions>; unit?: string; handoffPath?: string },
   onProgress?: ProgressCallback
 ) {
   const modelPath = params.path;
@@ -4435,6 +4439,12 @@ export async function exportMeshTool(
   }
   const outputPath = path.resolve(params.outputPath);
   assertNotSourcePath(modelPath, outputPath);
+  const manifestPath = params.handoffPath ? path.resolve(params.handoffPath) : undefined;
+  if (manifestPath) {
+    if (format.id !== "mdpaElements" && format.id !== "mdpaGeometries") throw new Error("A simulation handoff manifest is available only for MDPA exports.");
+    assertNotSourcePath(modelPath, manifestPath);
+    if (manifestPath === outputPath) throw new Error("The handoff manifest path must be separate from mesh artifacts.");
+  }
   const warnings: string[] = [];
   const unit = resolveExportMeshUnit(params.unit, warnings);
 
@@ -4447,8 +4457,77 @@ export async function exportMeshTool(
   const written = await writeMeshExportFormat(ctx, modelPath, route, input, options, parts, format, outputPath, unit, warnings);
 
   const sizes = await Promise.all(written.map(async (p) => ({ path: p, bytes: (await fs.stat(p)).size })));
+  let handoff: { path: string; manifest: Record<string, unknown> } | undefined;
+  if (manifestPath) {
+    const exportId = randomUUID();
+    const sourceRevision = await hashFile(modelPath);
+    const replayRevision = await fingerprintReplayInputs(modelPath);
+    const usedEngine: MeshEngine = options.engine === "ftetwild" && input.kind !== "brep" && options.dimension === 3 ? "ftetwild" : "gmsh";
+    const engineVersion = usedEngine === "gmsh" ? await ctx.pipeline.getGmshVersion(ctx.extensionPath) : "float-tetwild-wasm@0.2.0";
+    const groups = parts.flatMap(part => ([
+      { dim: 3, ids: part.volumes }, { dim: 2, ids: part.surfaces },
+      { dim: 1, ids: part.lines }, { dim: 0, ids: part.points },
+    ].filter(group => group.ids.length > 0).map(group => ({
+      name: part.name,
+      id: `${part.name}:${group.dim}`,
+      dimension: group.dim,
+      count: group.ids.length,
+    }))));
+    const artifacts = await Promise.all(written.map(async file => ({
+      role: "mesh",
+      reference: { kind: "external", path: path.resolve(file), revision: await hashFile(file) },
+      ownerId: exportId,
+    })));
+    const boundaryCoverage = {
+      state: "unavailable",
+      reason: "Boundary-to-mesh coverage is not measured by headless CAD export. Named groups report assigned CAD entities, not verified mesh coverage.",
+    };
+    const manifest: Record<string, unknown> = {
+      version: 1,
+      exportId,
+      source: { kind: "external", path: path.resolve(modelPath), revision: sourceRevision },
+      replayRevision,
+      units: { length: unit, scale: unitScaleFactor(unit) },
+      options,
+      engine: usedEngine,
+      engineVersion,
+      engineVersionSource: usedEngine === "gmsh" ? "runtime General.Version" : "float-tetwild-wasm package build",
+      artifacts,
+      groups,
+      boundaryCoverage,
+      findings: [
+        { severity: "unavailable", message: boundaryCoverage.reason, target: "boundary-coverage" },
+        ...warnings.map(message => ({ severity: "warning", message })),
+      ],
+    };
+    await writeJsonAtomic(manifestPath, manifest);
+    handoff = { path: manifestPath, manifest };
+  }
   onProgress?.({ progress: 1, total: 1, message: "Done" });
-  return { format: format.id, written: sizes, warnings };
+  return { format: format.id, written: sizes, ...(handoff ? { handoff } : {}), warnings };
+}
+
+async function hashFile(file: string): Promise<string> {
+  const bytes = await fs.readFile(file);
+  return createHash("sha256").update(bytes).digest("hex");
+}
+
+async function fingerprintReplayInputs(modelPath: string): Promise<string> {
+  const files = [editsSidecarPath(modelPath), partsSidecarPath(modelPath), annotationsSidecarPath(modelPath), planesSidecarPath(modelPath), meshOptionsSidecarPath(modelPath), geoScriptPath(modelPath)];
+  const hash = createHash("sha256");
+  for (const file of files) {
+    hash.update(path.basename(file)).update("\0");
+    try { hash.update(await fs.readFile(file)); }
+    catch { hash.update("<missing>"); }
+    hash.update("\0");
+  }
+  return hash.digest("hex");
+}
+
+async function writeJsonAtomic(file: string, value: unknown): Promise<void> {
+  const temporary = `${file}.${process.pid}.${randomUUID()}.tmp`;
+  await fs.writeFile(temporary, JSON.stringify(value, null, 2) + "\n", { flag: "wx" });
+  await fs.rename(temporary, file);
 }
 
 /**

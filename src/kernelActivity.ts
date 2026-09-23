@@ -44,6 +44,7 @@ export const KERNELS_BY_FUNCTION: Record<keyof DocumentPipeline, readonly Kernel
   loadBRep: O,
   exportBRep: O,
   generateMesh: G,
+  getGmshVersion: G,
   exportMeshFormat: G,
   exportMdpa: G,
   exportGeoUnrolled: G,

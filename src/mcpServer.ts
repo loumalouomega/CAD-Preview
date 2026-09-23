@@ -1233,18 +1233,19 @@ server.registerTool(
   "export_mesh",
   {
     description:
-      "Generate a mesh and write it to outputPath in the given format (format ids from describe_capabilities: mdpaElements, mdpaGeometries, msh, msh2, geoUnrolled, vtk, unv, inp, bdf, su2, mesh, stl, diff, off). geoUnrolled also writes a required .xao companion beside the output for B-rep sources. Optional unit (mm|cm|m|in|ft, default mm) applies a real geometric scale to the meshed geometry BEFORE Gmsh ever sees it (mirroring export_brep's unit param), with sizeMin/sizeMax and any per-part meshSize proportionally rescaled to match — generate_mesh (and the interactive Generate button) always stay native mm; this only affects export_mesh's written file. Emits notifications/progress at start and completion if you set _meta.progressToken (start/done only — see generate_mesh's note).",
+      "Generate a mesh and write it to outputPath in the given format (format ids from describe_capabilities: mdpaElements, mdpaGeometries, msh, msh2, geoUnrolled, vtk, unv, inp, bdf, su2, mesh, stl, diff, off). geoUnrolled also writes a required .xao companion beside the output for B-rep sources. Optional unit (mm|cm|m|in|ft, default mm) applies a real geometric scale to the meshed geometry BEFORE Gmsh ever sees it (mirroring export_brep's unit param), with sizeMin/sizeMax and any per-part meshSize proportionally rescaled to match — generate_mesh (and the interactive Generate button) always stay native mm; this only affects the export. Optional handoffPath writes a versioned JSON manifest for MDPA exports with source/replay fingerprints, effective settings, units, engine version, artifact ownership and named CAD groups; boundary coverage is explicitly unavailable. Emits notifications/progress at start and completion if you set _meta.progressToken (start/done only — see generate_mesh's note).",
     inputSchema: {
       path: modelPath,
       format: z.string().describe("Mesh export format id"),
       outputPath: z.string().describe("Destination file path (must not be the CAD source)"),
       options: meshOptionsOverride,
       unit: z.string().optional().describe("Export unit: mm | cm | m | in | ft (default mm, no conversion)"),
+      handoffPath: z.string().optional().describe("For MDPA only, write a version-1 simulation handoff manifest with source/replay fingerprints, effective settings, units, engine version, owned artifacts and named CAD groups. Boundary coverage is explicitly reported unavailable."),
     },
   },
   wrap(
     (
-      args: { path: string; format: string; outputPath: string; options?: Record<string, unknown>; unit?: string },
+      args: { path: string; format: string; outputPath: string; options?: Record<string, unknown>; unit?: string; handoffPath?: string },
       onProgress
     ) => exportMeshTool(ctx, { ...args, options: args.options as Partial<MeshOptions> | undefined }, onProgress)
   )

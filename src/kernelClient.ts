@@ -209,6 +209,7 @@ export function createKernelClient(extensionPath: string, options?: { timeoutMs?
     loadBRep: (...args) => callKernel("loadBRep", args) as ReturnType<Pipeline["loadBRep"]>,
     exportBRep: (...args) => callKernel("exportBRep", args) as ReturnType<Pipeline["exportBRep"]>,
     generateMesh: (...args) => callKernel("generateMesh", args) as ReturnType<Pipeline["generateMesh"]>,
+    getGmshVersion: (...args) => callKernel("getGmshVersion", args) as ReturnType<Pipeline["getGmshVersion"]>,
     exportMeshFormat: (...args) => callKernel("exportMeshFormat", args) as ReturnType<Pipeline["exportMeshFormat"]>,
     exportMdpa: (...args) => callKernel("exportMdpa", args) as ReturnType<Pipeline["exportMdpa"]>,
     exportGeoUnrolled: (...args) => callKernel("exportGeoUnrolled", args) as ReturnType<Pipeline["exportGeoUnrolled"]>,

@@ -114,6 +114,17 @@ export function resetGmsh(): void {
   _modelCounter = 0;
 }
 
+/** Runtime mesher version recorded in a simulation handoff manifest. */
+export async function getGmshVersion(extensionPath: string): Promise<string> {
+  const gmsh = await getGmsh(extensionPath);
+  try {
+    const version = gmsh.option.getString("General.Version");
+    return typeof version === "string" && version.trim() ? version.trim() : "Gmsh version unavailable";
+  } catch {
+    return "Gmsh version unavailable";
+  }
+}
+
 /** Emscripten aborts (out-of-bounds access, unreachable, null function pointer,
  * heap exhaustion) surface as opaque `RuntimeError`s. Recognize them so they can
  * be turned into an actionable message instead of the raw "memory access out of

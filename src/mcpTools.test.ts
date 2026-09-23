@@ -337,6 +337,7 @@ function fakePipeline(overrides: Partial<Pipeline> = {}): Pipeline {
     loadBRep: vi.fn(async () => FAKE_BREP_RESULT),
     exportBRep: vi.fn(async () => new Uint8Array([1, 2, 3])),
     generateMesh: vi.fn(async () => FAKE_MESH_RESULT),
+    getGmshVersion: vi.fn(async () => "4.13.1"),
     exportMeshFormat: vi.fn(async () => "vtk-content"),
     exportMdpa: vi.fn(async () => "Begin Nodes\nEnd Nodes\n"),
     exportGeoUnrolled: vi.fn(async () => ({ text: 'Merge "/out.geo_unrolled.xao";\n', xao: new Uint8Array([9]) })),
@@ -3092,6 +3093,40 @@ describe("compare_mesh_refinement", () => {
 });
 
 describe("export_mesh", () => {
+  it("writes a versioned MDPA handoff with revisions, effective units, engine identity and honest coverage diagnostics", async () => {
+    await fs.writeFile(partsSidecarPath(stpModel), JSON.stringify({
+      version: 1,
+      source: path.basename(stpModel),
+      parts: [{ name: "Fixed End", color: "#ff0000", volumes: [], surfaces: ["face-2"], lines: [], points: [], meshSize: 4 }],
+    }));
+    const out = path.join(dir, "handoff.mdpa");
+    const manifestPath = path.join(dir, "handoff.json");
+    const result = await exportMeshTool(ctx(), {
+      path: stpModel, format: "mdpaElements", outputPath: out, unit: "cm", handoffPath: manifestPath,
+    });
+    const handoff = JSON.parse(await fs.readFile(manifestPath, "utf8"));
+    expect(handoff).toMatchObject({
+      version: 1,
+      source: { kind: "external", path: stpModel, revision: expect.stringMatching(/^[a-f0-9]{64}$/) },
+      units: { length: "cm", scale: 0.1 },
+      engine: "gmsh",
+      engineVersion: "4.13.1",
+      boundaryCoverage: { state: "unavailable" },
+      groups: [{ name: "Fixed End", dimension: 2, count: 1 }],
+      artifacts: [{ role: "mesh", reference: { kind: "external", path: out, revision: expect.stringMatching(/^[a-f0-9]{64}$/) } }],
+    });
+    expect(handoff.replayRevision).toMatch(/^[a-f0-9]{64}$/);
+    expect(handoff.findings).toEqual(expect.arrayContaining([expect.objectContaining({ severity: "unavailable", target: "boundary-coverage" })]));
+    expect(result.handoff).toMatchObject({ path: manifestPath, manifest: { exportId: handoff.exportId } });
+  });
+
+  it("rejects handoff manifests for non-MDPA formats before writing output", async () => {
+    const out = path.join(dir, "not-a-handoff.vtk");
+    await expect(exportMeshTool(ctx(), { path: stpModel, format: "vtk", outputPath: out, handoffPath: path.join(dir, "bad.json") }))
+      .rejects.toThrow(/only for MDPA/);
+    await expect(fs.access(out)).rejects.toThrow();
+  });
+
   it("routes msh through generateMesh's mshText", async () => {
     const c = ctx();
     const out = path.join(dir, "out.msh");
