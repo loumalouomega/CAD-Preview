@@ -41,6 +41,7 @@ import { ClashPanel, type ClashPairDisplay } from "./clashPanel";
 import { MeshHealthPanel } from "./meshHealthPanel";
 import { RegionFitPanel } from "./regionFitPanel";
 import { PrimitivePanel } from "./primitivePanel";
+import { PassagesPanel } from "./passagesPanel";
 import { emitPrimitiveOps } from "../primitiveEmit";
 import { fitConstructionPlane, fitOpForKind, fitStoreWarning } from "../fitMapping";
 import { validateEditOp, GUIDE_KINDS } from "../editOps";
@@ -118,6 +119,19 @@ const post = (msg: WebviewToHost) => vscode.postMessage(msg);
 /** Mirrors `geometryBuilder.ts`'s local `decodeF32`/`decodeU32` — this
  * module's own base64 decode for `loadMeshBytes.regionAssignment`'s
  * `Int32Array` (see `protocol.ts`'s `encodeBuffer`). */
+function decodeF32Local(b64: string): Float32Array {
+  const bin = atob(b64);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return new Float32Array(bytes.buffer);
+}
+
+/** In-flight FE Mesh ▸ Deviation request (roadmap "CAD-to-mesh deviation map"). */
+let meshDeviationRequestId: string | null = null;
+/** Whether the colour-field overlay currently shows a deviation map (so the
+ * FE Mesh Clear removes it, but never a meshio field the user picked). */
+let deviationOverlayShown = false;
+
 function decodeI32(b64: string): Int32Array {
   const bin = atob(b64);
   const bytes = new Uint8Array(bin.length);
@@ -1170,12 +1184,19 @@ const meshingPanel = new MeshingPanel(document.getElementById("meshing-panel")!,
   // Same store the Parts panel edits — one Part.meshSize, two mirrored inputs.
   onPartMeshSize: (index, size) => partsModel.setMeshSize(index, size),
   onPartMeshGrading: (index, grading) => partsModel.setMeshGrading(index, grading),
+  onDeviation: async (tolerance) => {
+    const requestId = `${Date.now()}-${Math.random()}`;
+    meshDeviationRequestId = requestId;
+    meshingPanel.setDeviationBusy(true);
+    meshingPanel.renderDeviationMessage("Meshing and measuring deviation…");
+    post({ type: "meshDeviationRequest", requestId, tolerance, options: meshingModel.get(), stl: await currentStlIfMeshSource() });
+  },
   onGenerate: async () => {
     meshingPanel.setBusy(true);
     post({ type: "meshingGenerate", options: meshingModel.get(), stl: await currentStlIfMeshSource() });
   },
-  onExport: async (format, unit) => {
-    post({ type: "meshingExport", target: format, options: meshingModel.get(), stl: await currentStlIfMeshSource(), unit });
+  onExport: async (format, unit, manifest) => {
+    post({ type: "meshingExport", target: format, options: meshingModel.get(), stl: await currentStlIfMeshSource(), unit, ...(manifest ? { manifest: true } : {}) });
   },
   onMeshOps: (ops) => {
     const requestId = `${Date.now()}-${Math.random()}`;
@@ -1192,6 +1213,9 @@ const meshingPanel = new MeshingPanel(document.getElementById("meshing-panel")!,
   onPresetDelete: (name) => post({ type: "meshPresetDelete", name }),
   onClear: () => {
     viewer.setMeshOverlay(null);
+    if (deviationOverlayShown) viewer.setColorFieldOverlay(null); // it describes the cleared mesh
+    deviationOverlayShown = false;
+    meshDeviationRequestId = null;
     viewer.setWorstElementsOverlay(null);
     renderDockMeshStats(null); // the overlay these stats described is gone
     // Same toggle-truthfulness invariant as `meshingResult`/`meshingError`
@@ -1697,7 +1721,46 @@ const primitivePanel = new PrimitivePanel(document.getElementById("primitives-pa
   },
 });
 
+// Passages panel (roadmap "Narrow-gap and passage resolution preflight"):
+// read-only host analysis; "Apply local size" goes through the ordinary
+// Parts path so the size persists and rebinds like any Part assignment.
+let passagesRequestId: string | null = null;
+const passagesPanel = new PassagesPanel(document.getElementById("passages-panel")!, {
+  onAnalyze: (targetCells) => {
+    if (sourceKind !== "brep") return;
+    const requestId = `${Date.now()}-${Math.random()}`;
+    passagesRequestId = requestId;
+    passagesPanel.setBusy(true);
+    passagesPanel.renderMessage("Analyzing…");
+    post({ type: "passagesRequest", requestId, targetCells });
+  },
+  onApply: (f) => {
+    const name = `Passage ${f.faceA}/${f.faceB}`;
+    let index = partsModel.list().findIndex((p) => p.name === name);
+    if (index < 0) {
+      partsModel.create(name);
+      index = partsModel.list().length - 1;
+    }
+    partsModel.assign(index, [
+      { entityType: "surface", entityId: f.faceA },
+      { entityType: "surface", entityId: f.faceB },
+    ]);
+    partsModel.setMeshSize(index, f.suggestedSize);
+    setStatus(`Part "${name}": local mesh size ${Number(f.suggestedSize.toPrecision(3))} mm — Analyze again to re-check.`);
+  },
+  onHighlight: (faceIds) => {
+    if (faceIds) viewer.renderSelection(faceIds.map((entityId) => ({ entityType: "surface" as const, entityId })));
+    else renderHighlight();
+  },
+});
+
+function setPassagesEligible(eligible: boolean): void {
+  passagesPanel.setEligible(eligible);
+  if (!eligible) passagesRequestId = null;
+}
+
 function setPrimitivesEligible(eligible: boolean): void {
+  setPassagesEligible(eligible); // same gate: exact analytic surfaces exist only for B-rep
   primitivePanel.setEligible(eligible);
   if (!eligible) {
     primitiveRecognizeRequestId = null;
@@ -1759,6 +1822,34 @@ function computeAndRenderMeshMassProperties(target: SelectedEntity | null): void
     momentsOfInertia: null,
     watertight: isClosedTarget ? watertight : null,
   });
+}
+
+/**
+ * Volume/area of the DISPLAYED model for the FE Mesh budget estimate
+ * (roadmap "Mesh size and memory budget preview") — the same world-space
+ * triangle integration the Mass Properties panel uses for mesh sources,
+ * applied to whatever is shown (B-rep tessellation included; the estimate's
+ * ±25% band dwarfs the tessellation's own deviation). A non-watertight model
+ * reports `volume: null`, so a 3D count reads as unavailable, never a guess.
+ */
+function budgetFactsOfModel(): { volume: number | null; area: number } | null {
+  const model = viewer.getModel();
+  if (!model) return null;
+  const meshes: THREE.Mesh[] = [];
+  model.traverse((o) => {
+    if (o instanceof THREE.Mesh && o.userData.entityType === "surface") meshes.push(o);
+  });
+  if (meshes.length === 0) return null;
+  try {
+    const { volume, area, watertight } = computeMeshMassProperties(meshes);
+    // A B-rep's per-face tessellations need not weld perfectly at seams, so
+    // its closure comes from the kernel (a positive enclosed volume), not
+    // from the mesh-topology check that decides it for a raw mesh.
+    const closed = (watertight || sourceKind === "brep") && volume > 0;
+    return { volume: closed ? volume : null, area };
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -2755,6 +2846,7 @@ function rebuildMeshModel(opts?: { autoFit?: boolean }): void {
   // estimate honest. (B-rep sources get the equivalent via the re-posted
   // `geometry` message after each edit.)
   meshingPanel.setModelExtents(viewer.getModelExtents());
+  meshingPanel.setBudgetFacts(budgetFactsOfModel());
   applyInitialViewIfNeeded(); // no-op after the document's first load; see its doc comment
   renderEditsUi(); // re-render with THIS replay's outcome markers (syncEdits rendered before they existed)
 }
@@ -4904,6 +4996,7 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
         refreshBomButton(); // re-evaluate now sourceKind is settled; parts hydration refreshes again if needed
         meshingPanel.setSourceKind("brep");
         meshingPanel.setModelExtents(viewer.getModelExtents());
+        meshingPanel.setBudgetFacts(budgetFactsOfModel());
         syncMeshSizeSeed();
         applyInitialViewIfNeeded();
         showSidebar();
@@ -5494,6 +5587,18 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
       });
       break;
 
+    case "passagesResult":
+      if (msg.requestId !== passagesRequestId) break; // stale — a newer analysis/load superseded it
+      passagesRequestId = null;
+      passagesPanel.setBusy(false);
+      passagesPanel.render(msg.report, msg.sizeMax);
+      break;
+    case "passagesError":
+      if (msg.requestId !== passagesRequestId) break;
+      passagesRequestId = null;
+      passagesPanel.setBusy(false);
+      passagesPanel.renderMessage(msg.message, true);
+      break;
     case "primitiveRecognizeError":
       if (msg.requestId !== primitiveRecognizeRequestId) break;
       primitiveRecognizeRequestId = null;
@@ -5514,8 +5619,37 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
       break;
     }
 
+    case "meshDeviationResult": {
+      if (msg.requestId !== meshDeviationRequestId) break; // stale
+      meshDeviationRequestId = null;
+      meshingPanel.setDeviationBusy(false);
+      // The mesh boundary coloured by each vertex's distance to the reference
+      // (viridis, 0 → max) — the same colour-field overlay slot the meshio
+      // field picker uses, so it hides the model faces the same way.
+      viewer.setColorFieldOverlay(buildColorFieldOverlay(decodeF32Local(msg.positions), msg.distances, 0, msg.max));
+      deviationOverlayShown = true;
+      const r = msg.report;
+      const f = (n: number) => String(Number(n.toPrecision(3)));
+      const worst = r.regionFailures[0];
+      meshingPanel.renderDeviationMessage(
+        `Deviation: max ${f(r.forward.max)} mm (p95 ${f(r.forward.p95)}) · ${Math.round(r.forward.coverage * 100)}% within ${f(r.tolerance)} mm` +
+          (worst ? ` · worst ${worst.region}` : "") +
+          (r.extraneousFraction > 0 ? ` · ${Math.round(r.extraneousFraction * 100)}% extraneous` : "") +
+          " — sampled estimate; colour 0 → " + f(msg.max) + " mm",
+        r.forward.coverage < 1 || r.extraneousFraction > 0
+      );
+      break;
+    }
+    case "meshDeviationError":
+      if (msg.requestId !== meshDeviationRequestId) break;
+      meshDeviationRequestId = null;
+      meshingPanel.setDeviationBusy(false);
+      meshingPanel.renderDeviationMessage(`Deviation failed: ${msg.message}`, true);
+      break;
+
     case "colorFieldResult": {
       if (msg.requestId !== colorFieldRequestId) break; // stale — a newer selection/Clear/edit superseded it
+      deviationOverlayShown = false; // the field picker now owns the overlay slot
       const positions = pristineMeshPositions();
       if (!positions) break; // model was replaced/cleared while the request was in flight
       viewer.setColorFieldOverlay(buildColorFieldOverlay(positions, msg.values, msg.min, msg.max));
@@ -5650,6 +5784,7 @@ async function loadMeshObjectFromUrl(
     refreshBomButton(); // mesh source: Copy BOM stays disabled with reason
     meshingPanel.setSourceKind("mesh");
     meshingPanel.setModelExtents(viewer.getModelExtents());
+    meshingPanel.setBudgetFacts(budgetFactsOfModel());
     syncMeshSizeSeed();
     showSidebar();
     setStatus("");

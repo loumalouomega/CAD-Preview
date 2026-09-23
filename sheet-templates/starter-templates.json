@@ -1,0 +1,27 @@
+{
+  "version": 1,
+  "templates": {
+    "iso-a3-first": {
+      "name": "iso-a3-first",
+      "description": "Four views (front/top/right/iso) on A3, first-angle (ISO), standard scale chosen to fit.",
+      "views": ["front", "top", "right", "iso"],
+      "paper": "A3",
+      "projection": "first",
+      "scale": "auto"
+    },
+    "asme-a3-third": {
+      "name": "asme-a3-third",
+      "description": "Four views (front/top/right/iso) on A3, third-angle (ASME), standard scale chosen to fit.",
+      "views": ["front", "top", "right", "iso"],
+      "paper": "A3",
+      "projection": "third"
+    },
+    "front-fit-1to1": {
+      "name": "front-fit-1to1",
+      "description": "A single front view at 1:1 on a sheet sized to fit — a quick profile print.",
+      "views": ["front"],
+      "paper": "fit",
+      "scale": "1:1"
+    }
+  }
+}

@@ -122,7 +122,7 @@ function countFaces(model) {
 function checkExpect(res, expect) {
   const problems = [];
   if (expect.format && res.format !== expect.format) problems.push(`format ${res.format} ≠ ${expect.format}`);
-  const model = res.model;
+  const model = res.model ?? res; // load_model spreads the B-rep entity summary at top level
   if (expect.solids !== undefined && (model?.solids?.length ?? 0) !== expect.solids)
     problems.push(`solids ${model?.solids?.length} ≠ ${expect.solids}`);
   if (expect.faces !== undefined && countFaces(model) !== expect.faces) problems.push(`faces ${countFaces(model)} ≠ ${expect.faces}`);
@@ -186,7 +186,14 @@ async function runRow(row, seedPath) {
       const out = path.join(dir, row.id, `out.${row.format === "iges" ? "igs" : row.format === "step" ? "stp" : "brep"}`);
       fs.mkdirSync(path.dirname(out), { recursive: true });
       stage = "export";
-      await call("export_brep", { path: seedPath, targetFormat: row.format, outputPath: out });
+      let source = seedPath;
+      if (row.via) {
+        // A source can't target its own format (that's save_model), so reach
+        // it through an intermediate B-rep format first.
+        source = path.join(dir, row.id, `via.${row.via}`);
+        await call("export_brep", { path: seedPath, targetFormat: row.via, outputPath: source });
+      }
+      await call("export_brep", { path: source, targetFormat: row.format, outputPath: out });
       stage = "mass";
       const mass = await call("get_mass_properties", { path: out });
       const rel = Math.abs(mass.volume - corpus.seedVolume) / corpus.seedVolume;

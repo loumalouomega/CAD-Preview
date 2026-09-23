@@ -67,6 +67,9 @@ import {
   repairMeshTool,
   exportSvgSilhouetteTool,
   exportDrawingSheetTool,
+  batchExportTool,
+  checkHandoffManifestTool,
+  generatePrepReportTool,
   exportTechnicalDrawingTool,
   getState,
   applyEditOps,
@@ -82,7 +85,13 @@ import {
   generateMeshTool,
   exportMeshTool,
   compareMeshRefinementTool,
+  estimateMeshBudgetTool,
+  analyzePassagesTool,
+  measureMeshDeviationTool,
+  saveSheetTemplate,
+  listSheetTemplates,
   exportBRepTool,
+  exportTessellatedStlTool,
   saveModelTool,
   savePreprocessTool,
   loadPreprocessTool,
@@ -243,6 +252,15 @@ function wrap<A>(
 }
 
 const modelPath = z.string().describe("Absolute path to the CAD model file");
+const sheetFieldsSchema = z
+  .object({
+    author: z.string().optional(),
+    drawingNumber: z.string().optional(),
+    revision: z.string().optional(),
+    material: z.string().optional(),
+  })
+  .optional()
+  .describe("Title-block fields; each adds a cell only when present");
 // Deliberately loose op/options schemas: validateEditOp / validateMeshOptions
 // are the real (tolerant, always-current) gates — duplicating the 44-kind op
 // union in zod would drift against src/editOps.ts.
@@ -781,11 +799,17 @@ server.registerTool(
       format: z.enum(["svg", "dxf"]).optional(),
       paper: z.enum(["fit", "A4", "A3", "A2", "A1", "A0"]).optional().describe('Default "fit"'),
       projection: z.enum(["first", "third"]).optional().describe('Default "first" (ISO)'),
-      scale: z.number().optional().describe("Sheet mm per model mm (e.g. 0.5 for 1:2); overrides the automatic choice"),
+      scale: z
+        .union([z.number(), z.string()])
+        .optional()
+        .describe('Sheet mm per model mm (e.g. 0.5), or a ratio string ("1:2", "2:1"), or "auto"; overrides the automatic choice'),
       hiddenLines: z.boolean().optional().describe("Draw hidden edges (default true); false draws outlines only"),
       creaseAngleDeg: z.number().optional().describe("Mesh sources only: dihedral angle above which an interior edge is drawn (default 35°)"),
       tessellationQuality: z.string().optional().describe('B-rep only: draft/standard/fine (default "fine")'),
       title: z.string().optional().describe("Title-block title (default: the model's file name)"),
+      fields: sheetFieldsSchema,
+      template: z.string().optional().describe("Sheet template name (bundled starters ∪ libraryPath) supplying any setting not given explicitly"),
+      libraryPath: z.string().optional().describe("User sheet-template library JSON"),
     },
   },
   wrap(
@@ -796,13 +820,87 @@ server.registerTool(
       format?: "svg" | "dxf";
       paper?: string;
       projection?: string;
-      scale?: number;
+      scale?: number | string;
       hiddenLines?: boolean;
       creaseAngleDeg?: number;
       tessellationQuality?: string;
       title?: string;
+      fields?: { author?: string; drawingNumber?: string; revision?: string; material?: string };
+      template?: string;
+      libraryPath?: string;
     }) => exportDrawingSheetTool(ctx, args)
   )
+);
+
+server.registerTool(
+  "batch_export",
+  {
+    description:
+      "Export MANY models in one call, one row per file: a B-rep format (step/iges/brep), a one-view technical drawing (svg/dxf), or a drawing sheet (sheet-svg/sheet-dxf). Each file goes through the same single-file tool (export_brep / export_technical_drawing / export_drawing_sheet), so a batched output is identical to exporting it alone. One bad file is a failed row, never an aborted batch. Sources are never written; an output that would overwrite an input is always refused; existing outputs follow onCollision (skip by default, suffix, or overwrite). Each row states editsBaked (B-rep sources bake their whole op list; mesh sources' edits are never baked and say so). Sequential, with per-file progress; cancelling stops before the next file and keeps what was written. Also returns a TSV table (optionally written to reportPath).",
+    inputSchema: {
+      inputs: z.array(z.string()).optional().describe("Model paths (give this OR root)"),
+      root: z.string().optional().describe("Folder scanned like list_workspace_models (give this OR inputs)"),
+      target: z.enum(["step", "iges", "brep", "svg", "dxf", "sheet-svg", "sheet-dxf"]),
+      outDir: z.string().describe("Output folder (created if missing)"),
+      naming: z.string().optional().describe('Output name pattern: {stem}, {ext}, {name} (default "{stem}.{ext}")'),
+      onCollision: z.enum(["skip", "suffix", "overwrite"]).optional().describe('Existing outputs: default "skip"'),
+      unit: z.string().optional().describe("B-rep and one-view targets: export unit (default mm)"),
+      view: z.string().optional().describe("svg/dxf targets: named view (default front)"),
+      template: z.string().optional().describe("sheet targets: sheet template name"),
+      libraryPath: z.string().optional().describe("sheet targets: user sheet-template library"),
+      reportPath: z.string().optional().describe("Also write the TSV table here"),
+    },
+  },
+  wrap(
+    (
+      args: {
+        inputs?: string[];
+        root?: string;
+        target: string;
+        outDir: string;
+        naming?: string;
+        onCollision?: string;
+        unit?: string;
+        view?: string;
+        template?: string;
+        libraryPath?: string;
+        reportPath?: string;
+      },
+      onProgress
+    ) => batchExportTool(ctx, args, onProgress, jobScope.getStore()?.signal)
+  )
+);
+
+server.registerTool(
+  "save_sheet_template",
+  {
+    description:
+      "Save a reusable drawing-sheet template (views, projection, paper, scale, title-block fields — never geometry) into a caller-named library JSON — the mesh-preset tools' shape. Validated by resolving it once; refuses an existing name unless overwrite. export_drawing_sheet applies one via `template` + `libraryPath`. Kernel-free; touches no model.",
+    inputSchema: {
+      libraryPath: z.string().describe("Library JSON to write (created if missing)"),
+      name: z.string(),
+      description: z.string().optional(),
+      views: z.array(z.string()).optional(),
+      format: z.enum(["svg", "dxf"]).optional(),
+      paper: z.enum(["fit", "A4", "A3", "A2", "A1", "A0"]).optional(),
+      projection: z.enum(["first", "third"]).optional(),
+      scale: z.union([z.number(), z.string()]).optional(),
+      title: z.string().optional(),
+      fields: sheetFieldsSchema,
+      overwrite: z.boolean().optional(),
+    },
+  },
+  wrap((args: Parameters<typeof saveSheetTemplate>[0]) => saveSheetTemplate(args))
+);
+
+server.registerTool(
+  "list_sheet_templates",
+  {
+    description:
+      "List drawing-sheet templates: the bundled starters (iso-a3-first, asme-a3-third, front-fit-1to1), unioned with `libraryPath`'s entries when given (yours win name collisions, reported in warnings). Kernel-free.",
+    inputSchema: { libraryPath: z.string().optional() },
+  },
+  wrap((args: { libraryPath?: string }) => listSheetTemplates({ ...args, extensionPath }))
 );
 
 server.registerTool(
@@ -1245,11 +1343,57 @@ server.registerTool(
   "generate_mesh",
   {
     description:
-      "Generate a finite-element mesh of the model with Gmsh (edits baked in for B-rep sources; raw file bytes for .stl) and return statistics only (node/element counts, per-part element groups, timing, a minSICN quality summary, and — for a 3D mesh with elements scoring below 0.2 — a worstElements count). Nothing is written to disk — use export_mesh for that. Emits notifications/progress at start and completion if you set _meta.progressToken — Gmsh itself has no mid-call progress hook, so this is start/done signaling only, not a genuine percentage.",
+      "Generate a finite-element mesh of the model with Gmsh (edits baked in for B-rep sources; raw file bytes for .stl) and return statistics only (node/element counts, per-part element groups, timing, a minSICN quality summary, and — for a 3D mesh with elements scoring below 0.2 — a worstElements count), plus the pre-generation `estimate` (see estimate_mesh_budget) beside the actual counts. Nothing is written to disk — use export_mesh for that. Emits notifications/progress at start and completion if you set _meta.progressToken — Gmsh itself has no mid-call progress hook, so this is start/done signaling only, not a genuine percentage.",
     inputSchema: { path: modelPath, options: meshOptionsOverride },
   },
   wrap((args: { path: string; options?: Record<string, unknown> }, onProgress) =>
     generateMeshTool(ctx, { path: args.path, options: args.options as Partial<MeshOptions> | undefined }, onProgress)
+  )
+);
+
+server.registerTool(
+  "measure_mesh_deviation",
+  {
+    description:
+      "CAD-to-mesh deviation: generates the FE mesh exactly as generate_mesh would and measures its boundary's GEOMETRIC fidelity (not element quality) against the reference — the CAD's own fine tessellation for a B-rep (an approximate stand-in for the exact surface; its chordal floor is stated), or the source's raw triangles. Two directions: forward (reference → mesh; a flattened fillet, a bridged gap or an omitted face shows here, with per-face `regionFailures` for a B-rep) and reverse (mesh → reference; `extraneousFraction` flags extra surface). Stats: max/mean/p50/p95/p99, coverage within `tolerance` (absolute, model units), plus a `filtered` set dropping only Tukey outliers with the excluded count. Deterministic area-weighted sampling (`samples` per direction, default 20000) — an estimate, not a certified maximum. Optional deviationMeshPath writes a PLY of the boundary with a per-vertex `distance` property.",
+    inputSchema: {
+      path: modelPath,
+      tolerance: z.number().describe("Absolute deviation tolerance in model units (mm)"),
+      options: meshOptionsOverride,
+      samples: z.number().int().min(100).optional().describe("Samples per direction (default 20000, max 200000)"),
+      deviationMeshPath: z.string().optional().describe("Write the boundary as PLY with a per-vertex distance property"),
+    },
+  },
+  wrap((args: { path: string; tolerance: number; options?: Record<string, unknown>; samples?: number; deviationMeshPath?: string }, onProgress) =>
+    measureMeshDeviationTool(ctx, { ...args, options: args.options as Partial<MeshOptions> | undefined }, onProgress)
+  )
+);
+
+server.registerTool(
+  "analyze_passages",
+  {
+    description:
+      "Read-only narrow-gap preflight: finds ANNULAR gaps between coaxial cylindrical faces (width = radial difference; the faces must overlap axially — merely coaxial, disjoint cylinders are listed under `rejected`) and SLOTS between parallel planar faces facing each other (width = plane distance; they must genuinely overlap in plane). A gap must be void — two faces bounding solid material (a wall) are never reported. Per finding: the face pair (face-N), exact width, the size the mesher is asked to use there (smallest Part meshSize / grading sizeAtWall on either face or its solid, else sizeMax), the ESTIMATED cellsAcross, `underResolved` (< targetCells, default 3), and `suggestedSize` = width / targetCells. Apply a suggestion explicitly with set_part (surfaces: the pair, meshSize: suggestedSize). B-rep sources only.",
+    inputSchema: {
+      path: modelPath,
+      targetCells: z.number().min(1).optional().describe("Cells wanted across a passage (default 3)"),
+      sizeMax: z.number().optional().describe("Global size to compare against (default: the stored mesh options' sizeMax)"),
+      angleDeg: z.number().optional().describe("Parallel/coaxial angle tolerance in degrees (default 1)"),
+      maxFindings: z.number().int().min(1).optional().describe("Report at most this many, narrowest first (default 50)"),
+    },
+  },
+  wrap((args: { path: string; targetCells?: number; sizeMax?: number; angleDeg?: number; maxFindings?: number }) => analyzePassagesTool(ctx, args))
+);
+
+server.registerTool(
+  "estimate_mesh_budget",
+  {
+    description:
+      "Cheap pre-generation estimate of a mesh's element/node counts and a memory range — never runs the mesher. Uses the model's real volume/area (edits baked for B-rep, the boundary surface for mesh/meshio sources) in an empirical model calibrated against real Gmsh runs (elements ≈ a·V/h³ + b·A/h², ±25% on the calibration corpus). Reports `confidence` (calibrated | rough | uncertain) and `assumptions`: a size coarse relative to the part, local Part sizing/grading, hex-dominant output and fTetWild are flagged, never calibrated; an open (non-watertight) volume makes a 3D estimate unavailable rather than a guess. Memory is an order-of-magnitude range. An advisory budgetElements (in options or the stored mesh options) only warns.",
+    inputSchema: { path: modelPath, options: meshOptionsOverride },
+  },
+  wrap((args: { path: string; options?: Record<string, unknown> }) =>
+    estimateMeshBudgetTool(ctx, { path: args.path, options: args.options as Partial<MeshOptions> | undefined })
   )
 );
 
@@ -1264,14 +1408,53 @@ server.registerTool(
       outputPath: z.string().describe("Destination file path (must not be the CAD source)"),
       options: meshOptionsOverride,
       unit: z.string().optional().describe("Export unit: mm | cm | m | in | ft (default mm, no conversion)"),
+      manifest: z
+        .boolean()
+        .optional()
+        .describe("Also write <output>.handoff.json: source + edit-history fingerprints, effective options and unit, engine and kernel versions, output hashes, and per-Part physical groups with boundary coverage (costs one extra deterministic meshing pass)"),
     },
   },
   wrap(
     (
-      args: { path: string; format: string; outputPath: string; options?: Record<string, unknown>; unit?: string },
+      args: { path: string; format: string; outputPath: string; options?: Record<string, unknown>; unit?: string; manifest?: boolean },
       onProgress
     ) => exportMeshTool(ctx, { ...args, options: args.options as Partial<MeshOptions> | undefined }, onProgress)
   )
+);
+
+server.registerTool(
+  "generate_prep_report",
+  {
+    description:
+      "Write a PREPARATION REPORT for one model: report.json plus a self-contained report.html (inline CSS and images, no scripts, no network) in outputDir. Sections come from the same tools you would call one by one — source identity (hash, edit fingerprint), effective mesh options, edit replay, mass properties, BOM, hole table, mesh health, narrow passages, budget estimate vs the generated mesh, CAD-to-mesh deviation (needs `tolerance`), a handoff-manifest currency check (needs `manifestPath`), and snapshots (opt-in via include: they need Playwright). Every section states its status — ok, partial, unavailable (with the reason) or skipped — and which geometry and units it describes, so a missing fact is visible, never omitted. Read-only towards the model. Snapshots are diagnostic only.",
+    inputSchema: {
+      path: modelPath,
+      outputDir: z.string().describe("Folder for report.json and report.html (created if missing)"),
+      include: z
+        .array(z.enum(["identity", "options", "replay", "mass", "bom", "holes", "meshHealth", "passages", "budget", "mesh", "deviation", "manifest", "snapshots"]))
+        .optional()
+        .describe("Sections to compute (default: all but snapshots). Sections left out are still listed, as skipped."),
+      options: meshOptionsOverride,
+      tolerance: z.number().optional().describe("Deviation tolerance in model units — enables the deviation section"),
+      manifestPath: z.string().optional().describe("A <mesh>.handoff.json to check for currency"),
+    },
+  },
+  wrap(
+    (
+      args: { path: string; outputDir: string; include?: string[]; options?: Record<string, unknown>; tolerance?: number; manifestPath?: string },
+      onProgress
+    ) => generatePrepReportTool(ctx, { ...args, options: args.options as Partial<MeshOptions> | undefined }, onProgress)
+  )
+);
+
+server.registerTool(
+  "check_handoff_manifest",
+  {
+    description:
+      "Check whether a simulation handoff manifest (<mesh>.handoff.json, written by export_mesh's `manifest` option or the FE Mesh panel's Export with manifest) still describes the current model: re-hashes the source file, re-derives the edit-history fingerprint from the sidecar, and re-hashes each recorded output. Returns `current` plus one check per item naming what changed. Kernel-free and read-only.",
+    inputSchema: { manifestPath: z.string().describe("Absolute path of the .handoff.json") },
+  },
+  wrap((args: { manifestPath: string }) => checkHandoffManifestTool(args))
 );
 
 server.registerTool(
@@ -1316,6 +1499,42 @@ server.registerTool(
     },
   },
   wrap((args: { path: string; targetFormat: string; outputPath: string; unit?: string }) => exportBRepTool(ctx, args))
+);
+
+server.registerTool(
+  "export_tessellated_stl",
+  {
+    description:
+      "Mesh-aware surface tessellation export: writes a binary STL of the edited B-rep with its chordal tolerance derived from the DOWNSTREAM cell size (linear deflection = targetCellSize × chordalFraction, in `unit`; an angular limit is kept too), independent of the viewport tessellation. Reports the SAMPLED chordal error actually achieved (centroid + edge midpoints of a strided subset of triangles, measured against the exact face) — an estimate, not a certified maximum. dryRun only counts triangles. Refuses above maxTriangles (default 2,000,000) before writing. B-rep sources only.",
+    inputSchema: {
+      path: modelPath,
+      outputPath: z.string().optional().describe("Destination .stl path (required unless dryRun; must not be the CAD source)"),
+      targetCellSize: z.number().optional().describe("Downstream volume-mesh cell size, in `unit` (required unless `preset` supplies it)"),
+      chordalFraction: z.number().optional().describe("Chordal error as a fraction of targetCellSize, in (0, 1] (default 0.1)"),
+      angularDeg: z.number().optional().describe("Angular deflection limit in degrees, 1–90 (default 20)"),
+      unit: z.string().optional().describe("mm | cm | m | in | ft — the unit of targetCellSize AND of the written coordinates (default mm)"),
+      maxTriangles: z.number().int().min(1).optional().describe("Refuse above this triangle count (default 2,000,000)"),
+      sampleBudget: z.number().int().min(0).optional().describe("Chordal-error sample points (default 1200; 0 disables measurement)"),
+      dryRun: z.boolean().optional().describe("Only count triangles (a preview); writes nothing"),
+      preset: z.string().optional().describe("Mesh preset whose stlExport block fills any tolerance field not given explicitly (its unit too)"),
+      libraryPath: z.string().optional().describe("User mesh-preset library JSON (unioned over the bundled starters)"),
+    },
+  },
+  wrap(
+    (args: {
+      path: string;
+      outputPath?: string;
+      targetCellSize?: number;
+      chordalFraction?: number;
+      angularDeg?: number;
+      unit?: string;
+      maxTriangles?: number;
+      sampleBudget?: number;
+      dryRun?: boolean;
+      preset?: string;
+      libraryPath?: string;
+    }) => exportTessellatedStlTool(ctx, args)
+  )
 );
 
 server.registerTool(

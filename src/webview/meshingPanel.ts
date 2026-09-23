@@ -4,13 +4,12 @@ import { TOOLBAR_ICONS } from "../toolbarIcons";
 import { MESH_EXPORT_FORMATS, type MeshExportFormatId } from "../meshExportFormats";
 import { DISPLAY_UNITS, UNIT_LABELS, type DisplayUnit } from "../lengthUnits";
 import type { Part, MeshPresetSummary } from "../protocol";
+import { estimateMeshBudget, budgetWarning, formatBytes, formatCountRange } from "../meshBudget";
 import { MESHIO_OP_IDS, MESHIO_OP_LABELS, type MeshioOpId, type MeshioOpSpec } from "../meshioOps";
 import {
   LARGE_ELEMENT_COUNT,
   PRESET_DIVISORS,
   defaultTargetSize,
-  estimateElementCount,
-  formatCount,
   formatSize,
   sizeToSlider,
   sliderToSize,
@@ -51,11 +50,13 @@ export interface MeshingPanelCallbacks {
    * forwarded. */
   onPartMeshGrading: (index: number, grading: MeshGrading | undefined) => void;
   onGenerate: () => void;
+  /** Measure the generated boundary's deviation from the reference at `tolerance` (mm). */
+  onDeviation?: (tolerance: number) => void;
   /** Export in the format/unit currently picked in the two `<select>`s. `unit`
    * is a real geometric scale applied before Gmsh ever sees the geometry
    * (mirroring the model Export command's own unit conversion) — "mm" is
    * native/no-op. */
-  onExport: (format: MeshExportFormatId, unit: DisplayUnit) => void;
+  onExport: (format: MeshExportFormatId, unit: DisplayUnit, manifest: boolean) => void;
   onClear: () => void;
   /** Apply a saved meshing preset by name (host resolves the merged library,
    * converts units, and writes `.mesh.json` — settings only, no generate). */
@@ -134,6 +135,13 @@ export class MeshingPanel {
   private readonly elementShapeSelect: HTMLSelectElement;
   private readonly optimizeCheckbox: HTMLInputElement;
   private readonly stlAngleInput: HTMLInputElement;
+  private readonly budgetInput: HTMLInputElement;
+  private deviationBtn: HTMLButtonElement | null = null;
+  private deviationTolInput: HTMLInputElement | null = null;
+  /** Displayed model's volume (null = not a closed volume) / area, for the budget estimate. */
+  private budgetFacts: { volume: number | null; area: number } | null = null;
+  /** Whether any Part carries local sizing (the estimate is then a lower bound). */
+  private partsHaveLocalSizing = false;
   private readonly ftetwildEpsRelInput: HTMLInputElement;
   private readonly ftetwildManifoldSurfaceCheckbox: HTMLInputElement;
   private readonly ftetwildCoarsenCheckbox: HTMLInputElement;
@@ -199,8 +207,23 @@ export class MeshingPanel {
     }
 
     this.generateBtn.addEventListener("click", () => cb.onGenerate());
+    this.deviationBtn = panel.querySelector("#meshing-deviation");
+    this.deviationBtn?.addEventListener("click", () => {
+      const typed = Number(this.deviationTolInput?.value);
+      const auto = this.extents ? this.extents.diagonal / 1000 : NaN;
+      const tolerance = this.deviationTolInput && this.deviationTolInput.value.trim() !== "" && typed > 0 ? typed : auto;
+      if (!(tolerance > 0)) {
+        this.renderDeviationMessage("Set a deviation tolerance (mm) in Advanced settings.", true);
+        return;
+      }
+      cb.onDeviation?.(tolerance);
+    });
     this.exportBtn.addEventListener("click", () =>
-      cb.onExport(this.exportFormatSelect.value as MeshExportFormatId, this.exportUnitSelect.value as DisplayUnit)
+      cb.onExport(
+        this.exportFormatSelect.value as MeshExportFormatId,
+        this.exportUnitSelect.value as DisplayUnit,
+        panel.querySelector<HTMLInputElement>("#meshing-export-manifest")?.checked === true
+      )
     );
     this.clearBtn.addEventListener("click", () => cb.onClear());
 
@@ -482,6 +505,25 @@ export class MeshingPanel {
       cb.onOptionsChange({ stlAngle: Number(this.stlAngleInput.value) || 0 });
     });
 
+    this.budgetInput = this.numberField(form, "Element budget (advisory)", 0);
+    this.budgetInput.id = "meshing-budget";
+    this.budgetInput.value = "";
+    this.budgetInput.placeholder = "none";
+    this.budgetInput.step = "1";
+    this.budgetInput.title =
+      "Warn when the estimated element count exceeds this — advisory only, it never blocks a generate. Empty = no budget.";
+    this.budgetInput.addEventListener("change", () => {
+      const raw = Number(this.budgetInput.value);
+      cb.onOptionsChange({ budgetElements: this.budgetInput.value.trim() !== "" && raw >= 1 ? Math.round(raw) : undefined });
+    });
+
+    this.deviationTolInput = this.numberField(form, "Deviation tolerance (mm)", 0);
+    this.deviationTolInput.id = "meshing-deviation-tol";
+    this.deviationTolInput.value = "";
+    this.deviationTolInput.placeholder = "auto";
+    this.deviationTolInput.title =
+      "Absolute tolerance for the Deviation check (the button beside Generate). Empty = 1/1000 of the model's diagonal. Session-only.";
+
     this.ftetwildEpsRelInput = this.numberField(form, "fTetWild envelope (eps)", DEFAULT_MESH_OPTIONS.ftetwildEpsRel);
     this.ftetwildEpsRelInput.title =
       "fTetWild's envelope size, as a fraction of the model's bounding-box diagonal — smaller stays " +
@@ -678,6 +720,7 @@ export class MeshingPanel {
     this.elementShapeSelect.value = options.elementShape;
     this.optimizeCheckbox.checked = options.optimize;
     this.stlAngleInput.value = String(options.stlAngle);
+    this.budgetInput.value = options.budgetElements ? String(options.budgetElements) : "";
     this.ftetwildEpsRelInput.value = String(options.ftetwildEpsRel);
     this.ftetwildManifoldSurfaceCheckbox.checked = options.ftetwildManifoldSurface;
     this.ftetwildCoarsenCheckbox.checked = options.ftetwildCoarsen;
@@ -771,8 +814,29 @@ export class MeshingPanel {
    * slider is disabled — the wiring seeds a bbox-derived default size and calls
    * this on every model load.
    */
+  /** Deviation busy state (the button disables while a measurement runs). */
+  setDeviationBusy(busy: boolean): void {
+    if (this.deviationBtn) this.deviationBtn.disabled = busy;
+  }
+
+  /** Shows a deviation summary (or error) on the panel's status line. */
+  renderDeviationMessage(text: string, isError = false): void {
+    this.statusEl.textContent = text;
+    this.statusEl.classList.toggle("meshing-status-error", isError);
+  }
+
   setModelExtents(extents: ModelExtents | null): void {
     this.extents = extents;
+    this.syncSlider();
+  }
+
+  /**
+   * The displayed model's closed volume (`null` when not watertight — a 3D
+   * count then reads as unavailable, never a guess) and surface area, both in
+   * mm, for the budget estimate. `null` falls back to the bounding box.
+   */
+  setBudgetFacts(facts: { volume: number | null; area: number } | null): void {
+    this.budgetFacts = facts;
     this.syncSlider();
   }
 
@@ -842,6 +906,11 @@ export class MeshingPanel {
    * meshing controls. Hidden while no parts exist.
    */
   renderParts(parts: Part[]): void {
+    const local = parts.some((p) => p.meshSize != null || p.meshGrading != null);
+    if (local !== this.partsHaveLocalSizing) {
+      this.partsHaveLocalSizing = local;
+      this.syncSlider();
+    }
     this.partsSection.hidden = parts.length === 0;
     this.partsBody.textContent = "";
     parts.forEach((part, index) => {
@@ -1050,13 +1119,35 @@ export class MeshingPanel {
       this.warningEl.hidden = true;
       return;
     }
-    const dimension = this.lastOptions?.dimension ?? 3;
-    const shape = this.lastOptions?.elementShape ?? "simplex";
-    const estimate = estimateElementCount(this.extents.size, size, dimension, shape);
-    this.sliderReadout.textContent = `${formatSize(size)} mm · ${formatCount(estimate)} el`;
-    this.sliderReadout.title = `Estimated element count: ${formatCount(estimate)}`;
-    if (estimate > LARGE_ELEMENT_COUNT) {
-      this.warningEl.innerHTML = `<span class="toolbar-icon">${TOOLBAR_ICONS.warning}</span> Estimated ${formatCount(estimate)} elements — generation may be slow or run out of memory.`;
+    const o = this.lastOptions;
+    const budget = estimateMeshBudget({
+      volume: this.budgetFacts ? this.budgetFacts.volume : undefined,
+      area: this.budgetFacts?.area,
+      bboxSize: this.extents.size,
+      sizeMax: size,
+      dimension: o?.dimension ?? 3,
+      elementOrder: o?.elementOrder ?? 1,
+      elementShape: o?.elementShape ?? "simplex",
+      engine: o?.engine ?? "gmsh",
+      localSizing: this.partsHaveLocalSizing,
+    });
+    if (budget.status !== "ok") {
+      this.sliderReadout.textContent = `${formatSize(size)} mm`;
+      this.sliderReadout.title = budget.reason ?? "";
+      this.warningEl.hidden = true;
+      return;
+    }
+    const range = formatCountRange(budget.elements);
+    const memory = `${formatBytes(budget.memoryBytes.low)}–${formatBytes(budget.memoryBytes.high)}`;
+    this.sliderReadout.textContent = `${formatSize(size)} mm · ${range} el`;
+    this.sliderReadout.title =
+      `Estimated ${range} elements, ${formatCountRange(budget.nodes)} nodes, ~${memory} memory ` +
+      `(${budget.confidence}; basis: ${budget.basis}). ` +
+      budget.assumptions.join(" ");
+    const over = budgetWarning(budget, o?.budgetElements);
+    if (over || budget.elements.mid > LARGE_ELEMENT_COUNT) {
+      const text = over ?? `Estimated ${range} elements — generation may be slow or run out of memory.`;
+      this.warningEl.innerHTML = `<span class="toolbar-icon">${TOOLBAR_ICONS.warning}</span> ${text}`;
       this.warningEl.hidden = false;
     } else {
       this.warningEl.hidden = true;

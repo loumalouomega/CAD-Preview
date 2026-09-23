@@ -6,6 +6,7 @@
  * `.parts.json` / `.planes.json` / `.mesh.json` / `.geo` filenames, same tolerant-read
  * defaults, same one-way `.geo` regeneration on every options write.
  */
+import { bundledSheetTemplatesPath, parseSheetTemplatesJson, serializeSheetTemplatesJson, type SheetTemplateLibrary } from "./sheetTemplates";
 import * as fs from "fs/promises";
 import * as path from "path";
 import type { EditOp } from "./editOps";
@@ -215,6 +216,28 @@ export async function readMeshPresetLibrary(libraryPath: string): Promise<MeshPr
 
 export async function writeMeshPresetLibrary(libraryPath: string, library: MeshPresetLibrary): Promise<void> {
   await fs.writeFile(libraryPath, serializeMeshPresetsJson(library), "utf8");
+}
+
+/** The caller-named drawing-sheet template library (missing/corrupt → empty). */
+export async function readSheetTemplateLibrary(libraryPath: string): Promise<SheetTemplateLibrary> {
+  try {
+    return parseSheetTemplatesJson(await fs.readFile(libraryPath, "utf8"));
+  } catch {
+    return {};
+  }
+}
+
+export async function writeSheetTemplateLibrary(libraryPath: string, library: SheetTemplateLibrary): Promise<void> {
+  await fs.writeFile(libraryPath, serializeSheetTemplatesJson(library), "utf8");
+}
+
+/** The read-only bundled sheet templates (`dist/sheet-templates/…`). */
+export async function readBundledSheetTemplateLibrary(extensionPath: string): Promise<SheetTemplateLibrary> {
+  try {
+    return parseSheetTemplatesJson(await fs.readFile(bundledSheetTemplatesPath(extensionPath), "utf8"));
+  } catch {
+    return {};
+  }
 }
 
 /**

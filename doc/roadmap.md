@@ -31,6 +31,8 @@ Reviewed the implementation at `af8d059`, including mesher adapters, CAD diagnos
 | [`prove_cad_adherence`](https://github.com/Lilmill2000/Magnusim/blob/af8d05945d3b65cd9daf220554cb08ab0392da2d/magnusim-web/python/cfddesk/mesh/cad_adherence.py) | Quantify geometric fidelity independently of element quality. Its sampled, one-way distances and filtered outliers are not a certified Hausdorff bound. |
 | [`stl_deflection_for_bc` / `verify_stl_chordal_deviation`](https://github.com/Lilmill2000/Magnusim/blob/af8d05945d3b65cd9daf220554cb08ab0392da2d/magnusim-web/python/cfddesk/cad/stl_quality.py) | Tie exported tessellation tolerances to downstream mesh size and verify sampled error. |
 
+All four gaps have since shipped: narrow-passage preflight (`analyze_passages` / the Passages panel), the mesh size and memory budget preview (`estimate_mesh_budget` / the FE Mesh readout), the CAD-to-mesh deviation map (`measure_mesh_deviation` / Deviation), and mesh-aware tessellation export (`export_tessellated_stl` / Export ▸ STL ▸ Mesh-aware). See `CLAUDE.md` for each.
+
 ## Open items
 
 ### Suggested implementation sequence
@@ -38,16 +40,13 @@ Reviewed the implementation at `af8d059`, including mesher adapters, CAD diagnos
 | Wave | Outcome | Start with | Exit signal |
 | --- | --- | --- | --- |
 | Baseline | Installed, locked and documented kernel versions agree | The meshio++ upgrade pass | Full smoke and perf runs against the new artifact, with flipped assertions recorded |
-| Correctness | The view and saved state tell the same story | Bounded clash work (clip visibility and save/reopen coverage closed) | Targeted tests catch the documented failure, including recovery paths |
-| Everyday use | Less typing and fewer navigation steps | Zoom to selection; sidebar usability; named-plane profiles | Complete workflows on both a small part and a multi-body model |
-| Preparation and handoff | Repeatable meshing and review output | Mesh presets; drawing settings; batch export | Reopenable outputs with explicit settings and per-file results |
 | Exploration | Decide which kernel ideas deserve implementation | The probe harness, then B-rep validity; surface, edge, boundary-layer and takeoff probes in that order | Analytic or independently checked results, with failure cases and timing, each probe's write-up filed where the section says |
 
 These are outcome groupings, not release numbers. Independent small items can ship between waves; a failed probe must not block unrelated work.
 
 ### Tier 0 — Keep the verified baseline current
 
-*Admission: recurring maintenance where drift silently invalidates verification already recorded in `CLAUDE.md`. Nothing here adds a feature; each item restores the guarantee that what is documented is what ships. Ahead of Tier 1 because every later item inherits whatever kernel behaviour this tier leaves stale.*
+*Admission: recurring maintenance where drift silently invalidates verification already recorded in `CLAUDE.md`. Nothing here adds a feature; each item restores the guarantee that what is documented is what ships. Ahead of everything else because every later item inherits whatever kernel behaviour this tier leaves stale.*
 
 #### Keep meshio++ up to date (**S–M**, dependency + verification)
 
@@ -55,83 +54,7 @@ These are outcome groupings, not release numbers. Independent small items can sh
 - **First increment:** `npm install` to make the checkout match the lockfile, then a reviewed bump to the latest published release. Read the upstream changelog entries for every version skipped (v11.2.0–v11.6.0 were the WASM-parity tiers, so new bindings are likely; v13.0.0's "Breaking" fallback change and v14.0.0's ABI change are Python-shim and C++-header changes that should not reach the WASM surface, but confirm rather than assume).
 - **Re-verify against the installed artifact, not the git checkout** (which can be ahead or behind the published tarball): still `"type": "module"` with no `exports` map, so the dynamic `import()` stays mandatory; `resolveVariant()` still returns the threaded build under Node, so `{ variant: "seq" }` stays load-bearing; glue stdio still routes through `console.log`/`console.error` with no raw fd writes (stdout is the MCP JSON-RPC channel); the glue still self-locates its `.wasm` through `import.meta.url`, so the four-file `.vscodeignore` carve-out must still match the published `files` array; the `cell_data["surface:parent_cell"]` provenance name, `extractSurface`/`convertCells`/`readMesh`/`readMetadata`/`dataInfo` signatures and `Float64Array` marshalling across `kernelIpc.ts` are unchanged. Record the packaged `.wasm` size delta.
 - **Known upstream limitations to re-check, in both directions:** the XDMF Mixed-topology reimport failure and the writers that embed no provenance (`med`/`cgns`/`xdmf`/`hmf`/`wkt`) are pinned by smoke assertions that are meant to flip when upstream fixes them — a flip is a finding to record and re-scope, not a regression to suppress. Then check whether newly published capability (WASM-parity bindings, transient/partitioned reads) is worth a follow-up item; adopt nothing speculatively in the bump itself.
-- **Done when:** the installed, locked and latest-compatible versions agree; `tsc`, `npm test`, `npm run build`, `npm run mcp:smoke` and `npm run perf` pass against them; a packaged VSIX contains exactly the runtime files the loader resolves; every intentionally flipped assertion and every changed invariant is recorded in `CLAUDE.md`'s meshio++ section with the version it was verified at; and the release checklist includes `npm outdated @meshioplusplus/wasm` so this drift is caught at the next tag instead of the next incident. The corpus item in Tier 1 ("Dependency and format compatibility corpus") is what makes each future pass cheaper; this item is the recurring action itself and should not wait for it.
-
-### Tier 1 — Complete preparation and review workflows
-
-*Admission: a useful extension of shipped infrastructure that spans several modules or needs a product decision. These are new candidates; implement a vertical slice before expanding the option surface.*
-
-#### Document-scoped jobs and cancellation (**M–L**, host + MCP)
-
-- **Motivation:** `kernelClient.ts` serializes requests through a shared worker; `cancelCurrent()` kills whichever job is running, which may belong to another document.
-- **Phases:** attach an owner and request identity to queued work; remove a cancelled queued job before dispatch; kill only a matching active job; then expose queued/running/cancelled state and configurable operation timeouts. Preserve lazy spawning and automatic cold-cache recovery.
-- **Done when:** cancelling tab B cannot interrupt tab A, queued cancelled work never starts, worker exit settles promises once, and the next request succeeds after cancellation or timeout. MCP cancellation should use the same job identity rather than a separate implementation.
-
-#### Explicit external-change conflict handling (**M–L**, persistence)
-
-- **Motivation:** watchers reconcile external edits, but reconciliation is not a merge protocol between a pending local debounce and another writer. The standalone MCP server also cannot inspect VS Code's dirty buffers.
-- **First increment:** detect a disk revision changing since the last read before a sidecar write; retain local state and offer reload or an explicitly chosen overwrite, with a readable summary. Distinguish an external source replacement from an ordinary sidecar change.
-- **Design dependency:** specify comparison/write race guarantees honestly. Content fingerprints alone are not an atomic cross-process transaction; stronger guarantees may require shared locking or an explicit protocol.
-- **Done when:** a reproducible local-edit/external-write race surfaces a conflict instead of silently discarding either version. No automatic merge of geometry-op lists or positional entity ids.
-
-#### Drawing-sheet settings and reusable templates (**M**, UI + shared serializer)
-
-- **Gap:** `export_drawing_sheet` supports more options than the interactive format/paper quick-picks expose.
-- **First increment:** expose view selection, first/third-angle projection, standard or explicit scale, and title in a compact form; add a reusable template for those settings. Continue using `drawingSheet.ts` for both serializers.
-- **Done when:** UI and MCP produce equivalent layouts from identical settings, dimensions appear once in the best view, unsupported/overflowing layouts warn, and printed SVG/DXF scale is checked against a known-length fixture. Section/detail views are a separate geometry problem, not implied by this settings work.
-
-#### Batch export with per-file results (**M–L**, host + MCP)
-
-- **User goal:** hand off a folder of models or several chosen files without repeating the same export dialogue.
-- **First increment:** sequential B-rep-to-B-rep conversion and drawing export through existing headless-capable paths; explicit destination directory and naming policy; collision handling and cancellation; per-file success/failure report. Expand to other targets only where the pipeline can actually produce them headlessly.
-- **Done when:** one bad file does not discard other results, no input is overwritten by default, companion files retain correct names/references, and the report states which edits were baked. Do not implement this by repeatedly opening hidden custom editors.
-
-#### Narrow-gap and passage resolution preflight (**M–L**, geometry analysis + shared sizing)
-
-- **Current gap:** `gmshSizingFields.ts` applies per-Part sizes and distance grading, but does not compare them with a measured passage width. A mesh can have acceptable element quality while failing to resolve a small channel.
-- **First increment:** use existing analytic cylinder/plane recognition to find coaxial cylindrical gaps and annular openings; allow a user-measured width for other passages. Report the relevant face pair, width, requested local size and estimated cells across it. Offer an explicit **Apply local size** action setting `h <= width / targetCells` through the existing Parts/`Min` composition. Require axial overlap and expose geometric tolerances; merely coaxial, disjoint cylinders are not a flow passage.
-- **Evidence:** Magnusim's `measure_radial_gaps` compares radii; `check_passage_cells` compares size with an area-equivalent opening diameter. Do not label the latter as minimum width: a long narrow slot can have a large equivalent diameter. General medial-axis/thickness analysis is a separate project. The current `tools/generate_cfmesh_standard.py` caller stops before case generation when its passage check fails; use an advisory report here until the chosen geometric width is reliable enough for a blocking rule.
-- **Done when:** annulus, thin slot, disjoint coaxial cylinders and scaled-unit fixtures give the expected diagnoses; applying a suggestion changes only chosen Parts and survives reopen. Show requested resolution as an estimate until an actual mesh confirms it. **MCP:** read-only resolution report plus explicit sizing mutation with the same parameters.
-
-#### Mesh size and memory budget preview (**M**, shared estimator + UI/MCP)
-
-- **Current gap:** `MeshOptions` provides sizes and `compare_mesh_refinement` measures completed meshes; neither is a cheap pre-generation resource estimate.
-- **First increment:** display estimated element/node counts and memory range as global size, order, dimension and local sizing change. Start with uniform simplex meshes using volume/area and calibration from existing refinement-comparison results; show the assumptions and confidence. Treat local grading, boundary layers and hex-dominant output as uncertain until calibrated, and keep a user-set advisory budget.
-- **Evidence:** Magnusim's `estimate_cell_count` uses volume divided by finest hex-cell size cubed, with a heuristic lower band. That formula and its 0.55 band cannot be presented as a Gmsh tetrahedron bound. Include host/WASM/viewport copies in the memory model, not just connectivity bytes.
-- **Done when:** halving uniform size yields the expected dimensional growth trend, units do not change the estimate, and a small fixture corpus records predicted versus actual counts and peak memory. Invalid/open volume geometry returns unavailable instead of a misleading budget. **MCP:** a read-only estimate and actual-versus-estimated data in mesh generation reports.
-
-#### CAD-to-mesh deviation map (**L**, shared geometric analysis)
-
-- **Current gap:** `gmshService.ts` reports element quality; it does not show whether a well-shaped mesh flattened a fillet, bridged a gap or lost a small feature.
-- **First increment:** sample CAD faces/edges and measure distance to the exported mesh boundary, returning maximum, percentiles, coverage and per-region failures against an absolute tolerance. Start with the existing CAD tessellation as an explicitly approximate reference and a triangle acceleration structure; exact OCCT projection needs a separate binding probe. Add reverse mesh-boundary-to-reference sampling so extra surfaces are also visible. Render an error overlay and link results into **Preparation report bundle** and **Simulation handoff manifest and boundary coverage**.
-- **Evidence:** Magnusim's `cad_adherence.py` separates edge and face checks; its face path measures to the boundary surface rather than only vertices. Report raw and filtered statistics with excluded sample counts; filtering distant samples must not hide a missing region. Sampling is an estimate, not a mathematical maximum-distance guarantee.
-- **Done when:** an unchanged planar surface, a coarse cylinder, an omitted face and an extraneous surface produce distinguishable results; sampled density/tolerance are recorded and cancellation releases buffers. **MCP:** same numerical report and optional deviation-mesh export; overlay styling remains visual.
-
-#### Mesh-aware surface tessellation export (**M–L**, export options + fidelity check)
-
-- **Current gap:** volume meshing and surface export have separate accuracy controls; a fine downstream volume mesh cannot recover curvature already lost in a coarse STL.
-- **First increment:** for B-rep-to-STL handoffs, accept a target downstream cell size and a chordal-error fraction, derive absolute linear deflection, retain an angular limit, and preview triangle count. Persist these as export/preset options without changing viewport tessellation. Include units, requested tolerance and measured sampled error in the preparation report. Bound triangle growth and allow cancellation.
-- **Evidence:** Magnusim's `stl_quality.py` derives deflection from the finest local cell size and distinguishes requested deflection from sampled CAD distance. Transfer that relationship, not an unconditional guarantee from the mesher's input option.
-- **Done when:** coarse/fine exports of a sphere/cylinder show decreasing sampled chordal error, a planar patch is not needlessly over-refined, and mm-to-m conversion preserves the physical tolerance. Clearly identify this as a surface-export concern; direct B-rep Gmsh meshing remains its existing path. **MCP:** expose the same export tolerance options and report.
-
-#### Simulation handoff manifest and boundary coverage (**M–L**, shared export + MCP)
-
-- **User goal:** take a prepared CAD mesh into a simulation setup without reconstructing which named regions came from which geometry revision.
-- **First increment:** optionally write a versioned JSON manifest beside an existing mesh export: source/replay fingerprint, effective units and scale, meshing options and engine version, output paths, named Parts and their exported group IDs, dimensions and counts. Report empty/unresolved Parts, unassigned boundary entities and overlaps; whether an overlap is invalid belongs to the downstream problemtype. Keep solver-specific material and boundary-condition authoring downstream.
-- **Dependencies:** build on the current Parts-to-Gmsh mapping and writer contracts. Coordinate the schema with the consumer before coupling a KKSS study navigator to it; do not introduce a seventh autosaved document sidecar merely for an export receipt. Stable names plus source revision identify assignments; positional face IDs alone cannot survive arbitrary topology edits.
-- **Done when:** re-reading an MDPA export agrees with the manifest's SubModelParts and counts, a known unit conversion is recorded once, and remeshing or geometry edits produce a detectable revision change. Missing or ambiguous mappings remain visible rather than silently transferring conditions. MCP mesh export returns the same manifest/report and supports explicit output paths.
-
-#### Preparation report bundle (**M**, shared pipeline)
-
-- **User goal:** share the evidence behind a mesh or manufacturing handoff, not just the exported file.
-- **Scope:** JSON plus readable HTML containing selected existing facts: source identity, effective options, replay warnings, health/quality results, BOM/hole table and optional snapshots. Link to existing exports rather than inventing a new geometry format.
-- **Done when:** unavailable checks remain explicitly unavailable, partial/skipped checks are visible, units and raw-versus-edited geometry are identified, and a report opens without network access. Rendered images remain diagnostic; they are not a validity certificate.
-
-#### Dependency and format compatibility corpus (**M**, maintenance)
-
-- **Motivation:** past WASM upgrades changed winding, stdout routing, companion handling and supported cell layouts; a clean install alone does not establish compatibility.
-- **Scope:** a compact, version-recorded set of import/export round trips and analytic checks for each adopted kernel capability, including compound extensions and mixed cells. Supplement writer-generated fixtures with independently authored files where licensing permits. Re-check the packaged VSIX's runtime files, not only `node_modules` in the development checkout.
-- **Done when:** dependency upgrades exercise the known failure cases, distinguish fixed upstream limitations from regressions, and record artifact versions. Keep expensive/variable timing checks separate from deterministic correctness gates.
+- **Done when:** the installed, locked and latest-compatible versions agree; `tsc`, `npm test`, `npm run build`, `npm run mcp:smoke` and `npm run perf` pass against them; a packaged VSIX contains exactly the runtime files the loader resolves; every intentionally flipped assertion and every changed invariant is recorded in `CLAUDE.md`'s meshio++ section with the version it was verified at; and the release checklist includes `npm outdated @meshioplusplus/wasm` so this drift is caught at the next tag instead of the next incident. `npm run compat` (the table-driven format corpus) and `npm run compat:vsix` (the packaged-runtime check) are what make each pass cheap: re-run both against the new artifact and record any `FIXED UPSTREAM` flip.
 
 ### Probe-gated — establish feasibility before estimating
 

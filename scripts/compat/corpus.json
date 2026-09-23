@@ -1,5 +1,13 @@
 {
   "$comment": "Dependency and format compatibility corpus (npm run compat). Each row is one deterministic check against the real dist/mcp-server.js. 'load' opens a committed fixture; 'export' writes a mesh export from the seed model and (when 'reload' is true) re-opens it; 'brepExport' round-trips export_brep through load_model + get_mass_properties. A row with 'knownLimitation' asserts the CURRENT failure text — if it stops failing the row reports FIXED-UPSTREAM (a finding to record), never FAIL. 'verifiedAt' records the artifact versions the row was last checked against.",
+  "verifiedAt": {
+    "date": "2026-09-23",
+    "opencascade.js": "1.1.1",
+    "@loumalouomega/gmsh-wasm": "0.3.0",
+    "@meshioplusplus/wasm": "10.21.1",
+    "float-tetwild-wasm": "0.2.0",
+    "result": "38 pass, 1 known limitation (export-xdmf remesh)"
+  },
   "seed": "STP/block.stp",
   "seedVolume": 60,
   "rows": [
@@ -42,7 +50,7 @@
     { "id": "export-wkt", "check": "export", "format": "wkt", "reload": false },
     { "id": "export-flux", "check": "export", "format": "flux", "reload": false },
 
-    { "id": "brep-step", "check": "brepExport", "format": "step" },
+    { "id": "brep-step", "check": "brepExport", "format": "step", "via": "brep" },
     { "id": "brep-iges", "check": "brepExport", "format": "iges" },
     { "id": "brep-brep", "check": "brepExport", "format": "brep" }
   ]

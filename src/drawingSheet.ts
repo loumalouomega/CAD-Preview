@@ -87,6 +87,31 @@ export interface SheetOptions {
   unit?: string;
   /** Date string for the title block; omitted from the block when absent. */
   date?: string;
+  /** Optional title-block fields (roadmap "Drawing-sheet settings and reusable
+   * templates") — each adds a cell only when present; absent fields leave the
+   * block exactly as before. */
+  fields?: TitleBlockFields;
+}
+
+export interface TitleBlockFields {
+  author?: string;
+  drawingNumber?: string;
+  revision?: string;
+  material?: string;
+}
+
+/** The extra title-block rows (pairs of half-width cells) the fields produce. */
+export function titleBlockExtraRows(fields: TitleBlockFields | undefined): Array<[string, string | null]> {
+  if (!fields) return [];
+  const clean = (v: string | undefined) => (typeof v === "string" && v.trim() !== "" ? v.trim() : undefined);
+  const author = clean(fields.author), number = clean(fields.drawingNumber), rev = clean(fields.revision), material = clean(fields.material);
+  const rows: Array<[string, string | null]> = [];
+  if (author || number || rev) {
+    const dwg = number ? `Dwg ${number}${rev ? ` rev ${rev}` : ""}` : rev ? `Rev ${rev}` : null;
+    rows.push([author ? `Drawn ${author}` : dwg ?? "", author ? dwg : null]);
+  }
+  if (material) rows.push([`Material ${material}`, null]);
+  return rows;
 }
 
 export interface SheetText {
@@ -286,7 +311,8 @@ export function layoutSheet(inputs: ReadonlyArray<SheetViewInput>, options: Shee
     return { colW, rowH, width, height };
   };
 
-  const titleBlockHeight = SHEET.titleRowHeight + 3 * SHEET.cellRowHeight;
+  const extraRows = titleBlockExtraRows(options.fields);
+  const titleBlockHeight = SHEET.titleRowHeight + (3 + extraRows.length) * SHEET.cellRowHeight;
   let scale: number;
   let sheetW: number;
   let sheetH: number;
@@ -403,6 +429,7 @@ export function layoutSheet(inputs: ReadonlyArray<SheetViewInput>, options: Shee
       projection,
       date: options.date,
       views: views.map((v) => v.name.toUpperCase()).join(", "),
+      extraRows,
     }
   );
 
@@ -448,12 +475,21 @@ function fitText(text: string, width: number, height: number): string {
 function buildTitleBlock(
   x: number,
   y: number,
-  f: { title: string; scale: string; unit: string; projection: ProjectionMethod; date?: string; views: string }
+  f: {
+    title: string;
+    scale: string;
+    unit: string;
+    projection: ProjectionMethod;
+    date?: string;
+    views: string;
+    extraRows?: Array<[string, string | null]>;
+  }
 ): { lines: Segment2[]; texts: SheetText[] } {
   const w = SHEET.titleBlockWidth;
   const r0 = SHEET.titleRowHeight;
   const r = SHEET.cellRowHeight;
-  const h = r0 + 3 * r;
+  const extra = f.extraRows ?? [];
+  const h = r0 + (3 + extra.length) * r;
   const half = w / 2;
   const pad = 2;
   const lines: Segment2[] = [
@@ -463,6 +499,11 @@ function buildTitleBlock(
     [[x, y + r0 + 2 * r], [x + w, y + r0 + 2 * r]],
     [[x + half, y + r0], [x + half, y + r0 + 2 * r]],
   ];
+  extra.forEach(([, right], i) => {
+    const top = y + r0 + (3 + i) * r;
+    lines.push([[x, top], [x + w, top]]);
+    if (right !== null) lines.push([[x + half, top], [x + half, top + r]]);
+  });
   const cellBase = (row: number): number => y + r0 + row * r + r / 2 + SHEET.cellTextHeight * 0.35;
   const ct = SHEET.cellTextHeight;
   const texts: SheetText[] = [
@@ -487,5 +528,11 @@ function buildTitleBlock(
       : []),
     { x: x + pad, y: cellBase(2), text: fitText(`Views ${f.views}`, w - 2 * pad, ct), height: ct, anchor: "start" },
   ];
+  extra.forEach(([left, right], i) => {
+    const row = 3 + i;
+    const leftWidth = right === null ? w - 2 * pad : half - 2 * pad;
+    if (left) texts.push({ x: x + pad, y: cellBase(row), text: fitText(left, leftWidth, ct), height: ct, anchor: "start" });
+    if (right) texts.push({ x: x + half + pad, y: cellBase(row), text: fitText(right, half - 2 * pad, ct), height: ct, anchor: "start" });
+  });
   return { lines, texts };
 }

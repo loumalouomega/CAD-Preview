@@ -209,6 +209,14 @@
         "title": "CAD Preview: Compare Models…"
       },
       {
+        "command": "cad-preview.batchExport",
+        "title": "CAD Preview: Batch Export…"
+      },
+      {
+        "command": "cad-preview.prepReport",
+        "title": "CAD Preview: Preparation Report…"
+      },
+      {
         "command": "cad-preview.spaceMouseConnect",
         "title": "CAD Preview: Connect SpaceMouse"
       },
@@ -406,6 +414,8 @@
     "perf": "npm run build && node scripts/perf/run.mjs",
     "test:webview": "npm run build && node scripts/screenshots/make-fixtures.mjs && node scripts/webview-test/run.mjs",
     "test:integration": "npm run build && node test/integration/run.mjs",
+    "compat": "npm run build && node scripts/compat/run.mjs",
+    "compat:vsix": "node scripts/compat/vsix-check.mjs",
     "docs:dev": "vitepress dev doc",
     "docs:build": "vitepress build doc",
     "docs:preview": "vitepress preview doc",

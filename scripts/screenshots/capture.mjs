@@ -303,6 +303,10 @@ const SHOTS = [
           { name: "my-coarse", description: "Shop preset", unit: "mm", engine: "gmsh" },
         ],
       });
+      // FE Mesh is height-capped (45%) while Edits is expanded, which scrolls
+      // its last row (the Handoff manifest checkbox) out of the element shot.
+      // Collapsing Edits relaxes the cap to 70%, the hero shot's own staging.
+      await page.click("#edits-header > .panel-chevron");
       await sleep(250);
     },
     target: { sel: "#meshing-panel" },

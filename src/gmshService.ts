@@ -690,6 +690,115 @@ export async function exportMdpa(
   }
 }
 
+/** One Gmsh physical group as it exists in the generated model. */
+export interface PhysicalGroupFact {
+  dim: number;
+  physicalTag: number;
+  name: string;
+  entityTags: number[];
+  /** Elements of this group's own dimension (0 for a point group without a mesh node element). */
+  elementCount: number;
+}
+
+/** Facts a simulation handoff manifest records (roadmap "Simulation handoff
+ * manifest and boundary coverage") — read straight off the generated model,
+ * never judged: an unassigned surface or an overlap is a fact to report. */
+export interface HandoffFacts {
+  engineUsed: MeshEngine;
+  nodeCount: number;
+  elementCount: number;
+  groups: PhysicalGroupFact[];
+  /** Surface (dim-2) entity tags in no surface physical group. */
+  unassignedSurfaceTags: number[];
+  /** Entities that sit in more than one physical group of their dimension. */
+  overlaps: Array<{ dim: number; entityTag: number; groups: string[] }>;
+  /** Kratos SubModelPart sizes exactly as `writeMdpa` would write them — set
+   * only when the mesh is representable in MDPA (hex-dominant is not). */
+  subModelParts?: Array<{ name: string; nodeCount: number; volumeCellCount: number; surfaceCellCount: number }>;
+  warnings: string[];
+}
+
+/**
+ * Meshes exactly like `generateMesh` (same options, parts and engine) and
+ * reports the physical-group layout and boundary coverage the export will
+ * carry. Gmsh meshing is deterministic for identical input + options, so these
+ * facts describe the file an export of the same request writes.
+ */
+export async function computeHandoffFacts(
+  extensionPath: string,
+  input: MeshGenerationInput,
+  options: MeshOptions,
+  parts: Part[] = []
+): Promise<HandoffFacts> {
+  const gmsh = await getGmsh(extensionPath);
+  let tmpPath: string | null = null;
+  try {
+    const loaded = await populateMeshedModel(extensionPath, gmsh, input, options, parts);
+    tmpPath = loaded.tmpPath;
+    const warnings = [...loaded.warnings];
+    const nodes = gmsh.model.mesh.getNodes() as { nodeTags: number[] };
+
+    const groups: PhysicalGroupFact[] = [];
+    const pg = (gmsh.model.getPhysicalGroups().dimTags as number[]) ?? [];
+    for (let i = 0; i < pg.length; i += 2) {
+      const dim = pg[i];
+      const physicalTag = pg[i + 1];
+      const name = (gmsh.model.getPhysicalName(dim, physicalTag) as { name: string }).name ?? "";
+      const entityTags = [...((gmsh.model.getEntitiesForPhysicalGroup(dim, physicalTag) as { tags: number[] }).tags ?? [])];
+      let elementCount = 0;
+      for (const tag of entityTags) {
+        const els = gmsh.model.mesh.getElements(dim, tag) as { elementTags: number[][] };
+        for (const t of els.elementTags) elementCount += t.length;
+      }
+      groups.push({ dim, physicalTag, name, entityTags, elementCount });
+    }
+
+    const surfaces = (gmsh.model.getEntities(2).dimTags as number[]) ?? [];
+    const inSurfaceGroup = new Set(groups.filter((g) => g.dim === 2).flatMap((g) => g.entityTags));
+    const unassignedSurfaceTags: number[] = [];
+    for (let i = 0; i < surfaces.length; i += 2) if (!inSurfaceGroup.has(surfaces[i + 1])) unassignedSurfaceTags.push(surfaces[i + 1]);
+
+    const owners = new Map<string, string[]>();
+    for (const g of groups) {
+      for (const tag of g.entityTags) {
+        const key = `${g.dim}:${tag}`;
+        owners.set(key, [...(owners.get(key) ?? []), g.name]);
+      }
+    }
+    const overlaps = [...owners.entries()]
+      .filter(([, names]) => names.length > 1)
+      .map(([key, names]) => ({ dim: Number(key.split(":")[0]), entityTag: Number(key.split(":")[1]), groups: names }));
+
+    let subModelParts: HandoffFacts["subModelParts"];
+    try {
+      const mesh = extractMdpaMesh(gmsh, loaded.groupMaps);
+      subModelParts = mesh.groups.map((g) => {
+        const nodeSet = new Set<number>(g.extraNodeTags);
+        for (const i of g.volumeCellIndices) for (const t of mesh.volumeCells[i].nodeTags) nodeSet.add(t);
+        for (const i of g.surfaceCellIndices) for (const t of mesh.surfaceCells[i].nodeTags) nodeSet.add(t);
+        return { name: g.name, nodeCount: nodeSet.size, volumeCellCount: g.volumeCellIndices.length, surfaceCellCount: g.surfaceCellIndices.length };
+      });
+    } catch (err) {
+      warnings.push(`SubModelPart sizes unavailable — ${(err as Error).message.split(".")[0]}.`);
+    }
+
+    return {
+      engineUsed: loaded.engineUsed,
+      nodeCount: nodes.nodeTags.length,
+      elementCount: countElements(gmsh, options.dimension),
+      groups,
+      unassignedSurfaceTags,
+      overlaps,
+      subModelParts,
+      warnings,
+    };
+  } finally {
+    if (tmpPath) {
+      try { gmsh.FS.unlink(tmpPath); } catch { /* ignore */ }
+    }
+  }
+}
+
 /**
  * Pulls the live gmsh model's mesh, plus `groupMaps`' part groupings, into the
  * plain gmsh-free `MdpaMesh` shape `writeMdpa` consumes. Must run after

@@ -67,6 +67,31 @@ export interface MeshPreset {
    * options are derived by `effectivePresetOptions`, never stored here.
    */
   options: MeshOptions;
+  /**
+   * Optional mesh-aware STL export tolerance (roadmap "Mesh-aware surface
+   * tessellation export"), in this preset's `unit` — what
+   * `export_tessellated_stl`'s `preset` parameter applies.
+   */
+  stlExport?: PresetStlExport;
+}
+
+export interface PresetStlExport {
+  targetCellSize: number;
+  chordalFraction?: number;
+  angularDeg?: number;
+}
+
+/** Tolerant parse of a preset's `stlExport` block: a malformed block is
+ * dropped (the preset survives), a malformed optional field is omitted. */
+export function validatePresetStlExport(raw: unknown): PresetStlExport | undefined {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
+  const r = raw as Record<string, unknown>;
+  const size = r.targetCellSize;
+  if (!(typeof size === "number" && Number.isFinite(size) && size > 0)) return undefined;
+  const out: PresetStlExport = { targetCellSize: size };
+  if (typeof r.chordalFraction === "number" && r.chordalFraction > 0 && r.chordalFraction <= 1) out.chordalFraction = r.chordalFraction;
+  if (typeof r.angularDeg === "number" && r.angularDeg >= 1 && r.angularDeg <= 90) out.angularDeg = r.angularDeg;
+  return out;
 }
 
 /** A preset library: entries keyed by name. */
@@ -135,6 +160,8 @@ function validatePresetEntry(key: string, value: unknown): MeshPreset | null {
 
   const entry: MeshPreset = { name, unit, engine, options };
   if (typeof raw.description === "string") entry.description = raw.description;
+  const stlExport = validatePresetStlExport(raw.stlExport);
+  if (stlExport) entry.stlExport = stlExport;
   return entry;
 }
 

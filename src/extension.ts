@@ -3,6 +3,7 @@ import { CadPreviewProvider } from "./provider";
 import { registerModelsView } from "./modelsView";
 import { maybeShowWhatsNew } from "./whatsNew";
 import { disconnectSpaceMouse } from "./spaceMouse";
+import { setTestSheetFormAnswer } from "./drawingSheetForm";
 import type { HostToWebview, WebviewToHost } from "./protocol";
 
 /**
@@ -34,6 +35,8 @@ export interface CadPreviewTestApi {
    * doc comment in `provider.ts`.
    */
   setExportMeshStub: (stub: ((format: string) => Uint8Array | undefined) | undefined) => void;
+  /** Answers the Export Drawing Sheet form without showing it (undefined restores the real form). */
+  setSheetFormAnswer: (answer: ((opts: unknown) => Promise<unknown>) | undefined) => void;
 }
 
 export function activate(context: vscode.ExtensionContext): CadPreviewTestApi | undefined {
@@ -52,6 +55,7 @@ export function activate(context: vscode.ExtensionContext): CadPreviewTestApi | 
         setExportMeshStub: (stub) => {
           CadPreviewProvider.testExportMeshStub = stub;
         },
+        setSheetFormAnswer: (answer) => setTestSheetFormAnswer(answer as Parameters<typeof setTestSheetFormAnswer>[0]),
       }
     : undefined;
 }
