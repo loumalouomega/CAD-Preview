@@ -1068,6 +1068,7 @@ export class MeshingPanel {
     this.exportFormatSelect.disabled = busy;
     this.exportUnitSelect.disabled = busy;
     this.cancelBtn.disabled = !busy || !requestId;
+    this.cancelBtn.hidden = !busy || !requestId;
     if (busy && requestId) this.cancelBtn.dataset.requestId = requestId;
     else delete this.cancelBtn.dataset.requestId;
     this.progressEl.classList.toggle("active", busy);

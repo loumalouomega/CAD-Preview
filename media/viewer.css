@@ -3964,6 +3964,9 @@ input[type="range"].meshing-slider:focus {
 #meshing-actions #meshing-generate:disabled {
   opacity: 0.5;
 }
+#meshing-actions .panel-icon-btn[hidden] {
+  display: none;
+}
 #meshing-actions .panel-icon-btn {
   width: 30px;
   height: 30px;
