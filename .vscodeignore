@@ -5,10 +5,17 @@
 .vscode-test/**
 src/**
 test/**
-# `.gitignore` excludes the build tree, but the packaged extension runs from
-# `dist/extension.js`; explicitly retain the generated runtime bundle.
-!dist/
-!dist/**
+# `.gitignore` excludes the build tree. Re-include only generated runtime
+# assets; a broad `dist/**` carve-out also ships source maps and makes the
+# packaged-runtime check fail.
+!dist/extension.js
+!dist/mcp-server.js
+!dist/kernel-worker.js
+!dist/opencascade.wasm.wasm
+!dist/gmsh-core.wasm
+!dist/macros/starter-library.json
+!dist/mesh-presets/starter-presets.json
+!dist/sheet-templates/starter-templates.json
 node_modules/**
 # @loumalouomega/gmsh-wasm must ship as real files, NOT bundled into
 # dist/extension.js — see the comment in gmshService.ts/esbuild.mjs (its
