@@ -250,8 +250,8 @@ try {
   assert(capsText.length > 100, "resources/read cad-preview://capabilities returns JSON text");
 
   const tools = (await request("tools/list", {})).tools.map((t) => t.name);
-  assert(tools.length === 56, `tools/list exposes 56 tools (got ${tools.length}: ${tools.join(", ")})`);
-  for (const t of ["list_workspace_models", "check_interference_all", "generate_bom", "generate_hole_table", "render_ops_prefix", "check_tolerance", "inspect_meshio_fields", "pin_annotation", "import_svg", "save_mesh_preset", "list_mesh_presets", "apply_mesh_preset", "compare_mesh_refinement"]) {
+  assert(tools.length === 65, `tools/list exposes 65 tools (got ${tools.length}: ${tools.join(", ")})`);
+  for (const t of ["list_workspace_models", "check_interference_all", "generate_bom", "generate_hole_table", "render_ops_prefix", "check_tolerance", "inspect_meshio_fields", "pin_annotation", "import_svg", "save_mesh_preset", "list_mesh_presets", "apply_mesh_preset", "compare_mesh_refinement", "export_tessellated_stl", "estimate_mesh_budget", "analyze_passages", "measure_mesh_deviation", "save_sheet_template", "list_sheet_templates", "batch_export", "check_handoff_manifest", "generate_prep_report"]) {
     assert(tools.includes(t), `tools/list exposes ${t}`);
   }
 
@@ -409,10 +409,13 @@ try {
   // centre-distance oracle (the SAME faces, not coincidental ones), plus the
   // honest degradations (mesh source → supported:false, out-of-range op throws).
   {
-    const sel = await call("resolve_selector", {
-      path: model,
-      selector: { version: 1, source: { kind: "bucket", op: 0, role: "body" } },
-    });
+    // Read-only, so a self-healing WASM abort (seen once here, not
+    // reproducible in isolation) retries with a no-op reset.
+    const sel = await callWithCleanRetry(
+      "resolve_selector",
+      { path: model, selector: { version: 1, source: { kind: "bucket", op: 0, role: "body" } } },
+      () => {}
+    );
     assert(
       sel.supported === true && sel.bindable === true && sel.ids.length === 6 && sel.unresolved.length === 0,
       `resolve_selector re-resolves the op-0 body bucket to 6 ids (got ${JSON.stringify(sel.ids)})`
@@ -3325,27 +3328,41 @@ try {
   // Save-time Part/annotation rebind: seed both on the new box, save, and
   // confirm the ids track the baked file instead of dropping or warning.
   const saveRebindModel = path.join(dir, "bull-for-save-rebind.stp");
-  fs.copyFileSync(FIXTURE, saveRebindModel);
-  await call("apply_edit_ops", {
-    path: saveRebindModel,
-    ops: [{ op: "addBox", center: [50, 0, 0], size: [2, 2, 2] }],
-  });
-  await call("set_part", { path: saveRebindModel, name: "NewBox", volumes: ["solid-1"] });
-  await call("pin_annotation", {
-    path: saveRebindModel,
-    tool: "distance",
-    text: "2 mm",
-    anchorPoint: [50, 0, 0],
-    linePoints: [[49, 0, 0], [51, 0, 0]],
-    volumes: ["solid-1"],
-    surfaces: [],
-    lines: [],
-    points: [],
-  });
-  const rebindSave = await call("save_model", { path: saveRebindModel });
+  const seedSaveRebind = async () => {
+    for (const ext of ["", ".edits.json", ".parts.json", ".annotations.json", ".bak"]) {
+      fs.rmSync(`${saveRebindModel}${ext}`, { force: true });
+    }
+    fs.copyFileSync(FIXTURE, saveRebindModel);
+    await call("apply_edit_ops", {
+      path: saveRebindModel,
+      ops: [{ op: "addBox", center: [50, 0, 0], size: [2, 2, 2] }],
+    });
+    await call("set_part", { path: saveRebindModel, name: "NewBox", volumes: ["solid-1"] });
+    await call("pin_annotation", {
+      path: saveRebindModel,
+      tool: "distance",
+      text: "2 mm",
+      anchorPoint: [50, 0, 0],
+      linePoints: [[49, 0, 0], [51, 0, 0]],
+      volumes: ["solid-1"],
+      surfaces: [],
+      lines: [],
+      points: [],
+    });
+  };
+  await seedSaveRebind();
+  let rebindSave = await call("save_model", { path: saveRebindModel });
+  // The rebind reports (rather than throws) a WASM abort, and late in this
+  // long run that abort is the documented accumulated-heap-pressure class
+  // (it passes on a fresh server). Mirror callWithCleanRetry: re-seed from a
+  // clean copy and save once more on the kernel-reset signature only.
+  if (rebindSave.warnings.some((w) => /kernel has been reset/i.test(w))) {
+    await seedSaveRebind();
+    rebindSave = await call("save_model", { path: saveRebindModel });
+  }
   assert(
     !rebindSave.warnings.some((w) => /Could not rebind/.test(w)),
-    "saving with Parts/annotations reports no rebind failure on an identical-shape save"
+    `saving with Parts/annotations reports no rebind failure on an identical-shape save (warnings: ${JSON.stringify(rebindSave.warnings)})`
   );
   const rebindState = await call("get_state", { path: saveRebindModel });
   assert(
@@ -6185,6 +6202,237 @@ try {
       volGraded.nodeCount > gradingBaseline.nodeCount * 2,
       `volume-anchored grading (via getBoundary) refines well beyond baseline (got ${volGraded.nodeCount} vs baseline ${gradingBaseline.nodeCount})`
     );
+  }
+
+  // --- export_tessellated_stl (roadmap "Mesh-aware surface tessellation export") ---
+  {
+    // A sphere on the empty base: coarse vs fine downstream cell size must
+    // measurably reduce the SAMPLED chordal error (analytic reference: the
+    // sagitta of a chord on R=10 shrinks with the chord), and a planar box
+    // keeps its 12 triangles whatever the fraction (no curvature to chase).
+    const sphere = path.join(dir, "tess-sphere.brep");
+    fs.copyFileSync(path.join(ROOT, "examples", "BREP", "blank.brep"), sphere);
+    await call("apply_edit_ops", { path: sphere, ops: [{ op: "addSphere", center: [0, 0, 0], radius: 10 }] });
+    const coarse = await call("export_tessellated_stl", { path: sphere, outputPath: path.join(dir, "tess-coarse.stl"), targetCellSize: 8, angularDeg: 45 });
+    const fine = await call("export_tessellated_stl", { path: sphere, outputPath: path.join(dir, "tess-fine.stl"), targetCellSize: 0.5, angularDeg: 45 });
+    assert(coarse.supported && fine.supported, "export_tessellated_stl supports a B-rep source");
+    assert(fine.triangleCount > coarse.triangleCount, `a finer cell size tessellates more triangles (${coarse.triangleCount} → ${fine.triangleCount})`);
+    assert(
+      fine.measured.max < coarse.measured.max,
+      `the sampled chordal error drops with the cell size (${coarse.measured.max} → ${fine.measured.max})`
+    );
+    const stlBytes = fs.readFileSync(path.join(dir, "tess-fine.stl"));
+    assert(stlBytes.length === 84 + fine.triangleCount * 50 && stlBytes.readUInt32LE(80) === fine.triangleCount, "the STL is well-formed binary with the reported triangle count");
+    const inM = await call("export_tessellated_stl", { path: sphere, outputPath: path.join(dir, "tess-m.stl"), targetCellSize: 0.0005, angularDeg: 45, unit: "m" });
+    assert(inM.triangleCount === fine.triangleCount, `the same PHYSICAL cell size in metres tessellates identically (${inM.triangleCount} vs ${fine.triangleCount})`);
+    assert(Math.abs(inM.measured.max * 1000 - fine.measured.max) < 1e-6, "the measured error is reported in the export unit (m = mm / 1000)");
+    const box = path.join(dir, "tess-box.stp");
+    fs.copyFileSync(path.join(ROOT, "examples", "STP", "block.stp"), box);
+    const b1 = await call("export_tessellated_stl", { path: box, targetCellSize: 1, chordalFraction: 0.5, dryRun: true });
+    const b2 = await call("export_tessellated_stl", { path: box, targetCellSize: 1, chordalFraction: 0.01, dryRun: true });
+    assert(b1.triangleCount === 12 && b2.triangleCount === 12 && b1.written === null, "a planar box is not over-refined, and dryRun writes nothing");
+    const capped = await callTolerant("export_tessellated_stl", { path: sphere, outputPath: path.join(dir, "tess-cap.stl"), targetCellSize: 0.05, chordalFraction: 0.01, maxTriangles: 1000 });
+    assert(capped.error && /limit/.test(capped.error) && !fs.existsSync(path.join(dir, "tess-cap.stl")), "a runaway tolerance is refused before anything is written");
+    const viaPreset = await call("export_tessellated_stl", { path: sphere, outputPath: path.join(dir, "tess-preset.stl"), preset: "balanced" });
+    assert(Math.abs(viaPreset.requestedChordal - 0.1) < 1e-12, `a preset's stlExport block supplies the tolerance (requested ${viaPreset.requestedChordal})`);
+    const tessStl = path.join(dir, "tess-cube.stl");
+    fs.copyFileSync(path.join(ROOT, "examples", "STL", "cube.stl"), tessStl);
+    const meshSrc = await call("export_tessellated_stl", { path: tessStl, outputPath: path.join(dir, "x.stl"), targetCellSize: 1 });
+    assert(meshSrc.supported === false, "a mesh source has no B-rep to re-tessellate");
+  }
+
+  // --- estimate_mesh_budget (roadmap "Mesh size and memory budget preview") ---
+  {
+    // Predicted vs actual through the real kernels: the actual generate_mesh
+    // count must land inside the estimate's range, and the response of
+    // generate_mesh itself carries the estimate beside the real numbers.
+    const budgetModel = path.join(dir, "budget.stp");
+    fs.copyFileSync(path.join(ROOT, "examples", "STP", "angle1.stp"), budgetModel);
+    const est = await call("estimate_mesh_budget", { path: budgetModel, options: { sizeMin: 0, sizeMax: 2, budgetElements: 1000 } });
+    assert(est.estimate.status === "ok" && est.estimate.basis === "volume+area", `the estimate uses real volume+area (${JSON.stringify(est.estimate.basis)})`);
+    assert(est.warnings.some((w) => /budget/.test(w)), "an advisory budget below the estimate warns");
+    const gen = await call("generate_mesh", { path: budgetModel, options: { sizeMin: 0, sizeMax: 2 } });
+    assert(
+      gen.elementCount >= est.estimate.elements.low && gen.elementCount <= est.estimate.elements.high,
+      `the actual ${gen.elementCount} elements lie within the estimate ${est.estimate.elements.low}–${est.estimate.elements.high}`
+    );
+    assert(gen.estimate && gen.estimate.status === "ok", "generate_mesh reports its estimate beside the actual counts");
+    const halved = await call("estimate_mesh_budget", { path: budgetModel, options: { sizeMin: 0, sizeMax: 1 } });
+    const growth = halved.estimate.elements.mid / est.estimate.elements.mid;
+    assert(growth > 5 && growth <= 8, `halving the size grows the 3D estimate towards 8× (${growth.toFixed(2)}×)`);
+    const openStl = path.join(dir, "budget-holed.stl");
+    fs.copyFileSync(path.join(ROOT, "examples", "STL", "holed-cube.stl"), openStl);
+    const open = await call("estimate_mesh_budget", { path: openStl, options: { sizeMin: 0, sizeMax: 1, dimension: 3 } });
+    assert(open.estimate.status === "unavailable" && /closed volume/.test(open.estimate.reason), "an open mesh's 3D estimate is unavailable, not a guess");
+  }
+
+  // --- analyze_passages (roadmap "Narrow-gap and passage resolution preflight") ---
+  {
+    const P = path.join(ROOT, "examples", "STP", "passages");
+    const copy = (name) => {
+      const dst = path.join(dir, `pass-${name}`);
+      fs.copyFileSync(path.join(P, name), dst);
+      return dst;
+    };
+    const annulus = copy("annulus.stp");
+    const a = await call("analyze_passages", { path: annulus, sizeMax: 2 });
+    assert(a.findings.length === 1 && a.findings[0].kind === "annular", `the annulus fixture has exactly one annular passage (${JSON.stringify(a.findings)})`);
+    assert(Math.abs(a.findings[0].width - 1) < 1e-6, `its width is the exact 1 mm radial gap (${a.findings[0].width})`);
+    assert(a.findings[0].underResolved && Math.abs(a.findings[0].cellsAcross - 0.5) < 1e-6, "a 2 mm size gives 0.5 cells across — under-resolved");
+    const slot = await call("analyze_passages", { path: copy("thin-slot.stp"), sizeMax: 2 });
+    assert(slot.findings.length === 1 && slot.findings[0].kind === "slot" && Math.abs(slot.findings[0].width - 0.5) < 1e-6, "the thin-slot fixture has one 0.5 mm slot");
+    const disjoint = await call("analyze_passages", { path: copy("disjoint-coaxial.stp"), sizeMax: 2 });
+    assert(disjoint.findings.length === 0 && disjoint.rejected.some((r) => /no axial overlap/.test(r.reason)), "merely coaxial, axially disjoint cylinders are rejected, not a passage");
+    const inch = await call("analyze_passages", { path: copy("annulus-inch.stp"), sizeMax: 2 });
+    assert(inch.findings.length === 1 && Math.abs(inch.findings[0].width - 1) < 1e-4, `an inch-header copy reports the same 1 mm width (${inch.findings[0]?.width})`);
+    // Apply the suggestion through the ordinary Part path, then re-check.
+    const f = a.findings[0];
+    await call("set_part", { path: annulus, name: "Annular gap", surfaces: [f.faceA, f.faceB], meshSize: f.suggestedSize });
+    const again = await call("analyze_passages", { path: annulus, sizeMax: 2 });
+    assert(
+      again.findings[0].sizeSource === "part" && !again.findings[0].underResolved && Math.abs(again.findings[0].cellsAcross - 3) < 1e-6,
+      `after applying the suggested size the passage reads 3 cells across from the Part (${JSON.stringify(again.findings[0])})`
+    );
+    const state = await call("get_state", { path: annulus });
+    assert(state.parts.some((p) => p.name === "Annular gap" && Math.abs(p.meshSize - f.suggestedSize) < 1e-12), "the applied size survives in the parts sidecar (reopen)");
+  }
+
+  // --- measure_mesh_deviation (roadmap "CAD-to-mesh deviation map") ---
+  {
+    // Planar geometry: a mesh boundary of a cube lies ON its faces, so the
+    // deviation is ≈ 0 both ways. A sphere meshed coarse vs fine: the
+    // forward deviation must drop with the size (a coarse mesh flattens the
+    // curvature), and the tight tolerance must name the sphere's face.
+    const devCube = path.join(dir, "dev-cube.stl");
+    fs.copyFileSync(path.join(ROOT, "examples", "STL", "cube.stl"), devCube);
+    const flat = await call("measure_mesh_deviation", { path: devCube, tolerance: 1e-3, options: { sizeMin: 0, sizeMax: 2, dimension: 3 }, samples: 4000 });
+    assert(flat.referenceKind === "source-mesh" && flat.report.forward.max < 1e-3 && flat.report.forward.coverage === 1, `a planar cube's mesh sits on its faces (forward max ${flat.report.forward.max})`);
+    assert(flat.report.extraneousFraction === 0, "no extraneous surface on a faithful mesh");
+    const devSphere = path.join(dir, "dev-sphere.brep");
+    fs.copyFileSync(path.join(ROOT, "examples", "BREP", "blank.brep"), devSphere);
+    await call("apply_edit_ops", { path: devSphere, ops: [{ op: "addSphere", center: [0, 0, 0], radius: 10 }] });
+    const coarse = await call("measure_mesh_deviation", { path: devSphere, tolerance: 0.05, options: { sizeMin: 0, sizeMax: 6, dimension: 3 }, samples: 8000 });
+    const fine = await call("measure_mesh_deviation", { path: devSphere, tolerance: 0.05, options: { sizeMin: 0, sizeMax: 1.5, dimension: 3 }, samples: 8000, deviationMeshPath: path.join(dir, "dev-sphere.ply") });
+    assert(coarse.referenceKind === "cad-tessellation", "a B-rep is measured against its own CAD tessellation");
+    assert(fine.report.forward.max < coarse.report.forward.max, `a finer mesh flattens the sphere less (${coarse.report.forward.max} → ${fine.report.forward.max})`);
+    assert(coarse.report.regionFailures.length > 0 && /^face-\d+$/.test(coarse.report.regionFailures[0].region), `the coarse mesh's failure is named by face (${JSON.stringify(coarse.report.regionFailures[0])})`);
+    assert(coarse.warnings.some((w) => /approximate stand-in/.test(w)), "the approximate reference is stated, not hidden");
+    const ply = fs.readFileSync(path.join(dir, "dev-sphere.ply"), "utf8");
+    assert(/property float distance/.test(ply) && fine.written, "the deviation PLY carries a per-vertex distance");
+  }
+
+  // --- drawing-sheet settings + templates (roadmap "Drawing-sheet settings and reusable templates") ---
+  {
+    const sheetModel = path.join(dir, "sheet-block.stp");
+    fs.copyFileSync(path.join(ROOT, "examples", "STP", "block.stp"), sheetModel);
+    // Known length: block.stp is 3 × 4 × 5 mm; this codebase's FRONT view
+    // looks along Z with Y up (the viewer's Y-up convention), so it shows X
+    // (3 mm) across and Y (4 mm) up — at 2:1 the view's own geometry must
+    // span exactly 6 × 8 sheet-mm.
+    const out = path.join(dir, "sheet-2to1.svg");
+    const r = await call("export_drawing_sheet", { path: sheetModel, outputPath: out, views: ["front"], scale: "2:1", fields: { author: "Ann", drawingNumber: "D-7", revision: "B", material: "Al" } });
+    assert(r.scale === "2:1", `a ratio-string scale is honoured (${r.scale})`);
+    const svg = fs.readFileSync(out, "utf8");
+    const group = /<g id="view-front">([\s\S]*?)<\/g>/.exec(svg)?.[1] ?? "";
+    const nums = [...group.matchAll(/ d="([^"]+)"/g)].flatMap((m) => [...m[1].matchAll(/-?\d+(?:\.\d+)?(?:e-?\d+)?/gi)].map((x) => Number(x[0])));
+    const xs = nums.filter((_, i) => i % 2 === 0), ys = nums.filter((_, i) => i % 2 === 1);
+    const w = Math.max(...xs) - Math.min(...xs), h = Math.max(...ys) - Math.min(...ys);
+    assert(Math.abs(w - 6) < 1e-3 && Math.abs(h - 8) < 1e-3, `the front view prints at exactly 2:1 (${w.toFixed(4)} × ${h.toFixed(4)} sheet-mm, expected 6 × 8)`);
+    assert(/Drawn Ann/.test(svg) && /Dwg D-7 rev B/.test(svg) && /Material Al/.test(svg), "the title-block fields are drawn");
+    const lib = path.join(dir, "sheet-templates.json");
+    await call("save_sheet_template", { libraryPath: lib, name: "my-a4", views: ["front", "top"], paper: "A4", projection: "third", scale: "1:1" });
+    const listed = await call("list_sheet_templates", { libraryPath: lib });
+    assert(listed.templates.some((t) => t.name === "my-a4" && !t.readOnly) && listed.templates.some((t) => t.name === "iso-a3-first" && t.readOnly), "templates list bundled starters and yours");
+    const viaTpl = await call("export_drawing_sheet", { path: sheetModel, outputPath: path.join(dir, "sheet-tpl.svg"), template: "my-a4", libraryPath: lib });
+    assert(viaTpl.paper === "A4" && viaTpl.projection === "third" && viaTpl.views.length === 2, `a template supplies paper, projection and views (${JSON.stringify([viaTpl.paper, viaTpl.projection, viaTpl.views.length])})`);
+    const tooBig = await call("export_drawing_sheet", { path: sheetModel, outputPath: path.join(dir, "sheet-big.svg"), paper: "A4", scale: "50:1" });
+    assert(tooBig.warnings.some((w2) => /do not fit/.test(w2)), "an overflowing layout warns");
+  }
+
+  // --- batch export (roadmap "Batch export with per-file results") ---
+  {
+    const bdir = path.join(dir, "batch-in");
+    fs.mkdirSync(bdir);
+    const a = path.join(bdir, "block.stp");
+    const b = path.join(bdir, "angle1.stp");
+    const bad = path.join(bdir, "corrupt.stp");
+    fs.copyFileSync(path.join(ROOT, "examples", "STP", "block.stp"), a);
+    fs.copyFileSync(path.join(ROOT, "examples", "STP", "angle1.stp"), b);
+    fs.writeFileSync(bad, "ISO-10303-21;\nnot a real step file\n");
+    const aBefore = fs.readFileSync(a);
+    const outDir = path.join(dir, "batch-out");
+    const r = await call("batch_export", { inputs: [a, bad, b], target: "brep", outDir, reportPath: path.join(dir, "batch.tsv") });
+    assert(JSON.stringify(r.rows.map((x) => x.status)) === JSON.stringify(["ok", "failed", "ok"]), `one bad file is a failed row, not an aborted batch (${r.rows.map((x) => x.status)})`);
+    assert(r.rows[1].error && r.rows[1].error.length > 0, `the failed row names its error (${r.rows[1].error})`);
+    assert(fs.readdirSync(outDir).sort().join(",") === "angle1.brep,block.brep", "exactly the two good outputs are written");
+    assert(Buffer.compare(fs.readFileSync(a), aBefore) === 0, "batch sources stay byte-identical");
+    const again = await call("batch_export", { inputs: [a], target: "brep", outDir });
+    assert(again.rows[0].status === "skipped", "an existing output is skipped by default");
+    const sheets = await call("batch_export", { inputs: [a, b], target: "sheet-svg", outDir: path.join(dir, "batch-sheets"), template: "iso-a3-first" });
+    assert(sheets.summary.ok === 2, `the drawing-sheet target exports through the template (${JSON.stringify(sheets.summary)})`);
+    assert(fs.readFileSync(path.join(dir, "batch.tsv"), "utf8").split("\n").length === 5, "the TSV report has a header plus one row per file");
+  }
+
+  // --- simulation handoff manifest (roadmap "Simulation handoff manifest and boundary coverage") ---
+  {
+    const hm = path.join(dir, "handoff-block.stp");
+    fs.copyFileSync(path.join(ROOT, "examples", "STP", "block.stp"), hm);
+    await call("set_part", { path: hm, name: "Inlet", surfaces: ["face-0"] });
+    await call("set_part", { path: hm, name: "Ghost", surfaces: ["face-99"] });
+    await call("set_part", { path: hm, name: "Empty" });
+    const out = path.join(dir, "handoff.mdpa");
+    const r = await call("export_mesh", { path: hm, format: "mdpaElements", outputPath: out, unit: "in", options: { sizeMin: 0, sizeMax: 1.5, dimension: 3 }, manifest: true });
+    assert(r.manifest === `${out}.handoff.json` && fs.existsSync(r.manifest), "export_mesh writes <output>.handoff.json");
+    const m = JSON.parse(fs.readFileSync(r.manifest, "utf8"));
+    assert(m.unit.unit === "in" && Math.abs(m.unit.scaleFactor - 1 / 25.4) < 1e-12, "the unit conversion is recorded");
+    assert(m.notes.filter((n) => /scaled by/.test(n)).length === 1, "…and stated exactly once");
+    const status = Object.fromEntries(m.parts.map((p) => [p.name, p.status]));
+    assert(status.Inlet === "resolved" && status.Ghost === "unresolved" && status.Empty === "empty", `each Part's status is a fact (${JSON.stringify(status)})`);
+    assert(m.coverage.unassignedSurfaceCount === 5, `five of the block's six faces are in no surface group (${m.coverage.unassignedSurfaceCount})`);
+    assert(m.kernels["@loumalouomega/gmsh-wasm"] && m.kernels["opencascade.js"], `kernel versions are stamped (${JSON.stringify(m.kernels)})`);
+    // The manifest's SubModelPart sizes must equal what the MDPA file itself says.
+    const mdpa = fs.readFileSync(out, "utf8");
+    const smp = /Begin SubModelPart Inlet\n([\s\S]*?)\nEnd SubModelPart\s*(?:\n|$)/.exec(mdpa)?.[1] ?? "";
+    const block = (name) => (new RegExp(`Begin SubModelPart${name}([\\s\\S]*?)End SubModelPart${name}`).exec(smp)?.[1] ?? "").trim().split(/\s+/).filter(Boolean).length;
+    const inlet = m.parts.find((p) => p.name === "Inlet");
+    assert(inlet.subModelPart && block("Nodes") === inlet.subModelPart.nodeCount, `SubModelPart node count matches the MDPA (${block("Nodes")} vs ${inlet.subModelPart?.nodeCount})`);
+    assert(block("Conditions") === inlet.subModelPart.surfaceCellCount && inlet.subModelPart.surfaceCellCount > 0, `SubModelPart condition count matches the MDPA (${block("Conditions")} vs ${inlet.subModelPart.surfaceCellCount})`);
+    const fresh = await call("check_handoff_manifest", { manifestPath: r.manifest });
+    assert(fresh.current === true, `a just-written manifest is current (${JSON.stringify(fresh.checks)})`);
+    await call("apply_edit_ops", { path: hm, ops: [{ op: "addBox", center: [10, 0, 0], size: [1, 1, 1] }] });
+    const stale = await call("check_handoff_manifest", { manifestPath: r.manifest });
+    assert(stale.current === false && stale.checks.find((c) => c.name === "edits")?.ok === false && stale.checks.find((c) => c.name === "source")?.ok === true, "an edit after export makes the manifest stale, naming the edit history");
+  }
+
+  // --- preparation report (roadmap "Preparation report bundle") ---
+  {
+    const rb = path.join(dir, "report-block.stp");
+    fs.copyFileSync(path.join(ROOT, "examples", "STP", "block.stp"), rb);
+    await call("set_part", { path: rb, name: "Body", volumes: ["solid-0"] });
+    const before = fs.readFileSync(rb);
+    const sidecarsBefore = fs.readdirSync(dir).filter((f) => f.startsWith("report-block.stp.")).sort().join(",");
+    const r = await call("generate_prep_report", { path: rb, outputDir: path.join(dir, "rep-brep"), options: { sizeMin: 0, sizeMax: 1.5, dimension: 3 }, tolerance: 0.05 });
+    const rep = JSON.parse(fs.readFileSync(r.written[0], "utf8"));
+    const st = Object.fromEntries(rep.sections.map((x) => [x.id, x]));
+    assert(rep.sections.length === 13, "all thirteen sections are listed");
+    assert(Math.abs(st.mass.data.volume - 60) < 1e-6, `the mass section reports the block's analytic 60 mm³ (${st.mass.data?.volume})`);
+    assert(st.bom.status === "ok" && st.bom.data.length === 1, "the BOM section lists the one Part");
+    assert(st.mesh.status === "ok" && st.mesh.data.elementCount > 0 && typeof st.mesh.data.actualWithinEstimate === "boolean", "the mesh section reports actual counts beside the budget estimate");
+    assert(["ok", "partial"].includes(st.deviation.status) && st.deviation.data.forward, "the deviation section ran against the CAD tessellation");
+    assert(st.meshHealth.status === "unavailable" && st.meshHealth.reason, "an inapplicable section is kept with its reason");
+    assert(st.snapshots.status === "skipped", "snapshots are opt-in");
+    const html = fs.readFileSync(r.written[1], "utf8");
+    assert(!/<script/i.test(html) && !/(src|href)="https?:/.test(html), "report.html is script-free and makes no network references");
+    assert(Buffer.compare(before, fs.readFileSync(rb)) === 0, "the report leaves the source byte-identical");
+    assert(fs.readdirSync(dir).filter((f) => f.startsWith("report-block.stp.")).sort().join(",") === sidecarsBefore, "…and writes no sidecar");
+    const stl = path.join(dir, "report-cube.stl");
+    fs.copyFileSync(path.join(ROOT, "examples", "STL", "cube.stl"), stl);
+    const rs = await call("generate_prep_report", { path: stl, outputDir: path.join(dir, "rep-stl"), include: ["mass", "meshHealth", "bom", "passages"] });
+    const rstl = JSON.parse(fs.readFileSync(rs.written[0], "utf8"));
+    const s2 = Object.fromEntries(rstl.sections.map((x) => [x.id, x]));
+    assert(Math.abs(s2.mass.data.volume - 1000) < 1e-6 && /raw stl/.test(s2.mass.geometry), `an STL report states raw-file geometry (${s2.mass.geometry})`);
+    assert(s2.meshHealth.status === "ok" && s2.bom.status === "unavailable" && s2.passages.status === "unavailable", "mesh-only and B-rep-only sections resolve per source kind");
+    assert(s2.mesh.status === "skipped", "sections left out of `include` are listed as skipped");
   }
 
   assert(Buffer.compare(fs.readFileSync(model), originalBytes) === 0, "CAD source file is byte-identical");

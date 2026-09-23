@@ -1,4 +1,4 @@
-import { createHash } from "crypto";
+import { sha256Hex } from "./hash";
 import { zipSync, unzipSync, strToU8, strFromU8 } from "fflate";
 
 /**
@@ -51,10 +51,6 @@ const MAX_COMPRESSION_RATIO = 1000;
  */
 function isSafeEntryName(name: string): boolean {
   return name.length > 0 && name !== "." && name !== ".." && !name.includes("/") && !name.includes("\\");
-}
-
-function sha256Hex(bytes: Uint8Array): string {
-  return createHash("sha256").update(bytes).digest("hex");
 }
 
 export interface PreprocessManifest {

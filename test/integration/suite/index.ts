@@ -37,7 +37,7 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import * as vscode from "vscode";
-import { installModalStubs, pick, save, cancel, waitForFile, waitFor, type ModalAnswer } from "./modalStubs";
+import { installModalStubs, pick, save, cancel, open as openAnswer, waitForFile, waitFor, type ModalAnswer } from "./modalStubs";
 import { writeParts } from "../../../src/partsStore";
 import { writePlanes } from "../../../src/planesStore";
 import { writeCustomBackup, restoreCustomBackup } from "../../../src/customBackup";
@@ -57,7 +57,9 @@ interface SaveTestApi {
   saveDocument?: (uri: vscode.Uri) => Promise<void>;
   revertDocument?: (uri: vscode.Uri) => Promise<void>;
   markDirtyDocument?: (uri: vscode.Uri) => void;
+  simulateWebviewMessage?: (uri: vscode.Uri, msg: unknown) => Promise<void>;
   setExportMeshStub?: (stub: ((format: string) => Uint8Array | undefined) | undefined) => void;
+  setSheetFormAnswer?: (answer: ((opts: unknown) => Promise<unknown>) | undefined) => void;
 }
 
 async function saveTestApi(): Promise<SaveTestApi | undefined> {
@@ -1152,6 +1154,110 @@ test("Export Silhouette SVG… offers the view list and writes a parseable drawi
 });
 
 /**
+ * Roadmap "Batch export with per-file results": the session-free command runs
+ * over files on disk — a good STEP exports, a corrupt one and an STL (no
+ * B-rep) become failed rows, sources stay byte-identical, and no editor tab
+ * is ever opened for any of them.
+ */
+test("Batch Export… writes one row per file, never aborts on a bad file, and opens no editors", async () => {
+  await closeAll();
+  const good = stage(STEP_FIXTURE);
+  const dir = path.dirname(good);
+  const corrupt = path.join(dir, "corrupt.stp");
+  fs.writeFileSync(corrupt, "ISO-10303-21;\nnot really a step file\n");
+  const mesh = path.join(dir, "cube.stl");
+  fs.copyFileSync(STL_FIXTURE, mesh);
+  const outDir = path.join(dir, "out");
+  const goodBefore = fs.readFileSync(good);
+  const tabsBefore = vscode.window.tabGroups.all.reduce((n, g) => n + g.tabs.length, 0);
+
+  const record = await withModals(
+    [openAnswer(good, corrupt, mesh), pick("BREP (.brep)"), openAnswer(outDir), pick("Skip existing outputs")],
+    async () => {
+      fs.mkdirSync(outDir, { recursive: true });
+      await vscode.commands.executeCommand("cad-preview.batchExport");
+    }
+  );
+  assert(record.quickPicks[0]?.labels.includes("Drawing sheet — SVG") === true, "the target pick offers drawing sheets too");
+  const written = fs.existsSync(outDir) ? fs.readdirSync(outDir).sort() : [];
+  assert(JSON.stringify(written) === JSON.stringify(["block.brep"]), `exactly the good file was exported (saw ${JSON.stringify(written)})`);
+  assert(Buffer.compare(goodBefore, fs.readFileSync(good)) === 0, "the source file is byte-identical");
+  // tabGroups updates asynchronously after createWebviewPanel returns, so
+  // poll briefly instead of reading once (a single read raced in the full run).
+  const countTabs = () => vscode.window.tabGroups.all.reduce((n, g) => n + g.tabs.length, 0);
+  for (let i = 0; i < 40 && countTabs() < tabsBefore + 1; i++) await sleep(100);
+  const tabsAfter = countTabs();
+  // The report panel is the only new tab (a webview panel, not a CAD editor).
+  const cadTabs = vscode.window.tabGroups.all.flatMap((g) => g.tabs).filter((t) => t.input instanceof vscode.TabInputCustom);
+  assert(cadTabs.length === 0, `no CAD editor was opened (saw ${cadTabs.length})`);
+  assert(tabsAfter === tabsBefore + 1, `one report panel opened (tabs ${tabsBefore} → ${tabsAfter})`);
+  await closeAll();
+});
+
+/**
+ * Roadmap "Preparation report bundle": with no tab focused, the command asks
+ * for a model and a folder, and writes report.json + a script-free report.html
+ * whose every section carries a status — none dropped.
+ */
+test("Preparation Report… writes report.json and a self-contained report.html with a status per section", async () => {
+  await closeAll();
+  const model = stage(STEP_FIXTURE);
+  const outDir = path.join(path.dirname(model), "report");
+  fs.mkdirSync(outDir, { recursive: true });
+  await withModals([openAnswer(model), openAnswer(outDir)], async () => {
+    await vscode.commands.executeCommand("cad-preview.prepReport");
+  });
+  const json = path.join(outDir, "report.json");
+  const html = path.join(outDir, "report.html");
+  assert(fs.existsSync(json) && fs.existsSync(html), "report.json and report.html are written");
+  if (fs.existsSync(json)) {
+    const report = JSON.parse(fs.readFileSync(json, "utf8"));
+    const statuses = Object.fromEntries(report.sections.map((s: { id: string; status: string }) => [s.id, s.status]));
+    assert(report.sections.length === 13 && report.sections.every((s: { status: string }) => ["ok", "partial", "unavailable", "skipped"].includes(s.status)), `every section carries a status (${JSON.stringify(statuses)})`);
+    assert(statuses.identity === "ok" && statuses.mass === "ok" && statuses.mesh === "ok", `identity, mass and mesh sections ran (${JSON.stringify(statuses)})`);
+    assert(statuses.meshHealth === "unavailable" && statuses.snapshots === "skipped", "inapplicable and opt-in sections are listed, not omitted");
+  }
+  if (fs.existsSync(html)) {
+    const text = fs.readFileSync(html, "utf8");
+    assert(!/<script/i.test(text) && !/(src|href)="https?:/.test(text), "report.html has no scripts and no network references");
+  }
+  await closeAll();
+});
+
+/**
+ * Roadmap "Drawing-sheet settings and reusable templates": the form replaces
+ * the two quick-picks. The suite answers it through the Test seam (the form is
+ * a webview it cannot click) and checks that every setting reaches the sheet.
+ */
+test("Export Drawing Sheet applies the form's settings: views, scale, projection and title-block fields", async () => {
+  const api = await saveTestApi();
+  if (!api?.setSheetFormAnswer) return;
+  const staged = stage(STEP_FIXTURE);
+  const out = path.join(path.dirname(staged), "sheet.svg");
+  assert(await openDocument(staged), "the STEP fixture opens");
+  let offeredTemplates: string[] = [];
+  api.setSheetFormAnswer(async (opts) => {
+    const o = opts as { templates: () => Promise<Array<{ name: string }>> };
+    offeredTemplates = (await o.templates()).map((t) => t.name);
+    return { views: ["front", "top"], projection: "third", paper: "fit", scale: "2:1", format: "svg", title: "Bracket", fields: { author: "Ann", drawingNumber: "D-7" } };
+  });
+  try {
+    await withModals([save(out)], async () => {
+      await vscode.commands.executeCommand("cad-preview.exportSheet");
+      await waitForFile(out);
+    });
+  } finally {
+    api.setSheetFormAnswer(undefined);
+  }
+  assert(offeredTemplates.includes("iso-a3-first"), `the form is offered the bundled templates (got ${JSON.stringify(offeredTemplates)})`);
+  const svg = fs.existsSync(out) ? fs.readFileSync(out, "utf8") : "";
+  assert(/id="view-front"/.test(svg) && /id="view-top"/.test(svg) && !/id="view-right"/.test(svg), "exactly the chosen views are drawn");
+  assert(/Scale 2:1/.test(svg) && /Third-angle projection/.test(svg), "scale and projection reach the title block");
+  assert(/Bracket/.test(svg) && /Drawn Ann/.test(svg) && /Dwg D-7/.test(svg), "the title and fields are drawn");
+  await closeAll();
+});
+
+/**
  * Feasibility probe for covering `provider.ts`'s six external-change watchers.
  *
  * Those watchers reconcile by `webview.postMessage` with NO host-side
@@ -1248,6 +1354,89 @@ test("an external .planes.json edit is reconciled into the webview", async () =>
   } finally {
     sub.dispose();
   }
+  await closeAll();
+});
+
+/**
+ * Roadmap "Explicit external-change conflict handling": an external sidecar
+ * write that lands while this editor has an UNSAVED (debounce-pending)
+ * change is a conflict, never a silent last-writer-wins. The suite injects
+ * the local change through the Test seam (it cannot post into a webview),
+ * then races an external write inside the 500 ms autosave window.
+ */
+test("a parts conflict prompts, and 'Keep mine' overwrites the disk version", async () => {
+  const api = await saveTestApi();
+  if (!api?.simulateWebviewMessage || !api.onDidPostMessage) return;
+  const staged = stage(STEP_FIXTURE);
+  assert(await openDocument(staged), "the STEP fixture opens for the parts conflict");
+  await sleep(1500); // let the open settle (initial fingerprints, ready hydration)
+  const partsFile = `${staged}.parts.json`;
+  const part = (name: string) => ({ name, color: "#ff0000", volumes: [], surfaces: [], lines: [], points: [] });
+  const record = await withModals([pick("Keep mine")], async () => {
+    await api.simulateWebviewMessage!(vscode.Uri.file(staged), { type: "partsChanged", parts: [part("Mine")] });
+    fs.writeFileSync(partsFile, JSON.stringify({ version: 1, source: path.basename(staged), parts: [part("Theirs"), part("Theirs2")] }));
+    const settled = await waitFor(() => {
+      try {
+        return JSON.parse(fs.readFileSync(partsFile, "utf8")).parts?.[0]?.name === "Mine";
+      } catch {
+        return false;
+      }
+    }, 15000);
+    assert(settled, "choosing 'Keep mine' writes this editor's parts over the external version");
+  });
+  assert(record.warnings.length === 1, `exactly one conflict prompt was shown (saw ${record.warnings.length})`);
+  const msg = record.warnings[0]?.message ?? "";
+  assert(/Parts for .*changed on disk/.test(msg), `the prompt names the kind and file (got "${msg}")`);
+  assert(msg.includes("disk now has 2 parts") && msg.includes("this editor has 1 part"), `the prompt summarizes both sides (got "${msg}")`);
+  await closeAll();
+});
+
+test("an edits conflict prompts, and 'Reload from disk' adopts the disk version without overwriting it", async () => {
+  const api = await saveTestApi();
+  if (!api?.simulateWebviewMessage || !api.onDidPostMessage) return;
+  const staged = stage(STEP_FIXTURE);
+  assert(await openDocument(staged), "the STEP fixture opens for the edits conflict");
+  await sleep(1500);
+  const editsFile = `${staged}.edits.json`;
+  const box = (x: number) => ({ op: "addBox", center: [x, 0, 0], size: [1, 1, 1] });
+  const diskOps = [box(10), box(20)];
+  const seen: Array<{ type: string; ops?: unknown[] }> = [];
+  const sub = api.onDidPostMessage((m) => seen.push(m as { type: string; ops?: unknown[] }));
+  try {
+    const record = await withModals([pick("Reload from disk")], async () => {
+      await api.simulateWebviewMessage!(vscode.Uri.file(staged), { type: "editsChanged", ops: [box(5)], variables: [] });
+      fs.writeFileSync(editsFile, JSON.stringify({ version: 1, source: path.basename(staged), ops: diskOps }));
+      const adopted = await waitFor(() => seen.some((m) => m.type === "edits" && Array.isArray(m.ops) && m.ops.length === 2), 15000);
+      assert(adopted, "choosing 'Reload from disk' posts the disk's two ops to the webview");
+    });
+    assert(record.warnings.length === 1, `exactly one conflict prompt was shown (saw ${record.warnings.length})`);
+    assert((record.warnings[0]?.message ?? "").includes("disk now has 2 ops"), "the prompt counts the disk ops");
+    await sleep(1500); // past the autosave debounce: the local op must NOT land on disk
+    const onDisk = readSidecarJson(editsFile).ops ?? [];
+    assert(onDisk.length === 2, `the external version survives on disk (found ${onDisk.length} ops)`);
+  } finally {
+    sub.dispose();
+  }
+  await api.revertDocument?.(vscode.Uri.file(staged));
+  await closeAll();
+});
+
+test("replacing the source while unsaved edits exist asks instead of silently reloading", async () => {
+  const api = await saveTestApi();
+  if (!api?.simulateWebviewMessage) return;
+  const staged = stage(STEP_FIXTURE);
+  assert(await openDocument(staged), "the STEP fixture opens for the source-replacement prompt");
+  await sleep(1500);
+  const uri = vscode.Uri.file(staged);
+  await api.simulateWebviewMessage(uri, { type: "editsChanged", ops: [{ op: "addBox", center: [5, 0, 0], size: [1, 1, 1] }], variables: [] });
+  await sleep(1500); // the autosave lands — the tail is unsaved (not baked), not pending
+  const record = await withModals([pick("Keep editing")], async () => {
+    fs.writeFileSync(staged, fs.readFileSync(path.join(ROOT, "examples", "STP", "bull.stp")));
+    await sleep(3000); // watcher debounce + prompt
+  });
+  assert(record.warnings.length === 1, `the replacement prompted once (saw ${record.warnings.length})`);
+  assert(/replaced on disk while it has 1 unsaved edit/.test(record.warnings[0]?.message ?? ""), "the prompt counts the unsaved edits");
+  await api.revertDocument?.(uri);
   await closeAll();
 });
 

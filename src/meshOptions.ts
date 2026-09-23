@@ -78,6 +78,12 @@ export interface MeshOptions {
    * `numThreads` is deliberately NOT exposed: this repo always loads the
    * serial build, where it has no effect. */
   ftetwildDisableFiltering: boolean;
+  /**
+   * Advisory element budget (roadmap "Mesh size and memory budget preview"):
+   * when the pre-generation estimate exceeds it the panel/tool WARNS — it
+   * never blocks a generate. Optional: absent means no budget.
+   */
+  budgetElements?: number;
 }
 
 /**
@@ -244,7 +250,7 @@ export function validateMeshOptions(raw: unknown): MeshOptions | null {
   const ftetwildDisableFiltering =
     typeof o.ftetwildDisableFiltering === "boolean" ? o.ftetwildDisableFiltering : DEFAULT_MESH_OPTIONS.ftetwildDisableFiltering;
 
-  return {
+  const out: MeshOptions = {
     dimension,
     sizeMin,
     sizeMax,
@@ -260,6 +266,9 @@ export function validateMeshOptions(raw: unknown): MeshOptions | null {
     ftetwildCoarsen,
     ftetwildDisableFiltering,
   };
+  // Optional and omitted when absent, so an untouched sidecar stays byte-stable.
+  if (isFiniteNumber(o.budgetElements) && o.budgetElements >= 1) out.budgetElements = Math.round(o.budgetElements);
+  return out;
 }
 
 /**

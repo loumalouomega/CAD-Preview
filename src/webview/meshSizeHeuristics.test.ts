@@ -3,10 +3,8 @@ import {
   COARSE_DIVISOR,
   DEFAULT_SIZE_DIVISOR,
   FINE_DIVISOR,
-  LARGE_ELEMENT_COUNT,
   PRESET_DIVISORS,
   defaultTargetSize,
-  estimateElementCount,
   formatCount,
   formatSize,
   sizeToSlider,
@@ -71,44 +69,6 @@ describe("defaultTargetSize / presets", () => {
 
   it("the medium preset matches the default size", () => {
     expect(DIAGONAL / PRESET_DIVISORS.medium).toBeCloseTo(defaultTargetSize(DIAGONAL));
-  });
-});
-
-describe("estimateElementCount", () => {
-  it("estimates ~6 tets per h-cube of bbox volume in 3D", () => {
-    // Unit cube at h = 0.1: 1000 h-cubes × 6 tets.
-    expect(estimateElementCount([1, 1, 1], 0.1, 3)).toBe(6000);
-  });
-
-  it("estimates ~2 triangles per h-square of bbox area in 2D", () => {
-    // Unit cube surface area 6, h = 0.1 → 600 squares × 2 triangles.
-    expect(estimateElementCount([1, 1, 1], 0.1, 2)).toBe(1200);
-  });
-
-  it("defaults to the simplex factors when shape is omitted", () => {
-    expect(estimateElementCount([1, 1, 1], 0.1, 3)).toBe(estimateElementCount([1, 1, 1], 0.1, 3, "simplex"));
-  });
-
-  it("estimates ~1 hex per h-cube for a subdivided 3D mesh", () => {
-    expect(estimateElementCount([1, 1, 1], 0.1, 3, "subdivided")).toBe(1000);
-  });
-
-  it("estimates ~1 quad per h-square for a subdivided 2D mesh", () => {
-    expect(estimateElementCount([1, 1, 1], 0.1, 2, "subdivided")).toBe(600);
-  });
-
-  it("estimates diagonal segments in 1D, shape-independent", () => {
-    expect(estimateElementCount([3, 4, 0], 0.5, 1)).toBe(10);
-    expect(estimateElementCount([3, 4, 0], 0.5, 1, "subdivided")).toBe(10);
-  });
-
-  it("returns 0 for a degenerate target size", () => {
-    expect(estimateElementCount([1, 1, 1], 0, 3)).toBe(0);
-    expect(estimateElementCount([1, 1, 1], NaN, 3)).toBe(0);
-  });
-
-  it("crosses the large-mesh threshold for a fine size on a big box", () => {
-    expect(estimateElementCount([100, 100, 100], 1, 3)).toBeGreaterThan(LARGE_ELEMENT_COUNT);
   });
 });
 

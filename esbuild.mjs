@@ -33,6 +33,28 @@ const wasmPathPlugin = {
  *  for the bundle's own location, and substitute every `import.meta.url`
  *  reference in the bundle (including inside third-party deps) with it.
  *  opencascade.js has no `import.meta` references, so this is a no-op there. */
+/** Exact installed kernel package versions, stamped into the Node bundles as
+ *  `__KERNEL_VERSIONS__` (read by `src/kernelVersions.ts`) so a simulation
+ *  handoff manifest records what actually meshed the file. Read from the
+ *  installed packages at build time — the declared ranges in package.json are
+ *  not what shipped. */
+function kernelVersions() {
+  const read = (name) => {
+    try {
+      return JSON.parse(fs.readFileSync(new URL(`./node_modules/${name}/package.json`, import.meta.url), "utf8")).version;
+    } catch {
+      return null;
+    }
+  };
+  return {
+    "opencascade.js": read("opencascade.js"),
+    "@loumalouomega/gmsh-wasm": read("@loumalouomega/gmsh-wasm"),
+    "@meshioplusplus/wasm": read("@meshioplusplus/wasm"),
+    "float-tetwild-wasm": read("float-tetwild-wasm"),
+  };
+}
+const KERNEL_VERSIONS_DEFINE = JSON.stringify(JSON.stringify(kernelVersions()));
+
 const extensionConfig = {
   entryPoints: ["src/extension.ts"],
   bundle: true,
@@ -90,6 +112,7 @@ const extensionConfig = {
   },
   define: {
     "import.meta.url": "import_meta_url",
+    __KERNEL_VERSIONS__: KERNEL_VERSIONS_DEFINE,
   },
   sourcemap: true,
   logLevel: "info",
@@ -120,6 +143,7 @@ const mcpConfig = {
   },
   define: {
     "import.meta.url": "import_meta_url",
+    __KERNEL_VERSIONS__: KERNEL_VERSIONS_DEFINE,
   },
   sourcemap: true,
   logLevel: "info",
@@ -146,6 +170,7 @@ const kernelConfig = {
   },
   define: {
     "import.meta.url": "import_meta_url",
+    __KERNEL_VERSIONS__: KERNEL_VERSIONS_DEFINE,
   },
   sourcemap: true,
   logLevel: "info",
@@ -209,6 +234,16 @@ function copyMeshPresets() {
   console.log(`Copied starter-presets.json → dist/mesh-presets/starter-presets.json (${(fs.statSync(dst).size / 1e3).toFixed(1)} KB)`);
 }
 
+// Same for the bundled drawing-sheet templates (roadmap "Drawing-sheet
+// settings and reusable templates"), resolved via `bundledSheetTemplatesPath`.
+function copySheetTemplates() {
+  const src = path.join(__dirname, "sheet-templates", "starter-templates.json");
+  const dst = path.join(__dirname, "dist", "sheet-templates", "starter-templates.json");
+  fs.mkdirSync(path.dirname(dst), { recursive: true });
+  fs.copyFileSync(src, dst);
+  console.log(`Copied starter-templates.json → dist/sheet-templates/starter-templates.json (${(fs.statSync(dst).size / 1e3).toFixed(1)} KB)`);
+}
+
 if (watch) {
   const ctxExt = await esbuild.context(extensionConfig);
   const ctxMcp = await esbuild.context(mcpConfig);
@@ -218,6 +253,7 @@ if (watch) {
   copyWasm();
   copyMacros();
   copyMeshPresets();
+  copySheetTemplates();
   console.log("esbuild: watching…");
 } else {
   await Promise.all([
@@ -229,4 +265,5 @@ if (watch) {
   copyWasm();
   copyMacros();
   copyMeshPresets();
+  copySheetTemplates();
 }

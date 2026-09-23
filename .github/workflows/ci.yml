@@ -74,6 +74,12 @@ jobs:
       - name: Package extension (.vsix)
         run: npm run package -- --out cad-preview.vsix
 
+      # The packaged archive must contain every runtime file the kernel
+      # loaders resolve (derived from .vscodeignore's carve-outs) and nothing
+      # that must not ship — a clean npm ci says nothing about the .vsix.
+      - name: Check packaged runtime files
+        run: npm run compat:vsix -- cad-preview.vsix
+
       - name: Upload .vsix artifact
         uses: actions/upload-artifact@v7
         with:
@@ -108,6 +114,9 @@ jobs:
 
       - name: Package extension (.vsix)
         run: npm run package -- --out cad-preview-${{ github.ref_name }}.vsix
+
+      - name: Check packaged runtime files
+        run: npm run compat:vsix -- cad-preview-${{ github.ref_name }}.vsix
 
       # marketplace.visualstudio.com is a network call this job has no control
       # over, and it does go down: v1.9.0's publish died on a plain HTTP 503

@@ -4,6 +4,32 @@ All notable changes to the "CAD Preview" extension are documented in this file.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/); this project does not yet strictly follow Semantic Versioning (pre-1.0 releases moved fast and bundled multiple features per bump).
 
+## [3.1.0] - 2026-09-23
+
+Eleven items closed, all headless-side or additive, plus two correctness fixes to how the kernel and the sidecars behave under concurrent access — no sidecar schema changes, no breaking MCP changes.
+
+### Added
+
+- **Meshing preparation tools.**
+  - **Mesh-aware surface tessellation export** (`export_tessellated_stl`, and Export ▸ STL ▸ *Mesh-aware…*): derives the B-rep tessellation's linear deflection from a downstream target cell size instead of the viewport, and reports the sampled chordal error against the requested tolerance.
+  - **Mesh size and memory budget preview** (`estimate_mesh_budget`, and a readout in the FE Mesh panel): a calibrated element-count/memory estimate from real volume/area, before you generate.
+  - **Narrow-gap and passage resolution preflight** (`analyze_passages`, and a Passages panel under Advanced ▸ Analysis): finds annular passages between coaxial cylinders and thin slots between facing planes, reports cells-across against the requested size, and can apply a suggested local size as a Part.
+  - **CAD-to-mesh deviation map** (`measure_mesh_deviation`, and a *Deviation* button in FE Mesh): samples distance from the CAD tessellation to the generated mesh boundary in both directions, with per-face failures and an optional PLY export carrying the distance field.
+- **Drawing-sheet settings and reusable templates.** Title block fields (author, drawing number, revision, material), a `template`/`libraryPath` pair on `export_drawing_sheet`, `save_sheet_template`/`list_sheet_templates`, and a small webview form replacing the sheet export's two quick-picks.
+- **Batch export** (`batch_export`, and a *Batch Export…* command): exports many files to one target in one run, with a per-file result row — a bad file becomes a failed row, never an aborted batch — and a read-only report panel.
+- **Simulation handoff manifest** (`export_mesh {manifest: true}`, a *Handoff manifest* checkbox in FE Mesh, and `check_handoff_manifest`): a receipt beside a mesh export recording the source and edit-history hashes, resolved Part→physical-group mapping, boundary coverage, Kratos SubModelPart sizes, and the kernel versions used, so a later call can tell whether the export has gone stale.
+- **Preparation report bundle** (`generate_prep_report`, and a *Preparation Report…* command): a self-contained HTML (plus JSON) report assembling mass properties, BOM/hole table or mesh health, mesh quality, deviation, passage findings, budget-vs-actual, and the handoff manifest — each section filled by the same tool an agent would call directly.
+- **Dependency and format compatibility corpus** (`npm run compat`): a table-driven suite covering every import format, every meshio export writer, and known upstream limitations, plus a packaged-extension content check (`npm run compat:vsix`) now run in CI.
+
+### Changed
+
+- **Kernel jobs are now scoped to their owner** (a document tab, an MCP request, or a batch run). Cancelling one no longer risks killing another's in-flight kernel call; a queued-but-not-yet-sent job is dropped without ever reaching the kernel. There's a per-call timeout and a `cadPreview.kernelTimeoutMinutes` setting.
+- **External sidecar/source changes while you have unsaved local edits now prompt** ("Reload from disk" / "Keep mine") instead of silently overwriting whichever side wrote last. A source-file replacement with unsaved edits pending prompts the same way instead of reloading unconditionally.
+
+### Fixed
+
+- **`compat:vsix`'s first run found two packaging leaks**: `scripts/reinstall-local.sh` and roughly 1,200 stray `.opencode/**` files were being included in the packaged `.vsix`. Both are now excluded.
+
 ## [3.0.0] - 2026-09-21
 
 A ground-up redesign of the viewer's chrome. No CAD, meshing, MCP or file-format behaviour changed — every sidecar, tool and export reads and writes exactly what it did in 2.7.0 — but nearly everything you look at is different, and one control moved (see **Changed**), which is why this is a major version. It also covers the `2.7.1` version bump that was never released.
@@ -529,6 +555,7 @@ This release republishes v1.9.0's full changelog (below) unchanged; v1.9.0 itsel
 
 - Initial release: read-only 3D preview for CAD and mesh files (STEP, IGES, BREP, STL, OBJ, PLY, glTF) inside a VS Code custom editor, using OpenCascade.js (OCCT WASM) in the extension host for B-rep formats and Three.js in the webview for rendering.
 
+[3.1.0]: https://github.com/loumalouomega/CAD-Preview/compare/v3.0.0...v3.1.0
 [3.0.0]: https://github.com/loumalouomega/CAD-Preview/compare/v2.7.0...v3.0.0
 [2.7.0]: https://github.com/loumalouomega/CAD-Preview/compare/v2.6.0...v2.7.0
 [2.6.0]: https://github.com/loumalouomega/CAD-Preview/compare/v2.5.0...v2.6.0

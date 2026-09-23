@@ -47,6 +47,7 @@ import {
   type PaperSize,
   type ProjectionMethod,
   type SheetViewInput,
+  type TitleBlockFields,
 } from "./drawingSheet";
 
 /**
@@ -343,6 +344,8 @@ export interface DrawingSheetOptions {
   scale?: number;
   title?: string;
   date?: string;
+  /** Optional title-block fields (author, drawing number, revision, material). */
+  fields?: TitleBlockFields;
 }
 
 export interface DrawingSheetResult {
@@ -437,6 +440,7 @@ export async function exportDrawingSheet(
     title: options.title,
     unit: "mm",
     date: options.date,
+    fields: options.fields,
   });
   warnings.push(...layout.warnings);
 
