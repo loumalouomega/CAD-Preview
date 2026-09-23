@@ -3,7 +3,7 @@ import { CadPreviewProvider } from "./provider";
 import { registerModelsView } from "./modelsView";
 import { maybeShowWhatsNew } from "./whatsNew";
 import { disconnectSpaceMouse } from "./spaceMouse";
-import type { HostToWebview } from "./protocol";
+import type { HostToWebview, WebviewToHost } from "./protocol";
 
 /**
  * What `activate()` returns to `vscode.extensions.getExtension(id).exports`,
@@ -24,6 +24,8 @@ export interface CadPreviewTestApi {
   revertDocument: (uri: vscode.Uri) => Promise<void>;
   /** Fires the dirty event exactly like a webview `editsChanged` post would. */
   markDirtyDocument: (uri: vscode.Uri) => void;
+  /** Delivers a message to the document's real webview-message handler. */
+  simulateWebviewMessage: (uri: vscode.Uri, msg: WebviewToHost) => Promise<void>;
   /** Runs the real `saveCustomDocumentAs` copy join for an open document. */
   saveDocumentAs: (uri: vscode.Uri, destination: vscode.Uri) => Promise<void>;
   /**
@@ -44,6 +46,7 @@ export function activate(context: vscode.ExtensionContext): CadPreviewTestApi | 
         saveDocument: (uri: vscode.Uri) => CadPreviewProvider.testSaveDocument(uri),
         revertDocument: (uri: vscode.Uri) => CadPreviewProvider.testRevertDocument(uri),
         markDirtyDocument: (uri: vscode.Uri) => CadPreviewProvider.markDirtyDocument(uri),
+        simulateWebviewMessage: (uri: vscode.Uri, msg: WebviewToHost) => CadPreviewProvider.simulateWebviewMessage(uri, msg),
         saveDocumentAs: (uri: vscode.Uri, destination: vscode.Uri) =>
           CadPreviewProvider.testSaveDocumentAs(uri, destination),
         setExportMeshStub: (stub) => {

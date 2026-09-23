@@ -1,6 +1,14 @@
 import * as vscode from "vscode";
 import { routeFile } from "./fileRouter";
-import { createKernelClient, type KernelClient } from "./kernelClient";
+import {
+  SIDECAR_KIND_LABELS,
+  SidecarRevisionTracker,
+  fingerprint,
+  summarizeConflict,
+  type ConflictSides,
+  type SidecarKind,
+} from "./sidecarRevision";
+import { createKernelClient, DEFAULT_TIMEOUT_MS, type KernelClient, type ScopedPipeline } from "./kernelClient";
 import { normalizeTessellationQuality, tessellationParamsFor } from "./tessellationQuality";
 import { detectStepLengthUnit } from "./stepUnits";
 import { detectIgesLengthUnit } from "./igesUnits";
@@ -247,7 +255,12 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
    * when the save's rename-overwrite briefly reads as a file delete. */
   private readonly documentSavers = new Map<
     string,
-    { save: () => Promise<void>; revert: () => Promise<void>; markDirty: () => void }
+    {
+      save: () => Promise<void>;
+      revert: () => Promise<void>;
+      markDirty: () => void;
+      receive: (msg: WebviewToHost) => Promise<void>;
+    }
   >();
 
   /**
@@ -303,6 +316,15 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
     savers.markDirty();
   }
 
+  /** Test-only: delivers `msg` to the document's real webview-message
+   * handler, exactly as if its webview had posted it (the suite cannot post
+   * into a webview itself). */
+  public static async simulateWebviewMessage(uri: vscode.Uri, msg: WebviewToHost): Promise<void> {
+    const savers = CadPreviewProvider.lastProvider?.documentSavers.get(uri.toString());
+    if (!savers) throw new Error(`No open CAD Preview session for ${uri.fsPath} — open the document first.`);
+    await savers.receive(msg);
+  }
+
   /** Test-only: invokes the real `revertToSavePoint` join for an open document. */
   public static async testRevertDocument(uri: vscode.Uri): Promise<void> {
     const savers = CadPreviewProvider.lastProvider?.documentSavers.get(uri.toString());
@@ -331,6 +353,20 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
    * of importing `occtService.ts`/`gmshService.ts`/etc. directly.
    */
   private readonly pipeline: KernelClient;
+
+  /** Per-document owner-scoped views of `pipeline`, keyed by `uri.toString()`. */
+  private readonly scopedPipelines = new Map<string, ScopedPipeline>();
+
+  /** The owner-scoped pipeline for one document (memoized; dropped on dispose). */
+  private docPipeline(uri: vscode.Uri): ScopedPipeline {
+    const key = uri.toString();
+    let scoped = this.scopedPipelines.get(key);
+    if (!scoped) {
+      scoped = this.pipeline.withJob({ owner: key, timeoutMs: kernelTimeoutMs() });
+      this.scopedPipelines.set(key, scoped);
+    }
+    return scoped;
+  }
 
   /**
    * Thumbnail bytes by `pngUrl`, shared across every open document (the
@@ -661,6 +697,10 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
     // stable key identifying the document to the child — the URI string —
     // used by both `handleBRep` and this method's `onDidDispose` below.
     const documentKey = document.uri.toString();
+    // Roadmap "Document-scoped jobs and cancellation": every kernel call this
+    // document makes carries its own owner, so this tab's Cancel (or closing
+    // it) can never interrupt another tab's running job.
+    const docPipeline = this.docPipeline(document.uri);
     // Progress reporting and cancellation (roadmap item, closed — see
     // CLAUDE.md's "Progress reporting and cancellation" section for the full
     // scoping rationale). `loadModel()` can be called again (a newer edit, an
@@ -801,6 +841,11 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
             : []),
           ...(currentViewState ? [writeViewState(document.uri, currentViewState)] : []),
         ]);
+        // An explicit Save is the "chosen overwrite" for any held conflict.
+        for (const kind of Object.keys(sidecarUriFor) as SidecarKind[]) {
+          revisions.noteSynced(kind, await diskFingerprint(kind));
+          revisions.resolve(kind);
+        }
         post({ type: "status", text: "Saved" });
       } catch (err) {
         post({ type: "error", message: `Save failed: ${(err as Error).message}` });
@@ -869,7 +914,7 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
           );
           if (confirm !== "Save in place") return false;
         }
-        const baked = await this.pipeline.exportBRep(
+        const baked = await docPipeline.exportBRep(
           this.context.extensionPath,
           src.bytes,
           src.format as Extract<CadFormat, "step" | "iges" | "brep" | "csg">,
@@ -926,7 +971,7 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
         // rather than claiming verified highlights.
         try {
           const newBytes = await vscode.workspace.fs.readFile(document.uri);
-          const rebindResult = await this.pipeline.rebindPartsAcrossSave(
+          const rebindResult = await docPipeline.rebindPartsAcrossSave(
             this.context.extensionPath,
             src.bytes,
             src.format as Extract<CadFormat, "step" | "iges" | "brep" | "csg">,
@@ -1211,15 +1256,13 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
                 // respawned child).
                 brepLoadGeneration.current++;
                 post({ type: "status", text: "Cancelled" });
-                // Roadmap "OCCT in a forked child process", Phase 3: genuine
-                // interruption, not just a discarded result — kills the
-                // shared kernel-worker child. See this.pipeline's own doc
-                // comment on the one sharp edge this has: if some OTHER
-                // document's call happens to be the one truly executing at
-                // this exact moment (this document's own call was merely
-                // queued behind it), that other call is interrupted too, not
-                // just this one — an accepted trade-off of one shared child.
-                this.pipeline.cancelCurrent();
+                // Genuine interruption, scoped to THIS document (roadmap
+                // "Document-scoped jobs and cancellation"): this tab's queued
+                // jobs are dropped unsent and its running job — only if it is
+                // this tab's — is killed. Another tab's running job is never
+                // touched. The generation bump above still discards a result
+                // that raced the cancel.
+                docPipeline.cancel();
               });
               await this.handleBRep(document.uri, format, post, resolvedEdits, documentKey, generation, brepLoadGeneration, autoFit, progress, currentBakedThrough, currentEdits.slice(0, currentBakedThrough).map((o) => o.op));
             }
@@ -1277,7 +1320,7 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
         // result, so a query-covered part never also gets geometrically
         // remapped underneath its own resolution. Selector warnings surface
         // on the status line; the parts message below carries the final ids.
-        const selected = await this.pipeline.resolvePartSelectors(
+        const selected = await docPipeline.resolvePartSelectors(
           this.context.extensionPath,
           bytes,
           format as Extract<CadFormat, "step" | "iges" | "brep" | "csg">,
@@ -1286,7 +1329,7 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
         );
         if (selected.parts !== currentParts) currentParts = selected.parts;
         for (const warning of selected.warnings) post({ type: "status", text: warning });
-        const result = await this.pipeline.rebindPartsAcrossOps(
+        const result = await docPipeline.rebindPartsAcrossOps(
           this.context.extensionPath,
           bytes,
           format as Extract<CadFormat, "step" | "iges" | "brep" | "csg">,
@@ -1358,6 +1401,136 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
       watcherDisposables.push(watcher, { dispose: () => { if (timer) clearTimeout(timer); } });
     };
 
+    // Roadmap "Explicit external-change conflict handling": an external write
+    // that lands while THIS editor has an unsaved (debounce-pending) change
+    // to the same sidecar is a conflict — neither version is silently
+    // discarded. See `sidecarRevision.ts` for the rules and their honest
+    // limits (detection, not a cross-process transaction).
+    const revisions = new SidecarRevisionTracker();
+    const sidecarUriFor: Record<SidecarKind, vscode.Uri> = {
+      edits: editsSidecarUri(document.uri),
+      parts: sidecarUri(document.uri),
+      planes: planesSidecarUri(document.uri),
+      annotations: annotationsSidecarUri(document.uri),
+      mesh: meshOptionsSidecarUri(document.uri),
+    };
+    const saveTimerOf: Record<SidecarKind, () => void> = {
+      edits: () => editsSaveTimer && clearTimeout(editsSaveTimer),
+      parts: () => partsSaveTimer && clearTimeout(partsSaveTimer),
+      planes: () => planesSaveTimer && clearTimeout(planesSaveTimer),
+      annotations: () => annotationsSaveTimer && clearTimeout(annotationsSaveTimer),
+      mesh: () => meshSaveTimer && clearTimeout(meshSaveTimer),
+    };
+    const diskFingerprint = async (kind: SidecarKind): Promise<string> => {
+      try {
+        return fingerprint(await vscode.workspace.fs.readFile(sidecarUriFor[kind]));
+      } catch {
+        return fingerprint(null);
+      }
+    };
+    // Seed the known revisions from what is on disk at open (the `ready`
+    // hydration reads the same files).
+    for (const kind of Object.keys(sidecarUriFor) as SidecarKind[]) {
+      void diskFingerprint(kind).then((fp) => {
+        if (revisions.knownRevision(kind) === undefined) revisions.noteSynced(kind, fp);
+      });
+    }
+    /** Per kind: read the disk version and return an `adopt` thunk, or `null`
+     * when disk already matches this editor (an echo of our own write). */
+    type SidecarCheck = () => Promise<{ adopt: () => void; sides: ConflictSides } | null>;
+    const checks = new Map<SidecarKind, SidecarCheck>();
+    const openConflicts = new Set<SidecarKind>();
+    const fileName = path.basename(document.uri.fsPath);
+
+    /** Writes local state now, bypassing the conflict gate (an explicit overwrite). */
+    const writeLocal = async (kind: SidecarKind): Promise<void> => {
+      if (kind === "edits") await writeEdits(document.uri, currentEdits, currentVariables, currentBakedThrough);
+      else if (kind === "parts") await writeParts(document.uri, currentParts);
+      else if (kind === "planes") await writePlanes(document.uri, currentPlanes);
+      else if (kind === "annotations") await writeAnnotations(document.uri, currentAnnotations);
+      else if (currentMeshOptions) {
+        await writeMeshOptions(document.uri, currentMeshOptions);
+        await writeGeoScript(document.uri, currentMeshOptions);
+      }
+      revisions.noteSynced(kind, await diskFingerprint(kind));
+      revisions.resolve(kind);
+    };
+
+    const raiseConflict = async (kind: SidecarKind, sides: ConflictSides): Promise<void> => {
+      revisions.pause(kind);
+      saveTimerOf[kind]();
+      if (openConflicts.has(kind)) return;
+      openConflicts.add(kind);
+      const label = SIDECAR_KIND_LABELS[kind];
+      post({ type: "status", text: `${label}: external change conflicts with unsaved changes — autosave paused` });
+      try {
+        const choice = await vscode.window.showWarningMessage(
+          summarizeConflict(kind, fileName, sides),
+          "Reload from disk",
+          "Keep mine (overwrite)"
+        );
+        if (choice === "Reload from disk") {
+          const fresh = await checks.get(kind)?.();
+          fresh?.adopt();
+          revisions.noteSynced(kind, await diskFingerprint(kind));
+          revisions.resolve(kind);
+          post({ type: "status", text: `${label} reloaded from disk` });
+        } else if (choice === "Keep mine (overwrite)") {
+          await writeLocal(kind);
+          post({ type: "status", text: `${label}: disk overwritten with this editor's version` });
+        } else {
+          post({
+            type: "status",
+            text: `${label}: autosave paused until the conflict is resolved — File ▸ Save overwrites the disk version`,
+          });
+        }
+      } catch (err) {
+        post({ type: "error", message: `Could not resolve the ${label.toLowerCase()} conflict: ${(err as Error).message}` });
+      } finally {
+        openConflicts.delete(kind);
+      }
+    };
+
+    /** Debounced-autosave body for `kind`: checks disk against the known
+     * revision first; a moved disk (or a paused kind) raises the conflict
+     * instead of overwriting. */
+    const guardedAutosave = async (kind: SidecarKind): Promise<void> => {
+      const fp = await diskFingerprint(kind);
+      if (!revisions.canWrite(kind, fp)) {
+        const fresh = await checks.get(kind)?.();
+        if (!fresh) {
+          // Disk content equals ours after all (e.g. a formatting-only rewrite) — adopt the revision.
+          revisions.noteSynced(kind, fp);
+          if (!revisions.isPaused(kind)) return void (await writeLocal(kind));
+          return;
+        }
+        void raiseConflict(kind, fresh.sides);
+        return;
+      }
+      await writeLocal(kind);
+    };
+
+    const watchSidecar = (kind: SidecarKind, check: SidecarCheck): void => {
+      checks.set(kind, check);
+      watchForExternalChange(sidecarUriFor[kind], () => {
+        void (async () => {
+          const fp = await diskFingerprint(kind);
+          const fresh = await check();
+          const verdict = revisions.classifyDiskChange(kind, fresh === null);
+          if (verdict === "echo") {
+            revisions.noteSynced(kind, fp);
+            return;
+          }
+          if (verdict === "conflict") {
+            void raiseConflict(kind, fresh!.sides);
+            return;
+          }
+          fresh!.adopt();
+          revisions.noteSynced(kind, fp);
+        })();
+      });
+    };
+
     watchForExternalChange(document.uri, () => {
       if (!route) return;
       // Tier 0: our own in-place save fires this watcher too — skip exactly
@@ -1366,80 +1539,115 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
         expectOwnSourceSave = false;
         return;
       }
-      post({ type: "status", text: "File changed on disk — reloading…" });
-      loadModel(true);
-    });
-
-    watchForExternalChange(editsSidecarUri(document.uri), () => {
+      if (!isDocumentDirty()) {
+        post({ type: "status", text: "File changed on disk — reloading…" });
+        loadModel(true);
+        return;
+      }
+      // An external source replacement while unbaked edits are pending: the
+      // edits sidecar survives either way, but replaying the tail over a
+      // different base is the user's call, not ours.
       void (async () => {
-        const parsed = await readEdits(document.uri);
-        const { ops: resolvedOps } = resolvePlaneRefs(parsed.ops, currentPlanes);
-        if (JSON.stringify(resolvedOps) === JSON.stringify(currentEdits) && JSON.stringify(parsed.variables) === JSON.stringify(currentVariables)) {
-          return;
+        const choice = await vscode.window.showWarningMessage(
+          `${fileName} was replaced on disk while it has ${unsavedEditCount()} unsaved edit(s). Reload the new file (your edits are kept in the sidecar and replayed over it)?`,
+          "Reload",
+          "Keep editing"
+        );
+        if (choice === "Reload") {
+          post({ type: "status", text: "File changed on disk — reloading…" });
+          loadModel(true);
+        } else {
+          post({ type: "status", text: "Source changed on disk — still showing the previous version; reopen to load it" });
         }
-        const previousOps = currentEdits;
-        currentEdits = resolvedOps;
-        currentVariables = parsed.variables;
-        // Tier 0: an external writer (only this extension's own save-in-place
-        // sets it today) may have moved the watermark — adopt it so the tail
-        // slice below stays aligned with the file on disk.
-        currentBakedThrough = parsed.bakedThrough;
-        if (route && route.strategy === "occt") {
-          loadModel();
-          void rebindPartsOnChange(previousOps, currentEdits);
-        }
-        postEdits();
-        post({ type: "status", text: "Edits updated externally" });
       })();
     });
 
-    watchForExternalChange(sidecarUri(document.uri), () => {
-      void (async () => {
-        const parts = await readParts(document.uri);
-        if (JSON.stringify(parts) === JSON.stringify(currentParts)) return;
-        currentParts = parts;
-        post({ type: "parts", parts: currentParts });
-        post({ type: "status", text: "Parts updated externally" });
-      })();
-    });
-
-    watchForExternalChange(planesSidecarUri(document.uri), () => {
-      void (async () => {
-        const planes = await readPlanes(document.uri);
-        if (JSON.stringify(planes) === JSON.stringify(currentPlanes)) return;
-        currentPlanes = planes;
-        post({ type: "planes", planes: currentPlanes });
-        post({ type: "status", text: "Construction planes updated externally" });
-        const { ops: resolvedOps } = resolvePlaneRefs(currentEdits, currentPlanes);
-        if (JSON.stringify(resolvedOps) !== JSON.stringify(currentEdits)) {
+    watchSidecar("edits", async () => {
+      const parsed = await readEdits(document.uri);
+      const { ops: resolvedOps } = resolvePlaneRefs(parsed.ops, currentPlanes);
+      if (JSON.stringify(resolvedOps) === JSON.stringify(currentEdits) && JSON.stringify(parsed.variables) === JSON.stringify(currentVariables)) {
+        return null;
+      }
+      return {
+        sides: { local: currentEdits.length, disk: resolvedOps.length },
+        adopt: () => {
           const previousOps = currentEdits;
           currentEdits = resolvedOps;
+          currentVariables = parsed.variables;
+          // Tier 0: an external writer (only this extension's own save-in-place
+          // sets it today) may have moved the watermark — adopt it so the tail
+          // slice below stays aligned with the file on disk.
+          currentBakedThrough = parsed.bakedThrough;
           if (route && route.strategy === "occt") {
             loadModel();
             void rebindPartsOnChange(previousOps, currentEdits);
           }
           postEdits();
-        }
-      })();
-    });
-    watchForExternalChange(annotationsSidecarUri(document.uri), () => {
-      void (async () => {
-        const annotations = await readAnnotations(document.uri);
-        if (JSON.stringify(annotations) === JSON.stringify(currentAnnotations)) return;
-        currentAnnotations = annotations;
-        post({ type: "annotations", annotations: currentAnnotations });
-        post({ type: "status", text: "Annotations updated externally" });
-      })();
+          post({ type: "status", text: "Edits updated externally" });
+        },
+      };
     });
 
-    watchForExternalChange(meshOptionsSidecarUri(document.uri), () => {
-      void (async () => {
-        const options = await readMeshOptions(document.uri);
-        if (JSON.stringify(options) === JSON.stringify(currentMeshOptions)) return;
-        currentMeshOptions = options;
-        post({ type: "meshingOptions", options });
-        post({ type: "status", text: "Mesh options updated externally" });
-      })();
+    watchSidecar("parts", async () => {
+      const parts = await readParts(document.uri);
+      if (JSON.stringify(parts) === JSON.stringify(currentParts)) return null;
+      return {
+        sides: { local: currentParts.length, disk: parts.length },
+        adopt: () => {
+          currentParts = parts;
+          post({ type: "parts", parts: currentParts });
+          post({ type: "status", text: "Parts updated externally" });
+        },
+      };
+    });
+
+    watchSidecar("planes", async () => {
+      const planes = await readPlanes(document.uri);
+      if (JSON.stringify(planes) === JSON.stringify(currentPlanes)) return null;
+      return {
+        sides: { local: currentPlanes.length, disk: planes.length },
+        adopt: () => {
+          currentPlanes = planes;
+          post({ type: "planes", planes: currentPlanes });
+          post({ type: "status", text: "Construction planes updated externally" });
+          const { ops: resolvedOps } = resolvePlaneRefs(currentEdits, currentPlanes);
+          if (JSON.stringify(resolvedOps) !== JSON.stringify(currentEdits)) {
+            const previousOps = currentEdits;
+            currentEdits = resolvedOps;
+            if (route && route.strategy === "occt") {
+              loadModel();
+              void rebindPartsOnChange(previousOps, currentEdits);
+            }
+            postEdits();
+          }
+        },
+      };
+    });
+
+    watchSidecar("annotations", async () => {
+      const annotations = await readAnnotations(document.uri);
+      if (JSON.stringify(annotations) === JSON.stringify(currentAnnotations)) return null;
+      return {
+        sides: { local: currentAnnotations.length, disk: annotations.length },
+        adopt: () => {
+          currentAnnotations = annotations;
+          post({ type: "annotations", annotations: currentAnnotations });
+          post({ type: "status", text: "Annotations updated externally" });
+        },
+      };
+    });
+
+    watchSidecar("mesh", async () => {
+      const options = await readMeshOptions(document.uri);
+      if (JSON.stringify(options) === JSON.stringify(currentMeshOptions)) return null;
+      return {
+        sides: { local: null, disk: null },
+        adopt: () => {
+          currentMeshOptions = options;
+          post({ type: "meshingOptions", options });
+          post({ type: "status", text: "Mesh options updated externally" });
+        },
+      };
     });
 
     watchForExternalChange(viewStateSidecarUri(document.uri), () => {
@@ -1460,6 +1668,9 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
       // shared kernel-worker child, plus the live-operation-preview's
       // separate `::oppreview` entry (same key prefix + suffix convention
       // `handleOpPreview` replays under).
+      // Drop this tab's queued/running kernel work first — nothing will read it.
+      docPipeline.cancel();
+      this.scopedPipelines.delete(documentKey);
       void this.pipeline.disposeBRepCacheForDocument(documentKey);
       void this.pipeline.disposeBRepCacheForDocument(`${documentKey}::oppreview`);
     });
@@ -1506,6 +1717,7 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
       save: saveDocumentSource,
       revert: revertToSavePoint,
       markDirty: () => this.fireDirty(document),
+      receive: (msg) => handleWebviewMessage(msg),
     });
     const track = () => {
       if (webviewPanel.active) this.activeSession = session;
@@ -1518,7 +1730,8 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
       this.documentSavers.delete(documentKey);
     });
 
-    webviewPanel.webview.onDidReceiveMessage(async (msg: WebviewToHost) => {
+    let handleWebviewMessage: (msg: WebviewToHost) => Promise<void> = async () => {};
+    webviewPanel.webview.onDidReceiveMessage(handleWebviewMessage = async (msg: WebviewToHost) => {
       if (msg.type === "ready") {
         post({ type: "kernelStatus", state: this.pipeline.kernelState() });
         if (!route) {
@@ -1555,7 +1768,7 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
                 for (const w of scadWarnings) post({ type: "status", text: w });
                 const bytes = src.bytes;
                 const format = src.format;
-                const selected = await this.pipeline.resolvePartSelectors(
+                const selected = await docPipeline.resolvePartSelectors(
                   this.context.extensionPath,
                   bytes,
                   format as Extract<CadFormat, "step" | "iges" | "brep" | "csg">,
@@ -1599,8 +1812,9 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
         const parts: Part[] = msg.parts;
         currentParts = parts;
         if (partsSaveTimer) clearTimeout(partsSaveTimer);
+        revisions.markLocalPending("parts");
         partsSaveTimer = setTimeout(() => {
-          void writeParts(document.uri, parts).then(
+          void guardedAutosave("parts").then(
             undefined,
             (err) => post({ type: "error", message: `Could not save parts: ${(err as Error).message}` })
           );
@@ -1613,8 +1827,9 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
         const annotations: Annotation[] = msg.annotations;
         currentAnnotations = annotations;
         if (annotationsSaveTimer) clearTimeout(annotationsSaveTimer);
+        revisions.markLocalPending("annotations");
         annotationsSaveTimer = setTimeout(() => {
-          void writeAnnotations(document.uri, annotations).then(
+          void guardedAutosave("annotations").then(
             undefined,
             (err) => post({ type: "error", message: `Could not save annotations: ${(err as Error).message}` })
           );
@@ -1627,8 +1842,9 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
         const planes: ConstructionPlane[] = msg.planes;
         currentPlanes = planes;
         if (planesSaveTimer) clearTimeout(planesSaveTimer);
+        revisions.markLocalPending("planes");
         planesSaveTimer = setTimeout(() => {
-          void writePlanes(document.uri, planes).then(
+          void guardedAutosave("planes").then(
             undefined,
             (err) => post({ type: "error", message: `Could not save construction planes: ${(err as Error).message}` })
           );
@@ -1656,8 +1872,9 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
         syncDocumentInfo();
         // Debounced sidecar autosave (separate timer/file from parts).
         if (editsSaveTimer) clearTimeout(editsSaveTimer);
+        revisions.markLocalPending("edits");
         editsSaveTimer = setTimeout(() => {
-          void writeEdits(document.uri, currentEdits, currentVariables, currentBakedThrough).then(
+          void guardedAutosave("edits").then(
             undefined,
             (err) => post({ type: "error", message: `Could not save edits: ${(err as Error).message}` })
           );
@@ -1724,8 +1941,9 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
         currentMeshOptions = options;
         // Debounced sidecar autosave (separate timer/files from parts and edits).
         if (meshSaveTimer) clearTimeout(meshSaveTimer);
+        revisions.markLocalPending("mesh");
         meshSaveTimer = setTimeout(() => {
-          void Promise.all([writeMeshOptions(document.uri, options), writeGeoScript(document.uri, options)]).then(
+          void guardedAutosave("mesh").then(
             undefined,
             (err) => post({ type: "error", message: `Could not save mesh options: ${(err as Error).message}` })
           );
@@ -1742,7 +1960,7 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
           }
           const { parts, options } = await this.resolveMeshPartsAndOptions(document.uri, input, msg.options);
           const startedAt = Date.now();
-          const result = await this.pipeline.generateMesh(this.context.extensionPath, input, options, parts);
+          const result = await docPipeline.generateMesh(this.context.extensionPath, input, options, parts);
           post({
             type: "meshingResult",
             positions: encodeBuffer(result.positions),
@@ -1851,7 +2069,7 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
           for (const w of scadWarnings) post({ type: "status", text: w });
           const bytes = src.bytes;
           const format = src.format;
-          const properties = await this.pipeline.computeMassProperties(
+          const properties = await docPipeline.computeMassProperties(
             this.context.extensionPath,
             bytes,
             format as Extract<CadFormat, "step" | "iges" | "brep" | "csg">,
@@ -1887,7 +2105,7 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
           const scadWarnings: string[] = [];
           const src = await this.readOcctSource(document.uri, route.format, scadWarnings);
           for (const w of scadWarnings) post({ type: "status", text: w });
-          const result = await this.pipeline.computeBom(
+          const result = await docPipeline.computeBom(
             this.context.extensionPath,
             src.bytes,
             src.format as Extract<CadFormat, "step" | "iges" | "brep" | "csg">,
@@ -1945,7 +2163,7 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
           for (const w of scadWarnings) post({ type: "status", text: w });
           const bytes = src.bytes;
           const format = src.format;
-          const result = await this.pipeline.checkInterference(
+          const result = await docPipeline.checkInterference(
             this.context.extensionPath,
             bytes,
             format as Extract<CadFormat, "step" | "iges" | "brep" | "csg">,
@@ -1990,7 +2208,7 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
           for (const w of scadWarnings) post({ type: "status", text: w });
           const bytes = src.bytes;
           const format = src.format;
-          const result = await this.pipeline.checkInterferenceAll(
+          const result = await docPipeline.checkInterferenceAll(
             this.context.extensionPath,
             bytes,
             format as Extract<CadFormat, "step" | "iges" | "brep" | "csg">,
@@ -2225,7 +2443,7 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
           for (const w of scadWarnings) post({ type: "status", text: w });
           const bytes = src.bytes;
           const format = src.format;
-          const facts = await this.pipeline.getEntityFacts(
+          const facts = await docPipeline.getEntityFacts(
             this.context.extensionPath,
             bytes,
             format as Extract<CadFormat, "step" | "iges" | "brep" | "csg">,
@@ -2263,7 +2481,7 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
               if (!Number.isInteger(replayOp) || replayOp < 0 || replayOp >= tailEdits.length) {
                 throw new Error(`Bucket op ${msg.op} is inside the baked prefix — it cannot be re-synthesized without rewriting the source file.`);
               }
-              const r = await this.pipeline.synthesizeSelector(
+              const r = await docPipeline.synthesizeSelector(
                 this.context.extensionPath,
                 bytes,
                 format as Extract<CadFormat, "step" | "iges" | "brep" | "csg">,
@@ -2288,7 +2506,7 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
 
       if (msg.type === "standardPartsSearchRequest") {
         try {
-          const result = await this.pipeline.searchStandardParts({ q: msg.q, page: msg.page, pageSize: 20 });
+          const result = await docPipeline.searchStandardParts({ q: msg.q, page: msg.page, pageSize: 20 });
           if (!result.available) throw new Error(result.reason);
           lastPartsSearch = {
             requestId: msg.requestId,
@@ -2347,7 +2565,7 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
 
       if (msg.type === "standardPartsInsertRequest") {
         try {
-          const downloaded = await this.pipeline.downloadStandardPart(msg.id);
+          const downloaded = await docPipeline.downloadStandardPart(msg.id);
           if (!downloaded.available) throw new Error(downloaded.reason);
           const defaultUri = vscode.Uri.joinPath(document.uri, "..", msg.suggestedName);
           const saveUri = await vscode.window.showSaveDialog({ defaultUri, filters: { "STEP files": ["step", "stp"] } });
@@ -2428,7 +2646,7 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
           for (const w of scadWarnings) post({ type: "status", text: w });
           const bytes = src.bytes;
           const format = src.format;
-          const result = await this.pipeline.measureExact(
+          const result = await docPipeline.measureExact(
             this.context.extensionPath,
             bytes,
             format as Extract<CadFormat, "step" | "iges" | "brep" | "csg">,
@@ -2455,7 +2673,7 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
             throw new Error("Colour-by-field is only available for meshio++-imported sources (VTK/MED/CGNS/Exodus/XDMF/MDPA).");
           }
           const bytes = await vscode.workspace.fs.readFile(document.uri);
-          const result = await this.pipeline.readMeshioFieldValues(bytes, route.format, msg.field, msg.kind);
+          const result = await docPipeline.readMeshioFieldValues(bytes, route.format, msg.field, msg.kind);
           // The failure now carries WHY, so the user gets the one real cause
           // instead of the three-way disjunction this used to guess at.
           if (isMeshioFieldFailure(result)) throw new Error(describeMeshioFieldFailure(result.reason, msg.field));
@@ -2475,7 +2693,7 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
           const sourceFormat = route.format as MeshParseFormat;
           const external = await resolveGltfBuffersFor(document.uri, route.format, bytes);
           try {
-            const report = await this.pipeline.checkMeshHealth(
+            const report = await docPipeline.checkMeshHealth(
               this.context.extensionPath,
               bytes,
               sourceFormat,
@@ -2491,8 +2709,8 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
             if (!msg.autoDecimate || !isHealableSizeError(err)) throw err;
             const forHeal = stlBytesForHeal(bytes, sourceFormat, external);
             const ratio = Math.min(1, AUTO_DECIMATE_TARGET_TRIANGLES / forHeal.fromTriangles);
-            const decimated = await this.pipeline.decimateStlBoundary(forHeal.stlBytes, ratio);
-            const report = await this.pipeline.checkMeshHealth(this.context.extensionPath, decimated.bytes, "stl");
+            const decimated = await docPipeline.decimateStlBoundary(forHeal.stlBytes, ratio);
+            const report = await docPipeline.checkMeshHealth(this.context.extensionPath, decimated.bytes, "stl");
             post({
               type: "meshHealResult",
               requestId: msg.requestId,
@@ -2535,7 +2753,7 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
             throw new Error("Region fitting requires an STL/OBJ/PLY/glTF source.");
           }
           const bytes = await vscode.workspace.fs.readFile(document.uri);
-          const fit = await this.pipeline.fitMeshRegion(
+          const fit = await docPipeline.fitMeshRegion(
             bytes,
             route.format as MeshParseFormat,
             msg.point,
@@ -2565,7 +2783,7 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
           const scadWarnings: string[] = [];
           const src = await this.readOcctSource(document.uri, route.format, scadWarnings);
           for (const w of scadWarnings) post({ type: "status", text: w });
-          const report = await this.pipeline.recognizePrimitives(
+          const report = await docPipeline.recognizePrimitives(
             this.context.extensionPath,
             src.bytes,
             src.format as Extract<CadFormat, "step" | "iges" | "brep" | "csg">,
@@ -2682,7 +2900,7 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
       const quality = normalizeTessellationQuality(
         vscode.workspace.getConfiguration("cadPreview").get("tessellationQuality")
       );
-      const result = await this.pipeline.loadBRepCachedForDocument(
+      const result = await this.docPipeline(uri).loadBRepCachedForDocument(
         documentKey,
         this.context.extensionPath,
         bytes,
@@ -2802,7 +3020,7 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
       const quality = normalizeTessellationQuality(
         vscode.workspace.getConfiguration("cadPreview").get("tessellationQuality")
       );
-      const result = await this.pipeline.loadBRepCachedForDocument(
+      const result = await this.docPipeline(uri).loadBRepCachedForDocument(
         `${documentKey}::oppreview`,
         this.context.extensionPath,
         bytes,
@@ -2884,14 +3102,14 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
         // names ride an unexposed C++ side-channel), so the region
         // correlation below cannot fire for it by construction.
         isFoam
-          ? this.pipeline.convertFoamCaseToStlBoundary(uri.fsPath).then((stlBytes) => ({ stlBytes, regions: undefined }))
-          : this.pipeline.convertToStlBoundaryWithRegions(bytes!, format, basename, companions!),
-        isFoam ? EMPTY_MESHIO_METADATA : this.pipeline.readMeshioMetadata(bytes!, format, basename, companions!),
+          ? this.docPipeline(uri).convertFoamCaseToStlBoundary(uri.fsPath).then((stlBytes) => ({ stlBytes, regions: undefined }))
+          : this.docPipeline(uri).convertToStlBoundaryWithRegions(bytes!, format, basename, companions!),
+        isFoam ? EMPTY_MESHIO_METADATA : this.docPipeline(uri).readMeshioMetadata(bytes!, format, basename, companions!),
         // Provenance block, if the file carries one — never throws, so a
         // file without one simply yields nothing here. Geometry-only by
         // construction for OpenFOAM (see above), so it is skipped there
         // rather than staged for a guaranteed-empty answer.
-        isFoam ? null : this.pipeline.readMeshioProvenance(bytes!, format, basename, companions!),
+        isFoam ? null : this.docPipeline(uri).readMeshioProvenance(bytes!, format, basename, companions!),
         readParts(uri),
       ]);
       let parts = existingParts;
@@ -2919,7 +3137,7 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
       // same read on the first colour-by-field click anyway. Never throws.
       const hasDataArrays = metadata.pointDataNames.length > 0 || metadata.cellDataNames.length > 0;
       const arrays = hasDataArrays && !isFoam
-        ? await this.pipeline.readMeshioDataInfo(bytes!, format, basename, companions!)
+        ? await this.docPipeline(uri).readMeshioDataInfo(bytes!, format, basename, companions!)
         : [];
       post({
         type: "loadMeshBytes",
@@ -3080,7 +3298,7 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
       // never shown to the user, so it stays at the OCCT-native "mm" label
       // while its geometry is still genuinely scaled. See exportBRep's doc
       // comment for the full write-up.
-      const stepBytes = await this.pipeline.exportBRep(
+      const stepBytes = await this.docPipeline(uri).exportBRep(
         this.context.extensionPath,
         sourceBytes,
         src.format as Extract<CadFormat, "step" | "iges" | "brep" | "csg">,
@@ -3197,7 +3415,7 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
         const src = await this.readOcctSource(uri, route.format, scadWarnings);
         for (const w of scadWarnings) post({ type: "status", text: w });
         const sourceBytes = src.bytes;
-        return this.pipeline.exportBRep(
+        return this.docPipeline(uri).exportBRep(
           this.context.extensionPath,
           sourceBytes,
           src.format as Extract<CadFormat, "step" | "iges" | "brep" | "csg">,
@@ -3301,7 +3519,7 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
       EXPORT_LABEL[picked.format],
       async (_saveUri) => {
         const sourceBytes = await vscode.workspace.fs.readFile(uri);
-        const result = await this.pipeline.promoteMeshToBrep(
+        const result = await this.docPipeline(uri).promoteMeshToBrep(
           this.context.extensionPath,
           sourceBytes,
           meshFormat,
@@ -3342,7 +3560,7 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
       "STL",
       async (_saveUri) => {
         const sourceBytes = await vscode.workspace.fs.readFile(uri);
-        const result = await this.pipeline.repairMesh(
+        const result = await this.docPipeline(uri).repairMesh(
           this.context.extensionPath,
           sourceBytes,
           meshFormat,
@@ -3402,7 +3620,7 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
         const scadWarnings: string[] = [];
         const src = await this.readOcctSource(uri, route.format, scadWarnings);
         for (const w of scadWarnings) post({ type: "status", text: w });
-        const report = await this.pipeline.recognizePrimitives(
+        const report = await this.docPipeline(uri).recognizePrimitives(
           this.context.extensionPath,
           src.bytes,
           src.format as Extract<CadFormat, "step" | "iges" | "brep" | "csg">,
@@ -3414,7 +3632,7 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
         if (emission.ops.length === 0) {
           throw new Error("No primitives recognized — nothing to export.");
         }
-        const build = await this.pipeline.buildPrimitivesFile(
+        const build = await this.docPipeline(uri).buildPrimitivesFile(
           this.context.extensionPath,
           emission.ops,
           picked.format,
@@ -3451,7 +3669,7 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
       const scadWarnings: string[] = [];
       const src = await this.readOcctSource(uri, route.format, scadWarnings);
       for (const w of scadWarnings) post({ type: "status", text: w });
-      const report = await this.pipeline.recognizePrimitives(
+      const report = await this.docPipeline(uri).recognizePrimitives(
         this.context.extensionPath,
         src.bytes,
         src.format as Extract<CadFormat, "step" | "iges" | "brep" | "csg">,
@@ -3525,7 +3743,7 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
         const basename = uri.path.slice(uri.path.lastIndexOf("/") + 1);
         const sourceBytes = await vscode.workspace.fs.readFile(uri);
         const companions = await resolveMeshioCompanionsFor(uri, basename, route.format, sourceBytes);
-        const result = await this.pipeline.runMeshioOps(
+        const result = await this.docPipeline(uri).runMeshioOps(
           sourceBytes,
           route.format,
           ops as Parameters<typeof this.pipeline.runMeshioOps>[2],
@@ -3623,7 +3841,7 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
             : route.format === "gltf"
               ? { kind: "gltf", bytes, externalBuffers: await resolveGltfBuffersFor(uri, route.format, bytes) }
               : { kind: route.format as "stl" | "obj" | "ply", bytes };
-        const result = await this.pipeline.exportSvgSilhouette(this.context.extensionPath, source, {
+        const result = await this.docPipeline(uri).exportSvgSilhouette(this.context.extensionPath, source, {
           direction: picked.direction,
           up: picked.up,
           unit,
@@ -3703,7 +3921,7 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
           const key = view === "iso-ftr" ? "ISO" : view.toUpperCase();
           return { name: view, ...SVG_VIEWS[key] };
         });
-        const result = await this.pipeline.exportDrawingSheet(this.context.extensionPath, source, {
+        const result = await this.docPipeline(uri).exportDrawingSheet(this.context.extensionPath, source, {
           views,
           format,
           paper: paperPick.paper,
@@ -3778,7 +3996,7 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
         }
         const { parts, options } = await this.resolveMeshPartsAndOptions(uri, input, meshOptions, unit);
         if (target === "msh") {
-          const result = await this.pipeline.generateMesh(this.context.extensionPath, input, options, parts);
+          const result = await this.docPipeline(uri).generateMesh(this.context.extensionPath, input, options, parts);
           await this.promptSaveAndWrite(
             uri,
             "msh",
@@ -3787,7 +4005,7 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
             post
           );
         } else if (target === "geoUnrolled") {
-          const geo = await this.pipeline.exportGeoUnrolled(this.context.extensionPath, input, options, parts);
+          const geo = await this.docPipeline(uri).exportGeoUnrolled(this.context.extensionPath, input, options, parts);
           await this.promptSaveAndWrite(
             uri,
             "geo_unrolled",
@@ -3811,7 +4029,7 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
           // Kratos MDPA is hand-serialized (no gmsh.write() support at all — see
           // exportMdpa's doc comment), unlike every other format below.
           const format = meshExportFormat(target)!;
-          const text = await this.pipeline.exportMdpa(
+          const text = await this.docPipeline(uri).exportMdpa(
             this.context.extensionPath,
             input,
             options,
@@ -3836,9 +4054,9 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
           // reads 4.1 natively, physical groups included — see
           // exportViaMeshio's doc comment).
           const format = meshExportFormat(target)!;
-          const meshed = await this.pipeline.generateMesh(this.context.extensionPath, input, options, parts);
+          const meshed = await this.docPipeline(uri).generateMesh(this.context.extensionPath, input, options, parts);
           const sourceName = uri.path.slice(uri.path.lastIndexOf("/") + 1);
-          const { bytes, companion } = await this.pipeline.exportViaMeshio(meshed.mshText, target, {
+          const { bytes, companion } = await this.docPipeline(uri).exportViaMeshio(meshed.mshText, target, {
             extension: format.extension,
             companionExtension: format.companion?.extension,
             // Omitted rather than fabricated if the document somehow has no
@@ -3885,7 +4103,7 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
           // plain generate-then-write with no companion file, see `exportMeshFormat`.
           const format = meshExportFormat(target);
           if (!format) throw new Error(`Unknown mesh export format: ${target}`);
-          const text = await this.pipeline.exportMeshFormat(this.context.extensionPath, input, options, parts, target);
+          const text = await this.docPipeline(uri).exportMeshFormat(this.context.extensionPath, input, options, parts, target);
           await this.promptSaveAndWrite(
             uri,
             format.extension,
@@ -4148,6 +4366,14 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
  * project alongside its models, and named directly to the MCP tools'
  * `libraryPath`.
  */
+/** `cadPreview.kernelTimeoutMinutes` as milliseconds (clamped; the kernel
+ * client's own default when unset or invalid). */
+function kernelTimeoutMs(): number {
+  const minutes = vscode.workspace.getConfiguration("cadPreview").get<number>("kernelTimeoutMinutes");
+  if (typeof minutes !== "number" || !Number.isFinite(minutes) || minutes <= 0) return DEFAULT_TIMEOUT_MS;
+  return Math.round(Math.min(120, Math.max(0.1, minutes)) * 60_000);
+}
+
 function macroLibraryPath(modelUri: vscode.Uri): string {
   return path.join(path.dirname(modelUri.fsPath), "cad-preview-macros.json");
 }

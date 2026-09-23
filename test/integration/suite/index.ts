@@ -57,6 +57,7 @@ interface SaveTestApi {
   saveDocument?: (uri: vscode.Uri) => Promise<void>;
   revertDocument?: (uri: vscode.Uri) => Promise<void>;
   markDirtyDocument?: (uri: vscode.Uri) => void;
+  simulateWebviewMessage?: (uri: vscode.Uri, msg: unknown) => Promise<void>;
   setExportMeshStub?: (stub: ((format: string) => Uint8Array | undefined) | undefined) => void;
 }
 
@@ -1248,6 +1249,89 @@ test("an external .planes.json edit is reconciled into the webview", async () =>
   } finally {
     sub.dispose();
   }
+  await closeAll();
+});
+
+/**
+ * Roadmap "Explicit external-change conflict handling": an external sidecar
+ * write that lands while this editor has an UNSAVED (debounce-pending)
+ * change is a conflict, never a silent last-writer-wins. The suite injects
+ * the local change through the Test seam (it cannot post into a webview),
+ * then races an external write inside the 500 ms autosave window.
+ */
+test("a parts conflict prompts, and 'Keep mine' overwrites the disk version", async () => {
+  const api = await saveTestApi();
+  if (!api?.simulateWebviewMessage || !api.onDidPostMessage) return;
+  const staged = stage(STEP_FIXTURE);
+  assert(await openDocument(staged), "the STEP fixture opens for the parts conflict");
+  await sleep(1500); // let the open settle (initial fingerprints, ready hydration)
+  const partsFile = `${staged}.parts.json`;
+  const part = (name: string) => ({ name, color: "#ff0000", volumes: [], surfaces: [], lines: [], points: [] });
+  const record = await withModals([pick("Keep mine")], async () => {
+    await api.simulateWebviewMessage!(vscode.Uri.file(staged), { type: "partsChanged", parts: [part("Mine")] });
+    fs.writeFileSync(partsFile, JSON.stringify({ version: 1, source: path.basename(staged), parts: [part("Theirs"), part("Theirs2")] }));
+    const settled = await waitFor(() => {
+      try {
+        return JSON.parse(fs.readFileSync(partsFile, "utf8")).parts?.[0]?.name === "Mine";
+      } catch {
+        return false;
+      }
+    }, 15000);
+    assert(settled, "choosing 'Keep mine' writes this editor's parts over the external version");
+  });
+  assert(record.warnings.length === 1, `exactly one conflict prompt was shown (saw ${record.warnings.length})`);
+  const msg = record.warnings[0]?.message ?? "";
+  assert(/Parts for .*changed on disk/.test(msg), `the prompt names the kind and file (got "${msg}")`);
+  assert(msg.includes("disk now has 2 parts") && msg.includes("this editor has 1 part"), `the prompt summarizes both sides (got "${msg}")`);
+  await closeAll();
+});
+
+test("an edits conflict prompts, and 'Reload from disk' adopts the disk version without overwriting it", async () => {
+  const api = await saveTestApi();
+  if (!api?.simulateWebviewMessage || !api.onDidPostMessage) return;
+  const staged = stage(STEP_FIXTURE);
+  assert(await openDocument(staged), "the STEP fixture opens for the edits conflict");
+  await sleep(1500);
+  const editsFile = `${staged}.edits.json`;
+  const box = (x: number) => ({ op: "addBox", center: [x, 0, 0], size: [1, 1, 1] });
+  const diskOps = [box(10), box(20)];
+  const seen: Array<{ type: string; ops?: unknown[] }> = [];
+  const sub = api.onDidPostMessage((m) => seen.push(m as { type: string; ops?: unknown[] }));
+  try {
+    const record = await withModals([pick("Reload from disk")], async () => {
+      await api.simulateWebviewMessage!(vscode.Uri.file(staged), { type: "editsChanged", ops: [box(5)], variables: [] });
+      fs.writeFileSync(editsFile, JSON.stringify({ version: 1, source: path.basename(staged), ops: diskOps }));
+      const adopted = await waitFor(() => seen.some((m) => m.type === "edits" && Array.isArray(m.ops) && m.ops.length === 2), 15000);
+      assert(adopted, "choosing 'Reload from disk' posts the disk's two ops to the webview");
+    });
+    assert(record.warnings.length === 1, `exactly one conflict prompt was shown (saw ${record.warnings.length})`);
+    assert((record.warnings[0]?.message ?? "").includes("disk now has 2 ops"), "the prompt counts the disk ops");
+    await sleep(1500); // past the autosave debounce: the local op must NOT land on disk
+    const onDisk = readSidecarJson(editsFile).ops ?? [];
+    assert(onDisk.length === 2, `the external version survives on disk (found ${onDisk.length} ops)`);
+  } finally {
+    sub.dispose();
+  }
+  await api.revertDocument?.(vscode.Uri.file(staged));
+  await closeAll();
+});
+
+test("replacing the source while unsaved edits exist asks instead of silently reloading", async () => {
+  const api = await saveTestApi();
+  if (!api?.simulateWebviewMessage) return;
+  const staged = stage(STEP_FIXTURE);
+  assert(await openDocument(staged), "the STEP fixture opens for the source-replacement prompt");
+  await sleep(1500);
+  const uri = vscode.Uri.file(staged);
+  await api.simulateWebviewMessage(uri, { type: "editsChanged", ops: [{ op: "addBox", center: [5, 0, 0], size: [1, 1, 1] }], variables: [] });
+  await sleep(1500); // the autosave lands — the tail is unsaved (not baked), not pending
+  const record = await withModals([pick("Keep editing")], async () => {
+    fs.writeFileSync(staged, fs.readFileSync(path.join(ROOT, "examples", "STP", "bull.stp")));
+    await sleep(3000); // watcher debounce + prompt
+  });
+  assert(record.warnings.length === 1, `the replacement prompted once (saw ${record.warnings.length})`);
+  assert(/replaced on disk while it has 1 unsaved edit/.test(record.warnings[0]?.message ?? ""), "the prompt counts the unsaved edits");
+  await api.revertDocument?.(uri);
   await closeAll();
 });
 

@@ -23,7 +23,9 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import type { RequestHandlerExtra } from "@modelcontextprotocol/sdk/shared/protocol.js";
 import type { ServerRequest, ServerNotification } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
-import { createKernelClient } from "./kernelClient";
+import { AsyncLocalStorage } from "async_hooks";
+import { createKernelClient, type JobOptions, type ScopedPipeline } from "./kernelClient";
+import { KERNELS_BY_FUNCTION } from "./kernelActivity";
 import {
   describeCapabilities,
   OP_PARAM_DOCS,
@@ -108,9 +110,30 @@ const extensionPath = process.env.CAD_PREVIEW_ROOT ?? path.join(__dirname, "..")
 // thrown, regex-detected abort) can no longer poison a later, unrelated
 // call, since the next call after a dead child transparently respawns a
 // fresh one.
+//
+// Roadmap "Document-scoped jobs and cancellation": every tool call runs
+// inside `jobScope` (see `wrap()`), carrying the MCP request's own id and
+// `extra.signal`. `ctx.pipeline` resolves each kernel method against that
+// scope, so a client's `notifications/cancelled` cancels exactly that
+// request's queued/running kernel work — the same owner-scoped mechanism the
+// extension host uses — without threading a context through 50+ handlers.
+const kernelClient = createKernelClient(extensionPath);
+const jobScope = new AsyncLocalStorage<JobOptions>();
+const scopedByJob = new WeakMap<JobOptions, ScopedPipeline>();
 const ctx: ToolContext = {
   extensionPath,
-  pipeline: createKernelClient(extensionPath),
+  pipeline: new Proxy(kernelClient, {
+    get(target, key, receiver) {
+      const opts = jobScope.getStore();
+      if (!opts || typeof key !== "string" || !(key in KERNELS_BY_FUNCTION)) return Reflect.get(target, key, receiver);
+      let scoped = scopedByJob.get(opts);
+      if (!scoped) {
+        scoped = target.withJob(opts);
+        scopedByJob.set(opts, scoped);
+      }
+      return (scoped as unknown as Record<string, unknown>)[key];
+    },
+  }),
 };
 
 const INSTRUCTIONS = [
@@ -201,7 +224,8 @@ function wrap<A>(
       });
     };
     try {
-      const result = await handler(args, onProgress);
+      const job: JobOptions = { owner: `mcp-${String(extra?.requestId ?? "local")}`, signal: extra?.signal };
+      const result = await jobScope.run(job, () => handler(args, onProgress));
       const content: ToolContent[] = [];
       if (hasImages(result)) {
         const { images, ...rest } = result;

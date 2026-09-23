@@ -359,6 +359,13 @@
           "default": "openscad",
           "description": "OpenSCAD binary used to convert .scad sources to .csg on open (resolved via PATH when bare). Wins over the OPENSCAD_BINARY environment variable, which is the headless (MCP server) escape hatch. Unused when no .scad file is opened."
         },
+        "cadPreview.kernelTimeoutMinutes": {
+          "type": "number",
+          "default": 5,
+          "minimum": 0.1,
+          "maximum": 120,
+          "markdownDescription": "Watchdog for a single kernel job (load, mesh, export…). A job running longer is killed and the kernel worker respawned. Applies to newly opened documents."
+        },
         "cadPreview.tessellationQuality": {
           "type": "string",
           "enum": [
