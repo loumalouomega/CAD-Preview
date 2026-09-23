@@ -4,6 +4,23 @@ All notable changes to the "CAD Preview" extension are documented in this file.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/); this project does not yet strictly follow Semantic Versioning (pre-1.0 releases moved fast and bundled multiple features per bump).
 
+## [3.2.0] - 2026-09-23
+
+### Added
+
+- **Owned FE-mesh jobs.** The webview assigns one request UUID per Generate/Export; the extension host and the standalone MCP server attach stable owner/request IDs to the serialized kernel queue. Cancelling removes only that owner's queued work or terminates only its active worker call.
+- **Durable mesh execution receipts.** Queue-managed `export_mesh` writes an atomic, versioned receipt before dispatch and exposes owner-checked `cad_job_status` / `cad_job_cancel`. After a restart, a receipt with no live kernel record reports `uncertain` and is never replayed automatically.
+- **Versioned mesh handoff manifests** produced by the mesh export path.
+
+### Changed
+
+- The FE Mesh panel's Cancel button is hidden when there is nothing to cancel, and the mesh action row stays usable in narrow panels.
+- A cancelled mesh export no longer writes its output file.
+
+### Fixed
+
+- The packaged `.vsix` now contains only CAD runtime assets.
+
 ## [3.1.0] - 2026-09-23
 
 Eleven items closed, all headless-side or additive, plus two correctness fixes to how the kernel and the sidecars behave under concurrent access — no sidecar schema changes, no breaking MCP changes.
@@ -555,6 +572,7 @@ This release republishes v1.9.0's full changelog (below) unchanged; v1.9.0 itsel
 
 - Initial release: read-only 3D preview for CAD and mesh files (STEP, IGES, BREP, STL, OBJ, PLY, glTF) inside a VS Code custom editor, using OpenCascade.js (OCCT WASM) in the extension host for B-rep formats and Three.js in the webview for rendering.
 
+[3.2.0]: https://github.com/loumalouomega/CAD-Preview/compare/v3.1.0...v3.2.0
 [3.1.0]: https://github.com/loumalouomega/CAD-Preview/compare/v3.0.0...v3.1.0
 [3.0.0]: https://github.com/loumalouomega/CAD-Preview/compare/v2.7.0...v3.0.0
 [2.7.0]: https://github.com/loumalouomega/CAD-Preview/compare/v2.6.0...v2.7.0
