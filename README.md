@@ -182,3 +182,6 @@ The MCP server bundle additionally includes [`@modelcontextprotocol/sdk`](https:
 ## License
 
 See [LICENSE](LICENSE).
+
+Planar Kratos workflows can export 2D domain elements and line boundary conditions
+with named Parts; see [planar exports](doc/gmsh-integration.md#planar-simulation-exports).
