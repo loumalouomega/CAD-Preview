@@ -3203,7 +3203,7 @@ describe("export_mesh", () => {
       engineVersion: expect.any(String),
       artifacts: [{ role: "mesh", reference: { kind: "external", path: outputPath, revision: expect.any(String) } }],
       groups: [{ name: "Inlet" }],
-      boundaryCoverage: { state: "available", unassignedSurfaceCount: 2 },
+      boundaryCoverage: { state: "checked", reason: expect.any(String), unassignedSurfaceCount: 2 },
     });
     expect(await cadJobStatusTool(c, { receiptPath, ownerId: "study-1", requestId: "mesh-task-1" })).toMatchObject({ state: "succeeded" });
     await expect(cadJobStatusTool(c, { receiptPath, ownerId: "another-study", requestId: "mesh-task-1" })).rejects.toThrow(/does not match/);

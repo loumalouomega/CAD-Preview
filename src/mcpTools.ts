@@ -4984,8 +4984,14 @@ async function writeHandoffManifest(
       reference: { kind: "external" as const, path: path.resolve(output.path), revision: output.sha256 },
     })),
     groups: manifest.parts.flatMap((part) => part.groups.map((group) => ({ name: part.name, ...group }))),
-    boundaryCoverage: { state: "available" as const, ...manifest.coverage },
-    findings: [...manifest.notes],
+    boundaryCoverage: {
+      state: route.strategy === "occt" ? "checked" as const : "unavailable" as const,
+      reason: route.strategy === "occt"
+        ? "Gmsh physical-group and boundary coverage statistics were collected during export."
+        : "Physical-group boundary coverage is unavailable for " + route.format + " sources.",
+      ...manifest.coverage,
+    },
+    findings: manifest.notes.map((message) => ({ severity: "warning" as const, message })),
   };
   await fs.writeFile(manifestPath, JSON.stringify(portable, null, 2) + "\n", "utf8");
   if (route.strategy === "occt" && manifest.coverage.unresolvedParts.length > 0) {
