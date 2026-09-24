@@ -254,8 +254,8 @@ try {
   assert(capsText.length > 100, "resources/read cad-preview://capabilities returns JSON text");
 
   const tools = (await request("tools/list", {})).tools.map((t) => t.name);
-  assert(tools.length === 67, `tools/list exposes 67 tools (got ${tools.length}: ${tools.join(", ")})`);
-  for (const t of ["list_workspace_models", "check_interference_all", "generate_bom", "generate_hole_table", "render_ops_prefix", "check_tolerance", "inspect_meshio_fields", "pin_annotation", "import_svg", "save_mesh_preset", "list_mesh_presets", "apply_mesh_preset", "compare_mesh_refinement", "export_tessellated_stl", "estimate_mesh_budget", "analyze_passages", "measure_mesh_deviation", "save_sheet_template", "list_sheet_templates", "batch_export", "check_handoff_manifest", "generate_prep_report", "job_status", "job_cancel"]) {
+  assert(tools.length === 68, `tools/list exposes 68 tools (got ${tools.length}: ${tools.join(", ")})`);
+  for (const t of ["list_workspace_models", "check_interference_all", "generate_bom", "generate_hole_table", "render_ops_prefix", "check_tolerance", "inspect_meshio_fields", "pin_annotation", "import_svg", "save_mesh_preset", "list_mesh_presets", "apply_mesh_preset", "compare_mesh_refinement", "export_tessellated_stl", "estimate_mesh_budget", "analyze_passages", "measure_mesh_deviation", "save_sheet_template", "list_sheet_templates", "batch_export", "check_handoff_manifest", "generate_prep_report", "job_status", "job_cancel", "check_brep_health"]) {
     assert(tools.includes(t), `tools/list exposes ${t}`);
   }
 
@@ -2252,6 +2252,36 @@ try {
   assert(
     vtkRejected.supported === false && /STEP\/IGES\/BREP\/CSG\/STL\/OBJ\/PLY\/glTF/i.test(vtkRejected.warnings?.[0] ?? ""),
     `compare_models rejects a meshio-only source with a clear message, not a crash (got: ${JSON.stringify(vtkRejected)})`
+  );
+
+  // check_brep_health (roadmap "B-rep validity report"). Probe-verified
+  // facts: bull.stp is valid per BRepCheck; daratech.stp is INVALID with
+  // exactly five specific faces flagged UnorientableShape (a per-subshape
+  // status naming real face-N ids, not a bare boolean); piston.stp is seven
+  // OPEN shells and no solid, with 48 open-boundary edges.
+  for (const f of ["daratech.stp", "piston.stp"]) fs.copyFileSync(path.join(ROOT, "examples", "STP", f), path.join(dir, f));
+  const bullHealth = await call("check_brep_health", { path: model });
+  assert(bullHealth.supported === true && bullHealth.report.counters.solids >= 1, "check_brep_health supports a B-rep source");
+  assert(
+    bullHealth.report.solids.every((sd) => sd.openShellCount === 0 && sd.openBoundaryEdgeCount === 0),
+    `check_brep_health(bull + edits): every solid closed (got ${JSON.stringify(bullHealth.report.solids)})`
+  );
+  const daraHealth = await callWithCleanRetry("check_brep_health", { path: path.join(dir, "daratech.stp") }, () => {});
+  const unorientable = daraHealth.report.issues.filter((i) => i.statuses.includes("UnorientableShape")).map((i) => i.id);
+  assert(daraHealth.report.valid === false, "check_brep_health(daratech.stp): invalid per BRepCheck");
+  assert(
+    JSON.stringify(unorientable) === JSON.stringify(["face-13", "face-54", "face-58", "face-70", "face-71"]),
+    `check_brep_health(daratech.stp): names the five UnorientableShape faces (got ${JSON.stringify(unorientable)})`
+  );
+  const pistonHealth = await call("check_brep_health", { path: path.join(dir, "piston.stp") });
+  assert(
+    pistonHealth.report.counters.solids === 0 && pistonHealth.report.counters.shells === 7 && pistonHealth.report.openBoundaryEdgeCount === 48,
+    `check_brep_health(piston.stp): 7 open shells, 48 open-boundary edges (got ${JSON.stringify({ c: pistonHealth.report.counters, o: pistonHealth.report.openBoundaryEdgeCount })})`
+  );
+  const meshBrepHealth = await call("check_brep_health", { path: cubeStl });
+  assert(
+    meshBrepHealth.supported === false && /check_mesh_health/.test(meshBrepHealth.warnings[0] ?? ""),
+    "check_brep_health refuses a mesh source and names check_mesh_health"
   );
 
   // check_mesh_health (roadmap "Mesh -> B-rep promotion, diagnostic-first",

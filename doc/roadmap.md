@@ -39,9 +39,20 @@ All four gaps have since shipped: narrow-passage preflight (`analyze_passages` /
 
 | Wave | Outcome | Start with | Exit signal |
 | --- | --- | --- | --- |
-| Exploration | Decide which kernel ideas deserve implementation | B-rep validity, then the surface, edge, boundary-layer and takeoff probes in that order, each run with `npm run probe` | Analytic or independently checked results, with failure cases and timing, each probe's write-up filed where the section says |
+| Admitted work | Ship probe-passed kernel ideas | Unify same-domain faces | The Tier 1 item's done-when met |
+| Exploration | Decide which kernel ideas deserve implementation | The surface, edge, boundary-layer and takeoff probes in that order, each run with `npm run probe` | Analytic or independently checked results, with failure cases and timing, each probe's write-up filed where the section says |
 
 These are outcome groupings, not release numbers. Independent small items can ship between waves; a failed probe must not block unrelated work.
+
+### Tier 1 — admitted by a passed probe
+
+*Admission: the feasibility probe passed and its call shapes are recorded in `CLAUDE.md`; what remains is product work with a firm estimate.*
+
+#### Unify same-domain faces as an edit op
+
+- **Evidence (probed with the B-rep validity report, opencascade.js 1.1.1):** `new oc.ShapeUpgrade_UnifySameDomain_2(shape, true, true, false)` → `Build()` → `Shape()` merged two fused 10 mm boxes from 10 faces / 20 edges to 6 / 12 with the volume unchanged (2000.0000000000005 both sides); on a box with one fillet it correctly changed nothing (7 faces before and after, volume 997.853981147513 both sides). `_1()` + `Initialize(shape, true, true, false)` is the fallback form.
+- **First useful increment (M):** a `unifySameDomain` edit op — B-rep only, topology-changing (every downstream `face-N`/`edge-N` renumbers, so Parts and annotations go through the existing rebind), explicit and undoable, never an automatic consequence of a failed `check_brep_health`. Needs a panel button, which means a TikZ icon through the `icons/` pipeline (`pdflatex` + `pdftocairo`), an `OP_PARAM_DOCS` entry, the generic `produced` bucket role, and a `mcp:smoke` assertion on the fused-box face count and volume.
+- **Done when:** the fused-box fixture drops 10 → 6 faces through `apply_edit_ops` at an unchanged volume, and a Part on one of the merged faces is rebound or reported dropped, never silently repointed.
 
 ### Probe-gated — establish feasibility before estimating
 
@@ -55,29 +66,14 @@ These are outcome groupings, not release numbers. Independent small items can sh
 
 | Order | Item | Needs | Why here |
 | --- | --- | --- | --- |
-| 1 | B-rep validity report | — | Cheapest, largest reuse (mirrors `check_mesh_health`), and may explain the known Gmsh PLC failures |
-| 2 | Open-profile surface output | — | Exercises the same free-face invariant the validity item reads; structurally cheap |
-| 3 | Small-detail edge suppression | screenshot pipeline | Webview-side and independent; the risk is judgement, not bindings |
-| 4 | Anisotropic boundary layers | a `$Elements` walker | The largest probe, and the first live exercise of `dimension: 2` |
-| 5 | Loft takeoff by resampled intermediates | — | Lowest value; the measurement design is the hard part |
+| 1 | Open-profile surface output | — | Exercises the free-face invariant every `face-N` operand depends on; structurally cheap |
+| 2 | Small-detail edge suppression | screenshot pipeline | Webview-side and independent; the risk is judgement, not bindings |
+| 3 | Anisotropic boundary layers | a `$Elements` walker | The largest probe, and the first live exercise of `dimension: 2` |
+| 4 | Loft takeoff by resampled intermediates | — | Lowest value; the measurement design is the hard part |
 
 Every probe runs through the committed harness — `npm run probe -- <entry.ts>`, with the skeleton, protocol and scratch convention in [`scripts/probe/README.md`](https://github.com/loumalouomega/CAD-Preview/blob/master/scripts/probe/README.md).
 
 None depends on another row's *result* — a failed probe never blocks a later one.
-
-#### B-rep validity report
-
-- **Hypothesis:** `BRepCheck_Analyzer` returns per-subshape statuses — not only a whole-shape boolean — for imported STEP/IGES/BREP geometry, and `ShapeAnalysis_ShapeContents`/`ShapeAnalysis_FreeBounds` add counters a report can print as facts.
-- **Evidence today:** `BRepCheck_Analyzer`, `BRepCheck_Result`, `BRepCheck_Shell/Solid/Face`, `ShapeAnalysis_ShapeContents/Shell/Wire/FreeBounds/CheckSmallFace`, `ShapeUpgrade_UnifySameDomain` and `BRepAlgoAPI_Check` are all green in the manifest; `BOPAlgo_ArgumentAnalyzer` is red. The binary exports `BRepCheck_Analyzer` unsuffixed and `BRepCheck_Result_1..3`, `ShapeUpgrade_UnifySameDomain_1..3`. The only prior use was a rejection as a *closure test* on a freshly-sewn shell, where `NbFreeEdges()` won; it has never been called on imported geometry. `ShapeFix_Shape/Shell/Wireframe` throw or lack `.Perform`; only `ShapeFix_Solid` works. `TopExp.MapShapesAndAncestors` is unreachable (its map type is absent from the binary), so subshape bookkeeping uses the `HashCode(1<<30)` + `IsSame` bucket idiom.
-- **Probe (S):**
-  1. Enumerate the prototype of `new oc.BRepCheck_Analyzer(shape)`; if the unsuffixed ctor throws, try `_1` with `(shape, true)`. Find `IsValid` (whole-shape and per-subshape overloads), `Result(sub)`, and on the result `Status`/`StatusOnShape`; record which `BRepCheck_Status` members are readable symbolically.
-  2. Fixtures, in this order: `bull.stp` (healthy control); `cubsomcy.stp`, the shell-typed twin of `cubcylso.stp` (`examples/README.md` documents the pair); `block.stp` and `daratech.stp`, which both trip Gmsh's `PLC Error` during 3D meshing — the report should either flag them or say "valid per BRepCheck", and either is a finding; and a promoted `holed-cube.stl`, a deliberately open input. For each: whole-shape verdict, per-subshape status list keyed by `solid-N`/`face-N`/`edge-N`, `ShapeAnalysis_ShapeContents.Perform` counters (free versus shared edges, shells, solids), `ShapeAnalysis_FreeBounds` on the shell.
-  3. Discriminator: the shell twin reports free edges above zero and no closed solid; the solid twin reports zero. A per-subshape status must name at least one *specific* face or edge on the open input. A bare boolean is a failed probe.
-  4. Separately, `ShapeUpgrade_UnifySameDomain` on a box with one fillet: face count before and after, volume unchanged to 1e-9. Recorded as its own finding, never as this item's admission.
-  5. Time the analyzer on `turbine.stp` (2.3 MB) and record whether `IsValid` is cheap enough for a panel that runs on open or only for an explicit action.
-- **Decision gate:** *pass* — per-subshape statuses readable and reproducible on the shell/solid pair. *Fail* — a whole-shape boolean only, or statuses that don't discriminate the pair → Kernel-blocked, with the ctor and `Result` calls tried. *Partial* — counters work, statuses don't → narrow to a counters-only report.
-- **If admitted:** Phase 1 (**M**) — `checkBrepHealth(extensionPath, bytes, format, ops)` in a new `src/brepHealth.ts` returning a facts-only report shaped like `MeshHealthReport` (per solid: closed or not, free-edge count, per-subshape status list, `null` for anything the analyzer could not compute), wired through the four-touch-point `Pipeline` pattern; a `check_brep_health` MCP tool whose gate inverts `check_mesh_health`'s (mesh sources get `supported: false`); a "B-rep Health" sidebar section mirroring Mesh Health's request/result trio; a `describe_capabilities` limitation entry. Phase 2 (**M**, its own probe) — `unify_same_domain` as an explicit, undoable edit op, never an automatic consequence of a failed check.
-- **Out of scope:** repair. `ShapeFix_*` is three-quarters dead in this build and this item is read-only by design.
 
 #### Open-profile surface output
 

@@ -302,6 +302,18 @@ function normalizeViewerDefaults(raw: unknown): ViewerDefaults
 
 ---
 
+## `src/brepHealth.ts` / `src/brepHealthReport.ts`
+
+B-rep validity report (roadmap "B-rep validity report"), the read-only exact-geometry sibling of `meshHeal.ts`'s `checkMeshHealth`.
+
+```ts
+function checkBrepHealth(extensionPath: string, bytes: Uint8Array, format: BRepFormat, ops: EditOp[]): Promise<BrepHealthReport>
+```
+
+Replays `ops` over the parsed source (`readShape` + `applyEditsBRep`, the `computeMassProperties` shape), then runs `BRepCheck_Analyzer` over every solid, shell, face and edge in the same enumeration order that assigns `solid-N`/`face-N`/`edge-N` ids. `BrepHealthReport` (in the pure `brepHealthReport.ts`, safe to import from the webview) carries the whole-shape `valid` verdict, `ShapeAnalysis_ShapeContents` counters, open-boundary edge counts from `ShapeAnalysis_Shell` (per solid and overall), and at most `MAX_REPORTED_ISSUES` (200) `issues` — `{id, statuses, valid}` with statuses named from the bound `BRepCheck_Status` enum — plus the true `issueCount`. Shell ids (`shell-N`) are report-local. Wired through the kernel-worker `Pipeline` (`checkBrepHealth` key), consumed by the `check_brep_health` MCP tool and `provider.ts`'s `brepHealthRequest` handler. Fault handling via `wrapOcctFault`; every handle is freed in `finally`. `brepHealthReport.ts` also exports `statusNameTable`, `statusNames`, `capIssues` and `summarizeBrepHealth` (unit-tested).
+
+---
+
 ## `src/massProperties.ts`
 
 Volume/area/length + center-of-mass + moments-of-inertia for a B-rep shape, via OCCT `BRepGProp` — a new OCCT surface for this codebase (no prior `BRepGProp`/`GProp_GProps` usage anywhere). `vscode`-free (usable from both `provider.ts` and `mcpTools.ts`), following `occtService.ts`'s read-parse-cleanup skeleton.

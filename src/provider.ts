@@ -2942,6 +2942,27 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
         return;
       }
 
+      if (msg.type === "brepHealthRequest") {
+        try {
+          if (!route || route.strategy !== "occt") {
+            throw new Error("B-rep Health needs a B-rep source; use Mesh Health for a mesh.");
+          }
+          const scadWarnings: string[] = [];
+          const src = await this.readOcctSource(document.uri, route.format, scadWarnings);
+          for (const w of scadWarnings) post({ type: "status", text: w });
+          const report = await docPipeline.checkBrepHealth(
+            this.context.extensionPath,
+            src.bytes,
+            src.format as Extract<CadFormat, "step" | "iges" | "brep" | "csg">,
+            replayTail(currentEdits, currentBakedThrough)
+          );
+          post({ type: "brepHealthResult", requestId: msg.requestId, report });
+        } catch (err) {
+          post({ type: "brepHealthError", requestId: msg.requestId, message: (err as Error).message });
+        }
+        return;
+      }
+
       if (msg.type === "passagesRequest") {
         try {
           if (!route || route.strategy !== "occt") {

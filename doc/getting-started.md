@@ -114,10 +114,10 @@ Every section header reads chevron · icon · title, so a collapsed sidebar is s
 
 | Advanced ▸ | Sections |
 | --- | --- |
-| **Analysis** | Mass Properties, Clash, Mesh Health, Region fit, Primitives, Passages |
+| **Analysis** | Mass Properties, Clash, B-rep Health, Mesh Health, Region fit, Primitives, Passages |
 | **Library** | Macros, Standard Parts |
 
-Advanced starts collapsed. Its header carries a badge counting how many of its seven sections apply to the current file (`5 of 7` on a STEP source, where Mesh Health and Region fit want a mesh; a plain `7` when all of them apply), so you can tell whether opening it is worth the click without opening it. Each section inside keeps its own chevron and collapses independently, exactly as before — the group simply adds one more level.
+Advanced starts collapsed. Its header carries a badge counting how many of its nine sections apply to the current file (`7 of 9` on a STEP source, where Mesh Health and Region fit want a mesh; a plain `9` when all of them apply), so you can tell whether opening it is worth the click without opening it. Each section inside keeps its own chevron and collapses independently, exactly as before — the group simply adds one more level.
 
 ### Collapsing Sidebar Sections
 
@@ -125,7 +125,7 @@ Every sidebar section — and the Advanced group itself — has a chevron at the
 
 The collapsed/expanded layout is remembered **per document**, in the same `<model>.view.json` sidecar that already stores the camera, display mode and clip plane, so reopening a file restores the sidebar exactly as you left it. Merely opening a document never creates that file — only an actual change does.
 
-Sections that don't apply to the current file (Clash and Primitives are shown only for a STEP/IGES/BREP source; Mesh Health and Region fit only for a native STL/OBJ/PLY/glTF source) are hidden entirely rather than collapsed, independently of this — the Advanced badge is what tells you how many were left out.
+Sections that don't apply to the current file (Clash, B-rep Health, Primitives and Passages are shown only for a STEP/IGES/BREP source; Mesh Health and Region fit only for a native STL/OBJ/PLY/glTF source) are hidden entirely rather than collapsed, independently of this — the Advanced badge is what tells you how many were left out.
 
 ### Resizing the Sidebar
 
@@ -610,6 +610,16 @@ The **Clash** panel (below Mass Properties, B-rep sources only) checks Parts aga
 2. Each result row reads `A × B` → `overlap <volume>` or `no overlap`. Pairs the AABB pre-filter decided without a boolean carry an `AABB-screened` note; genuinely touching Parts (shared face, zero volume) correctly report no overlap. Volumes follow the **Units** dropdown like Mass Properties, live-rescaled on change.
 
 Results are session-only and clear on every model rebuild, since re-tessellation may renumber the ids they name.
+
+### B-rep Health
+
+The **B-rep Health** panel (Advanced ▸ Analysis, STEP/IGES/BREP sources only) runs OpenCascade's own validity checker (`BRepCheck`) on the model as currently edited. It reports facts, not a verdict of its own, and repairs nothing.
+
+1. Click **Check**. On a large model this takes a few seconds (about 9 s for a 2.3 MB STEP file).
+2. The summary line gives OCCT's whole-shape verdict (`valid per BRepCheck` or `INVALID per BRepCheck`), the number of flagged subshapes and the number of open-boundary edges.
+3. Below it: solid/shell/face/edge counts, one row per solid (shells and how many are open), and one row per flagged subshape with the checker's named statuses — for example `face-13 — UnorientableShape` or `shell-0 — NotClosed`. Hover a face, edge or solid row to highlight it in the view.
+
+`shell-N` ids are local to this report; nothing else in CAD Preview names shells. A model that passes is not guaranteed to mesh in Gmsh — the checker and the mesher test different things. The same report is available headless as the `check_brep_health` MCP tool.
 
 ### Passages
 

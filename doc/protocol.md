@@ -826,6 +826,18 @@ Sent in reply to `measureExactRequest` — **B-rep sources only**, same gate as 
 { "type": "measureExactError", "requestId": "1234-0.56", "message": "This edge is not a circular arc — radius is only defined for circular edges" }
 ```
 
+### `brepHealthResult` / `brepHealthError`
+
+Sent in reply to `brepHealthRequest` (webview → host, below) — roadmap "B-rep validity report". `report` is a `BrepHealthReport` (`src/brepHealthReport.ts`): the whole-shape `valid` verdict from OCCT's `BRepCheck_Analyzer`, `counters` (`ShapeAnalysis_ShapeContents`), `openBoundaryEdgeCount`, one `BrepSolidHealth` per solid, and up to 200 `issues` (`{id, statuses, valid}`, ids `solid-N`/`face-N`/`edge-N` or report-local `shell-N`) with `issueCount` the true total. Facts only; nothing is repaired. `brepHealthError` is sent for a non-B-rep source or a kernel failure.
+
+```json
+{ "type": "brepHealthResult", "requestId": "1234-0.56", "report": { "valid": false, "counters": { "solids": 1, "shells": 1, "faces": 175, "edges": 990, "looseEdges": 0, "looseFaces": 0, "looseWires": 0, "solidsWithVoids": 0 }, "openBoundaryEdgeCount": 0, "solids": [{ "solidId": "solid-0", "valid": false, "shellCount": 1, "openShellCount": 0, "openBoundaryEdgeCount": 0 }], "issues": [{ "id": "face-13", "statuses": ["UnorientableShape"], "valid": false }], "issueCount": 7, "analyzedSubshapes": 673, "elapsedMs": 1926 } }
+```
+
+```json
+{ "type": "brepHealthError", "requestId": "1234-0.56", "message": "B-rep Health needs a B-rep source; use Mesh Health for a mesh." }
+```
+
 ### `meshHealResult` / `meshHealError`
 
 Sent in reply to `meshHealRequest` (webview → host, below) — roadmap "Mesh → B-rep promotion, diagnostic-first", Phase 1 (read-only report, no promotion). `report` is a `MeshHealthReport` (`src/meshHeal.ts`): one `ComponentHealthReport` per connected component, each carrying free/non-manifold edge counts, degenerate face count, the sewing-tolerance-ladder rung actually required to close (`null` if it never closed), and the healed area/volume delta if it did. **STL/OBJ/PLY/glTF sources only** — a B-rep source has nothing to heal and a meshio-converted document has no matching host-side parser; the panel hides itself rather than ever sending this request in either case (see `src/webview/meshHealthPanel.ts`). A mesh above 50,000 triangles is refused with an actionable error (the pipeline builds one OCCT face per triangle) — most likely to come up for glTF. The request carries the panel's session-only `autoDecimate` flag; when set and the ceiling refuses, the host decimates first (meshio++ quadric edge-collapse, target ~1000 triangles) and the report carries a `decimated: {fromTriangles, toTriangles, ratio}` field plus the resampling stated in the panel — never silently.
@@ -992,6 +1004,7 @@ type WebviewToHost =
   | { type: 'selectorSynthesizeRequest'; requestId: string; op: number; role: string; entityIds: string[] }
   | { type: 'measureExactRequest'; requestId: string; kind: ExactMeasureKind; entityIdA: string; entityIdB?: string }
   | { type: 'meshHealRequest'; requestId: string; autoDecimate?: boolean }
+  | { type: 'brepHealthRequest'; requestId: string }
   | { type: 'bomRequest'; requestId: string }
   | { type: 'fitRegionRequest'; requestId: string; point: [number, number, number] }
   | { type: 'primitiveRecognizeRequest'; requestId: string }
@@ -1309,6 +1322,14 @@ Sent from the Passages panel (roadmap "Narrow-gap and passage resolution preflig
 
 ```json
 { "type": "passagesRequest", "requestId": "1234-0.56", "targetCells": 3 }
+```
+
+### `brepHealthRequest`
+
+Sent when the B-rep Health panel's **Check** button is clicked — only reachable for a STEP/IGES/BREP/CSG/SCAD source (the panel hides itself otherwise). No params beyond `requestId`: the host reads the source bytes and the unbaked tail ops itself, so the report describes the live, edited model. Answered with `brepHealthResult` / `brepHealthError`; a reply whose `requestId` is not the latest is ignored.
+
+```json
+{ "type": "brepHealthRequest", "requestId": "1234-0.56" }
 ```
 
 ### `primitiveRecognizeRequest` / `decomposeExportClicked` / `decomposeSaveMacroClicked`

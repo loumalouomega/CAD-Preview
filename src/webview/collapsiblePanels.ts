@@ -38,6 +38,7 @@ export const COLLAPSIBLE_PANELS: readonly { readonly panel: string; readonly hea
   { panel: "advanced-group", header: "advanced-header" },
   { panel: "mass-panel", header: "mass-header" },
   { panel: "clash-panel", header: "clash-header" },
+  { panel: "brep-health-panel", header: "brep-health-header" },
   { panel: "mesh-health-panel", header: "mesh-health-header" },
   { panel: "region-fit-panel", header: "region-fit-header" },
   { panel: "primitives-panel", header: "primitives-header" },
@@ -120,6 +121,7 @@ export function setupCollapsiblePanels(onChange: () => void): CollapsiblePanelsH
 export const ADVANCED_CHILDREN: readonly string[] = [
   "mass-panel",
   "clash-panel",
+  "brep-health-panel",
   "mesh-health-panel",
   "region-fit-panel",
   "primitives-panel",

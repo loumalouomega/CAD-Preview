@@ -58,6 +58,7 @@ import {
   downloadStandardPartTool,
   compareModelsTool,
   checkMeshHealthTool,
+  checkBrepHealthTool,
   recognizePrimitivesTool,
   decomposeToPrimitivesTool,
   fitMeshRegionTool,
@@ -719,6 +720,16 @@ server.registerTool(
     },
   },
   wrap((args: { path: string; autoDecimate?: boolean }) => checkMeshHealthTool(ctx, args))
+);
+
+server.registerTool(
+  "check_brep_health",
+  {
+    description:
+      "B-rep validity report, FACTS ONLY (see describe_capabilities' verdictConventions) — the exact-geometry sibling of check_mesh_health. Runs OCCT's BRepCheck_Analyzer over the edited model and reports: the whole-shape verdict, every subshape the analyzer flags as solid-N/face-N/edge-N (or a report-local shell-N, not an operand id) with named BRepCheck statuses (e.g. UnorientableShape, NotClosed, FreeEdge), per-solid shell counts and open-boundary edge counts (ShapeAnalysis_Shell), and ShapeAnalysis_ShapeContents counters (looseEdges = edges in no face, not open boundaries). Read-only: nothing is repaired or written. A 'valid' result does not guarantee Gmsh will mesh the model. Cost scales with model size (~9 s for a 2.3 MB STEP). Mesh-format sources return supported:false — use check_mesh_health.",
+    inputSchema: { path: modelPath },
+  },
+  wrap((args: { path: string }) => checkBrepHealthTool(ctx, args))
 );
 
 server.registerTool(

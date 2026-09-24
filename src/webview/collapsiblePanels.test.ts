@@ -111,7 +111,7 @@ describe("advancedCountLabel", () => {
   });
 
   it("covers the whole Advanced group", () => {
-    expect(ADVANCED_CHILDREN).toHaveLength(8);
+    expect(ADVANCED_CHILDREN).toHaveLength(9);
     // Every child must also be individually collapsible, or its chevron is dead.
     const registered = new Set(COLLAPSIBLE_PANELS.map((e) => e.panel));
     for (const id of ADVANCED_CHILDREN) expect(registered.has(id)).toBe(true);

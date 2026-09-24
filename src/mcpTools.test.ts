@@ -9,6 +9,7 @@ import {
   OP_PARAM_DOCS,
   loadModel,
   getMassProperties,
+  checkBrepHealthTool,
   generateBomTool,
   generateHoleTableTool,
   listWorkspaceModels,
@@ -79,6 +80,7 @@ import { parseStl } from "./stlParser";
 import type { BRepResult } from "./occtService";
 import type { MeshResult } from "./gmshService";
 import type { MassProperties } from "./massProperties";
+import type { BrepHealthReport } from "./brepHealthReport";
 import type { EntityFacts, MeasureResult, ExactMeasureResult, InterferenceResult } from "./entityFacts";
 import type { RenderResult } from "./renderService";
 import type { PartSearchResult, DownloadedPart } from "./stepPartsService";
@@ -208,6 +210,17 @@ const FAKE_MESH_RESULT: MeshResult = {
   mshText: "$MeshFormat\n4.1 0 8\n$EndMeshFormat\n",
   engineUsed: "gmsh",
   warnings: [],
+};
+
+const FAKE_BREP_HEALTH: BrepHealthReport = {
+  valid: false,
+  counters: { solids: 1, shells: 1, faces: 6, edges: 12, looseEdges: 0, looseFaces: 0, looseWires: 0, solidsWithVoids: 0 },
+  openBoundaryEdgeCount: 0,
+  solids: [{ solidId: "solid-0", valid: false, shellCount: 1, openShellCount: 0, openBoundaryEdgeCount: 0 }],
+  issues: [{ id: "face-3", statuses: ["UnorientableShape"], valid: false }],
+  issueCount: 1,
+  analyzedSubshapes: 20,
+  elapsedMs: 5,
 };
 
 const FAKE_MASS_PROPERTIES: MassProperties = {
@@ -363,6 +376,7 @@ function fakePipeline(overrides: Partial<Pipeline> = {}): Pipeline {
     })),
     exportGeoUnrolled: vi.fn(async () => ({ text: 'Merge "/out.geo_unrolled.xao";\n', xao: new Uint8Array([9]) })),
     computeMassProperties: vi.fn(async () => FAKE_MASS_PROPERTIES),
+    checkBrepHealth: vi.fn(async () => FAKE_BREP_HEALTH),
     computeBom: vi.fn(async (_ext: string, _bytes: Uint8Array, _format: string, _ops: unknown[], parts: Array<{ name: string; color: string; volumes: string[]; surfaces: string[]; lines: string[]; points: string[] }>) => ({
       rows: parts.map((p) => ({
         name: p.name,
@@ -775,6 +789,40 @@ describe("load_model", () => {
     const result = await loadModel(c, { path: vtkModel });
     expect(result.warnings.some((w) => /Auto-created/.test(w))).toBe(false);
     expect(result.sidecars.parts).toEqual([]);
+  });
+});
+
+describe("check_brep_health", () => {
+  it("reports a B-rep source's facts verbatim", async () => {
+    const c = ctx();
+    const result = await checkBrepHealthTool(c, { path: stpModel });
+    expect(c.pipeline.checkBrepHealth).toHaveBeenCalledWith(dir, expect.any(Uint8Array), "step", []);
+    expect(result.supported).toBe(true);
+    expect(result.report?.issues[0]).toEqual({ id: "face-3", statuses: ["UnorientableShape"], valid: false });
+  });
+
+  it("replays sidecar ops and says so", async () => {
+    const c = ctx();
+    await applyEditOps(c, { path: stpModel, ops: [{ op: "addBox", center: [0, 0, 0], size: [1, 1, 1] }] });
+    const result = await checkBrepHealthTool(c, { path: stpModel });
+    const lastCall = vi.mocked(c.pipeline.checkBrepHealth).mock.lastCall!;
+    expect(lastCall[3]).toHaveLength(1);
+    expect(result.warnings.some((w) => /edited model/.test(w))).toBe(true);
+  });
+
+  it("refuses a mesh source without touching the kernel", async () => {
+    const c = ctx();
+    const result = await checkBrepHealthTool(c, { path: stlModel });
+    expect(result.supported).toBe(false);
+    expect(result.warnings[0]).toMatch(/check_mesh_health/);
+    expect(c.pipeline.checkBrepHealth).not.toHaveBeenCalled();
+  });
+
+  it("notes a capped issue list", async () => {
+    const c = ctx();
+    vi.mocked(c.pipeline.checkBrepHealth).mockResolvedValueOnce({ ...FAKE_BREP_HEALTH, issueCount: 500 });
+    const result = await checkBrepHealthTool(c, { path: stpModel });
+    expect(result.warnings.some((w) => /first 1 of 500/.test(w))).toBe(true);
   });
 });
 

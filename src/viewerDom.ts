@@ -186,6 +186,17 @@ export function viewerBodyHtml(): string {
           <div id="clash-results"></div>
         </div>
       </div>
+      <div id="brep-health-panel" class="side-section" hidden>
+        <div id="brep-health-header" class="panel-header">
+          <button class="panel-chevron" type="button" aria-expanded="true" title="Collapse section">${glyph("chevronDown")}</button>
+          <span class="panel-icon" aria-hidden="true">${glyph("cube")}</span>
+          <span id="brep-health-title" class="panel-title">B-rep Health</span>
+          <div id="brep-health-actions">
+            <button id="brep-health-check" title="Read-only diagnostic: run OCCT's validity checker (BRepCheck) on the edited model and list every flagged solid, shell, face and edge — repairs nothing">${icon("generate")} Check</button>
+          </div>
+        </div>
+        <div id="brep-health-body"></div>
+      </div>
       <div id="mesh-health-panel" class="side-section" hidden>
         <div id="mesh-health-header" class="panel-header">
           <button class="panel-chevron" type="button" aria-expanded="true" title="Collapse section">${glyph("chevronDown")}</button>
