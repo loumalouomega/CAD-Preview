@@ -1,10 +1,10 @@
 {
   "$comment": "Dependency and format compatibility corpus (npm run compat). Each row is one deterministic check against the real dist/mcp-server.js. 'load' opens a committed fixture; 'export' writes a mesh export from the seed model and (when 'reload' is true) re-opens it; 'brepExport' round-trips export_brep through load_model + get_mass_properties. A row with 'knownLimitation' asserts the CURRENT failure text — if it stops failing the row reports FIXED-UPSTREAM (a finding to record), never FAIL. 'verifiedAt' records the artifact versions the row was last checked against.",
   "verifiedAt": {
-    "date": "2026-09-23",
+    "date": "2026-09-24",
     "opencascade.js": "1.1.1",
     "@loumalouomega/gmsh-wasm": "0.3.0",
-    "@meshioplusplus/wasm": "10.21.1",
+    "@meshioplusplus/wasm": "16.7.0",
     "float-tetwild-wasm": "0.2.0",
     "result": "38 pass, 1 known limitation (export-xdmf remesh)"
   },
@@ -22,10 +22,10 @@
     { "id": "load-glb-cube", "check": "load", "fixture": "GLTF/cube.glb", "expect": { "format": "gltf", "triangles": 12 } },
     { "id": "load-gltf-two-boxes", "check": "load", "fixture": "GLTF/two-boxes.gltf", "expect": { "format": "gltf", "components": 2 } },
     { "id": "load-med-two-material", "check": "load", "fixture": "MED/two-material-tets.med", "expect": { "format": "med", "warningIncludes": "MaterialA" } },
-    { "id": "load-med-two-region-hexes", "check": "load", "fixture": "MED/two-region-hexes.med", "expect": { "format": "med" } },
+    { "id": "load-med-two-region-hexes", "check": "load", "fixture": "MED/two-region-hexes.med", "expect": { "format": "med", "warningIncludes": "cell_tags" } },
     { "id": "load-med-single-hex-remesh", "check": "load", "fixture": "MED/single-hex.med", "expect": { "format": "med", "remesh": true } },
     { "id": "load-mdpa-gapped-ids", "check": "load", "fixture": "MDPA/gapped-ids.mdpa", "expect": { "format": "mdpa", "remesh": true } },
-    { "id": "load-gid-compound-extension", "check": "load", "fixture": "GiD/two-tets.post.msh", "siblings": ["GiD/two-tets.post.res"], "expect": { "format": "gid", "warningExcludes": "Assumed to be a Gmsh mesh" } },
+    { "id": "load-gid-compound-extension", "check": "load", "fixture": "GiD/two-tets.post.msh", "siblings": ["GiD/two-tets.post.res"], "expect": { "format": "gid", "warningExcludes": "Assumed to be a Gmsh mesh", "warningIncludes": "cell_tags" } },
     { "id": "load-openfoam-case", "check": "load", "fixtureDir": "OpenFOAM/hex-case", "fixture": "case.foam", "expect": { "format": "openfoam", "remesh": true } },
 
     { "id": "export-msh", "check": "export", "format": "msh", "reload": true, "remesh": true },

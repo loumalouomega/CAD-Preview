@@ -434,7 +434,7 @@ Written beside an exported FE mesh when you ask for one (the FE Mesh panel's **H
   "unit": { "unit": "in", "scaleFactor": 0.03937007874015748 },
   "meshOptions": { "sizeMax": 1.5, "dimension": 3, "…": "…" },
   "engineUsed": "gmsh",
-  "kernels": { "opencascade.js": "1.1.1", "@loumalouomega/gmsh-wasm": "0.3.0", "@meshioplusplus/wasm": "10.21.1", "float-tetwild-wasm": "0.2.0" },
+  "kernels": { "opencascade.js": "1.1.1", "@loumalouomega/gmsh-wasm": "0.3.0", "@meshioplusplus/wasm": "16.7.0", "float-tetwild-wasm": "0.2.0" },
   "outputs": [{ "path": "/work/bracket.mdpa", "format": "mdpaElements", "sha256": "…" }],
   "mesh": { "nodeCount": 812, "elementCount": 3120 },
   "parts": [
