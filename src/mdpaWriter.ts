@@ -21,6 +21,7 @@ import {
   MDPA_KIND_INFO,
   VOLUME_KIND_ORDER,
   SURFACE_KIND_ORDER,
+  LINE_KIND_ORDER,
   signedVolume,
   type MdpaCellKind,
 } from "./gmshElementTypes";
@@ -55,10 +56,12 @@ export interface MdpaGroup {
 }
 
 export interface MdpaMesh {
+  /** Topological mesh dimension; defaults to 3 for existing callers. */
+  dimension?: 2 | 3;
   nodes: MdpaNode[];
-  /** 3D cells → `Elements` (elements mode) or volume `Geometries` (geometries mode). */
+  /** Domain cells (2D or 3D) → `Elements` (elements mode) or volume `Geometries` (geometries mode). */
   volumeCells: MdpaCell[];
-  /** 2D cells → `Conditions` (elements mode) or surface `Geometries` (geometries mode). */
+  /** Boundary cells (1D or 2D) → `Conditions` (elements mode) or surface `Geometries` (geometries mode). */
   surfaceCells: MdpaCell[];
   /** Flat — this codebase's `Part[]` has no nesting concept. */
   groups: MdpaGroup[];
@@ -102,13 +105,13 @@ export function writeMdpa(mesh: MdpaMesh, mode: MdpaMode, onWarning?: (msg: stri
   // Assign ids. Elements/Conditions have separate id spaces; Geometries share one.
   const volumes = assignBlocks(
     mesh.volumeCells.map((c, i) => ({ kind: c.kind, ids: volumeResolved[i], originalIndex: i })),
-    VOLUME_KIND_ORDER,
+    mesh.dimension === 2 ? SURFACE_KIND_ORDER : VOLUME_KIND_ORDER,
     1
   );
   const surfaceStart = mode === "geometries" ? volumes.nextId : 1;
   const surfaces = assignBlocks(
     mesh.surfaceCells.map((c, i) => ({ kind: c.kind, ids: surfaceResolved[i], originalIndex: i })),
-    SURFACE_KIND_ORDER,
+    mesh.dimension === 2 ? LINE_KIND_ORDER : SURFACE_KIND_ORDER,
     surfaceStart
   );
 
@@ -122,7 +125,7 @@ export function writeMdpa(mesh: MdpaMesh, mode: MdpaMode, onWarning?: (msg: stri
 
   if (mode === "elements") {
     for (const block of volumes.blocks) {
-      const name = MDPA_KIND_INFO[block.kind].elementName!;
+      const name = mesh.dimension === 2 ? `Element2D${MDPA_KIND_INFO[block.kind].numNodes}N` : MDPA_KIND_INFO[block.kind].elementName!;
       lines.push(...writeCellBlock("Elements", name, block.entries, true), "");
     }
     for (const block of surfaces.blocks) {
@@ -131,7 +134,7 @@ export function writeMdpa(mesh: MdpaMesh, mode: MdpaMode, onWarning?: (msg: stri
     }
   } else {
     for (const block of [...volumes.blocks, ...surfaces.blocks]) {
-      const name = MDPA_KIND_INFO[block.kind].geometryName;
+      const name = mesh.dimension === 2 ? MDPA_KIND_INFO[block.kind].geometryName.replace("3D", "2D") : MDPA_KIND_INFO[block.kind].geometryName;
       lines.push(...writeCellBlock("Geometries", name, block.entries, false), "");
     }
   }

@@ -259,3 +259,28 @@ describe("writeMdpa — determinism", () => {
     expect(writeMdpa(meshB, "elements")).toBe(textA);
   });
 });
+
+describe('writeMdpa — planar domain and line boundaries', () => {
+  const planar: MdpaMesh = {
+    dimension: 2,
+    nodes: [{ tag: 1, x: 0, y: 0, z: 0 }, { tag: 2, x: 1, y: 0, z: 0 }, { tag: 3, x: 0, y: 1, z: 0 }],
+    volumeCells: [{ kind: 'tri3', nodeTags: [1, 2, 3] }],
+    surfaceCells: [{ kind: 'line2', nodeTags: [1, 2] }],
+    groups: [{ name: 'Domain', volumeCellIndices: [0], surfaceCellIndices: [], extraNodeTags: [] },
+      { name: 'Wall', volumeCellIndices: [], surfaceCellIndices: [0], extraNodeTags: [] }],
+  };
+  it('writes 2D elements, line conditions and correct region references', () => {
+    const text = writeMdpa(planar, 'elements');
+    expect(text).toContain('Begin Elements Element2D3N\n1 0 1 2 3');
+    expect(text).toContain('Begin Conditions LineCondition2D2N\n1 0 1 2');
+    expect(text).not.toContain('3D');
+    const wall = text.slice(text.indexOf('Begin SubModelPart Wall'));
+    expect(wall).toMatch(/Begin SubModelPartConditions\s+1\s+End SubModelPartConditions/);
+    expect(wall).toMatch(/Begin SubModelPartElements\s+End SubModelPartElements/);
+  });
+  it('uses one geometry id space and planar geometry names', () => {
+    const text = writeMdpa(planar, 'geometries');
+    expect(text).toContain('Begin Geometries Triangle2D3\n1 1 2 3');
+    expect(text).toContain('Begin Geometries Line2D2\n2 1 2');
+  });
+});
