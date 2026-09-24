@@ -66,7 +66,7 @@ export default defineConfig({
       { icon: 'github', link: 'https://github.com/loumalouomega/CAD-Preview' },
     ],
     footer: {
-      message: 'Released under the GPL-2.0-or-later License.',
+      message: 'Released under the GPL-3.0-or-later License.',
       copyright: 'Copyright © CAD-Preview contributors',
     },
     search: { provider: 'local' },

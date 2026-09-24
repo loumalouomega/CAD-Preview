@@ -16,6 +16,7 @@ import type { StandardPart } from "./stepPartsService";
 import type { MeshHealthReport } from "./meshHeal";
 import type { MeshRegionFit } from "./fitMapping";
 import type { PrimitiveReport } from "./primitiveReport";
+import type { BrepHealthReport } from "./brepHealthReport";
 import type { PassageReport } from "./passageAnalysis";
 import type { DeviationReport } from "./meshDeviation";
 import type { MeshioOpSpec } from "./meshioOps";
@@ -611,6 +612,12 @@ export type HostToWebview =
    * `meshHealRequest`'s requestId + stale-response-guard idiom. */
   | { type: "primitiveRecognizeResult"; requestId: string; report: PrimitiveReport }
   | { type: "primitiveRecognizeError"; requestId: string; message: string }
+  /** B-rep Health panel (roadmap "B-rep validity report"): the read-only
+   * `checkBrepHealth` report for the open B-rep. Same requestId +
+   * stale-response-guard idiom as `meshHealRequest`; the host answers with
+   * `brepHealthError` for a non-B-rep source. */
+  | { type: "brepHealthResult"; requestId: string; report: BrepHealthReport }
+  | { type: "brepHealthError"; requestId: string; message: string }
   /** Passages panel (roadmap "Narrow-gap and passage resolution preflight"):
    * the read-only `analyzePassages` report for the open B-rep, same
    * requestId + stale-guard idiom. `sizeMax` echoes the global size the
@@ -860,6 +867,9 @@ export type WebviewToHost =
    * reads the source bytes + tail ops itself, so the report always reflects
    * the live model rather than a stale client snapshot. */
   | { type: "primitiveRecognizeRequest"; requestId: string }
+  /** B-rep Health panel: run `checkBrepHealth` over the open B-rep. No params
+   * beyond `requestId` — the host reads source bytes + tail ops itself. */
+  | { type: "brepHealthRequest"; requestId: string }
   /** Passages panel: analyze the open B-rep's narrow gaps against the current
    * mesh size and Parts. The host reads source, tail ops, Parts and the stored
    * mesh options itself. */

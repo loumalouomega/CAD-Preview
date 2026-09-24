@@ -15,7 +15,8 @@ export type CadFormat =
   | "vtk" | "vtu" | "med" | "cgns" | "exodus" | "xdmf" | "mdpa"
   | "openfoam"
   | "gmsh" | "abaqus" | "unv" | "su2" | "medit"
-  | "gid";
+  | "gid"
+  | "nastran";
 
 /** `CadFormat` members routed through meshio++ — kept as one list so every
  * place that needs to enumerate them (package.json's generation, docs) has a
@@ -31,16 +32,13 @@ export type CadFormat =
  * meshio++'s format table: `gmsh.write()` a real tetrahedralized box to each
  * extension, then `meshioService.getMeshio()`'s `readMesh(path,
  * meshioFormat)` on the result — all five round-tripped with the correct
- * point/cell counts. Two formats gmsh ALSO writes were tried and REJECTED
- * after the same live check: `.bdf` (Nastran) round-trips through meshio++'s
- * own reader as `"Not a meshio++-C++ Nastran file"`, and `.off` as
- * `"Expected the first line to be 'OFF'"` — gmsh's writer output for both
- * isn't shaped the way meshio++'s reader for the same nominal format
- * expects, so neither is claimed as an import format here (a real, narrower
- * finding than "meshio++ can't read OFF/Nastran" — it may well read a
- * DIFFERENT tool's output for either format correctly; this codebase simply
- * has no fixture to verify that, and CLAUDE.md's own discipline is to claim
- * only what was actually checked).
+ * point/cell counts. `.off` was tried and REJECTED after the same live
+ * check (`"Expected the first line to be 'OFF'"` — gmsh's writer output isn't
+ * shaped the way meshio++'s OFF reader expects), so it is not claimed as an
+ * import format. `.bdf` (Nastran) was rejected the same way until meshio++
+ * 16.x, whose reader accepts any bulk-data deck — `nastran` is now routed,
+ * with gmsh's missing `BEGIN BULK` line normalized at staging
+ * (`nastranDeck.ts`).
  *
  * `gid` (GiD postprocess) came with the 10.20.2 bump and is the first entry
  * here whose extension is COMPOUND (`.post.msh`) — see `EXTENSION_MAP` and
@@ -50,7 +48,7 @@ export type CadFormat =
  */
 export const MESHIO_FORMATS: readonly CadFormat[] = [
   "vtk", "vtu", "med", "cgns", "exodus", "xdmf", "mdpa", "openfoam",
-  "gmsh", "abaqus", "unv", "su2", "medit", "gid",
+  "gmsh", "abaqus", "unv", "su2", "medit", "gid", "nastran",
 ];
 
 /**
@@ -75,6 +73,7 @@ export const MESHIO_FORMATS: readonly CadFormat[] = [
 export const AMBIGUOUS_MESHIO_EXTENSIONS: ReadonlyMap<string, string> = new Map([
   ["msh", "Assumed to be a Gmsh mesh (this extension's own FE Mesh export format) — an ANSYS or FreeFem .msh file will not parse correctly."],
   ["inp", "Assumed to be an Abaqus input file (this extension's own FE Mesh export format) — an ANSYS APDL .inp file will not parse correctly."],
+  ["bdf", "Assumed to be a Nastran bulk-data deck (this extension's own FE Mesh export format) — an X11 bitmap-font .bdf file will not parse."],
 ]);
 
 /** The mesh formats with a pure host-side triangle parser (`stlParser.ts`,
@@ -144,6 +143,9 @@ const EXTENSION_MAP: Record<string, FileRoute> = {
   inp: { strategy: "meshio", format: "abaqus" },
   unv: { strategy: "meshio", format: "unv" },
   su2: { strategy: "meshio", format: "su2" },
+  // Nastran bulk data (meshio++ 16.x reads any deck; Gmsh's own export lacks
+  // `BEGIN BULK`, normalized at staging — see nastranDeck.ts).
+  bdf: { strategy: "meshio", format: "nastran" },
   mesh: { strategy: "meshio", format: "medit" },
   // GiD postprocess (meshio++ 10.18.0 write / 10.19.0 read). A COMPOUND
   // extension, and the reason `routeFile` matches the longest suffix first —

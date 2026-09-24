@@ -39,6 +39,7 @@ import { MeshingPanel } from "./meshingPanel";
 import { MassPropertiesPanel, type MassPropertiesDisplay } from "./massPropertiesPanel";
 import { ClashPanel, type ClashPairDisplay } from "./clashPanel";
 import { MeshHealthPanel } from "./meshHealthPanel";
+import { BrepHealthPanel } from "./brepHealthPanel";
 import { RegionFitPanel } from "./regionFitPanel";
 import { PrimitivePanel } from "./primitivePanel";
 import { PassagesPanel } from "./passagesPanel";
@@ -1768,8 +1769,29 @@ function setPassagesEligible(eligible: boolean): void {
   if (!eligible) passagesRequestId = null;
 }
 
+// B-rep Health panel (roadmap "B-rep validity report"): read-only host
+// report; issue-row hover highlights through renderSelection, never the
+// working SelectionSet (the Passages panel precedent).
+let brepHealthRequestId: string | null = null;
+const brepHealthPanel = new BrepHealthPanel(document.getElementById("brep-health-panel")!, {
+  onCheck: () => {
+    if (sourceKind !== "brep") return;
+    const requestId = `${Date.now()}-${Math.random()}`;
+    brepHealthRequestId = requestId;
+    brepHealthPanel.setBusy(true);
+    brepHealthPanel.renderMessage("Checking…");
+    post({ type: "brepHealthRequest", requestId });
+  },
+  onHighlight: (entity) => {
+    if (entity) viewer.renderSelection([entity]);
+    else renderHighlight();
+  },
+});
+
 function setPrimitivesEligible(eligible: boolean): void {
   setPassagesEligible(eligible); // same gate: exact analytic surfaces exist only for B-rep
+  brepHealthPanel.setEligible(eligible); // same gate: only a B-rep has a B-rep to check
+  if (!eligible) brepHealthRequestId = null;
   primitivePanel.setEligible(eligible);
   if (!eligible) {
     primitiveRecognizeRequestId = null;
@@ -5608,6 +5630,20 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
       passagesPanel.setBusy(false);
       passagesPanel.renderMessage(msg.message, true);
       break;
+    case "brepHealthResult":
+      if (msg.requestId !== brepHealthRequestId) break; // stale — a newer check/load superseded it
+      brepHealthRequestId = null;
+      brepHealthPanel.setBusy(false);
+      brepHealthPanel.render(msg.report);
+      break;
+
+    case "brepHealthError":
+      if (msg.requestId !== brepHealthRequestId) break;
+      brepHealthRequestId = null;
+      brepHealthPanel.setBusy(false);
+      brepHealthPanel.renderMessage(msg.message, true);
+      break;
+
     case "primitiveRecognizeError":
       if (msg.requestId !== primitiveRecognizeRequestId) break;
       primitiveRecognizeRequestId = null;

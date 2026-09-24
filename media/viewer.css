@@ -1845,6 +1845,7 @@ body:not(:has(#side.visible)) #status {
 #edits-actions,
 #meshing-actions,
 #mesh-health-actions,
+#brep-health-actions,
 #primitives-actions,
 #passages-actions {
   display: flex;
@@ -1855,6 +1856,7 @@ body:not(:has(#side.visible)) #status {
 #edits-actions button,
 #meshing-actions button,
 #mesh-health-actions button,
+#brep-health-actions button,
 #primitives-actions button,
 #passages-actions button,
 #mass-refresh {
@@ -1872,6 +1874,7 @@ body:not(:has(#side.visible)) #status {
 #edits-actions button:hover:not(:disabled),
 #meshing-actions button:hover:not(:disabled),
 #mesh-health-actions button:hover:not(:disabled),
+#brep-health-actions button:hover:not(:disabled),
 #primitives-actions button:hover:not(:disabled),
 #passages-actions button:hover:not(:disabled),
 #mass-refresh:hover:not(:disabled) {
@@ -1881,6 +1884,7 @@ body:not(:has(#side.visible)) #status {
 #edits-actions button:disabled,
 #meshing-actions button:disabled,
 #mesh-health-actions button:disabled,
+#brep-health-actions button:disabled,
 #primitives-actions button:disabled,
 #passages-actions button:disabled { opacity: 0.35; cursor: default; }
 
@@ -2341,6 +2345,7 @@ input[type="range"].meshing-slider:focus {
 
 /* ── Mesh health panel (Mesh -> B-rep promotion, diagnostic-first) ──────── */
 
+#brep-health-panel,
 #mesh-health-panel {
   display: flex;
   flex-direction: column;
@@ -2357,12 +2362,14 @@ input[type="range"].meshing-slider:focus {
    of a hazard this file already documents twice (`#measure-tol-group[hidden]`,
    `#plane-entry[hidden]`); `#id[attr]` (1,1,0) beats `#id` (1,0,0). */
 #mesh-health-panel[hidden],
+#brep-health-panel[hidden],
 #region-fit-panel[hidden],
 #primitives-panel[hidden],
 #passages-panel[hidden] {
   display: none;
 }
 
+#brep-health-body,
 #mesh-health-body {
   flex: 1;
   min-height: 0;
@@ -4698,4 +4705,15 @@ body:has(#side.visible) #kernel-status {
   background: var(--vscode-list-inactiveSelectionBackground, rgba(90, 93, 94, 0.31));
   color: inherit;
   border-radius: var(--ui-r-xs);
+}
+
+/* ── B-rep Health panel (roadmap "B-rep validity report") ──────────────── */
+.brep-health-issue {
+  cursor: default;
+}
+.brep-health-issue:hover {
+  background: var(--vscode-list-hoverBackground, rgba(255,255,255,0.06));
+}
+.brep-health-issue .mesh-health-value {
+  text-align: right;
 }

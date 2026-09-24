@@ -45,6 +45,7 @@ import {
   readMeshioFieldValues,
 } from "./meshioService";
 import { checkMeshHealth, promoteMeshToBrep } from "./meshHeal";
+import { checkBrepHealth } from "./brepHealth";
 import { recognizePrimitives } from "./primitiveReport";
 import { fitMeshRegion } from "./meshRegionFit";
 import { exportSvgSilhouette, exportDrawingSheet } from "./svgSilhouetteHost";
@@ -148,6 +149,7 @@ const handlers: Record<keyof DocumentPipeline, Handler> = {
   disposeBRepCacheForDocument: disposeBRepCacheForDocument as Handler,
   readMeshioFieldValues: readMeshioFieldValues as Handler,
   checkMeshHealth: checkMeshHealth as Handler,
+  checkBrepHealth: checkBrepHealth as Handler,
   recognizePrimitives: recognizePrimitives as Handler,
   fitMeshRegion: fitMeshRegion as Handler,
   promoteMeshToBrep: promoteMeshToBrep as Handler,

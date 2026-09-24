@@ -2,24 +2,19 @@ import * as esbuild from "esbuild";
 import * as fs from "fs";
 import * as path from "path";
 import { fileURLToPath } from "url";
+// wasmPathPlugin, the shared `external` list and the import.meta.url shim live
+// in scripts/nodeBundleConfig.mjs so the script-side bundles (screenshot
+// fixtures, probes) can never drift from these configs again.
+import {
+  wasmPathPlugin,
+  WASM_EXTERNALS,
+  IMPORT_META_URL_BANNER,
+  IMPORT_META_URL_DEFINE,
+  kernelVersionsDefine,
+} from "./scripts/nodeBundleConfig.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const watch = process.argv.includes("--watch");
-
-/**
- * Plugin: intercepts `.wasm` file imports from opencascade.js/index.js and
- * returns a CJS module that resolves the WASM path relative to __dirname at
- * runtime (i.e. the `dist/` folder where we copy the WASM file).
- */
-const wasmPathPlugin = {
-  name: "wasm-path",
-  setup(build) {
-    build.onLoad({ filter: /\.wasm$/ }, () => ({
-      contents: `module.exports = require("path").join(__dirname, "opencascade.wasm.wasm");`,
-      loader: "js",
-    }));
-  },
-};
 
 /** Extension host bundle: Node/CJS.  opencascade.js is bundled (not external)
  *  so esbuild converts its ESM to CJS. `vscode` stays external.
@@ -33,27 +28,10 @@ const wasmPathPlugin = {
  *  for the bundle's own location, and substitute every `import.meta.url`
  *  reference in the bundle (including inside third-party deps) with it.
  *  opencascade.js has no `import.meta` references, so this is a no-op there. */
-/** Exact installed kernel package versions, stamped into the Node bundles as
- *  `__KERNEL_VERSIONS__` (read by `src/kernelVersions.ts`) so a simulation
- *  handoff manifest records what actually meshed the file. Read from the
- *  installed packages at build time — the declared ranges in package.json are
- *  not what shipped. */
-function kernelVersions() {
-  const read = (name) => {
-    try {
-      return JSON.parse(fs.readFileSync(new URL(`./node_modules/${name}/package.json`, import.meta.url), "utf8")).version;
-    } catch {
-      return null;
-    }
-  };
-  return {
-    "opencascade.js": read("opencascade.js"),
-    "@loumalouomega/gmsh-wasm": read("@loumalouomega/gmsh-wasm"),
-    "@meshioplusplus/wasm": read("@meshioplusplus/wasm"),
-    "float-tetwild-wasm": read("float-tetwild-wasm"),
-  };
-}
-const KERNEL_VERSIONS_DEFINE = JSON.stringify(JSON.stringify(kernelVersions()));
+// Exact installed kernel versions, stamped into the Node bundles as
+// `__KERNEL_VERSIONS__` (read by `src/kernelVersions.ts`) — see
+// kernelVersionsDefine() in scripts/nodeBundleConfig.mjs.
+const KERNEL_VERSIONS_DEFINE = kernelVersionsDefine();
 
 const extensionConfig = {
   entryPoints: ["src/extension.ts"],
@@ -105,13 +83,11 @@ const extensionConfig = {
   // connectSpaceMouse() (never top-level), so the extension activates
   // and runs fine where it is absent or unloadable. The MCP/kernel
   // bundles never import the HID path and need no entry.
-  external: ["vscode", "@loumalouomega/gmsh-wasm", "@meshioplusplus/wasm", "float-tetwild-wasm", "playwright", "node-hid"],
+  external: [...WASM_EXTERNALS, "node-hid"],
   plugins: [wasmPathPlugin],
-  banner: {
-    js: `const import_meta_url = require("url").pathToFileURL(__filename).href;`,
-  },
+  banner: { js: IMPORT_META_URL_BANNER },
   define: {
-    "import.meta.url": "import_meta_url",
+    ...IMPORT_META_URL_DEFINE,
     __KERNEL_VERSIONS__: KERNEL_VERSIONS_DEFINE,
   },
   sourcemap: true,
@@ -136,13 +112,11 @@ const mcpConfig = {
   // render_snapshot MCP tool — it must resolve via real node_modules at
   // runtime (or fail gracefully, caught there), never get inlined into the
   // bundle.
-  external: ["vscode", "@loumalouomega/gmsh-wasm", "@meshioplusplus/wasm", "float-tetwild-wasm", "playwright"],
+  external: [...WASM_EXTERNALS],
   plugins: [wasmPathPlugin],
-  banner: {
-    js: `const import_meta_url = require("url").pathToFileURL(__filename).href;`,
-  },
+  banner: { js: IMPORT_META_URL_BANNER },
   define: {
-    "import.meta.url": "import_meta_url",
+    ...IMPORT_META_URL_DEFINE,
     __KERNEL_VERSIONS__: KERNEL_VERSIONS_DEFINE,
   },
   sourcemap: true,
@@ -163,13 +137,11 @@ const kernelConfig = {
   target: "node18",
   outfile: "dist/kernel-worker.js",
   // See the matching comment in extensionConfig/mcpConfig above.
-  external: ["vscode", "@loumalouomega/gmsh-wasm", "@meshioplusplus/wasm", "float-tetwild-wasm", "playwright"],
+  external: [...WASM_EXTERNALS],
   plugins: [wasmPathPlugin],
-  banner: {
-    js: `const import_meta_url = require("url").pathToFileURL(__filename).href;`,
-  },
+  banner: { js: IMPORT_META_URL_BANNER },
   define: {
-    "import.meta.url": "import_meta_url",
+    ...IMPORT_META_URL_DEFINE,
     __KERNEL_VERSIONS__: KERNEL_VERSIONS_DEFINE,
   },
   sourcemap: true,

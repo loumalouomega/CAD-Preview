@@ -2,9 +2,9 @@
   "name": "cad-preview",
   "displayName": "CAD Preview",
   "description": "Interactive 3D preview, non-destructive editing, and FE mesh generation for CAD and mesh files (STEP, IGES, BREP, STL, OBJ, PLY, glTF, VTK, MED, CGNS, and more) inside VS Code, with an MCP server for AI agents.",
-  "version": "3.2.0",
+  "version": "3.3.0",
   "publisher": "kratos-multiphysics",
-  "license": "GPL-2.0-or-later",
+  "license": "GPL-3.0-or-later",
   "icon": "images/icon.png",
   "repository": {
     "type": "git",
@@ -107,6 +107,9 @@
           },
           {
             "filenamePattern": "*.post.msh"
+          },
+          {
+            "filenamePattern": "*.bdf"
           }
         ],
         "priority": "default"
@@ -412,6 +415,7 @@
     "mcp": "node dist/mcp-server.js",
     "mcp:smoke": "npm run build && node scripts/mcp-smoke/run.mjs",
     "perf": "npm run build && node scripts/perf/run.mjs",
+    "probe": "node scripts/probe/run.mjs",
     "test:webview": "npm run build && node scripts/screenshots/make-fixtures.mjs && node scripts/webview-test/run.mjs",
     "test:integration": "npm run build && node test/integration/run.mjs",
     "compat": "npm run build && node scripts/compat/run.mjs",
@@ -423,7 +427,7 @@
   },
   "dependencies": {
     "@loumalouomega/gmsh-wasm": "^0.3.0",
-    "@meshioplusplus/wasm": "^10.21.1",
+    "@meshioplusplus/wasm": "^16.7.0",
     "@modelcontextprotocol/sdk": "^1.30.0",
     "fflate": "^0.8.3",
     "float-tetwild-wasm": "^0.2.0",

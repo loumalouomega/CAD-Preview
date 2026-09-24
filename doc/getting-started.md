@@ -86,14 +86,15 @@ New Blank Model only ever creates new files: if you point it at a path that alre
 | SU2         | `.su2`          | meshio++ → STL boundary surface → Three.js |
 | INRIA Medit | `.mesh`         | meshio++ → STL boundary surface → Three.js |
 | GiD Postprocess | `.post.msh` (+ `.post.res`) | meshio++ → STL boundary surface → Three.js |
+| Nastran Bulk Data | `.bdf`   | meshio++ → STL boundary surface → Three.js |
 
 > **B-rep vs mesh:** STEP, IGES, and BREP are boundary-representation formats that are tessellated on-the-fly in the extension host. STL, OBJ, PLY, and glTF are already triangulated and are loaded directly into the webview by Three.js.
 >
-> **VTK/VTU/MED/CGNS/Exodus/XDMF/MDPA/OpenFOAM/Gmsh Mesh/Abaqus/I-DEAS Universal/SU2/INRIA Medit/GiD Postprocess** have no native Three.js loader, so the extension host converts them to a triangulated **boundary surface** in STL form first ([meshio++](https://github.com/loumalouomega/meshioplusplus), entirely host-side — no browser involved) and hands that to the webview exactly like a native `.stl` open. This means Parts, Edits, Export, Mass Properties, and Measurement all work identically to STL. **Named cell regions in the source file now auto-become real Parts** on first import (one per region, pre-coloured and pre-assigned — for a tetrahedral/triangular boundary; a quad/hex boundary still doesn't correlate); scalar field data (temperatures, stresses, …) beyond region names is still **not** preserved — only its names are shown, not its values. If you need to inspect scalar field values or colour by them, keep using a dedicated viewer (e.g. ParaView) for those formats — CAD-Preview's support here is for quick geometry (and now region) previews alongside your CAD files, not full FE post-processing.
+> **VTK/VTU/MED/CGNS/Exodus/XDMF/MDPA/OpenFOAM/Gmsh Mesh/Abaqus/I-DEAS Universal/SU2/INRIA Medit/GiD Postprocess/Nastran** have no native Three.js loader, so the extension host converts them to a triangulated **boundary surface** in STL form first ([meshio++](https://github.com/loumalouomega/meshioplusplus), entirely host-side — no browser involved) and hands that to the webview exactly like a native `.stl` open. This means Parts, Edits, Export, Mass Properties, and Measurement all work identically to STL. **Named cell regions in the source file now auto-become real Parts** on first import (one per region, pre-coloured and pre-assigned — for a tetrahedral/triangular boundary; a quad/hex boundary still doesn't correlate); scalar field data (temperatures, stresses, …) beyond region names is still **not** preserved — only its names are shown, not its values. If you need to inspect scalar field values or colour by them, keep using a dedicated viewer (e.g. ParaView) for those formats — CAD-Preview's support here is for quick geometry (and now region) previews alongside your CAD files, not full FE post-processing.
 >
 > **OpenFOAM (`.foam`) is a case marker, not a mesh file.** It's an (often empty) marker whose real mesh lives in sibling files under `<parent>/constant/polyMesh/` — CAD-Preview stages the whole case and hand-builds the boundary surface. OpenFOAM import is geometry-only: no patch names or field data are preserved (no Parts auto-create, no colour-by-field for it).
 >
-> **Gmsh Mesh / Abaqus / I-DEAS Universal / SU2 / INRIA Medit close a real export/import asymmetry:** the FE Mesh panel already *wrote* `.msh`/`.inp`/`.unv`/`.su2`/`.mesh`, but until now had no way to re-*open* any of them. `.msh` and `.inp` are ambiguous extensions (also used by ANSYS/FreeFem and ANSYS APDL) — CAD-Preview always assumes its own output (Gmsh/Abaqus) and shows a one-line status caveat on open; there's no automatic disambiguation into the alternate formats. **Known limitation:** an `.xdmf` this extension itself exports almost always fails to re-mesh after reimport, due to a separate, pre-existing meshio++ defect in reading back its own "mixed cell type" output — opening the file still works, only Generate on the reopened document doesn't.
+> **Gmsh Mesh / Abaqus / I-DEAS Universal / SU2 / INRIA Medit / Nastran close a real export/import asymmetry:** the FE Mesh panel already *wrote* `.msh`/`.inp`/`.unv`/`.su2`/`.mesh`/`.bdf`, but until now had no way to re-*open* any of them. `.msh`, `.inp` and `.bdf` are ambiguous extensions (also used by ANSYS/FreeFem, ANSYS APDL, and X11 bitmap fonts) — CAD-Preview always assumes its own output (Gmsh/Abaqus/Nastran) and shows a one-line status caveat on open; there's no automatic disambiguation into the alternate formats. **Known limitation:** an `.xdmf` this extension itself exports almost always fails to re-mesh after reimport, due to a separate, pre-existing meshio++ defect in reading back its own "mixed cell type" output — opening the file still works, only Generate on the reopened document doesn't.
 >
 > **GiD Postprocess (`.post.msh`) is a sibling pair**, and unlike XDMF it re-meshes correctly after reimport. Geometry lives in the `.post.msh`, results in a `.post.res` beside it that the reader finds by name convention — keep the two together; only the `.post.msh` is opened directly. It is both an import format and an FE Mesh panel export target.
 
@@ -113,10 +114,10 @@ Every section header reads chevron · icon · title, so a collapsed sidebar is s
 
 | Advanced ▸ | Sections |
 | --- | --- |
-| **Analysis** | Mass Properties, Clash, Mesh Health, Region fit, Primitives, Passages |
+| **Analysis** | Mass Properties, Clash, B-rep Health, Mesh Health, Region fit, Primitives, Passages |
 | **Library** | Macros, Standard Parts |
 
-Advanced starts collapsed. Its header carries a badge counting how many of its seven sections apply to the current file (`5 of 7` on a STEP source, where Mesh Health and Region fit want a mesh; a plain `7` when all of them apply), so you can tell whether opening it is worth the click without opening it. Each section inside keeps its own chevron and collapses independently, exactly as before — the group simply adds one more level.
+Advanced starts collapsed. Its header carries a badge counting how many of its nine sections apply to the current file (`7 of 9` on a STEP source, where Mesh Health and Region fit want a mesh; a plain `9` when all of them apply), so you can tell whether opening it is worth the click without opening it. Each section inside keeps its own chevron and collapses independently, exactly as before — the group simply adds one more level.
 
 ### Collapsing Sidebar Sections
 
@@ -124,7 +125,7 @@ Every sidebar section — and the Advanced group itself — has a chevron at the
 
 The collapsed/expanded layout is remembered **per document**, in the same `<model>.view.json` sidecar that already stores the camera, display mode and clip plane, so reopening a file restores the sidebar exactly as you left it. Merely opening a document never creates that file — only an actual change does.
 
-Sections that don't apply to the current file (Clash and Primitives are shown only for a STEP/IGES/BREP source; Mesh Health and Region fit only for a native STL/OBJ/PLY/glTF source) are hidden entirely rather than collapsed, independently of this — the Advanced badge is what tells you how many were left out.
+Sections that don't apply to the current file (Clash, B-rep Health, Primitives and Passages are shown only for a STEP/IGES/BREP source; Mesh Health and Region fit only for a native STL/OBJ/PLY/glTF source) are hidden entirely rather than collapsed, independently of this — the Advanced badge is what tells you how many were left out.
 
 ### Resizing the Sidebar
 
@@ -610,6 +611,16 @@ The **Clash** panel (below Mass Properties, B-rep sources only) checks Parts aga
 
 Results are session-only and clear on every model rebuild, since re-tessellation may renumber the ids they name.
 
+### B-rep Health
+
+The **B-rep Health** panel (Advanced ▸ Analysis, STEP/IGES/BREP sources only) runs OpenCascade's own validity checker (`BRepCheck`) on the model as currently edited. It reports facts, not a verdict of its own, and repairs nothing.
+
+1. Click **Check**. On a large model this takes a few seconds (about 9 s for a 2.3 MB STEP file).
+2. The summary line gives OCCT's whole-shape verdict (`valid per BRepCheck` or `INVALID per BRepCheck`), the number of flagged subshapes and the number of open-boundary edges.
+3. Below it: solid/shell/face/edge counts, one row per solid (shells and how many are open), and one row per flagged subshape with the checker's named statuses — for example `face-13 — UnorientableShape` or `shell-0 — NotClosed`. Hover a face, edge or solid row to highlight it in the view.
+
+`shell-N` ids are local to this report; nothing else in CAD Preview names shells. A model that passes is not guaranteed to mesh in Gmsh — the checker and the mesher test different things. The same report is available headless as the `check_brep_health` MCP tool.
+
 ### Passages
 
 The **Passages** panel (below Primitives, B-rep sources only) is a pre-meshing check for narrow channels a mesh could fail to resolve even with good element quality. Set **cells** (how many elements you want across a passage, default 3) and click **Analyze**. It finds two shapes, from the exact CAD faces:
@@ -662,7 +673,7 @@ Export… flow above — an outline is a drawing, not a 3D model, so it never ap
 
 > **It's an outline, not a dimensioned 2D technical drawing — there is no hidden-line removal.** Back-facing geometry isn't drawn, but neither are interior feature edges that don't lie on a silhouette (a hole seen face-on draws as a circle; the same hole seen edge-on draws nothing). OpenCascade's hidden-line machinery is entirely unavailable in the bundled WASM build, so the outline is derived from triangle adjacency instead — which is also why this works for mesh files, not just B-rep. Use it for review notes, documentation figures, and laser/plotter outlines; use the [Measurement](#measuring) tools for any dimension you need to be sure of.
 
-Works for STEP/IGES/BREP (with your edits baked in, from the current tessellation) and STL/OBJ/PLY/glTF (from the raw file — edits are **not** baked in, since mesh edits can't be replayed outside the viewer). meshio-only sources (VTK/VTU/MED/CGNS/Exodus/XDMF/MDPA/Gmsh Mesh/Abaqus/I-DEAS Universal/SU2/INRIA Medit) are rejected.
+Works for STEP/IGES/BREP (with your edits baked in, from the current tessellation) and STL/OBJ/PLY/glTF (from the raw file — edits are **not** baked in, since mesh edits can't be replayed outside the viewer). meshio-only sources (VTK/VTU/MED/CGNS/Exodus/XDMF/MDPA/Gmsh Mesh/Abaqus/I-DEAS Universal/SU2/INRIA Medit/Nastran) are rejected.
 
 ### Exporting a Drawing Sheet
 
@@ -706,18 +717,18 @@ A results tab opens beside the editor showing:
 - **Removed** solids — present only in A.
 - **Added** solids — present only in B.
 
-This is a display-only report (no 3D view, no merge) — to actually look at both models side by side, open each in its own tab and use VS Code's split editor layout. STEP/IGES/BREP, STL, OBJ, PLY, and glTF/GLB are all supported, in any combination; the meshio-only formats (VTK/VTU/MED/CGNS/Exodus/XDMF/MDPA/OpenFOAM/Gmsh Mesh/Abaqus/I-DEAS Universal/SU2/INRIA Medit) are the one remaining exception, since they never expose a triangle array outside their own WASM module. For a STEP/IGES/BREP file, the comparison reflects its currently-applied edits (its `.edits.json` sidecar, if any); for an STL/OBJ/PLY/glTF file, edits are **not** baked in (there's no way to replay a mesh edit outside the viewer) — a warning banner says so if the file has pending edits, and the comparison runs against the raw file as-is.
+This is a display-only report (no 3D view, no merge) — to actually look at both models side by side, open each in its own tab and use VS Code's split editor layout. STEP/IGES/BREP, STL, OBJ, PLY, and glTF/GLB are all supported, in any combination; the meshio-only formats (VTK/VTU/MED/CGNS/Exodus/XDMF/MDPA/OpenFOAM/Gmsh Mesh/Abaqus/I-DEAS Universal/SU2/INRIA Medit/Nastran) are the one remaining exception, since they never expose a triangle array outside their own WASM module. For a STEP/IGES/BREP file, the comparison reflects its currently-applied edits (its `.edits.json` sidecar, if any); for an STL/OBJ/PLY/glTF file, edits are **not** baked in (there's no way to replay a mesh edit outside the viewer) — a warning banner says so if the file has pending edits, and the comparison runs against the raw file as-is.
 
 ## Known Limitations
 
 - **No texture support for OBJ.** MTL material files are not loaded; a default grey material is applied.
 - **No glTF animations.** Animation playback is not implemented — only the first frame (bind pose) is shown.
 - **No BRep-embedded geometry in glTF.** Only triangulated `mesh` primitives inside glTF are rendered.
-- **No Compare Models / Mesh Health support for the meshio-only formats.** STEP/IGES/BREP/STL/OBJ/PLY/glTF are all supported (any combination) — glTF included since a dedicated host-side parser shipped, cross-validated against three.js's own `GLTFLoader`. VTK/VTU/MED/CGNS/Exodus/XDMF/MDPA/Gmsh Mesh/Abaqus/I-DEAS Universal/SU2/INRIA Medit remain excluded: meshio++'s WASM module converts them to a boundary surface for display but never hands a triangle array back to JS, so there's nothing for the host to match on (they still open and preview normally).
+- **No Compare Models / Mesh Health support for the meshio-only formats.** STEP/IGES/BREP/STL/OBJ/PLY/glTF are all supported (any combination) — glTF included since a dedicated host-side parser shipped, cross-validated against three.js's own `GLTFLoader`. VTK/VTU/MED/CGNS/Exodus/XDMF/MDPA/Gmsh Mesh/Abaqus/I-DEAS Universal/SU2/INRIA Medit/Nastran remain excluded: meshio++'s WASM module converts them to a boundary surface for display but never hands a triangle array back to JS, so there's nothing for the host to match on (they still open and preview normally).
 - **An `.xdmf` this extension itself exports usually can't be re-meshed after reimport.** A separate, pre-existing meshio++ 10.20.2 defect (not fixable in this codebase) means its own reader can't parse the "mixed cell type" topology this extension's meshing (`Mesh.SaveAll=1`, always on) produces. Opening the file still works normally; clicking **▶ Generate** on the reopened document fails with a clear error. A single-cell-type XDMF from a different tool is unaffected.
 - **Compressed glTF isn't parsed host-side.** A `.gltf`/`.glb` requiring `KHR_draco_mesh_compression` or `EXT_meshopt_compression` is rejected with a clear error by Compare Models / Mesh Health / Promote to B-rep / Silhouette SVG — the host-side parser can't decode compressed buffers. Viewing such a file in the 3D view is unaffected.
 - **Mesh Health and Promote to B-rep cap out at 50,000 triangles.** Both build one OCCT face per triangle and sew them, so a larger mesh is refused with an actionable error rather than exhausting the WASM heap. Most likely to come up with glTF, a rendering-oriented format whose real-world files are routinely far larger than hand-authored STL/OBJ/PLY — tick the panel's **Auto-decimate** checkbox (decimates to ~1000 triangles first; the report says so, never silently), or use the Mesh Health panel's **Repair (robust)…** button (fTetWild-based, no equivalent triangle-count ceiling), if you hit it. **Repair (robust)…** writes a NEW watertight STL file — tetrahedralize the source with fTetWild, keep the resulting volume mesh's own boundary — enabled once Check Healability shows at least one component that did NOT close; re-running Check Healability / Promote to B-rep on the repaired output then typically succeeds where the original could not.
-- **Silhouette SVG has no hidden-line removal.** It draws an outline, not a dimensioned 2D technical drawing — see [Exporting a Silhouette SVG](#exporting-a-silhouette-svg).
-- **Large assemblies are slow.** STEP/IGES files above ~50 MB may take several seconds to tessellate. Tessellation runs in-process in the Node extension host — there is no streaming.
+- **Silhouette SVG/DXF draws an outline only.** For hidden lines (occluded edges dashed) use **File ▸ Export Technical Drawing…**, and for several views on one sheet with a title block use **File ▸ Export Drawing Sheet…** — see [Exporting a Silhouette SVG](#exporting-a-silhouette-svg) and [Exporting a Drawing Sheet](#exporting-a-drawing-sheet).
+- **Large assemblies are slow.** STEP/IGES files above ~50 MB may take several seconds to tessellate. Tessellation runs in a forked kernel worker process, one shared by every open document — there is no streaming.
 - **One-time WASM startup.** The first B-rep file open triggers OpenCascade.js initialization (~300 ms on a typical machine). Subsequent B-rep files open faster because the kernel is memoized.
 - **Source CAD file is written only by an explicit save.** Ctrl+S (or Save All / auto-save) on a dirty tab bakes the unbaked op tail into the open STEP/IGES/BREP file itself (confirmed until the session's first bake, then on the dirty dot alone; temp-file + rename, one-deep `.bak`, history watermark — undo cannot cross the save point, and `File: Revert File` drops back to it). **Export** to another format writes a new, separate file; picking the source's own STEP/IGES/BREP format in the Export flow saves in place behind its own modal confirmation. **Part** definitions are saved to a `<model>.parts.json` sidecar; **pinned measurements** to a `<model>.annotations.json` sidecar; and **edit operations** are saved to a `<model>.edits.json` sidecar — the original geometry is otherwise always left untouched. Edits are non-destructive and replayable, and are baked in on **save** or **Export**.

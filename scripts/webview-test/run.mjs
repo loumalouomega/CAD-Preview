@@ -2406,7 +2406,7 @@ test("collapse: every sidebar section has a working chevron", async (page) => {
     "tree-panel", "parts-panel", "edits-panel", "meshing-panel",
     "advanced-group",
     "mass-panel",
-    "clash-panel",
+    "clash-panel", "brep-health-panel",
     "mesh-health-panel", "region-fit-panel", "primitives-panel", "macros-panel", "standard-parts-panel",
   ];
   const missing = await page.evaluate(
@@ -2483,7 +2483,7 @@ test("advanced: the group ships collapsed, hides its eight children, and opens o
   // hold only the four sections that EDIT the document.
   const shut = await page.evaluate(() => {
     const ids = [
-      "mass-panel", "clash-panel", "mesh-health-panel", "region-fit-panel",
+      "mass-panel", "clash-panel", "brep-health-panel", "mesh-health-panel", "region-fit-panel",
       "primitives-panel", "passages-panel", "macros-panel", "standard-parts-panel",
     ];
     return {
@@ -2500,13 +2500,13 @@ test("advanced: the group ships collapsed, hides its eight children, and opens o
   assert(shut.collapsed, "the group starts collapsed");
   assert(shut.headerShown, "its header is still visible while collapsed");
   assert(!shut.bodyShown, "its body is hidden while collapsed");
-  assert(!shut.anyChildShown, "none of the eight children render while it is collapsed");
+  assert(!shut.anyChildShown, "none of the nine children render while it is collapsed");
   assert(shut.topLevel, "Components/Parts/Edits/FE Mesh stayed OUT of the group");
 
   // The badge must report availability, not the raw child count: on this
   // B-rep fixture Mesh Health and Region fit gate themselves out.
   const badge = await page.evaluate(() => document.getElementById("advanced-count").textContent.trim());
-  assert(badge === "6 of 8", `the badge counts only the available children (got ${JSON.stringify(badge)})`);
+  assert(badge === "7 of 9", `the badge counts only the available children (got ${JSON.stringify(badge)})`);
 
   await openAdvanced(page);
   const open = await page.evaluate(() => ({
@@ -2926,6 +2926,64 @@ test("primitives: the hidden attribute genuinely hides the section", async (page
     return el.getBoundingClientRect().height;
   });
   assert(height === 0, `#primitives-panel[hidden] renders nothing (got ${height}px)`);
+});
+
+const BREP_HEALTH_REPORT = {
+  valid: false,
+  counters: { solids: 1, shells: 1, faces: 36, edges: 98, looseEdges: 0, looseFaces: 0, looseWires: 0, solidsWithVoids: 0 },
+  openBoundaryEdgeCount: 0,
+  solids: [{ solidId: "solid-0", valid: false, shellCount: 1, openShellCount: 0, openBoundaryEdgeCount: 0 }],
+  issues: [
+    { id: "solid-0", statuses: [], valid: false },
+    { id: "face-3", statuses: ["UnorientableShape"], valid: false },
+  ],
+  issueCount: 2,
+  analyzedSubshapes: 135,
+  elapsedMs: 120,
+};
+
+test("brep health: Check posts a request; the reply renders named statuses; a stale reply is ignored", async (page) => {
+  await populate(page); // bull.stp — B-rep, eligible
+  await openAdvanced(page);
+  const shown = await page.evaluate(() => document.getElementById("brep-health-panel")?.offsetParent !== null);
+  assert(shown, "the B-rep Health section is genuinely rendered for a B-rep source");
+  await page.click("#brep-health-check");
+  const req = await page.evaluate(() => (window.__sent ?? []).filter((m) => m.type === "brepHealthRequest").at(-1) ?? null);
+  assert(req !== null && typeof req.requestId === "string", `Check posts a brepHealthRequest (got ${JSON.stringify(req)})`);
+  const busy = await page.evaluate(() => document.getElementById("brep-health-check").disabled);
+  assert(busy, "Check disables while a request is in flight");
+  await page.evaluate(([report]) => window.postMessage({ type: "brepHealthResult", requestId: "stale", report }, "*"), [BREP_HEALTH_REPORT]);
+  await sleep(150);
+  const stale = await page.evaluate(() => document.getElementById("brep-health-body")?.textContent ?? "");
+  assert(/Checking/.test(stale), `a stale reply renders nothing (got ${JSON.stringify(stale.slice(0, 80))})`);
+  await page.evaluate(([id, report]) => window.postMessage({ type: "brepHealthResult", requestId: id, report }, "*"), [req.requestId, BREP_HEALTH_REPORT]);
+  await sleep(200);
+  const view = await page.evaluate(() => ({
+    text: document.getElementById("brep-health-body")?.textContent ?? "",
+    issues: [...document.querySelectorAll(".brep-health-issue")].map((r) => r.dataset.entityId),
+    enabled: !document.getElementById("brep-health-check").disabled,
+  }));
+  assert(/INVALID per BRepCheck/.test(view.text), `the summary states OCCT's verdict (got ${JSON.stringify(view.text.slice(0, 120))})`);
+  assert(/UnorientableShape/.test(view.text), "the named status renders");
+  assert(JSON.stringify(view.issues) === JSON.stringify(["solid-0", "face-3"]), `one row per issue (got ${JSON.stringify(view.issues)})`);
+  assert(view.enabled, "Check re-enables after the reply");
+  // Hover highlights through renderSelection only — nothing enters the SelectionSet.
+  await page.evaluate(() => (window.__sent.length = 0));
+  await page.hover('.brep-health-issue[data-entity-id="face-3"]');
+  await sleep(100);
+  const leaked = await page.evaluate(() => (window.__sent ?? []).filter((m) => m.type === "partsChanged" || m.type === "editsChanged").length);
+  assert(leaked === 0, "hovering an issue row posts nothing to the host");
+});
+
+test("brep health: the hidden attribute genuinely hides the section", async (page) => {
+  await populate(page);
+  await openAdvanced(page);
+  const height = await page.evaluate(() => {
+    const el = document.getElementById("brep-health-panel");
+    el.hidden = true;
+    return el.getBoundingClientRect().height;
+  });
+  assert(height === 0, `#brep-health-panel[hidden] renders nothing (got ${height}px)`);
 });
 
 // ── Tier 0 Phase 2: save-point-locked history ─────────────────────────────
@@ -4942,7 +5000,7 @@ test("sidebar: every section header carries the same rounded icon tile, between 
   const headers = await page.evaluate(() => {
     const ids = [
       "tree-header", "parts-header", "edits-header", "meshing-header", "advanced-header", "mass-header",
-      "clash-header", "mesh-health-header", "region-fit-header", "primitives-header", "macros-header", "standard-parts-header",
+      "clash-header", "brep-health-header", "mesh-health-header", "region-fit-header", "primitives-header", "macros-header", "standard-parts-header",
     ];
     return ids.map((id) => {
       const h = document.getElementById(id);

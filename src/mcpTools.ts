@@ -73,6 +73,8 @@ import { allCatalogEntries, describeOp } from "./webview/opCatalog";
 import type { Part, Annotation, ConstructionPlane, MeasureTool } from "./protocol";
 import type { loadBRep, exportBRep, BRepResult } from "./occtService";
 import type { computeMassProperties, computeBom, computeHoleTable, MassProperties } from "./massProperties";
+import type { checkBrepHealth } from "./brepHealth";
+import type { BrepHealthReport } from "./brepHealthReport";
 import type {
   getEntityFacts,
   measureEntities,
@@ -239,6 +241,7 @@ export interface Pipeline {
   decimateStlBoundary: typeof decimateStlBoundary;
   runMeshioOps: typeof runMeshioOps;
   checkMeshHealth: typeof checkMeshHealth;
+  checkBrepHealth: typeof checkBrepHealth;
   recognizePrimitives: typeof recognizePrimitives;
   fitMeshRegion: typeof fitMeshRegion;
   promoteMeshToBrep: typeof promoteMeshToBrep;
@@ -537,6 +540,7 @@ export function describeCapabilities() {
       "run_parametric_script compiles {variables?, steps} (each step is one op, or one flat `repeat: {times, indexVar, body}` loop expanding a template op-list) into ops appended via the exact same path as apply_edit_ops — not a general scripting language, no code execution. Repeat-generated ops are fully baked (concrete numbers, exprs stripped) — for a value that should stay live/editable later, use a plain op step with exprs referencing a real document variable (set_variables) instead of the repeat construct.",
       "compare_models (bounding-box-centroid + volume solid matching between two files) supports B-rep (STEP/IGES/BREP, edits baked in) and STL/OBJ/PLY/glTF (raw file bytes via dedicated host-side parsers, edits NOT baked in) sources, in any combination on either side; meshio-only formats have no host-side geometry to derive centroids/volumes from without a webview. Its optional includeSnapshots (default false) additionally renders each B-rep side's before/after PNGs via the same engine as render_snapshot — opt in only when you want to look at the geometry, not just the numeric diff; mesh-format sides never get a snapshot (render_snapshot is B-rep sources only) and degrade to a warning, never a failure.",
       "check_mesh_health (STL/OBJ/PLY/glTF sources only) is a READ-ONLY diagnostic — it reports per-connected-component free/non-manifold edge counts, degenerate face count, the sewing tolerance actually required to close the shape (or null if it never closed), and the healed area/volume delta, but it does NOT promote anything to a B-rep: there is still no path from a triangle mesh back into fillet/chamfer/measure_exact/get_mass_properties/export_brep (BREP_ONLY_OPS is unchanged). A null requiredTolerance or a large volumeDeltaPct/areaDeltaPct is a fact for you to judge, not a computed pass/fail.",
+      "check_brep_health (B-rep/csg/scad sources only) is a READ-ONLY validity report over OCCT's BRepCheck_Analyzer — named per-subshape statuses, open-boundary edges, content counters. It repairs nothing, and a valid verdict does not guarantee Gmsh can mesh the model.",
       "promote_mesh_to_brep (STL/OBJ/PLY/glTF sources only) closes the gap check_mesh_health leaves open — but as a ONE-SHOT EXPORT to a NEW file (outputPath), not an in-place reclassification of the source document: the original mesh is untouched, and the ORIGINAL document still has no B-rep capabilities. The written file is an ordinary B-rep document from the moment it exists (load_model/measure_exact/get_mass_properties/further export_brep all work on it). A component that never closes is skipped (skippedComponents/warnings), never silently dropped; if none close, the call fails.",
       "decompose_to_primitives (B-rep sources only) recognizes each solid as a box/sphere/cylinder/cone/torus when its face inventory matches exactly and emits a creation op per recognized solid with each dimension bound to a named variable via exprs — the first programmatic producer of expression strings — plus a parametric script document; optionally writes a new B-rep file (export model, like promote_mesh_to_brep) and/or saves the script to the macro library. Unrecognized solids are reported in perSolid with a reason, never a guess. This is a one-shot emit/export, not an in-place replacement — the source file is never modified.",
       "check_mesh_health/promote_mesh_to_brep build one OCCT face per triangle and sew them, so both refuse a mesh above 50000 triangles with an actionable error rather than exhausting the WASM heap — most relevant for glTF, a rendering-oriented format whose real-world files are routinely far larger than hand-authored STL/OBJ/PLY. Pass autoDecimate:true to run over a meshio++-decimated mesh instead (target ~1000 triangles; the response reports the ratio actually applied and warns that it describes the decimated mesh, never silently) — but note the sewing cost scales steeply past ~1k triangles, which is why the target is ~2% of the ceiling rather than just under it; and a decimated mesh can heal degenerately (decimation artifacts break the solidify — the report's own healedVolume/volumeDeltaPct/nonManifoldEdgeCount reveal it, and promote refuses to write such a solid rather than emitting a wrong file).",
@@ -552,7 +556,7 @@ export function describeCapabilities() {
       ".scad sources: identical to .csg once converted — which needs the openscad binary (cadPreview.openscadBinary setting, OPENSCAD_BINARY env override, else PATH). Absent binary → supported:false with an install hint on every .scad call, never a throw. Conversion runs `openscad -o <tmp>/model.csg <real path>` with cwd = the source directory (relative use/include/import keep working), capped at a 2-minute kill; openscad's own stderr chatter surfaces as warnings.",
       ".stl sources: meshable from the raw file bytes; edit ops are NOT baked into the meshed geometry headless (they replay in the webview only), and parts cannot become physical groups.",
       ".obj/.ply/.gltf/.glb sources: meshable headless (host-side parsed into a welded triangle mesh via the same dedicated parsers compare_models/check_mesh_health/promote_mesh_to_brep already use, then re-serialized as STL for the meshing pipeline — no webview needed); edit ops are NOT baked into the meshed geometry headless (they replay in the webview only), and parts cannot become physical groups, same as .stl. Still not exportable headless as a SOURCE DOCUMENT (export_brep/export_mesh always target a B-rep or a generated FE mesh, never these formats' own native representation) — edit ops can still be written to the sidecar for the extension to replay.",
-      ".vtk/.vtu/.med/.cgns/.exo(.e)/.xdmf/.mdpa/.foam/.msh(.msh2)/.inp/.unv/.su2/.mesh/.post.msh sources (meshio++): meshable headless from the raw file bytes (converted host-side to an STL boundary surface, no webview needed — more capable than .obj/.ply/.gltf here); edit ops are NOT baked into the meshed geometry headless (they replay in the webview only), same as .stl. Not exportable headless (export_mesh targets a source-agnostic generated FE mesh, not the source document itself).",
+      ".vtk/.vtu/.med/.cgns/.exo(.e)/.xdmf/.mdpa/.foam/.msh(.msh2)/.inp/.unv/.su2/.mesh/.post.msh/.bdf sources (meshio++): meshable headless from the raw file bytes (converted host-side to an STL boundary surface, no webview needed — more capable than .obj/.ply/.gltf here); edit ops are NOT baked into the meshed geometry headless (they replay in the webview only), same as .stl. Not exportable headless (export_mesh targets a source-agnostic generated FE mesh, not the source document itself).",
       "The CAD source file is never written except by the explicit opt-in save_model tool (STEP→STEP, IGES→IGES, BREP→BREP only — mesh/meshio/CAD-text sources are refused); every other writer refuses the source path. Edits/parts/annotations/construction planes/mesh options otherwise persist to <model>.edits.json / .parts.json / .annotations.json / .planes.json / .mesh.json sidecars the extension reads on open. save_model cannot see whether the file is open in VS Code — save (or close) the editor session first so its autosave does not race the write.",
       "get_state's annotations are pinned interactively (Measure tool) or headlessly (pin_annotation) — apply_edit_ops/run_parametric_script/remove_edit_op still rebind their anchor ids across topology-changing ops via the same best-effort geometric match parts get, reported in warnings when it happens.",
       "resolve_selector (B-rep sources only) re-resolves a whole-bucket query {version: 1, source: {kind: 'bucket', op, role}} against the current op list — the first three rungs of the Selector-synthesis ladder. An optional induced filter (planar, surfaceType, normal dir, area thresholds over exact current-shape facts; one leaf or an AND-list) plus rank ({by:'area',order:'max'|'min',n}) narrows the bucket without baking in coordinates (e.g. the largest endCap face) — or {version: 1, source: {kind: 'scene', filter?, rank?}} drops the bucket anchor entirely (at least one of filter/rank required), e.g. the largest planar face in the model, in a single replay. Each returned bucket id carries its centre-distance/measure-delta oracle (trustworthy only at ~0 distance; the scene path returns no matches — the exact facts are the oracle); unresolved names reference ids with no confident match, an induced selection of zero is an honest empty (never a fallback), and bindable:false means the producing op was a pattern instance (use a scene query to match across all copies instead).",
@@ -572,7 +576,7 @@ function requireRoute(modelPath: string): FileRoute {
   const route = routeFile(modelPath);
   if (!route) {
     throw new Error(
-      `Unsupported file extension: ${path.basename(modelPath)} (supported: step/stp, iges/igs, brep, csg, scad, stl, obj, ply, gltf, glb, vtk, vtu, med, cgns, exo/e, xdmf, mdpa, foam, msh/msh2, inp, unv, su2, mesh, post.msh)`
+      `Unsupported file extension: ${path.basename(modelPath)} (supported: step/stp, iges/igs, brep, csg, scad, stl, obj, ply, gltf, glb, vtk, vtu, med, cgns, exo/e, xdmf, mdpa, foam, msh/msh2, inp, unv, su2, mesh, post.msh, bdf)`
     );
   }
   return route;
@@ -947,6 +951,41 @@ export async function getMassProperties(
     ...properties,
     warnings,
   };
+}
+
+// ---------------------------------------------------------------------------
+// check_brep_health
+
+/**
+ * B-rep validity report (roadmap "B-rep validity report", closed) — the
+ * exact-geometry sibling of `check_mesh_health`, with the gate inverted: a
+ * B-rep (or csg/scad) source is checked, a mesh-format source gets
+ * `supported: false` naming `check_mesh_health`. Facts only — OCCT's
+ * `BRepCheck_Analyzer` decides validity; nothing is repaired or written.
+ */
+export async function checkBrepHealthTool(
+  ctx: ToolContext,
+  params: { path: string }
+): Promise<{ format: CadFormat; supported: boolean; warnings: string[]; report?: BrepHealthReport }> {
+  const modelPath = params.path;
+  const route = requireRoute(modelPath);
+  if (route.strategy !== "occt") {
+    return {
+      format: route.format,
+      supported: false,
+      warnings: [`${route.format} is a mesh-format source with no B-rep to check — use check_mesh_health instead.`],
+    };
+  }
+  const { ops } = await readEditsResolved(modelPath);
+  const warnings: string[] = [];
+  const src = await readOcctSource(modelPath, route, warnings);
+  if (!src.ok) return { format: route.format, supported: false, warnings: [...warnings, src.reason] };
+  const report = await ctx.pipeline.checkBrepHealth(ctx.extensionPath, src.bytes, src.format as BRepFormat, ops);
+  if (report.issueCount > report.issues.length) {
+    warnings.push(`Reporting the first ${report.issues.length} of ${report.issueCount} subshape issues.`);
+  }
+  if (ops.length) warnings.push(`Checked the edited model (${ops.length} op(s) replayed), not the raw source file.`);
+  return { format: route.format, supported: true, report, warnings };
 }
 
 // ---------------------------------------------------------------------------

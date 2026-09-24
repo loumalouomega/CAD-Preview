@@ -112,6 +112,7 @@ export const EXPORT_EXTENSION: Record<CadFormat, string> = {
   // Mesh panel's own registry (`meshExportFormats.ts`), which carries the
   // `.post.res` sibling handling this table has no way to express.
   gid: "post.msh",
+  nastran: "bdf",
 };
 
 /** Human-readable label for a format, used in the export quick-pick. */
@@ -141,4 +142,5 @@ export const EXPORT_LABEL: Record<CadFormat, string> = {
   su2: "SU2",
   medit: "INRIA Medit",
   gid: "GiD Postprocess",
+  nastran: "Nastran Bulk Data",
 };

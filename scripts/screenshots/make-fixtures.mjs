@@ -13,47 +13,21 @@ import * as esbuild from "esbuild";
 import { spawnSync } from "child_process";
 import * as path from "path";
 import { fileURLToPath } from "url";
+import { nodeCjsBase } from "../nodeBundleConfig.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const outfile = path.join(HERE, ".build", "fixtures-entry.cjs");
 
-const wasmPathPlugin = {
-  name: "wasm-path",
-  setup(build) {
-    build.onLoad({ filter: /\.wasm$/ }, () => ({
-      contents: `module.exports = require("path").join(__dirname, "opencascade.wasm.wasm");`,
-      loader: "js",
-    }));
-  },
-};
-
-await esbuild.build({
+// The wasm-path plugin, `external` list and import.meta.url shim come from the
+// shared scripts/nodeBundleConfig.mjs, which esbuild.mjs also uses. This script
+// used to hand-copy that list and it fell behind once: `float-tetwild-wasm`
+// joined gmshService.ts's import graph, nothing here listed it, and all of
+// `npm run docs:screenshots` failed with "Top-level await is currently not
+// supported with the cjs output format" until the pipeline was next run.
+await esbuild.build(nodeCjsBase({
   entryPoints: [path.join(HERE, "fixtures-entry.ts")],
-  bundle: true,
-  platform: "node",
-  format: "cjs",
-  target: "node18",
   outfile,
-  // This entry imports gmshService.ts (for the FE-mesh overlay fixture), so it
-  // needs the same external-ize-the-WASM-packages fix esbuild.mjs's
-  // extension/mcp/kernel configs already document: each of these ships an
-  // ESM-only build whose Emscripten bootstrap uses a top-level `await
-  // import(...)` that this "cjs" output format cannot represent.
-  //
-  // **Keep this list in sync with `esbuild.mjs`'s own `external` arrays.** It
-  // silently fell behind once already: `float-tetwild-wasm` was added to
-  // `gmshService.ts`'s import graph (via `ftetwildService.ts`) when the robust
-  // meshing feature shipped, and because nothing here listed it, THIS script —
-  // and therefore all of `npm run docs:screenshots` — failed outright with
-  // "Top-level await is currently not supported with the cjs output format".
-  // Nobody noticed, because regenerating screenshots is a manual step; the
-  // breakage surfaced only when the pipeline was next actually run.
-  external: ["vscode", "@loumalouomega/gmsh-wasm", "@meshioplusplus/wasm", "float-tetwild-wasm", "playwright"],
-  plugins: [wasmPathPlugin],
-  banner: { js: `const import_meta_url = require("url").pathToFileURL(__filename).href;` },
-  define: { "import.meta.url": "import_meta_url" },
-  logLevel: "warning",
-});
+}));
 
 const res = spawnSync(process.execPath, [outfile], { stdio: "inherit" });
 process.exit(res.status ?? 1);

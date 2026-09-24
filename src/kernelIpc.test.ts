@@ -129,6 +129,13 @@ describe("marshal/unmarshal", () => {
     expect(() => marshal(clamped)).toThrow(/unrecognized ArrayBufferView/);
   });
 
+  it("throws on a BigInt64Array — meshio++ >= 11.2 integer arrays must be normalized before crossing", () => {
+    // meshio++ hands integer data arrays over as BigInt64Array; meshioService.ts
+    // converts them with numericArray() before returning. Anything that slips
+    // through must fail loudly here, not be mis-tagged with the wrong width.
+    expect(() => marshal({ ids: new BigInt64Array([1n, 2n]) })).toThrow(/unrecognized ArrayBufferView/);
+  });
+
   it("round-trips NaN and +/-Infinity as scalar OBJECT PROPERTY values, distinct from null", () => {
     // meshio++'s dataInfo()/dataIntegrate() legitimately return NaN (e.g. a
     // field's min/max when every value is itself NaN, or a mean whose

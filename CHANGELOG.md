@@ -4,6 +4,29 @@ All notable changes to the "CAD Preview" extension are documented in this file.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/); this project does not yet strictly follow Semantic Versioning (pre-1.0 releases moved fast and bundled multiple features per bump).
 
+## [3.3.0] - 2026-09-24
+
+### Added
+
+- **B-rep health report.** A new `check_brep_health` MCP tool and a **B-rep Health** panel (Advanced ▸ Analysis) report OCCT's own validity checks over the edited model: per-solid, shell, face and edge statuses (for example `UnorientableShape`, `NotClosed`), open-boundary edges, and loose wireframe edges, each tied to the entity ids the rest of the tool uses. Hovering an issue row highlights it in the viewer. It is read-only and repairs nothing, and it is an explicit action rather than something run on open (the analyzer alone takes about 9 s on a 2.3 MB STEP file).
+- **Nastran `.bdf` import.** Bulk-data decks open as a triangulated boundary through meshio++ (routed as the `nastran` format), including the Gmsh-style decks this extension itself exports, which carry no `BEGIN BULK` line and are normalised on read. `.bdf` is an ambiguous extension, so opening one shows a status note saying it is assumed to be a Nastran mesh.
+- **Probe harness.** `npm run probe -- <entry.ts>` bundles a TypeScript entry against the real WASM kernels and runs it under Node, so live-kernel findings can be reproduced instead of living in throwaway scripts. The Node/CJS bundling recipe is now shared in `scripts/nodeBundleConfig.mjs` by the extension, MCP server, kernel worker, screenshot fixtures and the probe runner.
+
+### Changed
+
+- **Relicensed from `GPL-2.0-or-later` to `GPL-3.0-or-later`.** `LICENSE` now carries the verbatim GPLv3 text, and `package.json`, `package-lock.json`, the README's Licensing section, the docs footer and the PR template match. Nothing bundled today requires more than `GPL-2.0-or-later` (Gmsh's own licence is still compatible with either); the change is made ahead of the "Build and bundle an OpenSCAD WASM port" roadmap item, because a real OpenSCAD build links CGAL (GPLv3-or-later / LGPLv3-or-later) and/or Manifold (Apache-2.0, GPLv3- but not GPLv2-compatible), which forces a `GPL-3.0-or-later` floor. Doing it now avoids a second licence change when that dependency lands. Versions already released remain available under `GPL-2.0-or-later`.
+- **meshio++ upgraded from 10.21.1 to 16.7.0.** Integer point and cell data arrays now arrive from the WASM as `BigInt64Array`, which would silently break region-to-Parts correlation and integer colour fields if left unconverted, so they are converted on read. meshio++'s new native header-only metadata scan under-reports regions and data arrays for MED, CGNS and GiD files, so those three read metadata from a full read instead.
+- The mesh handoff manifest now states plainly whether boundary coverage was checked. Physical-group coverage is reported as unavailable for mesh-format sources, and manifest notes are reported as warnings.
+
+### Fixed
+
+- `getGmshVersion` always returned "Gmsh version unavailable", because gmsh-wasm returns `option.getString` as an object rather than a bare string; both shapes are now read. Nothing consumed it yet (handoff manifests use build-stamped package versions), so no exported output was ever wrong.
+
+### Documentation
+
+- `doc/roadmap.md` is restructured into upkeep, ready work, probe-gated items grouped by area, and strategic bets. It gains a meshing-library review (MMG remeshing, meshio++ field transfer, untapped Gmsh features), a kernel-capability review, an ecosystem review, a note on what the relicense unlocks, and about thirty new evidence-backed items; the OpenSCAD WASM port replaces the old "Bundling `openscad-wasm`" Non-goal, and the CGAL Non-goal is reworded since its licence reason no longer applies.
+- Two stale entries in the Known limitations list are corrected: hidden-line removal exists through **Export Technical Drawing**, and tessellation runs in the forked kernel worker, not in the extension host.
+
 ## [3.2.0] - 2026-09-23
 
 ### Added
@@ -572,6 +595,7 @@ This release republishes v1.9.0's full changelog (below) unchanged; v1.9.0 itsel
 
 - Initial release: read-only 3D preview for CAD and mesh files (STEP, IGES, BREP, STL, OBJ, PLY, glTF) inside a VS Code custom editor, using OpenCascade.js (OCCT WASM) in the extension host for B-rep formats and Three.js in the webview for rendering.
 
+[3.3.0]: https://github.com/loumalouomega/CAD-Preview/compare/v3.2.0...v3.3.0
 [3.2.0]: https://github.com/loumalouomega/CAD-Preview/compare/v3.1.0...v3.2.0
 [3.1.0]: https://github.com/loumalouomega/CAD-Preview/compare/v3.0.0...v3.1.0
 [3.0.0]: https://github.com/loumalouomega/CAD-Preview/compare/v2.7.0...v3.0.0

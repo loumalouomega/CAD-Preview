@@ -49,6 +49,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { summarizeQuality, type QualitySummary } from "./meshQuality";
 import { parseStl } from "./stlParser";
+import { ensureNastranBulkHeader } from "./nastranDeck";
 import { parseObj } from "./objParser";
 import { parsePly } from "./plyParser";
 import { parseGltf, type GltfExternalBuffers } from "./gltfParser";
@@ -105,6 +106,25 @@ function isMeshioWasmAbort(message: string): boolean {
   // message is a raw exception pointer with no text, updated across all four
   // kernel services together like every earlier vocabulary addition.
   return /out of bounds|abort|RuntimeError|unreachable|null function|table index|function table|wasmtable/i.test(message) || /^\d+$/.test(message);
+}
+
+/**
+ * Converts a meshio++ data array to plain JS numbers.
+ *
+ * Since `@meshioplusplus/wasm` v11.2.0 every INTEGER-kind `point_data` /
+ * `cell_data` array — including the `surface:parent_cell` provenance array —
+ * crosses the WASM boundary as a `BigInt64Array` (elements are `bigint`), not
+ * a `Float64Array`. Float arrays, cell connectivity (`Int32Array`) and
+ * `dataInfo()` results are unaffected (probed against 16.7.0). Left as
+ * `bigint`, those values fail SILENTLY here: `Set<number>.has(5n)` is false,
+ * so region correlation quietly resolves nothing, and `Number.isFinite(5n)`
+ * is false, so an integer colour field reads as "no finite values". Every such
+ * read goes through this helper. `Number()` is exact below 2^53, which covers
+ * any cell index or tag a mesh this size can carry.
+ */
+function numericArray(a: ArrayLike<number | bigint>): ArrayLike<number> {
+  if (a instanceof BigInt64Array || a instanceof BigUint64Array) return Float64Array.from(a, (x) => Number(x));
+  return a as ArrayLike<number>;
 }
 
 /**
@@ -194,7 +214,9 @@ function stageMeshioSource(
 ): { primaryPath: string; allPaths: string[] } {
   const primaryPath = `/${sourceName || `in.${meshioFormat}`}`;
   const allPaths = [primaryPath];
-  m.FS.writeFile(primaryPath, sourceBytes);
+  // Gmsh-written Nastran decks lack the `BEGIN BULK` line meshio++ requires
+  // (see nastranDeck.ts) — normalize here, the single staging choke point.
+  m.FS.writeFile(primaryPath, meshioFormat === "nastran" ? ensureNastranBulkHeader(sourceBytes) : sourceBytes);
   for (const companion of companions ?? []) {
     const path = `/${companion.name}`;
     m.FS.writeFile(path, companion.bytes);
@@ -633,6 +655,31 @@ export interface MeshioMetadataSummary {
 }
 
 /**
+ * Formats whose native, header-only `readMetadata()` path (added upstream in
+ * v11.3.0) under-reports what the file declares — verified against 16.7.0 by
+ * writing a region- and data-bearing mesh in every import format and comparing
+ * `readMetadata()` with a full `readMesh()`. MED reports no regions and no
+ * integer cell arrays (`two-material-tets.med`'s `MaterialA`/`MaterialB` and
+ * `cell_tags` vanish); CGNS and GiD report no data arrays at all. Every other
+ * import format either agreed or already fell back to a full read. For these
+ * three the summary comes from a full read instead — the same read the colour-
+ * field and region→Parts paths already pay. Remove a format once upstream's
+ * cheap scan agrees with the full read (`npm run compat`'s MED row pins it).
+ */
+const LOSSY_METADATA_FORMATS: ReadonlySet<string> = new Set(["med", "cgns", "gid"]);
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function summaryFromFullRead(mesh: any) {
+  return {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    regions: (mesh.regions ?? []).map((r: any) => ({ name: r.name, kind: r.kind, numEntries: r.entries?.length ?? 0 })),
+    pointDataNames: Object.keys(mesh.point_data ?? {}),
+    cellDataNames: Object.keys(mesh.cell_data ?? {}),
+    fieldDataNames: Object.keys(mesh.field_data ?? {}),
+  };
+}
+
+/**
  * Cheap, read-only visibility into what a meshio-only source file ACTUALLY
  * declares — region names (gmsh physical groups, Abaqus NSET/ELSET/SURFACE,
  * Exodus blocks/sets, MED families, Kratos SubModelParts) and named point/
@@ -664,7 +711,9 @@ export async function readMeshioMetadata(
     const { primaryPath, allPaths } = stageMeshioSource(m, sourceBytes, meshioFormat, sourceName, companions);
     try {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const meta = m.readMetadata(primaryPath, meshioFormat) as any;
+      const meta = LOSSY_METADATA_FORMATS.has(meshioFormat)
+        ? summaryFromFullRead(m.readMesh(primaryPath, meshioFormat))
+        : (m.readMetadata(primaryPath, meshioFormat) as any);
       return {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         regions: (meta.regions ?? []).map((r: any) => ({ name: r.name, kind: r.kind, numEntries: r.numEntries })),
@@ -786,8 +835,9 @@ export async function convertToStlBoundaryWithRegions(
       }
     }
     if (blocks.length === 0 || blocks.some((b) => b.type !== "triangle" || b.nodesPerCell !== 3)) return fallback();
-    const parentCellBlocks: Float64Array[] | undefined = boundary.cell_data?.["surface:parent_cell"];
-    if (!parentCellBlocks) return fallback();
+    const rawParentBlocks: ArrayLike<number | bigint>[] | undefined = boundary.cell_data?.["surface:parent_cell"];
+    if (!rawParentBlocks) return fallback();
+    const parentCellBlocks = rawParentBlocks.map(numericArray);
 
     const regionSets = cellRegions.map((r) => ({
       name: r.name as string,
@@ -964,16 +1014,19 @@ export async function readMeshioFieldValues(
 
     const perCorner: number[] = [];
     if (kind === "point") {
-      const arr: Float64Array | undefined = boundary.point_data?.[fieldName];
-      if (!arr) return { reason: "not-found" };
+      const rawArr: ArrayLike<number | bigint> | undefined = boundary.point_data?.[fieldName];
+      if (!rawArr) return { reason: "not-found" };
+      const arr = numericArray(rawArr);
       if ((boundary.point_data_components?.[fieldName] ?? 1) !== 1) return { reason: "not-scalar" };
       for (const block of blocks) {
         for (let i = 0; i < block.data.length; i++) perCorner.push(arr[block.data[i]]);
       }
     } else {
-      const cellArrBlocks: Float64Array[] | undefined = mesh.cell_data?.[fieldName];
-      const parentCellBlocks: Float64Array[] | undefined = boundary.cell_data?.["surface:parent_cell"];
-      if (!cellArrBlocks || !parentCellBlocks) return { reason: "not-found" };
+      const rawCellBlocks: ArrayLike<number | bigint>[] | undefined = mesh.cell_data?.[fieldName];
+      const rawParentBlocks: ArrayLike<number | bigint>[] | undefined = boundary.cell_data?.["surface:parent_cell"];
+      if (!rawCellBlocks || !rawParentBlocks) return { reason: "not-found" };
+      const cellArrBlocks = rawCellBlocks.map(numericArray);
+      const parentCellBlocks = rawParentBlocks.map(numericArray);
       if ((mesh.cell_data_components?.[fieldName] ?? 1) !== 1) return { reason: "not-scalar" };
       const flat: number[] = [];
       for (const blockArr of cellArrBlocks) for (let i = 0; i < blockArr.length; i++) flat.push(blockArr[i]);

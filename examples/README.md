@@ -10,6 +10,7 @@ Fixtures used for manual verification (see the "Verify a change" section of the 
 | [`PLY/`](PLY/) | PLY | `.ply` | Three.js `PLYLoader` (mesh) |
 | [`GLTF/`](GLTF/) | glTF | `.gltf` | Three.js `GLTFLoader` (mesh) |
 | [`MED/`](MED/) | MED | `.med` | meshio++ bridge (host-side, geometry + region/data-array-name visibility) |
+| [`Nastran/`](Nastran/) | Nastran bulk data | `.bdf` | meshio++ bridge (host-side, geometry only) |
 | [`OpenSCAD/`](OpenSCAD/) | OpenSCAD CSG | `.csg` | CSG parse → OCCT build → BRepMesh (B-rep, opaque base) |
 | [`OpenSCAD/`](OpenSCAD/) | OpenSCAD Source | `.scad` | openscad binary → `.csg` → same as above |
 
@@ -22,6 +23,10 @@ Each mesh directory contains a single `cube.*` fixture — a minimal triangulate
 ## MED
 
 `two-material-tets.med` is a synthetic (not real-world) fixture: two tetrahedra sharing a face, written by meshio++'s own MED writer from a hand-built mesh with two named cell regions (`MaterialA`/`MaterialB`) and a `Temperature` point-data field — used to verify (`npm run mcp:smoke`) that `load_model`/the viewer's meshio++ import surfaces those real names via `readMeshioMetadata()`. See CLAUDE.md's "meshio++ integration" section.
+
+## Nastran
+
+`block-tets.bdf` is this extension's own FE Mesh export of `STP/block.stp` (Gmsh writer, `sizeMin` 2.5 / `sizeMax` 4 — 32 nodes, 60 elements: `CTETRA` + `CTRIA3` + `CBAR`). Gmsh writes a bare bulk-data section with no `BEGIN BULK` line, which meshio++ requires — the fixture deliberately keeps that shape so `npm run compat`/`mcp:smoke` pin the read-side normalization in `src/nastranDeck.ts`.
 
 ## OpenSCAD
 
