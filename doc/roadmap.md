@@ -1,10 +1,10 @@
 # Roadmap
 
-Candidate features for future CAD-Preview releases, prioritized by value versus effort given what the extension already ships: an OCCT kernel, a Gmsh kernel, a meshio++ kernel and an fTetWild kernel live in the extension host (in a forked child process), a full picking/selection pipeline in the webview, a six-sidecar persistence model, and an MCP server mirroring the pipeline headless. Many high-value features are cheap precisely because that infrastructure exists.
+Candidate features for future CAD-Preview releases, prioritized by value versus effort given what the extension already ships: an OCCT kernel, a Gmsh kernel, a meshio++ kernel and an fTetWild kernel live in the extension host (in a forked child process) — a fifth, MMG, is proposed below but not bundled — a full picking/selection pipeline in the webview, a six-sidecar persistence model, and an MCP server mirroring the pipeline headless. Many high-value features are cheap precisely because that infrastructure exists.
 
 This page is aspirational, not a release commitment — items may be re-ordered, re-scoped, or dropped. Effort is a rough order of magnitude including implementation, documentation and focused verification: **S** (a day or two), **M** (roughly a week), **L** (multi-week). Estimates assume the stated dependencies hold; a short wiring change can still require substantial verification.
 
-**Planning review: 2026-09-16.** Existing implementation references were checked against the repository where noted; new candidates remain proposals, not promises of kernel support. This is a prioritized backlog, not a schedule for a particular version.
+**Planning review: 2026-09-24** (meshing-library review added; previous review 2026-09-16). Existing implementation references were checked against the repository where noted; new candidates remain proposals, not promises of kernel support. This is a prioritized backlog, not a schedule for a particular version.
 
 Everything previously shipped is tracked in `CHANGELOG.md`, and `CLAUDE.md` has a per-feature section with the verified implementation details for anything currently in the codebase — this page is for what's **not** built yet, plus the Non-goals that record why a direction was rejected so it isn't re-proposed.
 
@@ -33,6 +33,36 @@ Reviewed the implementation at `af8d059`, including mesher adapters, CAD diagnos
 
 All four gaps have since shipped: narrow-passage preflight (`analyze_passages` / the Passages panel), the mesh size and memory budget preview (`estimate_mesh_budget` / the FE Mesh readout), the CAD-to-mesh deviation map (`measure_mesh_deviation` / Deviation), and mesh-aware tessellation export (`export_tessellated_stl` / Export ▸ STL ▸ Mesh-aware). See `CLAUDE.md` for each.
 
+## Meshing library review — 2026-09-24 {#meshing-library-review}
+
+Meshing today is *generate* (Gmsh, fTetWild) plus *repair* (fTetWild, meshio++ ops). Nothing here remeshes an existing FE mesh: coarsening/refining it under a geometric error bound, improving element quality in place, or adapting it to a field. This review covers the libraries that could fill that gap, with the licence of each. It also covers capabilities that are already in the bundled binaries but have never been called.
+
+The MMG evidence comes from the sibling project [VSCode-MDPA-Preview](https://github.com/loumalouomega/VSCode-MDPA-Preview). It has shipped remeshing through [`@loumalouomega/mmg-wasm`](https://github.com/loumalouomega/MMG-WASM) 0.1.0: MMG 5.8.0, one ~1.1 MB `mmg-core.wasm` holding mmg2d, mmgs and mmg3d, with dual ESM/CJS builds and no pthreads. That is a working product elsewhere, not evidence in *this* pipeline — the kernel worker, IPC marshalling, Parts correlation and stdout purity are all untested here. That is why the MMG items below are probe-gated rather than Tier 1.
+
+**Licence decision, recorded:** MMG is LGPL-3.0-or-later. Shipping it ties the distributed extension to GPLv3-compatible terms, which CAD-Preview's GPL-2.0-or-later "or later" clause allows. We accept that dependency. It will ship the way meshio++ and fTetWild do: an `external` package loaded from its own `.wasm` file (separately replaceable, as LGPL §4 expects), a `.vscodeignore` carve-out, and its own README "Licensing" attribution. This is a deliberate choice, unlike the openscad-wasm rejection below, where CGAL and Manifold leave no GPLv2-compatible reading at all.
+
+| Library / capability | Licence | In the VSIX today? | What it adds | Outcome |
+| --- | --- | --- | --- | --- |
+| MMG — mmg3d / mmgs / mmg2d (`@loumalouomega/mmg-wasm`) | LGPL-3.0-or-later | No | Remeshing and optimisation of an existing tet or surface mesh under a Hausdorff bound (`hausd`/`hmin`/`hmax`/`hgrad`); scalar and tensor metrics; per-reference local sizes; frozen entities; level-set discretisation | [MMG remeshing of FE meshes](#mmg-remeshing-of-fe-meshes), [Hausdorff-bounded surface coarsening](#hausdorff-bounded-surface-coarsening-for-the-heal-ceiling), [Metric-driven adaptive remeshing](#metric-driven-adaptive-remeshing-from-a-field) |
+| meshio++ 16.7.0 surface `remesh` (clustering), `estimateError` (ZZ), `interpolate` / `conservativeInterpolate`, `sampleDistance` | MIT | Yes, never called | A licence-free surface remesher to measure MMG against; an error estimator to drive adaptation; mass-preserving field transfer across a remesh | Baseline in the coarsening probe; the field-transfer half of adaptive remeshing |
+| Gmsh `mesh.optimize` (`"Netgen"`, `"HighOrder"`, `"HighOrderElastic"`, …) | GPL-2.0-or-later (Netgen linked in) | Yes, never called | Quality optimisation after generate; untangling curved quadratic elements | [Gmsh mesh optimisation](#gmsh-mesh-optimisation-netgen-and-high-order) |
+| Gmsh `setTransfiniteCurve/Surface/Volume/Automatic` + `setRecombine` | GPL-2.0-or-later | Yes, never called | Structured, mapped hex/quad meshes on regular regions | [Structured meshing per Part](#structured-transfinite-meshing-per-part) |
+| Gmsh `setSizeCallback` | GPL-2.0-or-later | Declared green in 0.3.0, never called | Sizing from a JS function, e.g. a sampled deviation or error field | [JS mesh-size callback](#js-mesh-size-callback) |
+| Gmsh `partition` / `unpartition` (METIS linked in) | GPL-2.0-or-later | Yes, never called | Domain decomposition for distributed solvers | [METIS partitioning for Kratos MPI export](#metis-partitioning-for-kratos-mpi-export) |
+| TetGen | AGPL-3.0 | No | Constrained Delaunay tets | Rejected — see [Other meshing kernels](#rejected-scope) |
+| CGAL Mesh_3 / Polygon_mesh_processing remeshing | GPL-3.0-or-later | No | Implicit-domain meshing, isotropic surface remeshing | Rejected — see [Other meshing kernels](#rejected-scope) |
+| ParMmg | LGPL-3.0-or-later | No | Parallel (MPI) MMG | Rejected — see [Other meshing kernels](#rejected-scope) |
+
+Known MMG facts that the sibling project established the hard way, and which the probes must re-verify rather than assume:
+
+- **Default `hausd`:** MMG's default is an absolute 0.01, which is catastrophic on large domains — a level-set run there took 464 s and then failed. The default must be relative: VSCode-MDPA-Preview uses 0.5 % of the bbox diagonal.
+- **Stdout:** `print`/`printErr` are fixed at `initialize`, so logging has to go through a mutable listener. For the MCP server this is a correctness issue, not cosmetics: any stray write to fd 1 corrupts JSON-RPC.
+- **Table sizes first:** the `IPARAM_numberOfLocalParam` / `numberOfMat` / `numberOfLSBaseReferences` sizes must be set before their entries are, or the call throws.
+- **Multi-material maps:** a map that misses a domain reference ends in STRONGFAILURE.
+- **Return codes:** entry points return SUCCESS or LOWFAILURE, and throw only on STRONGFAILURE. An empty harvest (`np <= 0`) must be treated as a failure explicitly.
+- **Renumbering:** MMG renumbers every node and entity. Per-cell integer references survive, and they are the only handle for carrying Parts across a remesh. Point/cell data does not survive and must be remapped.
+- **Data path:** in-memory typed arrays (`setVertices`, `setTetrahedra`, … then `get*`), so the fixed MEMFS-path cliff that bites OCCT does not apply.
+
 ## Open items
 
 ### Suggested implementation sequence
@@ -41,6 +71,7 @@ All four gaps have since shipped: narrow-passage preflight (`analyze_passages` /
 | --- | --- | --- | --- |
 | Admitted work | Ship probe-passed kernel ideas | Unify same-domain faces | The Tier 1 item's done-when met |
 | Exploration | Decide which kernel ideas deserve implementation | The surface, edge, boundary-layer and takeoff probes in that order, each run with `npm run probe` | Analytic or independently checked results, with failure cases and timing, each probe's write-up filed where the section says |
+| Meshing | Decide whether to remesh existing meshes, and with which library | The MMG core probe, then the coarsening comparison (meshio++ against MMG), then Gmsh optimisation | Both MMG probes filed with measured timings, and the licence/packaging tasks known before any MMG code merges |
 
 These are outcome groupings, not release numbers. Independent small items can ship between waves; a failed probe must not block unrelated work.
 
@@ -58,7 +89,7 @@ These are outcome groupings, not release numbers. Independent small items can sh
 
 *Admission: a specific hypothesis with a discriminating experiment. Each probe below is a small, self-contained piece of work with a firm **S** estimate of its own; the phases under "If admitted" are what ships if the probe passes, tagged provisionally. A method that accepts arguments but changes nothing is a failed probe.*
 
-**Probe protocol.** Every probe write-up records: the installed artifact version (`opencascade.js` 1.1.1 and `@loumalouomega/gmsh-wasm` 0.3.0 at the time of writing), the fixture path, the exact call shapes that worked — overload suffix and argument count, because there is no `.d.ts` for OCCT and signatures are found by enumerating a prototype and trying suffixes, the same way every other OCCT call site here was found — the output facts, cleanup behaviour (`.delete()` in `finally`, a kernel reset after a deliberate abort), and wall-clock timing on the largest fixture that fits. MEMFS paths stay at 10 characters or fewer; the 11+ cliff silently corrupts STEP writes.
+**Probe protocol.** Every probe write-up records: the installed artifact version (`opencascade.js` 1.1.1, `@loumalouomega/gmsh-wasm` 0.3.0 and `@meshioplusplus/wasm` 16.7.0 at the time of writing; `@loumalouomega/mmg-wasm` 0.1.0 for the MMG probes, which install it first), the fixture path, the exact call shapes that worked — overload suffix and argument count, because there is no `.d.ts` for OCCT and signatures are found by enumerating a prototype and trying suffixes, the same way every other OCCT call site here was found — the output facts, cleanup behaviour (`.delete()` in `finally`, a kernel reset after a deliberate abort), and wall-clock timing on the largest fixture that fits. MEMFS paths stay at 10 characters or fewer; the 11+ cliff silently corrupts STEP writes.
 
 **Where a result goes.** *Pass:* the item's "If admitted" phases move into Tier 1 with firm estimates, and the probe's call shapes move to `CLAUDE.md` as the feature's verified facts. *Fail:* the item moves to Non-goals — Kernel-blocked for a dead binding, Rejected scope for a product judgement — with the exact calls that failed and what would change our mind. *Partial:* the item stays here, narrowed to the surviving hypothesis, with the negative half recorded under Non-goals.
 
@@ -67,13 +98,20 @@ These are outcome groupings, not release numbers. Independent small items can sh
 | Order | Item | Needs | Why here |
 | --- | --- | --- | --- |
 | 1 | Open-profile surface output | — | Exercises the free-face invariant every `face-N` operand depends on; structurally cheap |
-| 2 | Small-detail edge suppression | screenshot pipeline | Webview-side and independent; the risk is judgement, not bindings |
-| 3 | Anisotropic boundary layers | a `$Elements` walker | The largest probe, and the first live exercise of `dimension: 2` |
-| 4 | Loft takeoff by resampled intermediates | — | Lowest value; the measurement design is the hard part |
+| 2 | MMG remeshing of FE meshes | `@loumalouomega/mmg-wasm` installed as a devDependency for the probe | Opens a whole capability class (remeshing), and two later rows reuse its loader |
+| 3 | Hausdorff-bounded surface coarsening | the MMG core loader; meshio++ already bundled | Fixes a known defect (a degenerate heal after auto-decimate), and may need no new dependency at all |
+| 4 | Gmsh mesh optimisation | — | Already in the binary; cheap; directly improves every generated mesh |
+| 5 | Small-detail edge suppression | screenshot pipeline | Webview-side and independent; the risk is judgement, not bindings |
+| 6 | Anisotropic boundary layers | a `$Elements` walker | The largest Gmsh probe, and the first live exercise of `dimension: 2` |
+| 7 | Structured meshing per Part | the same `$Elements` walker | Exact element counts make the probe discriminating; shares the walker with row 6 |
+| 8 | Metric-driven adaptive remeshing | a passed MMG core probe | Depends on row 2's result; highest value of the MMG items but the most moving parts |
+| 9 | JS mesh-size callback | — | Only needed if a sizing source outgrows Gmsh's declarative fields |
+| 10 | Loft takeoff by resampled intermediates | — | Lowest-value geometry probe; the measurement design is the hard part |
+| 11 | METIS partitioning for Kratos MPI export | — | Lowest-value meshing probe; no user has asked for partitioned output yet |
 
 Every probe runs through the committed harness — `npm run probe -- <entry.ts>`, with the skeleton, protocol and scratch convention in [`scripts/probe/README.md`](https://github.com/loumalouomega/CAD-Preview/blob/master/scripts/probe/README.md).
 
-None depends on another row's *result* — a failed probe never blocks a later one.
+Only row 8 depends on another row's *result*: adaptive remeshing needs the MMG core probe to pass. Every other failed probe blocks nothing after it. Row 3 still produces a result if MMG fails, because its meshio++ half stands alone.
 
 #### Open-profile surface output
 
@@ -116,6 +154,7 @@ None depends on another row's *result* — a failed probe never blocks a later o
 - **Decision gate:** *pass* — graded quads with the asserted wall size and ratio, composing with the background field. *Fail* — triangles only, a no-op, or a throw → Kernel-blocked with the option names and diagnostics recorded. *Partial* — works alone but replaces the background field → keep here, narrowed to "layer or grading, not both".
 - **If admitted:** Phase 1 (**M**) — `Part.meshBoundaryLayer { wallSize, growthRatio, thickness, quads }` for curve-scoped Parts on 2D generates: a third `if (part.meshBoundaryLayer != null)` branch in `applyPartsToGmshModel` beside `meshSize` and `meshGrading`, a `validateMeshBoundaryLayer` gate, every length scaled by `scalePartsMeshSizeForUnit`, a `set_part` parameter, a panel row, and a `.geo` script comment. Phase 2 (**L**, its own probe, only if step 4 passes) — 3D layers through `extrudeBoundaryLayer`.
 - **Out of scope:** 3D layers on OCC-imported solids unless step 4 proves the route; STL sources (no entity correlation, the same rule physical groups follow).
+- **Not a substitute:** MMG's per-reference local sizes ([MMG remeshing of FE meshes](#mmg-remeshing-of-fe-meshes)) refine isotropically near a wall. They do not build stacked, ratio-graded layers, so a passed MMG probe does not close this item.
 
 #### Optional small-detail edge suppression
 
@@ -128,6 +167,164 @@ None depends on another row's *result* — a failed probe never blocks a later o
 - **Decision gate:** *pass* — some τ hides at least 30 % of fillet-band seams on two or more fixtures while hiding no cylindrical hole rim and no large-extent face's edges. *Fail* — every τ that removes clutter also removes a hole rim → Rejected scope, with the tables kept.
 - **If admitted:** Phase 1 (**S**) — `detail: boolean` beside `smooth` on the wire format (never a filter: `edge-N` enumeration untouched), a `#hide-detail-edges` View item through `applyEdgeVisibility`, opt-in, the threshold a `cadPreview.*` setting defaulting to the probe's τ; and fix the documented "edge visibility does not survive a model rebuild" limitation for *both* flags in the same change, since a second toggle would double that bug's surface.
 - **Out of scope:** any default-on suppression; area alone as the criterion — surface type and extent are part of the test.
+
+#### MMG remeshing of FE meshes
+
+- **Hypothesis:** `@loumalouomega/mmg-wasm` can load as a fifth lazy singleton inside `src/kernelWorker.ts` and remesh a tetrahedral or triangular mesh already in this pipeline, under a relative Hausdorff bound, with these guarantees:
+  - named regions (our Parts) survive through MMG's per-cell references;
+  - nothing reaches stdout;
+  - a STRONGFAILURE resets the kernel instead of poisoning it.
+- **Evidence today:**
+  - **From VSCode-MDPA-Preview** (see the review above): MMG remeshing ships there, with all three modules, typed-array I/O, per-reference local parameters and frozen entities.
+  - **Here:** the gap is real. `transform_mesh` offers clean/decimate/smooth/subdivide/refine, and `repair_mesh` offers fTetWild, but nothing remeshes to a target size or error bound. Refining with meshio++'s `refine` only splits elements; it never coarsens or relocates.
+  - **Region bridge:** `convertToStlBoundaryWithRegions` and `buildPartsFromMeshioRegions` already turn meshio regions into `node-0/face-K` Parts. MMG references are the matching integer handle.
+  - **Loading and packaging:** the kernel-worker `Pipeline` pattern (interface, dispatch, client, `kernelActivity` classification) and the `wrapXFault` / `resetX` / `isXWasmAbort` convention are ready to copy.
+  - **What differs from meshio++:**
+    - the package is dual ESM/CJS, so the CJS build must be aliased (`import.meta.url` is undefined in our CJS bundles, the same trap gmsh-wasm had);
+    - it takes `wasmBinary`, so a copy into `dist/` works, unlike meshio++.
+- **Probe (S):**
+  1. **Load and stdout.** Load through a `getMmg()` singleton that passes `wasmBinary`, `print` and `printErr`. Run one remesh inside `npm run probe`, then again through a throwaway `dist/mcp-server.js` build. Assert zero bytes on fd 1 (the `mcp:smoke` stdout discipline).
+  2. **Region survival (mmg3d).** Remesh `examples/MED/two-material-tets.med`:
+     - `hausd` = 0.5 % of the bbox diagonal;
+     - `hmax` = half the current mean edge;
+     - pass the two material references as cell refs;
+     - assert both references are present in the output;
+     - assert every output tet lies inside the input's bbox;
+     - assert total volume is conserved to 1e-6 relative (a remesh of a polyhedral domain must not change its volume beyond the Hausdorff budget).
+  3. **Quality optimisation.** Run `optim` on the fTetWild output of `examples/STL/holed-cube.stl`. Compare minSICN before and after through Gmsh's `getElementQualities`, after `gmsh.merge()` of the result (the fTetWild hand-off route). It must not fall.
+  4. **Surface (mmgs).** Coarsen `examples/STL/large-sphere-100k.stl` to `hausd` = 1e-2. Record the triangle count, and check that the maximum vertex-to-sphere distance stays within `hausd`.
+  5. **Failures.**
+     - Provoke a STRONGFAILURE: a multi-material map missing one reference. Assert a thrown error, a reset singleton, and a successful next call.
+     - Assert an empty harvest is reported as an error.
+  6. **Timing.** Record wall-clock timing for each step, and memory growth across 20 repeated remeshes.
+- **Decision gate:**
+  - **Pass:** all six steps hold.
+  - **Fail on stdout or loading:** Kernel-blocked, with the failing call recorded.
+  - **Partial (mmgs works, mmg3d does not, or the reverse):** keep the item, narrowed to the working module.
+- **If admitted:**
+  - **Phase 1 (M): a `remesh_mesh` MCP tool plus a **Remesh (MMG)** action in the FE Mesh panel's Mesh ops section**, for meshio sources and for a generated mesh.
+    - **Options:** `hausd` (relative by default), `hmin`, `hmax`, `hgrad`, `optimOnly`.
+    - **Result:** a new file, never the source (the `repair_mesh` precedent). Parts are carried through references.
+    - **Point/cell data:** dropped with a warning until the adaptive item lands.
+    - **Licence and packaging tasks:** the package stays in `WASM_EXTERNALS`; add a `.vscodeignore` carve-out; add a README "Licensing" paragraph stating LGPL-3.0-or-later and what that means for the combined work; add LICENSE attribution; `npm run compat:vsix` must list the new files.
+  - **Phase 2 (M): an optional MMG optimisation pass after Generate** (Gmsh or fTetWild output). It is gated behind a `MeshOptions` field, so existing documents mesh byte-identically.
+- **Out of scope:**
+  - Lagrangian `move` (it needs MMG's elasticity library, which the WASM build lacks).
+  - Hexahedral, pyramid and quadratic input (MMG rejects them; say so, rather than silently linearising).
+  - ParMmg.
+
+#### Hausdorff-bounded surface coarsening for the heal ceiling
+
+- **Hypothesis:** a Hausdorff-bounded surface remesh — mmgs, or meshio++'s own clustering `remesh` — reduces `large-sphere-100k.stl` to about 1 000 triangles. The result closes and heals to a *positive* volume near the sphere's, unlike the shipped QEM decimation, which heals to exactly 0.
+- **Evidence today:** the auto-decimate item (see `CLAUDE.md`) records that decimation introduces non-manifold edges and slivers. On the 1k sphere it sews at 1e-6 yet solidifies to volume 0, so `promote_mesh_to_brep {autoDecimate}` refuses with a degenerate-heal error. The smoke suite pins that refusal on purpose, as the revisit signal. meshio++ 16.7.0's `remesh` offers isotropic, quadric or anisotropic clustering with explicit repair passes. It reports `numIsolatedClusters` and `numNonManifoldVertices` separately, which is exactly the diagnostic this probe needs.
+- **Probe (S):**
+  1. Run three candidates on `large-sphere-100k.stl` at a target of about 1 000 triangles:
+     - the shipped `decimateStlBoundary`;
+     - meshio++ `remesh(mesh, 1000, …, "isotropic", …, preserveBoundary=true)`;
+     - mmgs with `hausd` = 1e-2 × the diagonal.
+  2. Score each through the unchanged `checkMeshHealth` on:
+     - free and non-manifold edges;
+     - `inconsistentPairCount`;
+     - healed volume against 4/3·π·10³ = 4188.79 (the fixture is a radius-10 sphere at the origin);
+     - wall-clock time.
+  3. Repeat at 5 000 triangles to find where sewing cost dominates. The auto-decimate write-up found 5k already past the 300 s watchdog.
+- **Decision gate:**
+  - **Pass:** at least one candidate heals to within 2 % of the analytic volume with zero non-manifold edges.
+  - **Fail:** every candidate heals degenerately. Record the numbers and keep the pinned refusal.
+- **If admitted (S):** auto-decimate's backend switches to the winning candidate. Its `decimated` report names the method and the Hausdorff bound. The `mcp:smoke` degenerate assertions flip to a successful promote, as the auto-decimate write-up anticipated. If meshio++ wins, this item needs **no** MMG dependency — state that outcome explicitly instead of bundling MMG for it.
+- **Out of scope:** raising `MAX_HEALABLE_TRIANGLES`; the per-triangle sewing cost is the real limit.
+
+#### Metric-driven adaptive remeshing from a field
+
+- **Hypothesis:** a remesh driven by a size map derived from a field — an error estimate, or a user-picked colour-by-field scalar — refines where the field varies and coarsens where it does not. Point/cell data can then be carried onto the new mesh with a measured conservation error.
+- **Evidence today:**
+  - **Error estimate:** meshio++ `estimateError` (the Zienkiewicz–Zhu estimator, with `none`/`absolute`/`fraction`/`dorfler` marking) is bundled and uncalled.
+  - **Field transfer:** `conservativeInterpolate` keeps ∑value·measure equal over the shared region, a property plain `interpolate` lacks.
+  - **Metrics:** MMG accepts scalar (`setScalarSols`) and tensor (`setTensorSols`, 6 doubles per node) metrics. VSCode-MDPA-Preview builds tensors from a field's Hessian.
+  - **Field plumbing:** already exists for display: `readMeshioDataInfo` and `readMeshioFieldValues` feed colour-by-field.
+- **Probe (S, requires the MMG core probe to pass):**
+  1. On `examples/MED/two-material-tets.med`, attach a synthetic point field f = exp(−|x − c|²/σ²).
+  2. Build a scalar size map h = clamp(h₀ / (1 + α·|∇f|)) from `estimateError`'s cell indicator, then remesh through mmg3d.
+  3. Assert that element density near `c` is at least 3× density far from it.
+  4. Transfer f with `conservativeInterpolate`, and assert ∑f·measure is preserved to 1e-6 relative.
+  5. Repeat with a tensor metric, and record whether anisotropy measurably lowers the element count at equal interpolation error.
+- **Decision gate:**
+  - **Pass:** the density ratio holds and the conservation check holds.
+  - **Partial:** scalar metrics work but tensor metrics do not. Admit the scalar path only.
+- **If admitted (M):** an `adapt_mesh` MCP tool plus a panel action. The metric source is `estimateError`, a named scalar field or a Part's region. Fields are transferred conservatively, and the achieved density and conservation error are reported. The result is a new file.
+- **Out of scope:**
+  - Level-set discretisation (MMG `-ls`, cutting a mesh along an isosurface into two materials). It is a separate workflow with its own reference rules (MMG reserves references 2/3), and it waits for a concrete request.
+  - Solver coupling. Adaptation is a single, user-triggered pass, never a loop.
+
+#### Gmsh mesh optimisation (Netgen and high-order)
+
+- **Hypothesis:** `gmsh.model.mesh.optimize(method)` — present in the bundled 0.3.0 binding, with Netgen linked in — raises minimum quality on generated tet meshes (`"Netgen"`, `"Relocate3D"`). It also untangles invalid curved quadratic elements (`"HighOrder"`, `"HighOrderElastic"`), and it is neither a no-op nor a crash.
+- **Evidence today:**
+  - `optimize(` is declared in `dist/gmsh.d.ts`. The only optimisation we set is `MeshOptions.optimize`, which today maps to Gmsh's generate-time `Mesh.Optimize` flag.
+  - An order-2 generate of a curved model can produce negative Jacobians. `summarizeQuality` would show them as ≤ 0 minSICN, but nothing fixes them.
+  - `README.md`'s licensing notes record that Netgen is linked into this Gmsh build; no call has ever reached it.
+- **Probe (S):**
+  1. Generate `examples/STP/bull.stp` in 3D at the smoke-test size. Record minSICN and mean quality, then call `optimize("Netgen")` and `optimize("Relocate3D")` separately, recording quality, element count and time for each.
+  2. Generate at `elementOrder: 2`, count elements with negative minSICN, then call `optimize("HighOrderElastic")` and recount.
+  3. Confirm `gmsh.write()` still produces a valid `.msh`, and that the physical groups from Parts survive optimisation.
+- **Decision gate:**
+  - **Pass:** a measurable, repeatable quality gain with physical groups intact.
+  - **Fail:** a no-op, a throw or an abort → Kernel-blocked, with the method name.
+- **If admitted (S):**
+  - `MeshOptions.optimize` becomes an enum (`none` / `default` / `netgen` / `highOrder`). It stays backward-compatible: the existing boolean parses as `default`/`none`.
+  - The option is threaded into `generateGeoScript` as `Mesh.OptimizeNetgen` / `Mesh.HighOrderOptimize` lines.
+  - The panel greys it out under fTetWild. That is the same rule every other Gmsh-only field follows, so `meshPresets`' `inapplicablePresetFields` needs the field added.
+
+#### Structured (transfinite) meshing per Part
+
+- **Hypothesis:** `setTransfiniteCurve` / `setTransfiniteSurface` / `setTransfiniteVolume`, plus `setRecombine`, produce exact mapped hex meshes on B-rep regions that admit them. `setTransfiniteAutomatic` finds such regions on its own on a multi-block model.
+- **Evidence today:**
+  - All of these calls are declared in the bundled binding and have never been called.
+  - The shipped `elementShape: "subdivided"` produces all-hex meshes, but by splitting tets. They are unstructured and of lower quality than a mapped mesh.
+  - Part-scoped Gmsh settings already have a home: `applyPartsToGmshModel` resolves Part ids to Gmsh tags for `meshSize` and `meshGrading`.
+- **Probe (S):**
+  1. On `examples/STP/block.stp` (3 × 4 × 5), set transfinite curves with n nodes per edge, set the surfaces and the volume, recombine, then generate in 3D. Assert exactly (n−1)³ hexahedra (Gmsh type 5) and zero tets, using the same `$Elements` walker the boundary-layer probe needs.
+  2. Call `setTransfiniteAutomatic` on `examples/STP/angle1.stp`, and record which volumes it accepts.
+  3. On a non-mappable region, check that the failure mode is a clean throw or a fallback, never a hang.
+- **Decision gate:**
+  - **Pass:** exact counts on `block.stp`, plus a defined failure on non-mappable regions.
+  - **Fail:** wrong counts, or a hang.
+- **If admitted (M):**
+  - A `Part.meshStructured { divisions }` field beside `meshSize` and `meshGrading`, for B-rep sources only (the same rule as physical groups).
+  - It gets its own branch in `applyPartsToGmshModel`, a validation gate, a `set_part` parameter and an FE Mesh row.
+  - Unit conversion does not touch `divisions`, which is a count, not a length.
+  - `mdpaWriter`'s `Hexahedra3D8` path already covers the output.
+
+#### JS mesh-size callback
+
+- **Hypothesis:** the `setSizeCallback((dim, tag, x, y, z, lc) => number)` declared in gmsh-wasm 0.3.0 actually marshals a JS function into Gmsh's per-vertex sizing loop. `doc/gmsh-integration.md` records it as green in the manifest but never called.
+- **Evidence today:** field-based sizing (Constant, Distance+Threshold, Min) covers every shipped feature. A callback would let a *sampled* quantity drive sizing without translating it into fields — for example, the deviation map's per-vertex distances, or an error indicator on a previous mesh.
+- **Probe (S):**
+  1. Register a callback returning `lc = 0.1 + 0.2·(z − zmin)/(zmax − zmin)` on `block.stp`, and generate.
+  2. Check that edge lengths grow monotonically in z, within a 20 % band.
+  3. Measure how many callback invocations occur and their total cost, since each call crosses the WASM boundary.
+  4. Confirm `removeSizeCallback` restores field-only behaviour in the same singleton.
+- **Decision gate:**
+  - **Pass:** the gradient appears and the per-call overhead is tolerable at the smoke-test size.
+  - **Fail:** a throw, an abort or no effect → Kernel-blocked, with the finding recorded in `doc/gmsh-integration.md` too.
+- **If admitted:** no feature by itself. This probe is an enabler, recorded so a future sizing source can choose it knowingly. The known cost is stated: a callback is not declarative, so it cannot round-trip through `.geo`, `.geo_unrolled` or the `.mesh.json` sidecar.
+
+#### METIS partitioning for Kratos MPI export
+
+- **Hypothesis:** `gmsh.model.mesh.partition(n)` (METIS is linked in) partitions a generated mesh. The partition entities read back cleanly enough to write one MDPA file per rank, each with its interface nodes identified.
+- **Evidence today:**
+  - `partition` / `unpartition` are declared in the binding.
+  - `README.md`'s licensing notes record that METIS is linked into this Gmsh build.
+  - `mdpaWriter.ts` writes a single serial file.
+  - Kratos's own MPI workflow usually partitions at load time (its `metis_partitioning` process), so the value here is unproven.
+- **Probe (S):**
+  1. Generate `bull.stp`, partition into 4, then read back `getPartitions` and partition entities.
+  2. Assert that every element belongs to exactly one partition, and that the partition element counts sum to the total.
+  3. Record the balance ratio (largest partition / mean).
+- **Decision gate:**
+  - **Pass:** a consistent, balanced partition.
+  - **Rejected scope regardless of the probe:** the case where Kratos users confirm load-time partitioning is what they use. Record that and stop.
+- **If admitted (M):** partitioned MDPA export, one file per rank, with SubModelParts preserved per rank. This is the lowest-value meshing item, so it is listed last.
 
 ## Definition of done
 
@@ -180,5 +377,16 @@ Three groups, three different revival rules. Each says what would change our min
 - **Parametric part generators as kernel primitives (involute gears, thread forms, springs)** — rejected as *kernel geometry*. Standard parts are something this tool should mostly *source*, not author: `search_standard_parts`/`download_standard_part` fetch real, verified geometry from step.parts as ordinary STEP files the existing pipeline opens, and the interactive sidebar does the same. Authoring an involute tooth-flank generator in `occtOperations.ts` is modeling-application scope.
 
   **What survived the reframing:** the same shapes as *macros* — closed as the "bundled starter macro library" item (`spring`, `bolt-circle-flange`, `hex-bolt` in `macros/starter-library.json`, served when `libraryPath` is omitted). `addHelix` + `sweep` + `repeat` loops + degree trig already express a spring and a thread profile with no new kernel code — the gap was data and a path resolver, not geometry, and step.parts will not hand you a spring at *your* wire diameter anyway.
+
+- **Other meshing kernels: TetGen, CGAL meshers, ParMmg, standalone Netgen** — rejected, recorded so they are not proposed again. The [meshing library review](#meshing-library-review) covers what is proposed instead.
+  - **TetGen** is AGPL-3.0: a stronger copyleft than anything bundled so far. It adds nothing fTetWild (robust tets from dirty input) and Gmsh (constrained Delaunay, which already uses tetgen-derived boundary recovery) do not already cover.
+  - **CGAL's Mesh_3 and Polygon_mesh_processing remeshers** are GPL-3.0-or-later with no GPLv2 reading — the same one-way door as openscad-wasm below. Their capabilities are covered by MMG (isotropic surface remeshing) and meshio++'s clustering `remesh`.
+  - **ParMmg** is MMG over MPI. A single-process WASM worker has no MPI, and the meshes this extension handles fit a sequential MMG.
+  - **A standalone Netgen** would duplicate the copy already linked into the bundled Gmsh, which is reachable through `optimize` ([Gmsh mesh optimisation](#gmsh-mesh-optimisation-netgen-and-high-order)).
+
+  **What would change our mind:**
+  - For TetGen or CGAL: a relicensing decision to GPL-3.0-or-later made for other reasons.
+  - For ParMmg: a real mesh that sequential MMG cannot handle within the kernel watchdog.
+  - For Netgen: Gmsh's `optimize("Netgen")` failing its probe while a standalone build demonstrably works.
 
 - **Bundling `openscad-wasm`** — rejected (was path (c) of the closed OpenSCAD item). Technically attractive but a GPL-3.0-or-later one-way door: CGAL is GPLv3+/LGPLv3+ with no GPLv2 option and Manifold is Apache-2.0 (FSF-held GPLv2-incompatible), and it costs ~8–14 MB plus ~8 MB more for `text()`. The shipped alternative — shelling out to a user-installed binary (mere aggregation, not linking) — covers `.scad` with zero bundled megabytes and no license propagation. Revisit only if the external binary stops being a viable dependency. That path's loose end — the `openscad` invocation never having run against a real binary — was closed by a live-binary run (OpenSCAD 2021.01, verified in `src/scadService.ts`'s header), which also caught and fixed a real relative-path argv defect.
