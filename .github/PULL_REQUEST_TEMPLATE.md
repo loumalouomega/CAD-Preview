@@ -39,7 +39,7 @@ Per CLAUDE.md's "Keep docs in sync" header — update everything the change touc
 
 <!-- Verification gaps that no automated check reached, stated plainly. If a
      new bundled dependency ships in the .vsix, note its license and say why
-     it is GPL-2.0-compatible (CLAUDE.md's "License" section). Roadmap items
+     it is GPL-3.0-compatible (CLAUDE.md's "License" section). Roadmap items
      are named by heading, never "roadmap item N" — path names and quoted
      historical mentions excepted, see .github/PULL_REQUEST_TEMPLATE.md's
      sibling check in npm test. -->

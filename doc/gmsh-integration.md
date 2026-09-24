@@ -301,11 +301,11 @@ Note this codebase skipped the buggy window entirely: 10.14.0 predates default-o
 
 Bundling gmsh-wasm changes CAD-Preview's own license. See the README's [Licensing](../README.md#licensing) section for the full statement; in short:
 
-> Gmsh statically links (and is itself linked with) OpenCASCADE, Netgen, METIS, and ParaView into a single WASM binary, and is distributed under the **GPL-2.0-or-later** (with a linking exception covering those dependencies). Because CAD-Preview ships that compiled binary, **CAD-Preview itself is distributed under the GPL-2.0-or-later** — see [LICENSE](../LICENSE).
+> Gmsh statically links (and is itself linked with) OpenCASCADE, Netgen, METIS, and ParaView into a single WASM binary, and is distributed under the **GPL-2.0-or-later** (with a linking exception covering those dependencies) — on its own, this only required CAD-Preview to be `GPL-2.0-or-later` too. **CAD-Preview itself is distributed under the GPL-3.0-or-later** — see [LICENSE](../LICENSE) — a floor set separately by the committed-to "Build and bundle an OpenSCAD WASM port" roadmap item (a real OpenSCAD build genuinely links CGAL/Manifold, neither of which is GPLv2-compatible), landed ahead of that dependency actually shipping.
 
 This is a strictly stronger copyleft than OCCT's own LGPL-2.1-with-exception (used directly for the B-rep read/export pipeline via `opencascade.js`, and indirectly a second time inside gmsh-wasm's bundled OCCT). The GPL obligation is triggered by gmsh-wasm's presence in the extension bundle, not by whether a given user ever opens the FE Mesh panel.
 
-`@meshioplusplus/wasm` (the meshio++ bridge, see above) is **MIT**-licensed, including its compiled `.wasm` binary — bundling it doesn't change CAD-Preview's overall license (already GPL-2.0-or-later because of gmsh-wasm), it's simply an additional MIT dependency alongside `@modelcontextprotocol/sdk`/ `zod`/`fflate`. See the README's Licensing section for the full attribution list.
+`@meshioplusplus/wasm` (the meshio++ bridge, see above) is **MIT**-licensed, including its compiled `.wasm` binary — bundling it doesn't change CAD-Preview's overall license (already GPL-3.0-or-later, see the README's Licensing section), it's simply an additional MIT dependency alongside `@modelcontextprotocol/sdk`/ `zod`/`fflate`. See the README's Licensing section for the full attribution list.
 
 ## Known limitations
 

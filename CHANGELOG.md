@@ -4,6 +4,16 @@ All notable changes to the "CAD Preview" extension are documented in this file.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/); this project does not yet strictly follow Semantic Versioning (pre-1.0 releases moved fast and bundled multiple features per bump).
 
+## Unreleased
+
+### Changed
+
+- **Relicensed from `GPL-2.0-or-later` to `GPL-3.0-or-later`.** `LICENSE` now carries the verbatim GPLv3 text, and `package.json`, `package-lock.json`, the README's Licensing section, the docs footer and the PR template match. Nothing bundled today requires more than `GPL-2.0-or-later` (Gmsh's own licence is still compatible with either); the change is made ahead of the "Build and bundle an OpenSCAD WASM port" roadmap item, because a real OpenSCAD build links CGAL (GPLv3-or-later / LGPLv3-or-later) and/or Manifold (Apache-2.0, GPLv3- but not GPLv2-compatible), which forces a `GPL-3.0-or-later` floor. Doing it now avoids a second licence change when that dependency lands. Versions already released remain available under `GPL-2.0-or-later`.
+
+### Documentation
+
+- `doc/roadmap.md` gains a meshing-library review (MMG remeshing, meshio++ field transfer, untapped Gmsh features) and the OpenSCAD WASM port as a probe-gated item; the "Bundling `openscad-wasm`" Non-goal is removed, and the CGAL Non-goal is reworded, since the licence reason for each no longer applies.
+
 ## [3.2.0] - 2026-09-23
 
 ### Added

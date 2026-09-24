@@ -39,7 +39,7 @@ Meshing today is *generate* (Gmsh, fTetWild) plus *repair* (fTetWild, meshio++ o
 
 The MMG evidence comes from the sibling project [VSCode-MDPA-Preview](https://github.com/loumalouomega/VSCode-MDPA-Preview). It has shipped remeshing through [`@loumalouomega/mmg-wasm`](https://github.com/loumalouomega/MMG-WASM) 0.1.0: MMG 5.8.0, one ~1.1 MB `mmg-core.wasm` holding mmg2d, mmgs and mmg3d, with dual ESM/CJS builds and no pthreads. That is a working product elsewhere, not evidence in *this* pipeline — the kernel worker, IPC marshalling, Parts correlation and stdout purity are all untested here. That is why the MMG items below are probe-gated rather than Tier 1.
 
-**Licence decision, recorded:** MMG is LGPL-3.0-or-later. Shipping it ties the distributed extension to GPLv3-compatible terms, which CAD-Preview's GPL-2.0-or-later "or later" clause allows. We accept that dependency. It will ship the way meshio++ and fTetWild do: an `external` package loaded from its own `.wasm` file (separately replaceable, as LGPL §4 expects), a `.vscodeignore` carve-out, and its own README "Licensing" attribution. This is a deliberate choice, unlike the openscad-wasm rejection below, where CGAL and Manifold leave no GPLv2-compatible reading at all.
+**Licence decision, recorded:** MMG is LGPL-3.0-or-later, which is directly compatible with CAD-Preview's own `GPL-3.0-or-later` (relicensed from `GPL-2.0-or-later` on 2026-09-24 for the [OpenSCAD WASM port](#build-and-bundle-an-openscad-wasm-port) — see the README's "Licensing" section). We accept the dependency. It will ship the way meshio++ and fTetWild do: an `external` package loaded from its own `.wasm` file (separately replaceable, as LGPL §4 expects), a `.vscodeignore` carve-out, and its own README "Licensing" attribution.
 
 | Library / capability | Licence | In the VSIX today? | What it adds | Outcome |
 | --- | --- | --- | --- | --- |
@@ -50,7 +50,7 @@ The MMG evidence comes from the sibling project [VSCode-MDPA-Preview](https://gi
 | Gmsh `setSizeCallback` | GPL-2.0-or-later | Declared green in 0.3.0, never called | Sizing from a JS function, e.g. a sampled deviation or error field | [JS mesh-size callback](#js-mesh-size-callback) |
 | Gmsh `partition` / `unpartition` (METIS linked in) | GPL-2.0-or-later | Yes, never called | Domain decomposition for distributed solvers | [METIS partitioning for Kratos MPI export](#metis-partitioning-for-kratos-mpi-export) |
 | TetGen | AGPL-3.0 | No | Constrained Delaunay tets | Rejected — see [Other meshing kernels](#rejected-scope) |
-| CGAL Mesh_3 / Polygon_mesh_processing remeshing | GPL-3.0-or-later | No | Implicit-domain meshing, isotropic surface remeshing | Rejected — see [Other meshing kernels](#rejected-scope) |
+| CGAL Mesh_3 / Polygon_mesh_processing remeshing | GPL-3.0-or-later | No | Implicit-domain meshing, isotropic surface remeshing | Not pursued (licence-compatible, but no WASM build and covered by MMG / meshio++) — see [Other meshing kernels](#rejected-scope) |
 | ParMmg | LGPL-3.0-or-later | No | Parallel (MPI) MMG | Rejected — see [Other meshing kernels](#rejected-scope) |
 
 Known MMG facts that the sibling project established the hard way, and which the probes must re-verify rather than assume:
@@ -108,6 +108,7 @@ These are outcome groupings, not release numbers. Independent small items can sh
 | 9 | JS mesh-size callback | — | Only needed if a sizing source outgrows Gmsh's declarative fields |
 | 10 | Loft takeoff by resampled intermediates | — | Lowest-value geometry probe; the measurement design is the hard part |
 | 11 | METIS partitioning for Kratos MPI export | — | Lowest-value meshing probe; no user has asked for partitioned output yet |
+| 12 | Build and bundle an OpenSCAD WASM port | Emscripten toolchain (`emsdk`); the relicense is already done | Largest item here (a from-scratch build); independent of every other row, and the shipped binary path keeps `.scad` working meanwhile |
 
 Every probe runs through the committed harness — `npm run probe -- <entry.ts>`, with the skeleton, protocol and scratch convention in [`scripts/probe/README.md`](https://github.com/loumalouomega/CAD-Preview/blob/master/scripts/probe/README.md).
 
@@ -326,6 +327,30 @@ Only row 8 depends on another row's *result*: adaptive remeshing needs the MMG c
   - **Rejected scope regardless of the probe:** the case where Kratos users confirm load-time partitioning is what they use. Record that and stop.
 - **If admitted (M):** partitioned MDPA export, one file per rank, with SubModelParts preserved per rank. This is the lowest-value meshing item, so it is listed last.
 
+#### Build and bundle an OpenSCAD WASM port
+
+- **Decision recorded (2026-09-24):** this was the "Bundling `openscad-wasm`" Non-goal, rejected purely on licensing grounds — a real OpenSCAD build links CGAL (GPLv3-or-later / LGPLv3-or-later, no GPLv2 option) and/or Manifold (Apache-2.0, which the FSF treats as GPLv3-compatible but not GPLv2-compatible), so bundling it forces a `GPL-3.0-or-later` floor. The maintainer chose to take that step: CAD-Preview was relicensed from `GPL-2.0-or-later` to `GPL-3.0-or-later` ahead of the artifact existing (see the README's "Licensing" section), so the licence is no longer the blocker. What remains is engineering: there is nothing safe to bundle yet.
+- **Hypothesis:** OpenSCAD's C++ core (GPL-2.0-or-later, confirmed against upstream's `COPYING`) plus a CGAL and/or Manifold geometry backend cross-compiles, through Emscripten, to a single WebAssembly module that evaluates `.scad` (and the `.csg` this codebase already imports) from Node with no `openscad` binary on `PATH` — the same recipe already proven by `@loumalouomega/gmsh-wasm`, `mmg-wasm` and `float-tetwild-wasm`.
+- **Evidence today:**
+  - **No usable artifact exists.** The only `openscad-wasm` on npm (publisher `20lives`, v0.0.4, ~500 weekly downloads) was downloaded and inspected: a single 14 MB `openscad.js` with **no LICENSE file, no repository, no author and no copyright or attribution notices**, self-labelled `"license": "GPL-2.0"` — a label that cannot be right for a build that links CGAL or Manifold, and, independently of what the underlying licence is, redistributing GPL code with its notices stripped is itself non-compliant. It is not bundle-able whatever its true licence turns out to be.
+  - **Upstream publishes nothing reusable.** `openscad/openscad-playground` builds a WASM binary for its own hosted page ("The build system fetches a prebuilt OpenSCAD web WASM binary") and publishes no npm package for it. Its README states the Manifold backend is the default.
+  - **The shipped alternative works and stays.** `.scad` already opens through a user-installed `openscad` binary (`src/scadService.ts`, verified live against OpenSCAD 2021.01, converting to the `.csg` that `csgImport.ts`/`csgModel.ts` build). This item is additive: it removes the "install OpenSCAD first" step and pins the version, and it does not retire the binary path.
+- **Probe (M — larger than this file's usual S probes: it is a build, not an API check):**
+  1. **Build.** From upstream OpenSCAD source, use `openscad-playground`'s own build recipe as the starting point to produce a single-threaded Emscripten module (the `{ threads: false }` choice fTetWild and meshio++ already force). Try Manifold as the only geometry backend first — a smaller dependency set (Apache-2.0 alone) than carrying CGAL too; record whether that build path is viable.
+  2. **Size.** Record the real `.wasm` size with and without `text()` and font support. Prior estimate to replace with a measurement: ~8–14 MB base, ~8 MB more for `text()`.
+  3. **Correctness.** Evaluate every `examples/OpenSCAD/*.scad` fixture and compare the emitted CSG with what `scadService.ts`'s binary path produces for the same input (booleans, `linear_extrude`, `rotate_extrude`, `polygon`, `polyhedron`, and one `text()` case); then confirm the analytic volumes `mcp:smoke` already pins (`bracket.csg` 5228.88, `extrude.csg`) still hold end to end.
+  4. **Loading.** Confirm it loads under this repo's own constraints: `esbuild.mjs`'s CJS bundling with the `import.meta.url` handling, the `wasmBinary` versus self-locating question, and stdout purity in the MCP server (`mcp:smoke` fails on any stray write to fd 1).
+  5. **Kernel behaviour.** A forced abort must be classified by the fifth `isXWasmAbort` vocabulary and reset the singleton; a `.scad` that recurses or loops must hit the kernel worker's watchdog rather than hang.
+  6. **Compliance.** Produce and ship a correct `LICENSE`, `NOTICE` and third-party attribution with the published package, plus a corresponding-source offer or pointer. This is a hard requirement, not polish — the existing npm package fails exactly here.
+  7. **Timing.** Compare wall-clock against the binary path on the largest existing OpenSCAD fixture.
+- **Decision gate:**
+  - **Pass:** a correct, reasonably sized artifact with complete licence material, matching the binary path's output on every fixture.
+  - **Fail:** it does not cross-compile cleanly, or size or timing is unacceptable → the binary path remains the answer. The item returns to Non-goals with the concrete build failure recorded, which is a materially different reason from the original licence-only rejection.
+- **If admitted:**
+  - **Phase 1 (M):** publish the artifact under the maintainer's own scope (`@loumalouomega/openscad-wasm`, following the gmsh-wasm / mmg-wasm precedent), add a lazy-singleton `scadWasmService.ts` to `kernelWorker.ts` through the standard four-touch-point `Pipeline` pattern, and have `resolveEffectiveSource` prefer it, falling back to the binary when the WASM path cannot handle a construct.
+  - **Phase 2 (S):** README "Licensing" attribution, the `WASM_EXTERNALS` / `.vscodeignore` / `compat:vsix` packaging entries, and `doc/file-formats.md`, `doc/mcp-server.md` and `doc/getting-started.md` updates (the "install OpenSCAD" hint becomes the fallback message).
+- **Out of scope:** retiring the binary path; a live OpenSCAD editor or customizer UI; anything that makes `.scad` evaluation asynchronous outside the kernel worker.
+
 ## Definition of done
 
 - **Behaviour:** complete the stated workflow, including cancellation, stale replies, empty input and reopen where relevant. A successful API return or non-empty file is not enough.
@@ -380,13 +405,12 @@ Three groups, three different revival rules. Each says what would change our min
 
 - **Other meshing kernels: TetGen, CGAL meshers, ParMmg, standalone Netgen** — rejected, recorded so they are not proposed again. The [meshing library review](#meshing-library-review) covers what is proposed instead.
   - **TetGen** is AGPL-3.0: a stronger copyleft than anything bundled so far. It adds nothing fTetWild (robust tets from dirty input) and Gmsh (constrained Delaunay, which already uses tetgen-derived boundary recovery) do not already cover.
-  - **CGAL's Mesh_3 and Polygon_mesh_processing remeshers** are GPL-3.0-or-later with no GPLv2 reading — the same one-way door as openscad-wasm below. Their capabilities are covered by MMG (isotropic surface remeshing) and meshio++'s clustering `remesh`.
+  - **CGAL's Mesh_3 and Polygon_mesh_processing remeshers** are GPL-3.0-or-later — no longer a licence barrier now that CAD-Preview is itself `GPL-3.0-or-later`, so this is *not pursued* rather than *blocked*. There is no standalone WASM build of them, and their capabilities are covered by MMG (isotropic surface remeshing) and meshio++'s clustering `remesh`. (A future OpenSCAD WASM build may statically link CGAL internally; that does not expose CGAL's meshers to JS.)
   - **ParMmg** is MMG over MPI. A single-process WASM worker has no MPI, and the meshes this extension handles fit a sequential MMG.
   - **A standalone Netgen** would duplicate the copy already linked into the bundled Gmsh, which is reachable through `optimize` ([Gmsh mesh optimisation](#gmsh-mesh-optimisation-netgen-and-high-order)).
 
   **What would change our mind:**
-  - For TetGen or CGAL: a relicensing decision to GPL-3.0-or-later made for other reasons.
+  - For TetGen: a relicensing decision to AGPL-3.0-or-later made for other reasons (its licence is a stronger copyleft than the project's own `GPL-3.0-or-later`).
+  - For CGAL: a concrete capability MMG and meshio++ demonstrably cannot supply, plus a WASM build to consume — its licence no longer blocks it.
   - For ParMmg: a real mesh that sequential MMG cannot handle within the kernel watchdog.
   - For Netgen: Gmsh's `optimize("Netgen")` failing its probe while a standalone build demonstrably works.
-
-- **Bundling `openscad-wasm`** — rejected (was path (c) of the closed OpenSCAD item). Technically attractive but a GPL-3.0-or-later one-way door: CGAL is GPLv3+/LGPLv3+ with no GPLv2 option and Manifold is Apache-2.0 (FSF-held GPLv2-incompatible), and it costs ~8–14 MB plus ~8 MB more for `text()`. The shipped alternative — shelling out to a user-installed binary (mere aggregation, not linking) — covers `.scad` with zero bundled megabytes and no license propagation. Revisit only if the external binary stops being a viable dependency. That path's loose end — the `openscad` invocation never having run against a real binary — was closed by a live-binary run (OpenSCAD 2021.01, verified in `src/scadService.ts`'s header), which also caught and fixed a real relative-path argv defect.
