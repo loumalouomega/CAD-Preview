@@ -415,6 +415,7 @@
     "mcp": "node dist/mcp-server.js",
     "mcp:smoke": "npm run build && node scripts/mcp-smoke/run.mjs",
     "perf": "npm run build && node scripts/perf/run.mjs",
+    "probe": "node scripts/probe/run.mjs",
     "test:webview": "npm run build && node scripts/screenshots/make-fixtures.mjs && node scripts/webview-test/run.mjs",
     "test:integration": "npm run build && node test/integration/run.mjs",
     "compat": "npm run build && node scripts/compat/run.mjs",

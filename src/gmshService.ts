@@ -118,7 +118,11 @@ export function resetGmsh(): void {
 export async function getGmshVersion(extensionPath: string): Promise<string> {
   const gmsh = await getGmsh(extensionPath);
   try {
-    const version = gmsh.option.getString("General.Version");
+    // gmsh-wasm returns `{ value }` (verified with the probe harness against
+    // 0.3.0: {"value":"5.0.0-git-29726e7"}), not a bare string — reading it as
+    // a string always fell through to "unavailable". Accept both shapes.
+    const raw: unknown = gmsh.option.getString("General.Version");
+    const version = typeof raw === "string" ? raw : (raw as { value?: unknown } | null)?.value;
     return typeof version === "string" && version.trim() ? version.trim() : "Gmsh version unavailable";
   } catch {
     return "Gmsh version unavailable";

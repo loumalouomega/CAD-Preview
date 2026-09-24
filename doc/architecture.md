@@ -110,7 +110,7 @@ The project uses [esbuild](https://esbuild.github.io/) (not tsc) to produce four
 
 ### WASM Handling in esbuild
 
-A custom esbuild plugin (`wasmPathPlugin` in `esbuild.mjs`) intercepts the import of `opencascade.js/dist/opencascade.wasm.wasm` and replaces it with a CJS stub:
+A custom esbuild plugin (`wasmPathPlugin`, defined in `scripts/nodeBundleConfig.mjs` and used by `esbuild.mjs`) intercepts the import of `opencascade.js/dist/opencascade.wasm.wasm` and replaces it with a CJS stub:
 
 ```javascript
 // Generated stub (not actual file content)

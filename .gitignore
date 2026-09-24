@@ -53,3 +53,5 @@ scripts/screenshots/.build/
 # .vscode-test/, already ignored above).
 test/integration/.build/
 scripts/compat/last-run.json
+scripts/probe/scratch/
+scripts/probe/.build/

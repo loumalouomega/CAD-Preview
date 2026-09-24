@@ -31,6 +31,7 @@ npm install
 | `npm run mcp` | Run the standalone MCP server (`dist/mcp-server.js`; requires a prior build) |
 | `npm run mcp:smoke` | Build, then run the real-WASM end-to-end MCP smoke test (see [MCP Server](./mcp-server.md)) |
 | `npm run perf` | Build, then benchmark load/mesh times against `scripts/perf/baseline.json` |
+| `npm run probe -- <entry.ts>` | Build, then run a TypeScript probe against the real WASM kernels (see [Probing the WASM kernels](#probing-the-wasm-kernels)) |
 | `npm run test:webview` | Playwright assertions over the real viewer bundle (needs a display server) |
 | `npm run test:integration` | The host-side suite inside a real VS Code (needs a display server) |
 
@@ -62,6 +63,18 @@ in `test/integration/run.mjs` explaining why that deletion is required for the
 spawned VS Code). The launcher therefore starts as a GUI VS Code that treats
 its script argument as a file to open, and exits 0 having run nothing. Run
 that suite from a normal terminal with a real `node` on `PATH`.
+
+## Probing the WASM kernels
+
+Many facts about this OCCT build can only be found by calling it: which overload suffix a constructor has, whether a manifest-green class actually computes, or what a method returns. `npm run probe -- <entry.ts>` bundles a TypeScript file with the same Node/CJS recipe as the shipped bundles and runs it against the real kernels, with the repo root as `extensionPath`:
+
+```sh
+npm run probe -- scripts/probe/examples/bull-counts.ts   # prints 36 faces / 98 edges
+```
+
+Scratch probes go under `scripts/probe/scratch/` (git-ignored). The harness also runs under the Flatpak recipe above (`ELECTRON_RUN_AS_NODE=1 …/code scripts/probe/run.mjs …`), because it passes the environment through unchanged. [`scripts/probe/README.md`](https://github.com/loumalouomega/CAD-Preview/blob/master/scripts/probe/README.md) has the cleanup skeleton, the probe protocol and where a probe's result is recorded.
+
+The shared recipe lives in `scripts/nodeBundleConfig.mjs`, which `esbuild.mjs`, the screenshot fixture generator and the probe runner all import. Add a new WASM package to its `WASM_EXTERNALS` list once, rather than to each script.
 
 ## Regenerating Documentation Screenshots
 
@@ -182,6 +195,8 @@ CAD-Preview/
 - Three.js is bundled
 
 **`wasmPathPlugin`**: A custom esbuild plugin intercepts `*.wasm` imports and emits a `require('path').join(__dirname, '<name>')` CJS stub. After the bundle is written, `esbuild.mjs` copies the actual `.wasm` binary from `node_modules/` to `dist/`. This ensures the WASM is always co-located with the extension bundle.
+
+The three Node/CJS configs take the plugin, the shared `external` list, the `import.meta.url` shim and the stamped kernel versions from `scripts/nodeBundleConfig.mjs`. The screenshot fixture generator and the probe runner import the same module, so a script-side bundle cannot fall behind the shipped ones.
 
 ### TypeScript
 
