@@ -49,6 +49,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { summarizeQuality, type QualitySummary } from "./meshQuality";
 import { parseStl } from "./stlParser";
+import { ensureNastranBulkHeader } from "./nastranDeck";
 import { parseObj } from "./objParser";
 import { parsePly } from "./plyParser";
 import { parseGltf, type GltfExternalBuffers } from "./gltfParser";
@@ -213,7 +214,9 @@ function stageMeshioSource(
 ): { primaryPath: string; allPaths: string[] } {
   const primaryPath = `/${sourceName || `in.${meshioFormat}`}`;
   const allPaths = [primaryPath];
-  m.FS.writeFile(primaryPath, sourceBytes);
+  // Gmsh-written Nastran decks lack the `BEGIN BULK` line meshio++ requires
+  // (see nastranDeck.ts) — normalize here, the single staging choke point.
+  m.FS.writeFile(primaryPath, meshioFormat === "nastran" ? ensureNastranBulkHeader(sourceBytes) : sourceBytes);
   for (const companion of companions ?? []) {
     const path = `/${companion.name}`;
     m.FS.writeFile(path, companion.bytes);

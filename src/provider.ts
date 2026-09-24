@@ -556,7 +556,7 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
         "CAD / Mesh": [
           "stl", "obj", "ply", "gltf", "glb", "step", "stp", "iges", "igs", "brep", "csg", "scad",
           "vtk", "vtu", "med", "cgns", "exo", "e", "xdmf", "mdpa", "foam",
-          "msh", "msh2", "inp", "unv", "su2", "mesh",
+          "msh", "msh2", "inp", "unv", "su2", "mesh", "bdf",
         ],
       },
     });

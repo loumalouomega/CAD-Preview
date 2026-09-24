@@ -27,6 +27,7 @@
     { "id": "load-mdpa-gapped-ids", "check": "load", "fixture": "MDPA/gapped-ids.mdpa", "expect": { "format": "mdpa", "remesh": true } },
     { "id": "load-gid-compound-extension", "check": "load", "fixture": "GiD/two-tets.post.msh", "siblings": ["GiD/two-tets.post.res"], "expect": { "format": "gid", "warningExcludes": "Assumed to be a Gmsh mesh", "warningIncludes": "cell_tags" } },
     { "id": "load-openfoam-case", "check": "load", "fixtureDir": "OpenFOAM/hex-case", "fixture": "case.foam", "expect": { "format": "openfoam", "remesh": true } },
+    { "id": "load-bdf-gmsh-export", "check": "load", "fixture": "Nastran/block-tets.bdf", "expect": { "format": "nastran", "warningIncludes": "Nastran bulk-data", "remesh": true } },
 
     { "id": "export-msh", "check": "export", "format": "msh", "reload": true, "remesh": true },
     { "id": "export-msh2", "check": "export", "format": "msh2", "reload": false },
@@ -35,6 +36,7 @@
     { "id": "export-inp", "check": "export", "format": "inp", "reload": true },
     { "id": "export-su2", "check": "export", "format": "su2", "reload": true },
     { "id": "export-medit", "check": "export", "format": "mesh", "reload": true },
+    { "id": "export-bdf", "check": "export", "format": "bdf", "reload": true, "remesh": true },
     { "id": "export-mdpa-elements", "check": "export", "format": "mdpaElements", "reload": true },
     { "id": "export-med", "check": "export", "format": "med", "reload": true, "remesh": true },
     { "id": "export-cgns", "check": "export", "format": "cgns", "reload": true },

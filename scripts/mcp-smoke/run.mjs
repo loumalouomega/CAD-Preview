@@ -3503,6 +3503,7 @@ try {
     ["unv", "unv"],
     ["su2", "su2"],
     ["mesh", "mesh"],
+    ["bdf", "bdf"],
   ]) {
     const roundTripOut = path.join(dir, `roundtrip.${ext}`);
     await call("export_mesh", { path: model, format: id, outputPath: roundTripOut, options: { sizeMax: bbox.diagonal / 8 } });
@@ -3751,6 +3752,28 @@ try {
   assert(
     gapMeshed.nodeCount > 0 && gapMeshed.elementCount > 0,
     `generate_mesh on a gapped-id MDPA: ${gapMeshed.nodeCount} nodes, ${gapMeshed.elementCount} elements`
+  );
+
+  // Nastran bulk data (examples/Nastran/block-tets.bdf — this extension's own
+  // Gmsh export of block.stp). Gmsh writes no `BEGIN BULK` line, which
+  // meshio++ 16.x requires; nastranDeck.ts normalizes it at staging. Without
+  // that, load's metadata degrades silently and generate_mesh throws
+  // `Nastran: "BEGIN BULK" statement not found`.
+  const bdfModel = path.join(dir, "block-tets.bdf");
+  fs.copyFileSync(path.join(ROOT, "examples", "Nastran", "block-tets.bdf"), bdfModel);
+  const bdfLoaded = await call("load_model", { path: bdfModel });
+  assert(
+    bdfLoaded.strategy === "meshio" && bdfLoaded.format === "nastran",
+    "load_model routes .bdf through meshio as nastran"
+  );
+  assert(
+    bdfLoaded.warnings.some((w) => /Nastran bulk-data deck/.test(w)),
+    `load_model surfaces the .bdf ambiguity caveat (got: ${JSON.stringify(bdfLoaded.warnings)})`
+  );
+  const bdfMeshed = await call("generate_mesh", { path: bdfModel, options: { sizeMax: 1 } });
+  assert(
+    bdfMeshed.nodeCount > 0 && bdfMeshed.elementCount > 0,
+    `generate_mesh on a Gmsh-written .bdf: ${bdfMeshed.nodeCount} nodes, ${bdfMeshed.elementCount} elements`
   );
 
   // OpenFOAM polyMesh import (examples/OpenFOAM/hex-case — see its README).

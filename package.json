@@ -107,6 +107,9 @@
           },
           {
             "filenamePattern": "*.post.msh"
+          },
+          {
+            "filenamePattern": "*.bdf"
           }
         ],
         "priority": "default"

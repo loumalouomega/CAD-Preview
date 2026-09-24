@@ -51,11 +51,12 @@ describe("routeFile", () => {
     expect(routeFile("m.inp")).toEqual({ strategy: "meshio", format: "abaqus" });
     expect(routeFile("m.unv")).toEqual({ strategy: "meshio", format: "unv" });
     expect(routeFile("m.su2")).toEqual({ strategy: "meshio", format: "su2" });
+    expect(routeFile("m.bdf")).toEqual({ strategy: "meshio", format: "nastran" });
+    expect(routeFile("M.BDF")).toEqual({ strategy: "meshio", format: "nastran" });
     expect(routeFile("m.mesh")).toEqual({ strategy: "meshio", format: "medit" });
   });
 
-  it("does NOT claim .bdf or .off as import formats — both were tried and rejected (see MESHIO_FORMATS' doc comment)", () => {
-    expect(routeFile("m.bdf")).toBeUndefined();
+  it("does NOT claim .off as an import format — tried and rejected (see MESHIO_FORMATS' doc comment)", () => {
     expect(routeFile("m.off")).toBeUndefined();
   });
 
@@ -126,6 +127,7 @@ describe("routeFile", () => {
     it("reports the caveat for a genuinely ambiguous extension", () => {
       expect(ambiguityCaveatFor("m.msh")).toContain("Gmsh");
       expect(ambiguityCaveatFor("m.inp")).toContain("Abaqus");
+      expect(ambiguityCaveatFor("m.bdf")).toContain("Nastran");
     });
 
     it("does NOT hand .msh's caveat to a .post.msh — it routes to gid, not gmsh", () => {
@@ -140,7 +142,7 @@ describe("routeFile", () => {
 
   it("MESHIO_FORMATS lists exactly the formats EXTENSION_MAP routes to the meshio strategy, with no duplicates", () => {
     const formatsInMap = new Set<string>();
-    for (const ext of ["vtk", "vtu", "med", "cgns", "exo", "e", "xdmf", "mdpa", "foam", "msh", "msh2", "inp", "unv", "su2", "mesh", "post.msh"]) {
+    for (const ext of ["vtk", "vtu", "med", "cgns", "exo", "e", "xdmf", "mdpa", "foam", "msh", "msh2", "inp", "unv", "su2", "mesh", "post.msh", "bdf"]) {
       const route = routeFile(`x.${ext}`);
       if (route?.strategy === "meshio") formatsInMap.add(route.format);
     }
@@ -148,8 +150,8 @@ describe("routeFile", () => {
     expect(new Set(MESHIO_FORMATS).size).toBe(MESHIO_FORMATS.length);
   });
 
-  it("AMBIGUOUS_MESHIO_EXTENSIONS names exactly msh and inp, each with a non-empty caveat", () => {
-    expect(new Set(AMBIGUOUS_MESHIO_EXTENSIONS.keys())).toEqual(new Set(["msh", "inp"]));
+  it("AMBIGUOUS_MESHIO_EXTENSIONS names exactly msh, inp and bdf, each with a non-empty caveat", () => {
+    expect(new Set(AMBIGUOUS_MESHIO_EXTENSIONS.keys())).toEqual(new Set(["msh", "inp", "bdf"]));
     for (const message of AMBIGUOUS_MESHIO_EXTENSIONS.values()) {
       expect(message.length).toBeGreaterThan(0);
     }
