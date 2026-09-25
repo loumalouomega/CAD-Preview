@@ -16,6 +16,8 @@ export interface PartsPanelCallbacks {
   onToggleIsolate: (index: number) => void;
   /** Copies the bill of materials (one TSV row per part, via a bomRequest host round trip). */
   onCopyBom: () => void;
+  /** Copies the hole table (one TSV row per diameter + axis group, via a holeTableRequest host round trip). */
+  onCopyHoleTable: () => void;
 }
 
 /**
@@ -37,6 +39,7 @@ export class PartsPanel {
   private readonly newBtn: HTMLElement;
   private readonly isolateBtn: HTMLButtonElement;
   private readonly copyBomBtn: HTMLButtonElement;
+  private readonly copyHolesBtn: HTMLButtonElement;
   private selectedIndex: number | null = null;
 
   constructor(
@@ -55,6 +58,17 @@ export class PartsPanel {
     this.copyBomBtn.addEventListener("click", () => {
       if (!this.copyBomBtn.disabled) this.cb.onCopyBom();
     });
+    this.copyHolesBtn = panel.querySelector("#parts-copy-holes")!;
+    this.copyHolesBtn.addEventListener("click", () => {
+      if (!this.copyHolesBtn.disabled) this.cb.onCopyHoleTable();
+    });
+  }
+
+  /** Enables/disables the Copy hole table button — B-rep sources only (the
+   * host reads analytic cylinder faces via OCCT). Needs no Parts. */
+  setHoleTableEnabled(enabled: boolean, reason: string): void {
+    this.copyHolesBtn.disabled = !enabled;
+    this.copyHolesBtn.title = reason;
   }
 
   /**

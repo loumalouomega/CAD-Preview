@@ -83,6 +83,19 @@ describe("parseAnnotationsJson", () => {
   });
 });
 
+describe("note annotations", () => {
+  it("round-trips a note, forcing no linePoints and no band, and drops an empty one", () => {
+    const note: Annotation = { ...BASE, id: "ann-n", tool: "note", text: "Check this", linePoints: [] };
+    const hostile = { ...note, id: "ann-h", linePoints: [[0, 0, 0], [1, 1, 1]], tolerance: { nominal: 1, plus: 0, minus: 0, measured: 1 } };
+    const empty = { ...note, id: "ann-e", text: "  " };
+    const parsed = parseAnnotationsJson(JSON.stringify({ version: 1, source: "m.step", annotations: [note, hostile, empty] }));
+    expect(parsed.map((a) => a.id)).toEqual(["ann-n", "ann-h"]);
+    expect(parsed[1].linePoints).toEqual([]);
+    expect(parsed[1].tolerance).toBeUndefined();
+    expect(parseAnnotationsJson(serializeAnnotationsJson("m.step", [note]))).toEqual([{ ...note, label: undefined, tolerance: undefined }]);
+  });
+});
+
 describe("serializeAnnotationsJson", () => {
   it("round-trips through parse and stamps version + source", () => {
     const text = serializeAnnotationsJson("model.step", [BASE]);

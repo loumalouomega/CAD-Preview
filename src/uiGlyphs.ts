@@ -41,6 +41,8 @@ export const UI_GLYPHS = {
   plus: g('<path d="M12 5v14"/><path d="M5 12h14"/>'),
   play: g('<path d="M7 4v16l13-8Z" fill="currentColor"/>'),
   download: g('<path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/>'),
+  holes: g('<rect x="3" y="5" width="18" height="14" rx="2"/><circle cx="8.5" cy="12" r="2.5"/><circle cx="15.5" cy="12" r="2.5"/>'),
+  note: g('<path d="M4 4h16v11l-5 5H4z"/><path d="M15 20v-5h5"/><path d="M8 9h8"/><path d="M8 13h4"/>'),
   target: g('<circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3"/>'),
   maximize: g('<path d="M8 3H5a2 2 0 0 0-2 2v3"/><path d="M21 8V5a2 2 0 0 0-2-2h-3"/><path d="M3 16v3a2 2 0 0 0 2 2h3"/><path d="M16 21h3a2 2 0 0 0 2-2v-3"/>'),
   home: g('<path d="M3 10.5 12 3l9 7.5"/><path d="M5 9v11a1 1 0 0 0 1 1h4v-6h4v6h4a1 1 0 0 0 1-1V9"/>'),

@@ -1579,7 +1579,8 @@ body:not(:has(#side.visible)) #status {
 
 #parts-new,
 #parts-isolate,
-#parts-copy-bom {
+#parts-copy-bom,
+#parts-copy-holes {
   font: inherit;
   font-size: var(--ui-fs-sm);
   padding: 2px 6px;
@@ -1591,9 +1592,11 @@ body:not(:has(#side.visible)) #status {
 }
 #parts-new:hover,
 #parts-isolate:hover:not(:disabled),
-#parts-copy-bom:hover:not(:disabled) { background: var(--vscode-button-hoverBackground, #1177bb); }
+#parts-copy-bom:hover:not(:disabled),
+#parts-copy-holes:hover:not(:disabled) { background: var(--vscode-button-hoverBackground, #1177bb); }
 #parts-isolate,
-#parts-copy-bom {
+#parts-copy-bom,
+#parts-copy-holes {
   background: var(--vscode-button-secondaryBackground, #3a3d41);
 }
 #parts-isolate.active {
@@ -1601,7 +1604,8 @@ body:not(:has(#side.visible)) #status {
   outline: 1px solid var(--vscode-focusBorder, #007fd4);
 }
 #parts-isolate:disabled,
-#parts-copy-bom:disabled { opacity: 0.4; cursor: default; }
+#parts-copy-bom:disabled,
+#parts-copy-holes:disabled { opacity: 0.4; cursor: default; }
 
 #parts-body {
   flex: 1;
@@ -3516,6 +3520,21 @@ input[type="range"].meshing-slider:focus {
   font-style: italic;
   font-size: var(--ui-fs-sm);
 }
+#context-menu .ctx-sep {
+  height: 1px;
+  margin: 2px 0;
+  background: var(--vscode-menu-separatorBackground, var(--vscode-panel-border, #444));
+}
+#context-menu #ctx-note-input {
+  min-width: 220px;
+  margin: 2px 4px;
+  padding: 2px 6px;
+  font: inherit;
+  color: var(--vscode-input-foreground, #ccc);
+  background: var(--vscode-input-background, #3c3c3c);
+  border: 1px solid var(--vscode-focusBorder, #007fd4);
+  border-radius: var(--ui-r-xs);
+}
 
 /* ── Macros panel (saved parameterized scripts) ──────────────────────────── */
 
@@ -3817,13 +3836,15 @@ input[type="range"].meshing-slider:focus {
 /* Beats the older filled-button block on #parts-isolate/#parts-copy-bom, which
  * shares the ids: same specificity as `#parts-new`, later in the file. */
 #parts-isolate,
-#parts-copy-bom {
+#parts-copy-bom,
+#parts-copy-holes {
   padding: 0;
   background: transparent;
   color: var(--vscode-foreground, #ccc);
 }
 #parts-isolate:hover:not(:disabled),
-#parts-copy-bom:hover:not(:disabled) {
+#parts-copy-bom:hover:not(:disabled),
+#parts-copy-holes:hover:not(:disabled) {
   background: var(--vscode-toolbar-hoverBackground, rgba(90, 93, 94, 0.31));
 }
 #parts-isolate.active {
@@ -4717,3 +4738,27 @@ body:has(#side.visible) #kernel-status {
 .brep-health-issue .mesh-health-value {
   text-align: right;
 }
+
+/* ── FE Mesh › Refinement sweep (roadmap Tier 1 "Parity gaps") ─────────── */
+#meshing-sweep-sizes { width: 100%; }
+.meshing-sweep-rows {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--ui-fs-sm);
+  font-variant-numeric: tabular-nums;
+}
+.meshing-sweep-rows th,
+.meshing-sweep-rows td {
+  padding: 1px 4px;
+  text-align: right;
+  border-bottom: 1px solid var(--vscode-panel-border, #444);
+}
+.meshing-sweep-rows th { font-weight: 600; opacity: 0.8; }
+.meshing-sweep-rows tr.meshing-sweep-error td { color: var(--vscode-errorForeground, #f48771); text-align: left; }
+.meshing-sweep-note {
+  margin-top: 4px;
+  font-size: var(--ui-fs-sm);
+  opacity: 0.75;
+  font-style: italic;
+}
+.meshing-sweep-note[hidden] { display: none; }

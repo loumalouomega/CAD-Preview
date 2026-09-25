@@ -90,7 +90,7 @@ interface AnnotationTolerance {
 
 interface Annotation {
   id: string
-  tool: MeasureTool
+  tool: MeasureTool | "note"               // "note" = free-text note: no linePoints, no tolerance
   label?: string
   text: string                              // frozen readout, e.g. "12.5 mm"
   anchorPoint: [number, number, number]     // frozen world-space label position
@@ -104,6 +104,8 @@ interface Annotation {
 ```
 
 A persisted, topology-anchored measurement (roadmap "Persisted, topology-anchored annotations", closed) — a "pinned" result from the interactive Measure tool (or headlessly via the MCP `pin_annotation` tool) that survives closing the file, unlike the tool's own session-only overlay. Structurally shaped like `Part` (same four `EntityType`-keyed id buckets) so it can be rebound across topology-changing edits with the identical machinery `Part` already uses — see `src/entityRebind.ts`'s `remapPartEntityIds`. `text`/`anchorPoint`/`linePoints` are a frozen snapshot of the result at pin time, never recomputed on redisplay; only "detached" (none of its anchor ids currently resolve in the loaded model) is computed live, in the webview. Persisted in `<model>.annotations.json` — see [File Formats](./file-formats.md).
+
+`tool: "note"` (roadmap Tier 1 "Parity gaps") is a free-text note rather than a measurement: `text` IS the note (cleaned to one line, capped at 500 characters when pinned via `pin_annotation`), `linePoints` is always empty and there is no tolerance band — the sidecar parser forces both, and drops an empty note. It is pinned interactively from the viewer's right-click menu (**Pin note…**, anchored to the clicked entity at the clicked world point) or headlessly via `pin_annotation`, lists in the Measure ▾ Saved list as `Note: <text>`, and bakes into SVG/DXF drawings as a bare label at its anchor. An older build drops note entries when it reads the sidecar.
 
 The optional `tolerance` field (roadmap "Tolerance-band fact checks on exact measurements") records a nominal-plus-band intent captured from the Measure panel's inline fields at pin time. `measured` is the raw numeric value frozen alongside the band, so the webview can re-derive the in/out-of-band label colour on every redisplay without parsing the formatted `text` back into a number. Facts only: nothing stores a pass/fail verdict — `src/toleranceBand.ts`'s shared `evaluateToleranceBand` computes it at render time (the same pure module the MCP `check_tolerance` tool uses, so headless and interactive math cannot drift). A malformed band is dropped tolerantly by the sidecar parser (band only — the annotation survives). A toleranced pin renders as `"<text> [nominal ±tol]"`, with an out-of-band pin's label frame and Saved-list row coloured by the derived tone; its dimension glyph in SVG/DXF silhouette exports carries the same decorated label.
 
@@ -389,6 +391,8 @@ type HostToWebview =
   | { type: 'meshingResult'; requestId: string; positions: string; indices: string; edges: string; nodeCount: number; elementCount: number;
       elementGroups: MeshElementGroup[]; elapsedMs: number; quality?: QualitySummary; worstElements?: WorstElementsMsg }
   | { type: 'meshingError'; requestId: string; message: string }
+  | { type: 'meshSweepResult'; requestId: string; runs: MeshSweepRun[]; warnings: string[]; note: string; outputDir: string | null }
+  | { type: 'meshSweepError'; requestId: string; message: string }
   | { type: 'meshingJobSettled'; requestId: string }
   | ({ type: 'viewerDefaults' } & ViewerDefaults)
   | { type: 'screenshotRequest'; requestId: string }
@@ -419,6 +423,8 @@ type HostToWebview =
   | { type: 'meshHealError'; requestId: string; message: string }
   | { type: 'bomResult'; requestId: string; rows: BomRow[]; warnings: string[] }
   | { type: 'bomError'; requestId: string; message: string }
+  | { type: 'holeTableResult'; requestId: string; rows: HoleTableRow[]; warnings: string[] }
+  | { type: 'holeTableError'; requestId: string; message: string }
   | { type: 'fitRegionResult'; requestId: string; fit: MeshRegionFit }
   | { type: 'fitRegionError'; requestId: string; message: string }
   | { type: 'primitiveRecognizeResult'; requestId: string; report: PrimitiveReport }
@@ -676,6 +682,14 @@ Sent in reply to `meshingGenerate` (and internally by `meshingExport` when the t
   "quality": { "min": 0.043, "mean": 0.71, "histogram": [1, 3, 8, 20, 45, 90, 210, 340, 180, 62] },
   "worstElements": { "indices": "DDDD...", "threshold": 0.2, "shownCount": 42, "belowThresholdCount": 42 }
 }
+```
+
+### `meshSweepResult` / `meshSweepError`
+
+Sent in reply to `meshSweepRequest` (webview → host, below) — the FE Mesh panel's **Refinement sweep**, the interactive half of `compare_mesh_refinement` (roadmap Tier 1 "Parity gaps"). `runs` is one `MeshSweepRun` per requested size, in order, produced by the SAME `runMeshSweep` loop (`src/meshSweep.ts`) the MCP tool runs, so the two cannot disagree: each run is a uniform mesh (`sizeMin = sizeMax = size`) over one resolved geometry and the request's other options; a failed run is a row with `status: "error"`, never a failed sweep. `note` is the tool's "trends are not convergence" disclaimer, shown under the table. `outputDir` is where the per-run `<stem>-size-<size>.msh` files were written, or `null`. `meshSweepError` covers invalid sizes, a declined output-folder dialog, or a cancelled job. The document's mesh options are never written.
+
+```json
+{ "type": "meshSweepResult", "requestId": "1234-0.56", "runs": [{ "size": 4, "status": "ok", "nodeCount": 381, "elementCount": 1282, "elapsedMs": 88, "engineUsed": "gmsh", "quality": { "min": 0.412, "mean": 0.73, "histogram": [] }, "outputPaths": [], "error": null }], "warnings": [], "note": "Mesh-density/quality trends across swept sizes do NOT establish FE-solution convergence …", "outputDir": null }
 ```
 
 ### `meshingError`
@@ -984,6 +998,7 @@ type WebviewToHost =
   | { type: 'exportError'; requestId: string; message: string }
   | { type: 'meshingChanged'; options: MeshOptions }
   | { type: 'meshingGenerate'; requestId: string; options: MeshOptions; stl?: string }
+  | { type: 'meshSweepRequest'; requestId: string; sizes: number[]; options: MeshOptions; stl?: string; writeOutputs?: boolean }
   | { type: 'meshingExport'; requestId: string; target: MeshExportFormatId; options: MeshOptions; stl?: string; unit?: DisplayUnit }
   | { type: 'meshingCancel'; requestId: string }
   | { type: 'meshPresetApply'; name: string }
@@ -1006,6 +1021,7 @@ type WebviewToHost =
   | { type: 'meshHealRequest'; requestId: string; autoDecimate?: boolean }
   | { type: 'brepHealthRequest'; requestId: string }
   | { type: 'bomRequest'; requestId: string }
+  | { type: 'holeTableRequest'; requestId: string }
   | { type: 'fitRegionRequest'; requestId: string; point: [number, number, number] }
   | { type: 'primitiveRecognizeRequest'; requestId: string }
   | { type: 'passagesRequest'; requestId: string; targetCells: number }
@@ -1091,6 +1107,14 @@ Sent whenever the user changes a mesh-options form control in the FE Mesh panel.
 
 ```json
 { "type": "meshingChanged", "options": { "dimension": 3, "sizeMin": 0, "sizeMax": 1e22, "algorithm2D": 6, "algorithm3D": 1, "elementOrder": 1, "optimize": true, "stlAngle": 40 } }
+```
+
+### `meshSweepRequest`
+
+Sent by the FE Mesh panel's **Refinement sweep ▸ Run sweep**. `sizes` (mm, at most 8, each finite and positive) are parsed and validated in the webview with the same `parseSweepSizes`/`validateSweepSizes` the host re-checks. `options` is the panel's current `MeshOptions` (its own `sizeMin`/`sizeMax` are ignored — each run sets both). `stl` carries the displayed mesh for a mesh-format document, as `meshingGenerate` does. `writeOutputs: true` makes the host ask for a folder and write one `.msh` per run. Runs under the document's meshing job, so the panel's Cancel stops it. The host replies with `meshSweepResult` or `meshSweepError`.
+
+```json
+{ "type": "meshSweepRequest", "requestId": "1234-0.56", "sizes": [4, 2, 1], "options": { "dimension": 3, "sizeMin": 0, "sizeMax": 4 } }
 ```
 
 ### `meshingGenerate`
@@ -1258,6 +1282,22 @@ Sent when the Mass Properties panel's **Compute** button is clicked, for a B-rep
 
 ```json
 { "type": "massPropertiesRequest", "requestId": "1234-0.56", "entityId": "solid-0" }
+```
+
+### `holeTableResult` / `holeTableError`
+
+Sent in reply to `holeTableRequest` (below) — the Parts header's **Copy hole table** button, the interactive half of `generate_hole_table` (roadmap Tier 1 "Parity gaps"). `rows` is one `HoleTableRow` per (diameter, axis) group of cylindrical faces over a single host parse/replay of the current (tail) ops (`computeHoleTable`, the same pipeline function the tool drives). The webview renders `holeTableTsv(rows)` (`src/holeTable.ts`) and copies it, so the clipboard text equals the tool's `table`. **B-rep sources only**; the host answers `holeTableError` otherwise. No Parts are needed.
+
+```json
+{ "type": "holeTableResult", "requestId": "1234-0.56", "rows": [{ "radius": 2.5, "diameter": 5, "axis": [0, 0, 1], "count": 1, "faceIds": ["face-40"], "solidIds": ["solid-0"], "nearest": { "designation": "M6", "standard": "iso-metric-coarse", "column": "tapDrill", "delta": 0 } }], "warnings": [] }
+```
+
+### `holeTableRequest`
+
+Sent when the Parts header's **Copy hole table** button is clicked — enabled for any B-rep source (disabled with a tooltip on mesh sources). No parameters beyond `requestId`.
+
+```json
+{ "type": "holeTableRequest", "requestId": "1234-0.56" }
 ```
 
 ### `bomRequest`

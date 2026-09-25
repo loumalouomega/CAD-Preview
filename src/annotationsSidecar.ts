@@ -1,4 +1,4 @@
-import type { Annotation, MeasureTool } from "./protocol";
+import type { Annotation, AnnotationTool } from "./protocol";
 import type { AnnotatedTolerance } from "./toleranceBand";
 
 /** Pure (vscode-free) parse/serialize for the annotations sidecar — unit-testable. */
@@ -11,7 +11,12 @@ interface SidecarFile {
   annotations: Annotation[];
 }
 
-const MEASURE_TOOLS: readonly MeasureTool[] = ["distance", "edgeLength", "angle", "radius"];
+/** Every `Annotation.tool` the sidecar accepts — the four measurement kinds
+ * plus the free-text `"note"`. Shared with `pin_annotation`. */
+export const ANNOTATION_TOOLS: readonly AnnotationTool[] = ["distance", "edgeLength", "angle", "radius", "note"];
+
+/** Longest note text kept (a note is a label on a model, not a document). */
+export const MAX_NOTE_LENGTH = 500;
 
 function asStringArray(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
@@ -72,22 +77,26 @@ export function parseAnnotationsJson(text: string): Annotation[] {
     if (!raw || typeof raw !== "object") continue;
     const a = raw as Partial<Annotation>;
     if (typeof a.id !== "string" || !a.id) continue;
-    if (typeof a.tool !== "string" || !MEASURE_TOOLS.includes(a.tool as MeasureTool)) continue;
+    if (typeof a.tool !== "string" || !ANNOTATION_TOOLS.includes(a.tool as AnnotationTool)) continue;
     if (typeof a.text !== "string") continue;
     const anchorPoint = asVec3(a.anchorPoint);
     if (!anchorPoint) continue;
+    // A note is text at a point: no measured line, no band. An empty note
+    // describes nothing and is dropped.
+    const isNote = a.tool === "note";
+    if (isNote && !a.text.trim()) continue;
     annotations.push({
       id: a.id,
-      tool: a.tool as MeasureTool,
+      tool: a.tool as AnnotationTool,
       label: typeof a.label === "string" && a.label ? a.label : undefined,
       text: a.text,
       anchorPoint,
-      linePoints: asLinePoints(a.linePoints),
+      linePoints: isNote ? [] : asLinePoints(a.linePoints),
       volumes: asStringArray(a.volumes),
       surfaces: asStringArray(a.surfaces),
       lines: asStringArray(a.lines),
       points: asStringArray(a.points),
-      tolerance: asTolerance(a.tolerance),
+      tolerance: isNote ? undefined : asTolerance(a.tolerance),
     });
   }
   return annotations;

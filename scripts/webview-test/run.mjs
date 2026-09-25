@@ -634,6 +634,141 @@ test("bom: Copy BOM posts a guarded request and copies the TSV", async (page) =>
 });
 
 /**
+ * H3b. Copy hole table (roadmap Tier 1 "Parity gaps") — the interactive half
+ * of `generate_hole_table`. The rows below are exactly what `mcp:smoke`'s
+ * hole-table block asserts for its plate fixture (40×40×10 plate, M6 tap-drill
+ * d=5.0 and M5 clearance d=5.5 blind holes), so this pins that the webview
+ * renders the SAME TSV the tool returns. `navigator.clipboard.writeText` is
+ * wrapped to capture the text, since headless Chromium grants no clipboard-read.
+ */
+test("holes: Copy hole table copies the plate fixture's TSV", async (page) => {
+  await populate(page);
+  await page.evaluate(() => {
+    window.__clip = null;
+    navigator.clipboard.writeText = async (t) => { window.__clip = t; };
+  });
+  const btn = await page.evaluate(() => {
+    const el = document.getElementById("parts-copy-holes");
+    return el ? { present: true, disabled: el.disabled } : { present: false, disabled: null };
+  });
+  assert(btn.present, "Copy hole table button is present in the Parts header");
+  assert(btn.disabled === false, "Copy hole table is enabled for a B-rep source");
+
+  await page.click("#parts-copy-holes");
+  const req = await page
+    .waitForFunction(() => window.__sent?.findLast((m) => m.type === "holeTableRequest") ?? null, null, { timeout: 10000 })
+    .then((h) => h.jsonValue())
+    .catch(() => null);
+  assert(
+    req && typeof req.requestId === "string" && Object.keys(req).length === 2,
+    `click posts a well-formed holeTableRequest (got ${JSON.stringify(req)})`
+  );
+
+  await post(page, { type: "holeTableResult", requestId: "stale-id", rows: [], warnings: [] });
+  await sleep(150);
+  assert((await page.evaluate(() => window.__clip)) === null, "a stale reply copies nothing");
+
+  const rows = [
+    { radius: 2.5, diameter: 5, axis: [0, 0, 1], count: 1, faceIds: ["face-40"], solidIds: ["solid-0"],
+      nearest: { designation: "M6", standard: "iso-metric-coarse", column: "tapDrill", delta: 0 } },
+    { radius: 2.75, diameter: 5.5, axis: [0, 0, 1], count: 1, faceIds: ["face-41"], solidIds: ["solid-0"],
+      nearest: { designation: "M5", standard: "iso-metric-coarse", column: "clearance", delta: 0 } },
+  ];
+  await post(page, { type: "holeTableResult", requestId: req.requestId, rows, warnings: ["2 of 16 face(s) are cylindrical."] });
+  await sleep(250);
+  const clip = await page.evaluate(() => window.__clip);
+  const lines = (clip ?? "").split("\n");
+  assert(lines.length === 3 && lines[0].startsWith("Diameter_mm\tAxis\t"), `copied TSV has a header plus one line per row (got ${JSON.stringify(clip)})`);
+  assert(lines.some((l) => l.includes("\tM6\ttapDrill\t0")), "the M6 tap-drill row is carried through");
+  assert(lines.some((l) => l.includes("\tM5\tclearance\t0")), "the M5 clearance row is carried through");
+  const status = await page.evaluate(() => document.getElementById("status")?.textContent ?? "");
+  assert(status === "Hole table copied (2 rows, 2 faces).", `status confirms the copy (got ${JSON.stringify(status)})`);
+
+  // A mesh source disables it — hole tables need analytic cylinder faces.
+  const tet = [
+    "solid tet",
+    "facet normal 0 0 1", "outer loop", "vertex 0 0 0", "vertex 1 0 0", "vertex 0 1 0", "endloop", "endfacet",
+    "endsolid tet",
+  ].join("\n");
+  await post(page, { type: "loadMeshBytes", sourceFormat: "stl", dataBase64: Buffer.from(tet, "utf8").toString("base64") });
+  await sleep(800);
+  const meshState = await page.evaluate(() => {
+    const el = document.getElementById("parts-copy-holes");
+    return el ? { disabled: el.disabled, title: el.title } : null;
+  });
+  assert(meshState?.disabled === true && /B-rep/.test(meshState.title), `disabled with a B-rep reason on a mesh source (${JSON.stringify(meshState)})`);
+});
+
+/**
+ * H3c. Refinement sweep (roadmap Tier 1 "Parity gaps") — the FE Mesh panel's
+ * interactive half of `compare_mesh_refinement`. Both run the shared
+ * `runMeshSweep` loop (unit-tested), so this pins the webview half: input
+ * validation, a well-formed request, the stale guard, and that the rendered
+ * table and copied TSV carry exactly the rows the host returned, with the
+ * tool's "not convergence" note.
+ */
+test("sweep: the FE Mesh refinement sweep renders the host's rows and note", async (page) => {
+  await populate(page);
+  await page.evaluate(() => {
+    window.__clip = null;
+    navigator.clipboard.writeText = async (t) => { window.__clip = t; };
+    document.querySelector("#meshing-sweep .meshing-section-header")?.click();
+  });
+  const sweepPosts = () => page.evaluate(() => (window.__sent ?? []).filter((m) => m.type === "meshSweepRequest").length);
+
+  await page.fill("#meshing-sweep-sizes", "4, 0");
+  await page.click("#meshing-sweep-run");
+  await sleep(100);
+  const bad = await page.evaluate(() => document.getElementById("meshing-sweep-status")?.textContent ?? "");
+  assert(/positive/.test(bad) && (await sweepPosts()) === 0, `an invalid size list is refused with no host traffic (status ${JSON.stringify(bad)})`);
+
+  await page.fill("#meshing-sweep-sizes", "4, 2");
+  await page.click("#meshing-sweep-run");
+  const req = await page
+    .waitForFunction(() => window.__sent?.findLast((m) => m.type === "meshSweepRequest") ?? null, null, { timeout: 10000 })
+    .then((h) => h.jsonValue())
+    .catch(() => null);
+  assert(
+    req && JSON.stringify(req.sizes) === "[4,2]" && typeof req.options?.dimension === "number" && req.writeOutputs === undefined,
+    `Run posts the sizes with the current options (got ${JSON.stringify(req && { sizes: req.sizes, writeOutputs: req.writeOutputs })})`
+  );
+
+  const runs = [
+    { size: 4, status: "ok", nodeCount: 381, elementCount: 1282, elapsedMs: 88, engineUsed: "gmsh", quality: { min: 0.412, mean: 0.73, histogram: [] }, outputPaths: [], error: null },
+    { size: 2, status: "error", nodeCount: null, elementCount: null, elapsedMs: null, engineUsed: null, quality: null, outputPaths: [], error: "PLC Error" },
+  ];
+  const note = "Mesh-density/quality trends across swept sizes do NOT establish FE-solution convergence.";
+  await post(page, { type: "meshSweepResult", requestId: "stale-id", runs: [], warnings: [], note, outputDir: null });
+  await sleep(100);
+  assert((await page.evaluate(() => document.querySelectorAll("#meshing-sweep-table tr").length)) === 0, "a stale reply renders nothing");
+
+  await post(page, { type: "meshSweepResult", requestId: req.requestId, runs, warnings: [], note, outputDir: null });
+  await sleep(150);
+  const table = await page.evaluate(() =>
+    [...document.querySelectorAll("#meshing-sweep-table tr")].map((tr) => [...tr.children].map((c) => c.textContent))
+  );
+  assert(
+    JSON.stringify(table[1]) === JSON.stringify(["4", "381", "1,282", "88", "0.412", "0.730"]),
+    `the ok row shows the host's numbers (got ${JSON.stringify(table[1])})`
+  );
+  assert(table[2]?.[0] === "2" && /PLC Error/.test(table[2]?.[1] ?? ""), `the failed run is a row with its error (got ${JSON.stringify(table[2])})`);
+  const shownNote = await page.evaluate(() => {
+    const el = document.getElementById("meshing-sweep-note");
+    return el && !el.hidden ? el.textContent : null;
+  });
+  assert(shownNote === note, `the convergence note is shown (got ${JSON.stringify(shownNote)})`);
+
+  await page.click("#meshing-sweep-copy");
+  await sleep(150);
+  const clip = (await page.evaluate(() => window.__clip)) ?? "";
+  const lines = clip.split("\n");
+  assert(
+    lines.length === 3 && lines[0].startsWith("size_mm\tstatus\t") && lines[1].startsWith("4\tok\t381\t1282\t88\tgmsh\t0.412\t0.73"),
+    `Copy TSV copies the tool's TSV shape (got ${JSON.stringify(clip)})`
+  );
+});
+
+/**
  * I. Framing invariants — the automated half of "visual correctness is nobody's
  * job".
  *
@@ -2324,7 +2459,7 @@ test("context menu: right-clicking geometry offers groups with member counts", a
   assert((await menuShown()) === true, "right-clicking a face opens the context menu");
 
   const rows = await page.evaluate(() =>
-    [...document.querySelectorAll("#context-menu button")].map((b) => b.textContent)
+    [...document.querySelectorAll("#context-menu button:not(#ctx-pin-note)")].map((b) => b.textContent)
   );
   assert(rows.length > 0, `the menu offers at least one group (got ${JSON.stringify(rows)})`);
   assert(
@@ -2353,12 +2488,12 @@ test("context menu: choosing a group selects exactly the members it advertised",
   await sleep(250);
 
   const advertised = await page.evaluate(() => {
-    const b = document.querySelector("#context-menu button");
+    const b = document.querySelector("#context-menu button:not(#ctx-pin-note)");
     return b ? Number(b.textContent.match(/(\d+)$/)?.[1] ?? "0") : null;
   });
   assert(advertised !== null && advertised > 1, `the first group advertises a count (got ${advertised})`);
 
-  await page.evaluate(() => document.querySelector("#context-menu button")?.click());
+  await page.evaluate(() => document.querySelector("#context-menu button:not(#ctx-pin-note)")?.click());
   await sleep(300);
 
   // The status line reports what was actually selected — it must agree with
@@ -2391,6 +2526,67 @@ test("context menu: volume mode says why it has no groups instead of showing a b
     text !== null && /Surf and Line/.test(text),
     `volume mode explains that groups apply to Surf/Line (got ${JSON.stringify(text)})`
   );
+});
+
+/**
+ * N2. Pin note (roadmap Tier 1 "Parity gaps") — the interactive half of
+ * pin_annotation's `tool: "note"`. A note pinned here must post the same
+ * sidecar record shape the MCP tool writes (so get_state reads it back), and a
+ * note the tool wrote must render in the Saved list (the reverse direction).
+ */
+test("context menu: Pin note writes a note annotation and the Saved list shows it", async (page) => {
+  await populate(page);
+  await enablePicking(page, "surface");
+  const box = await viewportBox(page);
+  const rightClick = async () => {
+    await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2, { button: "right" });
+    await sleep(250);
+  };
+  const noteCount = () =>
+    page.evaluate(() => (window.__sent ?? []).filter((m) => m.type === "annotationsChanged").length);
+
+  await rightClick();
+  const hasRow = await page.evaluate(() => document.getElementById("ctx-pin-note")?.textContent ?? null);
+  assert(hasRow === "Pin note…", `the context menu offers Pin note… (got ${JSON.stringify(hasRow)})`);
+
+  // Escape cancels: no annotation written.
+  const before = await noteCount();
+  await page.evaluate(() => document.getElementById("ctx-pin-note")?.click());
+  await sleep(100);
+  assert(await page.evaluate(() => document.activeElement?.id === "ctx-note-input"), "the note field takes focus");
+  await page.keyboard.type("discard me");
+  await page.keyboard.press("Escape");
+  await sleep(150);
+  assert((await noteCount()) === before, "Escape cancels without writing an annotation");
+
+  await rightClick();
+  await page.evaluate(() => document.getElementById("ctx-pin-note")?.click());
+  await sleep(100);
+  await page.keyboard.type("Check this fillet");
+  await page.keyboard.press("Enter");
+  await sleep(200);
+  const posted = await page.evaluate(() => (window.__sent ?? []).findLast((m) => m.type === "annotationsChanged") ?? null);
+  const note = posted?.annotations?.find((a) => a.tool === "note");
+  assert(note && note.text === "Check this fillet", `Enter posts a note annotation (got ${JSON.stringify(note)})`);
+  assert(
+    note && note.linePoints.length === 0 && note.surfaces.length === 1 && /^face-\d+$/.test(note.surfaces[0]) &&
+      note.anchorPoint.every((n) => Number.isFinite(n)) && note.tolerance === undefined,
+    `the note anchors to the clicked face at a finite point, with no line or band (got ${JSON.stringify(note)})`
+  );
+  const closed = await page.evaluate(() => document.getElementById("context-menu")?.offsetParent === null);
+  assert(closed, "pinning closes the menu");
+  const listed = await page.evaluate(() => [...document.querySelectorAll("#annotations-list .annotation-row-text")].map((e) => e.textContent));
+  assert(listed.includes("Note: Check this fillet"), `the Saved list shows the note (got ${JSON.stringify(listed)})`);
+
+  // Reverse direction: a note the MCP tool wrote renders too (silent load).
+  const mcpNote = {
+    id: "ann-mcp-1", tool: "note", text: "From the agent", anchorPoint: [0, 0, 0], linePoints: [],
+    volumes: [], surfaces: [note.surfaces[0]], lines: [], points: [],
+  };
+  await post(page, { type: "annotations", annotations: [note, mcpNote] });
+  await sleep(200);
+  const listed2 = await page.evaluate(() => [...document.querySelectorAll("#annotations-list .annotation-row-text")].map((e) => e.textContent));
+  assert(listed2.includes("Note: From the agent"), `an MCP-pinned note renders in the Saved list (got ${JSON.stringify(listed2)})`);
 });
 
 // ── Collapsible sidebar sections ──────────────────────────────────────────

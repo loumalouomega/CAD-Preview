@@ -310,24 +310,32 @@ test("Export FE Mesh… → GiD writes the .post.msh AND its .post.res sibling",
   await closeAll();
 });
 
-test("Export FE Mesh… explains itself rather than failing silently on a mesh source", async () => {
-  // A mesh-format source's geometry lives in the webview; the host has no mesh
-  // engine on this path, so the command must say which control to use.
-  const staged = stage(GID_FIXTURE, [GID_SIBLING]);
-  assert(await openDocument(staged), "the GiD (mesh-route) fixture opens");
-  const session = installModalStubs([]); // any modal opened here would throw — none should
-  let threw = false;
-  try {
-    await vscode.commands.executeCommand("cad-preview.exportMesh");
-    await sleep(1500);
-  } catch {
-    threw = true;
-  } finally {
-    session.restore();
-  }
-  assert(!threw, "a mesh source opens no quick-pick — it reports the limitation instead");
-  await closeAll();
-});
+/**
+ * Mesh-format sources through the same command (roadmap Tier 1 "Parity
+ * gaps"). The command used to refuse them — the geometry lived in the
+ * webview — and now resolves it host-side through `meshSourceInput.ts`, the
+ * resolver `export_mesh` uses. Covers both halves of that resolver: a native
+ * STL (parsed host-side) and a meshio++ source (converted by the kernel worker).
+ */
+for (const [label, fixture, siblings] of [
+  ["STL", STL_FIXTURE, [] as string[]],
+  ["GiD (meshio)", GID_FIXTURE, [GID_SIBLING]],
+] as const) {
+  test(`Export FE Mesh… meshes a ${label} source host-side`, async () => {
+    const staged = stage(fixture, [...siblings]);
+    const out = path.join(path.dirname(staged), "from-mesh.msh");
+    const before = fs.readFileSync(staged);
+    assert(await openDocument(staged), `the ${label} fixture opens`);
+    await withModals([pick("Gmsh Mesh (.msh)"), pick("Native"), save(out)], async () => {
+      await vscode.commands.executeCommand("cad-preview.exportMesh");
+      await waitForFile(out, 120000);
+    });
+    assert(fs.existsSync(out) && fs.statSync(out).size > 0, `the ${label} source exports a .msh`);
+    assert(fs.readFileSync(out, "utf8").includes("$Elements"), `the ${label} export is a real Gmsh mesh`);
+    assert(Buffer.compare(before, fs.readFileSync(staged)) === 0, "the source is byte-identical");
+    await closeAll();
+  });
+}
 
 test("Export… offers the real export targets and writes the chosen one", async () => {
   const staged = stage(STEP_FIXTURE);

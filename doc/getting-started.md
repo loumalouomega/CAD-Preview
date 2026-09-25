@@ -309,6 +309,13 @@ is the filter form's *Area ≤* with the threshold already filled in. Groups are
 Line modes only — the same modes the filter form supports — and a group that would select only the
 entity you clicked is not offered at all.
 
+The menu's first row, **Pin note…**, works in every pick mode: it turns the menu into a text field;
+type a note and press **Enter** to pin it to the entity you right-clicked, at the point you clicked
+(**Escape** cancels). A note is a saved annotation like a pinned measurement: it lists in the
+**Measure ▾** Saved list as `Note: …`, survives reopening the file, follows its entity across edits,
+is baked into SVG/DXF drawing exports as a label, and is the same record the `pin_annotation` MCP
+tool writes with `tool: "note"`.
+
 ### Macros
 
 The **Macros** sidebar panel saves a set of edits you have already applied as a named, reusable
@@ -415,6 +422,8 @@ Each part is a compact row: a colour swatch (click to recolour), an editable nam
 The panel header's **Isolate** button (target icon) shows only the currently-selected part's entities, hiding everything else; click it again (or select a different part and click it again) to clear isolation. Isolating composes with the per-row eye-toggles rather than overriding them — a part you'd already hidden stays hidden after you clear isolation. Like the eye-toggles, isolation is display-only and is never written to `<model>.parts.json`.
 
 The header's **Copy BOM** button (copy icon) copies the bill of materials — one row per part (name, entity counts, volume/area) as tab-separated text, ready to paste into a spreadsheet — computed live over the current model. It is enabled only for a B-rep source with at least one part defined (mesh sources have no per-part rows to compute).
+
+Beside it, **Copy hole table** (plate-with-holes icon) copies the hole schedule — one row per hole size and axis direction: diameter, axis, count, the `face-N`/`solid-N` ids, and the nearest standard thread designation with its signed delta — as the same tab-separated text the `generate_hole_table` MCP tool returns. It needs no parts, only a B-rep source.
 
 **Parts usually survive topology-changing edits.** Ops like Boolean, Fillet, and feature modeling rebuild the model's face/edge numbering, but CAD Preview automatically tries to re-match each part's assigned entities to their new numbering by geometry (same location, same area/length) right after you apply such an edit — so a part assigned to a face before a fillet elsewhere on the model typically keeps pointing at the right face afterward, with no action needed. This is a best-effort match, not a guarantee: an entity that genuinely merges or disappears (two faces fused into one by a Boolean, for instance) can't be matched to anything and is quietly dropped from the part, same as reopening a file with a stale reference. Undoing or removing an earlier op doesn't trigger a re-match (only applying a new one does).
 
@@ -580,6 +589,7 @@ While a mesh is generating or exporting, the panel shows **Cancel** beside Gener
 | **📤 Export** | Mesh with the current options (at the chosen export unit) and save the result in the format picked above, via a Save dialog (independent of whether **▶ Generate** was already clicked — it always (re)generates fresh) |
 | **⚠ Worst** | Only shown after a 3D generate with at least one element below quality 0.20 (auto-shown then, since it's a warning). Toggles the worst-quality-elements highlight in place, without discarding it |
 | **Clear** | Remove the mesh overlay and the worst-elements highlight (the original model is unaffected either way) |
+| **Refinement sweep** | Collapsed by default. Enter up to 8 mesh sizes in mm (`4, 2, 1`) and click **Run sweep** to mesh the current geometry at each size with the panel's other options — the interactive `compare_mesh_refinement`. A table shows each run's nodes, elements, time and min/mean element quality (a failed size is its own row, with its error); **Copy TSV** copies the same tab-separated table the MCP tool returns. Tick **Write each mesh (.msh) to a folder** to be asked for a folder and get one `<name>-size-<size>.msh` per run. The note under the table says what the numbers do not show: finer meshes and better element quality do not prove the FE solution has converged — that needs a solver. The panel's own options are never changed. |
 | **Mesh ops** | Only shown for a meshio++-imported source (VTK/MED/CGNS/…). One operation per **Run op…** — Clean, Decimate, Smooth, Subdivide, Refine, Agglomerate, or Convert cells — with only that op's parameters shown. Writes a NEW file via a Save dialog (same format as the source); the open document is never modified. The per-step applied/skipped report renders in the section's status line |
 
 <div style="display:flex; gap:1rem; flex-wrap:wrap; align-items:flex-start;">

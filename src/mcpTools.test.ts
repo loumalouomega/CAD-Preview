@@ -2867,6 +2867,30 @@ describe("pin_annotation", () => {
     expect(result.pinned!.volumes).toEqual(["node-0"]);
     expect(result.pinned!.surfaces).toEqual(["node-0/face-3"]);
   });
+
+  it("pins a free-text note (tool: note), cleaned to one line, readable via get_state", async () => {
+    const result = await pinAnnotation({
+      path: stpModel,
+      tool: "note",
+      text: "  Check\nthis \u202Efillet  ",
+      anchorPoint: [1, 2, 3],
+      surfaces: ["face-4"],
+    });
+    expect(result.pinned).toMatchObject({ tool: "note", text: "Check this fillet", linePoints: [], surfaces: ["face-4"] });
+    expect(result.pinned!.tolerance).toBeUndefined();
+    const state = await getState({ path: stpModel });
+    expect(state.annotations.find((a: { tool: string }) => a.tool === "note")?.text).toBe("Check this fillet");
+  });
+
+  it("refuses a note with empty text, line points, or a tolerance band", async () => {
+    const base = { path: stpModel, tool: "note", anchorPoint: [0, 0, 0], surfaces: ["face-0"] };
+    await expect(pinAnnotation({ ...base, text: "   " })).rejects.toThrow(/non-empty text/i);
+    await expect(pinAnnotation({ ...base, text: "n", linePoints: [[0, 0, 0], [1, 0, 0]] })).rejects.toThrow(/linePoints must be empty/i);
+    await expect(
+      pinAnnotation({ ...base, text: "n", tolerance: { nominal: 1, plus: 0.1, measured: 1 } })
+    ).rejects.toThrow(/no tolerance band/i);
+    expect(await readAnnotations(stpModel)).toHaveLength(0);
+  });
 });
 
 describe("set_mesh_options", () => {

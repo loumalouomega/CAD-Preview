@@ -1384,6 +1384,15 @@ The webview counterpart is `src/webview/planesModel.ts` (`PlanesModel`), mirrori
 
 ---
 
+## `src/meshParse.ts`, `src/meshSourceInput.ts`, `src/meshSweep.ts`
+
+Three WASM-free modules that let the extension host and the MCP server share meshing logic (roadmap Tier 1 "Parity gaps").
+
+- **`meshParse.ts`** — `parseToWeldedMesh(bytes, format, external?)`, the STL/OBJ/PLY/glTF parse into a welded `{positions, indices}` soup. It moved here from `meshHeal.ts`, whose module graph pulls in OCCT and so can never be imported by `provider.ts`; `meshHeal.ts` re-exports it, so every older importer is unchanged.
+- **`meshSourceInput.ts`** — `resolveMeshSourceInput(route, sourcePath, pendingOps, deps, warnings, unit?)` turns a mesh-format source (STL/OBJ/PLY/glTF, or any meshio++ format including OpenFOAM) into `{kind: "stl", stlBytes}` meshing input, scaled by `unit`. File reads and the two meshio conversions are injected (`deps`), so `mcpTools.ts`'s `resolveMeshInputHeadless` passes `node:fs` readers and its pipeline while `provider.ts` passes `vscode.workspace.fs` readers and the document-scoped kernel client. `isMeshSourceRoute(route)` says whether a route belongs here (everything except B-rep). Pending mesh edits are **not** baked in — they replay only in the webview — and every caller gets the same named warning.
+  - **The `cad-preview.exportMesh` command uses it.** The command used to refuse every mesh-format source, because the extension got that geometry from the webview's serialized STL. It now resolves the source host-side before any quick-pick, posts the not-baked warning as a status line, and runs the same `runMeshExport` chain as a B-rep source. The FE Mesh panel's own **Export** button still sends the displayed (edited) geometry.
+- **`meshSweep.ts`** — besides `MeshSweepRun`/`sweepTsv`/`sweepOutputName`, holds `MAX_SWEEP_RUNS`, `SWEEP_NOTE` (the "trends are not convergence" disclaimer), `validateSweepSizes`/`parseSweepSizes`, and **`runMeshSweep(sizes, baseOptions, generate, hooks)`** — the per-size loop both `compare_mesh_refinement` and the FE Mesh panel's sweep call, so their rows cannot disagree. Each size meshes the same base options as a uniform mesh; `elapsedMs` covers the generate call only; a failed generate or output write is a `status: "error"` row, never a thrown sweep. `provider.ts`'s `meshSweepRequest` handler runs it under the document's meshing job (so the panel's Cancel stops it) and writes optional per-run `.msh` files into a folder the user picks.
+
 ## `src/meshOptions.ts`, `src/meshOptionsStore.ts`, `src/meshOptionsSidecar.ts`
 
 The FE-mesh options model and its sidecar pair, mirroring the parts/edits trios (see [GMSH Integration](./gmsh-integration.md) for the feature-level write-up).

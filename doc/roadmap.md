@@ -170,7 +170,7 @@ It does **not** admit AGPL code, so TetGen stays rejected. Every new bundled dep
 | Wave | Outcome | Start with | Exit signal |
 | --- | --- | --- | --- |
 | Upkeep | The base stays current and trustworthy | Dependency currency, then the KKSS packaging workarounds | Both Tier 0 items done; the verification debt count has started falling |
-| Parity | Everything an agent can do, a user can do, and the reverse | Hole table, then free-text annotations, then headless mesh-edit replay | The MCP-only and webview-only lists in [Parity gaps](#parity-gaps) are empty or each remaining entry is justified |
+| Parity | Everything an agent can do, a user can do, and the reverse | Headless mesh-edit replay (the hole-table, refinement-sweep, free-text-note and mesh-source FE-export gaps are closed) | Headless tools see the same edited mesh the viewer shows, or each remaining difference is justified |
 | Meshing probes | Decide on remeshing and on conformal assemblies | The MMG core probe, then conformal multi-body meshing, then Gmsh optimisation | Each probe filed with measured results and a decision |
 | Geometry probes | Decide which never-called OCCT capabilities become ops | Imprint and split faces, then B-rep repair | Each probe filed with measured results and a decision |
 | Strategic | Remove the kernel ceiling | The self-built OCCT WASM probe | The existing test suites pass unchanged against the new build |
@@ -246,27 +246,6 @@ These are outcome groupings, not release numbers. Independent small items can sh
 ### Tier 1 — ready product work
 
 *Admission: no kernel unknown remains. Either a probe passed and its call shapes are in `CLAUDE.md`, or the work only reuses shipped machinery. The estimate is firm.*
-
-#### Parity gaps
-
-*Area: Parity.* These are the places where the MCP server and the interactive extension disagree about what the product can do. Each one is small because both halves already exist on one side.
-
-- **Hole table in the interactive UI (S).**
-  - `generate_hole_table` is MCP-only.
-  - Add a **Copy hole table** action beside the Parts panel's BOM copy. It reuses the `computeHoleTable` pipeline key and the `holeTable.ts` TSV renderer, over a request/response pair shaped like `bomRequest`.
-  - Done when a `test:webview` case copies the table for the plate fixture `mcp:smoke` already uses.
-- **Mesh refinement sweep in the FE Mesh panel (S–M).**
-  - `compare_mesh_refinement` is MCP-only.
-  - Add a small sweep form (sizes, optional output folder) that shows the TSV as a table, carrying the same "trends are not convergence" note the tool returns.
-  - Done when the panel's rows match the tool's for the same sizes.
-- **Free-text annotations in the interactive UI (S).**
-  - `pin_annotation` can pin a note to any entity; the interactive side only pins measurements.
-  - Add **Pin note** to the entity context menu. It writes the same sidecar record, and appears in the Measure ▾ Saved list and in drawings.
-  - Done when a note pinned in the viewer reads back through `get_state`, and the reverse.
-- **FE-mesh export for mesh-format sources from the command (S).**
-  - The `cad-preview.exportMesh` command refuses STL/OBJ/PLY/glTF sources, and points the user at the panel.
-  - `mcpTools.ts`'s `resolveMeshInputHeadless` already resolves those sources host-side. Move it into a module both layers import, and have the command use it.
-  - Pending mesh edits are not baked in; this caveat ends when [Headless mesh-edit replay](#headless-mesh-edit-replay) closes.
 
 #### Headless mesh-edit replay
 
