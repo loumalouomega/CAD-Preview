@@ -3369,6 +3369,29 @@ describe("export_mesh", () => {
     expect(result.written.map((w) => w.path)).toEqual([out]);
   });
 
+  it.each([2, 1, 0, -1])("records factual mesh replay provenance (%i applied)", async (applied) => {
+    const c = ctx();
+    const ops: EditOp[] = [0, 1].map(() => ({ op: "translate", targets: ["node-0"], vec: [1, 0, 0] }));
+    await writeEdits(stlModel, ops, []);
+    const raw = new Uint8Array(await fs.readFile(stlModel));
+    if (applied < 0) vi.mocked(c.pipeline.bakeMeshEdits).mockRejectedValue(new Error("bake failed"));
+    else vi.mocked(c.pipeline.bakeMeshEdits).mockResolvedValue({ bytes: raw, messages: [],
+      outcomes: ops.map((_, index) => ({ index, kind: "translate", applied: index < applied,
+        diagnostic: index < applied ? undefined : "target missing" })) });
+    const out = path.join(dir, "replay.msh");
+    await exportMeshTool(c, { path: stlModel, format: "msh", outputPath: out, manifest: true });
+    const manifest = JSON.parse(await fs.readFile(`${out}.handoff.json`, "utf8"));
+    const notes = manifest.notes.join("\n");
+    expect(notes).not.toContain("2 pending edit(s) were baked");
+    if (applied < 0) {
+      expect(notes).toContain("could NOT be baked (bake failed)");
+      expect(vi.mocked(c.pipeline.generateMesh).mock.calls[0][1]).toEqual({ kind: "stl", stlBytes: raw });
+    } else {
+      expect(notes).toContain(`Baked ${applied} of 2`);
+      if (applied < 2) expect(notes).toContain("target missing");
+    }
+  });
+
   it("manifest: writes <output>.handoff.json with fingerprints, groups and coverage; an edit afterwards makes it stale", async () => {
     const c = ctx();
     await setPart({ path: stpModel, name: "Inlet", surfaces: ["face-1"] });

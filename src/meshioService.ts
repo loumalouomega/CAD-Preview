@@ -270,15 +270,22 @@ export async function convertToStlBoundary(
   const { primaryPath, allPaths } = stageMeshioSource(m, sourceBytes, meshioFormat, sourceName, companions);
   const outPath = "/out.stl";
   try {
-    m.convertSurface(primaryPath, outPath, { inFormat: meshioFormat, outFormat: "stl" });
-    const bytes: Uint8Array = m.FS.readFile(outPath);
-    if (parseStl(bytes).length > 0) return bytes;
-    // `convertSurface` linearizes higher-ORDER cells but does NOT split
-    // multi-node boundary FACES — a quad-only boundary (the common case for
-    // hex meshes) yields `solid endsolid`, zero facets, no throw. Fall back
-    // to readMesh + extractSurface + simplexify + hand-built STL, the same
-    // shape `convertFoamCaseToStlBoundary` uses for exactly this reason.
-    // Failures here fall to the outer catch's single `wrapMeshioFault`.
+    let convertError: unknown;
+    try {
+      m.convertSurface(primaryPath, outPath, { inFormat: meshioFormat, outFormat: "stl" });
+      const bytes: Uint8Array = m.FS.readFile(outPath);
+      if (parseStl(bytes).length > 0) return bytes;
+    } catch (err) {
+      // Some format readers support a deck that the C++ surface converter
+      // rejects (Nastran is one). A plain reader + surface extraction handles
+      // those formats and the quad-only-boundary case below. Never continue
+      // after a WASM abort; that module must be reset by the outer handler.
+      if (isMeshioWasmAbort((err as Error)?.message ?? String(err))) throw err;
+      convertError = err;
+    }
+    // `convertSurface` linearizes higher-order cells but does NOT split
+    // multi-node boundary faces — a quad-only boundary yields zero facets.
+    // Also use this path when the format's C++ surface reader is unsupported.
     let boundary = m.extractSurface(m.readMesh(primaryPath, meshioFormat), false);
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     let blocks = boundary.cells as any[];
@@ -289,9 +296,8 @@ export async function convertToStlBoundary(
     }
     const stl = boundaryTrianglesToAsciiStl(boundary.points, boundary.dim, blocks, "meshio import");
     if (stl) return stl;
-    throw new Error(
-      "meshio import error: the mesh produced an empty boundary — no faces to display."
-    );
+    const detail = convertError ? ` (direct surface conversion also failed: ${(convertError as Error).message ?? String(convertError)})` : "";
+    throw new Error(`meshio import error: the mesh produced an empty boundary — no faces to display.${detail}`);
   } catch (err) {
     throw wrapMeshioFault(err);
   } finally {
