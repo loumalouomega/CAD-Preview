@@ -3891,10 +3891,9 @@ try {
   );
 
   // Nastran bulk data (examples/Nastran/block-tets.bdf — this extension's own
-  // Gmsh export of block.stp). Gmsh writes no `BEGIN BULK` line, which
-  // meshio++ 16.x requires; nastranDeck.ts normalizes it at staging. Without
-  // that, load's metadata degrades silently and generate_mesh throws
-  // `Nastran: "BEGIN BULK" statement not found`.
+  // Gmsh export of block.stp). Routing and the ambiguity caveat work, but the
+  // current meshio++ reader rejects this deck even after BEGIN BULK
+  // normalization. Pin the known limitation until a reader/parser is added.
   const bdfModel = path.join(dir, "block-tets.bdf");
   fs.copyFileSync(path.join(ROOT, "examples", "Nastran", "block-tets.bdf"), bdfModel);
   const bdfLoaded = await call("load_model", { path: bdfModel });
@@ -3906,15 +3905,14 @@ try {
     bdfLoaded.warnings.some((w) => /Nastran bulk-data deck/.test(w)),
     `load_model surfaces the .bdf ambiguity caveat (got: ${JSON.stringify(bdfLoaded.warnings)})`
   );
-  let bdfMeshingError = "";
-  try {
-    await call("generate_mesh", { path: bdfModel, options: { sizeMax: 1 } });
-  } catch (err) {
-    bdfMeshingError = String(err);
-  }
+  const bdfMeshing = await callTolerant("generate_mesh", {
+    path: bdfModel,
+    options: { sizeMax: 1 },
+  });
+  const bdfMeshingError = bdfMeshing.error ?? "";
   assert(
     /Not a meshio\+\+-C\+\+ Nastran file/.test(bdfMeshingError),
-    `Gmsh-written .bdf reports the tracked meshio++ limitation (got: ${bdfMeshingError || "unexpected success"})`
+    `Gmsh-written .bdf reports the tracked meshio++ limitation (got: ${bdfMeshingError || (bdfMeshing.value ? "unexpected success" : "no error result")})`
   );
 
   // OpenFOAM polyMesh import (examples/OpenFOAM/hex-case — see its README).
