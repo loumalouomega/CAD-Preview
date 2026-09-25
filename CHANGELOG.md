@@ -4,6 +4,23 @@ All notable changes to the "CAD Preview" extension are documented in this file.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/); this project does not yet strictly follow Semantic Versioning (pre-1.0 releases moved fast and bundled multiple features per bump).
 
+## [3.5.0] - 2026-09-25
+
+### Added
+
+- **Headless mesh-edit replay.** Edits made to a mesh-format model (STL, OBJ, PLY, glTF, or a meshio++ import) used to replay only in the viewer, so every headless tool saw the raw file. They are now baked by the same engine the viewer uses, so `generate_mesh`, `export_mesh`, `compare_mesh_refinement`, `measure_mesh_deviation`, `compare_models`, the drawing tools and `CAD Preview: Export Mesh` all mesh, compare and draw the edited model. A translated cube's exported mesh now moves by the translation.
+- **`save_model` accepts STL, OBJ and PLY sources.** It bakes the pending edits into the file in its own format, keeps a one-deep `<model>.bak`, and records the save point, exactly as it does for STEP, IGES and BREP. glTF is still refused, because its exporter only writes binary `.glb`.
+
+### Changed
+
+- Where these tools used to warn that pending mesh edits were "NOT baked in", they now report the facts: `Baked N of M pending mesh edit op(s)`, plus one line for each edit that could not apply, with its index, kind and reason. If the bake itself fails, meshing falls back to the raw file and says why; `save_model` throws before writing anything.
+- Mesh loading is shared between the viewer and the kernel worker (`src/webview/meshObject.ts`), so `node-N` edit targets mean the same object in both.
+- `doc/roadmap.md` task IDs were renumbered after the headless mesh-edit replay item closed (section 2 is now `2.1`–`2.8`); headings keep their anchors, so existing links are unchanged.
+
+### Not yet baked
+
+Mesh `inspect`, `get_mass_properties` and `measure` (their ids are defined over the raw file), `promote_mesh_to_brep`, `repair_mesh`, and the inspection sections of the preparation report still read the raw file, and their responses say so.
+
 ## [3.4.0] - 2026-09-25
 
 ### Added
@@ -613,6 +630,7 @@ This release republishes v1.9.0's full changelog (below) unchanged; v1.9.0 itsel
 
 - Initial release: read-only 3D preview for CAD and mesh files (STEP, IGES, BREP, STL, OBJ, PLY, glTF) inside a VS Code custom editor, using OpenCascade.js (OCCT WASM) in the extension host for B-rep formats and Three.js in the webview for rendering.
 
+[3.5.0]: https://github.com/loumalouomega/CAD-Preview/compare/v3.4.0...v3.5.0
 [3.4.0]: https://github.com/loumalouomega/CAD-Preview/compare/v3.3.0...v3.4.0
 [3.3.0]: https://github.com/loumalouomega/CAD-Preview/compare/v3.2.0...v3.3.0
 [3.2.0]: https://github.com/loumalouomega/CAD-Preview/compare/v3.1.0...v3.2.0
