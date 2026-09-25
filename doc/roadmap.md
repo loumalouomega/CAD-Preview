@@ -243,6 +243,15 @@ These are outcome groupings, not release numbers. Independent small items can sh
   - Capture their baselines with `--update-baseline` in a reviewed change.
 - **Done when:** both appear in `baseline.json`, and a deliberately slowed build flags them.
 
+#### 1.5 Recoverable mesh source saves {#recoverable-mesh-source-saves}
+
+*Area: Parity. Effort: M.*
+
+- **Evidence:** `saveMeshModel` writes the baked STL/OBJ/PLY source before advancing the `.edits.json` `bakedThrough` watermark. If the process stops between those writes, reopening can replay the same edit over already-baked geometry. A `.bak` is written first, but recovery is not yet coordinated with the sidecar.
+- **First useful increment:** make the geometry, backup and replay watermark a recoverable save transaction. On open, detect an interrupted transaction and restore or finish it without replaying edits twice. Preserve the current explicit-save and confirmation behavior.
+- **Verification:** inject failure after each write boundary and prove recovery is idempotent; test backup restore, repeated save, and two editors targeting the same source. Concurrent external changes must never be overwritten silently.
+- **Done when:** after interruption at every transaction boundary, reopening yields either the original source plus its pending edit tail or the fully baked source with the watermark advanced, and a second recovery/save does not change geometry.
+
 ### 2. Ready product work {#tier-1-—-ready-product-work}
 
 *Admission: no kernel unknown remains. Either a probe passed and its call shapes are in `CLAUDE.md`, or the work only reuses shipped machinery. The estimate is firm.*

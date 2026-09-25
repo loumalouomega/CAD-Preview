@@ -4940,7 +4940,7 @@ export async function buildExportHandoffManifest(
   if (route.strategy !== "occt" && tail > 0 && meshEditsBaked !== undefined) {
     notes.push(
       meshEditsBaked
-        ? `${tail} pending edit(s) were baked into this mesh headlessly by the same mesh-edit engine the viewer replays with.`
+        ? `Pending mesh edits were replayed headlessly; see the replay counts and skipped-operation diagnostics in these notes.`
         : `${tail} pending edit(s) were NOT baked into this mesh — the headless mesh-edit bake was unavailable or failed (see the export's warnings).`
     );
   }
@@ -4979,7 +4979,7 @@ async function writeHandoffManifest(
 ): Promise<string> {
   const outputs = await Promise.all(written.map(async (p) => ({ path: p, bytes: new Uint8Array(await fs.readFile(p)) })));
   const baked = warnings.some((w) => w.startsWith("Baked "));
-  const manifest = await buildExportHandoffManifest(ctx, modelPath, route, input, options, parts, formatId, outputs, unit, [], baked);
+  const manifest = await buildExportHandoffManifest(ctx, modelPath, route, input, options, parts, formatId, outputs, unit, warnings, baked);
   const manifestPath = path.resolve(requestedPath ?? `${written[0]}${HANDOFF_MANIFEST_SUFFIX}`);
   assertNotSourcePath(modelPath, manifestPath);
   const exportId = randomUUID();
