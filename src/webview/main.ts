@@ -7,6 +7,7 @@ import { UI_GLYPHS } from "../uiGlyphs";
 import { MacrosPanel } from "./macrosPanel";
 import { selectionGroupsFor } from "./selectionGroups";
 import { loadMeshFromUrl } from "./meshLoaders";
+import { tagMeshEntities } from "./meshObject";
 import { COMPARABLE_MESH_FORMATS, type CadFormat, type MeshParseFormat } from "../fileRouter";
 import { bomTsv } from "../bomExport";
 import { holeTableTsv } from "../holeTable";
@@ -5969,20 +5970,6 @@ async function loadMeshObjectFromUrl(
   } catch (err) {
     setStatus(`Failed to load model: ${(err as Error).message}`, true);
   }
-}
-
-/**
- * Tags a Three.js-loaded model with STABLE ids (traversal order, not uuid) so
- * part assignments round-trip across reopen. Each object's id becomes its
- * `groupId`; a mesh's id is its volume id, carried onto the facet group built by
- * `splitMeshesIntoFacets`. The shared id keeps the Components tree highlight
- * working.
- */
-function tagMeshEntities(obj: THREE.Object3D): void {
-  let i = 0;
-  obj.traverse((o) => {
-    o.userData.groupId = `node-${i++}`;
-  });
 }
 
 /** Build a TreeNode from an Object3D hierarchy (for Three.js-loaded formats). */

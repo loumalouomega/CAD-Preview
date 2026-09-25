@@ -4564,9 +4564,10 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
    * **Mesh-format sources too** (roadmap Tier 1 "Parity gaps"): STL/OBJ/PLY/
    * glTF and the meshio++ formats resolve host-side through the same
    * `meshSourceInput.ts` resolver `export_mesh` uses, instead of needing the
-   * webview's serialized STL. Pending mesh edits are NOT baked in (they replay
-   * only in the webview) — said as a status line, never silently. The panel's
-   * own Export button still sends the displayed (edited) geometry.
+   * webview's serialized STL. Pending mesh edits are baked in through the
+   * kernel worker's `bakeMeshEdits` (roadmap "Headless mesh-edit replay"),
+   * with the bake reported as a status line. The panel's own Export button
+   * still sends the displayed (edited) geometry.
    */
   private async handleExportMesh(
     uri: vscode.Uri,
@@ -4594,13 +4595,14 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
         const input = await resolveMeshSourceInput(
           route,
           uri.fsPath,
-          Math.max(0, ops.length - bakedThrough),
+          replayTail(ops, bakedThrough),
           {
             readBytes: async () => vscode.workspace.fs.readFile(uri),
             resolveGltfBuffers: (bytes) => resolveGltfBuffersFor(uri, route.format, bytes),
             resolveMeshioCompanions: (bytes) => resolveMeshioCompanionsFor(uri, basename, route.format, bytes),
             convertToStlBoundary: (bytes, format, name, companions) => pipeline.convertToStlBoundary(bytes, format, name, companions),
             convertFoamCaseToStlBoundary: (markerPath) => pipeline.convertFoamCaseToStlBoundary(markerPath),
+            bakeEdits: (bytes, format, tail, external) => pipeline.bakeMeshEdits(bytes, format, tail, "stl", external),
           },
           warnings
         );

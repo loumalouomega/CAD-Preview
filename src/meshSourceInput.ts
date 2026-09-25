@@ -16,15 +16,18 @@
  * (kernel-worker) functions, so `provider.ts` can import this without
  * bundling a kernel.
  *
- * Pending mesh edits are NOT baked in — mesh edits replay only in the
- * webview. Every caller gets the same named warning, never a silent raw-file
- * mesh.
+ * Pending mesh edits ARE baked in when the caller supplies `bakeEdits` (the
+ * kernel worker's `bakeMeshEdits` — the same three.js engine the webview
+ * replays with; roadmap "Headless mesh-edit replay"). Without it, or when the
+ * bake fails, the raw file is meshed with a named warning — never a silent
+ * raw-file mesh.
  */
 
 import type { FileRoute, MeshParseFormat } from "./fileRouter";
 import type { MeshGenerationInput } from "./gmshService";
 import type { MeshioCompanion } from "./meshioService";
 import type { GltfExternalBuffers } from "./gltfParser";
+import type { EditOp, OpOutcome } from "./editOps";
 import { parseToWeldedMesh } from "./meshParse";
 import { weldedMeshToStlBytes } from "./meshComponents";
 import { scaleStlBytes } from "./stlParser";
@@ -39,6 +42,60 @@ export interface MeshSourceInputDeps {
   resolveMeshioCompanions: (bytes: Uint8Array) => Promise<MeshioCompanion[]>;
   convertToStlBoundary: (bytes: Uint8Array, format: string, sourceName: string, companions: MeshioCompanion[]) => Promise<Uint8Array>;
   convertFoamCaseToStlBoundary: (markerPath: string) => Promise<Uint8Array>;
+  /**
+   * Replays `ops` over a mesh source and returns the edited model as binary
+   * STL (the kernel worker's `bakeMeshEdits`). Optional: without it pending
+   * edits are reported as not baked.
+   */
+  bakeEdits?: (
+    bytes: Uint8Array,
+    format: "stl" | "obj" | "ply" | "gltf",
+    ops: EditOp[],
+    externalBuffers?: GltfExternalBuffers
+  ) => Promise<{ bytes: Uint8Array; outcomes: OpOutcome[]; messages: string[] }>;
+}
+
+/**
+ * Bakes `ops` over `bytes` through `deps.bakeEdits`, pushing factual warnings
+ * (baked count, each skipped op, engine messages). Returns `undefined` — and
+ * the not-baked warning — when there is nothing to bake with or the bake
+ * failed, so the caller keeps the raw bytes.
+ */
+export async function bakeMeshSourceEdits(
+  bytes: Uint8Array,
+  format: "stl" | "obj" | "ply" | "gltf",
+  ops: EditOp[],
+  deps: Pick<MeshSourceInputDeps, "bakeEdits">,
+  warnings: string[],
+  label: string,
+  externalBuffers?: GltfExternalBuffers
+): Promise<Uint8Array | undefined> {
+  if (ops.length === 0) return undefined;
+  if (!deps.bakeEdits) {
+    warnings.push(`${ops.length} edit op(s) exist but are NOT baked in — ${label}.`);
+    return undefined;
+  }
+  try {
+    const result = await deps.bakeEdits(bytes, format, ops, externalBuffers);
+    warnings.push(...bakeWarnings(result.outcomes, result.messages, ops.length));
+    return result.bytes;
+  } catch (err) {
+    warnings.push(
+      `${ops.length} edit op(s) could NOT be baked (${(err as Error).message}) — ${label}.`
+    );
+    return undefined;
+  }
+}
+
+/** Factual warning lines for a bake: how many ops applied, which skipped, and why. */
+export function bakeWarnings(outcomes: OpOutcome[], messages: string[], total: number): string[] {
+  const skipped = outcomes.filter((o) => !o.applied);
+  const out = [`Baked ${total - skipped.length} of ${total} pending mesh edit op(s) headlessly (the same engine the viewer replays with).`];
+  for (const o of skipped) {
+    out.push(`Edit op #${o.index + 1} (${o.kind}) was skipped — ${o.diagnostic ?? "it did not apply"}.${o.hint ? ` Hint: ${o.hint}` : ""}`);
+  }
+  for (const m of new Set(messages)) out.push(m);
+  return out;
 }
 
 /** True for a route this module can resolve (everything but a B-rep source). */
@@ -50,14 +107,16 @@ export function isMeshSourceRoute(route: FileRoute): boolean {
  * Resolves a mesh-format source to STL meshing input, scaled by `unit`
  * (default native mm). `sourcePath` is the source's filesystem path — its
  * basename is the meshio staging name, and for OpenFOAM it is the `.foam`
- * marker the case is staged from. `pendingOps` is the count of unbaked edit
- * ops, only used to word the not-baked warning. Throws for a B-rep route —
- * callers resolve those through the kernel's STEP re-export instead.
+ * marker the case is staged from. `ops` is the unbaked edit tail: baked in
+ * through `deps.bakeEdits` when given (a meshio source is baked over its
+ * converted STL boundary — exactly the `node-0` mesh the viewer edits).
+ * Throws for a B-rep route — callers resolve those through the kernel's STEP
+ * re-export instead.
  */
 export async function resolveMeshSourceInput(
   route: FileRoute,
   sourcePath: string,
-  pendingOps: number,
+  ops: EditOp[],
   deps: MeshSourceInputDeps,
   warnings: string[],
   unit: DisplayUnit = "mm"
@@ -65,13 +124,10 @@ export async function resolveMeshSourceInput(
   if (!isMeshSourceRoute(route)) {
     throw new Error(`${route.format} is not a mesh-format source — resolve it through the B-rep STEP re-export.`);
   }
-  if (pendingOps > 0) {
-    warnings.push(
-      route.strategy === "meshio"
-        ? `${pendingOps} edit op(s) exist but are NOT baked into the meshed geometry — ${route.format} edits replay in the webview only; the raw file's boundary surface is meshed.`
-        : `${pendingOps} edit op(s) exist but are NOT baked into the meshed geometry — ${route.format.toUpperCase()} edits replay in the webview only; the raw file bytes are meshed.`
-    );
-  }
+  const notBaked =
+    route.strategy === "meshio"
+      ? "the raw file's boundary surface is meshed"
+      : `the raw ${route.format.toUpperCase()} file bytes are meshed`;
   let stlBytes: Uint8Array;
   if (route.strategy === "meshio") {
     // meshio++ runs host-side: converted to an STL boundary surface and meshed
@@ -84,13 +140,17 @@ export async function resolveMeshSourceInput(
       const companions = await deps.resolveMeshioCompanions(bytes);
       stlBytes = await deps.convertToStlBoundary(bytes, route.format, baseName(sourcePath), companions);
     }
+    stlBytes = (await bakeMeshSourceEdits(stlBytes, "stl", ops, deps, warnings, notBaked)) ?? stlBytes;
   } else if (route.format === "stl") {
-    stlBytes = await deps.readBytes();
+    const raw = await deps.readBytes();
+    stlBytes = (await bakeMeshSourceEdits(raw, "stl", ops, deps, warnings, notBaked)) ?? raw;
   } else {
     const bytes = await deps.readBytes();
     const format = route.format as MeshParseFormat;
     const external = format === "gltf" ? await deps.resolveGltfBuffers(bytes) : undefined;
-    stlBytes = weldedMeshToStlBytes(parseToWeldedMesh(bytes, format, external));
+    stlBytes =
+      (await bakeMeshSourceEdits(bytes, format, ops, deps, warnings, notBaked, external)) ??
+      weldedMeshToStlBytes(parseToWeldedMesh(bytes, format, external));
   }
   const factor = unitScaleFactor(unit);
   return { kind: "stl", stlBytes: factor === 1 ? stlBytes : scaleStlBytes(stlBytes, factor) };

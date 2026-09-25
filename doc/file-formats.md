@@ -485,7 +485,7 @@ glTF export always produces a binary `.glb` file (not a text `.gltf` with embedd
 | Source | Geometry the outline is derived from |
 | --- | --- |
 | STEP / IGES / BREP | the tessellation of the current model, **edits baked in** |
-| STL / OBJ / PLY / glTF | the raw file bytes, **edits not baked in** (there is no host-side mesh edit engine — same limitation Compare Models has) |
+| STL / OBJ / PLY / glTF | the file with its pending mesh edits **baked in** by the headless mesh-edit replay (the viewer's own engine); the raw file bytes, with a warning, only if that bake fails |
 | meshio++ (VTK/MED/CGNS/Exodus/XDMF/MDPA/OpenFOAM) | rejected — those formats never expose a triangle array back to JS |
 
 The output is a single self-contained `<path>` — no `<style>`, no script, no external references — so it embeds anywhere. **1 SVG user unit = 1 model unit**, with the document's physical `width`/`height` given in millimetres, so a drawing exported from a native (mm) model prints 1:1 in any vector tool. Choosing a non-mm unit applies the same real coordinate scale every other export in this codebase uses, before projection. The DXF variant is minimal model-space `ENTITIES` only: chained collinear runs become `LWPOLYLINE`s and unmatched singletons stay independent `LINE`s, at 1 DXF drawing unit = 1 model unit.

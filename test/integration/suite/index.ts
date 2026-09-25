@@ -39,6 +39,7 @@ import * as path from "path";
 import * as vscode from "vscode";
 import { installModalStubs, pick, save, cancel, open as openAnswer, waitForFile, waitFor, type ModalAnswer } from "./modalStubs";
 import { writeParts } from "../../../src/partsStore";
+import { serializeEditsJson } from "../../../src/editsSidecar";
 import { writePlanes } from "../../../src/planesStore";
 import { writeCustomBackup, restoreCustomBackup } from "../../../src/customBackup";
 import { ModelsTreeDataProvider } from "../../../src/modelsView";
@@ -336,6 +337,59 @@ for (const [label, fixture, siblings] of [
     await closeAll();
   });
 }
+
+/**
+ * Headless mesh-edit replay through the same command: a pending translate in
+ * the STL's sidecar is baked by the kernel worker before meshing, so the
+ * exported FE mesh sits where the viewer displays the edited cube.
+ */
+test("Export FE Mesh… bakes a mesh source's pending edits", async () => {
+  const minX = (msh: string): number => {
+    const lines = msh.split(/\r?\n/);
+    let i = lines.indexOf("$Nodes") + 2;
+    let min = Infinity;
+    while (lines[i] !== "$EndNodes") {
+      const count = Number(lines[i].split(/\s+/)[3]);
+      i += 1 + count;
+      for (let k = 0; k < count; k++, i++) min = Math.min(min, Number(lines[i].split(/\s+/)[0]));
+    }
+    return min;
+  };
+  const exportOnce = async (staged: string, name: string): Promise<number> => {
+    const out = path.join(path.dirname(staged), name);
+    assert(await openDocument(staged), "the STL fixture opens");
+    await withModals([pick("Gmsh Mesh (.msh)"), pick("Native"), save(out)], async () => {
+      await vscode.commands.executeCommand("cad-preview.exportMesh");
+      await waitForFile(out, 120000);
+    });
+    await closeAll();
+    return minX(fs.readFileSync(out, "utf8"));
+  };
+  const raw = await exportOnce(stage(STL_FIXTURE), "raw.msh");
+  const edited = stage(STL_FIXTURE);
+  fs.writeFileSync(
+    `${edited}.edits.json`,
+    serializeEditsJson(path.basename(edited), [{ op: "translate", targets: ["node-0"], vec: [100, 0, 0] }])
+  );
+  const before = fs.readFileSync(edited);
+  const api = await saveTestApi();
+  const statuses: string[] = [];
+  const sub = api?.onDidPostMessage?.((m) => {
+    const msg = m as { type: string; text?: string; message?: string };
+    if (msg.type === "status" || msg.type === "error") statuses.push(msg.text ?? msg.message ?? "");
+  });
+  let baked: number;
+  try {
+    baked = await exportOnce(edited, "baked.msh");
+  } finally {
+    sub?.dispose();
+  }
+  assert(
+    Math.abs(baked - (raw + 100)) < 1e-3,
+    `the exported mesh moved by the pending translate (min x ${raw} -> ${baked}; statuses ${JSON.stringify(statuses.filter((t) => /bake|Bake|edit/.test(t)))})`
+  );
+  assert(Buffer.compare(before, fs.readFileSync(edited)) === 0, "the source is byte-identical");
+});
 
 test("Export… offers the real export targets and writes the chosen one", async () => {
   const staged = stage(STEP_FIXTURE);

@@ -170,7 +170,7 @@ It does **not** admit AGPL code, so TetGen stays rejected. Every new bundled dep
 | Wave | Outcome | Start with | Exit signal |
 | --- | --- | --- | --- |
 | Upkeep | The base stays current and trustworthy | Dependency currency (1.1), then the KKSS packaging workarounds (1.2) | Both 1.1 and 1.2 done; the verification debt count has started falling |
-| Parity | Everything an agent can do, a user can do, and the reverse | Headless mesh-edit replay, 2.1 (the hole-table, refinement-sweep, free-text-note and mesh-source FE-export gaps are closed) | Headless tools see the same edited mesh the viewer shows, or each remaining difference is justified |
+| Parity | Everything an agent can do, a user can do, and the reverse | Done: headless mesh-edit replay closed the last listed gap (as did the hole-table, refinement-sweep, free-text-note and mesh-source FE-export gaps). Justified remainders: mesh `inspect`/mass facts, `promote_mesh_to_brep` and `repair_mesh` read the raw file (their ids and outputs are defined over it; `save_model` bakes first), and glTF has no own-format save (its exporter emits only `.glb`) | Headless tools see the same edited mesh the viewer shows, or each remaining difference is justified |
 | Meshing probes | Decide on remeshing and on conformal assemblies | The MMG core probe (4.1), then conformal multi-body meshing (4.2), then Gmsh optimisation (4.4) | Each probe filed with measured results and a decision |
 | Geometry probes | Decide which never-called OCCT capabilities become ops | Imprint and split faces (3.1), then B-rep repair (3.2) | Each probe filed with measured results and a decision |
 | Strategic | Remove the kernel ceiling | The self-built OCCT WASM probe (6.1) | The existing test suites pass unchanged against the new build |
@@ -246,22 +246,6 @@ These are outcome groupings, not release numbers. Independent small items can sh
 ### 2. Ready product work {#tier-1-—-ready-product-work}
 
 *Admission: no kernel unknown remains. Either a probe passed and its call shapes are in `CLAUDE.md`, or the work only reuses shipped machinery. The estimate is firm.*
-
-#### 2.1 Headless mesh-edit replay {#headless-mesh-edit-replay}
-
-*Area: Parity.*
-
-- **Evidence:**
-  - Mesh edits (transforms, booleans, holes, primitives, patterns) replay only in the webview, because `src/webview/meshEdits.ts` runs on Three.js objects. As a result, headless `generate_mesh`, `export_mesh`, `compare_models` and `save_model` all see the raw file, not the edited model, and each warns about it.
-  - `meshEdits.ts` has no DOM dependency: `meshEdits.test.ts` already runs it under Node, `three-bvh-csg` included.
-  - The host already parses all four mesh formats into triangles (`parseToWeldedMesh`).
-- **First useful increment (M):**
-  - Build a Three.js scene from the host-side parse.
-  - Run `applyEditsMesh` in the kernel worker, behind a new `Pipeline` key.
-  - Serialise the result with the same exporters the webview uses, which still need the `requestAnimationFrame` polyfill `meshExporters.test.ts` applies.
-  - Use that bake in `generate_mesh`, `export_mesh`, `compare_models` and a mesh-source `save_model`.
-  - glTF needs the `ProgressEvent` polyfill the glTF cross-validation test already uses.
-- **Done when:** an edited STL meshes headlessly with its edit applied (a translated cube's mesh bbox moves), and `save_model` accepts STL/OBJ/PLY sources.
 
 #### 2.2 Post geometry before the XCAF assembly tree {#post-geometry-before-the-xcaf-assembly-tree}
 

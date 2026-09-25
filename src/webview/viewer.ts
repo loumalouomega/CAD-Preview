@@ -2589,17 +2589,5 @@ export class Viewer {
   };
 }
 
-/** Builds a standard-material mesh for a raw geometry, computing normals if absent. */
-export function meshFromGeometry(geometry: THREE.BufferGeometry): THREE.Mesh {
-  if (!geometry.getAttribute("normal")) {
-    geometry.computeVertexNormals();
-  }
-  const material = new THREE.MeshStandardMaterial({
-    color: defaultFaceColor(),
-    metalness: 0.1,
-    roughness: 0.7,
-    side: THREE.DoubleSide,
-    flatShading: false,
-  });
-  return new THREE.Mesh(geometry, material);
-}
+/** Moved to `meshObject.ts` (shared with the headless mesh-edit bake); re-exported for existing callers. */
+export { meshFromGeometry } from "./meshObject";
