@@ -39,11 +39,27 @@ B-rep (boundary-representation) formats are parsed and tessellated with [OpenCas
 | GiD Postprocess | `.post.msh` (+ its `.post.res` sibling) | meshio++ → STL boundary surface → Three.js |
 | Nastran Bulk Data | `.bdf`   | detected as Nastran; current meshio++ reader rejects this extension's Gmsh-written deck |
 
+<details>
+<summary>Format details and limitations</summary>
+
 > The **Pipeline** column is how each format is *rendered*. STL, OBJ, PLY, and glTF/GLB additionally have pure host-side triangle parsers (no webview, no OCCT), which is what lets **Compare Models**, **Mesh Health / Promote to B-rep**, and **Silhouette SVG export** work on them headlessly as well as interactively. The glTF parser is geometry-only and cross-validated against three.js's own `GLTFLoader`; it rejects Draco/meshopt-compressed files with a clear error rather than guessing.
 >
 > The last thirteen formats are imported as a triangulated **boundary surface** (meshio++, host-side) — same capabilities as an STL open (Parts, Edits, Export, Mass Properties, Measurement all work identically). Named cell regions in the source file now auto-become real, selectable/colourable Parts on first import (for a tetrahedral/triangular boundary); scalar-field and multi-material data beyond that still isn't preserved. OpenFOAM (`.foam`) is a case marker, not a mesh file — its real mesh lives in sibling files under `<parent>/constant/polyMesh/`, and import is geometry-only (no patch names or field data preserved). Gmsh Mesh / Abaqus / I-DEAS Universal / SU2 / INRIA Medit close a real export/import asymmetry — CAD-Preview's own FE Meshing panel already wrote these formats but couldn't re-open them. Nastran is detected but remains incomplete: the current meshio++ reader rejects this extension's Gmsh-written `.bdf` even after header normalization (tracked in the roadmap). `.msh`/`.inp`/`.bdf` are ambiguous extensions (also used by ANSYS/FreeFem, and `.bdf` by X11 bitmap fonts) and are assumed to be this extension's own Gmsh/Abaqus/Nastran output, with a one-line status caveat on open. GiD Postprocess (`.post.msh`) is a sibling pair — geometry in the `.post.msh`, results in a `.post.res` found by stem convention — and is both importable and exportable; only the `.post.msh` is opened directly. This is separate from the FE Meshing feature's own export path below, which writes a newly generated mesh, not the source file.
 
+</details>
+
 ## Features
+
+CAD-Preview combines an interactive 3D viewer with non-destructive editing, sidecar-based project state, and optional engineering workflows. Its main capabilities are:
+
+- **Explore models** — orbit, pan, zoom, projection, clipping, snapping, display controls, and saved viewpoints.
+- **Model non-destructively** — transforms, booleans, features, sketches, curves, wireframe operations, and patterns.
+- **Organize and reuse** — Parts, Standard Parts, BOM and hole tables, blank models, and portable sidecar state.
+- **Export and mesh** — compatible 3D exports, SVG/DXF drawings, drawing sheets, and Gmsh/fTetWild FE meshing.
+- **Inspect and automate** — measurements, annotations, mass properties, health checks, reports, batch operations, comparisons, and an MCP server.
+
+<details>
+<summary>Detailed feature reference</summary>
 
 - **File menu**: a top menu bar with a **File ▾** dropdown — **New Blank Model…** (start an empty model and build it from scratch, see below), **Open…** (open another CAD/mesh file), **Save** (flush the parts/annotations/edits/mesh sidecars now; the CAD file itself stays read-only), **Save As…** and **Export…** (both run the Export flow), **Save Preprocess…** / **Load Preprocess…** (bundle/restore the CAD file plus whichever parts/annotations/edits/mesh sidecars exist as a single portable, checksummed `.zip` — restoring rejects a tampered archive or a destination whose extension doesn't match the archive's own format), **Import SVG…** / **Import DXF…** (import a traced `.svg`'s shape elements — with ancestor `transform`s composed in, so a real "convert text to outlines" export lands correctly — or a DXF's model-space `LINE`/`LWPOLYLINE`/`CIRCLE`/`ARC`/`SPLINE` entities as B-rep sketch ops, ready to Build → Surface, which now accepts an outer loop plus its holes as one op, / Extrude), **Export Silhouette SVG…** / **Export Silhouette DXF…** (write a 2D outline of the model as SVG or DXF — see [Export](#export) below), **Export Technical Drawing…** (the same outline WITH hidden-line removal — occluded edges dashed), and **Export Drawing Sheet…** (several views on one sheet at a shared scale with a title block — see [Export](#export) below). Every item is also a VS Code command; most have a keyboard shortcut (Ctrl+O / Ctrl+S / Ctrl+Shift+S / Ctrl+E / Ctrl+Alt+S / Ctrl+Alt+O, scoped to a focused CAD Preview tab). You can also drag a file onto the 3D view to open it, falling back to the **Open…** dialog if the drop doesn't expose a filesystem path.
 - Interactive camera: orbit, pan, zoom (OrbitControls with damping); an **Ortho/Persp** toggle switches between orthographic and perspective projection at any time
@@ -74,6 +90,8 @@ B-rep (boundary-representation) formats are parsed and tessellated with [OpenCas
 - **Batch export**: **CAD Preview: Batch Export…** (or the `batch_export` MCP tool) exports many files to STEP/IGES/BREP, technical drawings or drawing sheets in one go, one result row per file — a bad file never aborts the batch, sources are never written, and existing outputs are skipped unless you choose otherwise.
 - **Compare Models**: diff two files solid-by-solid — matched by bounding-box-centroid proximity and volume similarity, reporting added/removed/matched solids with each match's raw centre displacement and volume delta (never a hidden moved/unchanged guess). STEP/IGES/BREP/CSG/SCAD, STL, OBJ, PLY, and glTF/GLB are supported, in any combination (only the meshio++ bridge formats aren't — they never expose a triangle array outside their own WASM module); display-only.
 
+</details>
+
 ## Export
 
 The **File ▸ Export…** menu item (or Ctrl+E) converts the currently displayed model to a compatible format. Available targets depend on the source file's pipeline:
@@ -85,11 +103,16 @@ The **File ▸ Export…** menu item (or Ctrl+E) converts the currently displaye
 
 The source format itself is never offered. B-rep targets are written entirely in the extension host via OCCT; mesh targets are serialized in the webview from the already-tessellated Three.js model (there is no way to promote a triangle mesh back into a B-rep). glTF export always produces a single binary `.glb` file. A B-rep → STL export can instead be **mesh-aware**: give the downstream volume-mesh cell size and a chordal fraction, and the STL is tessellated host-side at that tolerance (independent of the viewport) with the sampled chordal error reported — also headless as `export_tessellated_stl`. See [File Formats → Export](https://loumalouomega.github.io/CAD-Preview/file-formats#export) for details.
 
+<details>
+<summary>2D drawing exports and implementation notes</summary>
+
 **File ▸ Export Silhouette SVG…** (and its **Export Silhouette DXF…** sibling) is a separate flow (a drawing, not a 3D model, so it never appears in the target list above): pick a view — **Current view**, or Front/Back/Top/Bottom/Left/Right/Iso — then an export unit, then a destination, and CAD-Preview writes a 2D **outline** of the model as a self-contained SVG (one `<path>`, no external references, 1 SVG user unit = 1 model unit with a physical size in mm, so it prints 1:1) or as a minimal DXF (`LWPOLYLINE`/`LINE` entities over the same outline). Both menu items share the flow; only the serializer and default extension differ. Works for STEP/IGES/BREP/CSG/SCAD (edits baked in, from the current tessellation) and STL/OBJ/PLY/glTF (pending edits baked in by the same mesh-edit engine the viewer uses).
 
 > It is an **outline — no hidden-line removal**. Back-facing geometry isn't drawn, but neither are interior feature edges that don't lie on a silhouette. For a drawing that also shows what's behind the part (interior feature edges, occluded runs dashed), use **File ▸ Export Technical Drawing…** instead — same view/unit picks, no separate menu of its own. Neither draws OpenCascade's hidden-line machinery, which is unavailable in the bundled WASM build; both derive from triangle adjacency instead, which is also why they work for mesh files and not just B-rep. Accuracy depends on consistent triangle winding; a mixed-winding mesh draws spurious interior lines.
 
 **File ▸ Export Drawing Sheet…** places several views (front/top/right/iso by default) on ONE sheet at a shared scale — the ordinary drafting-workflow output the single-view exports above don't give you. A settings form picks views, projection, paper (**Fit**, or A4–A0 with the largest standard scale that fits), scale and the title-block fields, then a destination — no unit pick, since a sheet's scale ratio is only meaningful in the model's native millimetres. Views are laid out orthographically (first-angle/ISO by default: top below front, right view to its left; third-angle mirrors both) inside a frame with a title block, and a pinned measurement is drawn once, in whichever view shows it at true length. Scale can be automatic, a standard ratio or any custom ratio; title-block fields cover drawn by, drawing number, revision and material; reusable **templates** are shared with the `export_drawing_sheet` MCP tool.
+
+</details>
 
 ## MCP Server
 
@@ -99,11 +122,19 @@ CAD-Preview ships a standalone MCP (Model Context Protocol) stdio server so AI a
 claude mcp add cad-preview -- node /absolute/path/to/CAD-Preview/dist/mcp-server.js
 ```
 
+<details>
+<summary>Capabilities and limitations</summary>
+
 B-rep sources (STEP/IGES/BREP) get the full pipeline; mesh-format sources are more limited headless. See [MCP Server](https://loumalouomega.github.io/CAD-Preview/mcp-server) for the tool reference and capability matrix.
+
+</details>
 
 ## Architecture
 
 OpenCascade.js (the WASM kernel) runs in the **Node extension host**, not in the webview. The host reads the file, tessellates B-rep shapes, and sends plain geometry buffers (base64-encoded typed arrays) to the webview. The webview runs only Three.js and is responsible for rendering and camera interaction. This keeps the WASM out of the webview (no CSP issues), keeps activation fast (the kernel is lazy-loaded only on the first B-rep open), and means pure-mesh files never load the WASM at all.
+
+<details>
+<summary>Runtime data flow</summary>
 
 ```
 Extension host (Node)                    Webview (Chromium)
@@ -114,6 +145,8 @@ Extension host (Node)                    Webview (Chromium)
   asWebviewUri(file)                 ───▶  STL/OBJ/PLY/GLTFLoader.loadAsync(url)
 ```
 
+</details>
+
 ## Development
 
 ```bash
@@ -122,6 +155,9 @@ npm run build      # build extension host + webview bundles (esbuild) and type-c
 npm run watch      # rebuild on change
 npm test           # run unit tests (vitest)
 ```
+
+<details>
+<summary>Contributing and local fixtures</summary>
 
 Questions or fixes welcome: see [doc/contributing.md](doc/contributing.md) for the development workflow, and use the **issue forms** (bug report / feature request) and the **PR checklist** that GitHub surfaces when opening an item — carrying your reproduction steps and a possible non-confidential fixture is what makes a report actionable.
 
@@ -135,12 +171,19 @@ Press **F5** in VS Code to launch an Extension Development Host, then open any s
 | `examples/PLY/cube.ply`   | PLY mesh                    |
 | `examples/GLTF/cube.gltf` | glTF mesh                   |
 
+</details>
+
 ## Packaging
+
+<details>
+<summary>Build and install a VSIX</summary>
 
 ```bash
 npm run package    # produces cad-preview.vsix
 code --install-extension cad-preview.vsix
 ```
+
+</details>
 
 ## Documentation
 
@@ -152,11 +195,21 @@ Non-goals and known constraints are recorded in the [Roadmap](doc/roadmap.md).
 
 ## CI
 
+<details>
+<summary>CI and dependency maintenance</summary>
+
 GitHub Actions runs on every push and pull request to `master`: builds the extension, runs unit tests, and uploads a `.vsix` artifact. See [`.github/workflows/ci.yml`](.github/workflows/ci.yml).
 
 Dependencies are kept current and vetted by two mechanisms in `.github/`: [Dependabot](.github/dependabot.yml) opens weekly update PRs (and raises security alerts) for `npm` and GitHub Actions dependencies, and the [Dependency Review](.github/workflows/dependency-review.yml) workflow blocks any pull request that introduces a package with a known moderate-or-worse vulnerability.
 
+</details>
+
 ## Licensing
+
+CAD-Preview is distributed under the **GPL-3.0-or-later**. See [LICENSE](LICENSE) for the full text; bundled dependencies retain their respective licenses and notices.
+
+<details>
+<summary>Dependency licenses and licensing history</summary>
 
 CAD-Preview bundles [`@loumalouomega/gmsh-wasm`](https://github.com/loumalouomega/GMSH-JS), which compiles the Gmsh mesh generator and statically links it (together with OpenCASCADE Technology) into a single WebAssembly binary. Gmsh is distributed under the **GNU General Public License, version 2 or later** (GPL-2.0-or-later), with a linking exception that covers Netgen, METIS, OpenCASCADE, and ParaView.
 
@@ -179,9 +232,16 @@ The MCP server bundle additionally includes [`@modelcontextprotocol/sdk`](https:
 - **meshio++** — V. Mataix Ferrándiz. <https://github.com/loumalouomega/meshioplusplus>
 - **fTetWild** — Y. Hu, T. Schneider, B. Wang, D. Zorin, D. Panozzo. <https://github.com/wildmeshing/fTetWild>
 
+</details>
+
 ## License
 
 See [LICENSE](LICENSE).
 
+<details>
+<summary>Planar Kratos exports</summary>
+
 Planar Kratos workflows can export 2D domain elements and line boundary conditions
 with named Parts; see [planar exports](doc/gmsh-integration.md#planar-simulation-exports).
+
+</details>
