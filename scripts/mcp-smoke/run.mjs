@@ -5893,10 +5893,14 @@ try {
     // 4. an unresolvable rail id skips with a diagnostic, like any operand.
     {
       resetRail();
-      const res = await call("apply_edit_ops", {
-        path: railModel,
-        ops: [circ(0, 10), circ(20, 6), rail, { op: "loft", profiles: sections, guides: ["edge-99"] }],
-      });
+      const res = await callWithCleanRetry(
+        "apply_edit_ops",
+        {
+          path: railModel,
+          ops: [circ(0, 10), circ(20, 6), rail, { op: "loft", profiles: sections, guides: ["edge-99"] }],
+        },
+        resetRail
+      );
       assert(
         res.applied === 3 && res.notApplied === 1 &&
           res.report.some((r) => /did not resolve|renumber/i.test(r.diagnostic ?? "")),
