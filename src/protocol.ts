@@ -21,6 +21,8 @@ import type { PassageReport } from "./passageAnalysis";
 import type { DeviationReport } from "./meshDeviation";
 import type { MeshioOpSpec } from "./meshioOps";
 import type { BomRow } from "./bomExport";
+import type { MeshSweepRun } from "./meshSweep";
+import type { HoleTableRow } from "./holeTable";
 import type { AnnotatedTolerance } from "./toleranceBand";
 import type { SelectorQuery } from "./selectorQuery";
 
@@ -106,6 +108,11 @@ export interface Part {
  * can never drift apart. */
 export type MeasureTool = "distance" | "edgeLength" | "angle" | "radius";
 
+/** What a persisted `Annotation` records: a frozen measurement, or a
+ * free-text `"note"` (roadmap Tier 1 "Parity gaps") — a note has no
+ * `linePoints` and no tolerance band; its `text` IS the note. */
+export type AnnotationTool = MeasureTool | "note";
+
 /**
  * A persisted, topology-anchored measurement (roadmap "Persisted,
  * topology-anchored annotations", closed) — a "pinned" measurement result
@@ -148,7 +155,7 @@ export interface MacroSummary {
 
 export interface Annotation {
   id: string; // stable id, client-generated at pin time (e.g. "ann-<ts>-<rand>")
-  tool: MeasureTool;
+  tool: AnnotationTool;
   label?: string; // optional user note
   text: string; // frozen readout, e.g. "12.5 mm" or "42.1°"
   anchorPoint: [number, number, number]; // frozen world-space label position
@@ -474,6 +481,13 @@ export type HostToWebview =
       };
     }
   | { type: "meshingError"; requestId: string; message: string }
+  /** FE Mesh panel's refinement sweep (roadmap Tier 1 "Parity gaps") — the
+   * interactive half of `compare_mesh_refinement`, over the same shared
+   * `runMeshSweep` loop so its rows match the tool's. `note` is the
+   * "trends are not convergence" disclaimer the tool returns; `outputDir` is
+   * where per-run `.msh` files were written (null when none were asked for). */
+  | { type: "meshSweepResult"; requestId: string; runs: MeshSweepRun[]; warnings: string[]; note: string; outputDir: string | null }
+  | { type: "meshSweepError"; requestId: string; message: string }
   | { type: "meshingJobSettled"; requestId: string }
   | ({ type: "viewerDefaults" } & ViewerDefaults)
   /** What the menubar's document chip shows: which file this is, what format it
@@ -554,6 +568,13 @@ export type HostToWebview =
    * `bomError` otherwise. */
   | { type: "bomResult"; requestId: string; rows: BomRow[]; warnings: string[] }
   | { type: "bomError"; requestId: string; message: string }
+  /** Parts-section "Copy hole table" button (roadmap Tier 1 "Parity gaps"):
+   * one row per (diameter, axis) group of cylindrical faces over a single host
+   * parse/replay (`computeHoleTable`, the same function `generate_hole_table`
+   * drives headless) — the webview renders `holeTableTsv(rows)` itself and
+   * copies it. B-rep sources only; the host answers `holeTableError` otherwise. */
+  | { type: "holeTableResult"; requestId: string; rows: HoleTableRow[]; warnings: string[] }
+  | { type: "holeTableError"; requestId: string; message: string }
   /** Clash panel (roadmap Tier 1 "Clash panel"): Part-vs-Part interference
    * over the existing `checkInterference` kernel function — a new protocol
    * pair over existing kernel surface, not new geometry work (the same shape
@@ -762,6 +783,11 @@ export type WebviewToHost =
   | { type: "exportError"; requestId: string; message: string }
   | { type: "meshingChanged"; options: MeshOptions }
   | { type: "meshingGenerate"; requestId: string; options: MeshOptions; stl?: string }
+  /** FE Mesh panel's refinement sweep: mesh the current geometry at each of
+   * `sizes` (mm) with `options`' other fields. `stl` is the displayed mesh
+   * for a mesh-format source (as for `meshingGenerate`); `writeOutputs` asks
+   * the host for a folder and writes one `<stem>-size-<size>.msh` per run. */
+  | { type: "meshSweepRequest"; requestId: string; sizes: number[]; options: MeshOptions; stl?: string; writeOutputs?: boolean }
   | { type: "meshingExport"; requestId: string; target: MeshExportFormatId; options: MeshOptions; stl?: string; unit?: DisplayUnit; manifest?: boolean }
   | { type: "meshingCancel"; requestId: string }
   /** Apply a saved meshing preset by name — the host resolves the merged
@@ -791,6 +817,9 @@ export type WebviewToHost =
    * reads the sidecar Parts and replays the current (tail) ops itself, so the
    * TSV always reflects the live model rather than a stale client snapshot. */
   | { type: "bomRequest"; requestId: string }
+  /** Parts-section "Copy hole table" button: like `bomRequest`, no params —
+   * the host replays the current (tail) ops itself. Needs no Parts. */
+  | { type: "holeTableRequest"; requestId: string }
   /** Clash panel: check one Part against another (volumes only — same
    * Part-name resolution the `check_interference` MCP tool applies). */
   | { type: "clashCheckRequest"; requestId: string; partA: string; partB: string }

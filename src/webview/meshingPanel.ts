@@ -6,6 +6,7 @@ import { DISPLAY_UNITS, UNIT_LABELS, type DisplayUnit } from "../lengthUnits";
 import type { Part, MeshPresetSummary } from "../protocol";
 import { estimateMeshBudget, budgetWarning, formatBytes, formatCountRange } from "../meshBudget";
 import { MESHIO_OP_IDS, MESHIO_OP_LABELS, type MeshioOpId, type MeshioOpSpec } from "../meshioOps";
+import { parseSweepSizes, sweepTsv, type MeshSweepRun } from "../meshSweep";
 import {
   LARGE_ELEMENT_COUNT,
   PRESET_DIVISORS,
@@ -70,6 +71,12 @@ export interface MeshingPanelCallbacks {
    * modified). The wiring posts `meshioOpsRequest` and renders the per-step
    * report from `meshioOpsResult`. */
   onMeshOps: (ops: MeshioOpSpec[]) => void;
+  /** Run a refinement sweep over `sizes` (mm) with the current options; the
+   * wiring posts `meshSweepRequest` (roadmap Tier 1 "Parity gaps" — the
+   * interactive half of `compare_mesh_refinement`). */
+  onSweep: (sizes: number[], writeOutputs: boolean) => void;
+  /** Copy the last sweep's rows as the same TSV the MCP tool returns. */
+  onSweepCopy: (tsv: string) => void;
 }
 
 /** Curated, well-known GMSH 2D algorithm ids (`Mesh.Algorithm`) — not exhaustive. */
@@ -151,6 +158,14 @@ export class MeshingPanel {
 
   /** Mesh-ops section (meshio++ sources only) — one operation per Run. */
   private readonly meshOpsSection: HTMLElement;
+  private readonly sweepSizes: HTMLInputElement;
+  private readonly sweepWrite: HTMLInputElement;
+  private readonly sweepRun: HTMLButtonElement;
+  private readonly sweepCopy: HTMLButtonElement;
+  private readonly sweepStatus: HTMLElement;
+  private readonly sweepTable: HTMLElement;
+  private readonly sweepNote: HTMLElement;
+  private lastSweepRuns: MeshSweepRun[] = [];
   private readonly meshOpsSelect: HTMLSelectElement;
   private readonly meshOpsRatio: HTMLInputElement;
   private readonly meshOpsMethod: HTMLSelectElement;
@@ -578,6 +593,95 @@ export class MeshingPanel {
     advSection.appendChild(form);
     this.body.appendChild(advSection);
 
+    // ── Refinement sweep (collapsed by default) — the interactive half of
+    // `compare_mesh_refinement`: mesh the same geometry at several sizes and
+    // compare cost vs quality before choosing one. Never writes options. ──
+    const sweepSection = document.createElement("div");
+    sweepSection.className = "meshing-section collapsed";
+    sweepSection.id = "meshing-sweep";
+    const sweepToggle = document.createElement("button");
+    sweepToggle.className = "meshing-section-header";
+    sweepToggle.type = "button";
+    const sweepChevron = document.createElement("span");
+    sweepChevron.className = "meshing-section-chevron";
+    sweepChevron.textContent = "▸";
+    sweepToggle.appendChild(sweepChevron);
+    sweepToggle.appendChild(document.createTextNode("Refinement sweep"));
+    sweepToggle.title = "Mesh at several sizes and compare nodes, elements, time and quality";
+    sweepToggle.addEventListener("click", () => {
+      const collapsed = sweepSection.classList.toggle("collapsed");
+      sweepChevron.textContent = collapsed ? "▸" : "▾";
+    });
+    sweepSection.appendChild(sweepToggle);
+    const sweepForm = document.createElement("div");
+    sweepForm.className = "meshing-form meshing-section-body";
+    const sizesRow = document.createElement("label");
+    sizesRow.className = "meshing-field";
+    const sizesLabel = document.createElement("span");
+    sizesLabel.className = "meshing-label";
+    sizesLabel.textContent = "Sizes (mm)";
+    sizesRow.appendChild(sizesLabel);
+    this.sweepSizes = document.createElement("input");
+    this.sweepSizes.type = "text";
+    this.sweepSizes.id = "meshing-sweep-sizes";
+    this.sweepSizes.className = "meshing-num";
+    this.sweepSizes.placeholder = "e.g. 4, 2, 1";
+    this.sweepSizes.title = "Up to 8 mesh sizes in mm, separated by commas or spaces";
+    sizesRow.appendChild(this.sweepSizes);
+    sweepForm.appendChild(sizesRow);
+    const writeRow = document.createElement("label");
+    writeRow.className = "meshing-field";
+    this.sweepWrite = document.createElement("input");
+    this.sweepWrite.type = "checkbox";
+    this.sweepWrite.id = "meshing-sweep-write";
+    writeRow.appendChild(this.sweepWrite);
+    const writeLabel = document.createElement("span");
+    writeLabel.textContent = "Write each mesh (.msh) to a folder";
+    writeRow.appendChild(writeLabel);
+    sweepForm.appendChild(writeRow);
+    const sweepBtns = document.createElement("div");
+    sweepBtns.className = "meshing-field";
+    this.sweepRun = document.createElement("button");
+    this.sweepRun.type = "button";
+    this.sweepRun.id = "meshing-sweep-run";
+    this.sweepRun.textContent = "Run sweep";
+    this.sweepRun.addEventListener("click", () => {
+      let sizes: number[];
+      try {
+        sizes = parseSweepSizes(this.sweepSizes.value);
+      } catch (err) {
+        this.renderSweepStatus((err as Error).message, true);
+        return;
+      }
+      this.sweepRun.disabled = true;
+      this.renderSweepStatus(`Meshing at ${sizes.length} size${sizes.length === 1 ? "" : "s"}…`, false);
+      cb.onSweep(sizes, this.sweepWrite.checked);
+    });
+    sweepBtns.appendChild(this.sweepRun);
+    this.sweepCopy = document.createElement("button");
+    this.sweepCopy.type = "button";
+    this.sweepCopy.id = "meshing-sweep-copy";
+    this.sweepCopy.textContent = "Copy TSV";
+    this.sweepCopy.disabled = true;
+    this.sweepCopy.title = "Copy the rows as tab-separated text (the same TSV compare_mesh_refinement returns)";
+    this.sweepCopy.addEventListener("click", () => cb.onSweepCopy(sweepTsv(this.lastSweepRuns)));
+    sweepBtns.appendChild(this.sweepCopy);
+    sweepForm.appendChild(sweepBtns);
+    this.sweepStatus = document.createElement("div");
+    this.sweepStatus.className = "meshing-status";
+    this.sweepStatus.id = "meshing-sweep-status";
+    sweepForm.appendChild(this.sweepStatus);
+    this.sweepTable = document.createElement("div");
+    this.sweepTable.id = "meshing-sweep-table";
+    sweepForm.appendChild(this.sweepTable);
+    this.sweepNote = document.createElement("div");
+    this.sweepNote.id = "meshing-sweep-note";
+    this.sweepNote.className = "meshing-sweep-note";
+    this.sweepNote.hidden = true;
+    sweepForm.appendChild(this.sweepNote);
+    sweepSection.appendChild(sweepForm);
+    this.body.appendChild(sweepSection);
+
     // ── Mesh ops (meshio++ sources only — hidden otherwise) ──
     // One declarative operation per Run (clean/decimate/smooth/subdivide/
     // refine/agglomerate/convertCells), mirroring `transform_mesh`'s own op
@@ -898,6 +1002,59 @@ export class MeshingPanel {
     const lines = steps.map((s) => `${s.op}: ${s.applied ? s.detail : `skipped — ${s.detail}`}`);
     for (const w of warnings) lines.push(w);
     this.renderMeshOpsStatus(lines.join(" · ") || "Done.", false);
+  }
+
+  /**
+   * Renders a sweep's rows as a table (size, status, nodes, elements, ms,
+   * min/mean quality — the same numbers `compare_mesh_refinement` returns),
+   * plus the tool's "trends are not convergence" note.
+   */
+  renderSweepResult(runs: MeshSweepRun[], warnings: string[], note: string, outputDir: string | null): void {
+    this.sweepRun.disabled = false;
+    this.lastSweepRuns = runs;
+    this.sweepCopy.disabled = runs.length === 0;
+    const failed = runs.filter((r) => r.status === "error").length;
+    const lines = [`${runs.length - failed} of ${runs.length} run${runs.length === 1 ? "" : "s"} meshed.`];
+    if (outputDir) lines.push(`Meshes written to ${outputDir}.`);
+    lines.push(...warnings);
+    this.renderSweepStatus(lines.join(" "), false);
+    const fmt = (n: number | null, digits = 0): string =>
+      n === null ? "—" : digits > 0 ? n.toFixed(digits) : n.toLocaleString("en-US");
+    const table = document.createElement("table");
+    table.className = "meshing-sweep-rows";
+    const head = document.createElement("tr");
+    for (const h of ["Size", "Nodes", "Elements", "ms", "Min q", "Mean q"]) {
+      const th = document.createElement("th");
+      th.textContent = h;
+      head.appendChild(th);
+    }
+    table.appendChild(head);
+    for (const r of runs) {
+      const tr = document.createElement("tr");
+      tr.className = r.status === "error" ? "meshing-sweep-error" : "";
+      const cells =
+        r.status === "error"
+          ? [String(r.size), `failed: ${r.error ?? "unknown error"}`]
+          : [String(r.size), fmt(r.nodeCount), fmt(r.elementCount), fmt(r.elapsedMs), fmt(r.quality?.min ?? null, 3), fmt(r.quality?.mean ?? null, 3)];
+      cells.forEach((text, i) => {
+        const td = document.createElement("td");
+        td.textContent = text;
+        if (r.status === "error" && i === 1) td.colSpan = 5;
+        tr.appendChild(td);
+      });
+      tr.title = r.engineUsed ? `engine: ${r.engineUsed}` : "";
+      table.appendChild(tr);
+    }
+    this.sweepTable.textContent = "";
+    this.sweepTable.appendChild(table);
+    this.sweepNote.textContent = note;
+    this.sweepNote.hidden = false;
+  }
+
+  renderSweepStatus(text: string, isError: boolean): void {
+    if (isError) this.sweepRun.disabled = false;
+    this.sweepStatus.textContent = text;
+    this.sweepStatus.classList.toggle("meshing-status-error", isError);
   }
 
   renderMeshOpsStatus(text: string, isError: boolean): void {

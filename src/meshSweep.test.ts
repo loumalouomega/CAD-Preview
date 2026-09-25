@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { sweepTsv, sweepOutputName, type MeshSweepRun } from "./meshSweep";
+import { sweepTsv, sweepOutputName, runMeshSweep, parseSweepSizes, validateSweepSizes, MAX_SWEEP_RUNS, type MeshSweepRun } from "./meshSweep";
+import { DEFAULT_MESH_OPTIONS, type MeshOptions } from "./meshOptions";
 
 const okRow: MeshSweepRun = {
   size: 2,
@@ -55,5 +56,62 @@ describe("sweepOutputName", () => {
   it("encodes the stem, size, and extension with no directory", () => {
     expect(sweepOutputName("bull", 2, "msh")).toBe("bull-size-2.msh");
     expect(sweepOutputName("bull.stp", 0.5, "msh")).toBe("bull.stp-size-0.5.msh");
+  });
+});
+
+describe("runMeshSweep (shared by compare_mesh_refinement and the FE Mesh panel)", () => {
+  const fakeResult = (o: MeshOptions) => ({
+    nodeCount: Math.round(100 / o.sizeMax),
+    elementCount: Math.round(400 / o.sizeMax),
+    engineUsed: "gmsh" as const,
+    quality: { min: 0.3, mean: 0.7, histogram: [] },
+    warnings: [`w${o.sizeMax}`],
+  });
+
+  it("meshes each size uniformly over the same base options, in order", async () => {
+    const seen: MeshOptions[] = [];
+    const warnings: string[] = [];
+    const runs = await runMeshSweep([4, 2], { ...DEFAULT_MESH_OPTIONS, dimension: 2 }, async (o) => {
+      seen.push(o);
+      return fakeResult(o);
+    }, { warnings });
+    expect(seen.map((o) => [o.sizeMin, o.sizeMax, o.dimension])).toEqual([[4, 4, 2], [2, 2, 2]]);
+    expect(runs.map((r) => [r.size, r.status, r.nodeCount, r.elementCount])).toEqual([[4, "ok", 25, 100], [2, "ok", 50, 200]]);
+    expect(warnings).toEqual(["w4", "w2"]);
+  });
+
+  it("turns a failed generate or output write into a row, never a thrown sweep", async () => {
+    const runs = await runMeshSweep(
+      [3, 2, 1],
+      DEFAULT_MESH_OPTIONS,
+      async (o) => {
+        if (o.sizeMax === 2) throw new Error("PLC Error");
+        return fakeResult(o);
+      },
+      {
+        warnings: [],
+        writeOutputs: async (size) => {
+          if (size === 1) throw new Error("disk full");
+          return [`/out-${size}.msh`];
+        },
+      }
+    );
+    expect(runs.map((r) => [r.status, r.error, r.outputPaths])).toEqual([
+      ["ok", null, ["/out-3.msh"]],
+      ["error", "PLC Error", []],
+      ["error", "disk full", []],
+    ]);
+  });
+});
+
+describe("parseSweepSizes / validateSweepSizes", () => {
+  it("accepts commas, spaces and semicolons", () => {
+    expect(parseSweepSizes(" 4, 2 1;0.5 ")).toEqual([4, 2, 1, 0.5]);
+  });
+  it("refuses empty, non-numeric, non-positive and over-cap input", () => {
+    expect(() => parseSweepSizes("  ")).toThrow(/Enter one or more/);
+    expect(() => parseSweepSizes("4, x")).toThrow(/"x" is not a number/);
+    expect(() => parseSweepSizes("4, 0")).toThrow(/finite positive/);
+    expect(() => validateSweepSizes(Array.from({ length: MAX_SWEEP_RUNS + 1 }, () => 1))).toThrow(/capped at/);
   });
 });

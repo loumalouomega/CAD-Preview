@@ -1309,15 +1309,15 @@ server.registerTool(
   "pin_annotation",
   {
     description:
-      "Pin a measurement as a persisted annotation in <model>.annotations.json, or remove one by id — the headless counterpart of the Measure panel's Pin button. A pin is a FROZEN snapshot (readout text, world-space anchor/line points, tolerance band), never live-recomputed; only whether it is detached is derived reactively. Anchors are positional entity ids accepted as given (a later renumbering is settled by the existing rebind pass, and an unresolvable pin renders detached rather than pointing at wrong geometry). Pinned annotations are what export_technical_drawing bakes as dimension glyphs, so this tool closes headless dimensioned drawings end to end.",
+      "Pin a measurement — or a free-text note (tool: \"note\", text = the note, no linePoints/tolerance) — as a persisted annotation in <model>.annotations.json, or remove one by id — the headless counterpart of the Measure panel's Pin button and the viewer's right-click Pin note. A pin is a FROZEN snapshot (readout text, world-space anchor/line points, tolerance band), never live-recomputed; only whether it is detached is derived reactively. Anchors are positional entity ids accepted as given (a later renumbering is settled by the existing rebind pass, and an unresolvable pin renders detached rather than pointing at wrong geometry). Pinned annotations are what export_technical_drawing bakes as dimension glyphs, so this tool closes headless dimensioned drawings end to end.",
     inputSchema: {
       path: modelPath,
       id: z.string().optional().describe("Annotation id; required with remove:true"),
       remove: z.boolean().optional().describe("Remove the annotation with this id instead of pinning"),
-      tool: z.string().optional().describe("Which measurement is frozen: distance|edgeLength|angle|radius"),
-      text: z.string().optional().describe("Frozen readout, e.g. \"12.5 mm\""),
+      tool: z.string().optional().describe("Which measurement is frozen: distance|edgeLength|angle|radius, or note for a free-text note"),
+      text: z.string().optional().describe("Frozen readout, e.g. \"12.5 mm\" — or the note's text for tool note (cleaned to one line, max 500 chars)"),
       anchorPoint: z.array(z.number()).length(3).optional().describe("Frozen world-space label position"),
-      linePoints: z.array(z.array(z.number()).length(3)).optional().describe("Frozen overlay line points: exactly 2 for distance/angle, empty for edgeLength/radius"),
+      linePoints: z.array(z.array(z.number()).length(3)).optional().describe("Frozen overlay line points: exactly 2 for distance/angle, empty for edgeLength/radius/note"),
       volumes: z.array(z.string()).optional().describe("Anchored solid-N ids"),
       surfaces: z.array(z.string()).optional().describe("Anchored face-N ids"),
       lines: z.array(z.string()).optional().describe("Anchored edge-N ids"),

@@ -2759,6 +2759,27 @@ try {
   assert(unpinned.removed === pinned.pinned.id && unpinned.pinned === null, "pin_annotation removes by id");
   const pinStateAfter = await call("get_state", { path: pinModel });
   assert(pinStateAfter.annotations.length === 0, "the sidecar is empty after removal");
+  // Free-text notes (roadmap Tier 1 "Parity gaps"): the same record the
+  // viewer's right-click Pin note writes — read back by get_state and baked
+  // into a drawing as a bare label at its anchor.
+  const note = await call("pin_annotation", {
+    path: pinModel, tool: "note", text: "Deburr this edge", anchorPoint: [5, 0, 5], volumes: ["node-0"],
+  });
+  assert(note.pinned?.tool === "note" && note.pinned.linePoints.length === 0, `pin_annotation pins a note (got ${JSON.stringify(note.pinned)})`);
+  const noteState = await call("get_state", { path: pinModel });
+  assert(noteState.annotations.some((a) => a.tool === "note" && a.text === "Deburr this edge"), "get_state reads the note back");
+  const noteSvg = path.join(dir, "cube-note.svg");
+  const noteSvgResult = await call("export_svg_silhouette", { path: pinModel, outputPath: noteSvg, view: "FRONT" });
+  assert(
+    noteSvgResult.dimensionCount === 1 && fs.readFileSync(noteSvg, "utf8").includes("Deburr this edge"),
+    `a note bakes into the drawing as a label (dimensionCount ${JSON.stringify(noteSvgResult.dimensionCount)})`
+  );
+  await call("pin_annotation", { path: pinModel, id: note.pinned.id, remove: true });
+  const noteWithLine = await callTolerant("pin_annotation", {
+    path: pinModel, tool: "note", text: "x", anchorPoint: [0, 0, 0], linePoints: [[0, 0, 0], [1, 0, 0]], volumes: ["node-0"],
+  });
+  assert(noteWithLine.error && /linePoints must be empty/i.test(noteWithLine.error), "a note refuses line points");
+
   // Structural misuse fails fast; unknown ids error rather than silently no-op.
   const badPin = await callTolerant("pin_annotation", {
     path: pinModel, tool: "volume", text: "x", anchorPoint: [0, 0, 0], linePoints: [[0, 0, 0], [1, 0, 0]], volumes: ["node-0"],

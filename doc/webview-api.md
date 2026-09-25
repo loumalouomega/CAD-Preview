@@ -113,6 +113,8 @@ Entry point for the webview bundle. Not exported — all logic runs at module le
 | `"massPropertiesResult"` | `renderMassProperties(msg.properties)` — caches the raw (mm) result and renders it converted to `currentDisplayUnit` (see `src/webview/units.ts` below); ignored if `msg.requestId` doesn't match the latest request |
 | `"massPropertiesError"` | `MassPropertiesPanel.renderMessage(msg.message, true)` (same stale-request guard) |
 | `"bomResult"` | Renders `bomTsv(msg.rows)` (`src/bomExport.ts`, zero-import pure) and copies it with `navigator.clipboard.writeText`, then `setStatus("BOM copied (N rows)")`; a denied clipboard write surfaces as an error status, never a silent no-copy. Ignored if `msg.requestId` doesn't match the latest click (`bomRequestId`). Host `warnings` are posted as status lines first |
+| `"holeTableResult"` | Renders `holeTableTsv(msg.rows)` (`src/holeTable.ts`) and copies it through the same clipboard helper as the BOM (`copyTextToClipboard`, which falls back to `execCommand("copy")`), then `setStatus("Hole table copied (N rows, M faces).")`. Latched by `holeTableRequestId`; the Parts header's **Copy hole table** button (`PartsPanel.setHoleTableEnabled`) is enabled for any B-rep source |
+| `"meshSweepResult"` / `"meshSweepError"` | Latched by `meshSweepRequestId`; routed to `MeshingPanel.renderSweepResult` / `renderSweepStatus` |
 | `"bomError"` | `setStatus(msg.message, true)` (same stale-request guard) |
 | `"colorFieldResult"` | `viewer.setColorFieldOverlay(buildColorFieldOverlay(pristineMeshPositions(), msg.values, msg.min, msg.max))`, then updates the legend (`#vc-colorfield-gradient`'s CSS background from `viridisCssGradientStops()`, `#vc-colorfield-min`/`-max` via the plain `formatMeasure` — no length-unit suffix, a scalar field isn't length-dimensioned) and unhides it; ignored if `msg.requestId` doesn't match the latest selection (`colorFieldRequestId`) |
 | `"colorFieldError"` | `setStatus(msg.message, true)` + resets the `<select>` to `""`, same stale-request guard |
@@ -848,6 +850,14 @@ Hovering a row previews through `viewer.renderSelection()` **directly, never int
 is a capture-phase `pointerdown` that `preventDefault()`s, mirroring `dropdownMenu.ts`'s own
 discipline: the click that closes the menu must not also reach the canvas and change the selection.
 
+The handler's fourth argument is the **world-space hit point**, used by the menu's first row,
+**Pin note…** (roadmap Tier 1 "Parity gaps"), which appears in every pick mode. Clicking it
+replaces the rows with an inline text field (webviews block `prompt()`): Enter pushes a
+`tool: "note"` `Annotation` (anchored to the clicked entity, label at the hit point, no
+`linePoints`, no band) onto `AnnotationsModel` — the same `annotationsChanged` path a pinned
+measurement takes — and Escape closes the menu without writing anything. `renderAnnotationsList()`
+shows notes as `Note: <text>`.
+
 ## `src/webview/palette.ts`
 
 The 3D scene's colour palette, so the scene tracks VS Code's active theme instead of being
@@ -1258,6 +1268,8 @@ class MeshingPanel {
   setMeshioOpsAvailable(enabled: boolean): void
   renderMeshOpsResult(steps: Array<{ op: string; applied: boolean; detail: string }>, warnings: string[]): void
   renderMeshOpsStatus(text: string, isError: boolean): void
+  renderSweepResult(runs: MeshSweepRun[], warnings: string[], note: string, outputDir: string | null): void
+  renderSweepStatus(text: string, isError: boolean): void
   setBusy(busy: boolean, requestId?: string, message?: string): void
 }
 ```
@@ -1267,6 +1279,8 @@ class MeshingPanel {
 The slider commits on `change` (release) only; `input` (mid-drag) refreshes the readout/warning locally so dragging never spams `meshingChanged`. Commits that would drop `sizeMax` below the current `sizeMin` include `sizeMin: 0` in the same patch (guarding `validateMeshOptions`' pair rule). `setModelExtents()` is pushed by `main.ts` on each model load and feeds the readout's element-count estimate and the presets; `setSourceKind("brep")` disables the STL angle field (it only feeds the STL reclassification path), mirroring `editsPanel.setBRepOnly`. `renderParts()` rebuilds the Part sizes rows — `onPartMeshSize` routes to the same `PartsModel.setMeshSize` the Parts panel uses, so the two inputs are views of one value.
 
 `setBusy(true, requestId, message)` disables Generate/Export, enables a Cancel control bound to that request, and shows the indeterminate `#meshing-progress` bar (CSS keyframe sweep — GMSH's `generate()` is one opaque blocking call with no progress hook to report a real percentage from). The host echoes `requestId` on result/error and sends `meshingJobSettled` when an export finishes; stale messages cannot clear or replace another request's state. `main.ts` clears busy state only for the matching identity. Cancellation routes through the document-owned kernel worker job and cannot cancel another tab's mesh operation.
+
+**Refinement sweep** (roadmap Tier 1 "Parity gaps") is a collapsed-by-default section above Mesh ops: a sizes field parsed by `meshSweep.ts`'s `parseSweepSizes` (commas/spaces, at most 8, each positive — a bad list shows its error and posts nothing), a **Write each mesh (.msh) to a folder** checkbox, **Run sweep**, and **Copy TSV**. `onSweep(sizes, writeOutputs)` posts `meshSweepRequest` with the current options (and the displayed STL for a mesh source); `main.ts` latches `meshSweepRequestId` and routes `meshSweepResult`/`meshSweepError` to `renderSweepResult`/`renderSweepStatus`. The table shows size, nodes, elements, ms and min/mean quality per run (a failed run is one row carrying its error), with the tool's `note` below it; `onSweepCopy(sweepTsv(runs))` copies the same TSV `compare_mesh_refinement` returns.
 
 **Mesh ops** (roadmap Tier 1 "Mesh-operations panel for meshio sources") is a section at the bottom of the same panel body: an operation `<select>` (the seven `MESHIO_OP_IDS` from `src/meshioOps.ts` with `MESHIO_OP_LABELS`), per-op parameter rows (keep-ratio / method / iterations / levels / group-size / mode — only the selected op's rows are shown, via `syncMeshOpsParams()`), a **Run op…** button, and a status line. `setMeshioOpsAvailable()` shows it only for a meshio++-imported source (`loadMeshBytes` with `sourceFormat !== "openfoam"` — OpenFOAM's case-staged reader has no `readMesh` path; `geometry` and `loadUrl` both hide it), and `main.ts` resets the `meshioOpsRequestId` latch on every new model load (same stale-response-guard idiom as `meshHealRequestId`). `onMeshOps` posts a one-element `meshioOpsRequest`; `renderMeshOpsResult()` renders the kernel's own per-step detail lines. Pure DOM like the rest of this panel (validation lives in `src/meshioOps.ts`, shared with the host) — no unit test, same convention as `partsPanel.ts`/`meshingPanel.ts` itself.
 

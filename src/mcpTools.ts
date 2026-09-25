@@ -66,11 +66,11 @@ import {
 import { scaleStlBytes } from "./stlParser";
 import { resolveEffectiveSource, ScadUnavailableError } from "./scadService";
 import { validateSelectorQuery } from "./selectorQuery";
-import { envelope } from "./untrustedText";
+import { clean, envelope } from "./untrustedText";
 import { MESH_EXPORT_FORMATS, meshExportFormat, companionSaveName, type MeshExportFormat } from "./meshExportFormats";
-import { sweepTsv, sweepOutputName, type MeshSweepRun } from "./meshSweep";
+import { sweepTsv, sweepOutputName, runMeshSweep, validateSweepSizes, SWEEP_NOTE } from "./meshSweep";
 import { allCatalogEntries, describeOp } from "./webview/opCatalog";
-import type { Part, Annotation, ConstructionPlane, MeasureTool } from "./protocol";
+import type { Part, Annotation, AnnotationTool, ConstructionPlane } from "./protocol";
 import type { loadBRep, exportBRep, BRepResult } from "./occtService";
 import type { computeMassProperties, computeBom, computeHoleTable, MassProperties } from "./massProperties";
 import type { checkBrepHealth } from "./brepHealth";
@@ -127,6 +127,7 @@ import { deviationPly } from "./meshDeviation";
 import { triangleMassProperties } from "./triangleMassProperties";
 import { parseStl as parseStlForBudget } from "./stlParser";
 import { parseToWeldedMesh } from "./meshHeal";
+import { isMeshSourceRoute, resolveMeshSourceInput } from "./meshSourceInput";
 import { meshInspection } from "./meshInspection";
 import { MAX_HEALABLE_TRIANGLES } from "./meshHeal";
 import { AUTO_DECIMATE_TARGET_TRIANGLES, isHealableSizeError, stlBytesForHeal } from "./meshioService";
@@ -189,7 +190,7 @@ import { sha256Hex } from "./hash";
 import { renderPrepReportHtml, serializePrepReport, type PrepReport, type ReportImage, type ReportSection } from "./prepReport";
 import { holeTableTsv, type HoleTableRow } from "./holeTable";
 import { parsePartsJson } from "./partsSidecar";
-import { parseAnnotationsJson } from "./annotationsSidecar";
+import { parseAnnotationsJson, ANNOTATION_TOOLS, MAX_NOTE_LENGTH } from "./annotationsSidecar";
 import { parsePlanesJson, nextPlaneId } from "./planesSidecar";
 import { parseEditsJson, replayTail } from "./editsSidecar";
 import { parseMeshJson } from "./meshOptionsSidecar";
@@ -4033,7 +4034,6 @@ export async function setPlane(params: {
 // ---------------------------------------------------------------------------
 // pin_annotation
 
-const MEASURE_TOOLS: readonly MeasureTool[] = ["distance", "edgeLength", "angle", "radius"];
 // B-rep ids (solid/face/edge/point-N) plus mesh ids (node-N volumes,
 // node-N/face-K facets) — the Pin button works on any source kind, so the
 // headless tool must accept every id the webview can produce, not just B-rep.
@@ -4087,11 +4087,16 @@ export async function pinAnnotation(params: {
     return { annotations, pinned: null, removed: params.id, warnings };
   }
 
-  if (typeof params.tool !== "string" || !(MEASURE_TOOLS as readonly string[]).includes(params.tool)) {
-    throw new Error(`tool must be one of ${MEASURE_TOOLS.join("/")}.`);
+  if (typeof params.tool !== "string" || !(ANNOTATION_TOOLS as readonly string[]).includes(params.tool)) {
+    throw new Error(`tool must be one of ${ANNOTATION_TOOLS.join("/")}.`);
   }
-  const tool = params.tool as MeasureTool;
-  if (typeof params.text !== "string") throw new Error("text must be the frozen readout string (e.g. \"12.5 mm\").");
+  const tool = params.tool as AnnotationTool;
+  if (typeof params.text !== "string") throw new Error("text must be the frozen readout string (e.g. \"12.5 mm\"), or the note's text for tool \"note\".");
+  // A note's text is caller-authored and read back verbatim by get_state and
+  // the viewer, so it is cleaned (control/bidi characters stripped, one line,
+  // capped) before it persists.
+  const text = tool === "note" ? clean(params.text, MAX_NOTE_LENGTH) : params.text;
+  if (tool === "note" && !text) throw new Error("A note needs non-empty text.");
   const asVec = (v: unknown, label: string): [number, number, number] => {
     if (!Array.isArray(v) || v.length !== 3 || !v.every((n) => typeof n === "number" && Number.isFinite(n))) {
       throw new Error(`${label} must be three finite numbers.`);
@@ -4106,8 +4111,12 @@ export async function pinAnnotation(params: {
   if ((tool === "distance" || tool === "angle") && linePoints.length !== 2) {
     throw new Error(`tool "${tool}" measures between two picks — linePoints must hold exactly 2 points.`);
   }
-  if ((tool === "edgeLength" || tool === "radius") && linePoints.length !== 0) {
-    throw new Error(`tool "${tool}" measures a single entity — linePoints must be empty.`);
+  if ((tool === "edgeLength" || tool === "radius" || tool === "note") && linePoints.length !== 0) {
+    throw new Error(
+      tool === "note"
+        ? "A note is text at a point — linePoints must be empty."
+        : `tool "${tool}" measures a single entity — linePoints must be empty.`
+    );
   }
   const buckets: Array<[string, string[] | undefined]> = [
     ["volumes", params.volumes],
@@ -4130,6 +4139,9 @@ export async function pinAnnotation(params: {
     throw new Error("A pin needs at least one anchor id — with none it would be detached on arrival.");
   }
   let tolerance: Annotation["tolerance"];
+  if (params.tolerance !== undefined && tool === "note") {
+    throw new Error("A note carries no tolerance band — bands belong on measurements.");
+  }
   if (params.tolerance !== undefined) {
     const t = params.tolerance;
     const fields = [t.nominal, t.plus, t.minus ?? t.plus, t.measured];
@@ -4149,7 +4161,7 @@ export async function pinAnnotation(params: {
     id,
     tool,
     label: typeof params.label === "string" && params.label ? params.label : undefined,
-    text: params.text,
+    text,
     anchorPoint,
     linePoints,
     ...anchors,
@@ -4383,64 +4395,23 @@ async function resolveMeshInputHeadless(
     );
     return { kind: "brep", stepBytes };
   }
-  if (route.format === "stl") {
+  if (isMeshSourceRoute(route)) {
+    // Shared with the `cad-preview.exportMesh` command (`meshSourceInput.ts`).
     const { ops } = await readEditsResolved(modelPath);
-    if (ops.length > 0) {
-      warnings.push(
-        `${ops.length} edit op(s) exist but are NOT baked into the meshed geometry — STL edits replay in the webview only; the raw file bytes are meshed.`
-      );
-    }
-    const stlBytes = await readModelBytes(modelPath);
-    return { kind: "stl", stlBytes: factor === 1 ? stlBytes : scaleStlBytes(stlBytes, factor) };
-  }
-  if (route.strategy === "meshio") {
-    // Unlike STL/OBJ/PLY/glTF, meshio++ (`src/meshioService.ts`) runs entirely
-    // host-side — no webview needed — so these formats are MORE headlessly
-    // capable than the other mesh formats: converted to an STL boundary
-    // surface (the same funnel-through-STL design the extension itself uses)
-    // and meshed exactly like a native `.stl`. OpenFOAM is the one exception
-    // to the bytes-in shape: its `.foam` marker's mesh lives in sibling files
-    // under `<parent>/constant/polyMesh/`, so the path-based foam conversion
-    // stages the case itself.
-    const { ops } = await readEditsResolved(modelPath);
-    if (ops.length > 0) {
-      warnings.push(
-        `${ops.length} edit op(s) exist but are NOT baked into the meshed geometry — ${route.format} edits replay in the webview only; the raw file's boundary surface is meshed.`
-      );
-    }
-    let stlBytes: Uint8Array;
-    if (route.format === "openfoam") {
-      stlBytes = await ctx.pipeline.convertFoamCaseToStlBoundary(modelPath);
-    } else {
-      const bytes = await readModelBytes(modelPath);
-      const companions = await resolveMeshioCompanions(modelPath, route.format, bytes);
-      stlBytes = await ctx.pipeline.convertToStlBoundary(bytes, route.format, path.basename(modelPath), companions);
-    }
-    return { kind: "stl", stlBytes: factor === 1 ? stlBytes : scaleStlBytes(stlBytes, factor) };
-  }
-  if (route.format === "obj" || route.format === "ply" || route.format === "gltf") {
-    // Closes a real headless gap (roadmap "fTetWild robust volume meshing",
-    // closed — see CLAUDE.md): OBJ/PLY/glTF sources used to be meshable ONLY
-    // interactively (the extension serializes the webview's THREE.Object3D
-    // to STL). `parseToWeldedMesh` — already used by `check_mesh_health`/
-    // `promote_mesh_to_brep` for these exact three formats — gives a
-    // host-side, WASM-free `{positions, indices}` mesh with no browser
-    // involved; `weldedMeshToStlBytes` re-serializes it as ASCII STL, the
-    // one shape `MeshGenerationInput`'s "stl" branch (and both meshing
-    // engines) accept. Edits are NOT baked in, same caveat as the raw `.stl`
-    // branch above and the same reason (no host-side mesh edit engine).
-    const { ops } = await readEditsResolved(modelPath);
-    if (ops.length > 0) {
-      warnings.push(
-        `${ops.length} edit op(s) exist but are NOT baked into the meshed geometry — ${route.format} edits replay in the webview only; the raw file bytes are meshed.`
-      );
-    }
-    const bytes = await readModelBytes(modelPath);
-    const format = route.format as MeshParseFormat;
-    const external = format === "gltf" ? await resolveGltfBuffers(modelPath, bytes) : undefined;
-    const welded = parseToWeldedMesh(bytes, format, external);
-    const stlBytes = weldedMeshToStlBytes(welded);
-    return { kind: "stl", stlBytes: factor === 1 ? stlBytes : scaleStlBytes(stlBytes, factor) };
+    return resolveMeshSourceInput(
+      route,
+      modelPath,
+      ops.length,
+      {
+        readBytes: () => readModelBytes(modelPath),
+        resolveGltfBuffers: (bytes) => resolveGltfBuffers(modelPath, bytes),
+        resolveMeshioCompanions: (bytes) => resolveMeshioCompanions(modelPath, route.format, bytes),
+        convertToStlBoundary: (bytes, format, name, companions) => ctx.pipeline.convertToStlBoundary(bytes, format, name, companions),
+        convertFoamCaseToStlBoundary: (markerPath) => ctx.pipeline.convertFoamCaseToStlBoundary(markerPath),
+      },
+      warnings,
+      unit
+    );
   }
   throw new Error(
     `${route.format} sources cannot be meshed headless — the extension serializes them to STL via the webview's Three.js scene. Convert to STL first (e.g. via the extension's Export).`
@@ -5191,24 +5162,6 @@ async function writeMeshExportFormat(
 // compare_mesh_refinement
 
 /**
- * Hard cap on sweep rows — each row is a full meshing pass (seconds to
- * minutes of WASM time), so an uncapped list is a hang by another name. Same
- * safety-caps-instead-of-sandboxing discipline as `MAX_STEPS`/
- * `MAX_TOTAL_OPS` in `parametricScript.ts`: hit it and the call throws
- * before any work starts, never a silent truncation.
- */
-const MAX_SWEEP_RUNS = 8;
-
-/**
- * Carried on every sweep response (see the roadmap item's done-when): rows
- * describe meshing COST (nodes/elements/time) and element SHAPE quality
- * (minSICN) — neither establishes FE-solution convergence, which needs a
- * solver run on the exported meshes, not just finer elements.
- */
-const SWEEP_NOTE =
-  "Mesh-density/quality trends across swept sizes do NOT establish FE-solution convergence — that needs a solver run on the exported meshes, not just finer elements. Rows describe meshing cost (nodes/elements/time) and element shape quality (minSICN), not solution accuracy.";
-
-/**
  * Bounded sweep of explicit mesh sizes (roadmap Tier 1 "Measured
  * mesh-refinement comparison", closed) — compare mesh cost and quality at
  * several sizes before choosing one. Headless-first (`generate_bom`/
@@ -5252,19 +5205,7 @@ export async function compareMeshRefinementTool(
 
   // Fail fast on caller-input shape (the `set_plane` precedent) — before any
   // WASM work, so a malformed sweep costs nothing.
-  if (!Array.isArray(params.sizes) || params.sizes.length === 0) {
-    throw new Error("sizes must be a non-empty array of positive mesh sizes in mm.");
-  }
-  if (params.sizes.length > MAX_SWEEP_RUNS) {
-    throw new Error(
-      `sizes has ${params.sizes.length} entries — capped at ${MAX_SWEEP_RUNS} runs per sweep (each run is a full meshing pass).`
-    );
-  }
-  for (const s of params.sizes) {
-    if (typeof s !== "number" || !Number.isFinite(s) || s <= 0) {
-      throw new Error(`sizes must all be finite positive numbers in mm (got ${JSON.stringify(s)}).`);
-    }
-  }
+  validateSweepSizes(params.sizes);
   if (
     params.applyIndex != null &&
     (!Number.isInteger(params.applyIndex) || params.applyIndex < 0 || params.applyIndex >= params.sizes.length)
@@ -5312,62 +5253,28 @@ export async function compareMeshRefinementTool(
   }
   const stem = path.basename(modelPath, path.extname(modelPath));
 
-  const runs: MeshSweepRun[] = [];
-  for (let i = 0; i < params.sizes.length; i++) {
-    const size = params.sizes[i];
-    const runOptions: MeshOptions = { ...baseOptions, sizeMin: size, sizeMax: size };
-    onProgress?.({ progress: i, total: params.sizes.length, message: `Meshing at size ${size} (${i + 1}/${params.sizes.length})...` });
-    const started = Date.now();
-    try {
-      const result = await ctx.pipeline.generateMesh(ctx.extensionPath, input, runOptions, parts);
-      const row: MeshSweepRun = {
-        size,
-        status: "ok",
-        nodeCount: result.nodeCount,
-        elementCount: result.elementCount,
-        elapsedMs: Date.now() - started,
-        engineUsed: result.engineUsed,
-        quality: result.quality ?? null,
-        outputPaths: [],
-        error: null,
-      };
-      if (format && outDir) {
-        const outPath = path.join(outDir, sweepOutputName(stem, size, format.extension));
-        assertNotSourcePath(modelPath, outPath);
-        // The helper reuses this run's own result for its `msh`/meshio
-        // branches (no second meshing pass); the other branches never call
-        // generateMesh at all.
-        row.outputPaths = await writeMeshExportFormat(
-          ctx,
-          modelPath,
-          route,
-          input,
-          runOptions,
-          parts,
-          format,
-          outPath,
-          "mm",
-          warnings,
-          result
-        );
-      }
-      warnings.push(...result.warnings);
-      runs.push(row);
-    } catch (err) {
-      runs.push({
-        size,
-        status: "error",
-        nodeCount: null,
-        elementCount: null,
-        elapsedMs: null,
-        engineUsed: null,
-        quality: null,
-        outputPaths: [],
-        error: (err as Error)?.message ?? String(err),
-      });
+  const runs = await runMeshSweep(
+    params.sizes,
+    baseOptions,
+    (runOptions) => ctx.pipeline.generateMesh(ctx.extensionPath, input, runOptions, parts),
+    {
+      warnings,
+      writeOutputs:
+        format && outDir
+          ? async (size, runOptions, result) => {
+              const outPath = path.join(outDir, sweepOutputName(stem, size, format.extension));
+              assertNotSourcePath(modelPath, outPath);
+              // Reuses this run's own result for its `msh`/meshio branches
+              // (no second meshing pass); the other branches never call
+              // generateMesh at all.
+              return writeMeshExportFormat(ctx, modelPath, route, input, runOptions, parts, format, outPath, "mm", warnings, result);
+            }
+          : undefined,
+      onRunStart: (i, size) =>
+        onProgress?.({ progress: i, total: params.sizes.length, message: `Meshing at size ${size} (${i + 1}/${params.sizes.length})...` }),
+      onRunDone: (i, run) => onProgress?.({ progress: i + 1, total: params.sizes.length, message: `Size ${run.size}: ${run.status}` }),
     }
-    onProgress?.({ progress: i + 1, total: params.sizes.length, message: `Size ${size}: ${runs[i].status}` });
-  }
+  );
 
   let applied: { index: number; size: number; options: MeshOptions } | null = null;
   if (params.applyIndex != null) {

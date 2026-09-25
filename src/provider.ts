@@ -75,6 +75,8 @@ import { parseEditsJson, replayTail } from "./editsSidecar";
 import { parseMeshJson } from "./meshOptionsSidecar";
 import { DISPLAY_UNITS, UNIT_LABELS, displayUnitFromUnitName, unitScaleFactor, type DisplayUnit } from "./lengthUnits";
 import { scaleStlBytes } from "./stlParser";
+import { isMeshSourceRoute, resolveMeshSourceInput } from "./meshSourceInput";
+import { runMeshSweep, validateSweepSizes, sweepOutputName, SWEEP_NOTE } from "./meshSweep";
 import { getNonce } from "./nonce";
 import { showLatestWhatsNew } from "./whatsNew";
 import { runCompareModelsCommand } from "./modelComparePanel";
@@ -2124,6 +2126,72 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
         return;
       }
 
+      /**
+       * FE Mesh panel's refinement sweep (roadmap Tier 1 "Parity gaps"): the
+       * interactive half of `compare_mesh_refinement`. One input resolution
+       * for the whole sweep, then the SAME `runMeshSweep` loop the tool runs,
+       * so rows cannot disagree. Runs under the meshing job owner, so the
+       * panel's Cancel stops it. The document's options are never written.
+       */
+      if (msg.type === "meshSweepRequest") {
+        try {
+          const sizes = validateSweepSizes(msg.sizes);
+          let outDir: vscode.Uri | undefined;
+          if (msg.writeOutputs) {
+            const picked = await vscode.window.showOpenDialog({
+              canSelectFolders: true,
+              canSelectFiles: false,
+              canSelectMany: false,
+              defaultUri: vscode.Uri.joinPath(document.uri, ".."),
+              openLabel: "Write sweep meshes here",
+            });
+            if (!picked || picked.length === 0) {
+              post({ type: "meshSweepError", requestId: msg.requestId, message: "No output folder chosen — sweep not run." });
+              return;
+            }
+            outDir = picked[0];
+          }
+          await this.runMeshingJob(document.uri, msg.requestId, post, async () => {
+            const input = await this.resolveMeshInput(document.uri, route, currentEdits, msg.stl, "mm", currentBakedThrough);
+            if (!input) throw new Error("No mesh geometry available: missing STL data.");
+            // Every run overrides sizeMin/sizeMax, so the panel's own sizes are inert here.
+            const { parts, options } = await this.resolveMeshPartsAndOptions(document.uri, input, msg.options);
+            const warnings: string[] = [];
+            const pipeline = this.docPipeline(document.uri);
+            const baseName = document.uri.path.slice(document.uri.path.lastIndexOf("/") + 1).replace(/\.[^.]+$/, "");
+            const runs = await runMeshSweep(
+              sizes,
+              options,
+              (runOptions) => pipeline.generateMesh(this.context.extensionPath, input, runOptions, parts),
+              {
+                warnings,
+                writeOutputs: outDir
+                  ? async (size, _o, result) => {
+                      this.assertMeshingJobActive();
+                      const target = vscode.Uri.joinPath(outDir!, sweepOutputName(baseName, size, "msh"));
+                      await vscode.workspace.fs.writeFile(target, Buffer.from(result.mshText, "utf8"));
+                      return [target.fsPath];
+                    }
+                  : undefined,
+                onRunStart: (i, size) => post({ type: "status", text: `Sweep: meshing at size ${size} (${i + 1}/${sizes.length})…` }),
+              }
+            );
+            this.assertMeshingJobActive();
+            post({
+              type: "meshSweepResult",
+              requestId: msg.requestId,
+              runs,
+              warnings,
+              note: SWEEP_NOTE,
+              outputDir: outDir ? outDir.fsPath : null,
+            });
+          });
+        } catch (err) {
+          post({ type: "meshSweepError", requestId: msg.requestId, message: (err as Error).message });
+        }
+        return;
+      }
+
       if (msg.type === "meshingCancel") {
         const job = this.cancelMeshingJob(document.uri, msg.requestId);
         if (job) post({ type: "status", text: "Cancelling meshing job…" });
@@ -2261,6 +2329,32 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
           post({ type: "bomResult", requestId: msg.requestId, rows: result.rows, warnings: [...scadWarnings, ...result.warnings] });
         } catch (err) {
           post({ type: "bomError", requestId: msg.requestId, message: (err as Error).message });
+        }
+        return;
+      }
+
+      /**
+       * Parts-section "Copy hole table" button (roadmap Tier 1 "Parity
+       * gaps"): the interactive half of `generate_hole_table`, over the same
+       * `computeHoleTable` pipeline key and the same tail replay. B-rep only.
+       */
+      if (msg.type === "holeTableRequest") {
+        try {
+          if (!route || route.strategy !== "occt") {
+            throw new Error("Hole tables enumerate analytic B-rep cylinder faces; mesh sources have none.");
+          }
+          const scadWarnings: string[] = [];
+          const src = await this.readOcctSource(document.uri, route.format, scadWarnings);
+          for (const w of scadWarnings) post({ type: "status", text: w });
+          const result = await docPipeline.computeHoleTable(
+            this.context.extensionPath,
+            src.bytes,
+            src.format as Extract<CadFormat, "step" | "iges" | "brep" | "csg">,
+            replayTail(currentEdits, currentBakedThrough)
+          );
+          post({ type: "holeTableResult", requestId: msg.requestId, rows: result.rows, warnings: [...scadWarnings, ...result.warnings] });
+        } catch (err) {
+          post({ type: "holeTableError", requestId: msg.requestId, message: (err as Error).message });
         }
         return;
       }
@@ -4467,12 +4561,12 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
    * also made it the one export flow the integration suite could not reach,
    * since a test cannot post into a webview.
    *
-   * **B-rep sources only.** A mesh-format source's geometry lives in the
-   * webview (the panel's button sends it as a serialized STL), and the host has
-   * no mesh engine of its own on this path — so rather than fail opaquely, say
-   * which control to use. (`mcpTools.ts`'s `resolveMeshInputHeadless` does
-   * resolve mesh sources host-side; reusing it here needs that resolver lifted
-   * out of the MCP layer, which is a separate refactor.)
+   * **Mesh-format sources too** (roadmap Tier 1 "Parity gaps"): STL/OBJ/PLY/
+   * glTF and the meshio++ formats resolve host-side through the same
+   * `meshSourceInput.ts` resolver `export_mesh` uses, instead of needing the
+   * webview's serialized STL. Pending mesh edits are NOT baked in (they replay
+   * only in the webview) — said as a status line, never silently. The panel's
+   * own Export button still sends the displayed (edited) geometry.
    */
   private async handleExportMesh(
     uri: vscode.Uri,
@@ -4483,12 +4577,40 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
     /** Tier 0: leading baked-op count — the meshing STEP re-export replays the tail. */
     bakedThrough = 0
   ): Promise<void> {
-    if (!route || route.strategy !== "occt") {
-      post({
-        type: "status",
-        text: "FE mesh export from the Command Palette needs a B-rep source (STEP/IGES/BREP) — use the FE Mesh panel's Export button for this document.",
-      });
-      return;
+    if (!route) return;
+    // A mesh-format source has no OCCT shape to re-export: resolve its STL
+    // host-side (native mm — runMeshExport applies the unit), before any
+    // quick-pick, so an unreadable file fails before asking anything.
+    let stl: string | undefined;
+    if (route.strategy !== "occt") {
+      if (!isMeshSourceRoute(route)) {
+        post({ type: "status", text: `FE mesh export is not available for ${route.format} sources.` });
+        return;
+      }
+      const warnings: string[] = [];
+      try {
+        const pipeline = this.docPipeline(uri);
+        const basename = uri.path.slice(uri.path.lastIndexOf("/") + 1);
+        const input = await resolveMeshSourceInput(
+          route,
+          uri.fsPath,
+          Math.max(0, ops.length - bakedThrough),
+          {
+            readBytes: async () => vscode.workspace.fs.readFile(uri),
+            resolveGltfBuffers: (bytes) => resolveGltfBuffersFor(uri, route.format, bytes),
+            resolveMeshioCompanions: (bytes) => resolveMeshioCompanionsFor(uri, basename, route.format, bytes),
+            convertToStlBoundary: (bytes, format, name, companions) => pipeline.convertToStlBoundary(bytes, format, name, companions),
+            convertFoamCaseToStlBoundary: (markerPath) => pipeline.convertFoamCaseToStlBoundary(markerPath),
+          },
+          warnings
+        );
+        if (input.kind !== "stl") return;
+        stl = Buffer.from(input.stlBytes).toString("base64");
+      } catch (err) {
+        post({ type: "error", message: `Export failed: ${(err as Error).message}` });
+        return;
+      }
+      for (const w of warnings) post({ type: "status", text: w });
     }
     const picked = await vscode.window.showQuickPick(
       MESH_EXPORT_FORMATS.map((f) => ({ label: f.label, id: f.id })),
@@ -4500,7 +4622,7 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
     // `meshingChanged`), but a document whose panel was never touched may not
     // have one yet — fall back to the sidecar, same source the panel reads.
     const options = meshOptions ?? (await readMeshOptions(uri));
-    await this.runMeshExport(uri, route, ops, picked.id as MeshExportFormatId, options, undefined, unit, post, bakedThrough);
+    await this.runMeshExport(uri, route, ops, picked.id as MeshExportFormatId, options, stl, unit, post, bakedThrough);
   }
 
   /**
