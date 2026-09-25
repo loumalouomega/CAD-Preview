@@ -252,6 +252,15 @@ These are outcome groupings, not release numbers. Independent small items can sh
 - **Verification:** inject failure after each write boundary and prove recovery is idempotent; test backup restore, repeated save, and two editors targeting the same source. Concurrent external changes must never be overwritten silently.
 - **Done when:** after interruption at every transaction boundary, reopening yields either the original source plus its pending edit tail or the fully baked source with the watermark advanced, and a second recovery/save does not change geometry.
 
+#### 1.6 Nastran bulk-deck import {#nastran-bulk-deck-import}
+
+*Area: Formats. Effort: M.*
+
+- **Evidence:** `.bdf` is routed as `nastran` and `BEGIN BULK` is normalized, but both meshio++ `convertSurface` and `readMesh` reject this extension's own Gmsh-written `examples/Nastran/block-tets.bdf` with `Not a meshio++-C++ Nastran file`. The metadata-only `load_model` path can still report the route, so it is not proof that a viewer open or headless `generate_mesh` works.
+- **First useful increment:** support the bulk-deck subset emitted by this project's Gmsh writer and a representative standard fixed-field deck, or consume a reader that handles both. Keep the current ambiguity caveat and geometry-only scope explicit; do not infer solver cards or follow `INCLUDE` files.
+- **Verification:** live-WASM tests must open the deck to a boundary surface, mesh that boundary, and round-trip the generated `.bdf`; pin node/element counts and failure diagnostics for unsupported cards.
+- **Done when:** the viewer, `generate_mesh`, and `export_mesh` all handle the stated fixture set, and source/deck parsing preserves actual node coordinates and boundary connectivity.
+
 ### 2. Ready product work {#tier-1-—-ready-product-work}
 
 *Admission: no kernel unknown remains. Either a probe passed and its call shapes are in `CLAUDE.md`, or the work only reuses shipped machinery. The estimate is firm.*

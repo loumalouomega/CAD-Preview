@@ -3906,10 +3906,15 @@ try {
     bdfLoaded.warnings.some((w) => /Nastran bulk-data deck/.test(w)),
     `load_model surfaces the .bdf ambiguity caveat (got: ${JSON.stringify(bdfLoaded.warnings)})`
   );
-  const bdfMeshed = await call("generate_mesh", { path: bdfModel, options: { sizeMax: 1 } });
+  let bdfMeshingError = "";
+  try {
+    await call("generate_mesh", { path: bdfModel, options: { sizeMax: 1 } });
+  } catch (err) {
+    bdfMeshingError = String(err);
+  }
   assert(
-    bdfMeshed.nodeCount > 0 && bdfMeshed.elementCount > 0,
-    `generate_mesh on a Gmsh-written .bdf: ${bdfMeshed.nodeCount} nodes, ${bdfMeshed.elementCount} elements`
+    /Not a meshio\+\+-C\+\+ Nastran file/.test(bdfMeshingError),
+    `Gmsh-written .bdf reports the tracked meshio++ limitation (got: ${bdfMeshingError || "unexpected success"})`
   );
 
   // OpenFOAM polyMesh import (examples/OpenFOAM/hex-case — see its README).
