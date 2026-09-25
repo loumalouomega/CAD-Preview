@@ -1,8 +1,8 @@
 /**
  * Keeps positional roadmap-item citations out of the tree, per
- * `doc/roadmap.md`'s own "How this file works" rule: "Numbering is not stable
- * across closes, so never reference an item by number from code or another
- * document — reference it by name."
+ * `doc/roadmap.md`'s own "How this file works" rule: task IDs (`1.1`, `4.10`)
+ * are renumbered at each planning review, so code and other documents cite an
+ * item by name, never by number.
  *
  * Pure (vscode/DOM/WASM-free), unit-tested. Scans the REAL source/doc tree
  * for **bare-ordinal** citations where the number is the only referent.
