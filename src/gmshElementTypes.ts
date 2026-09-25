@@ -34,13 +34,15 @@ export type MdpaCellKind =
   | "tri6"
   | "quad4"
   | "quad8"
-  | "quad9";
+  | "quad9"
+  | "line2"
+  | "line3";
 
 export interface GmshElementTypeInfo {
   /** Gmsh MSH element-type id (the {@link GMSH_ELEMENT_TYPES} key). */
   type: number;
   name: string;
-  dim: 2 | 3;
+  dim: 1 | 2 | 3;
   /** Node stride in `getElements`' flat `nodeTags[t]` array. */
   numNodes: number;
   numCorners: number;
@@ -114,6 +116,8 @@ const PERM_PYRAMID13 = [0, 1, 2, 3, 4, 5, 8, 10, 6, 7, 9, 11, 12];
 
 export const GMSH_ELEMENT_TYPES: ReadonlyMap<number, GmshElementTypeInfo> = new Map([
   // --- surface elements ---
+  [1, { type: 1, name: "line2", dim: 1, numNodes: 2, numCorners: 2, order: 1, faces: [], mdpa: { kind: "line2", permutation: IDENTITY(2) } }],
+  [8, { type: 8, name: "line3", dim: 1, numNodes: 3, numCorners: 2, order: 2, faces: [], mdpa: { kind: "line3", permutation: IDENTITY(3) } }],
   [2, { type: 2, name: "tri3", dim: 2, numNodes: 3, numCorners: 3, order: 1, faces: TRI_TRIANGULATION, mdpa: { kind: "tri3", permutation: IDENTITY(3) } }],
   [9, { type: 9, name: "tri6", dim: 2, numNodes: 6, numCorners: 3, order: 2, faces: TRI_TRIANGULATION, mdpa: { kind: "tri6", permutation: IDENTITY(6) } }],
   [3, { type: 3, name: "quad4", dim: 2, numNodes: 4, numCorners: 4, order: 1, faces: QUAD_TRIANGULATION, mdpa: { kind: "quad4", permutation: IDENTITY(4) } }],
@@ -147,6 +151,8 @@ export interface MdpaKindInfo {
 }
 
 export const MDPA_KIND_INFO: Readonly<Record<MdpaCellKind, MdpaKindInfo>> = {
+  line2: { numNodes: 2, numCorners: 2, elementName: null, conditionName: "LineCondition2D2N", geometryName: "Line2D2" },
+  line3: { numNodes: 3, numCorners: 2, elementName: null, conditionName: "LineCondition2D3N", geometryName: "Line2D3" },
   // volume kinds
   tet4: { numNodes: 4, numCorners: 4, elementName: "Element3D4N", conditionName: null, geometryName: "Tetrahedra3D4" },
   tet10: { numNodes: 10, numCorners: 4, elementName: "Element3D10N", conditionName: null, geometryName: "Tetrahedra3D10" },
@@ -177,6 +183,7 @@ export const VOLUME_KIND_ORDER: readonly MdpaCellKind[] = [
   "hex20",
   "hex27",
 ];
+export const LINE_KIND_ORDER: readonly MdpaCellKind[] = ["line2", "line3"];
 export const SURFACE_KIND_ORDER: readonly MdpaCellKind[] = ["tri3", "tri6", "quad4", "quad8", "quad9"];
 
 const FAMILY_FACES: Record<string, ReadonlyArray<readonly number[]>> = {
@@ -195,6 +202,8 @@ const KIND_FAMILY: Record<MdpaCellKind, keyof typeof FAMILY_FACES | null> = {
   prism15: "prism",
   pyramid5: "pyramid",
   pyramid13: "pyramid",
+  line2: null,
+  line3: null,
   tri3: null,
   tri6: null,
   quad4: null,

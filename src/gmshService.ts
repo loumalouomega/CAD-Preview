@@ -676,11 +676,11 @@ export async function exportMdpa(
     const loaded = await populateMeshedModel(extensionPath, gmsh, input, options, parts);
     tmpPath = loaded.tmpPath;
 
-    const mesh = extractMdpaMesh(gmsh, loaded.groupMaps);
+    const mesh = extractMdpaMesh(gmsh, loaded.groupMaps, options.dimension);
 
     if (mode === "elements") {
       for (const cell of mesh.volumeCells) {
-        if (MDPA_KIND_INFO[cell.kind].elementName === null) {
+        if (mesh.dimension !== 2 && MDPA_KIND_INFO[cell.kind].elementName === null) {
           throw new Error(
             `Kratos MDPA "Elements" mode has no confirmed Element name for a ${cell.kind} cell. ` +
               'Export in "Geometries" mode instead (its geometry names are certain).'
@@ -786,7 +786,7 @@ export async function computeHandoffFacts(
 
     let subModelParts: HandoffFacts["subModelParts"];
     try {
-      const mesh = extractMdpaMesh(gmsh, loaded.groupMaps);
+      const mesh = extractMdpaMesh(gmsh, loaded.groupMaps, options.dimension);
       subModelParts = mesh.groups.map((g) => {
         const nodeSet = new Set<number>(g.extraNodeTags);
         for (const i of g.volumeCellIndices) for (const t of mesh.volumeCells[i].nodeTags) nodeSet.add(t);
@@ -826,7 +826,8 @@ export async function computeHandoffFacts(
  * shorter geometry). A genuinely unmapped element type throws an actionable
  * error (graceful defensive backstop).
  */
-function extractMdpaMesh(gmsh: GmshApi, groupMaps: PartGroupMaps | null): MdpaMesh {
+function extractMdpaMesh(gmsh: GmshApi, groupMaps: PartGroupMaps | null, dimension: 1 | 2 | 3 = 3): MdpaMesh {
+  if (dimension === 1) throw new Error("Kratos MDPA export requires a 2D or 3D mesh.");
   const nodesRaw = gmsh.model.mesh.getNodes() as { nodeTags: number[]; coord: number[] };
   const nodes: MdpaNode[] = nodesRaw.nodeTags.map((tag, i) => ({
     tag,
@@ -837,17 +838,17 @@ function extractMdpaMesh(gmsh: GmshApi, groupMaps: PartGroupMaps | null): MdpaMe
 
   const volumeCells: MdpaCell[] = [];
   const cellVolumeTag: number[] = [];
-  collectCells(gmsh, 3, volumeCells, cellVolumeTag);
+  collectCells(gmsh, dimension, volumeCells, cellVolumeTag);
 
   const surfaceCells: MdpaCell[] = [];
   const cellSurfaceTag: number[] = [];
-  collectCells(gmsh, 2, surfaceCells, cellSurfaceTag);
+  collectCells(gmsh, dimension === 2 ? 1 : 2, surfaceCells, cellSurfaceTag);
 
   const groups: MdpaGroup[] = [];
   if (groupMaps) {
     for (const bucket of groupPartsAcrossDims(groupMaps)) {
-      const volumeTagSet = new Set(bucket.volumeTags);
-      const surfaceTagSet = new Set(bucket.surfaceTags);
+      const volumeTagSet = new Set(dimension === 2 ? bucket.surfaceTags : bucket.volumeTags);
+      const surfaceTagSet = new Set(dimension === 2 ? bucket.curveTags : bucket.surfaceTags);
       const volumeCellIndices: number[] = [];
       cellVolumeTag.forEach((vTag, idx) => {
         if (volumeTagSet.has(vTag)) volumeCellIndices.push(idx);
@@ -871,13 +872,13 @@ function extractMdpaMesh(gmsh: GmshApi, groupMaps: PartGroupMaps | null): MdpaMe
     }
   }
 
-  return { nodes, volumeCells, surfaceCells, groups };
+  return { dimension, nodes, volumeCells, surfaceCells, groups };
 }
 
 /** Walks every `dim`-D entity, resolving each element through the shared
  * `gmshElementTypes.ts` table into a Kratos-ordered {@link MdpaCell}, and
  * records each cell's owning entity tag in the parallel `ownerTags` array. */
-function collectCells(gmsh: GmshApi, dim: 2 | 3, out: MdpaCell[], ownerTags: number[]): void {
+function collectCells(gmsh: GmshApi, dim: 1 | 2 | 3, out: MdpaCell[], ownerTags: number[]): void {
   const entities = (gmsh.model.getEntities(dim).dimTags as number[]) ?? [];
   for (let i = 0; i < entities.length; i += 2) {
     const tag = entities[i + 1];

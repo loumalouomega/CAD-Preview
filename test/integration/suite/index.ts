@@ -39,6 +39,7 @@ import * as path from "path";
 import * as vscode from "vscode";
 import { installModalStubs, pick, save, cancel, open as openAnswer, waitForFile, waitFor, type ModalAnswer } from "./modalStubs";
 import { writeParts } from "../../../src/partsStore";
+import { serializeEditsJson } from "../../../src/editsSidecar";
 import { writePlanes } from "../../../src/planesStore";
 import { writeCustomBackup, restoreCustomBackup } from "../../../src/customBackup";
 import { ModelsTreeDataProvider } from "../../../src/modelsView";
@@ -310,23 +311,84 @@ test("Export FE Mesh… → GiD writes the .post.msh AND its .post.res sibling",
   await closeAll();
 });
 
-test("Export FE Mesh… explains itself rather than failing silently on a mesh source", async () => {
-  // A mesh-format source's geometry lives in the webview; the host has no mesh
-  // engine on this path, so the command must say which control to use.
-  const staged = stage(GID_FIXTURE, [GID_SIBLING]);
-  assert(await openDocument(staged), "the GiD (mesh-route) fixture opens");
-  const session = installModalStubs([]); // any modal opened here would throw — none should
-  let threw = false;
+/**
+ * Mesh-format sources through the same command (roadmap Tier 1 "Parity
+ * gaps"). The command used to refuse them — the geometry lived in the
+ * webview — and now resolves it host-side through `meshSourceInput.ts`, the
+ * resolver `export_mesh` uses. Covers both halves of that resolver: a native
+ * STL (parsed host-side) and a meshio++ source (converted by the kernel worker).
+ */
+for (const [label, fixture, siblings] of [
+  ["STL", STL_FIXTURE, [] as string[]],
+  ["GiD (meshio)", GID_FIXTURE, [GID_SIBLING]],
+] as const) {
+  test(`Export FE Mesh… meshes a ${label} source host-side`, async () => {
+    const staged = stage(fixture, [...siblings]);
+    const out = path.join(path.dirname(staged), "from-mesh.msh");
+    const before = fs.readFileSync(staged);
+    assert(await openDocument(staged), `the ${label} fixture opens`);
+    await withModals([pick("Gmsh Mesh (.msh)"), pick("Native"), save(out)], async () => {
+      await vscode.commands.executeCommand("cad-preview.exportMesh");
+      await waitForFile(out, 120000);
+    });
+    assert(fs.existsSync(out) && fs.statSync(out).size > 0, `the ${label} source exports a .msh`);
+    assert(fs.readFileSync(out, "utf8").includes("$Elements"), `the ${label} export is a real Gmsh mesh`);
+    assert(Buffer.compare(before, fs.readFileSync(staged)) === 0, "the source is byte-identical");
+    await closeAll();
+  });
+}
+
+/**
+ * Headless mesh-edit replay through the same command: a pending translate in
+ * the STL's sidecar is baked by the kernel worker before meshing, so the
+ * exported FE mesh sits where the viewer displays the edited cube.
+ */
+test("Export FE Mesh… bakes a mesh source's pending edits", async () => {
+  const minX = (msh: string): number => {
+    const lines = msh.split(/\r?\n/);
+    let i = lines.indexOf("$Nodes") + 2;
+    let min = Infinity;
+    while (lines[i] !== "$EndNodes") {
+      const count = Number(lines[i].split(/\s+/)[3]);
+      i += 1 + count;
+      for (let k = 0; k < count; k++, i++) min = Math.min(min, Number(lines[i].split(/\s+/)[0]));
+    }
+    return min;
+  };
+  const exportOnce = async (staged: string, name: string): Promise<number> => {
+    const out = path.join(path.dirname(staged), name);
+    assert(await openDocument(staged), "the STL fixture opens");
+    await withModals([pick("Gmsh Mesh (.msh)"), pick("Native"), save(out)], async () => {
+      await vscode.commands.executeCommand("cad-preview.exportMesh");
+      await waitForFile(out, 120000);
+    });
+    await closeAll();
+    return minX(fs.readFileSync(out, "utf8"));
+  };
+  const raw = await exportOnce(stage(STL_FIXTURE), "raw.msh");
+  const edited = stage(STL_FIXTURE);
+  fs.writeFileSync(
+    `${edited}.edits.json`,
+    serializeEditsJson(path.basename(edited), [{ op: "translate", targets: ["node-0"], vec: [100, 0, 0] }])
+  );
+  const before = fs.readFileSync(edited);
+  const api = await saveTestApi();
+  const statuses: string[] = [];
+  const sub = api?.onDidPostMessage?.((m) => {
+    const msg = m as { type: string; text?: string; message?: string };
+    if (msg.type === "status" || msg.type === "error") statuses.push(msg.text ?? msg.message ?? "");
+  });
+  let baked: number;
   try {
-    await vscode.commands.executeCommand("cad-preview.exportMesh");
-    await sleep(1500);
-  } catch {
-    threw = true;
+    baked = await exportOnce(edited, "baked.msh");
   } finally {
-    session.restore();
+    sub?.dispose();
   }
-  assert(!threw, "a mesh source opens no quick-pick — it reports the limitation instead");
-  await closeAll();
+  assert(
+    Math.abs(baked - (raw + 100)) < 1e-3,
+    `the exported mesh moved by the pending translate (min x ${raw} -> ${baked}; statuses ${JSON.stringify(statuses.filter((t) => /bake|Bake|edit/.test(t)))})`
+  );
+  assert(Buffer.compare(before, fs.readFileSync(edited)) === 0, "the source is byte-identical");
 });
 
 test("Export… offers the real export targets and writes the chosen one", async () => {

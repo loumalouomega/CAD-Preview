@@ -27,17 +27,17 @@ Everything previously shipped is tracked in `CHANGELOG.md`, and `CLAUDE.md` has 
 
 ## How this file works
 
-- **Tiers are ordered, and the order is the recommendation.** Each tier states an *admission criterion*; an item that doesn't meet it belongs in a different tier or in Non-goals, not at the top because it sounds exciting. An empty tier is removed from the file entirely rather than kept as a placeholder.
-  - **Tier 0 — upkeep and defects:** no design question, only work.
-  - **Tier 1 — ready product work:** no kernel unknown remains, whether because a probe passed or because the work only reuses shipped machinery. The estimate is firm.
-  - **Probe-gated:** a hypothesis with a discriminating experiment, grouped by area.
-  - **Strategic:** multi-phase bets that gate other items or reopen Non-goals.
+- **Sections are ordered, and the order is the recommendation.** Each section states an *admission criterion*; an item that doesn't meet it belongs in a different section or in Non-goals, not at the top because it sounds exciting. An empty section is removed from the file entirely rather than kept as a placeholder.
+  - **1. Upkeep and defects:** no design question, only work. (Called "Tier 0" in older changelog and `CLAUDE.md` text.)
+  - **2. Ready product work:** no kernel unknown remains, whether because a probe passed or because the work only reuses shipped machinery. The estimate is firm. (Called "Tier 1" in older text.)
+  - **3–5. Probe-gated:** a hypothesis with a discriminating experiment, grouped by area — geometry, meshing and platform.
+  - **6. Strategic:** multi-phase bets that gate other items or reopen Non-goals.
 - **Each item carries an area tag** — *Geometry*, *Meshing*, *Formats*, *Drawings*, *Parity*, *Platform* or *Ecosystem* — so the file can be read by area as well as by tier.
-- **A closed item is removed from this list entirely**, not struck through — its write-up moves to `CLAUDE.md` (a per-feature section with the verified implementation details) and its history stays in git. **Numbering is not stable across closes**, so never reference an item by number from code or another document — reference it by name.
+- **A closed item is removed from this list entirely**, not struck through — its write-up moves to `CLAUDE.md` (a per-feature section with the verified implementation details) and its history stays in git. **Every item has a task ID `S.N`** (section, then position within it — `1.1`, `2.3`, `4.10`), shown in its heading and in the order tables, so a task can be named in an issue, a commit or a conversation. **IDs are renumbered at each planning review**, when items close and sections shift, so an ID is only meaningful against the review date at the top of this page. Code and other documents therefore still cite an item by **name** (the `docRoadmapRefs` gate enforces this), and headings keep an explicit `{#anchor}` so name-based links survive the numbering.
 - **Probe-gated items are hypotheses, not implementation-ready work.** Evidence may be a binding-manifest entry, an upstream API, or a proposed geometric construction. Green in `node_modules/opencascade.js/dist/Supported APIs.md` is **necessary but not sufficient** — both the STEP-unit and the IGES-writer findings started green and only resolved (one negative, one positive) under a real probe, and `HLRAppli_ReflectLines` was green, functional, *and still the wrong tool*. Each probe carries a firm **S** estimate of its own; the implementation phases listed under an item's *If admitted* are conditional, tagged provisionally, and re-estimated once the probe establishes useful output, failure behaviour and cost.
 - **Non-goals are not one thing.** They are split into three groups below because each has a different revival rule, and each group says plainly **what would change our mind**. A rejection nobody re-checks is how a capability stays "permanently out of reach" long after it stopped being — four entries in this file were found stale exactly that way.
 - **An item that corresponds to a known GitHub issue names it inline.** The issue is the request and discussion thread; this file is the proposed scope. Reconcile disagreements against current code and the issue before implementation; neither document automatically overrides a newer decision.
-- **Use feature names and heading links, not ordinal item numbers.** Each candidate states its first useful increment, dependencies or decisions, and evidence needed to close it. New features belong here only when they have a concrete user workflow and an observable completion criterion.
+- **Cite by feature name and heading link from outside this file; use the task ID inside it.** Each candidate states its first useful increment, dependencies or decisions, and evidence needed to close it. New features belong here only when they have a concrete user workflow and an observable completion criterion.
 - **Shared capabilities must reach both consumers.** A new headless-capable operation includes MCP schemas/capabilities and sidecar compatibility; a purely visual interaction can remain webview-only. Reuse the existing pipeline and registries rather than adding parallel implementations.
 - **Cross-repo items say which repository owns each half.** Several items below exist because KKSS (which embeds this repository as its `cad/` submodule) or VSCode-MDPA-Preview asked for them. Only this repository's half is scoped here; the other half is named so that it is not forgotten.
 
@@ -55,7 +55,7 @@ Closed. All four transferable gaps it found have shipped: narrow-passage preflig
 
 Meshing today is *generate* (Gmsh, fTetWild) plus *repair* (fTetWild, meshio++ ops). Nothing here remeshes an existing FE mesh: coarsening/refining it under a geometric error bound, improving element quality in place, or adapting it to a field. This review covers the libraries that could fill that gap, with the licence of each. It also covers capabilities that are already in the bundled binaries but have never been called.
 
-The MMG evidence comes from the sibling project [VSCode-MDPA-Preview](https://github.com/loumalouomega/VSCode-MDPA-Preview). It has shipped remeshing through [`@loumalouomega/mmg-wasm`](https://github.com/loumalouomega/MMG-WASM) 0.1.0: MMG 5.8.0, one ~1.1 MB `mmg-core.wasm` holding mmg2d, mmgs and mmg3d, with dual ESM/CJS builds and no pthreads. That is a working product elsewhere, not evidence in *this* pipeline — the kernel worker, IPC marshalling, Parts correlation and stdout purity are all untested here. That is why the MMG items below are probe-gated rather than Tier 1.
+The MMG evidence comes from the sibling project [VSCode-MDPA-Preview](https://github.com/loumalouomega/VSCode-MDPA-Preview). It has shipped remeshing through [`@loumalouomega/mmg-wasm`](https://github.com/loumalouomega/MMG-WASM) 0.1.0: MMG 5.8.0, one ~1.1 MB `mmg-core.wasm` holding mmg2d, mmgs and mmg3d, with dual ESM/CJS builds and no pthreads. That is a working product elsewhere, not evidence in *this* pipeline — the kernel worker, IPC marshalling, Parts correlation and stdout purity are all untested here. That is why the MMG items below are probe-gated rather than ready product work (section 2).
 
 **Licence decision, recorded:** MMG is LGPL-3.0-or-later, which is directly compatible with CAD-Preview's own `GPL-3.0-or-later` (relicensed from `GPL-2.0-or-later` on 2026-09-24 for the [OpenSCAD WASM port](#build-and-bundle-an-openscad-wasm-port) — see the README's "Licensing" section). We accept the dependency. It will ship the way meshio++ and fTetWild do: an `external` package loaded from its own `.wasm` file (separately replaceable, as LGPL §4 expects), a `.vscodeignore` carve-out, and its own README "Licensing" attribution.
 
@@ -169,19 +169,19 @@ It does **not** admit AGPL code, so TetGen stays rejected. Every new bundled dep
 
 | Wave | Outcome | Start with | Exit signal |
 | --- | --- | --- | --- |
-| Upkeep | The base stays current and trustworthy | Dependency currency, then the KKSS packaging workarounds | Both Tier 0 items done; the verification debt count has started falling |
-| Parity | Everything an agent can do, a user can do, and the reverse | Hole table, then free-text annotations, then headless mesh-edit replay | The MCP-only and webview-only lists in [Parity gaps](#parity-gaps) are empty or each remaining entry is justified |
-| Meshing probes | Decide on remeshing and on conformal assemblies | The MMG core probe, then conformal multi-body meshing, then Gmsh optimisation | Each probe filed with measured results and a decision |
-| Geometry probes | Decide which never-called OCCT capabilities become ops | Imprint and split faces, then B-rep repair | Each probe filed with measured results and a decision |
-| Strategic | Remove the kernel ceiling | The self-built OCCT WASM probe | The existing test suites pass unchanged against the new build |
+| Upkeep | The base stays current and trustworthy | Dependency currency (1.1), then the KKSS packaging workarounds (1.2) | Both 1.1 and 1.2 done; the verification debt count has started falling |
+| Parity | Everything an agent can do, a user can do, and the reverse | Done: headless mesh-edit replay closed the last listed gap (as did the hole-table, refinement-sweep, free-text-note and mesh-source FE-export gaps). Justified remainders: mesh `inspect`/mass facts, `promote_mesh_to_brep` and `repair_mesh` read the raw file (their ids and outputs are defined over it; `save_model` bakes first), and glTF has no own-format save (its exporter emits only `.glb`) | Headless tools see the same edited mesh the viewer shows, or each remaining difference is justified |
+| Meshing probes | Decide on remeshing and on conformal assemblies | The MMG core probe (4.1), then conformal multi-body meshing (4.2), then Gmsh optimisation (4.4) | Each probe filed with measured results and a decision |
+| Geometry probes | Decide which never-called OCCT capabilities become ops | Imprint and split faces (3.1), then B-rep repair (3.2) | Each probe filed with measured results and a decision |
+| Strategic | Remove the kernel ceiling | The self-built OCCT WASM probe (6.1) | The existing test suites pass unchanged against the new build |
 
 These are outcome groupings, not release numbers. Independent small items can ship between waves; a failed probe must not block unrelated work.
 
-### Tier 0 — upkeep and defects
+### 1. Upkeep and defects {#tier-0-—-upkeep-and-defects}
 
 *Admission: the work is known and has no design question. These items keep the base current, honest and cheap to verify; they rank first because every other item depends on them.*
 
-#### Dependency currency
+#### 1.1 Dependency currency {#dependency-currency}
 
 *Area: Platform.*
 
@@ -199,7 +199,7 @@ These are outcome groupings, not release numbers. Independent small items can sh
   - Add a weekly workflow that runs `npm outdated` for the WASM kernels plus `three` and the MCP SDK, and opens an issue when a pin trails.
 - **Done when:** both bumps land with the checklist recorded in `CLAUDE.md`, and the scheduled job has opened (or had nothing to open) at least once.
 
-#### Upstream the packaging workarounds KKSS carries
+#### 1.2 Upstream the packaging workarounds KKSS carries {#upstream-the-packaging-workarounds-kkss-carries}
 
 *Area: Ecosystem.*
 
@@ -213,7 +213,7 @@ These are outcome groupings, not release numbers. Independent small items can sh
   - Extend `scripts/compat/vsix-check.mjs` so the staged files are required.
 - **Done when:** KKSS can delete both loader shims after a submodule bump, and `npm run compat:vsix` passes.
 
-#### Verification-debt burn-down
+#### 1.3 Verification-debt burn-down {#verification-debt-burn-down}
 
 *Area: Platform.*
 
@@ -233,7 +233,7 @@ These are outcome groupings, not release numbers. Independent small items can sh
   Then add a check to `npm test` that counts the "Verification gap" notes in `CLAUDE.md` and fails when the count rises without a matching entry in a small allowlist file that states why.
 - **Done when:** the count has fallen by ten, and a new unverified feature cannot land silently.
 
-#### Perf harness coverage for meshio and OpenSCAD loads
+#### 1.4 Perf harness coverage for meshio and OpenSCAD loads {#perf-harness-coverage-for-meshio-and-openscad-loads}
 
 *Area: Platform.*
 
@@ -243,48 +243,29 @@ These are outcome groupings, not release numbers. Independent small items can sh
   - Capture their baselines with `--update-baseline` in a reviewed change.
 - **Done when:** both appear in `baseline.json`, and a deliberately slowed build flags them.
 
-### Tier 1 — ready product work
+#### 1.5 Recoverable mesh source saves {#recoverable-mesh-source-saves}
+
+*Area: Parity. Effort: M.*
+
+- **Evidence:** `saveMeshModel` writes the baked STL/OBJ/PLY source before advancing the `.edits.json` `bakedThrough` watermark. If the process stops between those writes, reopening can replay the same edit over already-baked geometry. A `.bak` is written first, but recovery is not yet coordinated with the sidecar.
+- **First useful increment:** make the geometry, backup and replay watermark a recoverable save transaction. On open, detect an interrupted transaction and restore or finish it without replaying edits twice. Preserve the current explicit-save and confirmation behavior.
+- **Verification:** inject failure after each write boundary and prove recovery is idempotent; test backup restore, repeated save, and two editors targeting the same source. Concurrent external changes must never be overwritten silently.
+- **Done when:** after interruption at every transaction boundary, reopening yields either the original source plus its pending edit tail or the fully baked source with the watermark advanced, and a second recovery/save does not change geometry.
+
+#### 1.6 Nastran bulk-deck import {#nastran-bulk-deck-import}
+
+*Area: Formats. Effort: M.*
+
+- **Evidence:** `.bdf` is routed as `nastran` and `BEGIN BULK` is normalized, but both meshio++ `convertSurface` and `readMesh` reject this extension's own Gmsh-written `examples/Nastran/block-tets.bdf` with `Not a meshio++-C++ Nastran file`. The metadata-only `load_model` path can still report the route, so it is not proof that a viewer open or headless `generate_mesh` works.
+- **First useful increment:** support the bulk-deck subset emitted by this project's Gmsh writer and a representative standard fixed-field deck, or consume a reader that handles both. Keep the current ambiguity caveat and geometry-only scope explicit; do not infer solver cards or follow `INCLUDE` files.
+- **Verification:** live-WASM tests must open the deck to a boundary surface, mesh that boundary, and round-trip the generated `.bdf`; pin node/element counts and failure diagnostics for unsupported cards.
+- **Done when:** the viewer, `generate_mesh`, and `export_mesh` all handle the stated fixture set, and source/deck parsing preserves actual node coordinates and boundary connectivity.
+
+### 2. Ready product work {#tier-1-—-ready-product-work}
 
 *Admission: no kernel unknown remains. Either a probe passed and its call shapes are in `CLAUDE.md`, or the work only reuses shipped machinery. The estimate is firm.*
 
-#### Parity gaps
-
-*Area: Parity.* These are the places where the MCP server and the interactive extension disagree about what the product can do. Each one is small because both halves already exist on one side.
-
-- **Hole table in the interactive UI (S).**
-  - `generate_hole_table` is MCP-only.
-  - Add a **Copy hole table** action beside the Parts panel's BOM copy. It reuses the `computeHoleTable` pipeline key and the `holeTable.ts` TSV renderer, over a request/response pair shaped like `bomRequest`.
-  - Done when a `test:webview` case copies the table for the plate fixture `mcp:smoke` already uses.
-- **Mesh refinement sweep in the FE Mesh panel (S–M).**
-  - `compare_mesh_refinement` is MCP-only.
-  - Add a small sweep form (sizes, optional output folder) that shows the TSV as a table, carrying the same "trends are not convergence" note the tool returns.
-  - Done when the panel's rows match the tool's for the same sizes.
-- **Free-text annotations in the interactive UI (S).**
-  - `pin_annotation` can pin a note to any entity; the interactive side only pins measurements.
-  - Add **Pin note** to the entity context menu. It writes the same sidecar record, and appears in the Measure ▾ Saved list and in drawings.
-  - Done when a note pinned in the viewer reads back through `get_state`, and the reverse.
-- **FE-mesh export for mesh-format sources from the command (S).**
-  - The `cad-preview.exportMesh` command refuses STL/OBJ/PLY/glTF sources, and points the user at the panel.
-  - `mcpTools.ts`'s `resolveMeshInputHeadless` already resolves those sources host-side. Move it into a module both layers import, and have the command use it.
-  - Pending mesh edits are not baked in; this caveat ends when [Headless mesh-edit replay](#headless-mesh-edit-replay) closes.
-
-#### Headless mesh-edit replay
-
-*Area: Parity.*
-
-- **Evidence:**
-  - Mesh edits (transforms, booleans, holes, primitives, patterns) replay only in the webview, because `src/webview/meshEdits.ts` runs on Three.js objects. As a result, headless `generate_mesh`, `export_mesh`, `compare_models` and `save_model` all see the raw file, not the edited model, and each warns about it.
-  - `meshEdits.ts` has no DOM dependency: `meshEdits.test.ts` already runs it under Node, `three-bvh-csg` included.
-  - The host already parses all four mesh formats into triangles (`parseToWeldedMesh`).
-- **First useful increment (M):**
-  - Build a Three.js scene from the host-side parse.
-  - Run `applyEditsMesh` in the kernel worker, behind a new `Pipeline` key.
-  - Serialise the result with the same exporters the webview uses, which still need the `requestAnimationFrame` polyfill `meshExporters.test.ts` applies.
-  - Use that bake in `generate_mesh`, `export_mesh`, `compare_models` and a mesh-source `save_model`.
-  - glTF needs the `ProgressEvent` polyfill the glTF cross-validation test already uses.
-- **Done when:** an edited STL meshes headlessly with its edit applied (a translated cube's mesh bbox moves), and `save_model` accepts STL/OBJ/PLY sources.
-
-#### Post geometry before the XCAF assembly tree
+#### 2.1 Post geometry before the XCAF assembly tree {#post-geometry-before-the-xcaf-assembly-tree}
 
 *Area: Platform.*
 
@@ -295,7 +276,7 @@ These are outcome groupings, not release numbers. Independent small items can sh
   - Base-shape caching is unaffected: the tree cache already lives beside the base shape.
 - **Done when:** first geometry on `turbine.stp` arrives at roughly the pre-XCAF time, the tree still arrives, and `npm run perf` records both numbers.
 
-#### Tessellation quality for `render_snapshot`
+#### 2.2 Tessellation quality for `render_snapshot` {#tessellation-quality-for-render-snapshot}
 
 *Area: Parity.*
 
@@ -303,7 +284,7 @@ These are outcome groupings, not release numbers. Independent small items can sh
 - **First useful increment (S):** add an optional `quality` (`draft` / `standard` / `fine`) to `render_snapshot`, `screenshot_shape` and `render_ops_prefix`, defaulting to today's behaviour.
 - **Done when:** a `fine` render of a curved part has visibly more triangles in the picture, and omitting the parameter changes nothing.
 
-#### Cancel a mesh refinement sweep mid-run
+#### 2.3 Cancel a mesh refinement sweep mid-run {#cancel-a-mesh-refinement-sweep-mid-run}
 
 *Area: Meshing.*
 
@@ -315,7 +296,7 @@ These are outcome groupings, not release numbers. Independent small items can sh
   - A cancelled sweep returns the completed rows with `cancelled: true`, never a partial row presented as complete.
 - **Done when:** cancelling after the first run returns exactly one row and leaves no kernel work queued.
 
-#### Mesh display fidelity: OBJ materials, PLY colours, compressed glTF
+#### 2.4 Mesh display fidelity: OBJ materials, PLY colours, compressed glTF {#mesh-display-fidelity-obj-materials-ply-colours-compressed-gltf}
 
 *Area: Formats.*
 
@@ -332,7 +313,7 @@ These are outcome groupings, not release numbers. Independent small items can sh
     - Decode host-side with `draco3d`, so Compare Models, Mesh Health and Promote accept the file too. `meshopt` follows the same pattern.
 - **Done when:** each has a committed fixture that renders correctly in `test:webview`, and the compressed fixture passes `check_mesh_health`.
 
-#### More mesh formats through three's bundled loaders
+#### 2.5 More mesh formats through three's bundled loaders {#more-mesh-formats-through-three-s-bundled-loaders}
 
 *Area: Formats.*
 
@@ -346,7 +327,7 @@ These are outcome groupings, not release numbers. Independent small items can sh
   - Every new format states its host-side status plainly: display-only unless a host parser is added. Compare Models, Mesh Health and headless meshing refuse it by name, the way meshio-only formats are refused today.
 - **Done when:** a committed `.3mf` fixture opens, edits, exports back to `.3mf`, and reopens with the same triangle count.
 
-#### Shared UI design system with VSCode-MDPA-Preview
+#### 2.6 Shared UI design system with VSCode-MDPA-Preview {#shared-ui-design-system-with-vscode-mdpa-preview}
 
 *Area: Ecosystem.*
 
@@ -362,7 +343,7 @@ These are outcome groupings, not release numbers. Independent small items can sh
 - **Done when:** the snaps work in both extensions, the renames are settled, and the drift check runs in this repository's CI.
 - **Other repository's half:** the matching change in VSCode-MDPA-Preview, and its stale licence line.
 
-#### Canonical worked example for the simulation tutorial
+#### 2.7 Canonical worked example for the simulation tutorial {#canonical-worked-example-for-the-simulation-tutorial}
 
 *Area: Ecosystem.*
 
@@ -374,7 +355,7 @@ These are outcome groupings, not release numbers. Independent small items can sh
   - Pin it in `mcp:smoke` with analytic volume and exact Part membership, like the bracket tutorial.
 - **Done when:** the page builds, its op list compiles under `npm test`, and the exported MDPA opens in VSCode-MDPA-Preview with both SubModelParts populated.
 
-#### Unify same-domain faces as an edit op
+#### 2.8 Unify same-domain faces as an edit op {#unify-same-domain-faces-as-an-edit-op}
 
 *Area: Geometry.*
 
@@ -399,31 +380,31 @@ MEMFS paths stay at 10 characters or fewer; the 11+ cliff silently corrupts STEP
 
 **Where a result goes.**
 
-- **Pass:** the item's "If admitted" phases move into Tier 1 with firm estimates, and the probe's call shapes move to `CLAUDE.md` as the feature's verified facts.
+- **Pass:** the item's "If admitted" phases move into section 2 with firm estimates, and the probe's call shapes move to `CLAUDE.md` as the feature's verified facts.
 - **Fail:** the item moves to Non-goals, with the exact calls that failed and what would change our mind. It goes under Kernel-blocked for a dead binding, or Rejected scope for a product judgement.
 - **Partial:** the item stays here, narrowed to the surviving hypothesis, with the negative half recorded under Non-goals.
 
 Probes are grouped by area. Each group has its own order table. The order is the recommendation within that group, and the groups can proceed in parallel.
 
-#### Geometry and B-rep probes
+#### 3. Geometry and B-rep probes {#geometry-and-b-rep-probes}
 
-| Order | Item | Needs | Why here |
+| ID | Item | Needs | Why here |
 | --- | --- | --- | --- |
-| 1 | Imprint and split faces for boundary-condition regions | — | Highest FE value: today a boundary condition can only target a whole face |
-| 2 | B-rep repair as an explicit op | the shipped validity report | Turns `check_brep_health`'s findings into something the user can act on |
-| 3 | More facts in the B-rep validity report | — | Cheap, read-only, and it sharpens the repair probe's before/after |
-| 4 | Open-profile surface output | — | Exercises the free-face invariant every `face-N` operand depends on; structurally cheap |
-| 5 | N-sided surface filling | — | Closes the gap `addSurfaceFromLines` leaves for non-planar boundaries |
-| 6 | Read PMI, layers and materials from STEP | — | May also reopen colours through a different API than the dead one |
-| 7 | Fillets and chamfers on 2D profiles | — | Small, self-contained, and it removes a common reason to hand-edit profiles |
-| 8 | Small-detail edge suppression | screenshot pipeline | Webview-side and independent; the risk is judgement, not bindings |
-| 9 | Project a curve onto a face | — | Useful mostly as an input to other features |
-| 10 | Loft takeoff by resampled intermediates | — | The measurement design is the hard part |
-| 11 | VRML export | — | Cheap but low value; last on purpose |
+| 3.1 | Imprint and split faces for boundary-condition regions | — | Highest FE value: today a boundary condition can only target a whole face |
+| 3.2 | B-rep repair as an explicit op | the shipped validity report | Turns `check_brep_health`'s findings into something the user can act on |
+| 3.3 | More facts in the B-rep validity report | — | Cheap, read-only, and it sharpens the repair probe's before/after |
+| 3.4 | Open-profile surface output | — | Exercises the free-face invariant every `face-N` operand depends on; structurally cheap |
+| 3.5 | N-sided surface filling | — | Closes the gap `addSurfaceFromLines` leaves for non-planar boundaries |
+| 3.6 | Read PMI, layers and materials from STEP | — | May also reopen colours through a different API than the dead one |
+| 3.7 | Fillets and chamfers on 2D profiles | — | Small, self-contained, and it removes a common reason to hand-edit profiles |
+| 3.8 | Small-detail edge suppression | screenshot pipeline | Webview-side and independent; the risk is judgement, not bindings |
+| 3.9 | Project a curve onto a face | — | Useful mostly as an input to other features |
+| 3.10 | Loft takeoff by resampled intermediates | — | The measurement design is the hard part |
+| 3.11 | VRML export | — | Cheap but low value; last on purpose |
 
 None of these depends on another's result.
 
-##### Imprint and split faces for boundary-condition regions
+##### 3.1 Imprint and split faces for boundary-condition regions {#imprint-and-split-faces-for-boundary-condition-regions}
 
 *Area: Geometry.*
 
@@ -445,7 +426,7 @@ None of these depends on another's result.
   - A panel form, an `OP_PARAM_DOCS` entry, and a TikZ icon.
 - **Out of scope:** imprinting one solid's footprint onto another; that is a boolean-family feature.
 
-##### B-rep repair as an explicit op
+##### 3.2 B-rep repair as an explicit op {#b-rep-repair-as-an-explicit-op}
 
 *Area: Geometry.*
 
@@ -467,7 +448,7 @@ None of these depends on another's result.
   - The report before and after, shown side by side.
 - **Out of scope:** sewing an open shell into a solid; the mesh-to-B-rep promotion already covers the closable case.
 
-##### More facts in the B-rep validity report
+##### 3.3 More facts in the B-rep validity report {#more-facts-in-the-b-rep-validity-report}
 
 *Area: Geometry.*
 
@@ -482,7 +463,7 @@ None of these depends on another's result.
   - **Fail:** no detection, or runaway time → recorded, with the report unchanged.
 - **If admitted (S):** two more fact fields in `check_brep_health` and the panel. Self-intersection is opt-in if timing demands it.
 
-##### Open-profile surface output
+##### 3.4 Open-profile surface output {#open-profile-surface-output}
 
 *Area: Geometry.*
 
@@ -498,7 +479,7 @@ None of these depends on another's result.
 - **If admitted:** Phase 1 (**S**) — `extrude` and `revolve` accept an open profile without `thin` and produce a surface: the op outcome and bucket record the generic `produced` role, `finishThin` is bypassed, `featureModel` is unchanged, the faces are ordinary free faces (no new id kind), and consumers that need a closed volume (`addVolumeFromSurfaces`, mass volume) refuse them by name. The panel hint and `OP_PARAM_DOCS` say "surface, not solid". Phase 2 (**M**, only if a real need appears) — `sweep`/`loft` surfaces and a `shell-N` entity id; deferred deliberately, since that id touches `entityIdScheme`, the picker, rebinding and every sidecar reader.
 - **Out of scope:** any change to `collectFaces`'s claiming algorithm — the probe verifies the new faces fit it as-is.
 
-##### N-sided surface filling
+##### 3.5 N-sided surface filling {#n-sided-surface-filling}
 
 *Area: Geometry.*
 
@@ -515,7 +496,7 @@ None of these depends on another's result.
   - **Fail:** no face, or no closure.
 - **If admitted (M):** an `addSurfaceFilling` op beside `addSurfaceFromLines`, taking edge ids, with a guide-aware refusal like the other profile-building ops.
 
-##### Read PMI, layers and materials from STEP
+##### 3.6 Read PMI, layers and materials from STEP {#read-pmi-layers-and-materials-from-step}
 
 *Area: Formats.*
 
@@ -539,7 +520,7 @@ None of these depends on another's result.
 
   Each ships with its own verification.
 
-##### Fillets and chamfers on 2D profiles
+##### 3.7 Fillets and chamfers on 2D profiles {#fillets-and-chamfers-on-2d-profiles}
 
 *Area: Geometry.*
 
@@ -554,7 +535,7 @@ None of these depends on another's result.
   - **Fail:** the calls are rejected.
 - **If admitted (S–M):** an optional corner-radius or corner-chamfer field on the rectangle and polygon profile ops, plus a `filletProfile` op for arbitrary polylines.
 
-##### Optional small-detail edge suppression
+##### 3.8 Optional small-detail edge suppression {#optional-small-detail-edge-suppression}
 
 *Area: Geometry.*
 
@@ -568,7 +549,7 @@ None of these depends on another's result.
 - **If admitted:** Phase 1 (**S**) — `detail: boolean` beside `smooth` on the wire format (never a filter: `edge-N` enumeration untouched), a `#hide-detail-edges` View item through `applyEdgeVisibility`, opt-in, the threshold a `cadPreview.*` setting defaulting to the probe's τ; and fix the documented "edge visibility does not survive a model rebuild" limitation for *both* flags in the same change, since a second toggle would double that bug's surface.
 - **Out of scope:** any default-on suppression; area alone as the criterion — surface type and extent are part of the test.
 
-##### Project a curve onto a face
+##### 3.9 Project a curve onto a face {#project-a-curve-onto-a-face}
 
 *Area: Geometry.*
 
@@ -583,7 +564,7 @@ None of these depends on another's result.
   - **Fail:** recorded.
 - **If admitted (M):** a `projectCurve` op producing guide-able edges, most useful as input to the split-face op.
 
-##### Loft takeoff by resampled intermediates
+##### 3.10 Loft takeoff by resampled intermediates {#loft-takeoff-by-resampled-intermediates}
 
 *Area: Geometry.*
 
@@ -598,7 +579,7 @@ None of these depends on another's result.
 - **If admitted:** Phase 1 (**M**) — `takeoff?: { startDeg?, endDeg? }` on `loft`, implemented as one extra station per end, labelled "approximate takeoff" in the panel, `OP_PARAM_DOCS` and the docs, with the probe's published sensitivity limits. Never labelled as an exact tangent or curvature constraint.
 - **Out of scope:** any `MakePipeShell` revival — `SetMode_4` returns `false` even for the spine, recorded under Non-goals.
 
-##### VRML export
+##### 3.11 VRML export {#vrml-export}
 
 *Area: Formats.*
 
@@ -615,30 +596,30 @@ None of these depends on another's result.
   - **Fail:** recorded.
 - **If admitted (S):** a VRML export target for B-rep sources. Low value, and ranked last for that reason: VRML is legacy, and glTF already covers display exchange.
 
-#### Meshing probes
+#### 4. Meshing probes {#meshing-probes}
 
-| Order | Item | Needs | Why here |
+| ID | Item | Needs | Why here |
 | --- | --- | --- | --- |
-| 1 | MMG remeshing of FE meshes | `@loumalouomega/mmg-wasm` installed as a devDependency for the probe | Opens a whole capability class (remeshing), and two later rows reuse its loader |
-| 2 | Conformal multi-body meshing | — | Assemblies are the common case for FE input, and the fix is already in the binary |
-| 3 | Hausdorff-bounded surface coarsening | the MMG core loader; meshio++ already bundled | Fixes a known defect (a degenerate heal after auto-decimate), and may need no new dependency at all |
-| 4 | Gmsh mesh optimisation | — | Already in the binary; cheap; directly improves every generated mesh |
-| 5 | Compound meshing across sliver faces | — | Dirty STEP input is the norm; cheap once the conformal probe's walker exists |
-| 6 | Manifold mesh booleans | `manifold-3d` installed for the probe | Replaces the one mesh operation that can produce non-manifold output |
-| 7 | Jacobian validity for high-order meshes | — | Order-2 meshes ship today with no validity check beyond `minSICN` |
-| 8 | Anisotropic boundary layers | a `$Elements` walker | The largest Gmsh probe, and the first live exercise of `dimension: 2` |
-| 9 | Structured meshing per Part | the same `$Elements` walker | Exact element counts make the probe discriminating; shares the walker with row 8 |
-| 10 | Metric-driven adaptive remeshing | a passed MMG core probe | Depends on row 1's result; highest value of the MMG items but the most moving parts |
-| 11 | Embedded points and curves | — | Small; useful for load and sensor locations |
-| 12 | Pre-mesh healing | — | Worth measuring against fTetWild before building any UI |
-| 13 | Hex-dominant MDPA export | — | Closes a documented refusal; may end in Kernel-blocked |
-| 14 | Periodic meshing | — | Niche (representative-volume-element studies) |
-| 15 | JS mesh-size callback | — | Only needed if a sizing source outgrows Gmsh's declarative fields |
-| 16 | METIS partitioning for Kratos MPI export | — | Lowest value; no user has asked for partitioned output yet |
+| 4.1 | MMG remeshing of FE meshes | `@loumalouomega/mmg-wasm` installed as a devDependency for the probe | Opens a whole capability class (remeshing), and two later rows reuse its loader |
+| 4.2 | Conformal multi-body meshing | — | Assemblies are the common case for FE input, and the fix is already in the binary |
+| 4.3 | Hausdorff-bounded surface coarsening | the MMG core loader; meshio++ already bundled | Fixes a known defect (a degenerate heal after auto-decimate), and may need no new dependency at all |
+| 4.4 | Gmsh mesh optimisation | — | Already in the binary; cheap; directly improves every generated mesh |
+| 4.5 | Compound meshing across sliver faces | — | Dirty STEP input is the norm; cheap once the conformal probe's walker exists |
+| 4.6 | Manifold mesh booleans | `manifold-3d` installed for the probe | Replaces the one mesh operation that can produce non-manifold output |
+| 4.7 | Jacobian validity for high-order meshes | — | Order-2 meshes ship today with no validity check beyond `minSICN` |
+| 4.8 | Anisotropic boundary layers | a `$Elements` walker | The largest Gmsh probe, and the first live exercise of `dimension: 2` |
+| 4.9 | Structured meshing per Part | the same `$Elements` walker | Exact element counts make the probe discriminating; shares the walker with 4.8 |
+| 4.10 | Metric-driven adaptive remeshing | a passed MMG core probe | Depends on 4.1's result; highest value of the MMG items but the most moving parts |
+| 4.11 | Embedded points and curves | — | Small; useful for load and sensor locations |
+| 4.12 | Pre-mesh healing | — | Worth measuring against fTetWild before building any UI |
+| 4.13 | Hex-dominant MDPA export | — | Closes a documented refusal; may end in Kernel-blocked |
+| 4.14 | Periodic meshing | — | Niche (representative-volume-element studies) |
+| 4.15 | JS mesh-size callback | — | Only needed if a sizing source outgrows Gmsh's declarative fields |
+| 4.16 | METIS partitioning for Kratos MPI export | — | Lowest value; no user has asked for partitioned output yet |
 
-Only row 10 depends on another row's *result*: adaptive remeshing needs the MMG core probe to pass. Row 3 still produces a result if MMG fails, because its meshio++ half stands alone.
+Only 4.10 depends on another item's *result*: adaptive remeshing needs the MMG core probe (4.1) to pass. 4.3 still produces a result if MMG fails, because its meshio++ half stands alone.
 
-##### MMG remeshing of FE meshes
+##### 4.1 MMG remeshing of FE meshes {#mmg-remeshing-of-fe-meshes}
 
 *Area: Meshing.*
 
@@ -685,7 +666,7 @@ Only row 10 depends on another row's *result*: adaptive remeshing needs the MMG 
   - Hexahedral, pyramid and quadratic input (MMG rejects them; say so, rather than silently linearising).
   - ParMmg.
 
-##### Conformal multi-body meshing
+##### 4.2 Conformal multi-body meshing {#conformal-multi-body-meshing}
 
 *Area: Meshing.*
 
@@ -710,7 +691,7 @@ Only row 10 depends on another row's *result*: adaptive remeshing needs the MMG 
   - Kratos MDPA output keeps one SubModelPart per body.
 - **Out of scope:** contact pairs or tied interfaces; those are solver-side choices.
 
-##### Hausdorff-bounded surface coarsening for the heal ceiling
+##### 4.3 Hausdorff-bounded surface coarsening for the heal ceiling {#hausdorff-bounded-surface-coarsening-for-the-heal-ceiling}
 
 *Area: Meshing.*
 
@@ -733,7 +714,7 @@ Only row 10 depends on another row's *result*: adaptive remeshing needs the MMG 
 - **If admitted (S):** auto-decimate's backend switches to the winning candidate. Its `decimated` report names the method and the Hausdorff bound. The `mcp:smoke` degenerate assertions flip to a successful promote, as the auto-decimate write-up anticipated. If meshio++ wins, this item needs **no** MMG dependency — state that outcome explicitly instead of bundling MMG for it.
 - **Out of scope:** raising `MAX_HEALABLE_TRIANGLES`; the per-triangle sewing cost is the real limit.
 
-##### Gmsh mesh optimisation (Netgen and high-order)
+##### 4.4 Gmsh mesh optimisation (Netgen and high-order) {#gmsh-mesh-optimisation-netgen-and-high-order}
 
 *Area: Meshing.*
 
@@ -754,7 +735,7 @@ Only row 10 depends on another row's *result*: adaptive remeshing needs the MMG 
   - The option is threaded into `generateGeoScript` as `Mesh.OptimizeNetgen` / `Mesh.HighOrderOptimize` lines.
   - The panel greys it out under fTetWild. That is the same rule every other Gmsh-only field follows, so `meshPresets`' `inapplicablePresetFields` needs the field added.
 
-##### Compound meshing across sliver faces
+##### 4.5 Compound meshing across sliver faces {#compound-meshing-across-sliver-faces}
 
 *Area: Meshing.*
 
@@ -773,7 +754,7 @@ Only row 10 depends on another row's *result*: adaptive remeshing needs the MMG 
   - **Fail, or Parts are lost:** recorded.
 - **If admitted (M):** an opt-in "Merge smooth patches" mesh option, driven by the existing smooth-edge classification.
 
-##### Manifold mesh booleans
+##### 4.6 Manifold mesh booleans {#manifold-mesh-booleans}
 
 *Area: Meshing.*
 
@@ -795,7 +776,7 @@ Only row 10 depends on another row's *result*: adaptive remeshing needs the MMG 
   - The dense-mesh guard is re-measured.
   - README Licensing gains the Apache-2.0 attribution.
 
-##### Jacobian validity for high-order meshes
+##### 4.7 Jacobian validity for high-order meshes {#jacobian-validity-for-high-order-meshes}
 
 *Area: Meshing.*
 
@@ -812,7 +793,7 @@ Only row 10 depends on another row's *result*: adaptive remeshing needs the MMG 
   - **Fail:** the call throws or returns nothing usable.
 - **If admitted (S):** an "invalid elements" count in the quality summary for order-2 meshes, fed into the worst-element overlay.
 
-##### Anisotropic boundary layers for 2D Gmsh meshes
+##### 4.8 Anisotropic boundary layers for 2D Gmsh meshes {#anisotropic-boundary-layers-for-2d-gmsh-meshes}
 
 *Area: Meshing.*
 
@@ -830,7 +811,7 @@ Only row 10 depends on another row's *result*: adaptive remeshing needs the MMG 
 - **Out of scope:** 3D layers on OCC-imported solids unless step 4 proves the route; STL sources (no entity correlation, the same rule physical groups follow).
 - **Not a substitute:** MMG's per-reference local sizes ([MMG remeshing of FE meshes](#mmg-remeshing-of-fe-meshes)) refine isotropically near a wall. They do not build stacked, ratio-graded layers, so a passed MMG probe does not close this item.
 
-##### Structured (transfinite) meshing per Part
+##### 4.9 Structured (transfinite) meshing per Part {#structured-transfinite-meshing-per-part}
 
 *Area: Meshing.*
 
@@ -852,7 +833,7 @@ Only row 10 depends on another row's *result*: adaptive remeshing needs the MMG 
   - Unit conversion does not touch `divisions`, which is a count, not a length.
   - `mdpaWriter`'s `Hexahedra3D8` path already covers the output.
 
-##### Metric-driven adaptive remeshing from a field
+##### 4.10 Metric-driven adaptive remeshing from a field {#metric-driven-adaptive-remeshing-from-a-field}
 
 *Area: Meshing.*
 
@@ -876,7 +857,7 @@ Only row 10 depends on another row's *result*: adaptive remeshing needs the MMG 
   - Level-set discretisation (MMG `-ls`, cutting a mesh along an isosurface into two materials). It is a separate workflow with its own reference rules (MMG reserves references 2/3), and it waits for a concrete request.
   - Solver coupling. Adaptation is a single, user-triggered pass, never a loop.
 
-##### Embedded points and curves
+##### 4.11 Embedded points and curves {#embedded-points-and-curves}
 
 *Area: Meshing.*
 
@@ -893,7 +874,7 @@ Only row 10 depends on another row's *result*: adaptive remeshing needs the MMG 
   - **Fail:** recorded.
 - **If admitted (S–M):** free points and lines assigned to a Part are embedded automatically, and their physical group holds the embedded nodes.
 
-##### Pre-mesh healing
+##### 4.12 Pre-mesh healing {#pre-mesh-healing}
 
 *Area: Meshing.*
 
@@ -909,7 +890,7 @@ Only row 10 depends on another row's *result*: adaptive remeshing needs the MMG 
   - **Fail:** recorded. fTetWild remains the answer.
 - **If admitted (S):** an opt-in `heal` mesh option recorded in the handoff manifest.
 
-##### Hex-dominant MDPA export
+##### 4.13 Hex-dominant MDPA export {#hex-dominant-mdpa-export}
 
 *Area: Meshing.*
 
@@ -926,7 +907,7 @@ Only row 10 depends on another row's *result*: adaptive remeshing needs the MMG 
   - **Fail:** the shape is ambiguous → Kernel-blocked, and the refusal stays.
 - **If admitted (S–M):** MDPA export splits type 140 and says so in its warnings and in the handoff manifest.
 
-##### Periodic meshing
+##### 4.14 Periodic meshing {#periodic-meshing}
 
 *Area: Meshing.*
 
@@ -940,7 +921,7 @@ Only row 10 depends on another row's *result*: adaptive remeshing needs the MMG 
   - **Fail:** recorded.
 - **If admitted (M):** a periodic-pair mesh option between two Parts, with the node pairs written to the MDPA as a SubModelPart pair.
 
-##### JS mesh-size callback
+##### 4.15 JS mesh-size callback {#js-mesh-size-callback}
 
 *Area: Meshing.*
 
@@ -956,7 +937,7 @@ Only row 10 depends on another row's *result*: adaptive remeshing needs the MMG 
   - **Fail:** a throw, an abort or no effect → Kernel-blocked, with the finding recorded in `doc/gmsh-integration.md` too.
 - **If admitted:** no feature by itself. This probe is an enabler, recorded so a future sizing source can choose it knowingly. The known cost is stated: a callback is not declarative, so it cannot round-trip through `.geo`, `.geo_unrolled` or the `.mesh.json` sidecar.
 
-##### METIS partitioning for Kratos MPI export
+##### 4.16 METIS partitioning for Kratos MPI export {#metis-partitioning-for-kratos-mpi-export}
 
 *Area: Meshing.*
 
@@ -975,9 +956,9 @@ Only row 10 depends on another row's *result*: adaptive remeshing needs the MMG 
   - **Rejected scope regardless of the probe:** the case where Kratos users confirm load-time partitioning is what they use. Record that and stop.
 - **If admitted (M):** partitioned MDPA export, one file per rank, with SubModelParts preserved per rank. This is the lowest-value meshing item, so it is listed last.
 
-#### Platform probes
+#### 5. Platform probes {#platform-probes}
 
-##### Per-document kernel isolation
+##### 5.1 Per-document kernel isolation {#per-document-kernel-isolation}
 
 *Area: Platform.*
 
@@ -996,11 +977,11 @@ Only row 10 depends on another row's *result*: adaptive remeshing needs the MMG 
   - **Fail:** recorded. The shared worker stays, and the trade-off is re-stated with numbers.
 - **If admitted (M):** `kernelClient.ts` maps each owner to a worker, and the watchdog and cancel paths kill only the owning worker.
 
-### Strategic — multi-phase bets
+### 6. Strategic — multi-phase bets {#strategic-—-multi-phase-bets}
 
 *Admission: an L-sized, multi-phase effort that gates other items or reopens Non-goals. Each starts with its own probe, and nothing below it is estimated until that probe reports.*
 
-#### Self-built OCCT WASM
+#### 6.1 Self-built OCCT WASM {#self-built-occt-wasm}
 
 *Area: Platform.*
 
@@ -1031,7 +1012,7 @@ Only row 10 depends on another row's *result*: adaptive remeshing needs the MMG 
   - Then re-open each Kernel-blocked Non-goal as a probe in its own right.
 - **Out of scope:** changing any op's behaviour during the swap. The first milestone is identical output.
 
-#### Build and bundle an OpenSCAD WASM port
+#### 6.2 Build and bundle an OpenSCAD WASM port {#build-and-bundle-an-openscad-wasm-port}
 
 *Area: Formats. Issue: #35 "OpenSCAD".*
 
@@ -1104,7 +1085,7 @@ Three groups, three different revival rules. Each says what would change our min
 
 - **Glyph → `TopoDS_Shape` via OCCT fonts.** Every `Font_*` class is red: `Font_BRepFont`, `Font_BRepTextBuilder`, `Font_FTFont`, `Font_FTLibrary`, `Font_FontMgr`, `Font_SystemFont`, `Font_TextFormatter`. There is no path from a font file to a shape inside this build.
 
-  **Narrowed twice, and this entry used to overstate itself.** It was titled "3D text, engraving, and embossing" — but engraving and embossing **ship**, as `wrap`'s `emboss`/`engrave` variants, and have nothing to do with fonts. And the text half is not kernel-blocked either, only *font*-blocked: outlines that arrive as SVG paths become ordinary sketch geometry — "3D text via outline import" (the Tier 1 item this entry used to point at) has since closed in full: `svgImport.ts` now composes ancestor `transform`s (so a real "convert text to outlines" export, typically wrapped in `<g transform="...">` groups, lands correctly), `addSurfaceFromLines` accepts several disjoint loops forming one outer boundary plus its holes (a letter with a counter, e.g. an "O", builds as one holed face), `wrap` develops a holed profile onto a cylinder/cone (each hole cut out of the shell), and `import_svg` exposes the whole pipeline headlessly. Nothing is currently tracked as unshipped from this Non-goal.
+  **Narrowed twice, and this entry used to overstate itself.** It was titled "3D text, engraving, and embossing" — but engraving and embossing **ship**, as `wrap`'s `emboss`/`engrave` variants, and have nothing to do with fonts. And the text half is not kernel-blocked either, only *font*-blocked: outlines that arrive as SVG paths become ordinary sketch geometry — "3D text via outline import" (the ready-product-work item this entry used to point at) has since closed in full: `svgImport.ts` now composes ancestor `transform`s (so a real "convert text to outlines" export, typically wrapped in `<g transform="...">` groups, lands correctly), `addSurfaceFromLines` accepts several disjoint loops forming one outer boundary plus its holes (a letter with a counter, e.g. an "O", builds as one holed face), `wrap` develops a holed profile onto a cylinder/cone (each hole cut out of the shell), and `import_svg` exposes the whole pipeline headlessly. Nothing is currently tracked as unshipped from this Non-goal.
 
 - **Loft start/end (takeoff) conditions.** `BRepOffsetAPI_ThruSections` exposes no condition API — of its bound knobs only `SetSmoothing` moves geometry (`SetContinuity`/`SetParType`/`SetMaxDegree`/`SetCriteriumWeight` are accepted but byte-identical everywhere tried, so only smoothing is exposed) — and the pipe-shell conditions have no reachable consumer: `BRepOffsetAPI_MakePipeShell`'s `SetMode_4(wire)` returns `false` even for the spine itself, and `BRepFill_FaceAndOrder_2`/`EdgeFaceAndOrder_2` exist as signatures with no sweep to attach them to. Out of scope is only the *constraint*; steering a loft along a rail already ships via the resampled-intermediate `guides` fallback, which is a different feature, not a silent substitution. The [takeoff approximation probe](#loft-takeoff-by-resampled-intermediates) above explores a separate route, not a revival of this dead API.
 

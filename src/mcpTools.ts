@@ -51,7 +51,7 @@ async function readEditsResolved(modelPath: string): Promise<{ ops: EditOp[]; fu
 import { compileParametricScript } from "./parametricScript";
 import { routeFile, COMPARABLE_MESH_FORMATS, MESHIO_FORMATS, ambiguityCaveatFor, type CadFormat, type FileRoute, type MeshParseFormat } from "./fileRouter";
 import { resolveExternalBuffers, type GltfExternalBuffers } from "./gltfParser";
-import { exportTargetsFor, EXPORT_EXTENSION } from "./exportTargets";
+import { exportTargetsFor, EXPORT_EXTENSION, MESH_SAVE_IN_PLACE_FORMATS } from "./exportTargets";
 import {
   DEFAULT_MESH_OPTIONS,
   SIZE_MAX_SENTINEL,
@@ -66,11 +66,11 @@ import {
 import { scaleStlBytes } from "./stlParser";
 import { resolveEffectiveSource, ScadUnavailableError } from "./scadService";
 import { validateSelectorQuery } from "./selectorQuery";
-import { envelope } from "./untrustedText";
+import { clean, envelope } from "./untrustedText";
 import { MESH_EXPORT_FORMATS, meshExportFormat, companionSaveName, type MeshExportFormat } from "./meshExportFormats";
-import { sweepTsv, sweepOutputName, type MeshSweepRun } from "./meshSweep";
+import { sweepTsv, sweepOutputName, runMeshSweep, validateSweepSizes, SWEEP_NOTE } from "./meshSweep";
 import { allCatalogEntries, describeOp } from "./webview/opCatalog";
-import type { Part, Annotation, ConstructionPlane, MeasureTool } from "./protocol";
+import type { Part, Annotation, AnnotationTool, ConstructionPlane } from "./protocol";
 import type { loadBRep, exportBRep, BRepResult } from "./occtService";
 import type { computeMassProperties, computeBom, computeHoleTable, MassProperties } from "./massProperties";
 import type { checkBrepHealth } from "./brepHealth";
@@ -122,11 +122,13 @@ import { mergeSheetTemplates, type SheetTemplate } from "./sheetTemplates";
 import type { TitleBlockFields } from "./drawingSheet";
 import type { analyzePassages } from "./passageAnalysisHost";
 import type { measureMeshDeviation } from "./meshDeviationHost";
+import type { bakeMeshEdits } from "./meshEditBake";
 import { estimateMeshBudget, budgetWarning, type MeshBudget } from "./meshBudget";
 import { deviationPly } from "./meshDeviation";
 import { triangleMassProperties } from "./triangleMassProperties";
 import { parseStl as parseStlForBudget } from "./stlParser";
 import { parseToWeldedMesh } from "./meshHeal";
+import { isMeshSourceRoute, resolveMeshSourceInput, bakeMeshSourceEdits, bakeWarnings } from "./meshSourceInput";
 import { meshInspection } from "./meshInspection";
 import { MAX_HEALABLE_TRIANGLES } from "./meshHeal";
 import { AUTO_DECIMATE_TARGET_TRIANGLES, isHealableSizeError, stlBytesForHeal } from "./meshioService";
@@ -189,7 +191,7 @@ import { sha256Hex } from "./hash";
 import { renderPrepReportHtml, serializePrepReport, type PrepReport, type ReportImage, type ReportSection } from "./prepReport";
 import { holeTableTsv, type HoleTableRow } from "./holeTable";
 import { parsePartsJson } from "./partsSidecar";
-import { parseAnnotationsJson } from "./annotationsSidecar";
+import { parseAnnotationsJson, ANNOTATION_TOOLS, MAX_NOTE_LENGTH } from "./annotationsSidecar";
 import { parsePlanesJson, nextPlaneId } from "./planesSidecar";
 import { parseEditsJson, replayTail } from "./editsSidecar";
 import { parseMeshJson } from "./meshOptionsSidecar";
@@ -252,6 +254,7 @@ export interface Pipeline {
   exportTessellatedStl: typeof exportTessellatedStl;
   analyzePassages: typeof analyzePassages;
   measureMeshDeviation: typeof measureMeshDeviation;
+  bakeMeshEdits: typeof bakeMeshEdits;
 }
 
 export interface ToolContext {
@@ -538,7 +541,7 @@ export function describeCapabilities() {
       "render_snapshot is B-rep sources only, and additionally requires Playwright + a Chromium binary in this environment (`npx playwright install chromium`) — call it and check `supported` rather than assuming availability; not guaranteed present for an installed .vsix (see doc/mcp-server.md).",
       "search_standard_parts/download_standard_part are network calls to the hosted step.parts API (api.step.parts) — the extension's only external network dependency. A network/API failure returns supported:false and is INCONCLUSIVE, never \"no matching parts\"/\"part unavailable\" — retry or report uncertainty, don't treat it as a negative result.",
       "run_parametric_script compiles {variables?, steps} (each step is one op, or one flat `repeat: {times, indexVar, body}` loop expanding a template op-list) into ops appended via the exact same path as apply_edit_ops — not a general scripting language, no code execution. Repeat-generated ops are fully baked (concrete numbers, exprs stripped) — for a value that should stay live/editable later, use a plain op step with exprs referencing a real document variable (set_variables) instead of the repeat construct.",
-      "compare_models (bounding-box-centroid + volume solid matching between two files) supports B-rep (STEP/IGES/BREP, edits baked in) and STL/OBJ/PLY/glTF (raw file bytes via dedicated host-side parsers, edits NOT baked in) sources, in any combination on either side; meshio-only formats have no host-side geometry to derive centroids/volumes from without a webview. Its optional includeSnapshots (default false) additionally renders each B-rep side's before/after PNGs via the same engine as render_snapshot — opt in only when you want to look at the geometry, not just the numeric diff; mesh-format sides never get a snapshot (render_snapshot is B-rep sources only) and degrade to a warning, never a failure.",
+      "compare_models (bounding-box-centroid + volume solid matching between two files) supports B-rep (STEP/IGES/BREP, edits baked in) and STL/OBJ/PLY/glTF (host-side parsers; pending mesh edits baked in first by the kernel worker's headless mesh-edit replay — the same three.js engine the viewer uses — compared as an STL side) sources, in any combination on either side; meshio-only formats have no host-side geometry to derive centroids/volumes from without a webview. Its optional includeSnapshots (default false) additionally renders each B-rep side's before/after PNGs via the same engine as render_snapshot — opt in only when you want to look at the geometry, not just the numeric diff; mesh-format sides never get a snapshot (render_snapshot is B-rep sources only) and degrade to a warning, never a failure.",
       "check_mesh_health (STL/OBJ/PLY/glTF sources only) is a READ-ONLY diagnostic — it reports per-connected-component free/non-manifold edge counts, degenerate face count, the sewing tolerance actually required to close the shape (or null if it never closed), and the healed area/volume delta, but it does NOT promote anything to a B-rep: there is still no path from a triangle mesh back into fillet/chamfer/measure_exact/get_mass_properties/export_brep (BREP_ONLY_OPS is unchanged). A null requiredTolerance or a large volumeDeltaPct/areaDeltaPct is a fact for you to judge, not a computed pass/fail.",
       "check_brep_health (B-rep/csg/scad sources only) is a READ-ONLY validity report over OCCT's BRepCheck_Analyzer — named per-subshape statuses, open-boundary edges, content counters. It repairs nothing, and a valid verdict does not guarantee Gmsh can mesh the model.",
       "promote_mesh_to_brep (STL/OBJ/PLY/glTF sources only) closes the gap check_mesh_health leaves open — but as a ONE-SHOT EXPORT to a NEW file (outputPath), not an in-place reclassification of the source document: the original mesh is untouched, and the ORIGINAL document still has no B-rep capabilities. The written file is an ordinary B-rep document from the moment it exists (load_model/measure_exact/get_mass_properties/further export_brep all work on it). A component that never closes is skipped (skippedComponents/warnings), never silently dropped; if none close, the call fails.",
@@ -554,10 +557,11 @@ export function describeCapabilities() {
       "export_drawing_sheet places several views (default front/top/right/iso) on ONE sheet at a shared scale with a title block, orthographically aligned per first-angle (default) or third-angle projection. It is the one drawing tool with dimension logic beyond baking a pin verbatim: each pinned annotation is drawn exactly once, in the orthographic view where its measured line reads at true length (never foreshortened, never repeated). paper:'fit' (default) sizes the sheet to the content at 1:1 or an explicit scale; a named ISO paper size picks the largest ISO 5455 standard scale that fits and reports if none does, rather than silently clipping. No unit conversion — a sheet's scale ratio is only meaningful against the model's native millimetres.",
       "B-rep sources (.step/.stp/.iges/.igs/.brep/.csg): full pipeline — load, edit, mesh, export. `.scad` converts to `.csg` first via a user-installed openscad binary (see below); without one every .scad tool returns supported:false.",
       ".scad sources: identical to .csg once converted — which needs the openscad binary (cadPreview.openscadBinary setting, OPENSCAD_BINARY env override, else PATH). Absent binary → supported:false with an install hint on every .scad call, never a throw. Conversion runs `openscad -o <tmp>/model.csg <real path>` with cwd = the source directory (relative use/include/import keep working), capped at a 2-minute kill; openscad's own stderr chatter surfaces as warnings.",
-      ".stl sources: meshable from the raw file bytes; edit ops are NOT baked into the meshed geometry headless (they replay in the webview only), and parts cannot become physical groups.",
-      ".obj/.ply/.gltf/.glb sources: meshable headless (host-side parsed into a welded triangle mesh via the same dedicated parsers compare_models/check_mesh_health/promote_mesh_to_brep already use, then re-serialized as STL for the meshing pipeline — no webview needed); edit ops are NOT baked into the meshed geometry headless (they replay in the webview only), and parts cannot become physical groups, same as .stl. Still not exportable headless as a SOURCE DOCUMENT (export_brep/export_mesh always target a B-rep or a generated FE mesh, never these formats' own native representation) — edit ops can still be written to the sidecar for the extension to replay.",
-      ".vtk/.vtu/.med/.cgns/.exo(.e)/.xdmf/.mdpa/.foam/.msh(.msh2)/.inp/.unv/.su2/.mesh/.post.msh/.bdf sources (meshio++): meshable headless from the raw file bytes (converted host-side to an STL boundary surface, no webview needed — more capable than .obj/.ply/.gltf here); edit ops are NOT baked into the meshed geometry headless (they replay in the webview only), same as .stl. Not exportable headless (export_mesh targets a source-agnostic generated FE mesh, not the source document itself).",
-      "The CAD source file is never written except by the explicit opt-in save_model tool (STEP→STEP, IGES→IGES, BREP→BREP only — mesh/meshio/CAD-text sources are refused); every other writer refuses the source path. Edits/parts/annotations/construction planes/mesh options otherwise persist to <model>.edits.json / .parts.json / .annotations.json / .planes.json / .mesh.json sidecars the extension reads on open. save_model cannot see whether the file is open in VS Code — save (or close) the editor session first so its autosave does not race the write.",
+      ".stl sources: meshable headless; pending edit ops ARE baked into the meshed geometry by the kernel worker's headless mesh-edit replay (the same three.js engine and ids the viewer uses; a skipped op is reported by index), and parts cannot become physical groups.",
+      ".obj/.ply/.gltf/.glb sources: meshable headless (host-side parsed into a welded triangle mesh via the same dedicated parsers compare_models/check_mesh_health/promote_mesh_to_brep already use, then re-serialized as STL for the meshing pipeline — no webview needed); pending edit ops are baked in by the headless mesh-edit replay (loaded with the viewer's own three.js loaders so node-N ids match), and parts cannot become physical groups, same as .stl. save_model bakes an STL/OBJ/PLY source in place in its own format; glTF has no same-format writer (its exporter emits only .glb).",
+      ".vtk/.vtu/.med/.cgns/.exo(.e)/.xdmf/.mdpa/.foam/.msh(.msh2)/.inp/.unv/.su2/.mesh/.post.msh sources (meshio++): meshable headless from the raw file bytes (converted host-side to an STL boundary surface, no webview needed — more capable than .obj/.ply/.gltf here); pending edit ops are baked over that converted boundary (the node-0 mesh the viewer edits), same as .stl. Not exportable headless (export_mesh targets a source-agnostic generated FE mesh, not the source document itself).",
+      "Nastran .bdf is routed as a meshio source with an ambiguity caveat, but the bundled meshio++ reader currently rejects this extension's Gmsh-written deck (even after BEGIN BULK normalization); do not claim it can open or mesh these files. See the Nastran import roadmap item.",
+      "The CAD source file is never written except by the explicit opt-in save_model tool (STEP→STEP, IGES→IGES, BREP→BREP, STL→STL, OBJ→OBJ, PLY→PLY — glTF/meshio/CAD-text sources are refused); every other writer refuses the source path. Edits/parts/annotations/construction planes/mesh options otherwise persist to <model>.edits.json / .parts.json / .annotations.json / .planes.json / .mesh.json sidecars the extension reads on open. save_model cannot see whether the file is open in VS Code — save (or close) the editor session first so its autosave does not race the write.",
       "get_state's annotations are pinned interactively (Measure tool) or headlessly (pin_annotation) — apply_edit_ops/run_parametric_script/remove_edit_op still rebind their anchor ids across topology-changing ops via the same best-effort geometric match parts get, reported in warnings when it happens.",
       "resolve_selector (B-rep sources only) re-resolves a whole-bucket query {version: 1, source: {kind: 'bucket', op, role}} against the current op list — the first three rungs of the Selector-synthesis ladder. An optional induced filter (planar, surfaceType, normal dir, area thresholds over exact current-shape facts; one leaf or an AND-list) plus rank ({by:'area',order:'max'|'min',n}) narrows the bucket without baking in coordinates (e.g. the largest endCap face) — or {version: 1, source: {kind: 'scene', filter?, rank?}} drops the bucket anchor entirely (at least one of filter/rank required), e.g. the largest planar face in the model, in a single replay. Each returned bucket id carries its centre-distance/measure-delta oracle (trustworthy only at ~0 distance; the scene path returns no matches — the exact facts are the oracle); unresolved names reference ids with no confident match, an induced selection of zero is an honest empty (never a fallback), and bindable:false means the producing op was a pattern instance (use a scene query to match across all copies instead).",
       "synthesize_selector (B-rep sources only) is resolve_selector's inverse: given a picked entityId plus its producing op/role, it induces the constant-free-first query naming exactly that entity (qualitative leaves before the exact normal, area literals last) and verifies it live (exact re-execution plus centreDistance ~ 0) before returning — query:null with a reason means nothing exact exists, never a guess.",
@@ -895,7 +899,7 @@ async function readMeshInspection(modelPath: string, format: MeshParseFormat) {
   const inspection = meshInspection(parseToWeldedMesh(bytes, format, external));
   const {ops} = await readEditsResolved(modelPath);
   const warnings = ["Triangle-based facts in raw file coordinates; mesh-component-N / mesh-triangle-N / mesh-vertex-N are headless ids, not webview node-N or edit operands. No analytic surface parameters or inertia are computed."];
-  if (ops.length) warnings.push("Pending mesh edits are NOT baked in; these facts describe the raw source file.");
+  if (ops.length) warnings.push("Pending mesh edits are NOT baked in here — these facts (and their mesh-component/triangle ids) describe the raw source file; generate_mesh/export_mesh/compare_models bake them.");
   return {inspection, warnings};
 }
 
@@ -1998,15 +2002,7 @@ export async function compareModelsTool(
       return { kind: "brep", bytes: src.bytes, format: src.format as BRepFormat, ops };
     }
     const [{ ops }, bytes] = await Promise.all([readEditsResolved(modelPath), readModelBytes(modelPath)]);
-    if (ops.length > 0) {
-      warnings.push(
-        `${modelPath}: pending edits are NOT baked in (${route.format.toUpperCase()} sources have no host-side edit engine) — comparing the raw file only.`
-      );
-    }
-    if (route.format === "gltf") {
-      return { kind: "gltf", bytes, externalBuffers: await resolveGltfBuffers(modelPath, bytes) };
-    }
-    return { kind: route.format as "stl" | "obj" | "ply", bytes };
+    return meshCompareSource(ctx, modelPath, route, ops, bytes, warnings, "comparing the raw file only");
   };
 
   let sourceA: CompareSource;
@@ -2617,7 +2613,7 @@ export async function promoteMeshToBrepTool(
 
   const { ops } = await readEditsResolved(modelPath);
   if (ops.length > 0) {
-    warnings.push(`${modelPath}: pending edits are NOT baked in — ${route.format.toUpperCase()} sources have no host-side edit engine; promoting the raw file only.`);
+    warnings.push(`${modelPath}: pending edits are NOT baked in — promote_mesh_to_brep reads the raw file; save_model (STL/OBJ/PLY) bakes them into the source first.`);
   }
 
   const bytes = await readModelBytes(modelPath);
@@ -2690,7 +2686,7 @@ export async function repairMeshTool(
 
   const { ops } = await readEditsResolved(modelPath);
   if (ops.length > 0) {
-    warnings.push(`${modelPath}: pending edits are NOT baked in — ${route.format.toUpperCase()} sources have no host-side edit engine; repairing the raw file only.`);
+    warnings.push(`${modelPath}: pending edits are NOT baked in — repair_mesh reads the raw file; save_model (STL/OBJ/PLY) bakes them into the source first.`);
   }
 
   const bytes = await readModelBytes(modelPath);
@@ -4033,7 +4029,6 @@ export async function setPlane(params: {
 // ---------------------------------------------------------------------------
 // pin_annotation
 
-const MEASURE_TOOLS: readonly MeasureTool[] = ["distance", "edgeLength", "angle", "radius"];
 // B-rep ids (solid/face/edge/point-N) plus mesh ids (node-N volumes,
 // node-N/face-K facets) — the Pin button works on any source kind, so the
 // headless tool must accept every id the webview can produce, not just B-rep.
@@ -4087,11 +4082,16 @@ export async function pinAnnotation(params: {
     return { annotations, pinned: null, removed: params.id, warnings };
   }
 
-  if (typeof params.tool !== "string" || !(MEASURE_TOOLS as readonly string[]).includes(params.tool)) {
-    throw new Error(`tool must be one of ${MEASURE_TOOLS.join("/")}.`);
+  if (typeof params.tool !== "string" || !(ANNOTATION_TOOLS as readonly string[]).includes(params.tool)) {
+    throw new Error(`tool must be one of ${ANNOTATION_TOOLS.join("/")}.`);
   }
-  const tool = params.tool as MeasureTool;
-  if (typeof params.text !== "string") throw new Error("text must be the frozen readout string (e.g. \"12.5 mm\").");
+  const tool = params.tool as AnnotationTool;
+  if (typeof params.text !== "string") throw new Error("text must be the frozen readout string (e.g. \"12.5 mm\"), or the note's text for tool \"note\".");
+  // A note's text is caller-authored and read back verbatim by get_state and
+  // the viewer, so it is cleaned (control/bidi characters stripped, one line,
+  // capped) before it persists.
+  const text = tool === "note" ? clean(params.text, MAX_NOTE_LENGTH) : params.text;
+  if (tool === "note" && !text) throw new Error("A note needs non-empty text.");
   const asVec = (v: unknown, label: string): [number, number, number] => {
     if (!Array.isArray(v) || v.length !== 3 || !v.every((n) => typeof n === "number" && Number.isFinite(n))) {
       throw new Error(`${label} must be three finite numbers.`);
@@ -4106,8 +4106,12 @@ export async function pinAnnotation(params: {
   if ((tool === "distance" || tool === "angle") && linePoints.length !== 2) {
     throw new Error(`tool "${tool}" measures between two picks — linePoints must hold exactly 2 points.`);
   }
-  if ((tool === "edgeLength" || tool === "radius") && linePoints.length !== 0) {
-    throw new Error(`tool "${tool}" measures a single entity — linePoints must be empty.`);
+  if ((tool === "edgeLength" || tool === "radius" || tool === "note") && linePoints.length !== 0) {
+    throw new Error(
+      tool === "note"
+        ? "A note is text at a point — linePoints must be empty."
+        : `tool "${tool}" measures a single entity — linePoints must be empty.`
+    );
   }
   const buckets: Array<[string, string[] | undefined]> = [
     ["volumes", params.volumes],
@@ -4130,6 +4134,9 @@ export async function pinAnnotation(params: {
     throw new Error("A pin needs at least one anchor id — with none it would be detached on arrival.");
   }
   let tolerance: Annotation["tolerance"];
+  if (params.tolerance !== undefined && tool === "note") {
+    throw new Error("A note carries no tolerance band — bands belong on measurements.");
+  }
   if (params.tolerance !== undefined) {
     const t = params.tolerance;
     const fields = [t.nominal, t.plus, t.minus ?? t.plus, t.measured];
@@ -4149,7 +4156,7 @@ export async function pinAnnotation(params: {
     id,
     tool,
     label: typeof params.label === "string" && params.label ? params.label : undefined,
-    text: params.text,
+    text,
     anchorPoint,
     linePoints,
     ...anchors,
@@ -4383,64 +4390,24 @@ async function resolveMeshInputHeadless(
     );
     return { kind: "brep", stepBytes };
   }
-  if (route.format === "stl") {
+  if (isMeshSourceRoute(route)) {
+    // Shared with the `cad-preview.exportMesh` command (`meshSourceInput.ts`).
     const { ops } = await readEditsResolved(modelPath);
-    if (ops.length > 0) {
-      warnings.push(
-        `${ops.length} edit op(s) exist but are NOT baked into the meshed geometry — STL edits replay in the webview only; the raw file bytes are meshed.`
-      );
-    }
-    const stlBytes = await readModelBytes(modelPath);
-    return { kind: "stl", stlBytes: factor === 1 ? stlBytes : scaleStlBytes(stlBytes, factor) };
-  }
-  if (route.strategy === "meshio") {
-    // Unlike STL/OBJ/PLY/glTF, meshio++ (`src/meshioService.ts`) runs entirely
-    // host-side — no webview needed — so these formats are MORE headlessly
-    // capable than the other mesh formats: converted to an STL boundary
-    // surface (the same funnel-through-STL design the extension itself uses)
-    // and meshed exactly like a native `.stl`. OpenFOAM is the one exception
-    // to the bytes-in shape: its `.foam` marker's mesh lives in sibling files
-    // under `<parent>/constant/polyMesh/`, so the path-based foam conversion
-    // stages the case itself.
-    const { ops } = await readEditsResolved(modelPath);
-    if (ops.length > 0) {
-      warnings.push(
-        `${ops.length} edit op(s) exist but are NOT baked into the meshed geometry — ${route.format} edits replay in the webview only; the raw file's boundary surface is meshed.`
-      );
-    }
-    let stlBytes: Uint8Array;
-    if (route.format === "openfoam") {
-      stlBytes = await ctx.pipeline.convertFoamCaseToStlBoundary(modelPath);
-    } else {
-      const bytes = await readModelBytes(modelPath);
-      const companions = await resolveMeshioCompanions(modelPath, route.format, bytes);
-      stlBytes = await ctx.pipeline.convertToStlBoundary(bytes, route.format, path.basename(modelPath), companions);
-    }
-    return { kind: "stl", stlBytes: factor === 1 ? stlBytes : scaleStlBytes(stlBytes, factor) };
-  }
-  if (route.format === "obj" || route.format === "ply" || route.format === "gltf") {
-    // Closes a real headless gap (roadmap "fTetWild robust volume meshing",
-    // closed — see CLAUDE.md): OBJ/PLY/glTF sources used to be meshable ONLY
-    // interactively (the extension serializes the webview's THREE.Object3D
-    // to STL). `parseToWeldedMesh` — already used by `check_mesh_health`/
-    // `promote_mesh_to_brep` for these exact three formats — gives a
-    // host-side, WASM-free `{positions, indices}` mesh with no browser
-    // involved; `weldedMeshToStlBytes` re-serializes it as ASCII STL, the
-    // one shape `MeshGenerationInput`'s "stl" branch (and both meshing
-    // engines) accept. Edits are NOT baked in, same caveat as the raw `.stl`
-    // branch above and the same reason (no host-side mesh edit engine).
-    const { ops } = await readEditsResolved(modelPath);
-    if (ops.length > 0) {
-      warnings.push(
-        `${ops.length} edit op(s) exist but are NOT baked into the meshed geometry — ${route.format} edits replay in the webview only; the raw file bytes are meshed.`
-      );
-    }
-    const bytes = await readModelBytes(modelPath);
-    const format = route.format as MeshParseFormat;
-    const external = format === "gltf" ? await resolveGltfBuffers(modelPath, bytes) : undefined;
-    const welded = parseToWeldedMesh(bytes, format, external);
-    const stlBytes = weldedMeshToStlBytes(welded);
-    return { kind: "stl", stlBytes: factor === 1 ? stlBytes : scaleStlBytes(stlBytes, factor) };
+    return resolveMeshSourceInput(
+      route,
+      modelPath,
+      ops,
+      {
+        readBytes: () => readModelBytes(modelPath),
+        resolveGltfBuffers: (bytes) => resolveGltfBuffers(modelPath, bytes),
+        resolveMeshioCompanions: (bytes) => resolveMeshioCompanions(modelPath, route.format, bytes),
+        convertToStlBoundary: (bytes, format, name, companions) => ctx.pipeline.convertToStlBoundary(bytes, format, name, companions),
+        convertFoamCaseToStlBoundary: (markerPath) => ctx.pipeline.convertFoamCaseToStlBoundary(markerPath),
+        bakeEdits: (bytes, format, tail, external) => ctx.pipeline.bakeMeshEdits(bytes, format, tail, "stl", external),
+      },
+      warnings,
+      unit
+    );
   }
   throw new Error(
     `${route.format} sources cannot be meshed headless — the extension serializes them to STL via the webview's Three.js scene. Convert to STL first (e.g. via the extension's Export).`
@@ -4961,13 +4928,22 @@ export async function buildExportHandoffManifest(
   formatId: string,
   outputs: Array<{ path: string; bytes: Uint8Array }>,
   unit: DisplayUnit,
-  extraNotes: string[] = []
+  extraNotes: string[] = [],
+  /** Mesh-format sources: whether the pending edit tail was baked into `input`
+   * (headless mesh-edit replay). Undefined = the caller supplied geometry that
+   * already reflects the displayed edits (the FE Mesh panel's own Export). */
+  meshEditsBaked?: boolean
 ): Promise<HandoffManifest> {
   const facts = await ctx.pipeline.computeHandoffFacts(ctx.extensionPath, input, options, parts);
   const replay = await currentReplayFingerprint(modelPath);
   const notes = [...extraNotes];
-  if (route.strategy !== "occt" && replay.fullOps.length > 0) {
-    notes.push(`${replay.fullOps.length} pending edit(s) were NOT baked into this mesh — ${route.format} sources have no host-side edit engine.`);
+  const tail = Math.max(0, replay.fullOps.length - replay.bakedThrough);
+  if (route.strategy !== "occt" && tail > 0 && meshEditsBaked !== undefined) {
+    notes.push(
+      meshEditsBaked
+        ? `Pending mesh edits were replayed headlessly; see the replay counts and skipped-operation diagnostics in these notes.`
+        : `${tail} pending edit(s) were NOT baked into this mesh — the headless mesh-edit bake was unavailable or failed (see the export's warnings).`
+    );
   }
   if (input.kind === "stl" && parts.length > 0) {
     notes.push("Parts are not carried into physical groups for a mesh-format source (no entity correlation); coverage below reflects that.");
@@ -5003,7 +4979,8 @@ async function writeHandoffManifest(
   requestedPath?: string
 ): Promise<string> {
   const outputs = await Promise.all(written.map(async (p) => ({ path: p, bytes: new Uint8Array(await fs.readFile(p)) })));
-  const manifest = await buildExportHandoffManifest(ctx, modelPath, route, input, options, parts, formatId, outputs, unit);
+  const baked = warnings.some((w) => w.startsWith("Baked "));
+  const manifest = await buildExportHandoffManifest(ctx, modelPath, route, input, options, parts, formatId, outputs, unit, warnings, baked);
   const manifestPath = path.resolve(requestedPath ?? `${written[0]}${HANDOFF_MANIFEST_SUFFIX}`);
   assertNotSourcePath(modelPath, manifestPath);
   const exportId = randomUUID();
@@ -5191,24 +5168,6 @@ async function writeMeshExportFormat(
 // compare_mesh_refinement
 
 /**
- * Hard cap on sweep rows — each row is a full meshing pass (seconds to
- * minutes of WASM time), so an uncapped list is a hang by another name. Same
- * safety-caps-instead-of-sandboxing discipline as `MAX_STEPS`/
- * `MAX_TOTAL_OPS` in `parametricScript.ts`: hit it and the call throws
- * before any work starts, never a silent truncation.
- */
-const MAX_SWEEP_RUNS = 8;
-
-/**
- * Carried on every sweep response (see the roadmap item's done-when): rows
- * describe meshing COST (nodes/elements/time) and element SHAPE quality
- * (minSICN) — neither establishes FE-solution convergence, which needs a
- * solver run on the exported meshes, not just finer elements.
- */
-const SWEEP_NOTE =
-  "Mesh-density/quality trends across swept sizes do NOT establish FE-solution convergence — that needs a solver run on the exported meshes, not just finer elements. Rows describe meshing cost (nodes/elements/time) and element shape quality (minSICN), not solution accuracy.";
-
-/**
  * Bounded sweep of explicit mesh sizes (roadmap Tier 1 "Measured
  * mesh-refinement comparison", closed) — compare mesh cost and quality at
  * several sizes before choosing one. Headless-first (`generate_bom`/
@@ -5252,19 +5211,7 @@ export async function compareMeshRefinementTool(
 
   // Fail fast on caller-input shape (the `set_plane` precedent) — before any
   // WASM work, so a malformed sweep costs nothing.
-  if (!Array.isArray(params.sizes) || params.sizes.length === 0) {
-    throw new Error("sizes must be a non-empty array of positive mesh sizes in mm.");
-  }
-  if (params.sizes.length > MAX_SWEEP_RUNS) {
-    throw new Error(
-      `sizes has ${params.sizes.length} entries — capped at ${MAX_SWEEP_RUNS} runs per sweep (each run is a full meshing pass).`
-    );
-  }
-  for (const s of params.sizes) {
-    if (typeof s !== "number" || !Number.isFinite(s) || s <= 0) {
-      throw new Error(`sizes must all be finite positive numbers in mm (got ${JSON.stringify(s)}).`);
-    }
-  }
+  validateSweepSizes(params.sizes);
   if (
     params.applyIndex != null &&
     (!Number.isInteger(params.applyIndex) || params.applyIndex < 0 || params.applyIndex >= params.sizes.length)
@@ -5312,62 +5259,28 @@ export async function compareMeshRefinementTool(
   }
   const stem = path.basename(modelPath, path.extname(modelPath));
 
-  const runs: MeshSweepRun[] = [];
-  for (let i = 0; i < params.sizes.length; i++) {
-    const size = params.sizes[i];
-    const runOptions: MeshOptions = { ...baseOptions, sizeMin: size, sizeMax: size };
-    onProgress?.({ progress: i, total: params.sizes.length, message: `Meshing at size ${size} (${i + 1}/${params.sizes.length})...` });
-    const started = Date.now();
-    try {
-      const result = await ctx.pipeline.generateMesh(ctx.extensionPath, input, runOptions, parts);
-      const row: MeshSweepRun = {
-        size,
-        status: "ok",
-        nodeCount: result.nodeCount,
-        elementCount: result.elementCount,
-        elapsedMs: Date.now() - started,
-        engineUsed: result.engineUsed,
-        quality: result.quality ?? null,
-        outputPaths: [],
-        error: null,
-      };
-      if (format && outDir) {
-        const outPath = path.join(outDir, sweepOutputName(stem, size, format.extension));
-        assertNotSourcePath(modelPath, outPath);
-        // The helper reuses this run's own result for its `msh`/meshio
-        // branches (no second meshing pass); the other branches never call
-        // generateMesh at all.
-        row.outputPaths = await writeMeshExportFormat(
-          ctx,
-          modelPath,
-          route,
-          input,
-          runOptions,
-          parts,
-          format,
-          outPath,
-          "mm",
-          warnings,
-          result
-        );
-      }
-      warnings.push(...result.warnings);
-      runs.push(row);
-    } catch (err) {
-      runs.push({
-        size,
-        status: "error",
-        nodeCount: null,
-        elementCount: null,
-        elapsedMs: null,
-        engineUsed: null,
-        quality: null,
-        outputPaths: [],
-        error: (err as Error)?.message ?? String(err),
-      });
+  const runs = await runMeshSweep(
+    params.sizes,
+    baseOptions,
+    (runOptions) => ctx.pipeline.generateMesh(ctx.extensionPath, input, runOptions, parts),
+    {
+      warnings,
+      writeOutputs:
+        format && outDir
+          ? async (size, runOptions, result) => {
+              const outPath = path.join(outDir, sweepOutputName(stem, size, format.extension));
+              assertNotSourcePath(modelPath, outPath);
+              // Reuses this run's own result for its `msh`/meshio branches
+              // (no second meshing pass); the other branches never call
+              // generateMesh at all.
+              return writeMeshExportFormat(ctx, modelPath, route, input, runOptions, parts, format, outPath, "mm", warnings, result);
+            }
+          : undefined,
+      onRunStart: (i, size) =>
+        onProgress?.({ progress: i, total: params.sizes.length, message: `Meshing at size ${size} (${i + 1}/${params.sizes.length})...` }),
+      onRunDone: (i, run) => onProgress?.({ progress: i + 1, total: params.sizes.length, message: `Size ${run.size}: ${run.status}` }),
     }
-    onProgress?.({ progress: i + 1, total: params.sizes.length, message: `Size ${size}: ${runs[i].status}` });
-  }
+  );
 
   let applied: { index: number; size: number; options: MeshOptions } | null = null;
   if (params.applyIndex != null) {
@@ -5557,10 +5470,10 @@ export async function exportTessellatedStlTool(
  * Explicit opt-in by construction: there is no output path to confuse with
  * the source, and every other writer in this file still refuses the source
  * via `assertNotSourcePath`, so no existing agent workflow changes behaviour
- * by getting this. Mesh sources (STL/OBJ/PLY/glTF), meshio-only formats and
- * CAD-text sources (csg/scad) are refused with a clear message — mesh edits
- * replay in the webview only (no host-side mesh edit engine to bake), and
- * csg/scad have no writer for their own representation.
+ * by getting this. STL/OBJ/PLY sources bake through `saveMeshModel` (the
+ * headless mesh-edit replay). glTF (its exporter emits only `.glb`),
+ * meshio-only formats and CAD-text sources (csg/scad) are refused with a
+ * clear message — none has a writer for its own representation.
  *
  * Semantics mirror the interactive `bakeTailToSource`: the file becomes
  * `base ∘ fullOps`, the sidecar keeps the full list with `bakedThrough` set
@@ -5578,10 +5491,15 @@ export async function exportTessellatedStlTool(
 export async function saveModelTool(ctx: ToolContext, params: { path: string }) {
   const modelPath = params.path;
   const route = requireRoute(modelPath);
+  if (route.strategy === "three" && MESH_SAVE_IN_PLACE_FORMATS.has(route.format)) {
+    return saveMeshModel(ctx, modelPath, route.format as "stl" | "obj" | "ply");
+  }
   if (route.strategy !== "occt" || !isBRepFormat(route.format)) {
     throw new Error(
-      `${route.format} sources cannot be saved in place headless — save_model is STEP→STEP, IGES→IGES and BREP→BREP only. ` +
-        `Mesh sources save in place through the extension (File ▸ Export… → own format); meshio-only and CAD-text sources have no writer for their own representation.`
+      `${route.format} sources cannot be saved in place headless — save_model is STEP→STEP, IGES→IGES, BREP→BREP, STL→STL, OBJ→OBJ and PLY→PLY only. ` +
+        (route.format === "gltf"
+          ? `glTF has no same-format writer (its exporter emits only binary .glb) — use export_mesh or the extension's Export instead.`
+          : `meshio-only and CAD-text sources have no writer for their own representation.`)
     );
   }
   const warnings: string[] = [];
@@ -5652,6 +5570,36 @@ export async function saveModelTool(ctx: ToolContext, params: { path: string }) 
   return { written: resolved, baked: ops.length, editsBaked: fullOps.length, warnings };
 }
 
+/**
+ * `save_model` for STL/OBJ/PLY (headless mesh-edit replay): the mirror of the
+ * interactive `bakeMeshToSource`. The unbaked tail is replayed by the kernel
+ * worker's `bakeMeshEdits` — the same engine and exporters the viewer uses —
+ * serialized in the file's own format at native mm, written over the source
+ * after a one-deep `<model>.bak`, and the watermark moves to the full list.
+ * No id rebind: mesh Parts use `node-N` traversal-order ids, which the
+ * interactive save does not rebind either. A skipped op is reported, not
+ * fatal (the saved file is what the viewer displays); a failed bake throws
+ * before anything is written.
+ */
+async function saveMeshModel(ctx: ToolContext, modelPath: string, format: "stl" | "obj" | "ply") {
+  const warnings: string[] = [];
+  const { ops, fullOps, variables } = await readEditsResolved(modelPath);
+  if (ops.length === 0) {
+    return { written: path.resolve(modelPath), baked: 0, editsBaked: fullOps.length, warnings };
+  }
+  const original = await readModelBytes(modelPath);
+  const result = await ctx.pipeline.bakeMeshEdits(original, format, ops, format);
+  warnings.push(...bakeWarnings(result.outcomes, result.messages, ops.length));
+  const resolved = path.resolve(modelPath);
+  await fs.writeFile(`${resolved}.bak`, original);
+  await fs.writeFile(resolved, result.bytes);
+  await writeEdits(modelPath, fullOps, variables, fullOps.length);
+  warnings.push(
+    "This server cannot see whether the file is open in VS Code — save (or close) the editor session first so its autosave does not race this write."
+  );
+  return { written: resolved, baked: ops.length, editsBaked: fullOps.length, warnings };
+}
+
 // ---------------------------------------------------------------------------
 // export_svg_silhouette
 
@@ -5667,7 +5615,8 @@ export async function saveModelTool(ctx: ToolContext, params: { path: string }) 
  * strictly worse drawing — see `svgSilhouetteHost.ts`'s doc comment.
  *
  * Works for every source with host-side geometry: B-rep (edits baked in, via
- * the tessellation) and STL/OBJ/PLY/glTF (raw file bytes, edits NOT baked in).
+ * the tessellation) and STL/OBJ/PLY/glTF (pending edits baked in by the
+ * headless mesh-edit replay; raw file bytes when that bake fails).
  */
 /**
  * A 2D technical drawing: visible edges solid, occluded edges dashed.
@@ -5694,7 +5643,41 @@ function requireDrawableRoute(modelPath: string): FileRoute {
  * draws from — shared by the single-view tools and `export_drawing_sheet` so
  * the edits-baking and annotation conventions cannot drift between them.
  */
+/**
+ * A mesh-format source as a `CompareSource`, with its pending edit tail baked
+ * in through the kernel worker's `bakeMeshEdits` (headless mesh-edit replay —
+ * the same engine the viewer replays with). The baked model comes back as
+ * STL, so it is compared/drawn as an STL side. A failed bake falls back to
+ * the raw file with a named warning (`rawLabel` says what that means here).
+ */
+async function meshCompareSource(
+  ctx: ToolContext,
+  modelPath: string,
+  route: FileRoute,
+  ops: EditOp[],
+  bytes: Uint8Array,
+  warnings: string[],
+  rawLabel: string
+): Promise<CompareSource> {
+  const format = route.format as "stl" | "obj" | "ply" | "gltf";
+  const externalBuffers = format === "gltf" ? await resolveGltfBuffers(modelPath, bytes) : undefined;
+  const local: string[] = [];
+  const baked = await bakeMeshSourceEdits(
+    bytes,
+    format,
+    ops,
+    { bakeEdits: (b, f, tail, ext) => ctx.pipeline.bakeMeshEdits(b, f, tail, "stl", ext) },
+    local,
+    rawLabel,
+    externalBuffers
+  );
+  warnings.push(...local.map((w) => `${modelPath}: ${w}`));
+  if (baked) return { kind: "stl", bytes: baked };
+  return format === "gltf" ? { kind: "gltf", bytes, externalBuffers } : { kind: format, bytes };
+}
+
 async function resolveDrawingSource(
+  ctx: ToolContext,
   modelPath: string,
   warnings: string[]
 ): Promise<{ source: CompareSource; annotations: DimensionSource[] }> {
@@ -5721,15 +5704,7 @@ async function resolveDrawingSource(
     }
     source = { kind: "brep", bytes: src.bytes, format: src.format as BRepFormat, ops };
   } else {
-    if (ops.length > 0) {
-      warnings.push(
-        `${modelPath}: pending edits are NOT baked in (${route.format.toUpperCase()} sources have no host-side edit engine) — drawing the raw file only.`
-      );
-    }
-    source =
-      route.format === "gltf"
-        ? { kind: "gltf", bytes, externalBuffers: await resolveGltfBuffers(modelPath, bytes) }
-        : { kind: route.format as "stl" | "obj" | "ply", bytes };
+    source = await meshCompareSource(ctx, modelPath, route, ops, bytes, warnings, "drawing the raw file only");
   }
   return { source, annotations };
 }
@@ -5785,7 +5760,7 @@ export async function exportDrawingSheetTool(
   warnings.push(...settings.warnings);
   const { views, format, paper, projection, scale } = settings;
 
-  const { source, annotations } = await resolveDrawingSource(modelPath, warnings);
+  const { source, annotations } = await resolveDrawingSource(ctx, modelPath, warnings);
   const result = await ctx.pipeline.exportDrawingSheet(ctx.extensionPath, source, {
     views,
     quality: normalizeTessellationQuality(params.tessellationQuality ?? "fine"),
@@ -5941,7 +5916,7 @@ export async function exportSvgSilhouetteTool(
     warnings.push(`Unknown format "${params.format}" — valid: svg, dxf. Falling back to "svg".`);
   }
 
-  const { source, annotations } = await resolveDrawingSource(modelPath, warnings);
+  const { source, annotations } = await resolveDrawingSource(ctx, modelPath, warnings);
 
   const result = await ctx.pipeline.exportSvgSilhouette(ctx.extensionPath, source, {
     direction,
@@ -6227,12 +6202,10 @@ export async function batchExportTool(
     const route = requireRoute(input);
     const rowWarnings: string[] = [];
     // Edits baking is a per-file fact: B-rep writers bake the whole op list;
-    // mesh sources have no host-side edit engine, so their edits never land.
-    const { fullOps } = await readEditsResolved(input);
-    const baked = route.strategy === "occt" ? fullOps.length : 0;
-    if (route.strategy !== "occt" && fullOps.length > 0) {
-      rowWarnings.push(`${fullOps.length} pending edit(s) NOT baked in — ${route.format} sources have no host-side edit engine.`);
-    }
+    // a mesh source's drawing bakes its pending tail through the headless
+    // mesh-edit bake (its baked prefix is already in the file), and says so
+    // in the row's warnings when that bake was unavailable.
+    const { fullOps, bakedThrough } = await readEditsResolved(input);
     let result: { written: string; warnings: string[] };
     if (target === "step" || target === "iges" || target === "brep") {
       result = await exportBRepTool(ctx, { path: input, targetFormat: target, outputPath: outPath, unit: params.unit });
@@ -6247,6 +6220,8 @@ export async function batchExportTool(
         libraryPath: params.libraryPath,
       });
     }
+    const tailBaked = result.warnings.some((w) => /: Baked \d+ of \d+/.test(w));
+    const baked = route.strategy === "occt" || tailBaked ? fullOps.length : bakedThrough;
     return { outputs: [result.written], editsBaked: baked, warnings: [...rowWarnings, ...result.warnings] };
   };
 
@@ -6350,7 +6325,7 @@ export async function generatePrepReportTool(
   const geometry = isBrep
     ? `edited B-rep (${replay.fullOps.length} op(s) replayed)`
     : replay.fullOps.length > 0
-      ? `raw ${route.format} file (${replay.fullOps.length} pending edit(s) NOT baked)`
+      ? `raw ${route.format} file (${replay.fullOps.length} pending edit(s) NOT baked into inspection facts)`
       : `raw ${route.format} file`;
   const units = isBrep ? "mm" : "file units";
   const sections: ReportSection[] = [];
@@ -6515,7 +6490,7 @@ export async function generatePrepReportTool(
   });
 
   onProgress({ progress: order.length, total: order.length, message: "Writing report" });
-  if (!isBrep && replay.fullOps.length > 0) notes.push(`${replay.fullOps.length} pending edit(s) are NOT reflected in this report's geometry — ${route.format} sources have no host-side edit engine.`);
+  if (!isBrep && replay.fullOps.length > 0) notes.push(`${replay.fullOps.length} pending edit(s) are NOT reflected in this report's inspection facts (they describe the raw ${route.format} file); meshing sections bake them headlessly — see those sections' warnings.`);
   const report: PrepReport = {
     version: 1,
     kind: "cad-preview-prep-report",

@@ -55,10 +55,8 @@
 import { getOcct, wrapOcctFault, writeShape } from "./occtService";
 import { scaleShapeForExport, combineSolids } from "./occtOperations";
 import { volumePropertiesAdaptive, surfacePropertiesAdaptive } from "./brepGProp";
-import { parseStl } from "./stlParser";
-import { parseObj } from "./objParser";
-import { parsePly } from "./plyParser";
-import { parseGltf, type GltfExternalBuffers } from "./gltfParser";
+import type { GltfExternalBuffers } from "./gltfParser";
+import { parseToWeldedMesh } from "./meshParse";
 import type { MeshParseFormat } from "./fileRouter";
 import { weldTriangleSoup, connectedComponents, areaOfTriangles, volumeOfTriangles, type WeldedMesh } from "./meshComponents";
 import { analyzeMeshTopology } from "./meshTopology";
@@ -151,19 +149,9 @@ export const MAX_HEALABLE_TRIANGLES = 50_000;
 // (`mcpTools.ts`, `provider.ts`) must import them as values, and this file's
 // own module graph pulls in OCCT, which `provider.ts` must never bundle.)
 
-/**
- * Parses any of the four dirty-mesh formats into a welded `{positions,
- * indices}` triangle soup, entirely host-side, no WASM. Exported (was
- * module-private) for `ftetwildService.ts`'s tetrahedralization path — it
- * needs exactly this shape as fTetWild's `tetrahedralize()` input, and this
- * is the one place all four formats already funnel into it uniformly.
- */
-export function parseToWeldedMesh(bytes: Uint8Array, format: MeshParseFormat, external?: GltfExternalBuffers): WeldedMesh {
-  if (format === "stl") return weldTriangleSoup(parseStl(bytes));
-  if (format === "obj") return parseObj(bytes);
-  if (format === "gltf") return parseGltf(bytes, external); // already welded internally
-  return parsePly(bytes);
-}
+// Moved to the WASM-free `meshParse.ts` (the extension host needs it too);
+// re-exported so every existing importer keeps working.
+export { parseToWeldedMesh } from "./meshParse";
 
 /** Throws the shared, actionable over-budget error both entry points use. */
 function assertHealableSize(indices: Uint32Array): void {
