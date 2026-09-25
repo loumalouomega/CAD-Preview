@@ -76,6 +76,7 @@ export function viewerBodyHtml(): string {
           <div id="parts-header-actions">
             <button id="parts-isolate" class="panel-icon-btn" title="Isolate the selected part (show only it)">${glyph("target")}</button>
             <button id="parts-copy-bom" class="panel-icon-btn" title="Copy the bill of materials (one row per part) as tab-separated text">${glyph("copy")}</button>
+            <button id="parts-copy-holes" class="panel-icon-btn" title="Copy the hole table (one row per hole size and axis) as tab-separated text">${glyph("holes")}</button>
             <button id="parts-new" class="panel-primary-btn" title="New part">${glyph("plus")} New</button>
           </div>
         </div>

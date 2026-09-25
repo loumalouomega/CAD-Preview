@@ -92,6 +92,7 @@ export const KERNELS_BY_FUNCTION: Record<keyof DocumentPipeline, readonly Kernel
   exportTessellatedStl: O,
   analyzePassages: O,
   measureMeshDeviation: G, // OCCT only for a B-rep reference — listed by what it DEFINITELY touches
+  bakeMeshEdits: NONE, // pure three.js mesh-edit replay (headless mesh-edit replay)
 };
 
 export function kernelsFor(fn: string): readonly Kernel[] {

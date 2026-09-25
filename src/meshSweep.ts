@@ -7,7 +7,7 @@
  * as a VALUE, while `mcpTools.ts` hosts the kernel-touching sweep itself.
  */
 
-import type { MeshEngine } from "./meshOptions";
+import type { MeshEngine, MeshOptions } from "./meshOptions";
 import type { QualitySummary } from "./meshQuality";
 
 /** One swept size's outcome — an individual result, never a throw: a failed
@@ -81,4 +81,125 @@ export function sweepTsv(rows: MeshSweepRun[]): string {
  */
 export function sweepOutputName(stem: string, size: number, extension: string): string {
   return `${stem}-size-${String(size)}.${extension}`;
+}
+
+/**
+ * Hard cap on sweep rows — each row is a full meshing pass (seconds to
+ * minutes of WASM time), so an uncapped list is a hang by another name. Same
+ * safety-caps-instead-of-sandboxing discipline as `MAX_STEPS`/
+ * `MAX_TOTAL_OPS` in `parametricScript.ts`: hit it and the call throws
+ * before any work starts, never a silent truncation.
+ */
+export const MAX_SWEEP_RUNS = 8;
+
+/**
+ * Carried on every sweep response and shown under the FE Mesh panel's sweep
+ * table: rows describe meshing COST (nodes/elements/time) and element SHAPE
+ * quality (minSICN) — neither establishes FE-solution convergence, which
+ * needs a solver run on the exported meshes, not just finer elements.
+ */
+export const SWEEP_NOTE =
+  "Mesh-density/quality trends across swept sizes do NOT establish FE-solution convergence — that needs a solver run on the exported meshes, not just finer elements. Rows describe meshing cost (nodes/elements/time) and element shape quality (minSICN), not solution accuracy.";
+
+/** Throws on a malformed size list (empty, over the cap, or a non-positive /
+ * non-finite entry) — before any meshing work, so a bad sweep costs nothing. */
+export function validateSweepSizes(sizes: unknown): number[] {
+  if (!Array.isArray(sizes) || sizes.length === 0) {
+    throw new Error("sizes must be a non-empty array of positive mesh sizes in mm.");
+  }
+  if (sizes.length > MAX_SWEEP_RUNS) {
+    throw new Error(
+      `sizes has ${sizes.length} entries — capped at ${MAX_SWEEP_RUNS} runs per sweep (each run is a full meshing pass).`
+    );
+  }
+  for (const s of sizes) {
+    if (typeof s !== "number" || !Number.isFinite(s) || s <= 0) {
+      throw new Error(`sizes must all be finite positive numbers in mm (got ${JSON.stringify(s)}).`);
+    }
+  }
+  return sizes as number[];
+}
+
+/**
+ * Parses the FE Mesh panel's size field ("0.5, 1, 2" — commas or spaces) into
+ * a validated size list. Throws the same messages as {@link validateSweepSizes}.
+ */
+export function parseSweepSizes(text: string): number[] {
+  const tokens = text.split(/[\s,;]+/).filter((t) => t.length > 0);
+  if (tokens.length === 0) throw new Error("Enter one or more mesh sizes in mm, e.g. 4, 2, 1.");
+  const sizes = tokens.map((t) => {
+    const n = Number(t);
+    if (!Number.isFinite(n)) throw new Error(`"${t}" is not a number.`);
+    return n;
+  });
+  return validateSweepSizes(sizes);
+}
+
+/** The slice of a `MeshResult` a sweep row reads. */
+export interface SweepGenerateResult {
+  nodeCount: number;
+  elementCount: number;
+  engineUsed: MeshEngine;
+  quality?: QualitySummary | null;
+  warnings: string[];
+}
+
+/**
+ * The per-size loop, shared by `compare_mesh_refinement` and the FE Mesh
+ * panel's sweep form so their rows cannot disagree: each size meshes the SAME
+ * `baseOptions` as a uniform mesh (`sizeMin = sizeMax = size`), sequentially;
+ * `elapsedMs` covers the generate call only; a failed run (generate or the
+ * optional `writeOutputs`) is a row with `status: "error"`, never a thrown
+ * sweep. `writeOutputs` returns the paths it wrote for that run.
+ */
+export async function runMeshSweep<R extends SweepGenerateResult>(
+  sizes: readonly number[],
+  baseOptions: MeshOptions,
+  generate: (options: MeshOptions) => Promise<R>,
+  hooks: {
+    warnings: string[];
+    writeOutputs?: (size: number, options: MeshOptions, result: R) => Promise<string[]>;
+    onRunStart?: (index: number, size: number) => void;
+    onRunDone?: (index: number, run: MeshSweepRun) => void;
+  }
+): Promise<MeshSweepRun[]> {
+  const runs: MeshSweepRun[] = [];
+  for (let i = 0; i < sizes.length; i++) {
+    const size = sizes[i];
+    const runOptions: MeshOptions = { ...baseOptions, sizeMin: size, sizeMax: size };
+    hooks.onRunStart?.(i, size);
+    const started = Date.now();
+    let row: MeshSweepRun;
+    try {
+      const result = await generate(runOptions);
+      row = {
+        size,
+        status: "ok",
+        nodeCount: result.nodeCount,
+        elementCount: result.elementCount,
+        elapsedMs: Date.now() - started,
+        engineUsed: result.engineUsed,
+        quality: result.quality ?? null,
+        outputPaths: [],
+        error: null,
+      };
+      if (hooks.writeOutputs) row.outputPaths = await hooks.writeOutputs(size, runOptions, result);
+      hooks.warnings.push(...result.warnings);
+    } catch (err) {
+      row = {
+        size,
+        status: "error",
+        nodeCount: null,
+        elementCount: null,
+        elapsedMs: null,
+        engineUsed: null,
+        quality: null,
+        outputPaths: [],
+        error: (err as Error)?.message ?? String(err),
+      };
+    }
+    runs.push(row);
+    hooks.onRunDone?.(i, row);
+  }
+  return runs;
 }

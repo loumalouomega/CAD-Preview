@@ -446,6 +446,13 @@ function fakePipeline(overrides: Partial<Pipeline> = {}): Pipeline {
     compareModels: vi.fn(async () => FAKE_MODEL_DIFF),
     checkMeshHealth: vi.fn(async () => FAKE_MESH_HEALTH_REPORT),
     recognizePrimitives: vi.fn(async () => ({ solidCount: 0, solids: [] })),
+    // Identity bake: returns the input bytes and reports every op applied, so
+    // tests can assert the bake was called and its bytes used.
+    bakeMeshEdits: vi.fn(async (bytes: Uint8Array, _format: string, ops: EditOp[]) => ({
+      bytes,
+      outcomes: ops.map((op, index) => ({ index, kind: op.op, applied: true })),
+      messages: [] as string[],
+    })),
     measureMeshDeviation: vi.fn(async () => ({
       report: {
         tolerance: 0.1,
@@ -1289,14 +1296,27 @@ describe("compare_models", () => {
     expect(result.warnings).toEqual([]);
   });
 
-  it("warns (but still compares the raw file) when an STL side has pending edits that can't be baked in", async () => {
+  it("bakes an STL side's pending edits headlessly before comparing", async () => {
     const c = ctx();
     await applyEditOps(c, { path: stlModel, ops: [{ op: "translate", targets: ["node-0"], vec: [1, 0, 0] }] });
     const result = await compareModelsTool(c, { pathA: stpModel, pathB: stlModel });
     expect(result.supported).toBe(true);
-    expect(result.warnings[0]).toMatch(/not baked in/i);
+    expect(result.warnings[0]).toMatch(/Baked 1 of 1/);
+    const bake = vi.mocked(c.pipeline.bakeMeshEdits).mock.lastCall!;
+    expect(bake[1]).toBe("stl");
+    expect(bake[2]).toEqual([expect.objectContaining({ op: "translate" })]);
+    expect(bake[3]).toBe("stl");
     const [, , sourceB] = vi.mocked(c.pipeline.compareModels).mock.lastCall!;
     expect(sourceB).toEqual({ kind: "stl", bytes: expect.any(Uint8Array) });
+  });
+
+  it("falls back to the raw file with a warning when the bake fails", async () => {
+    const c = ctx();
+    vi.mocked(c.pipeline.bakeMeshEdits).mockRejectedValueOnce(new Error("boom"));
+    await applyEditOps(c, { path: stlModel, ops: [{ op: "translate", targets: ["node-0"], vec: [1, 0, 0] }] });
+    const result = await compareModelsTool(c, { pathA: stpModel, pathB: stlModel });
+    expect(result.warnings[0]).toMatch(/could NOT be baked \(boom\)/);
+    expect(result.warnings[0]).toMatch(/comparing the raw file only/);
   });
 
   it("diffs a B-rep source against an OBJ source, as raw OBJ bytes with no edits baked", async () => {
@@ -1332,13 +1352,27 @@ describe("compare_models", () => {
     expect(result.supported).toBe(true);
   });
 
-  it("warns (but still compares the raw file) when an OBJ/PLY side has pending edits that can't be baked in", async () => {
+  it("bakes an OBJ side's pending edits and compares the result as an STL side", async () => {
     const c = ctx();
     await applyEditOps(c, { path: objModel, ops: [{ op: "translate", targets: ["node-0"], vec: [1, 0, 0] }] });
     const result = await compareModelsTool(c, { pathA: stpModel, pathB: objModel });
     expect(result.supported).toBe(true);
-    expect(result.warnings[0]).toMatch(/not baked in/i);
-    expect(result.warnings[0]).toMatch(/OBJ/);
+    expect(vi.mocked(c.pipeline.bakeMeshEdits).mock.lastCall![1]).toBe("obj");
+    const [, , sourceB] = vi.mocked(c.pipeline.compareModels).mock.lastCall!;
+    expect(sourceB).toEqual({ kind: "stl", bytes: expect.any(Uint8Array) });
+  });
+
+  it("reports a skipped op from the bake by index and kind", async () => {
+    const c = ctx();
+    vi.mocked(c.pipeline.bakeMeshEdits).mockResolvedValueOnce({
+      bytes: new Uint8Array(84),
+      outcomes: [{ index: 0, kind: "translate", applied: false, diagnostic: "none of the target ids resolve" }],
+      messages: [],
+    });
+    await applyEditOps(c, { path: stlModel, ops: [{ op: "translate", targets: ["node-9"], vec: [1, 0, 0] }] });
+    const result = await compareModelsTool(c, { pathA: stpModel, pathB: stlModel });
+    expect(result.warnings.join(" ")).toMatch(/Baked 0 of 1/);
+    expect(result.warnings.join(" ")).toMatch(/#1 \(translate\) was skipped — none of the target ids resolve/);
   });
 
   it("diffs a B-rep source against a glTF source, resolving its external buffers first", async () => {
@@ -2595,11 +2629,47 @@ describe("save_model (Tier 0 Phase 3)", () => {
     expect(bad.warnings.some((w: string) => /Could not rebind/.test(w))).toBe(true);
   });
 
-  it("refuses mesh/meshio/CAD-text sources with a clear message", async () => {
+  it("refuses glTF/meshio/CAD-text sources with a clear message", async () => {
     const c = ctx();
-    await expect(saveModelTool(c, { path: stlModel })).rejects.toThrow(/cannot be saved in place headless/i);
+    await expect(saveModelTool(c, { path: gltfModel })).rejects.toThrow(/glTF has no same-format writer/i);
     await expect(saveModelTool(c, { path: vtkModel })).rejects.toThrow(/cannot be saved in place headless/i);
     expect(c.pipeline.exportBRep).not.toHaveBeenCalled();
+    expect(c.pipeline.bakeMeshEdits).not.toHaveBeenCalled();
+  });
+
+  it("bakes an STL source's tail in place: .bak, own-format bytes, watermark", async () => {
+    const c = ctx();
+    const original = await fs.readFile(stlModel);
+    const baked = new Uint8Array([1, 2, 3, 4]);
+    vi.mocked(c.pipeline.bakeMeshEdits).mockResolvedValueOnce({
+      bytes: baked,
+      outcomes: [{ index: 0, kind: "translate", applied: true }],
+      messages: [],
+    });
+    await applyEditOps(c, { path: stlModel, ops: [{ op: "translate", targets: ["node-0"], vec: [5, 0, 0] }] });
+    const r = await saveModelTool(c, { path: stlModel });
+    expect(r.baked).toBe(1);
+    const call = vi.mocked(c.pipeline.bakeMeshEdits).mock.lastCall!;
+    expect(call[1]).toBe("stl");
+    expect(call[3]).toBe("stl");
+    expect(new Uint8Array(await fs.readFile(stlModel))).toEqual(baked);
+    expect(await fs.readFile(`${stlModel}.bak`)).toEqual(original);
+    const state = await getState({ path: stlModel });
+    expect(state.bakedThrough).toBe(1);
+    // A second save with no new edits is a no-op.
+    const again = await saveModelTool(c, { path: stlModel });
+    expect(again.baked).toBe(0);
+    expect(c.pipeline.bakeMeshEdits).toHaveBeenCalledTimes(1);
+  });
+
+  it("writes nothing when the mesh bake throws", async () => {
+    const c = ctx();
+    const original = await fs.readFile(objModel);
+    vi.mocked(c.pipeline.bakeMeshEdits).mockRejectedValueOnce(new Error("bad obj"));
+    await applyEditOps(c, { path: objModel, ops: [{ op: "translate", targets: ["node-0"], vec: [5, 0, 0] }] });
+    await expect(saveModelTool(c, { path: objModel })).rejects.toThrow(/bad obj/);
+    expect(await fs.readFile(objModel)).toEqual(original);
+    await expect(fs.stat(`${objModel}.bak`)).rejects.toThrow();
   });
 });
 
@@ -2867,6 +2937,30 @@ describe("pin_annotation", () => {
     expect(result.pinned!.volumes).toEqual(["node-0"]);
     expect(result.pinned!.surfaces).toEqual(["node-0/face-3"]);
   });
+
+  it("pins a free-text note (tool: note), cleaned to one line, readable via get_state", async () => {
+    const result = await pinAnnotation({
+      path: stpModel,
+      tool: "note",
+      text: "  Check\nthis \u202Efillet  ",
+      anchorPoint: [1, 2, 3],
+      surfaces: ["face-4"],
+    });
+    expect(result.pinned).toMatchObject({ tool: "note", text: "Check this fillet", linePoints: [], surfaces: ["face-4"] });
+    expect(result.pinned!.tolerance).toBeUndefined();
+    const state = await getState({ path: stpModel });
+    expect(state.annotations.find((a: { tool: string }) => a.tool === "note")?.text).toBe("Check this fillet");
+  });
+
+  it("refuses a note with empty text, line points, or a tolerance band", async () => {
+    const base = { path: stpModel, tool: "note", anchorPoint: [0, 0, 0], surfaces: ["face-0"] };
+    await expect(pinAnnotation({ ...base, text: "   " })).rejects.toThrow(/non-empty text/i);
+    await expect(pinAnnotation({ ...base, text: "n", linePoints: [[0, 0, 0], [1, 0, 0]] })).rejects.toThrow(/linePoints must be empty/i);
+    await expect(
+      pinAnnotation({ ...base, text: "n", tolerance: { nominal: 1, plus: 0.1, measured: 1 } })
+    ).rejects.toThrow(/no tolerance band/i);
+    expect(await readAnnotations(stpModel)).toHaveLength(0);
+  });
 });
 
 describe("set_mesh_options", () => {
@@ -3051,7 +3145,8 @@ describe("generate_mesh", () => {
     expect(genCall[2].sizeMin).toBe(0.5);
     expect(genCall[2].sizeMax).toBe(0.5);
     expect(genCall[3]).toEqual([]); // parts dropped for STL
-    expect(result.warnings.some((w) => w.includes("NOT baked"))).toBe(true);
+    expect(result.warnings.some((w) => w.startsWith("Baked 1 of 1"))).toBe(true);
+    expect(vi.mocked(c.pipeline.bakeMeshEdits).mock.lastCall![1]).toBe("stl");
     expect(c.pipeline.exportBRep).not.toHaveBeenCalled();
   });
 
@@ -3062,7 +3157,8 @@ describe("generate_mesh", () => {
     const genCall = vi.mocked(c.pipeline.generateMesh).mock.lastCall!;
     expect(genCall[1].kind).toBe("stl");
     expect(genCall[3]).toEqual([]); // parts dropped, same as raw STL
-    expect(result.warnings.some((w) => w.includes("NOT baked"))).toBe(true);
+    expect(result.warnings.some((w) => w.startsWith("Baked 1 of 1"))).toBe(true);
+    expect(vi.mocked(c.pipeline.bakeMeshEdits).mock.lastCall![1]).toBe("obj");
     expect(c.pipeline.exportBRep).not.toHaveBeenCalled();
   });
 
@@ -3075,7 +3171,9 @@ describe("generate_mesh", () => {
     expect(c.pipeline.convertToStlBoundary).toHaveBeenCalledWith(expect.any(Uint8Array), "vtk", "model.vtk", []);
     const genCall = vi.mocked(c.pipeline.generateMesh).mock.lastCall!;
     expect(genCall[1].kind).toBe("stl");
-    expect(result.warnings.some((w) => w.includes("NOT baked"))).toBe(true);
+    // Baked over the converted boundary — the node-0 mesh the viewer edits.
+    expect(result.warnings.some((w) => w.startsWith("Baked 1 of 1"))).toBe(true);
+    expect(vi.mocked(c.pipeline.bakeMeshEdits).mock.lastCall![1]).toBe("stl");
     expect(c.pipeline.exportBRep).not.toHaveBeenCalled();
   });
 
@@ -3269,6 +3367,29 @@ describe("export_mesh", () => {
     const result = await exportMeshTool(c, { path: stpModel, format: "msh", outputPath: out });
     expect(await fs.readFile(out, "utf8")).toBe(FAKE_MESH_RESULT.mshText);
     expect(result.written.map((w) => w.path)).toEqual([out]);
+  });
+
+  it.each([2, 1, 0, -1])("records factual mesh replay provenance (%i applied)", async (applied) => {
+    const c = ctx();
+    const ops: EditOp[] = [0, 1].map(() => ({ op: "translate", targets: ["node-0"], vec: [1, 0, 0] }));
+    await writeEdits(stlModel, ops, []);
+    const raw = new Uint8Array(await fs.readFile(stlModel));
+    if (applied < 0) vi.mocked(c.pipeline.bakeMeshEdits).mockRejectedValue(new Error("bake failed"));
+    else vi.mocked(c.pipeline.bakeMeshEdits).mockResolvedValue({ bytes: raw, messages: [],
+      outcomes: ops.map((_, index) => ({ index, kind: "translate", applied: index < applied,
+        diagnostic: index < applied ? undefined : "target missing" })) });
+    const out = path.join(dir, "replay.msh");
+    await exportMeshTool(c, { path: stlModel, format: "msh", outputPath: out, manifest: true });
+    const manifest = JSON.parse(await fs.readFile(`${out}.handoff.json`, "utf8"));
+    const notes = manifest.notes.join("\n");
+    expect(notes).not.toContain("2 pending edit(s) were baked");
+    if (applied < 0) {
+      expect(notes).toContain("could NOT be baked (bake failed)");
+      expect(vi.mocked(c.pipeline.generateMesh).mock.calls[0][1]).toEqual({ kind: "stl", stlBytes: raw });
+    } else {
+      expect(notes).toContain(`Baked ${applied} of 2`);
+      if (applied < 2) expect(notes).toContain("target missing");
+    }
   });
 
   it("manifest: writes <output>.handoff.json with fingerprints, groups and coverage; an edit afterwards makes it stale", async () => {

@@ -675,7 +675,7 @@ server.registerTool(
   "compare_models",
   {
     description:
-      "Diff two models solid-by-solid, matched by bounding-box-centroid proximity + volume similarity — reports added/removed/matched solids, with each match's raw centre displacement and volume delta (never a black-box moved/unchanged verdict) so you can judge match confidence yourself. STEP/IGES/BREP (edits baked in) and STL/OBJ/PLY (raw file bytes, edits NOT baked in) are supported headless, in any combination; glTF and meshio-only formats return supported: false. Optional includeSnapshots (default false) additionally renders each B-rep side's whole-model before/after PNGs (render_snapshot's own DEFAULT_VIEWS engine) as image content blocks — costs up to two headless browser launches and up to 8 images, opt in only when you actually want to look at the geometry.",
+      "Diff two models solid-by-solid, matched by bounding-box-centroid proximity + volume similarity — reports added/removed/matched solids, with each match's raw centre displacement and volume delta (never a black-box moved/unchanged verdict) so you can judge match confidence yourself. STEP/IGES/BREP (edits baked in) and STL/OBJ/PLY/glTF (pending mesh edits baked in by the headless mesh-edit replay, then compared as STL) are supported headless, in any combination; meshio-only formats return supported: false. Optional includeSnapshots (default false) additionally renders each B-rep side's whole-model before/after PNGs (render_snapshot's own DEFAULT_VIEWS engine) as image content blocks — costs up to two headless browser launches and up to 8 images, opt in only when you actually want to look at the geometry.",
     inputSchema: { pathA: modelPath, pathB: modelPath, includeSnapshots: z.boolean().optional().describe("Also render before/after PNG snapshots for any B-rep side (default false)") },
   },
   wrap((args: { pathA: string; pathB: string; includeSnapshots?: boolean }) => compareModelsTool(ctx, args))
@@ -911,7 +911,7 @@ server.registerTool(
   "batch_export",
   {
     description:
-      "Export MANY models in one call, one row per file: a B-rep format (step/iges/brep), a one-view technical drawing (svg/dxf), or a drawing sheet (sheet-svg/sheet-dxf). Each file goes through the same single-file tool (export_brep / export_technical_drawing / export_drawing_sheet), so a batched output is identical to exporting it alone. One bad file is a failed row, never an aborted batch. Sources are never written; an output that would overwrite an input is always refused; existing outputs follow onCollision (skip by default, suffix, or overwrite). Each row states editsBaked (B-rep sources bake their whole op list; mesh sources' edits are never baked and say so). Sequential, with per-file progress; cancelling stops before the next file and keeps what was written. Also returns a TSV table (optionally written to reportPath).",
+      "Export MANY models in one call, one row per file: a B-rep format (step/iges/brep), a one-view technical drawing (svg/dxf), or a drawing sheet (sheet-svg/sheet-dxf). Each file goes through the same single-file tool (export_brep / export_technical_drawing / export_drawing_sheet), so a batched output is identical to exporting it alone. One bad file is a failed row, never an aborted batch. Sources are never written; an output that would overwrite an input is always refused; existing outputs follow onCollision (skip by default, suffix, or overwrite). Each row states editsBaked (B-rep sources bake their whole op list; mesh sources' drawings bake their pending edits through the headless mesh-edit replay and say so). Sequential, with per-file progress; cancelling stops before the next file and keeps what was written. Also returns a TSV table (optionally written to reportPath).",
     inputSchema: {
       inputs: z.array(z.string()).optional().describe("Model paths (give this OR root)"),
       root: z.string().optional().describe("Folder scanned like list_workspace_models (give this OR inputs)"),
@@ -982,7 +982,7 @@ server.registerTool(
   "export_svg_silhouette",
   {
     description:
-      "Write a 2D OUTLINE (silhouette) of a model to an .svg or .dxf file. OUTLINE ONLY -- there is NO hidden-line removal here (use export_technical_drawing for that), so this is NOT a dimensioned 2D technical drawing: back-facing geometry is not drawn, but neither are interior feature edges that don't lie on a silhouette. (OCCT's hidden-line machinery is entirely unavailable in this WASM build; HLRAppli_ReflectLines was probed and produced a strictly worse drawing.) Supports every source with host-side geometry: STEP/IGES/BREP (edits baked in, outline derived from the tessellation) and STL/OBJ/PLY/glTF (raw file bytes, edits NOT baked in); meshio-only formats return an error. Pick a named view (FRONT/BACK/TOP/BOTTOM/LEFT/RIGHT/ISO, matching render_snapshot's directions) or pass an explicit direction vector. 1 output unit = 1 model unit, so the output prints 1:1; the optional unit param (mm/cm/m/in/ft) applies the same real geometric scale export_brep's does. Output format is \"svg\" (default) or \"dxf\" — DXF chains silhouette segments into LWPOLYLINEs (with bulges for arcs where detected) plus singleton LINEs.",
+      "Write a 2D OUTLINE (silhouette) of a model to an .svg or .dxf file. OUTLINE ONLY -- there is NO hidden-line removal here (use export_technical_drawing for that), so this is NOT a dimensioned 2D technical drawing: back-facing geometry is not drawn, but neither are interior feature edges that don't lie on a silhouette. (OCCT's hidden-line machinery is entirely unavailable in this WASM build; HLRAppli_ReflectLines was probed and produced a strictly worse drawing.) Supports every source with host-side geometry: STEP/IGES/BREP (edits baked in, outline derived from the tessellation) and STL/OBJ/PLY/glTF (pending edits baked in by the headless mesh-edit replay); meshio-only formats return an error. Pick a named view (FRONT/BACK/TOP/BOTTOM/LEFT/RIGHT/ISO, matching render_snapshot's directions) or pass an explicit direction vector. 1 output unit = 1 model unit, so the output prints 1:1; the optional unit param (mm/cm/m/in/ft) applies the same real geometric scale export_brep's does. Output format is \"svg\" (default) or \"dxf\" — DXF chains silhouette segments into LWPOLYLINEs (with bulges for arcs where detected) plus singleton LINEs.",
     inputSchema: {
       path: modelPath,
       outputPath: z.string().describe("Absolute path to write the .svg/.dxf to (must not be the source path)"),
@@ -1309,15 +1309,15 @@ server.registerTool(
   "pin_annotation",
   {
     description:
-      "Pin a measurement as a persisted annotation in <model>.annotations.json, or remove one by id — the headless counterpart of the Measure panel's Pin button. A pin is a FROZEN snapshot (readout text, world-space anchor/line points, tolerance band), never live-recomputed; only whether it is detached is derived reactively. Anchors are positional entity ids accepted as given (a later renumbering is settled by the existing rebind pass, and an unresolvable pin renders detached rather than pointing at wrong geometry). Pinned annotations are what export_technical_drawing bakes as dimension glyphs, so this tool closes headless dimensioned drawings end to end.",
+      "Pin a measurement — or a free-text note (tool: \"note\", text = the note, no linePoints/tolerance) — as a persisted annotation in <model>.annotations.json, or remove one by id — the headless counterpart of the Measure panel's Pin button and the viewer's right-click Pin note. A pin is a FROZEN snapshot (readout text, world-space anchor/line points, tolerance band), never live-recomputed; only whether it is detached is derived reactively. Anchors are positional entity ids accepted as given (a later renumbering is settled by the existing rebind pass, and an unresolvable pin renders detached rather than pointing at wrong geometry). Pinned annotations are what export_technical_drawing bakes as dimension glyphs, so this tool closes headless dimensioned drawings end to end.",
     inputSchema: {
       path: modelPath,
       id: z.string().optional().describe("Annotation id; required with remove:true"),
       remove: z.boolean().optional().describe("Remove the annotation with this id instead of pinning"),
-      tool: z.string().optional().describe("Which measurement is frozen: distance|edgeLength|angle|radius"),
-      text: z.string().optional().describe("Frozen readout, e.g. \"12.5 mm\""),
+      tool: z.string().optional().describe("Which measurement is frozen: distance|edgeLength|angle|radius, or note for a free-text note"),
+      text: z.string().optional().describe("Frozen readout, e.g. \"12.5 mm\" — or the note's text for tool note (cleaned to one line, max 500 chars)"),
       anchorPoint: z.array(z.number()).length(3).optional().describe("Frozen world-space label position"),
-      linePoints: z.array(z.array(z.number()).length(3)).optional().describe("Frozen overlay line points: exactly 2 for distance/angle, empty for edgeLength/radius"),
+      linePoints: z.array(z.array(z.number()).length(3)).optional().describe("Frozen overlay line points: exactly 2 for distance/angle, empty for edgeLength/radius/note"),
       volumes: z.array(z.string()).optional().describe("Anchored solid-N ids"),
       surfaces: z.array(z.string()).optional().describe("Anchored face-N ids"),
       lines: z.array(z.string()).optional().describe("Anchored edge-N ids"),
@@ -1646,7 +1646,7 @@ server.registerTool(
   "save_model",
   {
     description:
-      "Bake the unbaked op tail into the CAD source file itself (STEP→STEP, IGES→IGES, BREP→BREP only) — the same write export_brep performs, pointed at the file it came from. The sidecar keeps the full op list with the bakedThrough watermark (history preserved, not cleared); a one-deep <model>.bak is written beside the source first. Mesh/meshio/CAD-text sources are refused. This server cannot see whether the file is open in VS Code — save (or close) the editor session first so its autosave does not race this write.",
+      "Bake the unbaked op tail into the CAD source file itself (STEP→STEP, IGES→IGES, BREP→BREP; STL→STL, OBJ→OBJ, PLY→PLY via the headless mesh-edit replay — the same three.js engine and exporters the viewer uses, native mm, no id rebind needed) — pointed at the file it came from. The sidecar keeps the full op list with the bakedThrough watermark (history preserved, not cleared); a one-deep <model>.bak is written beside the source first. glTF (its exporter emits only .glb), meshio-only and CAD-text sources are refused. This server cannot see whether the file is open in VS Code — save (or close) the editor session first so its autosave does not race this write.",
     inputSchema: {
       path: modelPath,
     },

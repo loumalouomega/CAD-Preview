@@ -186,7 +186,7 @@ export class Viewer {
   private lastHoverKey: string | null = null;
   private lastHoverAt = 0;
   /** Right-click reporting; `null` until `setContextMenuHandler` registers one. */
-  private onContextMenu: ((r: PickResult, cssX: number, cssY: number) => void) | null = null;
+  private onContextMenu: ((r: PickResult, cssX: number, cssY: number, point: [number, number, number]) => void) | null = null;
   private onEmptyPick: (() => void) | null = null;
   private pointerDownPos: { x: number; y: number } | null = null;
   private renderDirty = false;
@@ -1675,7 +1675,8 @@ export class Viewer {
    * no entity to compute groups from, and swallowing the default menu there
    * would remove a capability without offering one.
    */
-  setContextMenuHandler(onMenu: (r: PickResult, cssX: number, cssY: number) => void): void {
+  /** `point` is the world-space hit on the right-clicked entity (a note's anchor). */
+  setContextMenuHandler(onMenu: (r: PickResult, cssX: number, cssY: number, point: [number, number, number]) => void): void {
     if (!this.onContextMenu) {
       this.renderer.domElement.addEventListener("contextmenu", this.onCanvasContextMenu);
     }
@@ -1700,7 +1701,7 @@ export class Viewer {
         // Only suppress the browser menu once we actually have something to
         // replace it with.
         event.preventDefault();
-        this.onContextMenu(r, cssX, cssY);
+        this.onContextMenu(r, cssX, cssY, [h.point.x, h.point.y, h.point.z]);
         return;
       }
     }
@@ -2588,17 +2589,5 @@ export class Viewer {
   };
 }
 
-/** Builds a standard-material mesh for a raw geometry, computing normals if absent. */
-export function meshFromGeometry(geometry: THREE.BufferGeometry): THREE.Mesh {
-  if (!geometry.getAttribute("normal")) {
-    geometry.computeVertexNormals();
-  }
-  const material = new THREE.MeshStandardMaterial({
-    color: defaultFaceColor(),
-    metalness: 0.1,
-    roughness: 0.7,
-    side: THREE.DoubleSide,
-    flatShading: false,
-  });
-  return new THREE.Mesh(geometry, material);
-}
+/** Moved to `meshObject.ts` (shared with the headless mesh-edit bake); re-exported for existing callers. */
+export { meshFromGeometry } from "./meshObject";

@@ -4,6 +4,7 @@ import {
   MDPA_KIND_INFO,
   VOLUME_KIND_ORDER,
   SURFACE_KIND_ORDER,
+  LINE_KIND_ORDER,
   surfaceTriangles,
   boundaryTriangles,
   boundaryFaceRings,
@@ -59,7 +60,7 @@ describe("GMSH_ELEMENT_TYPES table invariants", () => {
   });
 
   it("kind orders cover every kind exactly once, volume vs surface split matches info", () => {
-    const all = [...VOLUME_KIND_ORDER, ...SURFACE_KIND_ORDER];
+    const all = [...VOLUME_KIND_ORDER, ...SURFACE_KIND_ORDER, ...LINE_KIND_ORDER];
     expect(new Set(all).size).toBe(all.length);
     expect(new Set(all)).toEqual(new Set(Object.keys(MDPA_KIND_INFO)));
     for (const k of VOLUME_KIND_ORDER) expect(MDPA_KIND_INFO[k].elementName).not.toBeNull();

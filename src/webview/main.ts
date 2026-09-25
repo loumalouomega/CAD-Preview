@@ -7,8 +7,10 @@ import { UI_GLYPHS } from "../uiGlyphs";
 import { MacrosPanel } from "./macrosPanel";
 import { selectionGroupsFor } from "./selectionGroups";
 import { loadMeshFromUrl } from "./meshLoaders";
+import { tagMeshEntities } from "./meshObject";
 import { COMPARABLE_MESH_FORMATS, type CadFormat, type MeshParseFormat } from "../fileRouter";
 import { bomTsv } from "../bomExport";
+import { holeTableTsv } from "../holeTable";
 import { exportModel } from "./meshExporters";
 import { buildGroupFromEncoded, buildFEMesh, buildWorstElementsHighlight, buildColorFieldOverlay } from "./geometryBuilder";
 import { viridisCssGradientStops } from "./colorMap";
@@ -259,6 +261,12 @@ const partsPanel = new PartsPanel(
       setStatus("Copying BOM…");
       post({ type: "bomRequest", requestId });
     },
+    onCopyHoleTable: () => {
+      const requestId = `${Date.now()}-${Math.random()}`;
+      holeTableRequestId = requestId;
+      setStatus("Copying hole table…");
+      post({ type: "holeTableRequest", requestId });
+    },
   },
   visibilityState
 );
@@ -281,7 +289,7 @@ function renderAnnotationsList(): void {
     const evaluation = a.tolerance ? evaluateToleranceBand(a.tolerance.measured, a.tolerance) : null;
     const outOfBand = evaluation !== null && !evaluation.withinTolerance;
     const displayText = annotatedLabelText(a.text, a.tolerance);
-    const label = a.label ? `${a.label}: ${displayText}` : displayText;
+    const label = a.tool === "note" ? `Note: ${displayText}` : a.label ? `${a.label}: ${displayText}` : displayText;
 
     const row = document.createElement("div");
     row.className = detached ? "annotation-row detached" : "annotation-row";
@@ -296,7 +304,7 @@ function renderAnnotationsList(): void {
 
     const showBtn = document.createElement("button");
     showBtn.textContent = "Show";
-    showBtn.title = "Re-display this measurement's overlay";
+    showBtn.title = a.tool === "note" ? "Show this note in the view" : "Re-display this measurement's overlay";
     showBtn.disabled = detached;
     showBtn.addEventListener("click", () => {
       viewer.showMeasurementOverlay(
@@ -1213,6 +1221,18 @@ const meshingPanel = new MeshingPanel(document.getElementById("meshing-panel")!,
     meshioOpsRequestId = requestId;
     post({ type: "meshioOpsRequest", requestId, ops });
   },
+  // Refinement sweep (roadmap Tier 1 "Parity gaps"): stale-guarded like every
+  // other round trip; a mesh source sends its displayed geometry, as Generate does.
+  onSweep: async (sizes, writeOutputs) => {
+    const requestId = `${Date.now()}-${Math.random()}`;
+    meshSweepRequestId = requestId;
+    const stl = await currentStlIfMeshSource();
+    post({ type: "meshSweepRequest", requestId, sizes, options: meshingModel.get(), ...(stl ? { stl } : {}), ...(writeOutputs ? { writeOutputs: true } : {}) });
+  },
+  onSweepCopy: async (tsv) => {
+    const copied = await copyTextToClipboard(tsv);
+    setStatus(copied ? "Sweep table copied." : "Copy failed: the clipboard write was denied.", !copied);
+  },
   // Saved presets need no requestId round trip: applying/saving/deleting is
   // host-owned end to end (the host re-posts `meshingOptions` after an apply
   // and `meshingPresets` after a save/delete), so success/failure surface
@@ -1253,6 +1273,11 @@ let massPropertiesRequestId: string | null = null;
 // locally via `bomTsv` (zero-import pure, so the webview bundle stays
 // WASM-free), and copied with the async clipboard API.
 let bomRequestId: string | null = null;
+// Parts-section "Copy hole table" (roadmap Tier 1 "Parity gaps") — same shape
+// as the BOM copy, over `computeHoleTable` / `holeTableTsv`.
+let holeTableRequestId: string | null = null;
+// FE Mesh panel refinement sweep (roadmap Tier 1 "Parity gaps").
+let meshSweepRequestId: string | null = null;
 
 // ── Standard parts (step.parts search/insert) ────────────────────────────
 // Search requestId is stale-guarded like every other request/response round
@@ -1597,6 +1622,37 @@ function refreshBomButton(): void {
     partsPanel.setBomEnabled(false, "BOM rows need a B-rep source (mesh sources have no per-part rows)");
   } else {
     partsPanel.setBomEnabled(false, "Define a part first — an empty document would copy a header-only TSV");
+  }
+  if (sourceKind === "brep") {
+    partsPanel.setHoleTableEnabled(true, "Copy the hole table (one row per hole size and axis) as tab-separated text");
+  } else {
+    partsPanel.setHoleTableEnabled(false, "Hole tables need a B-rep source (mesh sources have no analytic cylinder faces)");
+  }
+}
+
+/**
+ * Writes text to the clipboard, falling back to the deprecated execCommand
+ * path via a temporary selected textarea where the async clipboard API is
+ * denied (some webview/embed contexts). Resolves true when the copy landed.
+ */
+async function copyTextToClipboard(text: string): Promise<boolean> {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    try {
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      ta.style.position = "fixed";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.select();
+      const ok = document.execCommand("copy");
+      ta.remove();
+      return ok;
+    } catch {
+      return false;
+    }
   }
 }
 
@@ -3306,7 +3362,7 @@ function setupSelectionControls(): void {
     setStatus(`Selected ${entities.length} ${selectMode === "line" ? "edges" : "faces"}.`);
   };
 
-  viewer.setContextMenuHandler((result, cssX, cssY) => {
+  viewer.setContextMenuHandler((result, cssX, cssY, point) => {
     if (!ctxMenu) return;
     closeMenu();
     const model = viewer.getModel();
@@ -3314,6 +3370,47 @@ function setupSelectionControls(): void {
 
     const groups = selectionGroupsFor(collectTargets(model, selectMode), selectMode, result.entityId);
     ctxMenu.textContent = "";
+
+    // Free-text note pinned at the clicked point (roadmap Tier 1 "Parity
+    // gaps"): the interactive half of pin_annotation's `tool: "note"`. Same
+    // sidecar record, same Saved list, same drawing export as a measurement
+    // pin. Clicking swaps the menu for an inline field — webviews block
+    // prompt() — where Enter commits and Escape cancels.
+    const noteBtn = document.createElement("button");
+    noteBtn.id = "ctx-pin-note";
+    noteBtn.setAttribute("role", "menuitem");
+    noteBtn.textContent = "Pin note…";
+    noteBtn.title = `Pin a free-text note to ${result.entityId}`;
+    noteBtn.addEventListener("click", () => {
+      ctxMenu.textContent = "";
+      const input = document.createElement("input");
+      input.id = "ctx-note-input";
+      input.type = "text";
+      input.placeholder = `Note on ${result.entityId} — Enter to pin`;
+      input.maxLength = 500;
+      input.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          const text = input.value.trim();
+          if (!text) {
+            setStatus("A note needs text — type something or press Escape.", true);
+            return;
+          }
+          annotationsModel.push(noteAnnotation(text, result, point));
+          setStatus(`Pinned note to ${result.entityId}`);
+          closeMenu();
+        } else if (e.key === "Escape") {
+          e.preventDefault();
+          closeMenu();
+        }
+      });
+      ctxMenu.append(input);
+      input.focus();
+    });
+    ctxMenu.append(noteBtn);
+    const sep = document.createElement("div");
+    sep.className = "ctx-sep";
+    ctxMenu.append(sep);
 
     if (groups.length === 0) {
       const empty = document.createElement("div");
@@ -3539,6 +3636,25 @@ function readToleranceFields(): { band?: AnnotatedTolerance; incomplete: boolean
 }
 
 let annotationIdCounter = 0;
+
+/** Builds a free-text note {@link Annotation} anchored to one picked entity,
+ * with its label at the right-clicked world point. Mirrors
+ * `annotationFromLastMeasurement`'s id scheme and anchor bucketing. */
+function noteAnnotation(text: string, pick: SelectedEntity, point: [number, number, number]): Annotation {
+  annotationIdCounter++;
+  const bucket = (t: SelectedEntity["entityType"]): string[] => (pick.entityType === t ? [pick.entityId] : []);
+  return {
+    id: `ann-${Date.now()}-${annotationIdCounter}`,
+    tool: "note",
+    text,
+    anchorPoint: point,
+    linePoints: [],
+    volumes: bucket("volume"),
+    surfaces: bucket("surface"),
+    lines: bucket("line"),
+    points: bucket("point"),
+  };
+}
 
 /** Builds a new {@link Annotation} from the most recently completed
  * measurement — anchors are bucketed by entity kind exactly like
@@ -5008,7 +5124,7 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
         meshingPanel.setMeshioOpsAvailable(false); // B-rep has exact geometry — no meshio mesh model
         clashPanel.setEligible(true); // exact booleans exist only for B-rep
         clearClashResults(); // re-tessellation may renumber the ids results name
-        bomRequestId = null; // a new model supersedes any in-flight BOM request
+        bomRequestId = null; holeTableRequestId = null; // a new model supersedes any in-flight BOM request
         setPrimitivesEligible(true); // exact analytic surfaces exist only for B-rep
         primitiveRecognizeRequestId = null; // a new model supersedes any in-flight recognition
         lastPrimitiveReport = null;
@@ -5089,7 +5205,7 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
       meshingPanel.setMeshioOpsAvailable(false); // native mesh has no meshio++ mesh model
       clashPanel.setEligible(false); // no exact boolean geometry for a mesh
       clearClashResults();
-      bomRequestId = null; // a new model supersedes any in-flight BOM request (eligibility refreshes in loadMeshObjectFromUrl once sourceKind settles)
+      bomRequestId = null; holeTableRequestId = null; // a new model supersedes any in-flight BOM request (eligibility refreshes in loadMeshObjectFromUrl once sourceKind settles)
       setPrimitivesEligible(false); // a mesh has no analytic surfaces to classify
       viewer.setFitSeedPickHandler(null);
       lastRegionFit = null;
@@ -5107,7 +5223,7 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
       // one except OpenFOAM (geometry-only case staging, no readMesh path).
       meshingPanel.setMeshioOpsAvailable(msg.sourceFormat !== "openfoam");
       meshioOpsRequestId = null; // a new document supersedes any in-flight op
-      bomRequestId = null; // same for an in-flight BOM request (eligibility refreshes in loadMeshObjectFromUrl once sourceKind settles)
+      bomRequestId = null; holeTableRequestId = null; // same for an in-flight BOM request (eligibility refreshes in loadMeshObjectFromUrl once sourceKind settles)
       clashPanel.setEligible(false); // meshio boundary has no B-rep booleans
       setPrimitivesEligible(false); // meshio boundary has no analytic surfaces
       viewer.setFitSeedPickHandler(null);
@@ -5333,28 +5449,7 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
       if (msg.requestId !== bomRequestId) break; // stale — a newer click/load superseded it
       bomRequestId = null;
       for (const w of msg.warnings) setStatus(w);
-      const tsv = bomTsv(msg.rows);
-      let copied = false;
-      try {
-        await navigator.clipboard.writeText(tsv);
-        copied = true;
-      } catch {
-        // Fallback for contexts where the async clipboard API is denied (some
-        // webview/embed contexts): the deprecated execCommand path via a
-        // temporary selected textarea.
-        try {
-          const ta = document.createElement("textarea");
-          ta.value = tsv;
-          ta.style.position = "fixed";
-          ta.style.opacity = "0";
-          document.body.appendChild(ta);
-          ta.select();
-          copied = document.execCommand("copy");
-          ta.remove();
-        } catch {
-          copied = false;
-        }
-      }
+      const copied = await copyTextToClipboard(bomTsv(msg.rows));
       if (copied) {
         setStatus(`BOM copied (${msg.rows.length} row${msg.rows.length === 1 ? "" : "s"}).`);
       } else {
@@ -5366,6 +5461,26 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
     case "bomError":
       if (msg.requestId !== bomRequestId) break;
       bomRequestId = null;
+      setStatus(msg.message, true);
+      break;
+
+    case "holeTableResult": {
+      if (msg.requestId !== holeTableRequestId) break; // stale — a newer click/load superseded it
+      holeTableRequestId = null;
+      for (const w of msg.warnings) setStatus(w);
+      const copied = await copyTextToClipboard(holeTableTsv(msg.rows));
+      if (!copied) {
+        setStatus("Copy hole table failed: the clipboard write was denied.", true);
+      } else {
+        const holes = msg.rows.reduce((n, r) => n + r.count, 0);
+        setStatus(`Hole table copied (${msg.rows.length} row${msg.rows.length === 1 ? "" : "s"}, ${holes} face${holes === 1 ? "" : "s"}).`);
+      }
+      break;
+    }
+
+    case "holeTableError":
+      if (msg.requestId !== holeTableRequestId) break;
+      holeTableRequestId = null;
       setStatus(msg.message, true);
       break;
 
@@ -5585,6 +5700,18 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
       if (msg.requestId !== meshioOpsRequestId) break;
       meshioOpsRequestId = null;
       meshingPanel.renderMeshOpsStatus(msg.message, true);
+      break;
+
+    case "meshSweepResult":
+      if (msg.requestId !== meshSweepRequestId) break; // stale — a newer run/load superseded it
+      meshSweepRequestId = null;
+      meshingPanel.renderSweepResult(msg.runs, msg.warnings, msg.note, msg.outputDir);
+      break;
+
+    case "meshSweepError":
+      if (msg.requestId !== meshSweepRequestId) break;
+      meshSweepRequestId = null;
+      meshingPanel.renderSweepStatus(msg.message, true);
       break;
 
     case "fitRegionResult":
@@ -5843,20 +5970,6 @@ async function loadMeshObjectFromUrl(
   } catch (err) {
     setStatus(`Failed to load model: ${(err as Error).message}`, true);
   }
-}
-
-/**
- * Tags a Three.js-loaded model with STABLE ids (traversal order, not uuid) so
- * part assignments round-trip across reopen. Each object's id becomes its
- * `groupId`; a mesh's id is its volume id, carried onto the facet group built by
- * `splitMeshesIntoFacets`. The shared id keeps the Components tree highlight
- * working.
- */
-function tagMeshEntities(obj: THREE.Object3D): void {
-  let i = 0;
-  obj.traverse((o) => {
-    o.userData.groupId = `node-${i++}`;
-  });
 }
 
 /** Build a TreeNode from an Object3D hierarchy (for Three.js-loaded formats). */
