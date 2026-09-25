@@ -25,6 +25,7 @@
 import * as http from "http";
 import * as fs from "fs";
 import * as path from "path";
+import { createRequire } from "node:module";
 import { loadBRep } from "./occtService";
 import { encodeBuffer } from "./protocol";
 import { viewerBodyHtml } from "./viewerDom";
@@ -105,6 +106,25 @@ function nodeSupportsPlaywright(): boolean {
 
 const NODE_TOO_OLD_REASON = `${NOT_AVAILABLE_REASON} (this Node.js runtime is v${process.versions.node}; Playwright requires v${MIN_NODE_MAJOR_FOR_PLAYWRIGHT}+)`;
 
+/** Resolve Playwright beside the extension first. In a KKSS source checkout,
+ * the MCP runtime is copied into out/cad-runtime while the existing optional
+ * install lives under cad/node_modules. This fallback uses that dev install
+ * without adding it to the packaged runtime. */
+async function loadPlaywright(): Promise<any> {
+  try {
+    return await import("playwright");
+  } catch (extensionError) {
+    const extensionRoot = process.env.CAD_PREVIEW_ROOT;
+    if (!extensionRoot) throw extensionError;
+    try {
+      const checkoutPackage = path.resolve(extensionRoot, "../../cad/package.json");
+      return createRequire(checkoutPackage)("playwright");
+    } catch {
+      throw extensionError;
+    }
+  }
+}
+
 /** Cheap-ish availability probe (launches + immediately closes a browser) —
  * NOT called by `describe_capabilities` (that tool is meant to be
  * instant/side-effect-free); `render_snapshot` calls this itself and reports
@@ -112,7 +132,7 @@ const NODE_TOO_OLD_REASON = `${NOT_AVAILABLE_REASON} (this Node.js runtime is v$
 export async function isRenderAvailable(): Promise<{ available: boolean; reason?: string }> {
   if (!nodeSupportsPlaywright()) return { available: false, reason: NODE_TOO_OLD_REASON };
   try {
-    const { chromium } = await import("playwright");
+    const { chromium } = await loadPlaywright();
     const browser = await chromium.launch({ headless: true, args: LAUNCH_ARGS });
     await browser.close();
     return { available: true };
@@ -214,7 +234,7 @@ export async function renderSnapshot(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let playwright: any;
   try {
-    playwright = await import("playwright");
+    playwright = await loadPlaywright();
   } catch (err) {
     return { supported: false, reason: `${NOT_AVAILABLE_REASON} (${(err as Error).message})` };
   }
