@@ -184,15 +184,10 @@ These are outcome groupings, not release numbers. Independent small items can sh
 
 *Area: Platform.*
 
-The dependency bumps and weekly monitor are implemented; see `CLAUDE.md`'s
-"Dependency currency and embedded kernel packaging" section. Local report-only
-verification found Three.js 0.186.1 ahead of the locked 0.186.0.
+The dependency bumps and weekly monitor are implemented; see `CLAUDE.md`'s "Dependency currency and embedded kernel packaging" section. Local report-only verification found Three.js 0.186.1 ahead of the locked 0.186.0.
 
-- **Remaining:** after the workflow is available on GitHub, run
-  `dependency-watch.yml` once via manual dispatch (or observe its Monday run).
-- **Done when:** it has either opened/updated its tracking issue or successfully
-  reported that all watched dependencies are current. Local mocked issue tests
-  and a report-only run do not establish this GitHub-side result.
+- **Remaining:** after the workflow is available on GitHub, run `dependency-watch.yml` once via manual dispatch (or observe its Monday run).
+- **Done when:** it has either opened/updated its tracking issue or successfully reported that all watched dependencies are current. Local mocked issue tests and a report-only run do not establish this GitHub-side result.
 
 #### 1.2 Verification-debt burn-down {#verification-debt-burn-down}
 
