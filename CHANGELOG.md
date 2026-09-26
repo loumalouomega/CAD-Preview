@@ -4,6 +4,17 @@ All notable changes to the "CAD Preview" extension are documented in this file.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/); this project does not yet strictly follow Semantic Versioning (pre-1.0 releases moved fast and bundled multiple features per bump).
 
+## [3.6.0] - 2026-09-26
+
+### Added
+
+- **Embedded kernel runtime loading.** meshio++ and fTetWild runtime files are staged beside the CJS bundles, and their loaders resolve either installed packages or the staged layout used by embedded applications.
+- **Weekly dependency watch.** A scheduled workflow checks OCCT, Gmsh, meshio++, fTetWild, Three.js and the MCP SDK, and creates or updates one issue when versions trail npm.
+
+### Changed
+
+- **meshio++ upgraded from 16.7.0 to 16.16.0; MCP SDK upgraded from 1.30.0 to 1.30.1.** Compatibility checks retained MED, CGNS and GiD metadata fallbacks, while the new meshio++ release fixes mixed-topology XDMF remeshing.
+
 ## [3.5.0] - 2026-09-25
 
 ### Added
