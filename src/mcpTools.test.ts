@@ -3,6 +3,7 @@ import * as fs from "fs/promises";
 import * as os from "os";
 import * as path from "path";
 import { createHash } from "node:crypto";
+import { hashBytes, parseSaveJournal, serializeSaveJournal } from "./saveJournal";
 import {
   describeCapabilities,
   allOpKinds,
@@ -2670,6 +2671,196 @@ describe("save_model (Tier 0 Phase 3)", () => {
     await expect(saveModelTool(c, { path: objModel })).rejects.toThrow(/bad obj/);
     expect(await fs.readFile(objModel)).toEqual(original);
     await expect(fs.stat(`${objModel}.bak`)).rejects.toThrow();
+  });
+
+  it("opens and closes the save transaction around the source write", async () => {
+    const c = ctx();
+    vi.mocked(c.pipeline.bakeMeshEdits).mockResolvedValueOnce({ bytes: new Uint8Array([9, 9]), outcomes: [], messages: [] });
+    await applyEditOps(c, { path: stlModel, ops: [{ op: "translate", targets: ["node-0"], vec: [5, 0, 0] }] });
+    await saveModelTool(c, { path: stlModel });
+    // Nothing left behind: the marker is per-save, not a sidecar.
+    await expect(fs.stat(`${stlModel}.save-journal.json`)).rejects.toThrow();
+    await expect(fs.stat(path.join(dir, "model.save-tmp.stl"))).rejects.toThrow();
+  });
+
+  it("closes the transaction and leaves the source alone when the rename fails", async () => {
+    const c = ctx();
+    // A directory at the source's path makes the rename fail, which is the
+    // "the source never moved" branch: the marker must be closed, not left for
+    // a later open to reason about a save that demonstrably did not happen.
+    const target = path.join(dir, "as-dir.stl");
+    await fs.mkdir(target);
+    await applyEditOps(c, { path: target, ops: [{ op: "translate", targets: ["node-0"], vec: [5, 0, 0] }] });
+    vi.mocked(c.pipeline.bakeMeshEdits).mockResolvedValueOnce({ bytes: new Uint8Array([9, 9]), outcomes: [], messages: [] });
+    await expect(saveModelTool(c, { path: target })).rejects.toThrow();
+    await expect(fs.stat(`${target}.save-journal.json`)).rejects.toThrow();
+    await expect(fs.stat(path.join(dir, "as-dir.save-tmp.stl"))).rejects.toThrow();
+  });
+});
+
+/**
+ * Roadmap 1.5, "Recoverable mesh source saves" — recovery on open. Each test
+ * STAGES the on-disk state a process death at that boundary would leave, then
+ * calls the real `load_model` and asserts the repaired pair.
+ *
+ * The geometry half of the double-apply is asserted by the integration suite
+ * (only the webview actually replays a mesh op list); headless, the fact
+ * recovery fixes is the watermark itself, so the control case here is a staged
+ * stale watermark with NO journal, which must be left alone.
+ */
+describe("recoverable mesh save (roadmap 1.5)", () => {
+  const ORIGINAL = "solid orig\nendsolid orig\n";
+  const BAKED = "solid baked\nendsolid baked\n";
+
+  /** Stages a save-in-place interrupted at `point`. */
+  async function stage(modelPath: string, point: "before-source" | "after-source" | "after-watermark" | "unrecognised", bakedThrough = 0) {
+    const baked = point === "unrecognised" ? "solid torn\nendsolid tor" : BAKED;
+    await fs.writeFile(modelPath, point === "before-source" ? ORIGINAL : baked, "utf8");
+    await fs.writeFile(`${modelPath}.bak`, ORIGINAL, "utf8");
+    await fs.writeFile(
+      `${modelPath}.edits.json`,
+      JSON.stringify({
+        version: 1,
+        source: path.basename(modelPath),
+        bakedThrough: point === "after-watermark" ? 1 : bakedThrough,
+        ops: [{ op: "translate", targets: ["node-0"], vec: [100, 0, 0] }],
+      }),
+      "utf8"
+    );
+    await fs.writeFile(
+      `${modelPath}.save-journal.json`,
+      serializeSaveJournal({
+        version: 1,
+        source: path.basename(modelPath),
+        saveId: "save-1",
+        startedAt: "2026-09-26T00:00:00.000Z",
+        format: "stl",
+        bakedThrough: 1,
+        preSaveSha256: hashBytes(Buffer.from(ORIGINAL, "utf8")),
+        bakedSha256: hashBytes(Buffer.from(BAKED, "utf8")),
+      }),
+      "utf8"
+    );
+    if (point === "before-source") await fs.writeFile(path.join(dir, "model.save-tmp.stl"), BAKED, "utf8");
+  }
+
+  it("finishes the save when the source holds the baked geometry but the watermark never landed", async () => {
+    const c = ctx();
+    await stage(stlModel, "after-source");
+    const result = await loadModel(c, { path: stlModel });
+    expect(result.warnings.join(" ")).toMatch(/the save was completed/i);
+    const state = await getState({ path: stlModel });
+    expect(state.bakedThrough).toBe(1);
+    // History preserved — only the watermark moved.
+    expect(state.edits).toHaveLength(1);
+    await expect(fs.stat(`${stlModel}.save-journal.json`)).rejects.toThrow();
+  });
+
+  it("discards the marker when the source was never rewritten, sweeping the temp sibling", async () => {
+    const c = ctx();
+    await stage(stlModel, "before-source");
+    const result = await loadModel(c, { path: stlModel });
+    expect(result.warnings.join(" ")).toMatch(/never rewritten/i);
+    expect((await getState({ path: stlModel })).bakedThrough).toBe(0);
+    expect(await fs.readFile(stlModel, "utf8")).toBe(ORIGINAL);
+    await expect(fs.stat(`${stlModel}.save-journal.json`)).rejects.toThrow();
+    await expect(fs.stat(path.join(dir, "model.save-tmp.stl"))).rejects.toThrow();
+  });
+
+  it("does nothing but clean up when the watermark already landed", async () => {
+    const c = ctx();
+    await stage(stlModel, "after-watermark");
+    const result = await loadModel(c, { path: stlModel });
+    // A mesh load always carries its two standing mesh-facts warnings, so the
+    // assertion is on the ABSENCE of a recovery line, not on an empty array.
+    expect(result.warnings.join(" ")).not.toMatch(/interrupted save/i);
+    expect((await getState({ path: stlModel })).bakedThrough).toBe(1);
+    await expect(fs.stat(`${stlModel}.save-journal.json`)).rejects.toThrow();
+  });
+
+  it("warns and changes NOTHING when the source matches neither hash", async () => {
+    const c = ctx();
+    const before = await fs.readFile(stlModel, "utf8");
+    await stage(stlModel, "unrecognised");
+    const torn = await fs.readFile(stlModel, "utf8");
+    const result = await loadModel(c, { path: stlModel });
+    expect(result.warnings.join(" ")).toMatch(/Nothing has been changed/);
+    // Headless has no prompt, so the unrecognised branch must never act.
+    expect(await fs.readFile(stlModel, "utf8")).toBe(torn);
+    expect(await fs.readFile(`${stlModel}.bak`, "utf8")).toBe(ORIGINAL);
+    expect((await getState({ path: stlModel })).bakedThrough).toBe(0);
+    // The marker survives, carrying the recorded "do not ask again" decision.
+    const kept = parseSaveJournal(await fs.readFile(`${stlModel}.save-journal.json`, "utf8"));
+    expect(kept?.resolution).toBe("deferred");
+    expect(before).not.toBe(torn);
+  });
+
+  it("is idempotent: a second load after a recovery changes nothing", async () => {
+    const c = ctx();
+    await stage(stlModel, "after-source");
+    await loadModel(c, { path: stlModel });
+    const after = await fs.readFile(stlModel, "utf8");
+    const second = await loadModel(c, { path: stlModel });
+    expect(second.warnings.join(" ")).not.toMatch(/interrupted save/i);
+    expect(await fs.readFile(stlModel, "utf8")).toBe(after);
+    expect((await getState({ path: stlModel })).bakedThrough).toBe(1);
+  });
+
+  it("leaves a stale watermark alone when there is no journal — the control", async () => {
+    // Proves the assertions above are not vacuous: with the marker removed the
+    // very same staged file reports bakedThrough 0, which is precisely the
+    // double-apply recovery exists to prevent.
+    const c = ctx();
+    await stage(stlModel, "after-source");
+    await fs.rm(`${stlModel}.save-journal.json`);
+    const result = await loadModel(c, { path: stlModel });
+    expect(result.warnings.join(" ")).not.toMatch(/interrupted save/i);
+    expect((await getState({ path: stlModel })).bakedThrough).toBe(0);
+  });
+
+  it("ignores a staged journal on a B-rep source (the mesh-only gate)", async () => {
+    const c = ctx();
+    await stage(stpModel, "after-source");
+    await loadModel(c, { path: stpModel });
+    expect((await getState({ path: stpModel })).bakedThrough).toBe(0);
+    await expect(fs.stat(`${stpModel}.save-journal.json`)).resolves.toBeDefined();
+  });
+
+  it("ignores a staged journal on a glTF source (no same-format writer)", async () => {
+    const c = ctx();
+    // The marker only — the real glTF fixture's bytes must stay parseable, or
+    // this would be testing gltfParser rather than the recovery gate.
+    await fs.writeFile(
+      `${gltfModel}.save-journal.json`,
+      serializeSaveJournal({
+        version: 1,
+        source: path.basename(gltfModel),
+        saveId: "save-1",
+        startedAt: "2026-09-26T00:00:00.000Z",
+        format: "gltf",
+        bakedThrough: 1,
+        preSaveSha256: hashBytes(Buffer.from(ORIGINAL, "utf8")),
+        bakedSha256: hashBytes(Buffer.from(BAKED, "utf8")),
+      }),
+      "utf8"
+    );
+    const result = await loadModel(c, { path: gltfModel });
+    expect(result.warnings.join(" ")).not.toMatch(/interrupted save/i);
+    expect((await getState({ path: gltfModel })).bakedThrough).toBe(0);
+    await expect(fs.stat(`${gltfModel}.save-journal.json`)).resolves.toBeDefined();
+  });
+
+  it("completes a staged interrupted save when save_model is called again", async () => {
+    const c = ctx();
+    await stage(stlModel, "after-source");
+    vi.mocked(c.pipeline.bakeMeshEdits).mockResolvedValueOnce({ bytes: Buffer.from(BAKED, "utf8"), outcomes: [], messages: [] });
+    const r = await saveModelTool(c, { path: stlModel });
+    expect(r.warnings.join(" ")).toMatch(/the save was completed/i);
+    // Recovery advanced the watermark first, so the pending tail is now empty
+    // and the re-save is a no-op rather than a second application.
+    expect(r.baked).toBe(0);
+    expect(c.pipeline.bakeMeshEdits).not.toHaveBeenCalled();
+    await expect(fs.stat(`${stlModel}.save-journal.json`)).rejects.toThrow();
   });
 });
 
