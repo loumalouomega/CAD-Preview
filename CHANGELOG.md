@@ -4,6 +4,28 @@ All notable changes to the "CAD Preview" extension are documented in this file.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/); this project does not yet strictly follow Semantic Versioning (pre-1.0 releases moved fast and bundled multiple features per bump).
 
+## [3.7.0] - 2026-09-26
+
+### Added
+
+- **Recoverable mesh save-in-place.** Saving a mesh source (STL, OBJ, PLY) writes the geometry and *then* advances the edit history's save watermark. A process that stopped between those two writes left the file baked while the history still said otherwise, so reopening replayed the same edit over geometry that already contained it. A `<model>.save-journal.json` transaction marker now makes that recoverable: on the next open the save is completed, discarded, or — if the file matches neither expected state — reported and never guessed. A source edited by something else in the meantime is left byte-identical unless you explicitly choose to restore the backup.
+- **Performance benchmarks for meshio++ and OpenSCAD loads.** `npm run perf` measured only the B-rep load and mesh paths, so a regression in either of the other two loaders would surface only as a user report. Both are now benchmarked, with a per-family warm-up so each is measured at steady state rather than paying its first-call initialisation.
+- **The dependency monitor is verified against GitHub.** It ran once by manual dispatch, opened its tracking issue, and re-running reported no change — confirming the marker-based lookup works against the real API and not just the test double.
+
+### Changed
+
+- **meshio++ upgraded from 16.16.0 to 16.21.0; Three.js from 0.186.0 to 0.186.1.** Kernel loading is unchanged in every audited respect. The new release adds deck writers, an EnSight Gold reader fix, and broad read-path speedups (up to 3.5× on some text formats).
+- **A meshio import's boundary surface is now checked against the mesh it came from.** A boundary that silently lost part of a model's geometry would display a wrong model with nothing warning — and one format does exactly that, so its import is refused rather than shown wrong. The check is exact rather than heuristic, and none of the supported formats trip it.
+
+### Fixed
+
+- **Batch export no longer fails a whole batch on a kernel reset.** An OCCT memory-access abort resets the kernel worker, which respawns on the next call; the export now retries once, exactly as the other export paths already did. Ordinary errors are never retried, and a second abort is reported as a failure.
+- A batch export that produced fewer files than expected now names which input failed and why, instead of only listing what reached disk.
+
+### Known issues
+
+- `npm run mcp:smoke` has one stale assertion: it still expects a Nastran bulk-data limitation that meshio++ removed two releases ago, so it fails with "unexpected success". The compatibility corpus was updated for this; the smoke assertion was not. CI does not run this harness, which is why it went unnoticed.
+
 ## [3.6.0] - 2026-09-26
 
 ### Added
