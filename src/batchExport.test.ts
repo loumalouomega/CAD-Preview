@@ -52,6 +52,72 @@ describe("runBatch", () => {
     expect(r.summary).toEqual({ total: 3, ok: 2, failed: 1, skipped: 0, cancelled: 0 });
     expect(r.rows[0].editsBaked).toBe(2);
   });
+  it("retries ONCE after a kernel reset, and the retry succeeds", async () => {
+    // The real CI failure: OCCT aborted with a memory-access error, the kernel
+    // client reset the singleton, and the batch recorded the good file as
+    // failed. The client respawns a fresh worker, so one clean retry recovers.
+    let calls = 0;
+    const r = await runBatch(["/in/a.stp"], {
+      outDir: "/out",
+      ext: "brep",
+      exists: () => false,
+      exportOne: async (_input, out) => {
+        calls++;
+        if (calls === 1) throw new Error("OCCT crashed (memory access out of bounds) — the kernel has been reset; try the operation again.");
+        return { outputs: [out], editsBaked: 0, warnings: [] };
+      },
+    });
+    expect(calls).toBe(2);
+    expect(r.rows[0].status).toBe("ok");
+    expect(r.summary).toEqual({ total: 1, ok: 1, failed: 0, skipped: 0, cancelled: 0 });
+  });
+  it("does NOT retry a second reset — that is a real failure, recorded once", async () => {
+    let calls = 0;
+    const r = await runBatch(["/in/a.stp"], {
+      outDir: "/out",
+      ext: "brep",
+      exists: () => false,
+      exportOne: async () => {
+        calls++;
+        throw new Error("OCCT crashed (memory access out of bounds) — the kernel has been reset; try the operation again.");
+      },
+    });
+    expect(calls).toBe(2);
+    expect(r.rows[0].status).toBe("failed");
+    expect(r.rows[0].error).toMatch(/kernel has been reset/);
+  });
+  it("does NOT retry an ordinary error", async () => {
+    let calls = 0;
+    const r = await runBatch(["/in/a.stp"], {
+      outDir: "/out",
+      ext: "brep",
+      exists: () => false,
+      exportOne: async () => {
+        calls++;
+        throw new Error("STEP ReadFile failed (code 2)");
+      },
+    });
+    expect(calls).toBe(1);
+    expect(r.rows[0].status).toBe("failed");
+  });
+  it("the retry reuses the already-resolved path, so it cannot collide onto a new name", async () => {
+    const written: string[] = [];
+    let calls = 0;
+    await runBatch(["/in/a.stp"], {
+      outDir: "/out",
+      ext: "brep",
+      exists: () => false,
+      exportOne: async (_input, out) => {
+        calls++;
+        // A partial file from the aborted attempt must not push the retry onto a
+        // suffixed name — the path is resolved once, before the first attempt.
+        if (calls === 1) throw new Error("the kernel has been reset");
+        written.push(out);
+        return { outputs: [out], editsBaked: 0, warnings: [] };
+      },
+    });
+    expect(written).toEqual(["/out/a.brep"]);
+  });
   it("two inputs with the same stem don't collide under skip — the second is skipped, never overwrites", async () => {
     const r = await runBatch(["/x/p.stp", "/y/p.step"], {
       outDir: "/out",

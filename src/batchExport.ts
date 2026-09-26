@@ -91,8 +91,13 @@ export interface BatchRunOptions {
   onProgress?: (done: number, total: number, row: BatchRow) => void;
 }
 
-export async function runBatch(inputs: readonly string[], options: BatchRunOptions): Promise<{ rows: BatchRow[]; summary: BatchSummary }> {
-  const policy = options.onCollision ?? "skip";
+/** The kernel-client's vocabulary for "a WASM abort reset the singleton; the
+ *  next call gets a fresh worker". Matched case-insensitively because the exact
+ *  phrasing differs per service — the same pattern `mcp-smoke`'s
+ *  `callWithCleanRetry` and the perf harness test against. */
+const KERNEL_RESET_RE = /kernel has been reset/i;
+
+export async function runBatch(inputs: readonly string[], options: BatchRunOptions): Promise<{ rows: BatchRow[]; summary: BatchSummary }> {  const policy = options.onCollision ?? "skip";
   const inputSet = new Set(inputs.map((i) => path.resolve(i)));
   const taken = new Set<string>();
   const rows: BatchRow[] = [];
@@ -110,9 +115,38 @@ export async function runBatch(inputs: readonly string[], options: BatchRunOptio
         row = { input, status: "skipped", outputs: [], editsBaked: 0, warnings: [], error: resolved.reason };
       } else {
         taken.add(path.resolve(resolved.path));
-        const r = await options.exportOne(input, resolved.path);
-        for (const o of r.outputs) taken.add(path.resolve(o));
-        row = { input, status: "ok", outputs: r.outputs, editsBaked: r.editsBaked, warnings: r.warnings };
+        // One clean retry after a KERNEL RESET, and only that. A WASM abort in
+        // the OCCT/Gmsh worker ("memory access out of bounds") resets the
+        // singleton; the kernel client respawns a fresh worker on the next call,
+        // so the retry runs on a clean one and succeeds. This is the same
+        // recovery `mcp-smoke`'s `callWithCleanRetry` and the perf harness
+        // already perform — batch export was the one export path without it,
+        // which is why a loaded CI runner turned an OCCT abort into "0 ok,
+        // 3 failed" for a batch whose every file was fine.
+        //
+        // Retrying is safe here because the export is a deterministic write to
+        // an already-resolved path: `taken` was updated before the attempt, so a
+        // collision cannot be re-resolved onto the same name, and a partial file
+        // from the aborted attempt is simply overwritten by the retry. Ordinary
+        // errors are never retried, and a SECOND failure is recorded as the
+        // failure it is.
+        let attempt = 0;
+        for (;;) {
+          try {
+            const r = await options.exportOne(input, resolved.path);
+            for (const o of r.outputs) taken.add(path.resolve(o));
+            row = { input, status: "ok", outputs: r.outputs, editsBaked: r.editsBaked, warnings: r.warnings };
+            break;
+          } catch (err) {
+            const message = (err as Error)?.message ?? String(err);
+            if (attempt === 0 && KERNEL_RESET_RE.test(message)) {
+              attempt++;
+              continue;
+            }
+            row = { input, status: "failed", outputs: [], editsBaked: 0, warnings: [], error: message.split("\n")[0] };
+            break;
+          }
+        }
       }
     } catch (err) {
       row = { input, status: "failed", outputs: [], editsBaked: 0, warnings: [], error: ((err as Error)?.message ?? String(err)).split("\n")[0] };
