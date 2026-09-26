@@ -1500,30 +1500,29 @@ test("Batch Export… writes one row per file, never aborts on a bad file, and o
   const goodBefore = fs.readFileSync(good);
   const tabsBefore = vscode.window.tabGroups.all.reduce((n, g) => n + g.tabs.length, 0);
 
+  let batchResult: { rows?: Array<{ input?: string; status?: string; error?: string }> } | undefined;
   const record = await withModals(
     [openAnswer(good, corrupt, mesh), pick("BREP (.brep)"), openAnswer(outDir), pick("Skip existing outputs")],
     async () => {
       fs.mkdirSync(outDir, { recursive: true });
-      await vscode.commands.executeCommand("cad-preview.batchExport");
+      batchResult = await vscode.commands.executeCommand("cad-preview.batchExport");
     }
   );
   assert(record.quickPicks[0]?.labels.includes("Drawing sheet — SVG") === true, "the target pick offers drawing sheets too");
   const written = fs.existsSync(outDir) ? fs.readdirSync(outDir).sort() : [];
-  // On failure, name WHICH row failed and why. `saw []` on its own is what made
-  // this test undiagnosable when it started failing on CI: the per-row results
-  // live only in the report panel, and nothing asserted on them. Two files are
-  // SUPPOSED to fail here (a corrupt STEP, and an STL that cannot be a BREP), so
-  // "the good one exported" is a statement about the third row specifically.
-  // On failure, name the tally. `saw []` on its own is what made this test
-  // undiagnosable when it began failing on CI: the per-row results live only in
-  // the report panel, and nothing observed them. Two files are SUPPOSED to fail
-  // here (a corrupt STEP, and an STL that cannot become a BREP), so "the good
-  // one exported" is a claim about the third row — and `0 ok, 3 failed` versus
-  // `1 ok, 2 failed` separates "the good file failed" from anything else.
-  const tally = record.infos.join(" | ") || "none";
+  // On failure, name every row and its error. `saw []` on its own is what made
+  // this test undiagnosable when it began failing on CI: the per-row results
+  // live only in the report panel, and nothing observed them. Two of the three
+  // inputs are SUPPOSED to fail (a corrupt STEP, and an STL that cannot become
+  // a BREP), so this is a claim about the third row — and the rows say exactly
+  // which one went wrong and why. `runBatchExportCommand` returns its result
+  // and the registration forwards it, purely so this is observable.
+  const rows = (batchResult?.rows ?? [])
+    .map((r) => `${path.basename(String(r.input))}=${r.status}${r.error ? `(${r.error})` : ""}`)
+    .join(", ");
   assert(
     JSON.stringify(written) === JSON.stringify(["block.brep"]),
-    `exactly the good file was exported (saw ${JSON.stringify(written)}, tally: ${tally})`
+    `exactly the good file was exported (saw ${JSON.stringify(written)}) — rows: ${rows || "(no result)"}`
   );
   assert(Buffer.compare(goodBefore, fs.readFileSync(good)) === 0, "the source file is byte-identical");
   // tabGroups updates asynchronously after createWebviewPanel returns, so

@@ -524,8 +524,14 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
         }).then(undefined, (err) => vscode.window.showErrorMessage(`Preparation report failed: ${(err as Error)?.message ?? err}`))
       ),
       vscode.commands.registerCommand("cad-preview.batchExport", () =>
-        runBatchExportCommand(this.context, this.pipeline).then(undefined, (err) =>
-          vscode.window.showErrorMessage(`Batch export failed: ${(err as Error)?.message ?? err}`)
+        // Forward the resolved result so `executeCommand` callers can read the
+        // per-row statuses/errors; the error path still surfaces a message.
+        runBatchExportCommand(this.context, this.pipeline).then(
+          (r) => r,
+          (err) => {
+            void vscode.window.showErrorMessage(`Batch export failed: ${(err as Error)?.message ?? err}`);
+            return undefined;
+          }
         )
       ),
       // SpaceMouse 6DOF input — deliberately NOT

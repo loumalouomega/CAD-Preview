@@ -25,20 +25,31 @@ const TARGET_LABELS: Record<BatchTarget, string> = {
 
 let batchCounter = 0;
 
-export async function runBatchExportCommand(context: vscode.ExtensionContext, pipeline: KernelClient): Promise<void> {
+/**
+ * Runs the interactive batch export and returns its result.
+ *
+ * The return value exists for testability: the per-row statuses and error text
+ * are otherwise only rendered into the report panel, so a caller (the
+ * integration suite) has no way to see WHY a file failed. `executeCommand`
+ * surfaces it because the registration forwards the resolved value.
+ */
+export async function runBatchExportCommand(
+  context: vscode.ExtensionContext,
+  pipeline: KernelClient
+): Promise<Awaited<ReturnType<typeof batchExportTool>> | undefined> {
   const inputs = await vscode.window.showOpenDialog({
     canSelectMany: true,
     openLabel: "Batch export",
     title: "Batch export — pick CAD/mesh files",
     filters: { "CAD and mesh files": ROUTED_EXTENSIONS.map((e) => e.replace(/^\./, "")) },
   });
-  if (!inputs || inputs.length === 0) return;
+  if (!inputs || inputs.length === 0) return undefined;
 
   const targetPick = await vscode.window.showQuickPick(
     BATCH_TARGETS.map((t) => ({ label: TARGET_LABELS[t], target: t })),
     { title: "Batch export — target", placeHolder: "Export every file to…" }
   );
-  if (!targetPick) return;
+  if (!targetPick) return undefined;
 
   const outDirs = await vscode.window.showOpenDialog({
     canSelectFiles: false,
@@ -48,7 +59,7 @@ export async function runBatchExportCommand(context: vscode.ExtensionContext, pi
     title: "Batch export — destination folder",
     defaultUri: vscode.Uri.file(path.dirname(inputs[0].fsPath)),
   });
-  if (!outDirs || outDirs.length === 0) return;
+  if (!outDirs || outDirs.length === 0) return undefined;
 
   const collisionPick = await vscode.window.showQuickPick(
     [
@@ -58,7 +69,7 @@ export async function runBatchExportCommand(context: vscode.ExtensionContext, pi
     ],
     { title: "Batch export — when an output already exists" }
   );
-  if (!collisionPick) return;
+  if (!collisionPick) return undefined;
 
   const owner = `batch-${++batchCounter}`;
   const result = await vscode.window.withProgress(
@@ -88,6 +99,7 @@ export async function runBatchExportCommand(context: vscode.ExtensionContext, pi
   void vscode.window.showInformationMessage(
     `Batch export: ${s.ok} ok, ${s.failed} failed, ${s.skipped} skipped${s.cancelled ? `, ${s.cancelled} cancelled` : ""}.`
   );
+  return result;
 }
 
 function showBatchReport(
