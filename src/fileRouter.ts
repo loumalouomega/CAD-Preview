@@ -158,6 +158,16 @@ const EXTENSION_MAP: Record<string, FileRoute> = {
   // codebase has no fixture verifying either, and CLAUDE.md's discipline is to
   // claim only what was actually checked.
   "post.msh": { strategy: "meshio", format: "gid" },
+  // EnSight Gold is NOT routed, deliberately. The plumbing is all in place —
+  // `meshioCompanions.ts` already carries `ensight: ["case", "geo"]` and
+  // unit-tests it, and the format only became readable at all in meshio++
+  // 16.17.0. But the foreign fixture in `examples/EnSight/` does not survive
+  // this codebase's boundary conversion: meshio++ reads it correctly (9
+  // points, 4 cells, extent 2x1x1) while `extractSurface` on that same mesh
+  // returns 4 points at a unit box, and `convertSurface` throws outright — so
+  // the `.case` would open and DISPLAY A UNIT CUBE instead of the deck. See
+  // `examples/EnSight/README.md` for the measurements. A counts-only check
+  // passes for this, which is the point.
 };
 
 /**

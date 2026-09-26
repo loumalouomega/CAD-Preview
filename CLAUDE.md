@@ -2580,3 +2580,78 @@ surface only as a user report. Both are now benchmarked.
   deliberately loose for machine-to-machine variance. And because the two new
   baselines are up to ~2x conservative (above), the first real regression in
   the meshio or CSG path may need a re-capture before it trips.
+
+## Meshio boundary-extent guard, and the EnSight format it was found by
+
+Attempting to add meshio++ formats after the 16.21.0 bump surfaced a
+silent-wrong-geometry defect, and the investigation is worth more than the
+format was.
+
+- **The defect.** meshio++ reads meshio++'s own foreign EnSight fixture
+  correctly — 9 points, 4 cells, extent `2x1x1`, with `2 0.5 0` in the raw
+  point array — and then produces a **unit box** from it. `convertSurface`
+  succeeds and returns a 4-triangle STL spanning `(0,0,0)→(1,1,1)`; the
+  `extractSurface` fallback agrees. End to end, `generate_mesh` on the EnSight
+  deck returned **120 nodes / 298 elements, byte-identical to
+  `MDPA/gapped-ids.mdpa`**, a one-cell unit tetrahedron. Two unrelated meshes
+  cannot mesh identically, so the geometry was being lost — the file would have
+  opened and displayed a unit cube with nothing warning.
+- **Why every existing check passed.** `npm run compat`'s `load` rows assert
+  counts, warnings and `remesh: true`, and `remesh` fails only when
+  `elementCount` is 0. A unit cube satisfies all of it. This is the same
+  blindness as the MDPA node-order tables above — a structurally valid,
+  correctly shaped, non-empty mesh that is the wrong mesh — and the two
+  findings are the same lesson found twice by different routes.
+- **The guard** (`src/meshioBoundary.ts`, pure and unit-tested, 13 cases).
+  `convertToStlBoundary` now reads the source mesh once and checks the produced
+  boundary against it on **both** paths — the native `convertSurface` and the
+  `extractSurface` fallback. The invariant is exact rather than heuristic: a
+  boundary is built from the mesh's OWN points (extraction selects cells and
+  linearizes them; a quadratic cell's mid-edge nodes lie on the edge between two
+  corners, so linearizing cannot push the extent outward), and a vertex
+  achieving a min or max on some axis necessarily lies on the convex hull, so
+  nothing can be legitimately dropped. The boundary's extent must therefore
+  equal the source's on every non-degenerate axis.
+- **The tolerance is measured, not guessed.** Across every committed meshio
+  fixture a correct extraction is **exactly 1.000** on all three axes
+  (`MED/single-hex.med`, `MED/two-material-tets.med`,
+  `MED/two-region-hexes.med`, `MED/vector-field-tets.med`,
+  `MDPA/gapped-ids.mdpa`, `GiD/two-tets.post.msh`); the one failure,
+  `EnSight/simple.case`, is **0.500**. `BOUNDARY_EXTENT_TOLERANCE` is `1e-6`,
+  with a test asserting that one order of magnitude past it is still rejected
+  so it cannot be quietly widened later.
+- **The guard's placement is load-bearing and was got wrong first.** It was
+  initially written on the fallback branch only; the end-to-end probe showed it
+  never firing, because the wrong geometry came from the *native*
+  `convertSurface`. It now sits **outside** the converter's own `try` — a
+  refusal there would otherwise be caught as "the converter declined this deck"
+  and fall through to the fallback, reintroducing the same wrong geometry.
+- **Asymmetric on purpose.** Only a boundary *smaller* than its source is
+  refused. An over-large extent is not something this check claims to
+  diagnose, and a legitimately thin model must not trip it. Degenerate source
+  axes are skipped rather than divided by, and the check is relative, so a
+  1e6 mm model is judged proportionally.
+- **Blast radius: all meshio formats, and none of the 15 shipped ones trip
+  it.** MED, MDPA, GiD and Nastran still load and mesh exactly as before
+  (verified against their committed fixtures through the real server), so
+  nothing that opens today stops opening — while the class of bug is now closed
+  for every format already supported, and a newly added one is checked for it
+  by construction.
+- **Cost, stated plainly:** the native path now performs one extra `readMesh`,
+  since `convertSurface` is a separate parse. `load_model` is unaffected (its
+  headless inventory for a mesh source is route-info-only and never reaches the
+  boundary); the cost lands on the interactive open and on `generate_mesh`.
+- **EnSight is therefore NOT routed**, and `.case` is deliberately absent from
+  `EXTENSION_MAP` with a comment saying so. The plumbing was never the problem —
+  `meshioCompanions.ts` already carried `ensight: ["case", "geo"]` with a unit
+  test, and `tsc`'s exhaustive `Record<CadFormat, string>` maps caught the
+  routing edits. The format is unreadable in meshio++ before 16.17.0 and its
+  surface conversion is wrong in 16.21.0; the fixture and full measurements are
+  committed under `examples/EnSight/` as the evidence and a reproduction.
+- **Method note worth reusing.** The 14 candidate formats were first screened
+  by writing each with meshio++ and reading it back — a **same-library** round
+  trip, which cannot detect a convention the library is self-consistent about.
+  EnSight was the first one re-checked against a **foreign** fixture, and it
+  failed immediately. Any future format addition here should verify against a
+  file from the format's own ecosystem (meshio++ ships 50 such directories under
+  `tests/python/meshes/`, MIT) rather than one meshio++ wrote.
