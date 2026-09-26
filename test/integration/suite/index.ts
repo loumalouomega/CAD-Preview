@@ -1509,7 +1509,22 @@ test("Batch Export… writes one row per file, never aborts on a bad file, and o
   );
   assert(record.quickPicks[0]?.labels.includes("Drawing sheet — SVG") === true, "the target pick offers drawing sheets too");
   const written = fs.existsSync(outDir) ? fs.readdirSync(outDir).sort() : [];
-  assert(JSON.stringify(written) === JSON.stringify(["block.brep"]), `exactly the good file was exported (saw ${JSON.stringify(written)})`);
+  // On failure, name WHICH row failed and why. `saw []` on its own is what made
+  // this test undiagnosable when it started failing on CI: the per-row results
+  // live only in the report panel, and nothing asserted on them. Two files are
+  // SUPPOSED to fail here (a corrupt STEP, and an STL that cannot be a BREP), so
+  // "the good one exported" is a statement about the third row specifically.
+  // On failure, name the tally. `saw []` on its own is what made this test
+  // undiagnosable when it began failing on CI: the per-row results live only in
+  // the report panel, and nothing observed them. Two files are SUPPOSED to fail
+  // here (a corrupt STEP, and an STL that cannot become a BREP), so "the good
+  // one exported" is a claim about the third row — and `0 ok, 3 failed` versus
+  // `1 ok, 2 failed` separates "the good file failed" from anything else.
+  const tally = record.infos.join(" | ") || "none";
+  assert(
+    JSON.stringify(written) === JSON.stringify(["block.brep"]),
+    `exactly the good file was exported (saw ${JSON.stringify(written)}, tally: ${tally})`
+  );
   assert(Buffer.compare(goodBefore, fs.readFileSync(good)) === 0, "the source file is byte-identical");
   // tabGroups updates asynchronously after createWebviewPanel returns, so
   // poll briefly instead of reading once (a single read raced in the full run).

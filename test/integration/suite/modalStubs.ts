@@ -53,6 +53,9 @@ export interface ModalRecord {
   openDialogs: Array<{ openLabel?: string; filters?: Record<string, string[]> }>;
   warnings: Array<{ message: string; buttons: string[] }>;
   errors: string[];
+  /** `showInformationMessage` text, e.g. batch export's "N ok, M failed" tally.
+   *  Not queued — it is an outcome, not a prompt. */
+  infos: string[];
   /** Answers still unconsumed when `restore()` ran — a test that over-scripted. */
   leftover: number;
 }
@@ -72,7 +75,7 @@ const labelOf = (item: unknown): string =>
  */
 export function installModalStubs(answers: ModalAnswer[]): ModalSession {
   const queue = [...answers];
-  const record: ModalRecord = { quickPicks: [], saveDialogs: [], openDialogs: [], warnings: [], errors: [], leftover: 0 };
+  const record: ModalRecord = { quickPicks: [], saveDialogs: [], openDialogs: [], warnings: [], errors: [], infos: [], leftover: 0 };
 
   const win = vscode.window as unknown as Record<string, unknown>;
   const original = {
@@ -81,6 +84,7 @@ export function installModalStubs(answers: ModalAnswer[]): ModalSession {
     showOpenDialog: win.showOpenDialog,
     showWarningMessage: win.showWarningMessage,
     showErrorMessage: win.showErrorMessage,
+    showInformationMessage: win.showInformationMessage,
   };
 
   const next = (expected: ModalAnswer["kind"], context: string): ModalAnswer => {
@@ -131,6 +135,20 @@ export function installModalStubs(answers: ModalAnswer[]): ModalSession {
   // and are an OUTCOME to assert on, not a prompt to answer.
   win.showErrorMessage = async (message: string) => {
     record.errors.push(message);
+    return undefined;
+  };
+
+  // Also an outcome, not a prompt. Swallowed so a command's success tally
+  // cannot itself pop a modal that would stall a headless run — and recorded,
+  // because "N ok, M failed" is the cheapest possible diagnosis of a batch run
+  // that produced fewer files than expected.
+  //
+  // Deliberately NOT extending this to `createWebviewPanel`: wrapping that
+  // core API to capture a report panel's HTML broke the three webview-driven
+  // mesh-save recovery cases, which post through a real panel. The tally alone
+  // distinguishes "the good file failed" from "the good file was skipped".
+  win.showInformationMessage = async (message: string) => {
+    record.infos.push(String(message));
     return undefined;
   };
 
