@@ -1,3 +1,5 @@
+import { importRuntimePackage } from "./runtimePackage";
+
 // fTetWild WASM module (`float-tetwild-wasm`) — the fourth host-side WASM
 // singleton alongside OCCT (occtService.ts), Gmsh (gmshService.ts), and
 // meshio++ (meshioService.ts). Used ONLY as an alternative, opt-in volume
@@ -13,7 +15,9 @@
 // `exports: {".": {"types": "./index.d.ts", "default": "./index.js"}}` (no
 // `require` condition, in either v0.1.0 or v0.2.0), so
 // `require("float-tetwild-wasm")` throws `ERR_REQUIRE_ESM`. Same reason,
-// same mechanism as `meshioService.ts`'s `getMeshio()`. Must stay `external`
+// same runtimePackage.ts resolver as meshio++ (installed package first,
+// then staged ftetwild/ trees). The opaque native import prevents consumer
+// bundlers from inlining top-level await. It also stays `external`
 // in esbuild.mjs for the identical two reasons gmsh-wasm/meshio++ must:
 // nothing statically imports its `.wasm` (it self-locates via
 // `import.meta.url`, and `Module.wasmBinary` is NOT honored by the glue —
@@ -66,7 +70,7 @@ let _ftetwildPromise: Promise<FtetwildApi> | null = null;
 export function getFtetwild(): Promise<FtetwildApi> {
   if (!_ftetwildPromise) {
     _ftetwildPromise = (async () => {
-      const { loadFloatTetwild } = await import("float-tetwild-wasm");
+      const { loadFloatTetwild } = await importRuntimePackage("float-tetwild-wasm", "ftetwild", "index.js");
       // `threads: false` is still load-bearing as of v0.2.0 — see the
       // top-of-file comment for why. No `moduleArgs` override needed
       // anymore: v0.2.0 is quiet by default (see top-of-file comment).

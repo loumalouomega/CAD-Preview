@@ -2415,3 +2415,65 @@ quadratic line connectivity preserves Gmsh's endpoint/midpoint order. Both MDPA
 modes use planar geometry names for 2D; 1D MDPA export is explicitly unsupported.
 The same pipeline serves interactive export and MCP. Writer regression tests and
 KKSS's real fluid/potential-flow/shallow-water tutorial solves cover the handoff.
+
+
+## Dependency currency and embedded kernel packaging (roadmap 1.1 / 1.2)
+
+Implemented 2026-09-26 in CAD-Preview only. npm's latest stable releases at
+implementation time were **meshio++ 16.16.0** (from 16.7.0) and **MCP SDK
+1.30.1** (from 1.30.0); manifest caret ranges and lockfile both updated.
+
+- **Loader audit:** meshio++ remains ESM, `main: ./src/index.mjs`, no exports
+  map. `variant: "seq"` remains mandatory (`parallelBackend()` reports `seq`;
+  auto still picks mt under Node). The sequential glue has one `console.log`,
+  one `console.error`, three `import.meta.url` references and zero `writeSync`
+  calls. Its WASM is 11,186,916 bytes. Integer `cell_tags` and
+  `surface:parent_cell` remain `BigInt64Array`; existing conversions stay.
+- **Metadata audit:** live full-read/header comparisons still disagree for
+  MED (integer cell arrays and the committed fixture's region names), CGNS
+  and GiD (point/cell array names). `LOSSY_METADATA_FORMATS` retains all three.
+  Regression tests compare service metadata to full reads for each format,
+  including GiD's result companion, and pin MED's MaterialA/MaterialB regions.
+- **Upstream fix:** Mixed-topology XDMF exports now reimport and remesh.
+  The compatibility corpus now requires success instead of the former
+  `unknown mixed topology index` limitation; MCP smoke has the same assertion.
+  Current format/MCP/meshing/getting-started documentation is corrected.
+- **Embedding:** `runtimePackage.ts` resolves the installed package first,
+  then the package entry under `meshio/` or `ftetwild/` beside the bundle,
+  then two levels above (KKSS's nested MCP layout). It imports an explicit
+  file URL through an opaque native-import wrapper, preserving ESM and
+  top-level await through CJS builds. A selected package's import/init errors
+  are not swallowed; failed singleton initialization remains retryable.
+  Consumers retain the existing import-meta shim when bundling CJS.
+- **Packaging:** `scripts/runtimeAssets.mjs` is the build/check inventory.
+  Normal/watch builds stage four sequential meshio runtime files under
+  `dist/meshio/`, and the existing nine fTetWild runtime files under
+  `dist/ftetwild/`. The VSIX contains these trees instead of duplicate copies
+  in node_modules; fTetWild still runs with `threads: false`. The VSIX checker
+  requires every staged file and rejects threaded meshio and source-map leaks.
+- **Embedding evidence:** subprocess tests load the real CJS services with no
+  accessible repository node_modules in both adjacent and nested layouts,
+  including paths with spaces and `#`, without consumer aliases or external
+  declarations for these two packages. Real mesh conversion and fTetWild
+  tetrahedralization produce nonempty geometry, clean stdout/stderr and normal
+  process exit. Additional cases cover installed-package precedence, ESM
+  evaluation, missing packages, import errors and init retry. No KKSS files or
+  submodule refs were changed; migration instructions are in `doc/development.md`.
+- **Monitor:** Monday 07:23 UTC plus manual dispatch; npm ci then npm outdated
+  for OCCT/Gmsh/meshio++/fTetWild/Three.js/MCP SDK. Handles object and array npm
+  results, including major releases and registry failures. One marked issue
+  is created/updated; unchanged bodies create no notifications, and an empty
+  report leaves existing issues alone. Local report-only verification found
+  Three.js 0.186.0 → 0.186.1 (left outside this two-package bump). GitHub issue
+  behavior is covered with a mocked API; an actual workflow run remains roadmap
+  1.1. No issue was posted from this checkout.
+- **Validation:** 41/41 compatibility cases; unit and isolated runtime suites;
+  type-check/build; documentation build; fresh 33.21 MB VSIX with 46 archive
+  entries checked and all 36 distinct required entries present. The full
+  `npm run mcp:smoke` passed, including XDMF/GiD/MED round trips, provenance,
+  stdout purity and the final byte-identical source assertion.
+- **Smoke harness recovery:** the render:true prefix-preview case twice hit
+  an OCCT memory-access abort before reaching meshio tests. It now uses the
+  same existing one-retry-on-kernel-reset helper as the adjacent read-only
+  prefix case, preserving the byte-identical sidecar assertion. Ordinary
+  errors and a second failure remain fatal; no production OCCT behavior changed.

@@ -427,8 +427,8 @@
   },
   "dependencies": {
     "@loumalouomega/gmsh-wasm": "^0.3.0",
-    "@meshioplusplus/wasm": "^16.7.0",
-    "@modelcontextprotocol/sdk": "^1.30.0",
+    "@meshioplusplus/wasm": "^16.16.0",
+    "@modelcontextprotocol/sdk": "^1.30.1",
     "fflate": "^0.8.3",
     "float-tetwild-wasm": "^0.2.0",
     "node-hid": "^3.4.0",

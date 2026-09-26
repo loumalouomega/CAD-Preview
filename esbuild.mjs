@@ -13,6 +13,8 @@ import {
   kernelVersionsDefine,
 } from "./scripts/nodeBundleConfig.mjs";
 
+import { runtimePackages } from "./scripts/runtimeAssets.mjs";
+
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const watch = process.argv.includes("--watch");
 
@@ -48,15 +50,9 @@ const extensionConfig = {
   // forever. Left external + shipped as real node_modules files (see the
   // `!node_modules/...` carve-out in .vscodeignore), its workers correctly
   // re-execute the real, standalone, vscode-free gmsh-core.cjs instead.
-  // @meshioplusplus/wasm must ALSO stay external, for two reasons verified
-  // against the live package (see meshioService.ts's long comment): it's
-  // ESM-only with no `require` condition at all (unlike gmsh-wasm, which is
-  // dual CJS/ESM — meshioService.ts loads it via a dynamic `await import()`,
-  // not a static import, specifically because of this), and its threaded
-  // build variant has the identical eager-worker-spawn risk gmsh-wasm's does
-  // if ever bundled. `meshioService.ts` forces the sequential variant, so
-  // that risk is avoided regardless, but staying external is still required
-  // for the ESM/CJS reason alone.
+  // meshio++ and fTetWild use runtimePackage.ts's opaque native import.
+  // Their ESM glue stays on disk, staged beside these bundles by copyWasm().
+  // Keep them external as well for any future direct package imports.
   // "playwright" joined this list once modelComparePanel.ts's visual-diff
   // feature (roadmap item, closed) started importing src/renderService.ts
   // directly — previously only mcpServer.ts (a separate bundle, see
@@ -66,15 +62,6 @@ const extensionConfig = {
   // fail gracefully, caught there) rather than getting inlined — inlining it
   // is what broke the build in the first place (playwright-core's own
   // optional chromium-bidi sub-dependency isn't resolvable by esbuild).
-  // "float-tetwild-wasm" (ftetwildService.ts) is the fourth WASM kernel and
-  // must stay external for the same ESM-only reason as @meshioplusplus/wasm
-  // (no `require` condition at all — `"type": "module"`, a bare-string
-  // `exports` map — so it's loaded via a dynamic `await import()`, never a
-  // static import, and needs real files on disk at runtime, not a bundled
-  // copy). It is ALSO loaded with `{ threads: false }` unconditionally,
-  // avoiding the same eager-worker-pool risk gmsh-wasm's and meshio++'s
-  // threaded variants have — but staying external is required regardless,
-  // purely for the ESM/CJS reason.
   // "node-hid" (src/spaceMouse.ts, the "Native 6-DOF SpaceMouse input" feature) is the fifth
   // external, on extensionConfig ONLY: a native NAPI addon (.node
   // prebuilds) that cannot bundle — esbuild would inline its JS loader
@@ -162,6 +149,15 @@ const webviewConfig = {
 
 /** Copy the WASM binaries to dist/ so they ship with the packaged extension. */
 function copyWasm() {
+  for (const { name, directory, files } of runtimePackages) {
+    const destination = path.join(__dirname, "dist", directory);
+    fs.rmSync(destination, { recursive: true, force: true });
+    for (const file of files) {
+      const target = path.join(destination, file);
+      fs.mkdirSync(path.dirname(target), { recursive: true });
+      fs.copyFileSync(path.join(__dirname, "node_modules", name, file), target);
+    }
+  }
   const binaries = [
     ["node_modules/opencascade.js/dist/opencascade.wasm.wasm", "dist/opencascade.wasm.wasm"],
     ["node_modules/@loumalouomega/gmsh-wasm/dist/gmsh-core.wasm", "dist/gmsh-core.wasm"],

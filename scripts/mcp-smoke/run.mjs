@@ -821,7 +821,8 @@ try {
     // render:true degrades to a warning without Playwright/Chromium and
     // returns the image packet when it IS available — either way the numeric
     // prefix facts above must be unaffected.
-    const withRender = await call("render_ops_prefix", { path: model, throughIndex: 0, render: true });
+    // The rendering variant can hit the same self-healing OCCT abort as mid.
+    const withRender = await callWithCleanRetry("render_ops_prefix", { path: model, throughIndex: 0, render: true }, () => {});
     assert(
       withRender.supported === true && (Array.isArray(withRender.images) || withRender.warnings.some((w) => /renderer unavailable|snapshot failed/i.test(w))),
       "render_ops_prefix render:true either returns images or degrades to a clear warning"
@@ -3586,29 +3587,10 @@ try {
   // genuinely re-openable and meshable.
   const xdmfLoaded = await call("load_model", { path: xdmfOut });
   assert(xdmfLoaded.strategy === "meshio" && xdmfLoaded.format === "xdmf", "load_model re-opens the extension's own exported .xdmf");
-  // A SECOND, independent, pre-existing meshio++ 10.20.2 defect was found
-  // while verifying the .h5-companion fix above, not caused by it: this
-  // codebase's own generate_mesh always forces Mesh.SaveAll=1 (CLAUDE.md's
-  // "Meshing (GMSH-JS)" section), which includes 0-D vertex elements for
-  // the model's geometric points alongside the volume mesh — XDMF encodes
-  // that heterogeneous cell-type mix as a single "Mixed" topology block, and
-  // meshio++'s OWN reader cannot parse its OWN writer's Mixed-topology
-  // output ("XDMF: unknown mixed topology index" — reproduced with a bare
-  // hand-built vertex+line+triangle+tetra mesh, zero CAD-Preview code
-  // involved, so this is not fixable here). Proven to be a SEPARATE,
-  // LATER-stage failure than the companion defect (not a masked symptom of
-  // it): the identical mixed-topology fixture with its .h5 DELETED fails
-  // with the ORIGINAL "HDF5: could not open file" error instead — confirming
-  // the .h5 lookup happens first, succeeds, and only THEN does topology
-  // parsing fail. `callTolerant` (not `call`) because this failure is
-  // EXPECTED today; asserting the exact message means a future meshio++
-  // upgrade that fixes it flips this from "expected error" to "unexpected
-  // success", which is exactly the signal to go update this test/the docs.
-  const xdmfReimport = await callTolerant("generate_mesh", { path: xdmfOut, options: { sizeMax: 0.5 } });
-  assert(
-    xdmfReimport.error?.includes("mixed topology"),
-    `generate_mesh on the re-imported .xdmf hits the KNOWN, separate meshio++ Mixed-topology limitation, not the .h5-companion one (got: ${JSON.stringify(xdmfReimport)})`
-  );
+  // meshio++ 16.16.0 fixes the formerly broken Mixed-topology round trip.
+  const xdmfReimport = await call("generate_mesh", { path: xdmfOut, options: { sizeMax: 0.5 } });
+  assert(xdmfReimport.nodeCount > 0 && xdmfReimport.elementCount > 0,
+    "generate_mesh re-meshes the exported Mixed-topology XDMF with its HDF companion");
 
   // Format-coverage roadmap item: CAD-Preview's own FE
   // Mesh panel writes .msh/.inp/.unv/.su2/.mesh via Gmsh's own writer — until
@@ -3695,8 +3677,8 @@ try {
 
     // Re-read through a SEPARATE load_model call — proving the pair is a real,
     // openable document, not merely that the export call didn't throw. This is
-    // where GiD beats XDMF: fed the same `Mesh.SaveAll`-shaped mixed-topology
-    // mesh, XDMF cannot be re-read at all (see the Mixed-topology block above).
+    // checked with the same `Mesh.SaveAll`-shaped mixed-topology mesh
+    // as XDMF, which also round-trips as of meshio++ 16.16.0.
     const gidReloaded = await call("load_model", { path: gidOut });
     assert(gidReloaded.strategy === "meshio", "load_model routes the exported .post.msh through meshio");
     assert(gidReloaded.format === "gid", `load_model resolves .post.msh to gid, not gmsh (got ${gidReloaded.format})`);

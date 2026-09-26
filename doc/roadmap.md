@@ -137,7 +137,6 @@ CAD-Preview is embedded in [KKSS](https://github.com/loumalouomega/KKSS) as its 
 
 | Ask | From | Status here |
 | --- | --- | --- |
-| A meshio++ loader with a directory fallback, and fTetWild staged into `dist/` behind a CJS-safe loader. KKSS works around both today with its own `cadMeshioLoader.ts` and `cadFtetwildLoader.ts`. | KKSS `CLAUDE.md` | [Upstream the packaging workarounds KKSS carries](#upstream-the-packaging-workarounds-kkss-carries) |
 | Every new capability reachable through this repository's MCP server, since that is the only way the KKSS assistant sees it | KKSS roadmap | Already a house rule ("Shared capabilities must reach both consumers" above) |
 | A small, reproducible structural example that a geometry-to-results tutorial can reuse | KKSS roadmap | [Canonical worked example](#canonical-worked-example-for-the-simulation-tutorial) |
 | Performance baselines covering more than the OCCT and Gmsh paths | KKSS roadmap | [Perf harness coverage](#perf-harness-coverage-for-meshio-and-openscad-loads) |
@@ -169,7 +168,7 @@ It does **not** admit AGPL code, so TetGen stays rejected. Every new bundled dep
 
 | Wave | Outcome | Start with | Exit signal |
 | --- | --- | --- | --- |
-| Upkeep | The base stays current and trustworthy | Dependency currency (1.1), then the KKSS packaging workarounds (1.2) | Both 1.1 and 1.2 done; the verification debt count has started falling |
+| Upkeep | The base stays current and trustworthy | Verify the dependency watch (1.1), then verification-debt burn-down (1.2) | The monitor has run on GitHub; the verification debt count has started falling |
 | Parity | Everything an agent can do, a user can do, and the reverse | Done: headless mesh-edit replay closed the last listed gap (as did the hole-table, refinement-sweep, free-text-note and mesh-source FE-export gaps). Justified remainders: mesh `inspect`/mass facts, `promote_mesh_to_brep` and `repair_mesh` read the raw file (their ids and outputs are defined over it; `save_model` bakes first), and glTF has no own-format save (its exporter emits only `.glb`) | Headless tools see the same edited mesh the viewer shows, or each remaining difference is justified |
 | Meshing probes | Decide on remeshing and on conformal assemblies | The MMG core probe (4.1), then conformal multi-body meshing (4.2), then Gmsh optimisation (4.4) | Each probe filed with measured results and a decision |
 | Geometry probes | Decide which never-called OCCT capabilities become ops | Imprint and split faces (3.1), then B-rep repair (3.2) | Each probe filed with measured results and a decision |
@@ -181,39 +180,21 @@ These are outcome groupings, not release numbers. Independent small items can sh
 
 *Admission: the work is known and has no design question. These items keep the base current, honest and cheap to verify; they rank first because every other item depends on them.*
 
-#### 1.1 Dependency currency {#dependency-currency}
+#### 1.1 Verify the dependency watch on GitHub {#dependency-currency}
 
 *Area: Platform.*
 
-- **Evidence:**
-  - Two pins trail npm: `@meshioplusplus/wasm` is at 16.7.0 against 16.9.0, and `@modelcontextprotocol/sdk` at 1.30.0 against 1.30.1.
-  - Every other runtime dependency is current.
-  - meshio++ bumps are known to carry silent-failure risk: the 10.21 → 16.7 bump found integer arrays arriving as `BigInt64Array` and an upstream metadata regression, both documented in `CLAUDE.md`.
-  - VSCode-MDPA-Preview already runs a scheduled CI job that compares its pins against npm.
-- **First useful increment (S):**
-  - Bump both packages.
-  - Re-run the meshio++ checklist from `CLAUDE.md`:
-    - the loader invariants (no `exports` map, `{ variant: "seq" }` still load-bearing, stdio routing, `.vscodeignore` file list);
-    - `LOSSY_METADATA_FORMATS`;
-    - `npm run compat`, `npm run compat:vsix` and `npm run mcp:smoke`.
-  - Add a weekly workflow that runs `npm outdated` for the WASM kernels plus `three` and the MCP SDK, and opens an issue when a pin trails.
-- **Done when:** both bumps land with the checklist recorded in `CLAUDE.md`, and the scheduled job has opened (or had nothing to open) at least once.
+The dependency bumps and weekly monitor are implemented; see `CLAUDE.md`'s
+"Dependency currency and embedded kernel packaging" section. Local report-only
+verification found Three.js 0.186.1 ahead of the locked 0.186.0.
 
-#### 1.2 Upstream the packaging workarounds KKSS carries {#upstream-the-packaging-workarounds-kkss-carries}
+- **Remaining:** after the workflow is available on GitHub, run
+  `dependency-watch.yml` once via manual dispatch (or observe its Monday run).
+- **Done when:** it has either opened/updated its tracking issue or successfully
+  reported that all watched dependencies are current. Local mocked issue tests
+  and a report-only run do not establish this GitHub-side result.
 
-*Area: Ecosystem.*
-
-- **Evidence:** KKSS's `CLAUDE.md` records three places where this repository's build does not survive being embedded:
-  - `meshioService.ts` does a bare `await import("@meshioplusplus/wasm")` with no fallback, so a packaged app without `node_modules` fails. KKSS ships `cadMeshioLoader.ts` to work around it.
-  - fTetWild is not staged into `dist/`.
-  - fTetWild's ESM with top-level await breaks CJS consumers. KKSS ships `cadFtetwildLoader.ts` for this and the previous point.
-- **First useful increment (S):**
-  - Give `getMeshio()` and `getFtetwild()` an ordered list of locations: package resolution first, then a directory next to the bundle.
-  - Stage both packages under `dist/` in `esbuild.mjs` the way the OCCT and Gmsh binaries already are.
-  - Extend `scripts/compat/vsix-check.mjs` so the staged files are required.
-- **Done when:** KKSS can delete both loader shims after a submodule bump, and `npm run compat:vsix` passes.
-
-#### 1.3 Verification-debt burn-down {#verification-debt-burn-down}
+#### 1.2 Verification-debt burn-down {#verification-debt-burn-down}
 
 *Area: Platform.*
 
@@ -233,7 +214,7 @@ These are outcome groupings, not release numbers. Independent small items can sh
   Then add a check to `npm test` that counts the "Verification gap" notes in `CLAUDE.md` and fails when the count rises without a matching entry in a small allowlist file that states why.
 - **Done when:** the count has fallen by ten, and a new unverified feature cannot land silently.
 
-#### 1.4 Perf harness coverage for meshio and OpenSCAD loads {#perf-harness-coverage-for-meshio-and-openscad-loads}
+#### 1.3 Perf harness coverage for meshio and OpenSCAD loads {#perf-harness-coverage-for-meshio-and-openscad-loads}
 
 *Area: Platform.*
 
