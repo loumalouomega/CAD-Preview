@@ -33,35 +33,20 @@ node_modules/**
 !node_modules/@loumalouomega/gmsh-wasm/dist/gmsh-core.cjs
 !node_modules/@loumalouomega/gmsh-wasm/dist/gmsh-descriptor.cjs
 !node_modules/@loumalouomega/gmsh-wasm/dist/runtime.cjs
-# @meshioplusplus/wasm needs the SAME real-files treatment, for a different
-# reason (see meshioService.ts/esbuild.mjs): it's ESM-only with no `require`
-# condition at all, so it's loaded via a dynamic `import()`, not `require()` —
-# but that still means Node needs the real files on disk at runtime, not a
-# bundled copy. Only the SEQUENTIAL variant's files are listed — this package
-# always loads with `{variant: "seq"}` explicitly (never "auto"/"mt" — see
-# meshioService.ts for why), so the threaded variant's .mjs/.wasm (which
-# would double this package's ~1.8MB gzipped footprint) are dead weight.
-!node_modules/@meshioplusplus/wasm/package.json
-!node_modules/@meshioplusplus/wasm/src/index.mjs
-!node_modules/@meshioplusplus/wasm/dist/meshioplusplus_wasm.mjs
-!node_modules/@meshioplusplus/wasm/dist/meshioplusplus_wasm.wasm
-# float-tetwild-wasm (ftetwildService.ts, the fourth WASM kernel) is the
-# SAME ESM-only real-files pattern as @meshioplusplus/wasm above — no
-# `require` condition, loaded via dynamic `import()`, needs real files on
-# disk. Unlike meshio++, the whole package (both the serial build always
-# actually loaded via `{threads: false}` AND the threaded build + its
-# libtbb.so* side-module) ships — a deliberate choice, not an oversight,
-# since pruning the never-loaded threaded files was judged not worth the
-# packaging fragility for a ~3.4MB saving.
-!node_modules/float-tetwild-wasm/package.json
-!node_modules/float-tetwild-wasm/index.js
-!node_modules/float-tetwild-wasm/dist/floattetwild.serial.mjs
-!node_modules/float-tetwild-wasm/dist/floattetwild.serial.wasm
-!node_modules/float-tetwild-wasm/dist/floattetwild.threaded.mjs
-!node_modules/float-tetwild-wasm/dist/floattetwild.threaded.wasm
-!node_modules/float-tetwild-wasm/dist/libtbb.so
-!node_modules/float-tetwild-wasm/dist/libtbb.so.12
-!node_modules/float-tetwild-wasm/dist/libtbb.so.12.16
+# ESM kernels are staged beside the bundles; inventory: scripts/runtimeAssets.mjs.
+!dist/meshio/package.json
+!dist/meshio/src/index.mjs
+!dist/meshio/dist/meshioplusplus_wasm.mjs
+!dist/meshio/dist/meshioplusplus_wasm.wasm
+!dist/ftetwild/package.json
+!dist/ftetwild/index.js
+!dist/ftetwild/dist/floattetwild.serial.mjs
+!dist/ftetwild/dist/floattetwild.serial.wasm
+!dist/ftetwild/dist/floattetwild.threaded.mjs
+!dist/ftetwild/dist/floattetwild.threaded.wasm
+!dist/ftetwild/dist/libtbb.so
+!dist/ftetwild/dist/libtbb.so.12
+!dist/ftetwild/dist/libtbb.so.12.16
 # node-hid (src/spaceMouse.ts, the "Native 6-DOF SpaceMouse input" feature) is the same real-files
 # pattern: a native NAPI addon whose .node binary cannot bundle, loaded via
 # a lazy require() so the extension runs fine where it is absent. Only the

@@ -277,3 +277,41 @@ Before adding any new **bundled** dependency (see the License section in [`CLAUD
 2. `npm ci`
 3. `npm run docs:build` — VitePress build
 4. Deploy to GitHub Pages via `actions/upload-pages-artifact` + `actions/deploy-pages`
+
+## Embedding the kernel runtime
+
+The build stages meshio++ under `dist/meshio/` and fTetWild under
+`dist/ftetwild/`. Copy these directories intact beside a consuming CJS bundle;
+they contain package metadata, ESM glue and self-located WASM binaries. The
+shared inventory is `scripts/runtimeAssets.mjs`, used by the build and VSIX
+checker. meshio++ ships only its sequential variant; fTetWild retains its
+existing serial and threaded runtime files but always runs serially.
+
+Both loaders first resolve an installed package relative to the bundle, then
+try `meshio/` or `ftetwild/` beside it, then the same directories two levels
+above it (KKSS's `out/cad-runtime/dist/` layout). Native dynamic import avoids
+CJS conversion of ESM/top-level await. Keep the existing `import.meta.url`
+shim from `scripts/nodeBundleConfig.mjs` when bundling these sources into CJS.
+Import and initialization errors from a selected package are surfaced rather
+than hidden by a fallback. Failed initialization can be retried.
+
+For KKSS's separate migration: update its CAD submodule; copy
+`cad/dist/meshio/` and `cad/dist/ftetwild/` into its runtime layout; remove the
+`cadMeshioLoader` and `cadFtetwildLoader` aliases and shim files from both worker
+builds; retain the existing Gmsh alias and import-meta shim. Its two consumers
+should use the same tested meshio++ version. Run KKSS's packaged geometry and
+MCP tests before shipping. This change does not modify KKSS.
+
+## Dependency watch
+
+`node scripts/dependency-watch.mjs` reports installed-versus-latest versions
+without writing to GitHub. The Monday workflow also supports manual dispatch
+and uses `--publish` to create or update one tracking issue. It monitors the
+four WASM packages, Three.js and the MCP SDK, including releases beyond caret
+ranges. Unchanged reports do not generate repeated updates; a current report
+leaves existing issues alone. Registry errors fail the job.
+
+After updating kernels, run `npm test`, `npm run compat`, `npm run mcp:smoke`,
+then package a fresh VSIX and run `npm run compat:vsix`. The tests include real
+CJS loading and geometry operations from an isolated directory with no
+repository `node_modules`, for both adjacent and nested runtime layouts.

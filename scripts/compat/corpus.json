@@ -1,12 +1,12 @@
 {
   "$comment": "Dependency and format compatibility corpus (npm run compat). Each row is one deterministic check against the real dist/mcp-server.js. 'load' opens a committed fixture; 'export' writes a mesh export from the seed model and (when 'reload' is true) re-opens it; 'brepExport' round-trips export_brep through load_model + get_mass_properties. A row with 'knownLimitation' asserts the CURRENT failure text — if it stops failing the row reports FIXED-UPSTREAM (a finding to record), never FAIL. 'verifiedAt' records the artifact versions the row was last checked against.",
   "verifiedAt": {
-    "date": "2026-09-24",
+    "date": "2026-09-26",
     "opencascade.js": "1.1.1",
     "@loumalouomega/gmsh-wasm": "0.3.0",
-    "@meshioplusplus/wasm": "16.7.0",
+    "@meshioplusplus/wasm": "16.16.0",
     "float-tetwild-wasm": "0.2.0",
-    "result": "38 pass, 1 known limitation (export-xdmf remesh)"
+    "result": "41 pass"
   },
   "seed": "STP/block.stp",
   "seedVolume": 60,
@@ -42,8 +42,7 @@
     { "id": "export-cgns", "check": "export", "format": "cgns", "reload": true },
     { "id": "export-vtu", "check": "export", "format": "vtu", "reload": true },
     { "id": "export-gid", "check": "export", "format": "gid", "reload": true, "companion": ".post.res" },
-    { "id": "export-xdmf", "check": "export", "format": "xdmf", "reload": true, "companion": ".h5", "remesh": true,
-      "knownLimitation": { "stage": "remesh", "match": "unknown mixed topology index", "note": "meshio++ cannot re-read its own XDMF Mixed topology (Mesh.SaveAll vertex cells)" } },
+    { "id": "export-xdmf", "check": "export", "format": "xdmf", "reload": true, "companion": ".h5", "remesh": true },
     { "id": "export-hmf", "check": "export", "format": "hmf", "reload": false },
     { "id": "export-avsucd", "check": "export", "format": "avsucd", "reload": false },
     { "id": "export-mphtxt", "check": "export", "format": "mphtxt", "reload": false },

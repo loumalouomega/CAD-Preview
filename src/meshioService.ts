@@ -1,3 +1,5 @@
+import { importRuntimePackage } from "./runtimePackage";
+
 // meshio++ WASM module (`@meshioplusplus/wasm`) — the third host-side WASM
 // singleton alongside OCCT (occtService.ts) and Gmsh (gmshService.ts), used to
 // import mesh-only formats (VTK/MED/CGNS/Exodus/XDMF/MDPA/OpenFOAM/GiD) as
@@ -37,13 +39,10 @@
 // writes — so `mcpServer.ts`'s existing top-of-file stdout rebinding already
 // covers it; no new suppression code is needed here.
 //
-// Re-confirmed against the 10.20.2 glue on the dependency bump: still exactly
-// one console.log + one console.error, zero raw fd writes — and still exactly
-// three `import.meta.url` self-locations, so the package must keep being
-// shipped as real files under node_modules (.vscodeignore carve-out) rather
-// than copied into dist/ the way OCCT's and Gmsh's `.wasm` binaries are.
-// `resolveVariant()` is byte-identical across that bump too, so `{variant:
-// "seq"}` below remains load-bearing, not vestigial.
+// Rechecked at 16.16.0: one console.log + one console.error, zero raw fd
+// writes, three import.meta.url self-locations. runtimePackage.ts resolves
+// the installed package first, then staged dist/meshio trees, and performs
+// an opaque native import so CJS consumers cannot inline ESM glue.
 
 import * as fs from "node:fs";
 import * as path from "node:path";
@@ -79,7 +78,7 @@ let _meshioPromise: Promise<MeshioApi> | null = null;
 export function getMeshio(): Promise<MeshioApi> {
   if (!_meshioPromise) {
     _meshioPromise = (async () => {
-      const { loadMeshioPlusPlus } = await import("@meshioplusplus/wasm");
+      const { loadMeshioPlusPlus } = await importRuntimePackage("@meshioplusplus/wasm", "meshio", "src/index.mjs");
       return loadMeshioPlusPlus({}, { variant: "seq" });
     })().catch((err) => {
       _meshioPromise = null;
@@ -192,18 +191,8 @@ export interface MeshioCompanion {
  * sibling by swapping the PRIMARY's own extension); every companion is
  * always written under its own real/referenced basename, never renamed.
  *
- * **Fixes ONLY the missing-companion failure, not every XDMF re-import** —
- * a SEPARATE, pre-existing meshio++ 10.20.2 bug means an XDMF whose mesh
- * mixes cell types (points/lines/triangles/tets — exactly what this
- * codebase's own `generate_mesh` always produces, since `Mesh.SaveAll=1` is
- * forced unconditionally) still fails to re-import, with a DIFFERENT error
- * (`"XDMF: unknown mixed topology index"`) than the one this function
- * fixes. Verified these are two independent, ordered failures, not one
- * masking the other: the same Mixed-topology fixture with its `.h5` deleted
- * fails with the ORIGINAL `"HDF5: could not open file"` error instead — the
- * companion lookup this function performs runs first and succeeds; only
- * then does meshio++'s own topology parsing fail. See
- * `doc/gmsh-integration.md`'s "The meshio++ bridge" section.
+ * Mixed-topology XDMF also round-trips as of meshio++ 16.16.0; the
+ * formerly separate reader defect is covered by the compatibility corpus.
  */
 function stageMeshioSource(
   m: MeshioApi,
@@ -656,9 +645,9 @@ export interface MeshioMetadataSummary {
 
 /**
  * Formats whose native, header-only `readMetadata()` path (added upstream in
- * v11.3.0) under-reports what the file declares — verified against 16.7.0 by
- * writing a region- and data-bearing mesh in every import format and comparing
- * `readMetadata()` with a full `readMesh()`. MED reports no regions and no
+ * v11.3.0) under-reports what the file declares. The 16.7.0 audit compared
+ * every import format; the three affected formats were rechecked at 16.16.0
+ * against full `readMesh()` results with region- and data-bearing fixtures. MED reports no regions and no
  * integer cell arrays (`two-material-tets.med`'s `MaterialA`/`MaterialB` and
  * `cell_tags` vanish); CGNS and GiD report no data arrays at all. Every other
  * import format either agreed or already fell back to a full read. For these

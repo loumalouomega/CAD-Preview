@@ -8,12 +8,14 @@
  * This asserts the packaged archive contains every carved-back file plus the
  * built bundles and data dirs, and none of what must never ship.
  *
- * The required list is DERIVED from `.vscodeignore`'s `!` re-include lines,
- * so adding a carve-out needs no edit here; the bundles/data are listed below.
+ * Required files combine `.vscodeignore` re-includes with the shared staged
+ * runtime inventory, so accidentally deleting a carve-out cannot silently
+ * remove a kernel asset. Other bundles/data are listed below.
  */
 import * as fs from "fs";
 import * as path from "path";
 import { fileURLToPath } from "url";
+import { stagedRuntimeFiles } from "../runtimeAssets.mjs";
 import { unzipSync } from "fflate";
 
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
@@ -49,7 +51,7 @@ const carveOuts = fs
   .filter((l) => l.startsWith("!") && !l.includes("*"))
   .map((l) => l.slice(1));
 
-const required = [
+const required = [...new Set([
   "package.json",
   "dist/extension.js",
   "dist/mcp-server.js",
@@ -62,10 +64,13 @@ const required = [
   "media/viewer.js",
   "media/viewer.css",
   ...carveOuts,
-];
+  ...stagedRuntimeFiles,
+])];
 
 const forbidden = [
   /^src\//,
+  /^dist\/meshio\/dist\/meshioplusplus_wasm_mt\./,
+  /^node_modules\/(?:@meshioplusplus\/wasm|float-tetwild-wasm)\//,
   /^examples\//,
   /^scripts\//,
   /^doc\//,
