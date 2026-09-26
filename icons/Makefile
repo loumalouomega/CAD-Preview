@@ -47,7 +47,7 @@ ops-ts: ops
 
 icon:
 	rsvg-convert -w 512 -h 512 ../images/icon.svg -o ../images/icon_transparency.png
-	rsvg-convert -w 512 -h 512 -b white ../images/icon.svg -o ../images/icon.png
+	rsvg-convert -w 512 -h 512 ../images/icon.svg -o ../images/icon.png
 
 clean:
 	rm -rf $(UI_BUILDDIR) $(UI_SVGDIR) $(OPS_BUILDDIR) $(OPS_SVGDIR)
