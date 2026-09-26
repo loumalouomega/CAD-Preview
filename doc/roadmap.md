@@ -168,7 +168,7 @@ It does **not** admit AGPL code, so TetGen stays rejected. Every new bundled dep
 
 | Wave | Outcome | Start with | Exit signal |
 | --- | --- | --- | --- |
-| Upkeep | The base stays current and trustworthy | Verify the dependency watch (1.1), then verification-debt burn-down (1.3) | The monitor has run on GitHub; the verification debt count has started falling |
+| Upkeep | The base stays current and trustworthy | Verify the dependency watch (1.1), then verification-debt burn-down (1.2) | The monitor has run on GitHub; the verification debt count has started falling |
 | Parity | Everything an agent can do, a user can do, and the reverse | Done: headless mesh-edit replay closed the last listed gap (as did the hole-table, refinement-sweep, free-text-note and mesh-source FE-export gaps). Justified remainders: mesh `inspect`/mass facts, `promote_mesh_to_brep` and `repair_mesh` read the raw file (their ids and outputs are defined over it; `save_model` bakes first), and glTF has no own-format save (its exporter emits only `.glb`) | Headless tools see the same edited mesh the viewer shows, or each remaining difference is justified |
 | Meshing probes | Decide on remeshing and on conformal assemblies | The MMG core probe (4.1), then conformal multi-body meshing (4.2), then Gmsh optimisation (4.4) | Each probe filed with measured results and a decision |
 | Geometry probes | Decide which never-called OCCT capabilities become ops | Imprint and split faces (3.1), then B-rep repair (3.2) | Each probe filed with measured results and a decision |
@@ -194,7 +194,7 @@ verification found Three.js 0.186.1 ahead of the locked 0.186.0.
   reported that all watched dependencies are current. Local mocked issue tests
   and a report-only run do not establish this GitHub-side result.
 
-#### 1.3 Verification-debt burn-down {#verification-debt-burn-down}
+#### 1.2 Verification-debt burn-down {#verification-debt-burn-down}
 
 *Area: Platform.*
 
@@ -214,7 +214,7 @@ verification found Three.js 0.186.1 ahead of the locked 0.186.0.
   Then add a check to `npm test` that counts the "Verification gap" notes in `CLAUDE.md` and fails when the count rises without a matching entry in a small allowlist file that states why.
 - **Done when:** the count has fallen by ten, and a new unverified feature cannot land silently.
 
-#### 1.4 Perf harness coverage for meshio and OpenSCAD loads {#perf-harness-coverage-for-meshio-and-openscad-loads}
+#### 1.3 Perf harness coverage for meshio and OpenSCAD loads {#perf-harness-coverage-for-meshio-and-openscad-loads}
 
 *Area: Platform.*
 
