@@ -78,4 +78,4 @@ cd icons
 make icon       # requires rsvg-convert (librsvg)
 ```
 
-This generates the committed 512×512 `images/icon.png` (white background, referenced by `package.json`) and `images/icon_transparency.png` (transparent background) from the same SVG. Edit the SVG and commit both regenerated PNGs. The former TikZ application source has been retired; toolbar and operation icon pipelines remain independent.
+This generates the committed 512×512 `images/icon.png` (referenced by `package.json`) and `images/icon_transparency.png`, both with transparent backgrounds, from the same SVG. Edit the SVG and commit both regenerated PNGs. The former TikZ application source has been retired; toolbar and operation icon pipelines remain independent.

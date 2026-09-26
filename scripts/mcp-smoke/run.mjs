@@ -21,6 +21,7 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { fileURLToPath } from "url";
+import { createHash } from "crypto";
 
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const SERVER = path.join(ROOT, "dist", "mcp-server.js");
@@ -3507,6 +3508,144 @@ try {
     const reX = mshMinMax(fs.readFileSync(reMsh, "utf8"));
     assert(Math.abs(reX.min - (rawX.min + 100)) < 1e-3, `the saved STL carries the translate once, not twice (min x ${reX.min})`);
     assert((await call("save_model", { path: bakeStl })).baked === 0, "a second STL save with an empty tail is a no-op");
+
+    // ── Recoverable mesh save-in-place (roadmap 1.5) ────────────────────────
+    // A save writes the geometry and THEN advances the `bakedThrough`
+    // watermark. A process that dies between the two leaves the file baked and
+    // the history stale, and reopening replays the same edit over geometry
+    // that already contains it. These stage each write boundary on disk and
+    // assert `load_model` repairs the pair.
+    //
+    // The staged journal's `bakedSha256` is the PRISTINE cube's hash — a valid
+    // transaction whose saved output happened to equal its input — which
+    // isolates the watermark as the only variable. The control immediately
+    // below removes only the journal, and MUST show the +100 double-apply;
+    // without it none of these assertions are worth anything.
+    const sha = (buf) => createHash("sha256").update(buf).digest("hex");
+    const pristine = fs.readFileSync(path.join(ROOT, "examples", "STL", "cube.stl"));
+    // The fixture is ASCII STL, so padding its header line yields a
+    // byte-different but geometrically identical — and still valid — variant.
+    // Two padding widths give the three hashes a journal carries three
+    // genuinely distinct values, which is what reaches the `discard` and
+    // `ask` branches with a real, meshable model on disk.
+    const preSaveBytes = Buffer.from(pristine.toString("utf8").replace("solid cube", "solid cube "), "utf8");
+    const otherBytes = Buffer.from(pristine.toString("utf8").replace("solid cube", "solid cube  "), "utf8");
+    const stageInterrupted = (name, { source, bakedThrough = 0, withJournal = true } = {}) => {
+      const p = path.join(dir, name);
+      fs.writeFileSync(p, source);
+      fs.writeFileSync(`${p}.bak`, preSaveBytes);
+      fs.writeFileSync(
+        `${p}.edits.json`,
+        JSON.stringify(
+          { version: 1, source: name, bakedThrough, ops: [{ op: "translate", targets: ["node-0"], vec: [100, 0, 0] }] },
+          null,
+          2
+        )
+      );
+      if (withJournal) {
+        fs.writeFileSync(
+          `${p}.save-journal.json`,
+          JSON.stringify(
+            {
+              version: 1,
+              source: name,
+              saveId: "save-1",
+              startedAt: "2026-09-26T00:00:00.000Z",
+              format: "stl",
+              bakedThrough: 1,
+              preSaveSha256: sha(preSaveBytes),
+              bakedSha256: sha(pristine),
+            },
+            null,
+            2
+          )
+        );
+      }
+      return p;
+    };
+    const minXOf = async (modelPath, out) => {
+      await call("export_mesh", { path: modelPath, format: "msh", outputPath: out });
+      return mshMinMax(fs.readFileSync(out, "utf8")).min;
+    };
+
+    const recoverStl = stageInterrupted("recover.stl", { source: pristine });
+    const recoveredLoad = await call("load_model", { path: recoverStl });
+    assert(
+      recoveredLoad.warnings.some((w) => /interrupted save/i.test(w) && /completed/i.test(w)),
+      `load_model reports that it completed the interrupted save (warnings: ${JSON.stringify(recoveredLoad.warnings)})`
+    );
+    assert((await call("get_state", { path: recoverStl })).bakedThrough === 1, "the recovered save's watermark is advanced");
+    assert(!fs.existsSync(`${recoverStl}.save-journal.json`), "the transaction marker is cleared once the save is finished");
+    const recoveredX = await minXOf(recoverStl, path.join(dir, "recover.msh"));
+    assert(
+      Math.abs(recoveredX - rawX.min) < 1e-3,
+      `the pending edit is NOT replayed over already-baked geometry (min x ${rawX.min} vs ${recoveredX})`
+    );
+    // A second load is a genuine no-op.
+    assert(
+      !(await call("load_model", { path: recoverStl })).warnings.some((w) => /interrupted save/i.test(w)),
+      "a second load finds nothing pending"
+    );
+
+    // The control: byte-identical staging MINUS the journal.
+    const controlStl = stageInterrupted("control.stl", { source: pristine, withJournal: false });
+    const controlX = await minXOf(controlStl, path.join(dir, "control.msh"));
+    assert(
+      Math.abs(controlX - (rawX.min + 100)) < 1e-3,
+      `CONTROL: with no marker a stale watermark replays the +100 op (min x ${rawX.min} -> ${controlX}) — so the assertion above discriminates`
+    );
+
+    // The discard branch: the source still holds its pre-save bytes, so the
+    // existing watermark was already correct and the tail still applies once.
+    const discardStl = stageInterrupted("discard.stl", { source: preSaveBytes });
+    const discardLoad = await call("load_model", { path: discardStl });
+    assert(
+      discardLoad.warnings.some((w) => /interrupted save/i.test(w) && /never rewritten/i.test(w)),
+      `load_model reports the source was never rewritten (warnings: ${JSON.stringify(discardLoad.warnings)})`
+    );
+    assert(!fs.existsSync(`${discardStl}.save-journal.json`), "the stale marker is cleared");
+    const discardX = await minXOf(discardStl, path.join(dir, "discard.msh"));
+    assert(
+      Math.abs(discardX - (rawX.min + 100)) < 1e-3,
+      `the discard branch leaves the pending edit applying exactly once (min x ${rawX.min} -> ${discardX})`
+    );
+
+    // The unrecognised third state: the source matches NEITHER hash. Headless
+    // has no prompt, so it must report and change NOTHING.
+    const tornStl = stageInterrupted("torn.stl", { source: otherBytes });
+    const tornBefore = fs.readFileSync(tornStl);
+    const tornLoad = await call("load_model", { path: tornStl });
+    assert(
+      tornLoad.warnings.some((w) => /Nothing has been changed/i.test(w)),
+      `an unrecognised source is reported, not silently resolved (warnings: ${JSON.stringify(tornLoad.warnings)})`
+    );
+    assert(fs.readFileSync(tornStl).equals(tornBefore), "the unrecognised source is left byte-identical");
+    assert(fs.existsSync(`${tornStl}.save-journal.json`), "the marker survives so the evidence is not destroyed");
+    assert(
+      !(await call("load_model", { path: tornStl })).warnings.some((w) => /Nothing has been changed/i.test(w)),
+      "the recorded decision means a second load reports nothing"
+    );
+
+    // A staged marker on a format with no same-format writer is ignored outright.
+    const gltf = path.join(ROOT, "examples", "GLTF", "cube.gltf");
+    fs.writeFileSync(
+      `${gltf}.save-journal.json`,
+      JSON.stringify({ version: 1, source: "cube.gltf", saveId: "s", startedAt: "2026-09-26T00:00:00.000Z", format: "gltf", bakedThrough: 1, preSaveSha256: sha(preSaveBytes), bakedSha256: sha(pristine) })
+    );
+    await call("load_model", { path: gltf });
+    assert(fs.existsSync(`${gltf}.save-journal.json`), "a glTF source is not a mesh-save subject — the marker is ignored, not consumed");
+    fs.rmSync(`${gltf}.save-journal.json`);
+
+    // save_model settles a pending transaction before opening a new one.
+    const resaveStl = stageInterrupted("resave.stl", { source: pristine });
+    const resave = await call("save_model", { path: resaveStl });
+    assert(
+      resave.warnings.some((w) => /interrupted save/i.test(w) && /completed/i.test(w)),
+      `save_model reports the save it completed (warnings: ${JSON.stringify(resave.warnings)})`
+    );
+    assert(resave.baked === 0, "and then finds an empty tail, rather than applying the edit a second time");
+    assert(!fs.existsSync(`${resaveStl}.save-journal.json`), "the marker is cleared");
+
     for (const [rel, ext] of [["OBJ/cube.obj", "obj"], ["PLY/cube.ply", "ply"]]) {
       const p = path.join(dir, `mesh-bake.${ext}`);
       fs.copyFileSync(path.join(ROOT, "examples", ...rel.split("/")), p);

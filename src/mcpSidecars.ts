@@ -27,6 +27,7 @@ import {
   type MeshPresetLibrary,
 } from "./meshPresets";
 import { parseViewStateJson } from "./viewStateSidecar";
+import { saveJournalFileName } from "./saveJournal";
 import type { ViewState } from "./protocol";
 
 export function editsSidecarPath(modelPath: string): string {
@@ -60,6 +61,20 @@ export function geoScriptPath(modelPath: string): string {
  * hand-concatenating a sixth string that could drift. */
 export function viewStateSidecarPath(modelPath: string): string {
   return `${modelPath}.view.json`;
+}
+
+/**
+ * The save-transaction journal's path — a SIBLING of the source, from
+ * `saveJournal.ts`'s single name derivation.
+ *
+ * Deliberately NOT one of the six sidecars: it is per-save transaction state,
+ * not per-document state, so `list_workspace_models` does not report it as a
+ * companion and `save_preprocess` does not archive it. Its presence is
+ * reported by `load_model` when recovery acts on it, which is the only thing
+ * that needs to know about it.
+ */
+export function saveJournalPath(modelPath: string): string {
+  return path.join(path.dirname(modelPath), saveJournalFileName(path.basename(modelPath)));
 }
 
 /** Reads + validates the edits sidecar; returns empty lists when missing or unreadable. */

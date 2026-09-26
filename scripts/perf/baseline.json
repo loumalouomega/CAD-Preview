@@ -14,5 +14,13 @@
   "xlarge": {
     "loadMs": 13632,
     "meshMs": 26206
+  },
+  "med-hexes": {
+    "loadMs": 6,
+    "meshMs": 64
+  },
+  "csg-bracket": {
+    "loadMs": 156,
+    "meshMs": 610
   }
 }

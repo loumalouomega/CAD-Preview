@@ -181,7 +181,16 @@ import {
   meshOptionsSidecarPath,
   viewStateSidecarPath,
   geoScriptPath,
+  saveJournalPath,
 } from "./mcpSidecars";
+import {
+  beginMeshSave,
+  endMeshSave,
+  meshSavePaths,
+  recoverInterruptedMeshSave,
+  type MeshSaveRecoveryDeps,
+  type MeshSaveRecoveryResult,
+} from "./meshSaveRecovery";
 import { buildPreprocessZip, readPreprocessZip } from "./preprocessArchive";
 import { bomTsv, type BomRow } from "./bomExport";
 import { batchTsv, runBatch, type CollisionPolicy } from "./batchExport";
@@ -753,12 +762,72 @@ async function maybeAutoCreateMeshioParts(ctx: ToolContext, modelPath: string, b
   }
 }
 
+/**
+ * The `node:fs` adapter for `meshSaveRecovery.ts` — the headless half of the
+ * interactive path's identical adapter. `askUnrecognised` is a stub returning
+ * `null`: this server has no UI, so the unrecognised branch degrades to a
+ * warning and changes nothing (see `loadModel`, which reports it).
+ */
+function headlessMeshRecoveryDeps(modelPath: string): MeshSaveRecoveryDeps {
+  const sibling = (name: string): string => path.join(path.dirname(modelPath), name);
+  return {
+    readBytes: (name) => fs.readFile(sibling(name)),
+    readBytesOrNull: async (name) => fs.readFile(sibling(name)).catch(() => null),
+    writeBytes: async (name, bytes) => {
+      await fs.writeFile(sibling(name), bytes);
+    },
+    // Rename rather than an in-place write, so a process death mid-write can
+    // never leave a half-written source for recovery to find.
+    renameOver: async (from, to) => {
+      await fs.rename(sibling(from), sibling(to));
+    },
+    deleteFile: async (name) => {
+      await fs.rm(sibling(name), { force: true });
+    },
+    readEdits: () => readEditsRaw(modelPath),
+    writeEdits: (ops, variables, bakedThrough) => writeEdits(modelPath, ops, variables, bakedThrough),
+    askUnrecognised: async () => null,
+    withSourceWrite: (fn) => fn(),
+  };
+}
+
+/**
+ * Roadmap 1.5, "Recoverable mesh source saves" — repairs an interrupted
+ * save-in-place before the source is read or a new save is opened.
+ *
+ * Headless reaches the same two resolvable outcomes as the extension: a source
+ * that provably holds the baked bytes gets its watermark advanced (so the
+ * pending edits are not replayed over geometry that already contains them), and
+ * a source that still holds its pre-save bytes just has its stale marker
+ * dropped. The unrecognised third state reports a warning and changes nothing
+ * — this server cannot ask, and a headless call must never rewrite a file it
+ * cannot reason about.
+ *
+ * Non-fatal by construction: every failure returns `action: "none"` so the
+ * model still opens, exactly as before this existed.
+ */
+export async function recoverInterruptedMeshSaveHeadless(modelPath: string, format: string): Promise<MeshSaveRecoveryResult> {
+  if (!MESH_SAVE_IN_PLACE_FORMATS.has(format as CadFormat)) {
+    return { action: "none", reason: "not-savable", bakedThrough: 0, message: null, sidecarChanged: false, sourceChanged: false };
+  }
+  const fileName = path.basename(modelPath);
+  try {
+    return await recoverInterruptedMeshSave(meshSavePaths(fileName, EXPORT_EXTENSION[format as CadFormat]), fileName, headlessMeshRecoveryDeps(modelPath));
+  } catch {
+    return { action: "none", reason: "recovery-failed", bakedThrough: 0, message: null, sidecarChanged: false, sourceChanged: false };
+  }
+}
+
 export async function loadModel(ctx: ToolContext, params: { path: string }) {
   const modelPath = params.path;
   const route = requireRoute(modelPath);
 
   if (COMPARABLE_MESH_FORMATS.has(route.format)) {
+    // Recover an interrupted save-in-place BEFORE reading the source, so the
+    // facts below describe a consistent source/history pair.
+    const recovered = await recoverInterruptedMeshSaveHeadless(modelPath, route.format);
     const { inspection, warnings } = await readMeshInspection(modelPath, route.format as MeshParseFormat);
+    if (recovered.message) warnings.unshift(recovered.message);
     return {format: route.format, strategy: route.strategy, meshEntities: inspection.inventory,
       tree: null, solids: null, edgeCount: null, edgeIds: null, pointCount: null,
       bbox: inspection.inventory.triangleCount ? inspection.inspect("whole-model").bbox : null,
@@ -5580,9 +5649,19 @@ export async function saveModelTool(ctx: ToolContext, params: { path: string }) 
  * interactive save does not rebind either. A skipped op is reported, not
  * fatal (the saved file is what the viewer displays); a failed bake throws
  * before anything is written.
+ *
+ * Wrapped in the recoverable transaction of roadmap 1.5, "Recoverable mesh
+ * source saves", and now writing through a temp sibling + rename rather than in
+ * place — this path was the one
+ * place a process death mid-write could truncate the source, which is the
+ * unrecognised third state recovery has to ask about rather than resolve.
  */
 async function saveMeshModel(ctx: ToolContext, modelPath: string, format: "stl" | "obj" | "ply") {
   const warnings: string[] = [];
+  // Settle any transaction a previous run left in flight before opening a new
+  // one, and report it: a `finish` here is a save the caller never saw land.
+  const recovered = await recoverInterruptedMeshSaveHeadless(modelPath, format);
+  if (recovered.message) warnings.push(recovered.message);
   const { ops, fullOps, variables } = await readEditsResolved(modelPath);
   if (ops.length === 0) {
     return { written: path.resolve(modelPath), baked: 0, editsBaked: fullOps.length, warnings };
@@ -5591,9 +5670,38 @@ async function saveMeshModel(ctx: ToolContext, modelPath: string, format: "stl" 
   const result = await ctx.pipeline.bakeMeshEdits(original, format, ops, format);
   warnings.push(...bakeWarnings(result.outcomes, result.messages, ops.length));
   const resolved = path.resolve(modelPath);
-  await fs.writeFile(`${resolved}.bak`, original);
-  await fs.writeFile(resolved, result.bytes);
-  await writeEdits(modelPath, fullOps, variables, fullOps.length);
+  const fileName = path.basename(resolved);
+  const paths = meshSavePaths(fileName, EXPORT_EXTENSION[format]);
+  const deps = headlessMeshRecoveryDeps(resolved);
+  const sibling = (name: string): string => path.join(path.dirname(resolved), name);
+  const journal = await beginMeshSave(
+    { paths, fileName, format, bakedThrough: fullOps.length, preSaveBytes: original, bakedBytes: result.bytes, writeBackup: true },
+    deps
+  );
+  try {
+    await fs.writeFile(sibling(paths.temp), result.bytes);
+    await fs.rename(sibling(paths.temp), resolved);
+  } catch (err) {
+    // The source never moved, so the marker describes a save that did not
+    // happen: close it rather than leaving a later open to reason about it.
+    await endMeshSave(paths, journal, deps).catch(() => undefined);
+    await fs.rm(sibling(paths.temp), { force: true }).catch(() => undefined);
+    throw err;
+  }
+  try {
+    await writeEdits(modelPath, fullOps, variables, fullOps.length);
+  } catch (err) {
+    // The source is baked but the watermark did not land. Leaving the journal
+    // is exactly right here: the next open finds the source holding the baked
+    // bytes and FINISHES the save. Rolling the source back instead would need
+    // the pre-save bytes re-read, and the transaction marker already carries
+    // everything recovery needs.
+    throw new Error(
+      `${(err as Error).message} — the geometry was written but the edit history's save marker did not advance; ` +
+        `re-run save_model (or open the file) to complete the save. The pre-save geometry is in ${paths.backup}.`
+    );
+  }
+  await endMeshSave(paths, journal, deps).catch(() => undefined);
   warnings.push(
     "This server cannot see whether the file is open in VS Code — save (or close) the editor session first so its autosave does not race this write."
   );

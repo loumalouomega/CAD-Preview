@@ -1,4 +1,5 @@
 import { importRuntimePackage } from "./runtimePackage";
+import { boundaryExtentMismatches, describeExtentMismatch, extentOf } from "./meshioBoundary";
 
 // meshio++ WASM module (`@meshioplusplus/wasm`) — the third host-side WASM
 // singleton alongside OCCT (occtService.ts) and Gmsh (gmshService.ts), used to
@@ -259,11 +260,30 @@ export async function convertToStlBoundary(
   const { primaryPath, allPaths } = stageMeshioSource(m, sourceBytes, meshioFormat, sourceName, companions);
   const outPath = "/out.stl";
   try {
+    // One read, shared by both paths below: the extent check needs the source
+    // mesh, and the fallback path needs it anyway. `convertSurface` is a
+    // SEPARATE parse, so this is one extra read on the native path — the price
+    // of catching a boundary that silently lost part of the geometry.
+    const sourceMesh = m.readMesh(primaryPath, meshioFormat);
+    const sourceExtent = extentOf(sourceMesh.points, sourceMesh.dim);
+    // A boundary surface is built from the mesh's OWN points — extraction
+    // selects cells and linearizes them, it never moves a vertex — so its
+    // extent must match the source's on every non-degenerate axis. Measured
+    // across every committed meshio fixture, a correct extraction is exactly
+    // 1.000 on all three axes; see meshioBoundary.ts for the defect that
+    // motivated this, and why counts cannot catch it.
+    const assertCoversSource = (positions: ArrayLike<number>, dim: number) => {
+      const got = extentOf(positions, dim);
+      if (!sourceExtent || !got) return;
+      const mismatches = boundaryExtentMismatches(sourceExtent, got);
+      if (mismatches.length) throw new Error(describeExtentMismatch(meshioFormat, mismatches));
+    };
     let convertError: unknown;
+    let converted: Uint8Array | undefined;
     try {
       m.convertSurface(primaryPath, outPath, { inFormat: meshioFormat, outFormat: "stl" });
       const bytes: Uint8Array = m.FS.readFile(outPath);
-      if (parseStl(bytes).length > 0) return bytes;
+      if (parseStl(bytes).length > 0) converted = bytes;
     } catch (err) {
       // Some format readers support a deck that the C++ surface converter
       // rejects (Nastran is one). A plain reader + surface extraction handles
@@ -272,10 +292,18 @@ export async function convertToStlBoundary(
       if (isMeshioWasmAbort((err as Error)?.message ?? String(err))) throw err;
       convertError = err;
     }
+    // Guard OUTSIDE the try above on purpose: a refusal here must not be
+    // mistaken for the converter declining the deck and fall through to the
+    // fallback, which would reintroduce the same wrong geometry.
+    if (converted) {
+      assertCoversSource(parseStl(converted), 3);
+      return converted;
+    }
     // `convertSurface` linearizes higher-order cells but does NOT split
     // multi-node boundary faces — a quad-only boundary yields zero facets.
     // Also use this path when the format's C++ surface reader is unsupported.
-    let boundary = m.extractSurface(m.readMesh(primaryPath, meshioFormat), false);
+    let boundary = m.extractSurface(sourceMesh, false);
+    assertCoversSource(boundary.points, boundary.dim);
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     let blocks = boundary.cells as any[];
     if (blocks.length > 0 && blocks.some((b) => b.type !== "triangle" || b.nodesPerCell !== 3)) {

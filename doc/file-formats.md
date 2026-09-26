@@ -195,6 +195,20 @@ User-applied **edit operations** (transforms and booleans, and — in later mile
 
 The source file is written only by an explicit, confirmed action — Ctrl+S on a dirty tab (for STEP/IGES/BREP/STL/OBJ/PLY), an Export pick of the source's own format ("save in place"), or the headless `save_model` MCP tool — never as a side effect of applying or autosaving an edit. That save **bakes** the unbaked op tail into the file and records how far via a `bakedThrough` watermark: the file on disk already contains `ops[0..bakedThrough]`, so replay starts after it and every kernel replay consumes only the tail. The field is omitted when `0`, so a never-saved-in-place document's sidecar is byte-identical to before this feature existed; parsing clamps an out-of-range value instead of throwing. Undo cannot cross the save point, and `remove_edit_op` refuses an index inside the baked prefix headless.
 
+### Recovering an interrupted mesh save (`<model>.save-journal.json`)
+
+A mesh save-in-place (STL/OBJ/PLY) writes the geometry and **then** advances the `bakedThrough` watermark. A process that stops between those two writes leaves the file on disk baked while the sidecar still says otherwise — and reopening then replays the same edit over geometry that already contains it.
+
+`<model>.save-journal.json` is a **transaction marker** written before the source write and deleted after the watermark write, so a crash at any point is repairable on the next open. It carries the intended `bakedThrough`, a `saveId`, and two SHA-256 hashes — `preSaveSha256` and `bakedSha256` — both computable at every boundary from bytes the save already holds. On open, the two hashes say which write landed, and one of three things happens:
+
+- The source holds the **baked** bytes → the watermark is advanced, completing the save. The file on disk is what you saved, and the pending edits are not applied again.
+- The source still holds its **pre-save** bytes → the write never landed, the existing watermark was already correct, and only the stale marker is removed.
+- The source matches **neither** (a torn write, or something else editing the file during the crash window) → nothing is guessed. A message reports it and the marker survives. Interactively you are offered **Restore the pre-save backup** — offered only when `<model>.bak` genuinely is this save's pre-save state, since the `.bak` is one-deep per *session* and on a second save it holds the pre-*first*-save bytes — or **Keep the current file**; either answer is recorded in the marker so the question is asked once. Headless (`load_model`) has no prompt, so it reports and changes nothing.
+
+A leftover `<base>.save-tmp.<ext>` from a death between writing it and renaming it is swept, and a marker left after a save that had already completed is cleaned up silently.
+
+**This is deliberately not a seventh sidecar.** It is per-save transaction state, not per-document state: it is not part of a document's history, `list_workspace_models` does not report it as a companion, and `save_preprocess` does not archive it. Its presence is reported by the recovery that acts on it, which is the only thing that needs to know. It is written only for the three formats with a same-format writer, so a STEP/IGES/BREP/glTF/meshio document is never a subject — see `src/saveJournal.ts` (the pure rules) and `src/meshSaveRecovery.ts` (the shared I/O choreography).
+
 ```json
 {
   "version": 1,

@@ -2417,11 +2417,38 @@ The same pipeline serves interactive export and MCP. Writer regression tests and
 KKSS's real fluid/potential-flow/shallow-water tutorial solves cover the handoff.
 
 
-## Dependency currency and embedded kernel packaging (roadmap 1.1 / 1.2)
+## Recoverable mesh save-in-place (roadmap 1.5, "Recoverable mesh source saves", closed)
+
+A save-in-place writes the CAD source and **then** advances the `.edits.json` `bakedThrough` watermark. Both bake paths already roll the source back when the watermark write *throws* — but a process that simply **stops** between the two writes leaves the pair disagreeing: the file on disk is baked while the sidecar still says otherwise, and reopening replays the same edit over already-baked geometry. A `.bak` existed, but nothing coordinated it with the sidecar.
+
+- **A transaction journal, `<model>.save-journal.json`, written before the source write and deleted after the watermark write.** It carries the intended `bakedThrough`, a `saveId`, and two SHA-256 hashes — `preSaveSha256` and `bakedSha256` — both computable at every boundary from bytes the save already holds, so opening a transaction costs one small file write and one hash over each buffer. Its mere presence means "a save was in flight"; the two hashes say which write landed.
+- **Two modules, split by the repo's usual rule.** `src/saveJournal.ts` is pure (vscode-free, node-free beyond `./hash`): the `SaveJournal` shape, a tolerant `parseSaveJournal` (a corrupt marker is `null`, so it can never block opening a model), and `planRecovery` — the whole policy as one function, unit-tested like `sidecarRevision.ts`. `src/meshSaveRecovery.ts` is the I/O choreography, **vscode-free with all file access injected**, following `meshSourceInput.ts`'s exact shape: `provider.ts` passes `vscode.workspace.fs` plus the prompt and watcher-suppression callbacks, `mcpTools.ts` passes `node:fs` and turns the prompt into a warning. One implementation, two consumers, and the whole open-and-recover path is testable headlessly.
+- **`MeshSavePaths` holds bare FILE NAMES, not paths** — deliberately, so no path-separator or URI-scheme question leaks into the shared module: each caller joins the name onto its own root (`vscode.Uri.joinPath` / `path.join`). The names themselves come from one derivation (`saveJournalFileName`/`saveTempFileName`), so they cannot drift between surfaces.
+- **The four plans, in strict order**, each a reason to stop: `none`/no-journal; `none`/**already-resolved** (a recorded decision — this is what makes a second recovery a true no-op instead of a second prompt); `none`/**already-advanced** (the watermark landed and only the marker removal was lost — the pair agrees, so this sweeps the marker and any temp sibling and says nothing); **`finish`** (the source provably holds the baked bytes → advance the watermark, which is the whole point: it stops the double-apply); **`discard`** (the source still holds its pre-save bytes → the existing watermark was already correct); **`ask`** (neither → never guess).
+- **`finish` is guarded on `sidecarOpsCount >= journal.bakedThrough`**, so a hand-edited or truncated sidecar can never be handed a watermark past its own op list.
+- **The `ask` branch's restore is offered ONLY when `sha256(.bak) === journal.preSaveSha256`.** This is the non-obvious correctness point: `.bak` is one-deep per *session* (`madeSourceBackupThisSession`), so on a second save it holds the pre-*first*-save bytes, and an unconditional restore would silently discard an earlier successful save. When it genuinely is this transaction's pre-save state the restore is the right repair; otherwise nothing is touched. Either answer records a `resolution` **inside** the journal rather than deleting it, which is what makes the prompt show once and preserves the evidence.
+- **Two ordering hazards exist only because of the surrounding code, and are load-bearing.** (1) After `finish` writes the sidecar, `revisions.noteSynced("edits", …)` **must** record the new disk revision — the open-time seeding loop read the pre-recovery bytes, so without it `canWrite` would compare against a stale revision and silently refuse the user's first autosave. The seeding loop's existing "skip if already known" guard makes either interleaving safe. (2) The restore branch writes the source, so it runs inside `withSourceWrite` (the same one-shot `expectOwnSourceSave` guard the save paths use) or the source watcher reloads the document underneath the recovery.
+- **`saveId` compare-before-delete** in `endMeshSave` is what stops a completing save from removing a *newer* transaction's marker when two editors target the same source. It does not, and cannot, stop recovery from racing a save genuinely in flight — the same cross-process gap `save_model` already documents, stated in the code rather than papered over.
+- **The headless mesh save gained a temp sibling + rename**, matching the interactive path. It was the one place a process death mid-write could truncate the source, which is precisely the unrecognised third state recovery has to ask about rather than resolve. Making both paths share a write sequence is also what makes "inject failure after each write boundary" a well-defined list.
+- **The headless watermark-write failure deliberately LEAVES the journal** rather than rolling the source back: the next open finds the baked bytes and `finish`es the save, which needs nothing but the marker's own hashes. The error message says so and names the `.bak`.
+- **Deliberately not a seventh sidecar.** Per-save transaction state, not document state: absent from `list_workspace_models`' six companions, absent from the preprocess archive, and never read as a document's history. Its presence is reported by the recovery that acts on it. Gated on the three formats with a same-format writer, so B-rep/glTF/meshio are never touched — a marker planted beside a STEP file is ignored, not consumed.
+- **B-rep is explicitly out of scope, and why matters.** `bakeTailToSource` and `saveModelTool` have the identical crash window, but a B-rep roll-forward is *not* free: it must also re-run the two-byte `rebindPartsAcrossSave` (the pre-save bytes are recoverable from `.bak`) or Part/annotation ids go stale. That is a second, larger change, recorded as a follow-up rather than smuggled in.
+- **Verification** — the policy in `saveJournal.test.ts` (16 cases: round-trip, tolerant parse, every required field/hash/version/watermark rejection, the full decision table, the ops-count guard, and an explicit idempotence case). The I/O choreography in `meshSaveRecovery.test.ts` (20 cases over an in-memory fs, staging every crash boundary and asserting the end state is always *either* the original source *or* the fully baked one with the watermark advanced; plus the unrecognised branches, a refused sidecar write, an unreadable source, a corrupt marker, and the two-editor compare-before-delete). `mcpTools.test.ts` drives the real `load_model`/`save_model` over staged on-disk states, including the control that removes only the journal. **`test:integration` carries the geometric assertion, which is the only place it is observable**: a staged `translate [100,0,0]` is exported through the real `cad-preview.exportMesh` → `meshSourceInput.ts` → kernel-worker bake path, and the `.msh` node coordinates come out at `-5 → -5` when recovery ran and `-5 → 95` when only the journal is removed. The control is not optional — without it the recovered assertion is vacuous. `mcp:smoke` pins the same pair headlessly (584 → 601 checks, no new failures).
+- **Bug injections, each confirmed to land before being trusted**: removing the `writeEdits` from the `finish` branch (7 failures across the pure and headless suites) and making headless recovery a no-op (6 failures). Both reverted clean. Two of my own test-premise errors were also corrected rather than papered over: a `canRestoreBackup` expectation that passed a backup which genuinely *was* the pre-save hash, and `result.warnings` asserted empty on a mesh `load_model`, which always carries two standing mesh-facts warnings.
+- **Verification gap, stated plainly:** the recovery *modal*'s feel in a live session (both buttons offered by name is asserted, but which one a user reaches for is not) and the status/error wording's readability are F5-only. The decisions themselves are fully covered by the three suites above.
+
+
+
+## Dependency currency and embedded kernel packaging (roadmap 1.1, closed)
 
 Implemented 2026-09-26 in CAD-Preview only. npm's latest stable releases at
 implementation time were **meshio++ 16.16.0** (from 16.7.0) and **MCP SDK
 1.30.1** (from 1.30.0); manifest caret ranges and lockfile both updated.
+
+(The bumps and the monitor predate the current roadmap's numbering, which is
+why this section was headed "1.1 / 1.2"; roadmap 1.2 is now the unrelated
+verification-debt item. Only 1.1 — verifying the monitor on GitHub — was
+still open, and it is closed below.)
 
 - **Loader audit:** meshio++ remains ESM, `main: ./src/index.mjs`, no exports
   map. `variant: "seq"` remains mandatory (`parallelBackend()` reports `seq`;
@@ -2465,8 +2492,18 @@ implementation time were **meshio++ 16.16.0** (from 16.7.0) and **MCP SDK
   is created/updated; unchanged bodies create no notifications, and an empty
   report leaves existing issues alone. Local report-only verification found
   Three.js 0.186.0 → 0.186.1 (left outside this two-package bump). GitHub issue
-  behavior is covered with a mocked API; an actual workflow run remains roadmap
-  1.1. No issue was posted from this checkout.
+  behavior is covered with a mocked API, and **roadmap 1.1 is now closed by an
+  actual run** (2026-09-26, `gh workflow run dependency-watch.yml` from
+  `master`): green in 17 s, `npm ci` then the publish step, and it opened
+  **issue #84 "Runtime dependency updates available"** reporting
+  `@meshioplusplus/wasm` 16.16.0 → 16.21.0 and `three` 0.186.0 → 0.186.1 —
+  so the two-package bump above is itself already behind on meshio++ again.
+  **The control the mocked API cannot give:** a second dispatch reported
+  `unchanged` and the issue search still returned exactly one issue, proving
+  the marker-based lookup and the unchanged-body suppression work against the
+  real GitHub API (paginated `issues?state=open`, `!issue.pull_request`
+  filtering) and not just against the test double. No issue was posted from
+  this checkout.
 - **Validation:** 41/41 compatibility cases; unit and isolated runtime suites;
   type-check/build; documentation build; fresh 33.21 MB VSIX with 46 archive
   entries checked and all 36 distinct required entries present. The full
@@ -2477,3 +2514,144 @@ implementation time were **meshio++ 16.16.0** (from 16.7.0) and **MCP SDK
   same existing one-retry-on-kernel-reset helper as the adjacent read-only
   prefix case, preserving the byte-identical sidecar assertion. Ordinary
   errors and a second failure remain fatal; no production OCCT behavior changed.
+
+## Perf harness coverage for meshio and OpenSCAD loads (roadmap 1.3, closed)
+
+`npm run perf` measured only the OCCT STEP load and the Gmsh-on-B-rep mesh
+path, so a regression in the meshio++ load path or the CSG parse path would
+surface only as a user report. Both are now benchmarked.
+
+- **The two fixtures, and why they are not just more of the same.** `med-hexes`
+  (`examples/MED/two-region-hexes.med`) and `csg-bracket`
+  (`examples/OpenSCAD/bracket.csg`) exist to cover *code paths the STEP set
+  never enters*: meshio++ runs host-side through its own WASM module
+  (`src/meshioService.ts`, no webview at all) and meshes the converted STL
+  boundary, while `.csg` is parsed by `src/csgImport.ts`. They are single
+  fixtures, not a graded series — the point is path coverage, not a size ramp.
+  `.csg` needs no `openscad` binary (only `.scad` does), and `bracket.csg` is
+  self-contained, so both survive the harness's copy-into-tmpdir step.
+- **`FIXTURES` entries carry `dir` and `family`.** `dir` because the sources
+  span `examples/STP`, `examples/MED` and `examples/OpenSCAD` — the path was
+  previously hardcoded to `STP` for every entry.
+- **The warm-up had to become per-family, and that is the real work here.** It
+  was one `angle1.stp` load+mesh, valid only while every fixture was STEP,
+  because it warms OCCT and nothing else. meshio++ has its own WASM singleton
+  and the CSG parser is plain JS, so neither is initialized by an OCCT warm-up.
+  Timing them cold would record a **one-time init cost as their steady-state
+  baseline** — and because that cost is stable run-to-run, the gate would then
+  be permanently blind to a genuine steady-state regression in precisely the
+  two paths this item exists to cover. `FAMILIES` derives the warm-up set from
+  the fixture list in first-appearance order, so the `brep` warm-up is still
+  `angle1.stp` and the four reviewed STEP numbers are unaffected. Each
+  warm-up copy keeps its source extension, because `load_model` routes on it.
+- **`--update-baseline` rewrites the WHOLE file, so it was not used for the two
+  new rows.** Measured on this machine, the four existing STEP fixtures came
+  out **1.3–1.9x slower** than their reviewed baselines (`medium`'s mesh time
+  639 → 1786 ms is 2.8x, i.e. already within 20% of tripping the 3x gate). A
+  wholesale rewrite would therefore have silently re-baselined four reviewed
+  numbers *and* moved the goalposts toward "never flags". The two new entries
+  were hand-merged instead; `baseline.json`'s diff against the reviewed file is
+  **purely additive**.
+- **The mixed provenance is stated, not hidden.** `small`…`xlarge` come from an
+  earlier, faster session; the two new rows from a slower one. The consequence
+  is that the new entries are up to ~2x **conservative** — a real 3x regression
+  on the faster machine reads as ~1.6x here and would not fire. Recorded in the
+  script header with the instruction to re-capture all six from one machine
+  when the tolerance is next tightened.
+- **The sensitivity control the item's done-when asks for** ("a deliberately
+  slowed build flags them"): since there is no cheap way to deliberately slow
+  these load paths, the equivalent is to understate the new baselines and
+  require the measured values to trip the 3x gate. Setting
+  `med-hexes.loadMs = 1` and `csg-bracket.meshMs = 100` produced exactly two
+  flags — `med-hexes load_model took 7 ms, more than 3x the 1 ms baseline` and
+  `csg-bracket generate_mesh took 614 ms, more than 3x the 100 ms baseline` —
+  with the four STEP rows silent, proving both new rows are read *and* that
+  both stages are compared for them. Without this, "both appear in
+  `baseline.json`" would be satisfiable by rows nothing ever reads. Baselines
+  restored afterwards and the additive diff re-verified.
+- **That control also confirmed the warm-up works**: `med-hexes` read 6 ms on
+  the capture run and 7 ms on the control run. A cold first meshio++ call
+  could not land within 1 ms of a warmed one.
+- **Cosmetic:** the report table's `padEnd(8)` predated the longer names, so the
+  width now derives from `FIXTURES` (`Math.max(8, …)`).
+- **Standing gaps, stated plainly.** `perf` has **no CI job** — it is an
+  opt-in, hand-run gate (`PERF_STRICT=1` to make it fail), so these two paths
+  are measured on demand, not on every change. The 3x tolerance remains
+  deliberately loose for machine-to-machine variance. And because the two new
+  baselines are up to ~2x conservative (above), the first real regression in
+  the meshio or CSG path may need a re-capture before it trips.
+
+## Meshio boundary-extent guard, and the EnSight format it was found by
+
+Attempting to add meshio++ formats after the 16.21.0 bump surfaced a
+silent-wrong-geometry defect, and the investigation is worth more than the
+format was.
+
+- **The defect.** meshio++ reads meshio++'s own foreign EnSight fixture
+  correctly — 9 points, 4 cells, extent `2x1x1`, with `2 0.5 0` in the raw
+  point array — and then produces a **unit box** from it. `convertSurface`
+  succeeds and returns a 4-triangle STL spanning `(0,0,0)→(1,1,1)`; the
+  `extractSurface` fallback agrees. End to end, `generate_mesh` on the EnSight
+  deck returned **120 nodes / 298 elements, byte-identical to
+  `MDPA/gapped-ids.mdpa`**, a one-cell unit tetrahedron. Two unrelated meshes
+  cannot mesh identically, so the geometry was being lost — the file would have
+  opened and displayed a unit cube with nothing warning.
+- **Why every existing check passed.** `npm run compat`'s `load` rows assert
+  counts, warnings and `remesh: true`, and `remesh` fails only when
+  `elementCount` is 0. A unit cube satisfies all of it. This is the same
+  blindness as the MDPA node-order tables above — a structurally valid,
+  correctly shaped, non-empty mesh that is the wrong mesh — and the two
+  findings are the same lesson found twice by different routes.
+- **The guard** (`src/meshioBoundary.ts`, pure and unit-tested, 13 cases).
+  `convertToStlBoundary` now reads the source mesh once and checks the produced
+  boundary against it on **both** paths — the native `convertSurface` and the
+  `extractSurface` fallback. The invariant is exact rather than heuristic: a
+  boundary is built from the mesh's OWN points (extraction selects cells and
+  linearizes them; a quadratic cell's mid-edge nodes lie on the edge between two
+  corners, so linearizing cannot push the extent outward), and a vertex
+  achieving a min or max on some axis necessarily lies on the convex hull, so
+  nothing can be legitimately dropped. The boundary's extent must therefore
+  equal the source's on every non-degenerate axis.
+- **The tolerance is measured, not guessed.** Across every committed meshio
+  fixture a correct extraction is **exactly 1.000** on all three axes
+  (`MED/single-hex.med`, `MED/two-material-tets.med`,
+  `MED/two-region-hexes.med`, `MED/vector-field-tets.med`,
+  `MDPA/gapped-ids.mdpa`, `GiD/two-tets.post.msh`); the one failure,
+  `EnSight/simple.case`, is **0.500**. `BOUNDARY_EXTENT_TOLERANCE` is `1e-6`,
+  with a test asserting that one order of magnitude past it is still rejected
+  so it cannot be quietly widened later.
+- **The guard's placement is load-bearing and was got wrong first.** It was
+  initially written on the fallback branch only; the end-to-end probe showed it
+  never firing, because the wrong geometry came from the *native*
+  `convertSurface`. It now sits **outside** the converter's own `try` — a
+  refusal there would otherwise be caught as "the converter declined this deck"
+  and fall through to the fallback, reintroducing the same wrong geometry.
+- **Asymmetric on purpose.** Only a boundary *smaller* than its source is
+  refused. An over-large extent is not something this check claims to
+  diagnose, and a legitimately thin model must not trip it. Degenerate source
+  axes are skipped rather than divided by, and the check is relative, so a
+  1e6 mm model is judged proportionally.
+- **Blast radius: all meshio formats, and none of the 15 shipped ones trip
+  it.** MED, MDPA, GiD and Nastran still load and mesh exactly as before
+  (verified against their committed fixtures through the real server), so
+  nothing that opens today stops opening — while the class of bug is now closed
+  for every format already supported, and a newly added one is checked for it
+  by construction.
+- **Cost, stated plainly:** the native path now performs one extra `readMesh`,
+  since `convertSurface` is a separate parse. `load_model` is unaffected (its
+  headless inventory for a mesh source is route-info-only and never reaches the
+  boundary); the cost lands on the interactive open and on `generate_mesh`.
+- **EnSight is therefore NOT routed**, and `.case` is deliberately absent from
+  `EXTENSION_MAP` with a comment saying so. The plumbing was never the problem —
+  `meshioCompanions.ts` already carried `ensight: ["case", "geo"]` with a unit
+  test, and `tsc`'s exhaustive `Record<CadFormat, string>` maps caught the
+  routing edits. The format is unreadable in meshio++ before 16.17.0 and its
+  surface conversion is wrong in 16.21.0; the fixture and full measurements are
+  committed under `examples/EnSight/` as the evidence and a reproduction.
+- **Method note worth reusing.** The 14 candidate formats were first screened
+  by writing each with meshio++ and reading it back — a **same-library** round
+  trip, which cannot detect a convention the library is self-consistent about.
+  EnSight was the first one re-checked against a **foreign** fixture, and it
+  failed immediately. Any future format addition here should verify against a
+  file from the format's own ecosystem (meshio++ ships 50 such directories under
+  `tests/python/meshes/`, MIT) rather than one meshio++ wrote.

@@ -40,6 +40,7 @@ import * as vscode from "vscode";
 import { installModalStubs, pick, save, cancel, open as openAnswer, waitForFile, waitFor, type ModalAnswer } from "./modalStubs";
 import { writeParts } from "../../../src/partsStore";
 import { serializeEditsJson } from "../../../src/editsSidecar";
+import { hashBytes, serializeSaveJournal } from "../../../src/saveJournal";
 import { writePlanes } from "../../../src/planesStore";
 import { writeCustomBackup, restoreCustomBackup } from "../../../src/customBackup";
 import { ModelsTreeDataProvider } from "../../../src/modelsView";
@@ -389,6 +390,272 @@ test("Export FE Mesh… bakes a mesh source's pending edits", async () => {
     `the exported mesh moved by the pending translate (min x ${raw} -> ${baked}; statuses ${JSON.stringify(statuses.filter((t) => /bake|Bake|edit/.test(t)))})`
   );
   assert(Buffer.compare(before, fs.readFileSync(edited)) === 0, "the source is byte-identical");
+});
+
+/**
+ * Roadmap 1.5, "Recoverable mesh source saves" — recovery on open, driven
+ * through a REAL save-in-place interruption.
+ *
+ * Each case stages the exact on-disk state a process death at one write
+ * boundary would leave — the baked source, the one-deep `.bak`, the sidecar
+ * with a STALE watermark, and (where relevant) the transaction marker — then
+ * opens the document for real. Nothing here pushes ops through the webview or
+ * reaches into `provider.ts`.
+ *
+ * **The geometric assertion is the whole point, so it goes through geometry.**
+ * The staged source is the PRISTINE cube and the journal's `bakedSha256` is its
+ * hash, which is a valid transaction whose baked output happened to equal its
+ * input. That isolates the watermark as the only variable:
+ *   - recovered   → the tail is empty  → the exported mesh sits at `raw`
+ *   - not recovered → the tail replays → the exported mesh sits at `raw + 100`
+ * `cad-preview.exportMesh` bakes the tail through the kernel worker
+ * (`meshSourceInput.ts`), so the exported `.msh` node coordinates ARE the
+ * geometry the user would be looking at. The un-recovered case doubles as the
+ * sensitivity control: it proves this harness can see the double-apply at all.
+ */
+const mshMinX = (msh: string): number => {
+  const lines = msh.split(/\r?\n/);
+  let i = lines.indexOf("$Nodes") + 2;
+  let min = Infinity;
+  while (lines[i] !== "$EndNodes") {
+    const count = Number(lines[i].split(/\s+/)[3]);
+    i += 1 + count;
+    for (let k = 0; k < count; k++, i++) min = Math.min(min, Number(lines[i].split(/\s+/)[0]));
+  }
+  return min;
+};
+
+/**
+ * The fixture is an ASCII STL, so appending a space to its header line yields
+ * a byte-different but geometrically IDENTICAL — and still valid, still
+ * meshable — variant. That is what lets the three hashes a journal carries be
+ * made genuinely distinct without hand-authoring any geometry: `PRE_BYTES` and
+ * `OTHER_BYTES` differ from each other and from the pristine file, so each
+ * recovery branch can be reached with a real, working mesh on disk.
+ */
+const preSaveBytes = (fixture: string): Buffer => Buffer.from(fs.readFileSync(fixture).toString("utf8").replace("solid cube", "solid cube "), "utf8");
+const otherBytes = (fixture: string): Buffer => Buffer.from(fs.readFileSync(fixture).toString("utf8").replace("solid cube", "solid cube  "), "utf8");
+
+/** Stages an interrupted mesh save-in-place at one of its write boundaries. */
+function stageInterruptedSave(
+  fixture: string,
+  opts: { bakedThrough?: number; withJournal?: boolean; sourceBytes?: Buffer; preSave?: Buffer } = {}
+): string {
+  const staged = stage(fixture);
+  const source = opts.sourceBytes ?? fs.readFileSync(fixture);
+  fs.writeFileSync(staged, source);
+  fs.writeFileSync(`${staged}.bak`, opts.preSave ?? preSaveBytes(fixture));
+  fs.writeFileSync(
+    `${staged}.edits.json`,
+    serializeEditsJson(path.basename(staged), [{ op: "translate", targets: ["node-0"], vec: [100, 0, 0] }], [], opts.bakedThrough ?? 0)
+  );
+  if (opts.withJournal !== false) {
+    fs.writeFileSync(
+      `${staged}.save-journal.json`,
+      serializeSaveJournal({
+        version: 1,
+        source: path.basename(staged),
+        saveId: "save-1",
+        startedAt: "2026-09-26T00:00:00.000Z",
+        format: "stl",
+        bakedThrough: 1,
+        preSaveSha256: hashBytes(opts.preSave ?? preSaveBytes(fixture)),
+        // The pristine fixture IS this transaction's baked output, so the
+        // journal describes a real save whose result happened to equal its
+        // input. That isolates the watermark as the only variable.
+        bakedSha256: hashBytes(fs.readFileSync(fixture)),
+      })
+    );
+  }
+  return staged;
+}
+
+/**
+ * Exports the focused STL's FE mesh and returns its minimum node x.
+ *
+ * `leading` scripts any modals raised BEFORE the export's own — notably the
+ * recovery prompt, which fires while the document opens. The stub queue is
+ * FIFO across every modal, so the whole flow is one flat script; nesting
+ * `withModals` would return the inner *record* rather than the body value,
+ * which is exactly the bug this shape avoids.
+ */
+async function exportMinX(staged: string, name: string, leading: ModalAnswer[] = []): Promise<number> {
+  const out = path.join(path.dirname(staged), name);
+  await withModals([...leading, pick("Gmsh Mesh (.msh)"), pick("Native"), save(out)], async () => {
+    assert(await openDocument(staged), "the staged STL fixture opens");
+    await vscode.commands.executeCommand("cad-preview.exportMesh");
+    await waitForFile(out, 120000);
+  });
+  await closeAll();
+  return mshMinX(fs.readFileSync(out, "utf8"));
+}
+
+test("An interrupted mesh save is completed on open, not replayed over the baked geometry", async () => {
+  const raw = await exportMinX(stage(STL_FIXTURE), "raw.msh");
+  const staged = stageInterruptedSave(STL_FIXTURE);
+  const before = fs.readFileSync(staged);
+  const api = await saveTestApi();
+  const statuses: string[] = [];
+  const sub = api?.onDidPostMessage?.((m) => {
+    const msg = m as { type: string; text?: string; message?: string; bakedThrough?: number };
+    if (msg.type === "status" || msg.type === "error") statuses.push(msg.text ?? msg.message ?? "");
+  });
+  let recovered: number;
+  try {
+    recovered = await exportMinX(staged, "recovered.msh");
+  } finally {
+    sub?.dispose();
+  }
+  assert(
+    Math.abs(recovered - raw) < 1e-3,
+    `the pending translate is NOT replayed over the already-baked geometry (min x ${raw} vs ${recovered})`
+  );
+  assert(
+    statuses.some((t) => /interrupted save/i.test(t) && /completed/i.test(t)),
+    `the user is told the save was completed (saw ${JSON.stringify(statuses)})`
+  );
+  assert(!fs.existsSync(`${staged}.save-journal.json`), "the transaction marker is cleared");
+  assert(Buffer.compare(before, fs.readFileSync(staged)) === 0, "recovery never rewrites the source");
+});
+
+test("An interrupted mesh save with no marker double-applies — the sensitivity control", async () => {
+  // The staged file is byte-identical to the recovered case above MINUS the
+  // journal. If this does not show the +100 double-apply, the assertion above
+  // is vacuous.
+  const raw = await exportMinX(stage(STL_FIXTURE), "raw2.msh");
+  const staged = stageInterruptedSave(STL_FIXTURE, { withJournal: false });
+  const doubled = await exportMinX(staged, "doubled.msh");
+  assert(
+    Math.abs(doubled - (raw + 100)) < 1e-3,
+    `a stale watermark with no marker replays the baked +100 op a second time (min x ${raw} -> ${doubled})`
+  );
+});
+
+test("An interrupted save whose source was never rewritten leaves the pending edits alone", async () => {
+  const raw = await exportMinX(stage(STL_FIXTURE), "raw3.msh");
+  // The source holds the journal's PRE-SAVE bytes, so the transaction is
+  // discarded: the stale watermark was already correct and the tail still
+  // applies. This is end state 1 of the two the item allows — not a
+  // double-apply, and not a silent change either.
+  const staged = stageInterruptedSave(STL_FIXTURE, { sourceBytes: preSaveBytes(STL_FIXTURE) });
+  const api = await saveTestApi();
+  const statuses: string[] = [];
+  const sub = api?.onDidPostMessage?.((m) => {
+    const msg = m as { type: string; text?: string; message?: string };
+    if (msg.type === "status" || msg.type === "error") statuses.push(msg.text ?? msg.message ?? "");
+  });
+  let applied: number;
+  try {
+    applied = await exportMinX(staged, "discarded.msh");
+  } finally {
+    sub?.dispose();
+  }
+  assert(
+    Math.abs(applied - (raw + 100)) < 1e-3,
+    `the pending edit still applies exactly once (min x ${raw} -> ${applied}, expected ${raw + 100})`
+  );
+  assert(
+    statuses.some((t) => /interrupted save/i.test(t) && /never rewritten/i.test(t)),
+    `the user is told the file was never rewritten (saw ${JSON.stringify(statuses)})`
+  );
+  assert(!fs.existsSync(`${staged}.save-journal.json`), "the stale marker is cleared");
+});
+
+test("An unrecognised source is reported, never silently overwritten, and does not prompt twice", async () => {
+  const raw = await exportMinX(stage(STL_FIXTURE), "raw4.msh");
+  // The source matches NEITHER hash: a torn write, or an external edit landing
+  // inside the crash window. Headless this is a warning; interactively it is a
+  // prompt, and "keep the file" must change nothing at all.
+  const torn = otherBytes(STL_FIXTURE);
+  const staged = stageInterruptedSave(STL_FIXTURE, { sourceBytes: torn });
+  const api = await saveTestApi();
+  const statuses: string[] = [];
+  const sub = api?.onDidPostMessage?.((m) => {
+    const msg = m as { type: string; text?: string; message?: string };
+    if (msg.type === "status" || msg.type === "error") statuses.push(msg.text ?? msg.message ?? "");
+  });
+  let applied: number;
+  try {
+    applied = await exportMinX(staged, "kept.msh", [pick("Keep the current file")]);
+  } finally {
+    sub?.dispose();
+  }
+  assert(Buffer.compare(torn, fs.readFileSync(staged)) === 0, "the unrecognised source is left byte-identical");
+  assert(
+    statuses.some((t) => /interrupted save/i.test(t) && /Nothing has been changed/i.test(t)),
+    `the unrecognised state is reported as an ERROR, not silently ignored (saw ${JSON.stringify(statuses)})`
+  );
+  assert(fs.existsSync(`${staged}.save-journal.json`), "the marker survives so the evidence is not destroyed");
+  // The tail still applies — nothing was treated as baked.
+  assert(Math.abs(applied - (raw + 100)) < 1e-3, `the pending edit still applies (min x ${raw} -> ${applied})`);
+  // A second open asks nothing.
+  const again = await exportMinX(staged, "kept2.msh");
+  assert(Math.abs(again - applied) < 1e-6, "a second recovery is a no-op (and asks nothing)");
+});
+
+test("The unrecognised source can be rolled back to the pre-save backup", async () => {
+  const staged = stageInterruptedSave(STL_FIXTURE, { sourceBytes: otherBytes(STL_FIXTURE) });
+  const record = await withModals([pick("Restore the pre-save backup")], async () => {
+    assert(await openDocument(staged), "the staged STL fixture opens");
+  });
+  const offered = record.warnings[0]?.buttons ?? [];
+  assert(
+    offered.includes("Restore the pre-save backup") && offered.includes("Keep the current file"),
+    `the prompt offers both repairs by name (offered ${JSON.stringify(offered)})`
+  );
+  assert(
+    Buffer.compare(preSaveBytes(STL_FIXTURE), fs.readFileSync(staged)) === 0,
+    "the source is restored to the pre-save backup's bytes"
+  );
+  // The decision is recorded, so this cannot prompt again.
+  assert(fs.existsSync(`${staged}.save-journal.json`), "the marker survives, carrying the recorded decision");
+  await closeAll();
+  const leftover = await withModals([], async () => {
+    assert(await openDocument(staged), "the document reopens with no modal scripted");
+  });
+  assert(leftover.warnings.length === 0, `a second open asks nothing (saw ${JSON.stringify(leftover.warnings)})`);
+  await closeAll();
+});
+
+test("Recovery is a no-op when the watermark already landed, and still cleans up", async () => {
+  const staged = stageInterruptedSave(STL_FIXTURE, { bakedThrough: 1 });
+  const before = fs.readFileSync(staged);
+  const record = await withModals([], async () => {
+    assert(await openDocument(staged), "the staged STL fixture opens");
+  });
+  assert(
+    !record.warnings.some((w) => /interrupted save/i.test(w.message)),
+    `a save that completed is not reported as an interruption (saw ${JSON.stringify(record.warnings)})`
+  );
+  assert(!fs.existsSync(`${staged}.save-journal.json`), "the leftover marker is swept");
+  assert(Buffer.compare(before, fs.readFileSync(staged)) === 0, "the source is untouched");
+  await closeAll();
+});
+
+test("A B-rep source is never touched by mesh-save recovery", async () => {
+  const staged = stage(STEP_FIXTURE);
+  // A mesh-only marker planted on a STEP document must be ignored outright.
+  fs.writeFileSync(
+    `${staged}.save-journal.json`,
+    serializeSaveJournal({
+      version: 1,
+      source: path.basename(staged),
+      saveId: "save-1",
+      startedAt: "2026-09-26T00:00:00.000Z",
+      format: "step",
+      bakedThrough: 1,
+      preSaveSha256: hashBytes(fs.readFileSync(STEP_FIXTURE)),
+      bakedSha256: hashBytes(fs.readFileSync(staged)),
+    })
+  );
+  const before = fs.readFileSync(staged);
+  const record = await withModals([], async () => {
+    assert(await openDocument(staged), "the STEP fixture opens");
+  });
+  assert(!record.warnings.some((w) => /interrupted save/i.test(w.message)), "a STEP document is not a mesh-save subject");
+  assert(fs.existsSync(`${staged}.save-journal.json`), "the marker is left for a human to look at");
+  assert(Buffer.compare(before, fs.readFileSync(staged)) === 0, "the STEP source is untouched");
+  await closeAll();
 });
 
 test("Export… offers the real export targets and writes the chosen one", async () => {
@@ -1233,16 +1500,30 @@ test("Batch Export… writes one row per file, never aborts on a bad file, and o
   const goodBefore = fs.readFileSync(good);
   const tabsBefore = vscode.window.tabGroups.all.reduce((n, g) => n + g.tabs.length, 0);
 
+  let batchResult: { rows?: Array<{ input?: string; status?: string; error?: string }> } | undefined;
   const record = await withModals(
     [openAnswer(good, corrupt, mesh), pick("BREP (.brep)"), openAnswer(outDir), pick("Skip existing outputs")],
     async () => {
       fs.mkdirSync(outDir, { recursive: true });
-      await vscode.commands.executeCommand("cad-preview.batchExport");
+      batchResult = await vscode.commands.executeCommand("cad-preview.batchExport");
     }
   );
   assert(record.quickPicks[0]?.labels.includes("Drawing sheet — SVG") === true, "the target pick offers drawing sheets too");
   const written = fs.existsSync(outDir) ? fs.readdirSync(outDir).sort() : [];
-  assert(JSON.stringify(written) === JSON.stringify(["block.brep"]), `exactly the good file was exported (saw ${JSON.stringify(written)})`);
+  // On failure, name every row and its error. `saw []` on its own is what made
+  // this test undiagnosable when it began failing on CI: the per-row results
+  // live only in the report panel, and nothing observed them. Two of the three
+  // inputs are SUPPOSED to fail (a corrupt STEP, and an STL that cannot become
+  // a BREP), so this is a claim about the third row — and the rows say exactly
+  // which one went wrong and why. `runBatchExportCommand` returns its result
+  // and the registration forwards it, purely so this is observable.
+  const rows = (batchResult?.rows ?? [])
+    .map((r) => `${path.basename(String(r.input))}=${r.status}${r.error ? `(${r.error})` : ""}`)
+    .join(", ");
+  assert(
+    JSON.stringify(written) === JSON.stringify(["block.brep"]),
+    `exactly the good file was exported (saw ${JSON.stringify(written)}) — rows: ${rows || "(no result)"}`
+  );
   assert(Buffer.compare(goodBefore, fs.readFileSync(good)) === 0, "the source file is byte-identical");
   // tabGroups updates asynchronously after createWebviewPanel returns, so
   // poll briefly instead of reading once (a single read raced in the full run).
