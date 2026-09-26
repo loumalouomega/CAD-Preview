@@ -2,14 +2,27 @@
  * Performance regression harness (`npm run perf`, roadmap "Performance
  * regression harness", closed): spawns the real `dist/mcp-server.js` (real
  * OCCT + Gmsh WASM, same process this repo's `mcp:smoke` already drives) and
- * benchmarks `load_model` (B-rep read + tessellate) and `generate_mesh` (FE
- * meshing) against four graded STEP fixtures under `examples/STP/` — small
- * (~21 KB), medium (~113 KB, the same `bull.stp` used everywhere else in
- * this codebase), large (~333 KB), and xlarge (~2.3 MB). Reports wall-clock
- * ms and, on Linux, the server process's RSS delta (`/proc/<pid>/status`) —
- * `null` elsewhere (macOS/Windows), degrading gracefully rather than
- * throwing, matching this codebase's usual "optional signal, never blocks
- * the run" convention (e.g. Playwright's `render_snapshot`).
+ * benchmarks `load_model` (source read + tessellate) and `generate_mesh` (FE
+ * meshing) against six fixtures: four graded STEP files under `examples/STP/`
+ * — small (~21 KB), medium (~113 KB, the same `bull.stp` used everywhere else
+ * in this codebase), large (~333 KB), and xlarge (~2.3 MB) — plus one
+ * meshio++ source and one OpenSCAD CSG source (roadmap 1.3, closed). Those
+ * last two are single fixtures, not a graded series, and they exist to cover
+ * *load paths the STEP set never touches*: meshio++ runs host-side through its
+ * own WASM module (`src/meshioService.ts`, no webview) and meshes the
+ * converted STL boundary, while `.csg` is parsed by `src/csgImport.ts`. A
+ * regression in either would previously surface only as a user report.
+ * Reports wall-clock ms and, on Linux, the server process's RSS delta
+ * (`/proc/<pid>/status`) — `null` elsewhere (macOS/Windows), degrading
+ * gracefully rather than throwing, matching this codebase's usual "optional
+ * signal, never blocks the run" convention (e.g. Playwright's
+ * `render_snapshot`).
+ *
+ * Because those paths initialize *different* singletons than OCCT does, the
+ * warm-up is per-family (see `FAMILIES`): a meshio++ fixture timed without
+ * first paying meshio++'s own first-call init would record that one-time cost
+ * as its steady state, which is the exact artifact the original warm-up was
+ * added to exclude.
  *
  * Compares each stage's wall-clock time against a checked-in baseline
  * (`scripts/perf/baseline.json`, captured once on this dev environment) with
@@ -21,6 +34,19 @@
  * to close. A flagged stage prints a warning; the run only exits non-zero
  * when `PERF_STRICT=1` is set, so this never breaks `npm test`/normal CI by
  * merely existing — it's an opt-in gate, not an automatic one.
+ *
+ * **Mixed baseline provenance, deliberately.** `small`…`xlarge` were captured
+ * in an earlier, measurably faster session; `med-hexes` and `csg-bracket` were
+ * captured later on a slower one (~1.3–1.9x across the board). `--update-baseline`
+ * rewrites the WHOLE file from the current run, so running it for the two new
+ * fixtures would have silently re-baselined the four reviewed STEP numbers and
+ * baked the slower machine in as the new normal — `medium`'s mesh time already
+ * sits at 2.8x its reviewed value, so a wholesale rewrite would have moved the
+ * goalposts toward "never flags". The two new entries were hand-merged instead.
+ * The consequence is stated rather than hidden: the new entries are up to ~2x
+ * *conservative* (a real 3x regression on the faster machine reads as ~1.6x
+ * here and would not fire), so re-capture all six from one machine when the
+ * tolerance is next tightened.
  *
  * `--update-baseline` overwrites `baseline.json` with the numbers from this
  * run (use after a deliberate, reviewed perf-affecting change).
@@ -42,13 +68,28 @@ const STRICT = process.env.PERF_STRICT === "1";
 
 /** Small → xlarge, spanning roughly two orders of magnitude of STEP file
  * size (and, by extension, tessellated triangle/mesh-element count) — the
- * same "graded model sizes" framing the roadmap item asked for. */
+ * same "graded model sizes" framing the roadmap item asked for — plus the two
+ * single-format fixtures of roadmap 1.3.
+ *
+ * `dir` is per-fixture because the sources do not share one directory
+ * (`examples/STP`, `examples/MED`, `examples/OpenSCAD`).
+ *
+ * `family` names the set of singletons the fixture's *load* path initializes,
+ * and is what the warm-up groups on: `brep` is OCCT's STEP reader, `meshio`
+ * is meshio++'s own WASM module, `csg` is the native CSG parser. Warm only
+ * the first fixture of each family — they are also the cheapest in it. */
 const FIXTURES = [
-  { name: "small", file: "angle1.stp" },
-  { name: "medium", file: "bull.stp" },
-  { name: "large", file: "piston.stp" },
-  { name: "xlarge", file: "turbine.stp" },
+  { name: "small", dir: "STP", file: "angle1.stp", family: "brep" },
+  { name: "medium", dir: "STP", file: "bull.stp", family: "brep" },
+  { name: "large", dir: "STP", file: "piston.stp", family: "brep" },
+  { name: "xlarge", dir: "STP", file: "turbine.stp", family: "brep" },
+  { name: "med-hexes", dir: "MED", file: "two-region-hexes.med", family: "meshio" },
+  { name: "csg-bracket", dir: "OpenSCAD", file: "bracket.csg", family: "csg" },
 ];
+
+/** One warm-up per family, in first-appearance order, so the `brep` warm-up
+ * stays `angle1.stp` exactly as it was before this list grew. */
+const FAMILIES = [...new Set(FIXTURES.map((f) => f.family))];
 
 function fail(message) {
   console.error(`✗ ${message}`);
@@ -166,22 +207,35 @@ try {
   notify("notifications/initialized");
   if (init.serverInfo.name !== "cad-preview") fail("initialize handshake failed");
 
-  // Warm-up: pay the one-time OCCT/Gmsh WASM init cost on a throwaway tiny
-  // load, outside every reported measurement, so every graded fixture below
-  // reflects steady-state (already-initialized-singleton) performance, not
-  // whichever fixture happened to run first.
-  const warmupPath = path.join(dir, "warmup.stp");
-  fs.copyFileSync(path.join(ROOT, "examples", "STP", "angle1.stp"), warmupPath);
-  const warmupLoad = await call("load_model", { path: warmupPath });
-  const warmupDiagonal = warmupLoad.bbox?.diagonal;
-  await call("generate_mesh", {
-    path: warmupPath,
-    options: { dimension: 3, ...(warmupDiagonal ? { sizeMin: 0, sizeMax: warmupDiagonal / 20 } : {}) },
-  });
-  console.log("Warm-up complete (WASM singletons initialized).\n");
+  // Warm-up: pay the one-time WASM/native init cost per load *family*, on a
+  // throwaway copy, outside every reported measurement, so each fixture below
+  // reflects steady-state (already-initialized-singleton) performance rather
+  // than being the first call that ever paid for its own family.
+  //
+  // This was a single `angle1.stp` warm-up while every fixture was STEP, which
+  // warmed only OCCT. Adding the meshio++ and CSG fixtures makes that
+  // insufficient: meshio++ has its own WASM singleton and the CSG parser is
+  // plain JS, so neither is initialized by an OCCT warm-up. Timing them
+  // cold would record a one-time init cost as their baseline, and since that
+  // cost is stable run-to-run the gate would then be blind to a real
+  // steady-state regression in exactly the paths this item exists to cover.
+  //
+  // The copy keeps the source extension, because `load_model` routes on it.
+  for (const family of FAMILIES) {
+    const fixture = FIXTURES.find((f) => f.family === family);
+    const warmupPath = path.join(dir, `warmup-${family}${path.extname(fixture.file)}`);
+    fs.copyFileSync(path.join(ROOT, "examples", fixture.dir, fixture.file), warmupPath);
+    const warmupLoad = await call("load_model", { path: warmupPath });
+    const warmupDiagonal = warmupLoad.bbox?.diagonal;
+    await call("generate_mesh", {
+      path: warmupPath,
+      options: { dimension: 3, ...(warmupDiagonal ? { sizeMin: 0, sizeMax: warmupDiagonal / 20 } : {}) },
+    });
+  }
+  console.log(`Warm-up complete (${FAMILIES.length} families: ${FAMILIES.join(", ")}).\n`);
 
   for (const fixture of FIXTURES) {
-    const src = path.join(ROOT, "examples", "STP", fixture.file);
+    const src = path.join(ROOT, "examples", fixture.dir, fixture.file);
     const sizeKb = Math.round(fs.statSync(src).size / 1024);
     const model = path.join(dir, fixture.file);
     fs.copyFileSync(src, model);
@@ -220,8 +274,12 @@ try {
 
 // --- report + baseline comparison -------------------------------------------
 
+// Widest fixture name, so the columns stay aligned now that the list carries
+// names longer than the old STEP-only `padEnd(8)`.
+const nameWidth = Math.max(8, ...FIXTURES.map((f) => f.name.length));
+
 console.log(
-  "fixture".padEnd(8) +
+  "fixture".padEnd(nameWidth) +
     "size(KB)".padStart(10) +
     "load(ms)".padStart(10) +
     "loadΔRSS(KB)".padStart(14) +
@@ -230,7 +288,7 @@ console.log(
 );
 for (const r of results) {
   console.log(
-    r.name.padEnd(8) +
+    r.name.padEnd(nameWidth) +
       String(r.sizeKb).padStart(10) +
       String(r.loadMs).padStart(10) +
       String(r.loadRssDeltaKb ?? "n/a").padStart(14) +

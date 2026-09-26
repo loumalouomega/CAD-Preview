@@ -2439,11 +2439,16 @@ A save-in-place writes the CAD source and **then** advances the `.edits.json` `b
 
 
 
-## Dependency currency and embedded kernel packaging (roadmap 1.1 / 1.2)
+## Dependency currency and embedded kernel packaging (roadmap 1.1, closed)
 
 Implemented 2026-09-26 in CAD-Preview only. npm's latest stable releases at
 implementation time were **meshio++ 16.16.0** (from 16.7.0) and **MCP SDK
 1.30.1** (from 1.30.0); manifest caret ranges and lockfile both updated.
+
+(The bumps and the monitor predate the current roadmap's numbering, which is
+why this section was headed "1.1 / 1.2"; roadmap 1.2 is now the unrelated
+verification-debt item. Only 1.1 — verifying the monitor on GitHub — was
+still open, and it is closed below.)
 
 - **Loader audit:** meshio++ remains ESM, `main: ./src/index.mjs`, no exports
   map. `variant: "seq"` remains mandatory (`parallelBackend()` reports `seq`;
@@ -2487,8 +2492,18 @@ implementation time were **meshio++ 16.16.0** (from 16.7.0) and **MCP SDK
   is created/updated; unchanged bodies create no notifications, and an empty
   report leaves existing issues alone. Local report-only verification found
   Three.js 0.186.0 → 0.186.1 (left outside this two-package bump). GitHub issue
-  behavior is covered with a mocked API; an actual workflow run remains roadmap
-  1.1. No issue was posted from this checkout.
+  behavior is covered with a mocked API, and **roadmap 1.1 is now closed by an
+  actual run** (2026-09-26, `gh workflow run dependency-watch.yml` from
+  `master`): green in 17 s, `npm ci` then the publish step, and it opened
+  **issue #84 "Runtime dependency updates available"** reporting
+  `@meshioplusplus/wasm` 16.16.0 → 16.21.0 and `three` 0.186.0 → 0.186.1 —
+  so the two-package bump above is itself already behind on meshio++ again.
+  **The control the mocked API cannot give:** a second dispatch reported
+  `unchanged` and the issue search still returned exactly one issue, proving
+  the marker-based lookup and the unchanged-body suppression work against the
+  real GitHub API (paginated `issues?state=open`, `!issue.pull_request`
+  filtering) and not just against the test double. No issue was posted from
+  this checkout.
 - **Validation:** 41/41 compatibility cases; unit and isolated runtime suites;
   type-check/build; documentation build; fresh 33.21 MB VSIX with 46 archive
   entries checked and all 36 distinct required entries present. The full
@@ -2499,3 +2514,69 @@ implementation time were **meshio++ 16.16.0** (from 16.7.0) and **MCP SDK
   same existing one-retry-on-kernel-reset helper as the adjacent read-only
   prefix case, preserving the byte-identical sidecar assertion. Ordinary
   errors and a second failure remain fatal; no production OCCT behavior changed.
+
+## Perf harness coverage for meshio and OpenSCAD loads (roadmap 1.3, closed)
+
+`npm run perf` measured only the OCCT STEP load and the Gmsh-on-B-rep mesh
+path, so a regression in the meshio++ load path or the CSG parse path would
+surface only as a user report. Both are now benchmarked.
+
+- **The two fixtures, and why they are not just more of the same.** `med-hexes`
+  (`examples/MED/two-region-hexes.med`) and `csg-bracket`
+  (`examples/OpenSCAD/bracket.csg`) exist to cover *code paths the STEP set
+  never enters*: meshio++ runs host-side through its own WASM module
+  (`src/meshioService.ts`, no webview at all) and meshes the converted STL
+  boundary, while `.csg` is parsed by `src/csgImport.ts`. They are single
+  fixtures, not a graded series — the point is path coverage, not a size ramp.
+  `.csg` needs no `openscad` binary (only `.scad` does), and `bracket.csg` is
+  self-contained, so both survive the harness's copy-into-tmpdir step.
+- **`FIXTURES` entries carry `dir` and `family`.** `dir` because the sources
+  span `examples/STP`, `examples/MED` and `examples/OpenSCAD` — the path was
+  previously hardcoded to `STP` for every entry.
+- **The warm-up had to become per-family, and that is the real work here.** It
+  was one `angle1.stp` load+mesh, valid only while every fixture was STEP,
+  because it warms OCCT and nothing else. meshio++ has its own WASM singleton
+  and the CSG parser is plain JS, so neither is initialized by an OCCT warm-up.
+  Timing them cold would record a **one-time init cost as their steady-state
+  baseline** — and because that cost is stable run-to-run, the gate would then
+  be permanently blind to a genuine steady-state regression in precisely the
+  two paths this item exists to cover. `FAMILIES` derives the warm-up set from
+  the fixture list in first-appearance order, so the `brep` warm-up is still
+  `angle1.stp` and the four reviewed STEP numbers are unaffected. Each
+  warm-up copy keeps its source extension, because `load_model` routes on it.
+- **`--update-baseline` rewrites the WHOLE file, so it was not used for the two
+  new rows.** Measured on this machine, the four existing STEP fixtures came
+  out **1.3–1.9x slower** than their reviewed baselines (`medium`'s mesh time
+  639 → 1786 ms is 2.8x, i.e. already within 20% of tripping the 3x gate). A
+  wholesale rewrite would therefore have silently re-baselined four reviewed
+  numbers *and* moved the goalposts toward "never flags". The two new entries
+  were hand-merged instead; `baseline.json`'s diff against the reviewed file is
+  **purely additive**.
+- **The mixed provenance is stated, not hidden.** `small`…`xlarge` come from an
+  earlier, faster session; the two new rows from a slower one. The consequence
+  is that the new entries are up to ~2x **conservative** — a real 3x regression
+  on the faster machine reads as ~1.6x here and would not fire. Recorded in the
+  script header with the instruction to re-capture all six from one machine
+  when the tolerance is next tightened.
+- **The sensitivity control the item's done-when asks for** ("a deliberately
+  slowed build flags them"): since there is no cheap way to deliberately slow
+  these load paths, the equivalent is to understate the new baselines and
+  require the measured values to trip the 3x gate. Setting
+  `med-hexes.loadMs = 1` and `csg-bracket.meshMs = 100` produced exactly two
+  flags — `med-hexes load_model took 7 ms, more than 3x the 1 ms baseline` and
+  `csg-bracket generate_mesh took 614 ms, more than 3x the 100 ms baseline` —
+  with the four STEP rows silent, proving both new rows are read *and* that
+  both stages are compared for them. Without this, "both appear in
+  `baseline.json`" would be satisfiable by rows nothing ever reads. Baselines
+  restored afterwards and the additive diff re-verified.
+- **That control also confirmed the warm-up works**: `med-hexes` read 6 ms on
+  the capture run and 7 ms on the control run. A cold first meshio++ call
+  could not land within 1 ms of a warmed one.
+- **Cosmetic:** the report table's `padEnd(8)` predated the longer names, so the
+  width now derives from `FIXTURES` (`Math.max(8, …)`).
+- **Standing gaps, stated plainly.** `perf` has **no CI job** — it is an
+  opt-in, hand-run gate (`PERF_STRICT=1` to make it fail), so these two paths
+  are measured on demand, not on every change. The 3x tolerance remains
+  deliberately loose for machine-to-machine variance. And because the two new
+  baselines are up to ~2x conservative (above), the first real regression in
+  the meshio or CSG path may need a re-capture before it trips.

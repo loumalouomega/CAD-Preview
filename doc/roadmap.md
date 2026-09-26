@@ -168,7 +168,7 @@ It does **not** admit AGPL code, so TetGen stays rejected. Every new bundled dep
 
 | Wave | Outcome | Start with | Exit signal |
 | --- | --- | --- | --- |
-| Upkeep | The base stays current and trustworthy | Verify the dependency watch (1.1), then verification-debt burn-down (1.2) | The monitor has run on GitHub; the verification debt count has started falling |
+| Upkeep | The base stays current and trustworthy | Done: the dependency watch has run on GitHub (1.1, closed — it published issue #84 and re-dispatching reported `unchanged`). Verification-debt burn-down (1.2) next | The verification debt count has started falling |
 | Parity | Everything an agent can do, a user can do, and the reverse | Done: headless mesh-edit replay closed the last listed gap (as did the hole-table, refinement-sweep, free-text-note and mesh-source FE-export gaps). Justified remainders: mesh `inspect`/mass facts, `promote_mesh_to_brep` and `repair_mesh` read the raw file (their ids and outputs are defined over it; `save_model` bakes first), and glTF has no own-format save (its exporter emits only `.glb`) | Headless tools see the same edited mesh the viewer shows, or each remaining difference is justified |
 | Meshing probes | Decide on remeshing and on conformal assemblies | The MMG core probe (4.1), then conformal multi-body meshing (4.2), then Gmsh optimisation (4.4) | Each probe filed with measured results and a decision |
 | Geometry probes | Decide which never-called OCCT capabilities become ops | Imprint and split faces (3.1), then B-rep repair (3.2) | Each probe filed with measured results and a decision |
@@ -180,15 +180,6 @@ These are outcome groupings, not release numbers. Independent small items can sh
 
 *Admission: the work is known and has no design question. These items keep the base current, honest and cheap to verify; they rank first because every other item depends on them.*
 
-#### 1.1 Verify the dependency watch on GitHub {#dependency-currency}
-
-*Area: Platform.*
-
-The dependency bumps and weekly monitor are implemented; see `CLAUDE.md`'s "Dependency currency and embedded kernel packaging" section. Local report-only verification found Three.js 0.186.1 ahead of the locked 0.186.0.
-
-- **Remaining:** after the workflow is available on GitHub, run `dependency-watch.yml` once via manual dispatch (or observe its Monday run).
-- **Done when:** it has either opened/updated its tracking issue or successfully reported that all watched dependencies are current. Local mocked issue tests and a report-only run do not establish this GitHub-side result.
-
 #### 1.2 Verification-debt burn-down {#verification-debt-burn-down}
 
 *Area: Platform.*
@@ -198,26 +189,13 @@ The dependency bumps and weekly monitor are implemented; see `CLAUDE.md`'s "Depe
   - Several of them touch the source-write path (save-in-place, revert, hot-exit restore), where a regression costs user data.
   - Both automated harnesses exist and already cover similar ground: `npm run test:webview` drives the real viewer bundle, and `npm run test:integration` drives a real VS Code.
 - **First useful increment (M):** move the ten highest-risk features into those harnesses:
-  - save-in-place and revert for B-rep and mesh sources;
-  - the transform gizmo;
-  - the live operation preview;
-  - the drawing-sheet settings form;
-  - the Clash, Primitives and Mesh-ops panels;
-  - the join between mesh-target export and the save dialog;
-  - SVG and DXF import.
+  - **Already covered — drop from this list.** Re-verified against the harnesses' actual case names while closing roadmap 1.3, so the item is not worked twice: *save-in-place and revert for B-rep and mesh sources* (`test:integration`'s `Save in place bakes ops into the source with .bak + watermark`, `Revert drops the op list to the save point`, `Watermark-write failure rolls the source back`, `Mesh save-in-place (STL)`, and six interrupted-save recovery cases, plus `test:webview`'s three `save point` cases); *the live operation preview* (three `op preview bands` cases); *the drawing-sheet settings form* (an integration case plus a webview case); *the Clash, Primitives and Mesh-ops panels* (6 + 4 + 1 webview cases); *SVG and DXF import* (`dxfImport.test.ts`, `dxfSilhouette.test.ts`, and the `import_svg` cases in `mcpTools.test.ts`).
+  - **Still open:**
+    - the transform gizmo — only `gizmoTransform.test.ts`'s math is covered; the drag interaction in the real viewer is not;
+    - the join between mesh-target export and the save dialog — the export picker's option *list* is asserted, the join itself is not.
 
-  Then add a check to `npm test` that counts the "Verification gap" notes in `CLAUDE.md` and fails when the count rises without a matching entry in a small allowlist file that states why.
+  Then add a check to `npm test` that fails when the count of unresolved verification gaps rises, with a small allowlist file that states why. **The originally-worded `grep -c` version of this gate is known to be wrong and should not be built as written:** `CLAUDE.md` is a chronological session log, so its gap notes outlive the gaps they describe (one entry still carries a note it explicitly calls "resolved and … stale"). A text count would be trivially gameable by rewording and would ratchet upward on every honest retrospective. Count something *structural* instead — machine-readable markers that a later entry retracts, plus a checked-in baseline number — so closing a gap lowers the count.
 - **Done when:** the count has fallen by ten, and a new unverified feature cannot land silently.
-
-#### 1.3 Perf harness coverage for meshio and OpenSCAD loads {#perf-harness-coverage-for-meshio-and-openscad-loads}
-
-*Area: Platform.*
-
-- **Evidence:** `npm run perf` benchmarks only the B-rep load and Gmsh mesh paths (`scripts/perf/baseline.json`). The meshio++ load path and the `.csg` path are unmeasured, so a regression in either would only surface as a user report. KKSS's roadmap points at this harness as its model.
-- **First useful increment (S):**
-  - Add one meshio++ fixture (`examples/MED/two-region-hexes.med`) and one OpenSCAD fixture (`examples/OpenSCAD/bracket.csg`) to the benchmark list.
-  - Capture their baselines with `--update-baseline` in a reviewed change.
-- **Done when:** both appear in `baseline.json`, and a deliberately slowed build flags them.
 
 #### 1.6 Nastran bulk-deck import {#nastran-bulk-deck-import}
 
