@@ -2454,8 +2454,12 @@ still open, and it is closed below.)
   map. `variant: "seq"` remains mandatory (`parallelBackend()` reports `seq`;
   auto still picks mt under Node). The sequential glue has one `console.log`,
   one `console.error`, three `import.meta.url` references and zero `writeSync`
-  calls. Its WASM is 11,186,916 bytes. Integer `cell_tags` and
-  `surface:parent_cell` remain `BigInt64Array`; existing conversions stay.
+  calls. Its WASM is 11,514,403 bytes. Integer `cell_tags` and
+  `surface:parent_cell` are converted by `numericArray()` on read, which is
+  defensive rather than descriptive: on the committed small fixtures they arrive
+  as a plain `Array`, while meshio++ ≥ 11.2 hands larger integer arrays over as
+  `BigInt64Array`. Both shapes are handled, and `kernelIpc.ts` refuses to marshal
+  either one unconverted.
 - **Metadata audit:** live full-read/header comparisons still disagree for
   MED (integer cell arrays and the committed fixture's region names), CGNS
   and GiD (point/cell array names). `LOSSY_METADATA_FORMATS` retains all three.
@@ -2497,7 +2501,8 @@ still open, and it is closed below.)
   `master`): green in 17 s, `npm ci` then the publish step, and it opened
   **issue #84 "Runtime dependency updates available"** reporting
   `@meshioplusplus/wasm` 16.16.0 → 16.21.0 and `three` 0.186.0 → 0.186.1 —
-  so the two-package bump above is itself already behind on meshio++ again.
+  which is why the next run reported meshio++ 16.21.0 → 16.22.0 (see
+  "meshio++ 16.22.0" below). `three` 0.186.1 is still current.
   **The control the mocked API cannot give:** a second dispatch reported
   `unchanged` and the issue search still returned exactly one issue, proving
   the marker-based lookup and the unchanged-body suppression work against the
@@ -2514,6 +2519,77 @@ still open, and it is closed below.)
   same existing one-retry-on-kernel-reset helper as the adjacent read-only
   prefix case, preserving the byte-identical sidecar assertion. Ordinary
   errors and a second failure remain fatal; no production OCCT behavior changed.
+
+## meshio++ 16.21.0 → 16.22.0 — a documentation-only upstream release
+
+A one-release bump, taken because the weekly monitor reported it (issue #84).
+**The headline finding is that there is nothing to adopt and nothing to fix**,
+and establishing *that* took three independent lines of evidence rather than one,
+because a version bump is exactly the change that looks load-bearing and isn't.
+
+- **Upstream says so outright.** meshio++'s own `CHANGELOG.md` for v16.22.0:
+  *"`MESHIOPLUSPLUS_ABI_VERSION` stays 18 and no reader, writer or operation
+  output changes: this is a documentation release."* It closes its roadmap §2
+  (Spack package upkeep) and renumbers §3–§8 to §2–§7.
+- **The published tarball confirms it** — diffed against 16.21.0, not the git
+  checkout, which can run ahead of npm. `index.d.ts` and `src/index.mjs` are
+  **byte-identical** (zero JS API change, zero loader change); the only `.mjs`
+  delta is a single `ASM_CONSTS` constant (`1259148` → `1259132`); the only
+  `src/wasm/` source changes are the version string and the format-count
+  description. Seq `.wasm` 11,514,413 → **11,514,403** bytes (−10).
+- **An A/B live probe of both packages in one Node process** found them
+  behaviorally identical on every invariant this file pins: `type: "module"` /
+  `main: ./src/index.mjs` / no `exports` map (so the dynamic `import()` stays
+  mandatory); `parallelBackend()` → `seq` (so `{variant: "seq"}` stays
+  load-bearing); one `console.log`, one `console.error`, **zero** `writeSync`,
+  three `import.meta.url` in the seq glue (so `mcpServer.ts`'s stdout rebinding
+  and the "must stay real files under `node_modules`" packaging rule both still
+  hold); the `files` array byte-identical (so the four-file `.vscodeignore` /
+  `scripts/runtimeAssets.mjs` carve-out needed no change); `extractSurface(mesh,
+  true)` still yielding `cell_data["surface:parent_cell"]`; `readMetadata` still
+  under-reporting MED regions (0 vs 2, so `LOSSY_METADATA_FORMATS` keeps all
+  three); the EnSight boundary-extent defect **still present at 0.500**; and
+  `single-hex` still exactly 1.000 on all three axes, so the guard does not
+  false-positive. Nastran still refuses without `BEGIN BULK`, so the read-side
+  normalization stays necessary.
+- **One place the two versions measurably differ, found by the sweep rather than
+  expected — and it is an improvement.** A raw `.bdf` *lacking* `BEGIN BULK`
+  (i.e. bypassing `meshioService.ts`'s normalization) raised
+  `ASM_CONSTS[code] is not a function` at 16.21.0 — meshio++'s C++ throw path
+  itself failing, which `isMeshioWasmAbort`'s vocabulary does **not** match, so
+  it would have surfaced as an opaque error rather than a diagnosable one. At
+  16.22.0 the same input reports `Nastran: "BEGIN BULK" statement not found`.
+  Unreachable in production (the normalization runs first), recorded because it
+  is the single exception to "no behavioral delta" and because a broken throw
+  path is the kind of thing worth knowing about before it is depended on.
+- **The alarming format count was a correction, not new formats.** The package
+  description went "read 46 and write 49" → "read 76 and write 68". That came
+  from a git-only v16.21.1 documentation release that never reached npm,
+  fixing an undercounted claim. No reader or writer registration changed in the
+  diff, so **no format-adoption work opens up** — the "adopt the unused meshio++
+  capability surface" roadmap line gains nothing here. Recorded because "the
+  numbers went up by 60%" reads like a feature and is the single most
+  likely thing to be misread as one.
+- **Two pre-existing doc errors found while re-deriving the EnSight numbers,
+  both identical under 16.21.0 and therefore not caused by this bump.**
+  (1) `examples/EnSight/README.md`'s table claimed the native `convertSurface`
+  **throws**; it does not — it succeeds and returns a 4-facet STL spanning a unit
+  box, i.e. it is the *silent* wrong-geometry path, which is what this file's own
+  EnSight section already said and which is the stronger claim. Corrected. (2)
+  The `BigInt64Array` bullet above, restated as measured.
+- **No code, protocol, packaging or fixture change.** The only files touched are
+  the manifest/lockfile and version references. The provenance credit line's
+  version string does change, but `mcp-smoke` asserts only the
+  `"Written by meshio++"` prefix, so no pinned assertion flips.
+- **The full sweep is green except one PRE-EXISTING failure**, documented in
+  3.7.0's "Known issues" and unrelated to this bump: `mcp:smoke`'s
+  `Gmsh-written .bdf reports the tracked meshio++ limitation` assertion still
+  expects the removed `Not a meshio++-C++ Nastran file` string. Confirmed red at
+  **both** 16.21.0 and 16.22.0 by driving each package directly, so this is not a
+  regression — 601 checks pass either way. The compatibility corpus was already
+  updated for this; the smoke assertion was not. Deliberately left alone rather
+  than folded into a dependency bump, since it is a tracked issue with its own
+  disposition.
 
 ## Perf harness coverage for meshio and OpenSCAD loads (roadmap 1.3, closed)
 
@@ -2646,7 +2722,9 @@ format was.
   `meshioCompanions.ts` already carried `ensight: ["case", "geo"]` with a unit
   test, and `tsc`'s exhaustive `Record<CadFormat, string>` maps caught the
   routing edits. The format is unreadable in meshio++ before 16.17.0 and its
-  surface conversion is wrong in 16.21.0; the fixture and full measurements are
+  surface conversion is **still** wrong at 16.22.0 — re-measured after that
+  bump, both paths still span a unit box against a `2x1x1` source. The fixture
+  and full measurements are
   committed under `examples/EnSight/` as the evidence and a reproduction.
 - **Method note worth reusing.** The 14 candidate formats were first screened
   by writing each with meshio++ and reading it back — a **same-library** round

@@ -6,7 +6,7 @@
  * `extractSurface(readMesh(...))` when the native `convertSurface` converter
  * refuses a deck. That extraction is trusted unconditionally — nothing
  * compares the surface it produced against the mesh it came from. On
- * meshio++ 16.21.0, the foreign EnSight fixture in `examples/EnSight/` is read
+ * meshio++ 16.22.0, the foreign EnSight fixture in `examples/EnSight/` is read
  * correctly (9 points, 4 cells, extent 2x1x1) and then extracted to **4 points
  * at a unit box**: the 2-unit x extent is silently discarded. End to end the
  * file opens and displays a unit cube, with no warning, and the compatibility

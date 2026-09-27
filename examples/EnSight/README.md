@@ -18,15 +18,20 @@ boundary conversion**.
 
 ## The measurement that stopped it
 
-Against meshio++ 16.21.0 directly, staging both files under their real
+Against meshio++ 16.22.0 directly, staging both files under their real
 basenames (the stem convention is load-bearing — reading `/in.ensight` instead
 of `/simple.case` misses the `.geo`):
 
 | step | points | cells | extent |
 | --- | --- | --- | --- |
 | `readMesh("/simple.case", "ensight")` | 9 | 4 | `(0,0,0) → (2,1,1)` ✅ |
-| `convertSurface(… → stl)` | — | — | **throws** |
+| `convertSurface(… → stl)` | — | 4 facets | `(0,0,0) → (1,1,1)` ❌ **silently** |
 | `extractSurface(readMesh(…))` | **4** | 4 | `(0,0,0) → (1,1,1)` ❌ |
+
+**Both paths lose the extent, and the native one does it silently** — it does
+not throw, so a deck that reaches it looks like a clean success. That is why the
+guard has to sit outside the converter's own `try` (see below): there is no
+refusal to catch, only a wrong answer to check.
 
 The raw point array contains `2 0.5 0`, so the read really does span 2 in x —
 and the boundary extraction collapses that to a unit box, **discarding the

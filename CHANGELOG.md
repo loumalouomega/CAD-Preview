@@ -4,6 +4,13 @@ All notable changes to the "CAD Preview" extension are documented in this file.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/); this project does not yet strictly follow Semantic Versioning (pre-1.0 releases moved fast and bundled multiple features per bump).
 
+## [3.7.1] - 2026-09-27
+
+### Changed
+
+- **meshio++ upgraded from 16.21.0 to 16.22.0.** No user-visible behavior change: the upstream release is documentation-only — its own changelog states that no reader, writer or operation output changes. The published package's JavaScript API surface and loader are byte-identical to 16.21.0, and every loading rule this extension depends on was re-verified live against both versions: it remains ESM-only (so the load stays a dynamic `import()`), the sequential build is still the one selected, its console output still cannot reach the MCP server's JSON-RPC stream, and the four files staged into the packaged extension are unchanged. The release's larger advertised format count is a correction of an undercounted claim, not new format support, so nothing new becomes importable.
+- Two inaccuracies in this repository's own notes about meshio++ were corrected: the EnSight fixture's write-up claimed the native surface conversion throws on that deck (it does not — it succeeds and silently returns the wrong geometry, which is the more serious behaviour the accompanying guard exists to catch), and the recorded WASM size and integer-array behaviour were stale.
+
 ## [3.7.0] - 2026-09-26
 
 ### Added
@@ -663,6 +670,9 @@ This release republishes v1.9.0's full changelog (below) unchanged; v1.9.0 itsel
 
 - Initial release: read-only 3D preview for CAD and mesh files (STEP, IGES, BREP, STL, OBJ, PLY, glTF) inside a VS Code custom editor, using OpenCascade.js (OCCT WASM) in the extension host for B-rep formats and Three.js in the webview for rendering.
 
+[3.7.1]: https://github.com/loumalouomega/CAD-Preview/compare/v3.7.0...v3.7.1
+[3.7.0]: https://github.com/loumalouomega/CAD-Preview/compare/v3.6.0...v3.7.0
+[3.6.0]: https://github.com/loumalouomega/CAD-Preview/compare/v3.5.0...v3.6.0
 [3.5.0]: https://github.com/loumalouomega/CAD-Preview/compare/v3.4.0...v3.5.0
 [3.4.0]: https://github.com/loumalouomega/CAD-Preview/compare/v3.3.0...v3.4.0
 [3.3.0]: https://github.com/loumalouomega/CAD-Preview/compare/v3.2.0...v3.3.0
