@@ -1226,6 +1226,12 @@ const meshingPanel = new MeshingPanel(document.getElementById("meshing-panel")!,
   onSweep: async (sizes, writeOutputs) => {
     const requestId = `${Date.now()}-${Math.random()}`;
     meshSweepRequestId = requestId;
+    // Arm the sweep section's own Cancel (roadmap "Cancel a mesh refinement
+    // sweep mid-run") with the very id the host will register this meshing job
+    // under, so its click posts the same `meshingCancel` the toolbar's Cancel
+    // does. Set before the await below — the run is in flight from the user's
+    // point of view while the mesh bytes are still being collected.
+    meshingPanel.setSweepRequestId(requestId);
     const stl = await currentStlIfMeshSource();
     post({ type: "meshSweepRequest", requestId, sizes, options: meshingModel.get(), ...(stl ? { stl } : {}), ...(writeOutputs ? { writeOutputs: true } : {}) });
   },
@@ -5705,7 +5711,10 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
     case "meshSweepResult":
       if (msg.requestId !== meshSweepRequestId) break; // stale — a newer run/load superseded it
       meshSweepRequestId = null;
-      meshingPanel.renderSweepResult(msg.runs, msg.warnings, msg.note, msg.outputDir);
+      // `cancelled` is a normal outcome (the sweep section's Cancel), not an
+      // error: the host returns the runs that completed, and the panel says
+      // the table is partial rather than rendering a short comparison bare.
+      meshingPanel.renderSweepResult(msg.runs, msg.cancelled, msg.warnings, msg.note, msg.outputDir);
       break;
 
     case "meshSweepError":

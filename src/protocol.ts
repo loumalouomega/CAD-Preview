@@ -485,8 +485,13 @@ export type HostToWebview =
    * interactive half of `compare_mesh_refinement`, over the same shared
    * `runMeshSweep` loop so its rows match the tool's. `note` is the
    * "trends are not convergence" disclaimer the tool returns; `outputDir` is
-   * where per-run `.msh` files were written (null when none were asked for). */
-  | { type: "meshSweepResult"; requestId: string; runs: MeshSweepRun[]; warnings: string[]; note: string; outputDir: string | null }
+   * where per-run `.msh` files were written (null when none were asked for).
+   * `cancelled` is true when the sweep section's Cancel button stopped the
+   * loop (roadmap "Cancel a mesh refinement sweep mid-run") — a cancelled sweep
+   * is still a RESULT carrying the runs that completed, so `runs` is
+   * legitimately shorter than the requested sizes and the panel must say so
+   * rather than render a short table unexplained. */
+  | { type: "meshSweepResult"; requestId: string; runs: MeshSweepRun[]; cancelled: boolean; warnings: string[]; note: string; outputDir: string | null }
   | { type: "meshSweepError"; requestId: string; message: string }
   | { type: "meshingJobSettled"; requestId: string }
   | ({ type: "viewerDefaults" } & ViewerDefaults)

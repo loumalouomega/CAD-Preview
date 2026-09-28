@@ -738,11 +738,11 @@ test("sweep: the FE Mesh refinement sweep renders the host's rows and note", asy
     { size: 2, status: "error", nodeCount: null, elementCount: null, elapsedMs: null, engineUsed: null, quality: null, outputPaths: [], error: "PLC Error" },
   ];
   const note = "Mesh-density/quality trends across swept sizes do NOT establish FE-solution convergence.";
-  await post(page, { type: "meshSweepResult", requestId: "stale-id", runs: [], warnings: [], note, outputDir: null });
+  await post(page, { type: "meshSweepResult", requestId: "stale-id", runs: [], cancelled: false, warnings: [], note, outputDir: null });
   await sleep(100);
   assert((await page.evaluate(() => document.querySelectorAll("#meshing-sweep-table tr").length)) === 0, "a stale reply renders nothing");
 
-  await post(page, { type: "meshSweepResult", requestId: req.requestId, runs, warnings: [], note, outputDir: null });
+  await post(page, { type: "meshSweepResult", requestId: req.requestId, runs, cancelled: false, warnings: [], note, outputDir: null });
   await sleep(150);
   const table = await page.evaluate(() =>
     [...document.querySelectorAll("#meshing-sweep-table tr")].map((tr) => [...tr.children].map((c) => c.textContent))
@@ -757,6 +757,8 @@ test("sweep: the FE Mesh refinement sweep renders the host's rows and note", asy
     return el && !el.hidden ? el.textContent : null;
   });
   assert(shownNote === note, `the convergence note is shown (got ${JSON.stringify(shownNote)})`);
+  const fullStatus = await page.evaluate(() => document.getElementById("meshing-sweep-status")?.textContent ?? "");
+  assert(!/cancel/i.test(fullStatus), `an uncancelled sweep never mentions cancellation (got ${JSON.stringify(fullStatus)})`);
 
   await page.click("#meshing-sweep-copy");
   await sleep(150);
@@ -765,6 +767,100 @@ test("sweep: the FE Mesh refinement sweep renders the host's rows and note", asy
   assert(
     lines.length === 3 && lines[0].startsWith("size_mm\tstatus\t") && lines[1].startsWith("4\tok\t381\t1282\t88\tgmsh\t0.412\t0.73"),
     `Copy TSV copies the tool's TSV shape (got ${JSON.stringify(clip)})`
+  );
+});
+
+/**
+ * H3d. Cancelling a refinement sweep (roadmap "Cancel a mesh refinement
+ * sweep mid-run"). The panel half: the sweep
+ * section's own **Cancel** posts the SAME `meshingCancel` message the toolbar's
+ * Cancel uses, carrying the sweep's OWN request id (not a fresh one), and the
+ * host's `cancelled: true` reply renders as a partial table with an explicit
+ * "cancelled" status — never a short table that reads like a complete
+ * comparison. The host half (the loop stopping, nothing queued after the abort)
+ * is covered by `meshSweep.test.ts` and `mcpTools.test.ts`.
+ */
+test("sweep: Cancel stops the running sweep by its own request id, and the partial result says so", async (page) => {
+  await populate(page);
+  await page.evaluate(() => {
+    document.querySelector("#meshing-sweep .meshing-section-header")?.click();
+  });
+
+  const cancelBtnState = () =>
+    page.evaluate(() => {
+      const b = document.getElementById("meshing-sweep-cancel");
+      return b ? { present: true, disabled: b.disabled } : { present: false, disabled: null };
+    });
+
+  // Before any sweep there is nothing to cancel.
+  assert((await cancelBtnState()).disabled === true, "Cancel starts disabled — no sweep is in flight");
+
+  await page.fill("#meshing-sweep-sizes", "4, 2, 1");
+  await page.click("#meshing-sweep-run");
+  const req = await page
+    .waitForFunction(() => window.__sent?.findLast((m) => m.type === "meshSweepRequest") ?? null, null, { timeout: 10000 })
+    .then((h) => h.jsonValue())
+    .catch(() => null);
+  assert(!!req, "Run sweep posts a request");
+
+  // The button is armed by the wiring the moment it mints the id.
+  await sleep(100);
+  assert((await cancelBtnState()).disabled === false, "Cancel is enabled once the sweep is in flight");
+
+  const cancelsBefore = await page.evaluate(() => (window.__sent ?? []).filter((m) => m.type === "meshingCancel").length);
+  await page.click("#meshing-sweep-cancel");
+  await sleep(150);
+  const cancelMsg = await page
+    .waitForFunction(() => window.__sent?.findLast((m) => m.type === "meshingCancel") ?? null, null, { timeout: 10000 })
+    .then((h) => h.jsonValue())
+    .catch(() => null);
+  assert(
+    cancelMsg && cancelMsg.requestId === req.requestId,
+    `Cancel posts meshingCancel with the SWEEP's own request id (got ${JSON.stringify(cancelMsg && cancelMsg.requestId)} vs ${JSON.stringify(req.requestId)})`
+  );
+  assert(
+    (await page.evaluate(() => (window.__sent ?? []).filter((m) => m.type === "meshingCancel").length)) === cancelsBefore + 1,
+    "one click posts exactly one cancel"
+  );
+  // A second click must not re-post (the host has nothing left to cancel).
+  assert((await cancelBtnState()).disabled === true, "Cancel disables itself after firing, so a double-click cannot re-post");
+
+  // The host's cancelled reply: one completed row, explicitly labelled partial.
+  const note = "Mesh-density/quality trends across swept sizes do NOT establish FE-solution convergence.";
+  await post(page, {
+    type: "meshSweepResult",
+    requestId: req.requestId,
+    runs: [{ size: 4, status: "ok", nodeCount: 381, elementCount: 1282, elapsedMs: 88, engineUsed: "gmsh", quality: { min: 0.412, mean: 0.73, histogram: [] }, outputPaths: [], error: null }],
+    cancelled: true,
+    warnings: [],
+    note,
+    outputDir: null,
+  });
+  await sleep(150);
+  const rows = await page.evaluate(() => document.querySelectorAll("#meshing-sweep-table tr").length);
+  assert(rows === 2, `a cancelled sweep renders header + only the completed row (got ${rows} rows)`);
+  const status = await page.evaluate(() => document.getElementById("meshing-sweep-status")?.textContent ?? "");
+  assert(
+    /cancelled/i.test(status) && /1 of 1 run meshed/.test(status) && /only the 1 completed run was meshed/.test(status),
+    `the status states the sweep was cancelled and how much ran (got ${JSON.stringify(status)})`
+  );
+  // The first version of this feature had the host push a warning saying the
+  // same thing the flag already says, which rendered the sentence twice. Pinned
+  // so it cannot come back.
+  const cancelMentions = (status.match(/cancelled/gi) ?? []).length;
+  assert(cancelMentions === 1, `the cancellation is stated once, not duplicated by a host warning (got ${cancelMentions} in ${JSON.stringify(status)})`);
+  assert((await cancelBtnState()).disabled === true, "Cancel stays disarmed once the sweep has settled");
+  // A cancelled sweep is a RESULT, not a lockout.
+  assert(
+    (await page.evaluate(() => document.getElementById("meshing-sweep-run")?.disabled)) === false,
+    "Run sweep is re-enabled after a cancelled sweep"
+  );
+  // A later reply for the same (now settled) request is stale and renders nothing.
+  await post(page, { type: "meshSweepResult", requestId: req.requestId, runs: [], cancelled: false, warnings: [], note, outputDir: null });
+  await sleep(100);
+  assert(
+    (await page.evaluate(() => document.querySelectorAll("#meshing-sweep-table tr").length)) === 2,
+    "a second reply for the same (now settled) request is ignored"
   );
 });
 

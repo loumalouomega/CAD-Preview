@@ -2846,6 +2846,57 @@ try {
   // The view union / composite / screenshot_shape (roadmap "camera-aware
   // snapshots"), under the same Chromium tolerance — they share the engine.
   if (render.supported) {
+    // tessellationQuality (roadmap "Tessellation quality for render_snapshot"):
+    // the item's done-when was "a fine render has visibly more triangles in the
+    // picture, and omitting the parameter changes nothing". Both halves are
+    // asserted NUMERICALLY here, from the `tessellation` fact the response now
+    // carries -- comparing PNG bytes would only prove *a* difference, not
+    // density. Single-view renders keep this to one image (and one browser
+    // launch) per tier; the tessellation is computed once per call regardless.
+    const ONE_VIEW = { kind: "named", name: "iso-ftl" };
+    const tierOf = async (tessellationQuality) => {
+      const r = await call("render_snapshot", {
+        path: model,
+        view: ONE_VIEW,
+        ...(tessellationQuality === undefined ? {} : { tessellationQuality }),
+      });
+      const label = tessellationQuality ?? "default";
+      assert(r.supported === true && r.images.length === 1, `a ${label} render returns one image`);
+      assert(
+        r.tessellation && Number.isFinite(r.tessellation.triangleCount) && r.tessellation.triangleCount > 0,
+        `a ${label} render reports a real triangle count (got ${JSON.stringify(r.tessellation)})`
+      );
+      return r.tessellation;
+    };
+    const tDefault = await tierOf(undefined);
+    const tDraft = await tierOf("draft");
+    const tStandard = await tierOf("standard");
+    const tFine = await tierOf("fine");
+    assert(tDefault.quality === "standard", `omitting the parameter renders at standard (got ${JSON.stringify(tDefault.quality)})`);
+    assert(
+      tDefault.triangleCount === tStandard.triangleCount,
+      `omitting the parameter is indistinguishable from passing standard (got ${tDefault.triangleCount} vs ${tStandard.triangleCount})`
+    );
+    assert(
+      tDraft.triangleCount < tStandard.triangleCount && tStandard.triangleCount < tFine.triangleCount,
+      `triangle count increases with quality (draft ${tDraft.triangleCount} < standard ${tStandard.triangleCount} < fine ${tFine.triangleCount})`
+    );
+    assert(
+      tFine.triangleCount > tStandard.triangleCount * 2,
+      `fine is genuinely denser, not a marginal nudge (${tFine.triangleCount} vs ${tStandard.triangleCount})`
+    );
+    assert(
+      tDraft.linearDeflection > tStandard.linearDeflection && tStandard.linearDeflection > tFine.linearDeflection,
+      `the reported deflections really do tighten with quality (${tDraft.linearDeflection}/${tStandard.linearDeflection}/${tFine.linearDeflection})`
+    );
+    const badQuality = await call("render_snapshot", { path: model, view: ONE_VIEW, tessellationQuality: "ultra" });
+    assert(
+      badQuality.supported === true &&
+        badQuality.tessellation?.quality === "standard" &&
+        badQuality.warnings.some((w) => /not one of draft/.test(w)),
+      `an unrecognized quality warns and falls back to standard rather than rendering silently (got ${JSON.stringify(badQuality.tessellation)})`
+    );
+
     const named = await call("render_snapshot", { path: model, view: { kind: "named", name: "iso-ftl" } });
     assert(
       named.images.length === 1 && named.images[0].label === "ISO-FTL",
@@ -3115,6 +3166,11 @@ try {
     "sweep TSV carries a header plus one line per run"
   );
   assert(/do NOT establish FE-solution convergence/.test(sweep.note), "sweep response carries the convergence disclaimer");
+  // Pins the new field over the REAL server, not just a fake pipeline: without
+  // this, dropping `cancelled` from the tool's return would break no live
+  // assertion at all (its cancellation paths are unreachable from this client,
+  // which never sends `notifications/cancelled`).
+  assert(sweep.cancelled === false, `an uncancelled sweep reports cancelled: false (got ${JSON.stringify(sweep.cancelled)})`);
   const sweepAfter = JSON.stringify((await call("get_state", { path: sweepModel })).meshOptions);
   assert(sweepBefore === sweepAfter, "a sweep without applyIndex leaves the stored options untouched");
   const sweepApplied = await call("compare_mesh_refinement", { path: sweepModel, sizes: sweepSizes, applyIndex: 1 });

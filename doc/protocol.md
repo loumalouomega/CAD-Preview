@@ -391,7 +391,7 @@ type HostToWebview =
   | { type: 'meshingResult'; requestId: string; positions: string; indices: string; edges: string; nodeCount: number; elementCount: number;
       elementGroups: MeshElementGroup[]; elapsedMs: number; quality?: QualitySummary; worstElements?: WorstElementsMsg }
   | { type: 'meshingError'; requestId: string; message: string }
-  | { type: 'meshSweepResult'; requestId: string; runs: MeshSweepRun[]; warnings: string[]; note: string; outputDir: string | null }
+  | { type: 'meshSweepResult'; requestId: string; runs: MeshSweepRun[]; cancelled: boolean; warnings: string[]; note: string; outputDir: string | null }
   | { type: 'meshSweepError'; requestId: string; message: string }
   | { type: 'meshingJobSettled'; requestId: string }
   | ({ type: 'viewerDefaults' } & ViewerDefaults)
@@ -686,10 +686,12 @@ Sent in reply to `meshingGenerate` (and internally by `meshingExport` when the t
 
 ### `meshSweepResult` / `meshSweepError`
 
-Sent in reply to `meshSweepRequest` (webview → host, below) — the FE Mesh panel's **Refinement sweep**, the interactive half of `compare_mesh_refinement` (roadmap Tier 1 "Parity gaps"). `runs` is one `MeshSweepRun` per requested size, in order, produced by the SAME `runMeshSweep` loop (`src/meshSweep.ts`) the MCP tool runs, so the two cannot disagree: each run is a uniform mesh (`sizeMin = sizeMax = size`) over one resolved geometry and the request's other options; a failed run is a row with `status: "error"`, never a failed sweep. `note` is the tool's "trends are not convergence" disclaimer, shown under the table. `outputDir` is where the per-run `<stem>-size-<size>.msh` files were written, or `null`. `meshSweepError` covers invalid sizes, a declined output-folder dialog, or a cancelled job. The document's mesh options are never written.
+Sent in reply to `meshSweepRequest` (webview → host, below) — the FE Mesh panel's **Refinement sweep**, the interactive half of `compare_mesh_refinement` (roadmap Tier 1 "Parity gaps"). `runs` is one `MeshSweepRun` per **completed** size, in order, produced by the SAME `runMeshSweep` loop (`src/meshSweep.ts`) the MCP tool runs, so the two cannot disagree: each run is a uniform mesh (`sizeMin = sizeMax = size`) over one resolved geometry and the request's other options; a failed run is a row with `status: "error"`, never a failed sweep. `note` is the tool's "trends are not convergence" disclaimer, shown under the table. `outputDir` is where the per-run `<stem>-size-<size>.msh` files were written, or `null`.
+
+`cancelled` is `true` when the sweep section's **Cancel** stopped the loop (roadmap "Cancel a mesh refinement sweep mid-run", closed). A cancelled sweep is a **result, not an error** — the completed rows come back rather than being discarded, and `runs` is then legitimately shorter than the requested sizes. An interrupted run contributes **no row at all** (it produced no result, and a half-written row would read as a completed one); `cancelled` is what explains the short list, and the panel states it in the status line rather than rendering a short table bare. `meshSweepError` is for the failures that settle nothing — invalid sizes, a declined output-folder dialog, a genuinely failed request. The document's mesh options are never written either way.
 
 ```json
-{ "type": "meshSweepResult", "requestId": "1234-0.56", "runs": [{ "size": 4, "status": "ok", "nodeCount": 381, "elementCount": 1282, "elapsedMs": 88, "engineUsed": "gmsh", "quality": { "min": 0.412, "mean": 0.73, "histogram": [] }, "outputPaths": [], "error": null }], "warnings": [], "note": "Mesh-density/quality trends across swept sizes do NOT establish FE-solution convergence …", "outputDir": null }
+{ "type": "meshSweepResult", "requestId": "1234-0.56", "runs": [{ "size": 4, "status": "ok", "nodeCount": 381, "elementCount": 1282, "elapsedMs": 88, "engineUsed": "gmsh", "quality": { "min": 0.412, "mean": 0.73, "histogram": [] }, "outputPaths": [], "error": null }], "cancelled": false, "warnings": [], "note": "Mesh-density/quality trends across swept sizes do NOT establish FE-solution convergence …", "outputDir": null }
 ```
 
 ### `meshingError`
@@ -1111,7 +1113,7 @@ Sent whenever the user changes a mesh-options form control in the FE Mesh panel.
 
 ### `meshSweepRequest`
 
-Sent by the FE Mesh panel's **Refinement sweep ▸ Run sweep**. `sizes` (mm, at most 8, each finite and positive) are parsed and validated in the webview with the same `parseSweepSizes`/`validateSweepSizes` the host re-checks. `options` is the panel's current `MeshOptions` (its own `sizeMin`/`sizeMax` are ignored — each run sets both). `stl` carries the displayed mesh for a mesh-format document, as `meshingGenerate` does. `writeOutputs: true` makes the host ask for a folder and write one `.msh` per run. Runs under the document's meshing job, so the panel's Cancel stops it. The host replies with `meshSweepResult` or `meshSweepError`.
+Sent by the FE Mesh panel's **Refinement sweep ▸ Run sweep**. `sizes` (mm, at most 8, each finite and positive) are parsed and validated in the webview with the same `parseSweepSizes`/`validateSweepSizes` the host re-checks. `options` is the panel's current `MeshOptions` (its own `sizeMin`/`sizeMax` are ignored — each run sets both). `stl` carries the displayed mesh for a mesh-format document, as `meshingGenerate` does. `writeOutputs: true` makes the host ask for a folder and write one `.msh` per run. Runs under the document's meshing job, so the sweep section's own **Cancel** stops it (see `meshingCancel`). The host replies with `meshSweepResult` or `meshSweepError`.
 
 ```json
 { "type": "meshSweepRequest", "requestId": "1234-0.56", "sizes": [4, 2, 1], "options": { "dimension": 3, "sizeMin": 0, "sizeMax": 4 } }
@@ -1120,6 +1122,8 @@ Sent by the FE Mesh panel's **Refinement sweep ▸ Run sweep**. `sizes` (mm, at 
 ### `meshingGenerate`
 
 The webview includes a new `requestId` for each Generate or Export action. While the request is active, the panel offers Cancel; the host cancels only the active or queued work owned by that document and request. `meshingCancel` carries that same identity.
+
+A refinement sweep carries its own `requestId` too, and the sweep section's **Cancel** button posts the same `meshingCancel` message with that id — the sweep reuses this existing round trip rather than a second cancellation channel. Because the loop is multi-run, one `meshingCancel` stops it *between* runs as well as during one; the host replies with `meshSweepResult` carrying `cancelled: true` and the rows that completed, not with `meshSweepError`.
 
 Sent when the user clicks **▶ Generate** in the FE Mesh panel. Carries the current `MeshOptions` and, for a mesh-format document only, a base64 `stl` field — a fresh snapshot of the currently displayed `THREE.Object3D`, serialized in the webview via the same `exportModel(..., "stl")` helper Export already uses (the host has no B-rep to re-export for a mesh-sourced document, so it has no other way to obtain triangulated geometry for GMSH). B-rep documents omit `stl`; the host re-exports the live OCCT shape to STEP itself. The host replies with `meshingResult` or `meshingError`.
 
