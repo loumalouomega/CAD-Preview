@@ -3497,6 +3497,73 @@ describe("compare_mesh_refinement", () => {
     expect(onProgress.mock.calls.map((call) => call[0].progress)).toEqual([0, 1, 1, 2]);
     expect(onProgress.mock.calls[3][0]).toMatchObject({ progress: 2, total: 2 });
   });
+
+  it("is not flagged cancelled on an ordinary sweep", async () => {
+    const c = ctx();
+    const result = await compareMeshRefinementTool(c, { path: stpModel, sizes: [4, 2] });
+    expect(result.cancelled).toBe(false);
+  });
+
+  // Cancellation (roadmap "Cancel a mesh refinement sweep mid-run") — the MCP
+  // request's own abort signal, the same one `notifications/cancelled`
+  // produces.
+  it("returns only the completed rows and leaves no further kernel work when the signal aborts mid-run", async () => {
+    const controller = new AbortController();
+    let started = 0;
+    const generateMesh = vi.fn(async (_ext: string, _input: unknown, _options: { sizeMax: number }) => {
+      started++;
+      // The click lands while the SECOND of four runs is in flight.
+      if (started === 2) {
+        controller.abort();
+        throw new Error('kernel-worker: "generateMesh" was cancelled');
+      }
+      return FAKE_MESH_RESULT;
+    });
+    const c = ctx(fakePipeline({ generateMesh }));
+    const result = await compareMeshRefinementTool(c, { path: stpModel, sizes: [4, 2, 1, 0.5] }, undefined, controller.signal);
+    // Exactly the one completed run — the interrupted one yields NO row, so
+    // there is no partial row that could read as a completed one.
+    expect(result.runs.map((r) => [r.size, r.status])).toEqual([[4, "ok"]]);
+    expect(result.cancelled).toBe(true);
+    // Two calls, not four: nothing was queued after the abort.
+    expect(generateMesh).toHaveBeenCalledTimes(2);
+    // The TSV describes only what actually ran.
+    expect(result.tsv.split("\n")).toHaveLength(2);
+  });
+
+  it("stops before the first run when the signal is already aborted", async () => {
+    const c = ctx();
+    const controller = new AbortController();
+    controller.abort();
+    const result = await compareMeshRefinementTool(c, { path: stpModel, sizes: [4, 2] }, undefined, controller.signal);
+    expect(c.pipeline.generateMesh).not.toHaveBeenCalled();
+    expect(result.runs).toEqual([]);
+    expect(result.cancelled).toBe(true);
+  });
+
+  it("does not apply applyIndex on a cancelled sweep, and says why", async () => {
+    const controller = new AbortController();
+    let started = 0;
+    const c = ctx(
+      fakePipeline({
+        generateMesh: vi.fn(async (_ext: string, _input: unknown, _options: { sizeMax: number }) => {
+          started++;
+          if (started === 2) {
+            controller.abort();
+            throw new Error('kernel-worker: "generateMesh" was cancelled');
+          }
+          return FAKE_MESH_RESULT;
+        }),
+      })
+    );
+    const result = await compareMeshRefinementTool(c, { path: stpModel, sizes: [4, 2, 1], applyIndex: 1 }, undefined, controller.signal);
+    expect(result.cancelled).toBe(true);
+    expect(result.applied).toBeNull();
+    expect(result.warnings.some((w) => /applyIndex 1 was NOT applied/.test(w))).toBe(true);
+    // A partial comparison must never silently set the document's mesh size.
+    const { readMeshOptions } = await import("./mcpSidecars");
+    await expect(fs.stat(`${stpModel}.mesh.json`)).rejects.toThrow();
+  });
 });
 
 describe("export_mesh", () => {

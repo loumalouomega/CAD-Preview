@@ -5254,13 +5254,18 @@ async function writeMeshExportFormat(
  * `writeMeshExportFormat` body `export_mesh` uses, named
  * `<stem>-size-<size>.<ext>` so every file identifies its own settings.
  *
- * Cancellation scoping, stated plainly: runs execute sequentially, each
- * bounded by the kernel client's per-call watchdog, with per-completed-run
- * progress below — no mid-sweep cancel exists (MCP has no in-flight
- * cancellation primitive and the kernel client serializes regardless). This
- * deliberately does not wait on the still-open "Document-scoped jobs"
- * roadmap item; the bound (capped rows × watchdog-bounded calls) is what
- * keeps a sweep from running away instead.
+ * Cancellation (roadmap "Cancel a mesh refinement sweep mid-run", closed):
+ * `signal` is the MCP request's own abort signal, threaded in the same way
+ * `batch_export` receives it. The loop checks it between runs and on a
+ * mid-generate interruption, so a cancelled sweep returns the rows that
+ * actually completed plus `cancelled: true` — an interrupted run contributes no
+ * row at all rather than an error row that would read as a meshing failure.
+ * `applyIndex` is deliberately NOT honoured on a cancelled sweep: a partial
+ * comparison is not a comparison, and silently persisting one run's size as
+ * though the sweep concluded would set the document's mesh size from an
+ * incomplete result. Every run is also still bounded by the kernel client's
+ * per-call watchdog, and rows stay capped at `MAX_SWEEP_RUNS`, so an
+ * uncancelled sweep remains bounded too.
  */
 export async function compareMeshRefinementTool(
   ctx: ToolContext,
@@ -5272,7 +5277,8 @@ export async function compareMeshRefinementTool(
     outputFormat?: string;
     applyIndex?: number;
   },
-  onProgress?: ProgressCallback
+  onProgress?: ProgressCallback,
+  signal?: AbortSignal
 ) {
   const modelPath = params.path;
   const route = requireRoute(modelPath);
@@ -5328,12 +5334,13 @@ export async function compareMeshRefinementTool(
   }
   const stem = path.basename(modelPath, path.extname(modelPath));
 
-  const runs = await runMeshSweep(
+  const { runs, cancelled } = await runMeshSweep(
     params.sizes,
     baseOptions,
     (runOptions) => ctx.pipeline.generateMesh(ctx.extensionPath, input, runOptions, parts),
     {
       warnings,
+      isCancelled: () => signal?.aborted === true,
       writeOutputs:
         format && outDir
           ? async (size, runOptions, result) => {
@@ -5353,17 +5360,23 @@ export async function compareMeshRefinementTool(
 
   let applied: { index: number; size: number; options: MeshOptions } | null = null;
   if (params.applyIndex != null) {
-    const size = params.sizes[params.applyIndex];
-    const appliedOptions = await effectiveMeshOptions(modelPath, { sizeMin: size, sizeMax: size });
-    await writeMeshOptions(modelPath, appliedOptions);
-    applied = { index: params.applyIndex, size, options: appliedOptions };
+    if (cancelled) {
+      warnings.push(
+        `applyIndex ${params.applyIndex} was NOT applied — the sweep was cancelled after ${runs.length} of ${params.sizes.length} run(s), so the comparison is incomplete.`
+      );
+    } else {
+      const size = params.sizes[params.applyIndex];
+      const appliedOptions = await effectiveMeshOptions(modelPath, { sizeMin: size, sizeMax: size });
+      await writeMeshOptions(modelPath, appliedOptions);
+      applied = { index: params.applyIndex, size, options: appliedOptions };
+    }
   }
 
   const estimates = params.sizes.map((size) => {
     const e = budgetFor(budgetFacts, baseOptions, parts, size);
     return { size, status: e.status, elements: e.elements, confidence: e.confidence };
   });
-  return { runs, tsv: sweepTsv(runs), estimates, applied, warnings, note: SWEEP_NOTE };
+  return { runs, cancelled, tsv: sweepTsv(runs), estimates, applied, warnings, note: SWEEP_NOTE };
 }
 
 // ---------------------------------------------------------------------------

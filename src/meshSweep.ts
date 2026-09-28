@@ -145,12 +145,37 @@ export interface SweepGenerateResult {
 }
 
 /**
+ * A completed sweep: the rows that actually ran, plus whether the loop stopped
+ * early. `runs` is the honest list — a run interrupted by cancellation
+ * contributes NO row, because it produced no result and a half-written row
+ * would read as a completed one. `cancelled: true` is what explains a list
+ * shorter than the requested sizes.
+ */
+export interface MeshSweepOutcome {
+  runs: MeshSweepRun[];
+  cancelled: boolean;
+}
+
+/**
  * The per-size loop, shared by `compare_mesh_refinement` and the FE Mesh
  * panel's sweep form so their rows cannot disagree: each size meshes the SAME
  * `baseOptions` as a uniform mesh (`sizeMin = sizeMax = size`), sequentially;
  * `elapsedMs` covers the generate call only; a failed run (generate or the
  * optional `writeOutputs`) is a row with `status: "error"`, never a thrown
  * sweep. `writeOutputs` returns the paths it wrote for that run.
+ *
+ * **Cancellation** (roadmap "Cancel a mesh refinement sweep mid-run", closed).
+ * `isCancelled` is a predicate, not an `AbortSignal`, for the same reason
+ * `batchExport.ts`'s `BatchRunOptions.isCancelled` is: this module is imported
+ * by the webview (`meshingPanel.ts`), so it must stay free of Node imports, and
+ * a predicate serves the host, the MCP layer and the panel equally. It is
+ * checked at loop entry (stop before starting the next run) AND inside the
+ * `catch` (a cancel that lands mid-generate must stop the loop, not become an
+ * `status: "error"` row — the interruption is not a meshing failure). Either
+ * way the interrupted run yields no row and `cancelled` is set, so a caller
+ * never has to distinguish "failed" from "cancelled" by reading an error
+ * string. Genuine failures still produce their error row and the loop carries
+ * on, exactly as before.
  */
 export async function runMeshSweep<R extends SweepGenerateResult>(
   sizes: readonly number[],
@@ -161,10 +186,12 @@ export async function runMeshSweep<R extends SweepGenerateResult>(
     writeOutputs?: (size: number, options: MeshOptions, result: R) => Promise<string[]>;
     onRunStart?: (index: number, size: number) => void;
     onRunDone?: (index: number, run: MeshSweepRun) => void;
+    isCancelled?: () => boolean;
   }
-): Promise<MeshSweepRun[]> {
+): Promise<MeshSweepOutcome> {
   const runs: MeshSweepRun[] = [];
   for (let i = 0; i < sizes.length; i++) {
+    if (hooks.isCancelled?.()) return { runs, cancelled: true };
     const size = sizes[i];
     const runOptions: MeshOptions = { ...baseOptions, sizeMin: size, sizeMax: size };
     hooks.onRunStart?.(i, size);
@@ -186,6 +213,9 @@ export async function runMeshSweep<R extends SweepGenerateResult>(
       if (hooks.writeOutputs) row.outputPaths = await hooks.writeOutputs(size, runOptions, result);
       hooks.warnings.push(...result.warnings);
     } catch (err) {
+      // A cancel mid-generate is a stop, not a failed row: the run produced no
+      // result, so it gets no row at all (see MeshSweepOutcome).
+      if (hooks.isCancelled?.()) return { runs, cancelled: true };
       row = {
         size,
         status: "error",
@@ -201,5 +231,5 @@ export async function runMeshSweep<R extends SweepGenerateResult>(
     runs.push(row);
     hooks.onRunDone?.(i, row);
   }
-  return runs;
+  return { runs, cancelled: false };
 }

@@ -3115,6 +3115,11 @@ try {
     "sweep TSV carries a header plus one line per run"
   );
   assert(/do NOT establish FE-solution convergence/.test(sweep.note), "sweep response carries the convergence disclaimer");
+  // Pins the new field over the REAL server, not just a fake pipeline: without
+  // this, dropping `cancelled` from the tool's return would break no live
+  // assertion at all (its cancellation paths are unreachable from this client,
+  // which never sends `notifications/cancelled`).
+  assert(sweep.cancelled === false, `an uncancelled sweep reports cancelled: false (got ${JSON.stringify(sweep.cancelled)})`);
   const sweepAfter = JSON.stringify((await call("get_state", { path: sweepModel })).meshOptions);
   assert(sweepBefore === sweepAfter, "a sweep without applyIndex leaves the stored options untouched");
   const sweepApplied = await call("compare_mesh_refinement", { path: sweepModel, sizes: sweepSizes, applyIndex: 1 });

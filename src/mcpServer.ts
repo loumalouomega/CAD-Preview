@@ -1566,7 +1566,7 @@ server.registerTool(
   "compare_mesh_refinement",
   {
     description:
-      "Mesh the same model at several explicit sizes and compare cost vs quality before choosing one: each entry of sizes (mm) runs the same resolved geometry and the same non-size options as a uniform mesh (sizeMin = sizeMax = size), reporting per-run engine, nodes/elements, elapsed ms, the minSICN quality summary, and either output paths or an individual error — a failed run is a row, never a thrown sweep. The document's stored options are never written unless applyIndex (0-based into sizes) names the run to persist. Optional outputDir + outputFormat (any export_mesh format id, default msh) writes one <stem>-size-<size>.<ext> per run through the same writer export_mesh uses. Returns a spreadsheet-ready TSV alongside the rows. Rows describe meshing cost and element shape quality only — density/quality trends do NOT establish FE-solution convergence without a solver. Sequential runs (max 8 sizes), each bounded by the kernel watchdog; progress is reported per completed run. No mid-sweep cancellation exists.",
+      "Mesh the same model at several explicit sizes and compare cost vs quality before choosing one: each entry of sizes (mm) runs the same resolved geometry and the same non-size options as a uniform mesh (sizeMin = sizeMax = size), reporting per-run engine, nodes/elements, elapsed ms, the minSICN quality summary, and either output paths or an individual error — a failed run is a row, never a thrown sweep. The document's stored options are never written unless applyIndex (0-based into sizes) names the run to persist. Optional outputDir + outputFormat (any export_mesh format id, default msh) writes one <stem>-size-<size>.<ext> per run through the same writer export_mesh uses. Returns a spreadsheet-ready TSV alongside the rows. Rows describe meshing cost and element shape quality only — density/quality trends do NOT establish FE-solution convergence without a solver. Sequential runs (max 8 sizes), each bounded by the kernel watchdog; progress is reported per completed run. Cancelling the MCP request (notifications/cancelled) stops the sweep: it returns the rows that already completed with cancelled: true, and an interrupted run yields no row rather than an error row. A cancelled sweep does NOT apply applyIndex — an incomplete comparison is not a comparison — and says so in warnings.",
     inputSchema: {
       path: modelPath,
       sizes: z.array(z.number()).describe("Explicit mesh sizes in mm, one run each (max 8) — sizeMin = sizeMax = size per run"),
@@ -1587,7 +1587,7 @@ server.registerTool(
         applyIndex?: number;
       },
       onProgress
-    ) => compareMeshRefinementTool(ctx, { ...args, options: args.options as Partial<MeshOptions> | undefined }, onProgress)
+    ) => compareMeshRefinementTool(ctx, { ...args, options: args.options as Partial<MeshOptions> | undefined }, onProgress, jobScope.getStore()?.signal)
   )
 );
 

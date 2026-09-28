@@ -229,19 +229,7 @@ These are outcome groupings, not release numbers. Independent small items can sh
 - **First useful increment (S):** add an optional `quality` (`draft` / `standard` / `fine`) to `render_snapshot`, `screenshot_shape` and `render_ops_prefix`, defaulting to today's behaviour.
 - **Done when:** a `fine` render of a curved part has visibly more triangles in the picture, and omitting the parameter changes nothing.
 
-#### 2.3 Cancel a mesh refinement sweep mid-run {#cancel-a-mesh-refinement-sweep-mid-run}
-
-*Area: Meshing.*
-
-- **Evidence:**
-  - `compare_mesh_refinement` runs up to eight sequential meshes, and `CLAUDE.md` records that it cannot be cancelled mid-sweep.
-  - Document-scoped jobs have since given every MCP request an owner and an abort signal (`jobScope` in `mcpServer.ts`), so the building block now exists.
-- **First useful increment (S):**
-  - Check the signal between runs, and pass it to each run's kernel call.
-  - A cancelled sweep returns the completed rows with `cancelled: true`, never a partial row presented as complete.
-- **Done when:** cancelling after the first run returns exactly one row and leaves no kernel work queued.
-
-#### 2.4 Mesh display fidelity: OBJ materials, PLY colours, compressed glTF {#mesh-display-fidelity-obj-materials-ply-colours-compressed-gltf}
+#### 2.3 Mesh display fidelity: OBJ materials, PLY colours, compressed glTF {#mesh-display-fidelity-obj-materials-ply-colours-compressed-gltf}
 
 *Area: Formats.*
 
@@ -258,7 +246,7 @@ These are outcome groupings, not release numbers. Independent small items can sh
     - Decode host-side with `draco3d`, so Compare Models, Mesh Health and Promote accept the file too. `meshopt` follows the same pattern.
 - **Done when:** each has a committed fixture that renders correctly in `test:webview`, and the compressed fixture passes `check_mesh_health`.
 
-#### 2.5 More mesh formats through three's bundled loaders {#more-mesh-formats-through-three-s-bundled-loaders}
+#### 2.4 More mesh formats through three's bundled loaders {#more-mesh-formats-through-three-s-bundled-loaders}
 
 *Area: Formats.*
 
@@ -272,7 +260,7 @@ These are outcome groupings, not release numbers. Independent small items can sh
   - Every new format states its host-side status plainly: display-only unless a host parser is added. Compare Models, Mesh Health and headless meshing refuse it by name, the way meshio-only formats are refused today.
 - **Done when:** a committed `.3mf` fixture opens, edits, exports back to `.3mf`, and reopens with the same triangle count.
 
-#### 2.6 Shared UI design system with VSCode-MDPA-Preview {#shared-ui-design-system-with-vscode-mdpa-preview}
+#### 2.5 Shared UI design system with VSCode-MDPA-Preview {#shared-ui-design-system-with-vscode-mdpa-preview}
 
 *Area: Ecosystem.*
 
@@ -288,7 +276,7 @@ These are outcome groupings, not release numbers. Independent small items can sh
 - **Done when:** the snaps work in both extensions, the renames are settled, and the drift check runs in this repository's CI.
 - **Other repository's half:** the matching change in VSCode-MDPA-Preview, and its stale licence line.
 
-#### 2.7 Canonical worked example for the simulation tutorial {#canonical-worked-example-for-the-simulation-tutorial}
+#### 2.6 Canonical worked example for the simulation tutorial {#canonical-worked-example-for-the-simulation-tutorial}
 
 *Area: Ecosystem.*
 
@@ -300,7 +288,7 @@ These are outcome groupings, not release numbers. Independent small items can sh
   - Pin it in `mcp:smoke` with analytic volume and exact Part membership, like the bracket tutorial.
 - **Done when:** the page builds, its op list compiles under `npm test`, and the exported MDPA opens in VSCode-MDPA-Preview with both SubModelParts populated.
 
-#### 2.8 Unify same-domain faces as an edit op {#unify-same-domain-faces-as-an-edit-op}
+#### 2.7 Unify same-domain faces as an edit op {#unify-same-domain-faces-as-an-edit-op}
 
 *Area: Geometry.*
 
