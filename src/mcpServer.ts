@@ -599,6 +599,9 @@ server.registerTool(
         .boolean()
         .optional()
         .describe("Stitch the views into ONE labelled grid image instead of returning them separately — same total pixels as a single view, so it costs one image's worth of attention rather than four."),
+      tessellationQuality: z.string().optional().describe(
+        "B-rep only: draft | standard | fine. Omit for today's density (`standard` — omitting is indistinguishable from passing it). `fine` is ~3x the triangles of `standard` and `draft` roughly half, so it costs real time on a large model. An unrecognized value warns and falls back. The response reports the `tessellation` actually used (quality + deflections + triangleCount). Most visible under the wireframe displayMode, where the tessellation structure IS the picture; under shading, faceting is partly hidden either way."
+      ),
     },
   },
   wrap(
@@ -609,6 +612,7 @@ server.registerTool(
       displayMode?: "shaded" | "wireframe";
       view?: SnapshotView;
       composite?: boolean;
+      tessellationQuality?: string;
     }) => renderSnapshotTool(ctx, args)
   )
 );
@@ -625,9 +629,12 @@ server.registerTool(
         .int()
         .describe("Last applied op to include, 0-based (-1 = base shape with no ops applied)"),
       render: z.boolean().optional().describe("Also render the prefix model's 4-view PNG packet (default false)"),
+      tessellationQuality: z.string().optional().describe(
+        "B-rep only: draft | standard | fine. Omit for today's density (`standard` — omitting is indistinguishable from passing it). `fine` is ~3x the triangles of `standard` and `draft` roughly half, so it costs real time on a large model. An unrecognized value warns and falls back. The response reports the `tessellation` actually used (quality + deflections + triangleCount). Applies to the PREFIX model's render only — the returned entity inventory is unaffected."
+      ),
     },
   },
-  wrap((args: { path: string; throughIndex: number; render?: boolean }) => renderOpsPrefixTool(ctx, args))
+  wrap((args: { path: string; throughIndex: number; render?: boolean; tessellationQuality?: string }) => renderOpsPrefixTool(ctx, args))
 );
 
 server.registerTool(
@@ -1152,6 +1159,9 @@ server.registerTool(
         .describe("Camera to frame the entity from; defaults to an isometric"),
       context: z.boolean().optional().describe("Keep the whole model visible instead of isolating the entity"),
       displayMode: z.enum(["shaded", "wireframe"]).optional(),
+      tessellationQuality: z.string().optional().describe(
+        "B-rep only: draft | standard | fine. Omit for today's density (`standard` — omitting is indistinguishable from passing it). `fine` is ~3x the triangles of `standard` and `draft` roughly half, so it costs real time on a large model. An unrecognized value warns and falls back. The response reports the `tessellation` actually used (quality + deflections + triangleCount). A framed entity fills the image, so its own faceting is unusually visible here — this is where quality buys the most."
+      ),
     },
   },
   wrap(
@@ -1161,6 +1171,7 @@ server.registerTool(
       view?: SnapshotView;
       context?: boolean;
       displayMode?: "shaded" | "wireframe";
+      tessellationQuality?: string;
     }) => screenshotShapeTool(ctx, args)
   )
 );

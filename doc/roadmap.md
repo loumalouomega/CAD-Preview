@@ -221,15 +221,7 @@ These are outcome groupings, not release numbers. Independent small items can sh
   - Base-shape caching is unaffected: the tree cache already lives beside the base shape.
 - **Done when:** first geometry on `turbine.stp` arrives at roughly the pre-XCAF time, the tree still arrives, and `npm run perf` records both numbers.
 
-#### 2.2 Tessellation quality for `render_snapshot` {#tessellation-quality-for-render-snapshot}
-
-*Area: Parity.*
-
-- **Evidence:** the `cadPreview.tessellationQuality` setting reaches the viewer but not the headless renderer. `CLAUDE.md` names this a future item. `loadBRep` already takes a quality argument.
-- **First useful increment (S):** add an optional `quality` (`draft` / `standard` / `fine`) to `render_snapshot`, `screenshot_shape` and `render_ops_prefix`, defaulting to today's behaviour.
-- **Done when:** a `fine` render of a curved part has visibly more triangles in the picture, and omitting the parameter changes nothing.
-
-#### 2.3 Mesh display fidelity: OBJ materials, PLY colours, compressed glTF {#mesh-display-fidelity-obj-materials-ply-colours-compressed-gltf}
+#### 2.2 Mesh display fidelity: OBJ materials, PLY colours, compressed glTF {#mesh-display-fidelity-obj-materials-ply-colours-compressed-gltf}
 
 *Area: Formats.*
 
@@ -246,7 +238,7 @@ These are outcome groupings, not release numbers. Independent small items can sh
     - Decode host-side with `draco3d`, so Compare Models, Mesh Health and Promote accept the file too. `meshopt` follows the same pattern.
 - **Done when:** each has a committed fixture that renders correctly in `test:webview`, and the compressed fixture passes `check_mesh_health`.
 
-#### 2.4 More mesh formats through three's bundled loaders {#more-mesh-formats-through-three-s-bundled-loaders}
+#### 2.3 More mesh formats through three's bundled loaders {#more-mesh-formats-through-three-s-bundled-loaders}
 
 *Area: Formats.*
 
@@ -260,7 +252,7 @@ These are outcome groupings, not release numbers. Independent small items can sh
   - Every new format states its host-side status plainly: display-only unless a host parser is added. Compare Models, Mesh Health and headless meshing refuse it by name, the way meshio-only formats are refused today.
 - **Done when:** a committed `.3mf` fixture opens, edits, exports back to `.3mf`, and reopens with the same triangle count.
 
-#### 2.5 Shared UI design system with VSCode-MDPA-Preview {#shared-ui-design-system-with-vscode-mdpa-preview}
+#### 2.4 Shared UI design system with VSCode-MDPA-Preview {#shared-ui-design-system-with-vscode-mdpa-preview}
 
 *Area: Ecosystem.*
 
@@ -276,7 +268,7 @@ These are outcome groupings, not release numbers. Independent small items can sh
 - **Done when:** the snaps work in both extensions, the renames are settled, and the drift check runs in this repository's CI.
 - **Other repository's half:** the matching change in VSCode-MDPA-Preview, and its stale licence line.
 
-#### 2.6 Canonical worked example for the simulation tutorial {#canonical-worked-example-for-the-simulation-tutorial}
+#### 2.5 Canonical worked example for the simulation tutorial {#canonical-worked-example-for-the-simulation-tutorial}
 
 *Area: Ecosystem.*
 
@@ -288,13 +280,23 @@ These are outcome groupings, not release numbers. Independent small items can sh
   - Pin it in `mcp:smoke` with analytic volume and exact Part membership, like the bracket tutorial.
 - **Done when:** the page builds, its op list compiles under `npm test`, and the exported MDPA opens in VSCode-MDPA-Preview with both SubModelParts populated.
 
-#### 2.7 Unify same-domain faces as an edit op {#unify-same-domain-faces-as-an-edit-op}
+#### 2.6 Unify same-domain faces as an edit op {#unify-same-domain-faces-as-an-edit-op}
 
 *Area: Geometry.*
 
 - **Evidence (probed with the B-rep validity report, opencascade.js 1.1.1):** `new oc.ShapeUpgrade_UnifySameDomain_2(shape, true, true, false)` → `Build()` → `Shape()` merged two fused 10 mm boxes from 10 faces / 20 edges to 6 / 12 with the volume unchanged (2000.0000000000005 both sides); on a box with one fillet it correctly changed nothing (7 faces before and after, volume 997.853981147513 both sides). `_1()` + `Initialize(shape, true, true, false)` is the fallback form.
 - **First useful increment (M):** a `unifySameDomain` edit op — B-rep only, topology-changing (every downstream `face-N`/`edge-N` renumbers, so Parts and annotations go through the existing rebind), explicit and undoable, never an automatic consequence of a failed `check_brep_health`. Needs a panel button, which means a TikZ icon through the `icons/` pipeline (`pdflatex` + `pdftocairo`), an `OP_PARAM_DOCS` entry, the generic `produced` bucket role, and a `mcp:smoke` assertion on the fused-box face count and volume.
 - **Done when:** the fused-box fixture drops 10 → 6 faces through `apply_edit_ops` at an unchanged volume, and a Part on one of the merged faces is rebound or reported dropped, never silently repointed.
+
+#### 2.7 Tessellation quality for `hit_test` {#tessellation-quality-for-hit-test}
+
+*Area: Parity.*
+
+- **Evidence:** `src/hitTestService.ts`'s `HitTestOptions` already carries a `quality?: TessellationParams` and `hitTest` passes it to `loadBRep` — but **no caller has ever set it**, so `hit_test` picks at the `standard` default like every other headless path did. `hitTestTool` forwards `mode`/`focus`/`hide`/`tolerance` and nothing else.
+- **Why it matters more here than for a render:** the pick's default edge/point tolerance is 1 % of the bbox diagonal, so on a model whose thin walls, fillet bands or holes are finer than that, the tessellation decides whether a ray lands on the intended entity or misses it. A caller has no way to ask for a finer mesh, and no way to see which one it got — so a miss is indistinguishable from a coarse mesh. The three render tools now return a `tessellation` block for exactly this reason; `hit_test` reports a `tolerance` and nothing about the mesh behind it.
+- **First useful increment (S):** add `tessellationQuality` (`draft` / `standard` / `fine`) to `hit_test`, defaulting to today's behaviour, and return the same `tessellation` block the render tools report next to `tolerance`. `HitTestOptions.quality` is typed `TessellationParams` — a deflection pair — so narrow it to a **name** and map down with `tessellationParamsFor`, matching `renderService`. This is the one place a raw params object was already exposed, and leaving the two shapes different is precisely the drift that naming at the boundary prevents. Warn on an unrecognized value, as the render tools now do, rather than degrading quietly.
+- **Done when:** on a fixture with sub-1 %-diagonal features, a ray that misses at `standard` hits the intended edge at `fine`, and omitting the parameter is indistinguishable from passing `standard`.
+- **Related follow-up, deliberately not folded in:** `compare_models`' optional `includeSnapshots` is the fourth render call site and still has no `tessellationQuality`, so its before/after images render at the `standard` default. It is absent on purpose rather than forgotten — each render parameter widens a surface whose images cost a browser launch apiece — but it should get the same parameter eventually, and `doc/mcp-server.md` says so at that tool's own row so a reader is not left guessing why it lacks what its siblings have.
 
 ### Probe-gated — establish feasibility before estimating
 

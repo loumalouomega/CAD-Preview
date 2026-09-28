@@ -93,7 +93,7 @@ import type {
   InterferenceResult,
   InterferencePairResult,
 } from "./entityFacts";
-import type { renderSnapshot, isRenderAvailable, RenderImage, RenderView } from "./renderService";
+import type { renderSnapshot, isRenderAvailable, RenderImage, RenderView, RenderTessellation } from "./renderService";
 import type {
   searchStandardParts,
   downloadStandardPart,
@@ -134,7 +134,7 @@ import { MAX_HEALABLE_TRIANGLES } from "./meshHeal";
 import { AUTO_DECIMATE_TARGET_TRIANGLES, isHealableSizeError, stlBytesForHeal } from "./meshioService";
 import { weldedMeshToStlBytes } from "./meshComponents";
 import type { exportSvgSilhouette, exportDrawingSheet } from "./svgSilhouetteHost";
-import { normalizeTessellationQuality } from "./tessellationQuality";
+import { normalizeTessellationQuality, type TessellationQuality } from "./tessellationQuality";
 import { SVG_VIEWS, type DimensionSource } from "./svgSilhouette";
 import type { hitTest } from "./hitTestService";
 import { NAMED_VIEW_NAMES, orbitDirection, resolveNamedView, type Vec3 } from "./viewDirections";
@@ -548,6 +548,7 @@ export function describeCapabilities() {
       "get_mass_properties is B-rep sources via OCCT BRepGProp (volume/area/length, center of mass, moments of inertia) and STL/OBJ/PLY/glTF sources via headless triangle integration (volume/area, centroid, watertight flag; no length, no moments of inertia). Other mesh formats compute the equivalent client-side in the webview.",
       "inspect (per-entity bbox/bbox-center/area/length/normal/surfaceType, plus surfaceParams: the analytic radius/axis/half-angle behind that classification) and measure (distance between two entities' bbox centers) are B-rep sources plus STL/OBJ/PLY/glTF sources headless (triangle-based facts in raw file coordinates with mesh-component-N / mesh-triangle-N / mesh-vertex-N ids from load_model; no analytic parameters). Note inspect's `center` is the bbox center, NOT get_mass_properties' mass-weighted centroid — they can differ for an asymmetric shape.",
       "render_snapshot is B-rep sources only, and additionally requires Playwright + a Chromium binary in this environment (`npx playwright install chromium`) — call it and check `supported` rather than assuming availability; not guaranteed present for an installed .vsix (see doc/mcp-server.md).",
+      "render_snapshot/screenshot_shape/render_ops_prefix take tessellationQuality (draft|standard|fine) for the PICTURE only, and report the `tessellation` block actually used (quality + deflections + triangleCount) — nothing else about a render is tessellation-derived. Omitting it is indistinguishable from passing `standard`; it deliberately does NOT follow the cadPreview.tessellationQuality VS Code setting, which is an interactive-viewer default, so an agent's render is reproducible regardless of a user's editor preferences. It is most visible in wireframe, where the tessellation IS the picture; under shading, faceting is partly hidden either way. compare_models' includeSnapshots has no such parameter (a follow-up) and renders both sides at the standard default.",
       "search_standard_parts/download_standard_part are network calls to the hosted step.parts API (api.step.parts) — the extension's only external network dependency. A network/API failure returns supported:false and is INCONCLUSIVE, never \"no matching parts\"/\"part unavailable\" — retry or report uncertainty, don't treat it as a negative result.",
       "run_parametric_script compiles {variables?, steps} (each step is one op, or one flat `repeat: {times, indexVar, body}` loop expanding a template op-list) into ops appended via the exact same path as apply_edit_ops — not a general scripting language, no code execution. Repeat-generated ops are fully baked (concrete numbers, exprs stripped) — for a value that should stay live/editable later, use a plain op step with exprs referencing a real document variable (set_variables) instead of the repeat construct.",
       "compare_models (bounding-box-centroid + volume solid matching between two files) supports B-rep (STEP/IGES/BREP, edits baked in) and STL/OBJ/PLY/glTF (host-side parsers; pending mesh edits baked in first by the kernel worker's headless mesh-edit replay — the same three.js engine the viewer uses — compared as an STL side) sources, in any combination on either side; meshio-only formats have no host-side geometry to derive centroids/volumes from without a webview. Its optional includeSnapshots (default false) additionally renders each B-rep side's before/after PNGs via the same engine as render_snapshot — opt in only when you want to look at the geometry, not just the numeric diff; mesh-format sides never get a snapshot (render_snapshot is B-rep sources only) and degrade to a warning, never a failure.",
@@ -1737,6 +1738,39 @@ export async function synthesizeSelectorTool(
 // render_snapshot
 
 /**
+ * Resolves a caller-supplied `tessellationQuality` against the three presets
+ * (roadmap "Tessellation quality for `render_snapshot`", closed).
+ *
+ * **`undefined` in ⇒ `undefined` out, deliberately.** Omitting the parameter
+ * must leave the `renderSnapshot` opts semantically identical to what it was
+ * before this feature, which is what `mcpTools.test.ts`'s exact-opts assertion
+ * pins ("the regression proof of that and must not be edited"). It arrives
+ * present-but-undefined — precisely how the pre-existing `views`/`composite`
+ * keys already do, and indistinguishable from absent under the deep equality
+ * that assertion uses. Hard-coding `"standard"` here would NOT be: it would
+ * change the value, and would also be a lie, since the effective default is
+ * `renderSnapshot`'s own to state and report.
+ *
+ * A present-but-unrecognized value warns and falls back rather than throwing
+ * (`unit`, `view` and `outputFormat` all degrade this way) — but it *does* warn,
+ * which the two existing `tessellationQuality` params on
+ * `export_svg_silhouette`/`export_drawing_sheet` do not. Silently rendering at a
+ * different density than the caller asked for is precisely the kind of quiet
+ * substitution this codebase's "no silent caps / state it plainly" convention
+ * exists to prevent.
+ */
+function resolveSnapshotQuality(raw: string | undefined, warnings: string[]): TessellationQuality | undefined {
+  if (raw === undefined) return undefined;
+  const normalized = normalizeTessellationQuality(raw);
+  if (normalized !== raw) {
+    warnings.push(
+      `tessellationQuality ${JSON.stringify(raw)} is not one of draft/standard/fine — rendering at "${normalized}" instead.`
+    );
+  }
+  return normalized;
+}
+
+/**
  * Headless multi-view PNG packet via `renderService.ts` (Playwright driving
  * the real `media/viewer.js` bundle) — B-rep sources only in this version
  * (a mesh-format source would need a `loadMeshBytes`-style harness path,
@@ -1755,8 +1789,9 @@ export async function renderSnapshotTool(
     displayMode?: "shaded" | "wireframe";
     view?: SnapshotView;
     composite?: boolean;
+    tessellationQuality?: string;
   }
-): Promise<{ supported: boolean; images: RenderImage[]; warnings: string[] }> {
+): Promise<{ supported: boolean; images: RenderImage[]; warnings: string[]; tessellation?: RenderTessellation }> {
   const modelPath = params.path;
   const route = requireRoute(modelPath);
 
@@ -1775,6 +1810,7 @@ export async function renderSnapshotTool(
 
   const { ops } = await readEditsResolved(modelPath);
   const warnings: string[] = [];
+  const quality = resolveSnapshotQuality(params.tessellationQuality, warnings);
   const src = await readOcctSource(modelPath, route, warnings);
   if (!src.ok) {
     return { supported: false, images: [], warnings: [...warnings, src.reason] };
@@ -1786,14 +1822,18 @@ export async function renderSnapshotTool(
     hide: params.hide,
     wireframe: params.displayMode === "wireframe" ? true : undefined,
     // Left UNDEFINED when no view was asked for, so the default packet and
-    // every existing caller are byte-identical. `mcpTools.test.ts`'s exact-opts
-    // assertion is the regression proof of that and must not be edited.
+    // every existing caller are unchanged. `mcpTools.test.ts`'s exact-opts
+    // assertion is the regression proof of that and must not be edited. `quality`
+    // follows the same convention for the same reason (see
+    // `resolveSnapshotQuality`).
     views: resolved.views,
     composite: params.composite === true ? true : undefined,
+    quality,
   });
   return {
     supported: result.supported,
     images: result.images ?? [],
+    ...(result.tessellation ? { tessellation: result.tessellation } : {}),
     warnings: [...warnings, ...resolved.warnings, ...(result.reason ? [result.reason] : [])],
   };
 }
@@ -1906,7 +1946,7 @@ async function resolveSnapshotView(
  */
 export async function renderOpsPrefixTool(
   ctx: ToolContext,
-  params: { path: string; throughIndex: number; render?: boolean }
+  params: { path: string; throughIndex: number; render?: boolean; tessellationQuality?: string }
 ): Promise<{
   format: CadFormat;
   strategy: FileRoute["strategy"];
@@ -1918,6 +1958,11 @@ export async function renderOpsPrefixTool(
   persisted?: boolean;
   model?: ReturnType<typeof entitySummary>;
   images?: RenderImage[];
+  /** Present only alongside `images` — it describes the RENDER's tessellation,
+   * not the inventory's (the summary `loadBRep` above is left at the default
+   * deliberately: `entitySummary` needs only counts, so a finer tessellation
+   * there would cost real time for a fact nothing reads). */
+  tessellation?: RenderTessellation;
 }> {
   const modelPath = params.path;
   const route = requireRoute(modelPath);
@@ -1968,14 +2013,24 @@ export async function renderOpsPrefixTool(
   }
 
   let images: RenderImage[] | undefined;
+  let tessellation: RenderTessellation | undefined;
   if (params.render) {
     const avail = await ctx.pipeline.isRenderAvailable();
     if (!avail.available) {
       warnings.push(`render requested but renderer unavailable — ${avail.reason ?? "unknown reason"}.`);
     } else {
-      const snap = await ctx.pipeline.renderSnapshot(ctx.extensionPath, bytes, format as BRepFormat, prefixOps, {});
+      // Resolved HERE, not above, so the warn-and-fall-back message is never
+      // emitted for a call that renders nothing — `renderSnapshotTool` and
+      // `screenshotShapeTool` reach their `resolveSnapshotQuality` call only
+      // after the same two gates, and all three must agree.
+      const quality = resolveSnapshotQuality(params.tessellationQuality, warnings);
+      const snap = await ctx.pipeline.renderSnapshot(ctx.extensionPath, bytes, format as BRepFormat, prefixOps, { quality });
       if (snap.supported && snap.images) images = snap.images;
       else warnings.push(`render requested but snapshot failed — ${snap.reason ?? "unknown reason"}.`);
+      // Reported whenever the render pipeline got as far as tessellating, even
+      // if a view then failed — a fact about what was meshed, not about the
+      // picture coming back.
+      tessellation = snap.tessellation;
     }
   }
 
@@ -1989,6 +2044,7 @@ export async function renderOpsPrefixTool(
     persisted: false,
     model: entitySummary(result),
     ...(images ? { images } : {}),
+    ...(tessellation ? { tessellation } : {}),
     warnings,
   };
 }
@@ -3519,8 +3575,15 @@ export async function removeEditOp(ctx: ToolContext, params: { path: string; ind
  */
 export async function screenshotShapeTool(
   ctx: ToolContext,
-  params: { path: string; entityId: string; view?: SnapshotView; context?: boolean; displayMode?: "shaded" | "wireframe" }
-): Promise<{ supported: boolean; images: RenderImage[]; warnings: string[] }> {
+  params: {
+    path: string;
+    entityId: string;
+    view?: SnapshotView;
+    context?: boolean;
+    displayMode?: "shaded" | "wireframe";
+    tessellationQuality?: string;
+  }
+): Promise<{ supported: boolean; images: RenderImage[]; warnings: string[]; tessellation?: RenderTessellation }> {
   const modelPath = params.path;
   const route = requireRoute(modelPath);
   const warnings: string[] = [];
@@ -3537,6 +3600,10 @@ export async function screenshotShapeTool(
   if (!avail.available) {
     return { supported: false, images: [], warnings: [avail.reason ?? "Renderer unavailable."] };
   }
+
+  // Past both gates, so a bad `tessellationQuality` cannot be reported as
+  // having been substituted into a render that never happened.
+  const quality = resolveSnapshotQuality(params.tessellationQuality, warnings);
 
   const { ops } = await readEditsResolved(modelPath);
   const src = await readOcctSource(modelPath, route, warnings);
@@ -3556,11 +3623,13 @@ export async function screenshotShapeTool(
     // One view by default: four angles on a single face is mostly redundant.
     views: resolved.views ?? [{ label: `SHAPE ${params.entityId}`, direction: [1, 0.8, 1] }],
     frameEntity: params.entityId,
+    quality,
   });
 
   return {
     supported: result.supported,
     images: result.images ?? [],
+    ...(result.tessellation ? { tessellation: result.tessellation } : {}),
     warnings: [...warnings, ...(result.reason ? [result.reason] : [])],
   };
 }
