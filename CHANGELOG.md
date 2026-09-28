@@ -4,6 +4,17 @@ All notable changes to the "CAD Preview" extension are documented in this file.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/); this project does not yet strictly follow Semantic Versioning (pre-1.0 releases moved fast and bundled multiple features per bump).
 
+## [3.8.0] - 2026-09-28
+
+### Added
+
+- **A mesh refinement sweep can be cancelled while it runs.** A sweep meshes one model at several sizes to compare meshing cost and element quality, and until now it could be started but not stopped: the kernel already cancelled in-flight work on both surfaces, but the sweep loop itself never checked for it, so a long sweep had to be waited out. The sweep section of the FE Mesh panel now has its own **Cancel** button. It is deliberately not wired through the panel's existing busy state, which would also have disabled Generate and Export for the sweep's duration — a behaviour change well beyond making a sweep cancellable. A sweep stopped part-way through a size reports that size as a failed row rather than pretending it completed, and the option to persist one run's options as the document default is skipped for a cancelled sweep, so a cancelled run can never silently apply whichever size happened to be in progress.
+- **The headless render tools can trade speed for picture quality, and now report which they used.** The `draft`/`standard`/`fine` tessellation presets already existed as a VS Code setting, but they reached only the interactive viewer: an agent calling `render_snapshot`, `screenshot_shape` or `render_ops_prefix` always got the one default density, with no way to ask for more and no way to find out what it had. All three now take an optional `tessellationQuality`, and the response reports a `tessellation` block naming the quality actually used together with its deflections and the resulting triangle count — without which "does `fine` really give me a denser picture?" has no answer at the call site, since comparing image bytes would prove *a* difference rather than density. Omitting the parameter is indistinguishable from passing `standard`, which is the density every render has always used, so no existing call changes. An unrecognized value warns and falls back to `standard` rather than quietly rendering at a density nobody asked for. This deliberately does not follow the `cadPreview.tessellationQuality` setting, which is an interactive-viewer preference: an agent's render stays reproducible regardless of a user's editor settings. `compare_models`' optional snapshots are not covered by this yet.
+
+### Known issues
+
+- `npm run mcp:smoke` still has one stale assertion, unchanged from 3.7.0: it expects a Nastran bulk-data limitation that meshio++ removed several releases ago, so it fails with "unexpected success". The compatibility corpus was updated for this; the smoke assertion was not. CI does not run this harness, which is why it went unnoticed. Everything else in that harness passes (616 checks), including the new render-quality assertions.
+
 ## [3.7.1] - 2026-09-27
 
 ### Changed
@@ -670,6 +681,7 @@ This release republishes v1.9.0's full changelog (below) unchanged; v1.9.0 itsel
 
 - Initial release: read-only 3D preview for CAD and mesh files (STEP, IGES, BREP, STL, OBJ, PLY, glTF) inside a VS Code custom editor, using OpenCascade.js (OCCT WASM) in the extension host for B-rep formats and Three.js in the webview for rendering.
 
+[3.8.0]: https://github.com/loumalouomega/CAD-Preview/compare/v3.7.1...v3.8.0
 [3.7.1]: https://github.com/loumalouomega/CAD-Preview/compare/v3.7.0...v3.7.1
 [3.7.0]: https://github.com/loumalouomega/CAD-Preview/compare/v3.6.0...v3.7.0
 [3.6.0]: https://github.com/loumalouomega/CAD-Preview/compare/v3.5.0...v3.6.0
