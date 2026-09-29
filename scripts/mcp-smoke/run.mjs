@@ -4067,6 +4067,218 @@ try {
     `generate_mesh on a gapped-id MDPA: ${gapMeshed.nodeCount} nodes, ${gapMeshed.elementCount} elements`
   );
 
+  // ── Embedded points and curves (roadmap "Embedded points and curves") ──────
+  // A Part's FREE point/line — the wireframe an `addPoint`/`addLine` op appends
+  // to the model — is not part of any face, so Gmsh's OCC importer drops it
+  // from the exported STEP that IS the meshing input, and the mesher puts no
+  // node on it. This block proves the fix end to end through the real server.
+  {
+    // block.stp is a 3x4x5 box centred on the origin: x +-1.5, y +-2, z +-2.5.
+    // The coordinates are deliberately non-round so a coincidental element node
+    // cannot satisfy a distance assertion by luck, and so the point is nowhere
+    // near a box corner (the correlation tolerance is 1e-3 x the bbox
+    // diagonal, ~0.0071 here — the nearest corner is 1.43 away).
+    const LOAD_POINT = [0.37, -1.13, 2.5]; // interior of the z=+2.5 face
+    const LINE_A = [-0.9, -1.1, 2.5];
+    const LINE_B = [0.9, 1.1, 2.5];
+    const dist3 = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
+    const distToSeg = (p, a, b) => {
+      const ab = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+      const len2 = ab[0] ** 2 + ab[1] ** 2 + ab[2] ** 2;
+      const t = Math.max(0, Math.min(1, ((p[0] - a[0]) * ab[0] + (p[1] - a[1]) * ab[1] + (p[2] - a[2]) * ab[2]) / len2));
+      return dist3(p, [a[0] + ab[0] * t, a[1] + ab[1] * t, a[2] + ab[2] * t]);
+    };
+    const minDist = (coords, p) => Math.min(...coords.map((c) => dist3(c, p)));
+    const onSeg = (coords, a, b) => coords.filter((c) => distToSeg(c, a, b) < 1e-9).length;
+    const nodeCountOf = (mshText) => parseMshNodeCoords(mshText).length;
+
+    const addFreeOps = [
+      { op: "addPoint", position: LOAD_POINT },
+      { op: "addLine", start: LINE_A, end: LINE_B },
+    ];
+
+    // The free entities' `point-N`/`edge-N` ids are positional indices into
+    // the whole-shape enumeration and the line's OWN two endpoints come first,
+    // so `.at(-1)` is not "the free point". Look them up BY POSITION through
+    // `inspect` instead — self-verifying, and it independently pins that the
+    // entity really landed where it was asked to.
+    const findPointIdByPosition = async (modelPath, want) => {
+      const { pointCount } = await call("load_model", { path: modelPath });
+      for (let i = 0; i < pointCount; i++) {
+        const f = await call("inspect", { path: modelPath, entityId: `point-${i}` });
+        if (f.center && dist3(f.center, want) < 1e-6) return `point-${i}`;
+      }
+      return null;
+    };
+    const findEdgeIdByCentre = async (modelPath, want) => {
+      const { edgeCount } = await call("load_model", { path: modelPath });
+      for (let i = 0; i < edgeCount; i++) {
+        const f = await call("inspect", { path: modelPath, entityId: `edge-${i}` });
+        if (f.center && dist3(f.center, want) < 1e-6) return `edge-${i}`;
+      }
+      return null;
+    };
+    // The arc's own bbox centre is a geometric guess (and a first draft got it
+    // wrong: a 0°->180° arc's bbox centre is the MIDPOINT of its bbox, not a
+    // point on the arc). Diff against a pristine copy instead — structural, and
+    // it cannot be mis-guessed.
+    const findNewEdgeId = async (modelPath, baseModelPath) => {
+      const { edgeCount } = await call("load_model", { path: modelPath });
+      const baseCentres = [];
+      const { edgeCount: baseCount } = await call("load_model", { path: baseModelPath });
+      for (let i = 0; i < baseCount; i++) {
+        const f = await call("inspect", { path: baseModelPath, entityId: `edge-${i}` });
+        if (f.center) baseCentres.push(f.center);
+      }
+      for (let i = 0; i < edgeCount; i++) {
+        const f = await call("inspect", { path: modelPath, entityId: `edge-${i}` });
+        if (f.center && !baseCentres.some((c) => dist3(c, f.center) < 1e-6)) return `edge-${i}`;
+      }
+      return null;
+    };
+
+    // ---- Control FIRST: the free entities exist, but NO Part references them.
+    // Nothing may be forced onto the mesh, so no node lands on the point. This
+    // is what makes the positive assertion discriminating — a first draft
+    // asserted only the positive case and would have passed against a box that
+    // never grew the entities at all.
+    const ctlModel = path.join(dir, "embed-control.stp");
+    fs.copyFileSync(path.join(ROOT, "examples", "STP", "block.stp"), ctlModel);
+    await call("apply_edit_ops", { path: ctlModel, ops: addFreeOps });
+    const ctlOut = path.join(dir, "embed-control.msh");
+    await call("export_mesh", { path: ctlModel, format: "msh", outputPath: ctlOut, options: { sizeMin: 0, sizeMax: 0.7 } });
+    const ctlText = fs.readFileSync(ctlOut, "utf8");
+    const ctlCoords = parseMshNodeCoords(ctlText);
+    const ctlMin = minDist(ctlCoords, LOAD_POINT);
+    assert(ctlMin > 1e-3, `control (free entities, no Part): no node lands on the load point (closest ${ctlMin.toFixed(6)})`);
+    assert(onSeg(ctlCoords, LINE_A, LINE_B) === 0, `control: no node lands on the free line (got ${onSeg(ctlCoords, LINE_A, LINE_B)})`);
+
+    // ---- The real case: one Part holding BOTH free entities.
+    const embedModel = path.join(dir, "embed.stp");
+    fs.copyFileSync(path.join(ROOT, "examples", "STP", "block.stp"), embedModel);
+    await call("apply_edit_ops", { path: embedModel, ops: addFreeOps });
+    const freeVertexId = await findPointIdByPosition(embedModel, LOAD_POINT);
+    const freeEdgeId = await findEdgeIdByCentre(embedModel, [(LINE_A[0] + LINE_B[0]) / 2, (LINE_A[1] + LINE_B[1]) / 2, 2.5]);
+    assert(freeVertexId !== null, `the free point has a point-N id at its requested position (got ${freeVertexId})`);
+    assert(freeEdgeId !== null, `the free line has an edge-N id at its midpoint (got ${freeEdgeId})`);
+
+    await call("set_part", { path: embedModel, name: "Load", points: [freeVertexId], lines: [freeEdgeId] });
+    const embedOut = path.join(dir, "embed.msh");
+    const embedRes = await call("export_mesh", {
+      path: embedModel,
+      format: "msh",
+      outputPath: embedOut,
+      options: { sizeMin: 0, sizeMax: 0.7 },
+    });
+    const embedText = fs.readFileSync(embedOut, "utf8");
+    const embedCoords = parseMshNodeCoords(embedText);
+    const embedMin = minDist(embedCoords, LOAD_POINT);
+    assert(
+      embedMin < 1e-9,
+      `a Part's free point gets a mesh node EXACTLY on it (${embedMin.toExponential(3)}; control ${ctlMin.toFixed(6)})`
+    );
+    assert(
+      !embedRes.warnings.some((w) => /curved free edge/i.test(w)),
+      `a straight free line needs no warning (got ${JSON.stringify(embedRes.warnings)})`
+    );
+    const embedOnLine = onSeg(embedCoords, LINE_A, LINE_B);
+    assert(
+      embedOnLine >= 2,
+      `a Part's free line is meshed, with nodes exactly on it (${embedOnLine} nodes, control 0)`
+    );
+
+    // ---- The strongest form of the promise: the node is reachable through the
+    // Part's own Kratos sub-model-part, which is what a downstream solver
+    // reads to apply a point load.
+    const embedMdpa = path.join(dir, "embed.mdpa");
+    await call("export_mesh", {
+      path: embedModel,
+      format: "mdpaElements",
+      outputPath: embedMdpa,
+      options: { sizeMin: 0, sizeMax: 0.7, dimension: 3 },
+    });
+    const mdpaText = fs.readFileSync(embedMdpa, "utf8");
+    // Two regex traps in one line, both hit live while writing this block:
+    //  - a non-greedy `End SubModelPart` (no anchor) stops at
+    //    `End SubModelPartNodes` and yields a block with no nodes in it;
+    //  - `^End SubModelPartNodes$` cannot match either, because mdpaWriter
+    //    indents the inner blocks by four spaces and only the outer
+    //    `End SubModelPart` sits in column 0. So the outer block anchors on
+    //    the line start, and the inner one relies on its longer, unique token.
+    const smpBlock = (mdpaText.match(/Begin SubModelPart Load\b[\s\S]*?^End SubModelPart$/m) ?? [])[0];
+    assert(!!smpBlock, 'the MDPA carries a SubModelPart named "Load"');
+    const nodesBlock = smpBlock.match(/Begin SubModelPartNodes([\s\S]*?)End SubModelPartNodes/);
+    assert(!!nodesBlock, "the Load SubModelPart has a SubModelPartNodes block");
+    const smpNodeIds = new Set(
+      (nodesBlock[1] ?? "")
+        .split("\n")
+        .map((l) => l.trim())
+        .filter((l) => /^\d+$/.test(l))
+        .map(Number),
+    );
+    assert(smpNodeIds.size > 0, `SubModelPartNodes lists real node ids (${smpNodeIds.size})`);
+    // Map those ids back to coordinates through the MDPA's own node table.
+    const mdpaNodes = new Map();
+    for (const line of (mdpaText.match(/Begin Nodes([\s\S]*?)End Nodes/)?.[1] ?? "").split("\n")) {
+      const m = line.trim().match(/^(\d+)\s+(\S+)\s+(\S+)\s+(\S+)/);
+      if (m) mdpaNodes.set(Number(m[1]), [Number(m[2]), Number(m[3]), Number(m[4])]);
+    }
+    const smpCoords = [...smpNodeIds].map((id) => mdpaNodes.get(id)).filter(Boolean);
+    const smpMin = smpCoords.length ? minDist(smpCoords, LOAD_POINT) : Infinity;
+    assert(
+      smpMin < 1e-9,
+      `the load node is inside the Load SubModelPart — a solver finds it there (closest of ${smpCoords.length}: ${smpMin.toExponential(3)})`
+    );
+
+    // ---- Backwards compatibility: a Part on a REAL model vertex (the common,
+    // pre-existing case) must leave the mesh byte-for-byte alone. Same document,
+    // same size, with and without such a Part.
+    const cornerModel = path.join(dir, "embed-corner.stp");
+    fs.copyFileSync(path.join(ROOT, "examples", "STP", "block.stp"), cornerModel);
+    const cornerBase = await call("generate_mesh", { path: cornerModel, options: { sizeMin: 0, sizeMax: 0.7 } });
+    await call("set_part", { path: cornerModel, name: "Corner", points: ["point-0"] });
+    const cornerAfter = await call("generate_mesh", { path: cornerModel, options: { sizeMin: 0, sizeMax: 0.7 } });
+    assert(
+      cornerAfter.nodeCount === cornerBase.nodeCount,
+      `a Part on a real model vertex leaves the mesh unchanged (${cornerAfter.nodeCount} vs ${cornerBase.nodeCount} nodes)`
+    );
+
+    // ---- A CURVED free edge cannot be a two-endpoint Gmsh line, so it must be
+    // reported by name rather than silently approximated by its chord.
+    const arcBase = path.join(dir, "embed-arc-base.stp");
+    fs.copyFileSync(path.join(ROOT, "examples", "STP", "block.stp"), arcBase);
+    const arcModel = path.join(dir, "embed-arc.stp");
+    fs.copyFileSync(path.join(ROOT, "examples", "STP", "block.stp"), arcModel);
+    await call("apply_edit_ops", {
+      path: arcModel,
+      ops: [{ op: "addArc", center: [0, 0, 2.5], normal: [0, 0, 1], radius: 0.6, startAngleDeg: 0, endAngleDeg: 180 }],
+    });
+    const arcEdgeId = await findNewEdgeId(arcModel, arcBase);
+    assert(arcEdgeId !== null, `the free arc has an edge-N id (got ${arcEdgeId})`);
+    await call("set_part", { path: arcModel, name: "Arc", lines: [arcEdgeId] });
+    const arcRes = await call("generate_mesh", { path: arcModel, options: { sizeMin: 0, sizeMax: 0.7 } });
+    assert(
+      arcRes.warnings.some((w) => /curved free edge/i.test(w) && w.includes(arcEdgeId)),
+      `a curved free edge is reported by name, never chord-approximated (got ${JSON.stringify(arcRes.warnings)})`
+    );
+    assert(arcRes.elementCount > 0, `the arc document still meshes normally (${arcRes.elementCount} elements)`);
+
+    // ---- The size-slider case: a finer mesh must still keep the node exact
+    // (the feature must not be an artefact of one coarse size).
+    const fineRes = await call("export_mesh", {
+      path: embedModel,
+      format: "msh",
+      outputPath: path.join(dir, "embed-fine.msh"),
+      options: { sizeMin: 0, sizeMax: 0.2 },
+    });
+    const fineCoords = parseMshNodeCoords(fs.readFileSync(path.join(dir, "embed-fine.msh"), "utf8"));
+    assert(
+      fineCoords.length > embedCoords.length && minDist(fineCoords, LOAD_POINT) < 1e-9,
+      `the node stays exact at a finer size (${fineCoords.length} vs ${embedCoords.length} nodes, distance ${minDist(fineCoords, LOAD_POINT).toExponential(3)})`
+    );
+    assert(fineRes.warnings.length === embedRes.warnings.length, "a finer size produces no new warnings");
+  }
+
   // Nastran bulk data (examples/Nastran/block-tets.bdf — this extension's own
   // Gmsh export of block.stp). Routing and the ambiguity caveat work, but the
   // current meshio++ reader rejects this deck even after BEGIN BULK

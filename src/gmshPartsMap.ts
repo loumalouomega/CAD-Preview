@@ -2,8 +2,10 @@ import type { Vec3 } from "./editOps";
 import type { Part } from "./protocol";
 import { getOcct, readShape, wrapOcctFault } from "./occtService";
 import { resetGmsh } from "./gmshService";
-import { collectFaces, collectEdges, collectSolids, collectVertices, bboxCenter } from "./occtOperations";
+import { collectFaces, collectSolids, collectVertices, bboxCenter } from "./occtOperations";
+import { enumerateEdges } from "./edgeEnumeration";
 import { addConstantField, addDistanceThresholdField, setBackgroundMin } from "./gmshSizingFields";
+import { addFreeEntitiesToGmshModel, type FreeEntitySpec } from "./gmshEmbed";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type GmshApi = any;
@@ -56,12 +58,23 @@ export interface PartGroupMaps {
  * shape's bbox diagonal — accepted only if unambiguous (see `matchNearest`).
  * Unresolved/ambiguous entities are silently skipped, same graceful-
  * degradation convention as every other unresolved-id path in this codebase.
+ *
+ * The one exception to "silently skipped" is a Part's `point-N`/`edge-N` that
+ * did not correlate because it is FREE wireframe geometry (an `addPoint` /
+ * `addLine` / `addPolyline` op): Gmsh's OCC importer drops those from the
+ * exported STEP, so there is nothing to match. They are instead created in
+ * Gmsh's model directly via `gmshEmbed.ts`, which is what makes the mesher
+ * put a node exactly on them. A curved free edge cannot be represented that
+ * way and pushes a message onto `warnings` (an optional collector, the same
+ * pattern `applyEditsBRep`'s `outcomes`/`opBuckets` use) rather than being
+ * approximated.
  */
 export async function applyPartsToGmshModel(
   extensionPath: string,
   gmsh: GmshApi,
   stepBytes: Uint8Array,
-  parts: Part[]
+  parts: Part[],
+  warnings?: string[]
 ): Promise<PartGroupMaps | null> {
   if (parts.length === 0) return null;
 
@@ -73,7 +86,12 @@ export async function applyPartsToGmshModel(
     const shape = readShape(oc, CORR_TMP_PATH, "step", cleanup);
 
     const faces = collectFaces(oc, shape, cleanup);
-    const edges = collectEdges(oc, shape, cleanup);
+    // `enumerateEdges` rather than `collectEdges` (its `.map(e => e.edge)`)
+    // so the per-edge discretized polyline is available below: a free
+    // straight line discretizes to exactly two points, which is where the
+    // Gmsh curve's endpoints come from — no extra OCCT call needed.
+    const enumerated = enumerateEdges(oc, shape, cleanup);
+    const edges = enumerated.map((e) => e.edge);
     const solidEntries = collectSolids(oc, shape, cleanup);
     const solids = solidEntries.map((s) => s.solid);
     const vertices = collectVertices(oc, shape, cleanup);
@@ -122,6 +140,49 @@ export async function applyPartsToGmshModel(
       pnt.delete();
       const tag = matchNearest(center, gmshCandidates.get(0) ?? [], tol);
       if (tag !== null) pointIdToTag.set(`point-${i}`, tag);
+    }
+
+    // ---- Free entities (roadmap "Embedded points and curves").
+    // A Part's `point-N`/`edge-N` that DID correlate above is real model
+    // geometry and is left completely alone — that is what keeps a Part on an
+    // existing vertex or edge unchanged. The ones that did NOT correlate are
+    // free wireframe geometry from the `addPoint` / `addLine` / `addPolyline`
+    // ops, which Gmsh's OCC importer drops from the exported STEP (measured —
+    // see `gmshEmbed.ts`). Create those in the Gmsh model directly so the
+    // mesher puts a node exactly on each: a load or sensor location then lands
+    // on a real node instead of somewhere inside an element.
+    const freeSpecs: FreeEntitySpec[] = [];
+    for (const i of neededPointIdx) {
+      const id = `point-${i}`;
+      if (pointIdToTag.has(id)) continue;
+      const v = vertices[i];
+      if (!v) continue;
+      const pnt = oc.BRep_Tool.Pnt(v);
+      freeSpecs.push({ id, kind: "point", at: [pnt.X(), pnt.Y(), pnt.Z()] });
+      pnt.delete();
+    }
+    for (const i of neededEdgeIdx) {
+      const id = `edge-${i}`;
+      if (edgeIdToTag.has(id)) continue;
+      const e = enumerated[i];
+      if (!e) continue;
+      // Straight free edges only. `occ.addLine` takes two endpoints, so an arc
+      // or spline would have to be approximated by its endpoint chord — a
+      // silently wrong mesh. `addLine` and each `addPolyline` segment are
+      // straight; curves are reported rather than approximated.
+      const ends = straightLineEndpoints(oc, e.edge, cleanup);
+      if (ends === null) {
+        warnings?.push(
+          `${id} is a curved free edge — only straight lines are forced onto the mesh. Rebuild it from straight segments (addLine / addPolyline), or place points along it instead.`
+        );
+        continue;
+      }
+      freeSpecs.push({ id, kind: "line", from: ends[0], to: ends[1] });
+    }
+    const { tags: freeTags } = addFreeEntitiesToGmshModel(gmsh, freeSpecs);
+    for (const [id, tag] of freeTags) {
+      if (id.startsWith("point-")) pointIdToTag.set(id, tag);
+      else edgeIdToTag.set(id, tag);
     }
 
     const maps: PartGroupMaps = {
@@ -174,8 +235,7 @@ export async function applyPartsToGmshModel(
 
     setBackgroundMin(gmsh, sizeFieldTags);
 
-    return maps;
-  } catch (err) {
+    return maps;  } catch (err) {
     // This function touches both kernels (OCCT via `oc`, Gmsh via `gmsh.model.*`
     // above), so a WASM abort here could equally be either's fault with no
     // cheap way to attribute it — reset both conservatively. `wrapOcctFault`
@@ -198,6 +258,53 @@ export async function applyPartsToGmshModel(
       /* ignore */
     }
   }
+}
+
+/**
+ * The two endpoints of a STRAIGHT edge, as exact doubles, or `null` for a
+ * curved one.
+ *
+ * **The endpoints must NOT be read off `enumerateEdges`' `positions`.** For a
+ * straight edge that polyline IS its two endpoints — but `discretizeEdge`
+ * returns a `Float32Array` (it feeds the render/wire-format path), so the
+ * values are float32-quantized: measured against a line from (-0.9,-1.1,2.5),
+ * the polyline's start was **3.37e-8** away from the true coordinate. That is
+ * small enough to look harmless and is not: it is the difference between a
+ * load node landing on the line and landing 2.4e-8 beside it, and it is
+ * exactly why a curve built from the polyline produced NO node within 1e-9 of
+ * the requested segment while a curve built from the true coordinates
+ * produced them. Reading the curve's own parameter bounds instead gives a
+ * start error of **0** and an end error of 3.8e-13 — i.e. the real double.
+ *
+ * The curve type is compared SYMBOLICALLY against the enum, never by a
+ * hardcoded ordinal — the same convention `entityFacts.ts`'s `measureExact`
+ * radius check uses, and for the same reason.
+ *
+ * Call shapes verified against the live WASM: `new BRepAdaptor_Curve_2(edge)`
+ * takes the edge directly (`enumerateEdges` already returns `TopoDS.Edge_1`
+ * casts); `FirstParameter()`/`LastParameter()` return doubles; and `Value(t)`
+ * takes **exactly one** argument and returns a fresh `gp_Pnt` handle, which
+ * this codebase's OCCT memory discipline requires us to `.delete()`. The
+ * natural two-argument `Value(t, outPnt)` form is **not** bound ("expected 1
+ * args").
+ */
+function straightLineEndpoints(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  oc: any,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  edge: any,
+  cleanup: Array<{ delete(): void }>
+): [Vec3, Vec3] | null {
+  const curve = new oc.BRepAdaptor_Curve_2(edge);
+  cleanup.push(curve);
+  if (curve.GetType().value !== oc.GeomAbs_CurveType.GeomAbs_Line.value) return null;
+  const a = curve.Value(curve.FirstParameter());
+  const b = curve.Value(curve.LastParameter());
+  cleanup.push(a, b);
+  return [
+    [a.X(), a.Y(), a.Z()],
+    [b.X(), b.Y(), b.Z()],
+  ];
 }
 
 function resolveTags(ids: string[], map: Map<string, number>): number[] {
