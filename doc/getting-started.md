@@ -476,7 +476,7 @@ Opening **Move**, **Rotate**, or **Scale** with a selection active also attaches
 
 | Op | Action |
 | --- | --- |
-| **Point / Line / Arc** | Appends a standalone point / straight line / circular arc you can select later (**Point**/**Line** mode) |
+| **Point / Line / Arc** | Appends a standalone point / straight line / circular arc you can select later (**Point**/**Line** mode). Assign a point or straight line to a Part and it is meshed on exactly, so a load or sensor location lands on a real node (curved free edges are reported instead, since a line has only two endpoints) |
 | **Polyline** | Appends straight edges through an editable list of points (**+ Add point** / **−** rows); **Closed** adds the last→first edge |
 | **3-Pt Arc** | Appends the circular arc through three typed points (a collinear triple is skipped) |
 | **Spline** | Appends a smooth curve through the point list (endpoint-exact fit) |

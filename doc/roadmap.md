@@ -107,7 +107,7 @@ This review lists every capability that is **bound in a shipped kernel but never
 | `STEPCAFControl_GDTProperty`, `XCAFDoc_DimTolTool`, `XCAFDoc_LayerTool`, `XCAFDoc_MaterialTool`, `XCAFPrs_DocumentExplorer` | Reading STEP AP242 PMI, layers and materials, plus a second route to colours that bypasses the dead `XCAFDoc_ColorTool` getter | [Read PMI, layers and materials from STEP](#read-pmi-layers-and-materials-from-step) |
 | `VrmlAPI_Writer` | B-rep → VRML export, the one extra B-rep writer in the binding | [VRML export](#vrml-export) |
 
-**Gmsh: declared, never called, and worth a probe.** The table below is for `model.occ` and `model.mesh`. Two more parts of the binding are unused:
+**Gmsh: declared, never called, and worth a probe.** The table below is for `model.occ` and `model.mesh`. `model.mesh.embed` was in this table and has been **removed** — it was probed and shipped, but deliberately not used: Gmsh meshes a free 0D/1D model entity in its own right, so the node lands exactly without it, while calling `embed` measurably degrades the surrounding mesh (2-D minSICN 0.840 → 0.751) and produces an ill-shaped tetrahedron outright when a point on a face is embedded in a volume. A sixth "green but the wrong tool" finding alongside OCCT's; the numbers and the shipped alternative (create the entities in Gmsh's model via `model.occ.addPoint` / `addLine`) are in `CLAUDE.md` and `doc/gmsh-integration.md`. Two more parts of the binding are unused:
 
 - **`plugin.run` and `onelab`:** unused. There is no `view.*` namespace in this binding, so a plugin's output could only be reached through a written `.pos` file.
 - **`model.occ.*` modelling calls** (`fuse`, `fillet`, …): deliberately unused, since OCCT owns modelling here.
@@ -117,7 +117,6 @@ This review lists every capability that is **bound in a shipped kernel but never
 | `model.occ.fragment` | Conformal meshes across touching solids (shared interface nodes) | [Conformal multi-body meshing](#conformal-multi-body-meshing) |
 | `model.mesh.setCompound` | Meshing across the sliver faces and patch seams of dirty STEP files as if they were one face | [Compound meshing across sliver faces](#compound-meshing-across-sliver-faces) |
 | `model.occ.healShapes`, `model.occ.removeAllDuplicates` | An optional healing pass before meshing | [Pre-mesh healing](#pre-mesh-healing) |
-| `model.mesh.embed` | Forcing mesh nodes at load or sensor points, or along a curve inside a face | [Embedded points and curves](#embedded-points-and-curves) |
 | `model.mesh.setPeriodic` | Periodic meshes for representative-volume-element studies | [Periodic meshing](#periodic-meshing) |
 | `model.mesh.getJacobians` | Jacobian-based validity for curved (order 2) elements, which `minSICN` alone does not certify | [Jacobian validity for high-order meshes](#jacobian-validity-for-high-order-meshes) |
 
@@ -545,7 +544,6 @@ None of these depends on another's result.
 | 4.8 | Anisotropic boundary layers | a `$Elements` walker | The largest Gmsh probe, and the first live exercise of `dimension: 2` |
 | 4.9 | Structured meshing per Part | the same `$Elements` walker | Exact element counts make the probe discriminating; shares the walker with 4.8 |
 | 4.10 | Metric-driven adaptive remeshing | a passed MMG core probe | Depends on 4.1's result; highest value of the MMG items but the most moving parts |
-| 4.11 | Embedded points and curves | — | Small; useful for load and sensor locations |
 | 4.12 | Pre-mesh healing | — | Worth measuring against fTetWild before building any UI |
 | 4.13 | Hex-dominant MDPA export | — | Closes a documented refusal; may end in Kernel-blocked |
 | 4.14 | Periodic meshing | — | Niche (representative-volume-element studies) |
@@ -791,23 +789,6 @@ Only 4.10 depends on another item's *result*: adaptive remeshing needs the MMG c
 - **Out of scope:**
   - Level-set discretisation (MMG `-ls`, cutting a mesh along an isosurface into two materials). It is a separate workflow with its own reference rules (MMG reserves references 2/3), and it waits for a concrete request.
   - Solver coupling. Adaptation is a single, user-triggered pass, never a loop.
-
-##### 4.11 Embedded points and curves {#embedded-points-and-curves}
-
-*Area: Meshing.*
-
-- **Hypothesis:** `gmsh.model.mesh.embed`, declared and never called, forces a mesh node at a point or along a curve inside a face or volume. A load or sensor location then lands exactly on a node.
-- **Evidence today:**
-  - Point Parts (`point-N`) become physical groups, but only when the point is a vertex of the model.
-  - Standalone `addPoint` geometry is free, and is not guaranteed a node.
-- **Probe (S):**
-  1. Add a point in the middle of `block.stp`'s top face.
-  2. Mesh with and without `embed`, and assert a node lies at the point to 1e-9 only with it.
-  3. Repeat for a line embedded in the face.
-- **Decision gate:**
-  - **Pass:** exact node placement.
-  - **Fail:** recorded.
-- **If admitted (S–M):** free points and lines assigned to a Part are embedded automatically, and their physical group holds the embedded nodes.
 
 ##### 4.12 Pre-mesh healing {#pre-mesh-healing}
 
