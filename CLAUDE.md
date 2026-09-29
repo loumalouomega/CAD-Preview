@@ -2644,6 +2644,130 @@ because a version bump is exactly the change that looks load-bearing and isn't.
   than folded into a dependency bump, since it is a tracked issue with its own
   disposition.
 
+## meshio++ 16.22.0 → 16.27.0 — five releases, and the one assertion that was pinning a fix rather than a bug
+
+The 3.9.1 bump. Unlike the 16.22.0 section above, this one is **not** a no-op:
+it carried a behavioural change upstream, it closed a stale red, and it produced
+the roadmap items for seven new operations.
+
+- **Every loader invariant this file pins held, re-verified against the published
+  tarballs** (not the upstream git checkout, which carries an unpublished
+  16.28.0). Still `"type": "module"` / `main: ./src/index.mjs` with **no `exports`
+  map** → the dynamic `import()` stays mandatory. `parallelBackend()` still reports
+  `seq` → `{ variant: "seq" }` stays load-bearing. The sequential glue is
+  **byte-identical in size** (94,123 B) with one `console.log`, one
+  `console.error`, **zero** `writeSync` and three `import.meta.url` → the stdout
+  rebinding and the "must stay real files under `node_modules`" packaging rule
+  both still hold. The `files` array is **byte-identical** → the four-file
+  `runtimeAssets.mjs` / `.vscodeignore` carve-out needed no change, and the
+  threaded variant is still excluded by `vsix-check.mjs`'s own pattern. Seq
+  `.wasm` 11,514,403 → **11,772,112** B (+257 KB, +2.2%).
+- **The API is additive except for one trailing optional parameter.**
+  `agglomerate(mesh, n, returnMaps, options?)` gained `options`, and its
+  `returnMaps: true` return gained `numFacesMerged`/`numRejected`. CAD-Preview
+  calls `m.agglomerate(mesh, spec.targetGroupSize)` in `runMeshioOps` — no
+  `returnMaps`, so it still receives a bare `Mesh` and is unaffected. The
+  `.d.ts` diff is 224 added / 4 removed lines, and all four removed lines are the
+  two old `agglomerate` **overload signatures being replaced**, not removed
+  capability. Seven new operations (`resampleSequence`, `blendSteps`,
+  `checkQuality`, `featureEdges`, `hausdorffDistance`, `editRegions`,
+  `matchPeriodicNodes`) are recorded as available-not-adopted, with the triage
+  and two roadmap items written from it (`doc/roadmap.md` 2.8–2.10).
+- **The one load-bearing behaviour that could have moved, verified through the
+  real `meshioService.ts` entry points** (a `scripts/probe/scratch/` probe, not a
+  reimplementation): `extractSurface(mesh, true)` still yields
+  `cell_data["surface:parent_cell"]`, the array the whole region→Parts
+  correlation depends on, and `readMeshioFieldValues` returns the same corner
+  values through it for both kinds (18 each on `two-material-tets.med`,
+  `Temperature` range [1, 5] and `cell_tags` range [−2, −1]). v16.27.0 **did**
+  change region semantics — side regions now survive operations and
+  `extract_surface` output carries regions — but that is a **Cell→Cell no-op
+  here**: a Cell region still cannot survive a boundary extraction (its entries
+  name input cells, the output holds their facets), so the correlation reads the
+  *original* mesh's regions, exactly as before. The one visible change is that
+  `extract_surface`'s drop warning is now emitted **once per region** rather than
+  as one aggregate "N named region(s) dropped" line. Nothing in `src/` or
+  `scripts/` matches on that wording; `doc/gmsh-integration.md` is updated.
+- **The EnSight boundary defect is unchanged, and that is the finding.** Still
+  `ratio 0.500` — source spans 2 in x, the boundary spans 1 — with a
+  byte-identical refusal message, on both 16.22.0 and 16.27.0. v16.26.0 shipped
+  an EnSight reader *fix* (`FileSource::LoadBuffered` sizing), which makes it look
+  like a candidate to revisit; it is not, because the defect is in the surface
+  **extraction**, not the read. `.case` stays un-routed, `meshioBoundary`'s guard
+  stays, and `examples/EnSight/README.md` now records the measurement as taken on
+  **both** versions so the next bump does not re-derive it.
+- **`LOSSY_METADATA_FORMATS` keeps all three formats.** Re-measured: MED still
+  needs the full read for `MaterialA`/`MaterialB` and the integer `cell_tags`;
+  GiD still needs it for `cell_tags`. `MDPA/gapped-ids.mdpa` reports
+  `mdpa:id` + `gmsh:physical`, so v16.14.0's id-preservation metadata names are
+  intact. CGNS is **not** re-measured here — there is no committed `.cgns`
+  fixture to read, and the corpus's `export-cgns` row writes and reloads without
+  asserting on metadata. It stays in the set on the 16.16.0 evidence, and that
+  asymmetry is now stated rather than implied.
+- **v16.23.0 changed `decimate`/`smooth`'s feature-pinning rule, and it is
+  invisible on this repo's own fixture** — which is the measurement worth
+  keeping. The rule moved from a per-*vertex* test over every pair of faces
+  around a vertex to a per-*edge* test over sharp and non-manifold edges, and the
+  changelog warns that a mesh with smooth-but-coarse regions "moves more". On
+  `examples/STL/large-sphere-100k.stl` at ratio 0.25 both versions give
+  **99,904 → 24,976 triangles with the free-edge count preserved exactly at
+  460 → 460**, matching the number this file already pins. So the
+  `AUTO_DECIMATE_TARGET_TRIANGLES` path (a smooth sphere, the one shape the
+  distinction does not touch) is unaffected — stated as a fixture result, not as
+  a general claim about every mesh.
+- **The `.bdf` red was a stale assertion, and the item behind it was scoped from
+  a false premise.** `mcp:smoke` asserted `generate_mesh` on
+  `examples/Nastran/block-tets.bdf` would report
+  `Not a meshio++-C++ Nastran file`, via `callTolerant`, so a **fix** surfaced as
+  a failure — the shape of mistake this file's own "a fix flips the assertion"
+  convention anticipates, except the flip had already happened before 16.22.0.
+  Re-measured on both versions through the real service: after the existing
+  `BEGIN BULK` normalization the deck reads as `line,triangle,tetra` over 32
+  points and `convertToStlBoundary` returns **60 facets spanning exactly 3×4×5**
+  — `block.stp`'s own extents, the deck being its tetrahedralization. The
+  assertion now **requires success and pins the geometry** (analytic volume
+  3×4×5 = 60), not the absence of an error, because "did not throw" is precisely
+  the check that passes on wrong geometry — the lesson
+  `examples/EnSight/README.md` was written about. The corpus already agreed:
+  `load-bdf-gmsh-export` (1255 elements) and `export-bdf` (reopens, 1281
+  elements) both passed at 16.22.0 too, so the two harnesses were contradicting
+  each other and only the smoke script was wrong.
+  **Roadmap item 1.2 is narrowed, not closed.** Its own Evidence is now corrected
+  (the refusal is gone), and what genuinely remains is the half nobody had
+  evidence for: every committed `.bdf` fixture is this project's own Gmsh
+  output, so a real Nastran tool's deck — `GRID`/`CQUAD`/`CTETRA`, free- vs
+  small-field, continuation lines, a solver section — is still unverified. The
+  item is now scoped to committing one such deck and running the existing corpus
+  rows against it, which is an S–M fixture-plus-assertions job if the reader
+  copes, and a probe-gated reader question if it does not.
+- **The one remaining subtlety the deck does exercise:** `block-tets.bdf` carries
+  **no** `BEGIN BULK` line, so the read-side normalization is load-bearing, and
+  the stem convention is too. Omitting `sourceName` stages it under a synthetic
+  path, the sibling lookup is missed, and the reader fails with
+  `expected 'node id' record, got: GEOMETRY` — a different error entirely from
+  the normalized read. Worth knowing before proposing to "simplify" the staging.
+- **`three` needed no work, and the monitor report was stale.** The weekly watch
+  reported `three` 0.186.0 → 0.186.1, but commit `60d47a5` had already taken it
+  (2026-09-26, the same commit that reached 16.22.0); `npm outdated` does not list
+  it and 0.186.1 is npm's `latest`. Bumping it would have been a no-op dressed as
+  a change. The monitor's second dispatch reporting `unchanged` for `three` is
+  the control that would have caught this, and is the same marker-based
+  suppression already verified against the real GitHub API in 3.7.0.
+  **`@modelcontextprotocol/sdk` 1.30.1 → 1.31.0 IS behind** and is on the watch
+  list; deliberately left for a separate pass so this release's verification diff
+  has exactly one variable.
+- **Verified:** `npx tsc --noEmit` clean; `npx vitest run` **2474/2474**; `npm run
+  build` clean with `dist/meshio/` staged at 16.27.0 and the wasm at 11,772,112 B;
+  `npm run compat` **41 rows, 41 pass, 0 known limitation** (the corpus's
+  `verifiedAt` was stale at 16.16.0 — one bump behind even before this one — and
+  is now 16.27.0); `npm run mcp:smoke` and `npm run perf` run as part of the
+  release check. **No webview or `provider.ts` change**, so `test:webview`,
+  `test:integration` and `docs:screenshots` have no new surface to cover.
+- **Verification gap, stated plainly:** the Nastran **viewer** open is still
+  F5-only (nothing in this environment runs an Extension Development Host), which
+  is why the item is narrowed rather than closed — the headless chain is fully
+  pinned, the interactive one is not.
+
 ## Perf harness coverage for meshio and OpenSCAD loads (roadmap 1.3, closed)
 
 `npm run perf` measured only the OCCT STEP load and the Gmsh-on-B-rep mesh

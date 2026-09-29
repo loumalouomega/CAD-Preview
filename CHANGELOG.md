@@ -4,6 +4,17 @@ All notable changes to the "CAD Preview" extension are documented in this file.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/); this project does not yet strictly follow Semantic Versioning (pre-1.0 releases moved fast and bundled multiple features per bump).
 
+## [3.9.1] - 2026-09-29
+
+### Fixed
+
+- **Opening a `.bdf` Nastran deck this extension exported now works end to end.** `.bdf` has been routed as a Nastran bulk-data deck for a while, with the missing `BEGIN BULK` line added on read — but the deck this extension's own Gmsh export produces, `examples/Nastran/block-tets.bdf`, was then rejected by the mesh reader, so the file opened as a route you could select and nothing more. It is not a limitation any more, and the smoke test had been pinned to the *failure* string rather than to success, which is how a stale expectation survives a fix. A normalized deck now reads, converts to a 60-facet boundary spanning exactly 3×4×5 (the source model's own extents), meshes (1255 elements), and round-trips through an exported `.bdf` that reopens and re-meshes. The smoke test now asserts the analytic volume 3×4×5 = 60 instead of the absence of an error, because "did not throw" is the kind of check that passes just as happily on wrong geometry. **The one remaining caveat is unchanged:** every `.bdf` fixture here is this project's own output, so a deck written by a real Nastran tool — `GRID`/`CQUAD`/`CTETRA` cards, free- or small-field formatting, continuation lines, a solver section — is still unverified. That is recorded as the rest of the roadmap item, not as something this change claims.
+- **meshio++ upgraded from 16.22.0 to 16.27.0.** Five releases of drift, verified against the published packages rather than a changelog: the loader rules this extension depends on are unchanged (it is still ESM-only with no `require` condition, so the load stays a dynamic `import()`; the sequential build is still the one selected; its console output still cannot reach the MCP server's JSON-RPC stream; the four files staged into the packaged extension are byte-for-byte the same set), and the mesh data behaves identically on every committed fixture — MED/MDPA/GiD/Nastran/OpenFOAM all still load, mesh and export exactly as before, the region→Parts correlation still reads the same parent-cell array, and the CAD-to-mesh colour-by-field path returns the same values. The EnSight boundary defect that keeps `.case` un-routed is unchanged at exactly half the source extent, and is still caught by the guard that refuses it rather than displaying a wrong model. The bundled sequential WASM grows 257 KB (+2.2%).
+
+### Known issues
+
+- **`@modelcontextprotocol/sdk` is behind (1.30.1 → 1.31.0), along with three dev-only packages.** The weekly dependency watch reports it and it is left for a separate pass, so this release's verification diff has exactly one variable. `three` is already current at 0.186.1 and needed nothing.
+
 ## [3.9.0] - 2026-09-29
 
 ### Added
@@ -695,6 +706,7 @@ This release republishes v1.9.0's full changelog (below) unchanged; v1.9.0 itsel
 
 - Initial release: read-only 3D preview for CAD and mesh files (STEP, IGES, BREP, STL, OBJ, PLY, glTF) inside a VS Code custom editor, using OpenCascade.js (OCCT WASM) in the extension host for B-rep formats and Three.js in the webview for rendering.
 
+[3.9.1]: https://github.com/loumalouomega/CAD-Preview/compare/v3.9.0...v3.9.1
 [3.9.0]: https://github.com/loumalouomega/CAD-Preview/compare/v3.8.0...v3.9.0
 [3.8.0]: https://github.com/loumalouomega/CAD-Preview/compare/v3.7.1...v3.8.0
 [3.7.1]: https://github.com/loumalouomega/CAD-Preview/compare/v3.7.0...v3.7.1

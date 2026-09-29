@@ -4280,9 +4280,19 @@ try {
   }
 
   // Nastran bulk data (examples/Nastran/block-tets.bdf — this extension's own
-  // Gmsh export of block.stp). Routing and the ambiguity caveat work, but the
-  // current meshio++ reader rejects this deck even after BEGIN BULK
-  // normalization. Pin the known limitation until a reader/parser is added.
+  // Gmsh export of the 3x4x5 block.stp). This deck has NO `BEGIN BULK` line,
+  // so the read-side normalization is load-bearing; the route and the
+  // ambiguity caveat have always worked.
+  //
+  // It used to be PINNED AS A KNOWN LIMITATION, asserting the meshio++
+  // `Not a meshio++-C++ Nastran file` refusal. That stopped being true before
+  // meshio++ 16.22.0 and is definitively false at 16.27.0: after normalization
+  // the deck reads as line+triangle+tetra (32 points) and its boundary
+  // converts to 60 facets spanning exactly 3x4x5 — block.stp's own extents.
+  // So the assertion now requires SUCCESS rather than a specific error string.
+  // It pins node/element counts, which is what the headless surface can
+  // express for a meshio-only format; see the note below for the two stronger
+  // claims deliberately left to the corpus and to a probe.
   const bdfModel = path.join(dir, "block-tets.bdf");
   fs.copyFileSync(path.join(ROOT, "examples", "Nastran", "block-tets.bdf"), bdfModel);
   const bdfLoaded = await call("load_model", { path: bdfModel });
@@ -4294,15 +4304,39 @@ try {
     bdfLoaded.warnings.some((w) => /Nastran bulk-data deck/.test(w)),
     `load_model surfaces the .bdf ambiguity caveat (got: ${JSON.stringify(bdfLoaded.warnings)})`
   );
-  const bdfMeshing = await callTolerant("generate_mesh", {
+  const bdfMeshing = await call("generate_mesh", {
     path: bdfModel,
     options: { sizeMax: 1 },
   });
-  const bdfMeshingError = bdfMeshing.error ?? "";
   assert(
-    /Not a meshio\+\+-C\+\+ Nastran file/.test(bdfMeshingError),
-    `Gmsh-written .bdf reports the tracked meshio++ limitation (got: ${bdfMeshingError || (bdfMeshing.value ? "unexpected success" : "no error result")})`
+    bdfMeshing.nodeCount > 0 && bdfMeshing.elementCount > 0,
+    `a normalized Gmsh-written .bdf meshes (got ${bdfMeshing.nodeCount} nodes, ${bdfMeshing.elementCount} elements, error: ${bdfMeshing.error ?? "none"})`
   );
+  // The fixture IS the round trip: block-tets.bdf is this extension's own Gmsh
+  // export of block.stp, so opening it and meshing it *is* export -> reimport ->
+  // mesh, and the export direction is covered separately by the compat corpus's
+  // `export-bdf` row (which also reloads and re-meshes).
+  //
+  // Two things are deliberately NOT asserted here, both because claiming them
+  // would be claiming something this codebase cannot deliver:
+  //
+  // 1. An analytic volume. 3x4x5 = 60 is known exactly, and pinning it would
+  //    beat any count — but `get_mass_properties` is B-rep + STL/OBJ/PLY/glTF
+  //    only, and no headless tool reports a bounding box for a meshio-only
+  //    source. That gap is why the "Nastran bulk-deck import" roadmap item is
+  //    narrowed, not closed, and it is why a count-only pass must not be read as
+  //    geometric proof (see examples/EnSight/README.md). The extent IS verified —
+  //    60 facets spanning 3x4x5 through the real `convertToStlBoundary` — but in
+  //    a probe, until a tool can express it.
+  // 2. Re-meshing a deck this extension re-exported FROM this script's own
+  //    `bull.stp`. That fails with Gmsh's `classifySurfaces: Wrong topology of
+  //    boundary mesh for parametrization`, for a reason unrelated to Nastran:
+  //    a second meshing pass over the re-extracted boundary of an
+  //    already-tetrahedralized volume is a much harder case for Gmsh's STL
+  //    reclassification than a normal import. Already recorded for `.msh`, and
+  //    the compat corpus re-meshes from block.stp — a clean box — which is why
+  //    it passes there. The claim this fixture supports is "a generated .bdf
+  //    re-opens and meshes", not "any .bdf re-meshes".
 
   // OpenFOAM polyMesh import (examples/OpenFOAM/hex-case — see its README).
   // A `.foam` marker is NOT a mesh; its sibling constant/polyMesh/ holds the
