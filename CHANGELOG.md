@@ -4,6 +4,20 @@ All notable changes to the "CAD Preview" extension are documented in this file.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/); this project does not yet strictly follow Semantic Versioning (pre-1.0 releases moved fast and bundled multiple features per bump).
 
+## [3.9.0] - 2026-09-29
+
+### Added
+
+- **A point or straight line you place in the model can be meshed on exactly.** The **Point / Line / Arc** tool appends standalone wireframe geometry that belongs to no face, and assigning one to a Part previously had no effect on the mesh: Gmsh's STEP importer drops such free geometry when it reads the exported file that is the meshing input, so the load or sensor location you picked landed somewhere inside an element and a solver had no node to attach to. A Part's free point or straight line is now created in the mesher's model directly, so a node lands **exactly** on it — and the Part's own group holds that node, which is what makes it reachable through the Part's Kratos `SubModelPart`, the block a solver reads to apply a boundary condition. It needs no new setting and no new tool: the existing Part assignment is the entire trigger, so ▶ Generate in the viewer and headless `generate_mesh` / `export_mesh` / `export_mdpa` all get it identically, and a Part on an *existing* vertex or edge is left completely untouched (same mesh, 381 nodes, with and without). A **curved** free edge cannot be expressed as a two-endpoint line, so it is reported by name in the generate/export warnings and the model meshes normally without it, rather than being quietly replaced by its chord — the one deliberate narrowing, since a wrong chord is a wrong mesh that looks right.
+
+### Fixed
+
+- **Dependabot alert for `ip-address`** (CVE-2026-101910, medium) resolved by a lockfile bump, 10.4.0 → 10.7.2. It is transitive — `@modelcontextprotocol/sdk` → `express-rate-limit` — so no manifest changed. Worth recording that it was never reachable in the shipped extension: neither the extension bundle nor the MCP-server bundle inlines it, and `node_modules` is excluded from the `.vsix`. Still fixed, because a lockfile pin below a patched version is a real supply-chain liability for anyone installing from source.
+
+### Known issues
+
+- `npm run mcp:smoke` still has one stale assertion, unchanged from 3.7.0: it expects a Nastran bulk-data limitation that meshio++ removed several releases ago, so it fails with "unexpected success". The compatibility corpus was updated for this; the smoke assertion was not. CI does not run this harness, which is why it went unnoticed. Everything else in that harness passes (633 checks), including the 17 new ones for the feature above. Because a failed assertion stops the run, the new block is deliberately placed before it.
+
 ## [3.8.0] - 2026-09-28
 
 ### Added
@@ -681,6 +695,7 @@ This release republishes v1.9.0's full changelog (below) unchanged; v1.9.0 itsel
 
 - Initial release: read-only 3D preview for CAD and mesh files (STEP, IGES, BREP, STL, OBJ, PLY, glTF) inside a VS Code custom editor, using OpenCascade.js (OCCT WASM) in the extension host for B-rep formats and Three.js in the webview for rendering.
 
+[3.9.0]: https://github.com/loumalouomega/CAD-Preview/compare/v3.8.0...v3.9.0
 [3.8.0]: https://github.com/loumalouomega/CAD-Preview/compare/v3.7.1...v3.8.0
 [3.7.1]: https://github.com/loumalouomega/CAD-Preview/compare/v3.7.0...v3.7.1
 [3.7.0]: https://github.com/loumalouomega/CAD-Preview/compare/v3.6.0...v3.7.0
