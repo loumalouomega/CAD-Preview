@@ -86,10 +86,12 @@ export async function applyPartsToGmshModel(
     const shape = readShape(oc, CORR_TMP_PATH, "step", cleanup);
 
     const faces = collectFaces(oc, shape, cleanup);
-    // `enumerateEdges` rather than `collectEdges` (its `.map(e => e.edge)`)
-    // so the per-edge discretized polyline is available below: a free
-    // straight line discretizes to exactly two points, which is where the
-    // Gmsh curve's endpoints come from — no extra OCCT call needed.
+    // `enumerateEdges` rather than `collectEdges` (its `.map(e => e.edge)`),
+    // so each edge arrives as the shared enumerator's `{edge, positions}`
+    // entry. The positions are NOT used for the free-line endpoints below (they
+    // are float32 — see `straightLineEndpoints`); the entry is taken for the
+    // already-`TopoDS.Edge_1`-cast handle, which is what
+    // `BRepAdaptor_Curve_2` needs.
     const enumerated = enumerateEdges(oc, shape, cleanup);
     const edges = enumerated.map((e) => e.edge);
     const solidEntries = collectSolids(oc, shape, cleanup);
@@ -235,7 +237,8 @@ export async function applyPartsToGmshModel(
 
     setBackgroundMin(gmsh, sizeFieldTags);
 
-    return maps;  } catch (err) {
+    return maps;
+  } catch (err) {
     // This function touches both kernels (OCCT via `oc`, Gmsh via `gmsh.model.*`
     // above), so a WASM abort here could equally be either's fault with no
     // cheap way to attribute it — reset both conservatively. `wrapOcctFault`
