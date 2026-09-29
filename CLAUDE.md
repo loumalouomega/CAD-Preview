@@ -2646,7 +2646,7 @@ because a version bump is exactly the change that looks load-bearing and isn't.
 
 ## meshio++ 16.22.0 → 16.27.0 — five releases, and the one assertion that was pinning a fix rather than a bug
 
-The 3.9.1 bump. Unlike the 16.22.0 section above, this one is **not** a no-op:
+The 3.10.0 bump. Unlike the 16.22.0 section above, this one is **not** a no-op:
 it carried a behavioural change upstream, it closed a stale red, and it produced
 the roadmap items for seven new operations.
 
