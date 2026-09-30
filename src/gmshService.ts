@@ -275,6 +275,14 @@ async function loadGeometryAndApplyOptions(
     gmsh.model.geo.synchronize();
   }
 
+  // Queue resource contract: bound native Gmsh work to one CPU. fTetWild
+  // already loads its serial WASM build. Worker-pool capacity is not usage.
+  for (const key of ["General.NumThreads", "Mesh.MaxNumThreads1D", "Mesh.MaxNumThreads2D", "Mesh.MaxNumThreads3D"]) {
+    gmsh.option.setNumber(key, 1);
+    const raw: unknown = gmsh.option.getNumber(key);
+    const actual = typeof raw === "number" ? raw : (raw as { value?: unknown } | null)?.value;
+    if (actual !== 1) throw new Error(`Could not enforce ${key}=1`);
+  }
   gmsh.option.setNumber("Mesh.MeshSizeMin", options.sizeMin);
   gmsh.option.setNumber("Mesh.MeshSizeMax", options.sizeMax);
   gmsh.option.setNumber("Mesh.Algorithm", options.algorithm2D);
