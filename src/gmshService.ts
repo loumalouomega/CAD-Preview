@@ -243,18 +243,23 @@ async function loadGeometryAndApplyOptions(
   input: MeshGenerationInput,
   options: MeshOptions,
   parts: Part[]
-): Promise<{ tmpPath: string; groupMaps: PartGroupMaps | null }> {
+): Promise<{ tmpPath: string; groupMaps: PartGroupMaps | null; warnings: string[] }> {
   gmsh.clear();
   gmsh.model.add(`model-${++_modelCounter}`);
 
   const tmpPath = input.kind === "brep" ? "/model.step" : "/model.stl";
   gmsh.FS.writeFile(tmpPath, input.kind === "brep" ? input.stepBytes : input.stlBytes);
 
+  // Facts the user should see but that must not fail the generate — currently
+  // one case: a Part's curved free edge, which cannot be forced onto the mesh
+  // (see `gmshEmbed.ts`). Collected here and merged into `MeshResult.warnings`.
+  const warnings: string[] = [];
+
   let groupMaps: PartGroupMaps | null = null;
   if (input.kind === "brep") {
     gmsh.model.occ.importShapes(tmpPath);
     gmsh.model.occ.synchronize();
-    groupMaps = await applyPartsToGmshModel(extensionPath, gmsh, input.stepBytes, parts);
+    groupMaps = await applyPartsToGmshModel(extensionPath, gmsh, input.stepBytes, parts, warnings);
   } else {
     gmsh.merge(tmpPath);
     gmsh.model.mesh.classifySurfaces((options.stlAngle ?? 40) * (Math.PI / 180));
@@ -303,7 +308,7 @@ async function loadGeometryAndApplyOptions(
   // must always be 1 regardless of whether `parts` is empty.
   gmsh.option.setNumber("Mesh.SaveAll", 1);
 
-  return { tmpPath, groupMaps };
+  return { tmpPath, groupMaps, warnings };
 }
 
 /**
@@ -388,7 +393,12 @@ async function populateMeshedModel(
   if (engine === "gmsh") {
     const loaded = await loadGeometryAndApplyOptions(extensionPath, gmsh, input, options, parts);
     runMeshGenerate(gmsh, options);
-    return { tmpPath: loaded.tmpPath, groupMaps: loaded.groupMaps, engineUsed: "gmsh", warnings };
+    return {
+      tmpPath: loaded.tmpPath,
+      groupMaps: loaded.groupMaps,
+      engineUsed: "gmsh",
+      warnings: [...warnings, ...loaded.warnings],
+    };
   }
 
   // engine === "ftetwild" — effectiveEngine only returns this for input.kind

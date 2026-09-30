@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { sweepTsv, sweepOutputName, runMeshSweep, parseSweepSizes, validateSweepSizes, MAX_SWEEP_RUNS, type MeshSweepRun } from "./meshSweep";
 import { DEFAULT_MESH_OPTIONS, type MeshOptions } from "./meshOptions";
 
@@ -71,17 +71,20 @@ describe("runMeshSweep (shared by compare_mesh_refinement and the FE Mesh panel)
   it("meshes each size uniformly over the same base options, in order", async () => {
     const seen: MeshOptions[] = [];
     const warnings: string[] = [];
-    const runs = await runMeshSweep([4, 2], { ...DEFAULT_MESH_OPTIONS, dimension: 2 }, async (o) => {
+    const { runs, cancelled } = await runMeshSweep([4, 2], { ...DEFAULT_MESH_OPTIONS, dimension: 2 }, async (o) => {
       seen.push(o);
       return fakeResult(o);
     }, { warnings });
     expect(seen.map((o) => [o.sizeMin, o.sizeMax, o.dimension])).toEqual([[4, 4, 2], [2, 2, 2]]);
     expect(runs.map((r) => [r.size, r.status, r.nodeCount, r.elementCount])).toEqual([[4, "ok", 25, 100], [2, "ok", 50, 200]]);
     expect(warnings).toEqual(["w4", "w2"]);
+    // The control for every cancellation case below: an un-cancelled sweep is
+    // never flagged, so the new field cannot quietly become always-true.
+    expect(cancelled).toBe(false);
   });
 
   it("turns a failed generate or output write into a row, never a thrown sweep", async () => {
-    const runs = await runMeshSweep(
+    const { runs, cancelled } = await runMeshSweep(
       [3, 2, 1],
       DEFAULT_MESH_OPTIONS,
       async (o) => {
@@ -101,6 +104,77 @@ describe("runMeshSweep (shared by compare_mesh_refinement and the FE Mesh panel)
       ["error", "PLC Error", []],
       ["error", "disk full", []],
     ]);
+    // A genuine failure is NOT a cancellation: the loop still ran every size.
+    expect(cancelled).toBe(false);
+  });
+
+  // ── Cancellation (roadmap "Cancel a mesh refinement sweep mid-run") ─────
+  describe("cancellation", () => {
+    it("stops before the first run when already cancelled — no generate call at all", async () => {
+      const generate = vi.fn(async (o: MeshOptions) => fakeResult(o));
+      const { runs, cancelled } = await runMeshSweep([4, 2, 1], DEFAULT_MESH_OPTIONS, generate, {
+        warnings: [],
+        isCancelled: () => true,
+      });
+      expect(generate).not.toHaveBeenCalled();
+      expect(runs).toEqual([]);
+      expect(cancelled).toBe(true);
+    });
+
+    it("returns exactly the completed rows when cancelled after a run — the loop never starts the next one", async () => {
+      // Cancels once the first run has been recorded, i.e. the click lands
+      // between runs — the roadmap's "cancelling after the first run returns
+      // exactly one row".
+      let done = 0;
+      const generate = vi.fn(async (o: MeshOptions) => {
+        done++;
+        return fakeResult(o);
+      });
+      const { runs, cancelled } = await runMeshSweep([4, 2, 1], DEFAULT_MESH_OPTIONS, generate, {
+        warnings: [],
+        isCancelled: () => done >= 1,
+      });
+      expect(generate).toHaveBeenCalledTimes(1);
+      expect(runs.map((r) => [r.size, r.status])).toEqual([[4, "ok"]]);
+      expect(cancelled).toBe(true);
+    });
+
+    it("gives a run interrupted MID-generate no row, and stops instead of erroring", async () => {
+      // The kernel call is killed by the cancel, so it rejects. That rejection
+      // must NOT become an `status: "error"` row reading as a meshing failure,
+      // and the remaining sizes must not be attempted.
+      let aborted = false;
+      const generate = vi.fn(async (o: MeshOptions) => {
+        if (o.sizeMax === 2) {
+          aborted = true;
+          throw new Error('kernel-worker: "generateMesh" was cancelled');
+        }
+        return fakeResult(o);
+      });
+      const { runs, cancelled } = await runMeshSweep([4, 2, 1], DEFAULT_MESH_OPTIONS, generate, {
+        warnings: [],
+        isCancelled: () => aborted,
+      });
+      expect(generate).toHaveBeenCalledTimes(2);
+      expect(runs.map((r) => [r.size, r.status])).toEqual([[4, "ok"]]);
+      expect(cancelled).toBe(true);
+    });
+
+    it("keeps a genuine failure as an error row and carries on when not cancelled", async () => {
+      // The discriminator: the SAME rejection, with no cancel pending, is still
+      // an error row and does not stop the sweep.
+      const { runs, cancelled } = await runMeshSweep(
+        [4, 2, 1],
+        DEFAULT_MESH_OPTIONS,
+        async (o) => {
+          if (o.sizeMax === 2) throw new Error("PLC Error");
+          return fakeResult(o);
+        },
+        { warnings: [], isCancelled: () => false }
+      );
+      expect(runs.map((r) => r.status)).toEqual(["ok", "error", "ok"]);
+      expect(cancelled).toBe(false);
+    });
   });
 });
 

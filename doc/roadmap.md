@@ -107,7 +107,7 @@ This review lists every capability that is **bound in a shipped kernel but never
 | `STEPCAFControl_GDTProperty`, `XCAFDoc_DimTolTool`, `XCAFDoc_LayerTool`, `XCAFDoc_MaterialTool`, `XCAFPrs_DocumentExplorer` | Reading STEP AP242 PMI, layers and materials, plus a second route to colours that bypasses the dead `XCAFDoc_ColorTool` getter | [Read PMI, layers and materials from STEP](#read-pmi-layers-and-materials-from-step) |
 | `VrmlAPI_Writer` | B-rep → VRML export, the one extra B-rep writer in the binding | [VRML export](#vrml-export) |
 
-**Gmsh: declared, never called, and worth a probe.** The table below is for `model.occ` and `model.mesh`. Two more parts of the binding are unused:
+**Gmsh: declared, never called, and worth a probe.** The table below is for `model.occ` and `model.mesh`. `model.mesh.embed` was in this table and has been **removed** — it was probed and shipped, but deliberately not used: Gmsh meshes a free 0D/1D model entity in its own right, so the node lands exactly without it, while calling `embed` measurably degrades the surrounding mesh (2-D minSICN 0.840 → 0.751) and produces an ill-shaped tetrahedron outright when a point on a face is embedded in a volume. A sixth "green but the wrong tool" finding alongside OCCT's; the numbers and the shipped alternative (create the entities in Gmsh's model via `model.occ.addPoint` / `addLine`) are in `CLAUDE.md` and `doc/gmsh-integration.md`. Two more parts of the binding are unused:
 
 - **`plugin.run` and `onelab`:** unused. There is no `view.*` namespace in this binding, so a plugin's output could only be reached through a written `.pos` file.
 - **`model.occ.*` modelling calls** (`fuse`, `fillet`, …): deliberately unused, since OCCT owns modelling here.
@@ -117,7 +117,6 @@ This review lists every capability that is **bound in a shipped kernel but never
 | `model.occ.fragment` | Conformal meshes across touching solids (shared interface nodes) | [Conformal multi-body meshing](#conformal-multi-body-meshing) |
 | `model.mesh.setCompound` | Meshing across the sliver faces and patch seams of dirty STEP files as if they were one face | [Compound meshing across sliver faces](#compound-meshing-across-sliver-faces) |
 | `model.occ.healShapes`, `model.occ.removeAllDuplicates` | An optional healing pass before meshing | [Pre-mesh healing](#pre-mesh-healing) |
-| `model.mesh.embed` | Forcing mesh nodes at load or sensor points, or along a curve inside a face | [Embedded points and curves](#embedded-points-and-curves) |
 | `model.mesh.setPeriodic` | Periodic meshes for representative-volume-element studies | [Periodic meshing](#periodic-meshing) |
 | `model.mesh.getJacobians` | Jacobian-based validity for curved (order 2) elements, which `minSICN` alone does not certify | [Jacobian validity for high-order meshes](#jacobian-validity-for-high-order-meshes) |
 
@@ -201,10 +200,11 @@ These are outcome groupings, not release numbers. Independent small items can sh
 
 *Area: Formats. Effort: M.*
 
-- **Evidence:** `.bdf` is routed as `nastran` and `BEGIN BULK` is normalized, but both meshio++ `convertSurface` and `readMesh` reject this extension's own Gmsh-written `examples/Nastran/block-tets.bdf` with `Not a meshio++-C++ Nastran file`. The metadata-only `load_model` path can still report the route, so it is not proof that a viewer open or headless `generate_mesh` works.
-- **First useful increment:** support the bulk-deck subset emitted by this project's Gmsh writer and a representative standard fixed-field deck, or consume a reader that handles both. Keep the current ambiguity caveat and geometry-only scope explicit; do not infer solver cards or follow `INCLUDE` files.
-- **Verification:** live-WASM tests must open the deck to a boundary surface, mesh that boundary, and round-trip the generated `.bdf`; pin node/element counts and failure diagnostics for unsupported cards.
-- **Done when:** the viewer, `generate_mesh`, and `export_mesh` all handle the stated fixture set, and source/deck parsing preserves actual node coordinates and boundary connectivity.
+- **Evidence (corrected 2026-09-29 — the previous text here was false, and its own hedge about `load_model` was right):** this item was written when meshio++'s Nastran reader rejected this extension's own Gmsh-written `examples/Nastran/block-tets.bdf` with `Not a meshio++-C++ Nastran file`. **That refusal no longer occurs on any currently-supported meshio++.** Re-measured against 16.22.0 and 16.27.0 through the real `src/meshioService.ts` entry points: after the existing `BEGIN BULK` normalization the deck reads as `line,triangle,tetra` over 32 points, and `convertToStlBoundary` returns 60 facets spanning exactly **3×4×5** — `block.stp`'s own extents, since the deck is its tetrahedralization. `npm run compat`'s `load-bdf-gmsh-export` (1255 elements) and `export-bdf` (reopens, 1281 elements) both pass, and `mcp:smoke` now asserts the analytic volume 3×4×5 = 60 rather than the mere absence of an error. The fixture's *lack* of a `BEGIN BULK` line is what makes the read-side normalization load-bearing, and that is the one real remaining subtlety — omitting `sourceName` stages the deck under a synthetic path, the sibling `.geo`/`.res` convention is missed, and the reader then fails on `expected 'node id' record, got: GEOMETRY`.
+- **What is actually left:** the *second* half of the original scope is unmet. Every committed `.bdf` fixture is this project's own Gmsh output, so nothing here is evidence that a deck written by a real Nastran tool — with `GRID`/`CQUAD`/`CTETRA` cards, free-field or small-field formatting, continuation lines, and a solver section — reads correctly. That is the whole remaining risk, and it is exactly the "a reader can return a well-formed, correctly shaped, non-empty mesh that is the wrong mesh" class `examples/EnSight/README.md` documents.
+- **First useful increment (S–M):** commit one representative standard fixed-field deck (a small `GRID` + `CTETRA` model from a Nastran-family tool, ideally with a mid-line continuation) and run the existing corpus rows against it. If meshio++ reads it, this item closes with no product code at all — a fixture plus the assertions. If it does not, the gap is a genuine reader limitation and belongs in the probe-gated section, scoped to what meshio++'s Nastran card coverage actually is.
+- **Verification:** the existing corpus rows already give the full chain for the Gmsh deck — open to a boundary surface, mesh it, round-trip the generated `.bdf`, reload. Extend them to the new fixture rather than adding a new harness, and pin its volume against an independently known value (as `block-tets.bdf`'s is now pinned at 60) so a count-only pass cannot hide wrong geometry.
+- **Done when:** a standard fixed-field deck loads, meshes, and reports a verified volume; `generate_mesh` and `export_mesh` handle both fixture classes; and the ambiguity caveat and geometry-only scope stay explicit. Do not infer solver cards or follow `INCLUDE` files.
 
 ### 2. Ready product work {#tier-1-—-ready-product-work}
 
@@ -221,27 +221,7 @@ These are outcome groupings, not release numbers. Independent small items can sh
   - Base-shape caching is unaffected: the tree cache already lives beside the base shape.
 - **Done when:** first geometry on `turbine.stp` arrives at roughly the pre-XCAF time, the tree still arrives, and `npm run perf` records both numbers.
 
-#### 2.2 Tessellation quality for `render_snapshot` {#tessellation-quality-for-render-snapshot}
-
-*Area: Parity.*
-
-- **Evidence:** the `cadPreview.tessellationQuality` setting reaches the viewer but not the headless renderer. `CLAUDE.md` names this a future item. `loadBRep` already takes a quality argument.
-- **First useful increment (S):** add an optional `quality` (`draft` / `standard` / `fine`) to `render_snapshot`, `screenshot_shape` and `render_ops_prefix`, defaulting to today's behaviour.
-- **Done when:** a `fine` render of a curved part has visibly more triangles in the picture, and omitting the parameter changes nothing.
-
-#### 2.3 Cancel a mesh refinement sweep mid-run {#cancel-a-mesh-refinement-sweep-mid-run}
-
-*Area: Meshing.*
-
-- **Evidence:**
-  - `compare_mesh_refinement` runs up to eight sequential meshes, and `CLAUDE.md` records that it cannot be cancelled mid-sweep.
-  - Document-scoped jobs have since given every MCP request an owner and an abort signal (`jobScope` in `mcpServer.ts`), so the building block now exists.
-- **First useful increment (S):**
-  - Check the signal between runs, and pass it to each run's kernel call.
-  - A cancelled sweep returns the completed rows with `cancelled: true`, never a partial row presented as complete.
-- **Done when:** cancelling after the first run returns exactly one row and leaves no kernel work queued.
-
-#### 2.4 Mesh display fidelity: OBJ materials, PLY colours, compressed glTF {#mesh-display-fidelity-obj-materials-ply-colours-compressed-gltf}
+#### 2.2 Mesh display fidelity: OBJ materials, PLY colours, compressed glTF {#mesh-display-fidelity-obj-materials-ply-colours-compressed-gltf}
 
 *Area: Formats.*
 
@@ -258,7 +238,7 @@ These are outcome groupings, not release numbers. Independent small items can sh
     - Decode host-side with `draco3d`, so Compare Models, Mesh Health and Promote accept the file too. `meshopt` follows the same pattern.
 - **Done when:** each has a committed fixture that renders correctly in `test:webview`, and the compressed fixture passes `check_mesh_health`.
 
-#### 2.5 More mesh formats through three's bundled loaders {#more-mesh-formats-through-three-s-bundled-loaders}
+#### 2.3 More mesh formats through three's bundled loaders {#more-mesh-formats-through-three-s-bundled-loaders}
 
 *Area: Formats.*
 
@@ -272,7 +252,7 @@ These are outcome groupings, not release numbers. Independent small items can sh
   - Every new format states its host-side status plainly: display-only unless a host parser is added. Compare Models, Mesh Health and headless meshing refuse it by name, the way meshio-only formats are refused today.
 - **Done when:** a committed `.3mf` fixture opens, edits, exports back to `.3mf`, and reopens with the same triangle count.
 
-#### 2.6 Shared UI design system with VSCode-MDPA-Preview {#shared-ui-design-system-with-vscode-mdpa-preview}
+#### 2.4 Shared UI design system with VSCode-MDPA-Preview {#shared-ui-design-system-with-vscode-mdpa-preview}
 
 *Area: Ecosystem.*
 
@@ -288,7 +268,7 @@ These are outcome groupings, not release numbers. Independent small items can sh
 - **Done when:** the snaps work in both extensions, the renames are settled, and the drift check runs in this repository's CI.
 - **Other repository's half:** the matching change in VSCode-MDPA-Preview, and its stale licence line.
 
-#### 2.7 Canonical worked example for the simulation tutorial {#canonical-worked-example-for-the-simulation-tutorial}
+#### 2.5 Canonical worked example for the simulation tutorial {#canonical-worked-example-for-the-simulation-tutorial}
 
 *Area: Ecosystem.*
 
@@ -300,13 +280,51 @@ These are outcome groupings, not release numbers. Independent small items can sh
   - Pin it in `mcp:smoke` with analytic volume and exact Part membership, like the bracket tutorial.
 - **Done when:** the page builds, its op list compiles under `npm test`, and the exported MDPA opens in VSCode-MDPA-Preview with both SubModelParts populated.
 
-#### 2.8 Unify same-domain faces as an edit op {#unify-same-domain-faces-as-an-edit-op}
+#### 2.6 Unify same-domain faces as an edit op {#unify-same-domain-faces-as-an-edit-op}
 
 *Area: Geometry.*
 
 - **Evidence (probed with the B-rep validity report, opencascade.js 1.1.1):** `new oc.ShapeUpgrade_UnifySameDomain_2(shape, true, true, false)` → `Build()` → `Shape()` merged two fused 10 mm boxes from 10 faces / 20 edges to 6 / 12 with the volume unchanged (2000.0000000000005 both sides); on a box with one fillet it correctly changed nothing (7 faces before and after, volume 997.853981147513 both sides). `_1()` + `Initialize(shape, true, true, false)` is the fallback form.
 - **First useful increment (M):** a `unifySameDomain` edit op — B-rep only, topology-changing (every downstream `face-N`/`edge-N` renumbers, so Parts and annotations go through the existing rebind), explicit and undoable, never an automatic consequence of a failed `check_brep_health`. Needs a panel button, which means a TikZ icon through the `icons/` pipeline (`pdflatex` + `pdftocairo`), an `OP_PARAM_DOCS` entry, the generic `produced` bucket role, and a `mcp:smoke` assertion on the fused-box face count and volume.
 - **Done when:** the fused-box fixture drops 10 → 6 faces through `apply_edit_ops` at an unchanged volume, and a Part on one of the merged faces is rebound or reported dropped, never silently repointed.
+
+#### 2.7 Tessellation quality for `hit_test` {#tessellation-quality-for-hit-test}
+
+*Area: Parity.*
+
+- **Evidence:** `src/hitTestService.ts`'s `HitTestOptions` already carries a `quality?: TessellationParams` and `hitTest` passes it to `loadBRep` — but **no caller has ever set it**, so `hit_test` picks at the `standard` default like every other headless path did. `hitTestTool` forwards `mode`/`focus`/`hide`/`tolerance` and nothing else.
+- **Why it matters more here than for a render:** the pick's default edge/point tolerance is 1 % of the bbox diagonal, so on a model whose thin walls, fillet bands or holes are finer than that, the tessellation decides whether a ray lands on the intended entity or misses it. A caller has no way to ask for a finer mesh, and no way to see which one it got — so a miss is indistinguishable from a coarse mesh. The three render tools now return a `tessellation` block for exactly this reason; `hit_test` reports a `tolerance` and nothing about the mesh behind it.
+- **First useful increment (S):** add `tessellationQuality` (`draft` / `standard` / `fine`) to `hit_test`, defaulting to today's behaviour, and return the same `tessellation` block the render tools report next to `tolerance`. `HitTestOptions.quality` is typed `TessellationParams` — a deflection pair — so narrow it to a **name** and map down with `tessellationParamsFor`, matching `renderService`. This is the one place a raw params object was already exposed, and leaving the two shapes different is precisely the drift that naming at the boundary prevents. Warn on an unrecognized value, as the render tools now do, rather than degrading quietly.
+- **Done when:** on a fixture with sub-1 %-diagonal features, a ray that misses at `standard` hits the intended edge at `fine`, and omitting the parameter is indistinguishable from passing `standard`.
+- **Related follow-up, deliberately not folded in:** `compare_models`' optional `includeSnapshots` is the fourth render call site and still has no `tessellationQuality`, so its before/after images render at the `standard` default. It is absent on purpose rather than forgotten — each render parameter widens a surface whose images cost a browser launch apiece — but it should get the same parameter eventually, and `doc/mcp-server.md` says so at that tool's own row so a reader is not left guessing why it lacks what its siblings have.
+
+#### 2.8 meshio++ `feature_edges` replaces the hand-rolled winding check {#meshio-feature-edges-winding-check}
+
+*Area: Meshing. Effort: S–M.*
+
+- **Evidence:** `src/meshTopology.ts` keys every edge through `edgeKey(a, b)`, which **sorts the pair and discards orientation** before counting — so two adjacent triangles wound in opposite directions still register as a clean manifold edge. That is a real, committed blind spot: `examples/STL/flipped-winding-tet.stl` reports `freeEdgeCount: 0` and `nonManifoldEdgeCount: 0` while carrying a reversed face. The current answer is `analyzeMeshioSurfaces`'s hand-rolled `inconsistentPairCount` (added in the meshio++ capability-surface phase), which re-counts the same fact through meshio++'s own surface diagnostics — an acknowledgement that the pure analyzer cannot see it, worked around rather than fixed. meshio++ 16.23.0 added `featureEdges(mesh, featureAngle)`, which returns sharp, open, non-manifold **and inconsistently wound** edges as a `line` mesh with `feature:kind`/`feature:angle` cell data, and works on a volume's skin.
+- **Why this is a product item and not a refactor:** the two signals answer different questions and the kernel's is strictly stronger. `meshTopology.ts` stays exactly as it is — it is a *pure, WASM-free* module that `check_mesh_health` calls per connected component without a kernel, and that property is worth keeping. `featureEdges` answers the oriented question the pure module structurally cannot.
+- **First useful increment (S–M):** report `inconsistentEdgeIds` (not just a count) from `analyzeMeshioSurfaces` using `featureEdges`' `feature:kind === "inconsistent"`, and cross-check it against the existing `inconsistentPairCount` on `flipped-winding-tet.stl` and the clean fixtures. If they agree on every committed fixture, retire the hand-rolled counter and say so in the same commit — one implementation of a fact, the same rule that removed the duplicated edge enumerator. A disagreement is a finding in itself and belongs in the write-up either way.
+- **Done when:** the count has one implementation, the pure analyzer's limitation is documented as a deliberate boundary rather than an open gap, and a fixture whose two implementations disagree cannot land silently.
+
+#### 2.9 meshio++ `check_quality` as a caller-supplied quality gate {#meshio-check-quality-gate}
+
+*Area: Meshing. Effort: S–M.*
+
+- **Evidence:** the FE Mesh panel reports `min`/mean/histogram of Gmsh's `minSICN` via `src/meshQuality.ts`'s `summarizeQuality`, plus a "N elements below quality 0.20" line. Every one of those is **descriptive** — a number to read. A user preparing a part for a solver has to know which of those numbers matters to *their* solver and invent the threshold themselves; a library that applies a stricter criterion will simply produce a mesh this panel says is fine. meshio++ 16.24.0 added `checkQuality(mesh, require, maxInverted, maxDegenerate)`, taking thresholds as one specification text (`"scaled_jacobian >= 0.2; aspect_ratio <= 5 @ 1%"`, clauses separated by `;`/`,`/newline, `#` comments, `@` an allowed violating fraction) and reporting per-check violations, the fraction, and the worst value with its cell.
+- **Framing discipline, which is the whole design question:** the threshold must stay the **caller's**, supplied per call, and the result reported as a fact (`passed`, per-check violation counts, worst value) rather than a computed verdict. That is the `verdictConventions` rule this codebase already states — tools report facts, the caller renders the judgment — and a hard-coded "PASS"/"FAIL" would be the first thing to violate it. A vacuous pass (a threshold that applies to no cell) must be reported as such, not as success.
+- **First useful increment (S–M):** an `estimate_mesh_budget`-shaped sibling: an MCP tool plus a panel row that runs the gate over the generated mesh and reports per-check results. It belongs **beside** the existing Gmsh `minSICN` summary rather than replacing it — the two metrics measure different things (a Jacobian on the actual cells vs. a shape-quality index), and a user needs both. The meshing spec for the docs lives in `doc/gmsh-integration.md`, which is where the comparison belongs.
+- **Done when:** a caller can state a threshold, get per-check facts back, and a deliberately bad mesh and a deliberately good one are distinguishable on the same fixture. Interactive and MCP reach the same result, per the parity rule.
+
+#### 2.10 meshio++ `hausdorff_distance` as a cross-check on the deviation map {#meshio-hausdorff-deviation-cross-check}
+
+*Area: Meshing. Effort: S.*
+
+- **Evidence:** `src/meshDeviation.ts`'s `measureDeviation` is the CAD-to-mesh deviation map, and it is **sampled** — the documented caveat is that its `max`/`p95` are not certified Hausdorff bounds. It has no independent oracle: the one test that would catch a bug in the sampling, the projection or the Tukey filter is the implementation itself. meshio++ 16.23.0 added `hausdorffDistance(a, b, faceSamples)`, which samples vertices plus sub-triangle centroids and reduces them into the two one-sided maxima, their means and RMS, and the worst sample points. It is the same class of quantity from an independent implementation.
+- **This is deliberately scoped as validation, not as a feature.** Nothing user-facing ships: no new tool, no new panel row, no second way to ask the same question. The value is that it can *disagree* with `measureDeviation`, and a disagreement is the finding — this is the `gltfParser` cross-validation-oracle precedent, where the payoff came from a deliberately injected `byteStride` bug being caught by three.js rather than from the oracle itself being reachable by a user. Offering both to users would mean two numbers that look interchangeable and are not (one is CAD-reference-to-mesh, the other mesh-to-mesh), which is worse than one.
+- **First useful increment (S):** a unit test comparing the two on committed fixtures with a known answer — `cube.stl` against itself (0), and a deliberately perturbed copy (a known offset) — plus a `large-sphere-100k.stl` case where sampling density is visible in the result. Where they disagree by more than the sampling argument, record why in the deviation map's own doc comment rather than tuning a tolerance until it passes.
+- **Done when:** the deviation map's sampling caveat is either backed by an independent number or its residual error is characterized, and the sampled-vs-certified distinction in `doc/file-formats.md` and the tool description is accurate about which one a caller is reading.
+- **Recorded as available, deliberately not adopted** (meshio++ 16.23–16.27, same release window): `edit_regions` would introduce a second, parallel concept to `Part`, which is a JSON sidecar over CAD entity ids — the exact divergence `src/entityRebind.ts` exists to prevent, and mesh regions have no viewer-side representation at all. `match_periodic_nodes`, `resample_sequence` and `blend_steps` are periodic- and transient-solver workflows; this tool exports to solvers but does not run them or hold result series, so none has a user workflow here that meets this file's bar for a new item. Recorded so a future review does not re-derive the triage, not as a standing invitation.
 
 ### Probe-gated — establish feasibility before estimating
 
@@ -555,7 +573,6 @@ None of these depends on another's result.
 | 4.8 | Anisotropic boundary layers | a `$Elements` walker | The largest Gmsh probe, and the first live exercise of `dimension: 2` |
 | 4.9 | Structured meshing per Part | the same `$Elements` walker | Exact element counts make the probe discriminating; shares the walker with 4.8 |
 | 4.10 | Metric-driven adaptive remeshing | a passed MMG core probe | Depends on 4.1's result; highest value of the MMG items but the most moving parts |
-| 4.11 | Embedded points and curves | — | Small; useful for load and sensor locations |
 | 4.12 | Pre-mesh healing | — | Worth measuring against fTetWild before building any UI |
 | 4.13 | Hex-dominant MDPA export | — | Closes a documented refusal; may end in Kernel-blocked |
 | 4.14 | Periodic meshing | — | Niche (representative-volume-element studies) |
@@ -801,23 +818,6 @@ Only 4.10 depends on another item's *result*: adaptive remeshing needs the MMG c
 - **Out of scope:**
   - Level-set discretisation (MMG `-ls`, cutting a mesh along an isosurface into two materials). It is a separate workflow with its own reference rules (MMG reserves references 2/3), and it waits for a concrete request.
   - Solver coupling. Adaptation is a single, user-triggered pass, never a loop.
-
-##### 4.11 Embedded points and curves {#embedded-points-and-curves}
-
-*Area: Meshing.*
-
-- **Hypothesis:** `gmsh.model.mesh.embed`, declared and never called, forces a mesh node at a point or along a curve inside a face or volume. A load or sensor location then lands exactly on a node.
-- **Evidence today:**
-  - Point Parts (`point-N`) become physical groups, but only when the point is a vertex of the model.
-  - Standalone `addPoint` geometry is free, and is not guaranteed a node.
-- **Probe (S):**
-  1. Add a point in the middle of `block.stp`'s top face.
-  2. Mesh with and without `embed`, and assert a node lies at the point to 1e-9 only with it.
-  3. Repeat for a line embedded in the face.
-- **Decision gate:**
-  - **Pass:** exact node placement.
-  - **Fail:** recorded.
-- **If admitted (S–M):** free points and lines assigned to a Part are embedded automatically, and their physical group holds the embedded nodes.
 
 ##### 4.12 Pre-mesh healing {#pre-mesh-healing}
 

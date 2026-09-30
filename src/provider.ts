@@ -2285,7 +2285,11 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
        * interactive half of `compare_mesh_refinement`. One input resolution
        * for the whole sweep, then the SAME `runMeshSweep` loop the tool runs,
        * so rows cannot disagree. Runs under the meshing job owner, so the
-       * panel's Cancel stops it. The document's options are never written.
+       * sweep section's own **Cancel** button (which posts `meshingCancel`
+       * with this request's id) aborts it; a cancelled sweep is still a
+       * RESULT — its completed rows plus `cancelled: true` — not an error, so
+       * the table is never thrown away (roadmap "Cancel a mesh refinement
+       * sweep mid-run"). The document's options are never written.
        */
       if (msg.type === "meshSweepRequest") {
         try {
@@ -2319,6 +2323,12 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
               (runOptions) => pipeline.generateMesh(this.context.extensionPath, input, runOptions, parts),
               {
                 warnings,
+                // The panel's Cancel aborts this job's controller, so the same
+                // predicate the MCP layer builds from its request signal. The
+                // loop checks it between runs and on a mid-generate
+                // interruption (roadmap "Cancel a mesh refinement sweep
+                // mid-run").
+                isCancelled: () => this.meshingJobScope.getStore()?.controller.signal.aborted === true,
                 writeOutputs: outDir
                   ? async (size, _o, result) => {
                       this.assertMeshingJobActive();
@@ -2330,11 +2340,19 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
                 onRunStart: (i, size) => post({ type: "status", text: `Sweep: meshing at size ${size} (${i + 1}/${sizes.length})…` }),
               }
             );
-            this.assertMeshingJobActive();
+            // A cancelled sweep IS a result (its completed rows, flagged), so
+            // the assert that guards an interrupted-but-unflagged tail is
+            // skipped for exactly that case — a cancel landing after the LAST
+            // run still throws, which is right: it is not visible in `runs`.
+            // The panel derives its own "cancelled" line from the flag, so
+            // nothing is pushed into `warnings` here; a warning too would
+            // render the same sentence twice in the status line.
+            if (!runs.cancelled) this.assertMeshingJobActive();
             post({
               type: "meshSweepResult",
               requestId: msg.requestId,
-              runs,
+              runs: runs.runs,
+              cancelled: runs.cancelled,
               warnings,
               note: SWEEP_NOTE,
               outputDir: outDir ? outDir.fsPath : null,

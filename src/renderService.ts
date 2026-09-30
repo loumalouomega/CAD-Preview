@@ -28,6 +28,7 @@ import * as path from "path";
 import { createRequire } from "node:module";
 import { loadBRep } from "./occtService";
 import { encodeBuffer } from "./protocol";
+import { tessellationParamsFor, DEFAULT_TESSELLATION_QUALITY, type TessellationQuality } from "./tessellationQuality";
 import { viewerBodyHtml } from "./viewerDom";
 import type { HostToWebview, EntityType } from "./protocol";
 import type { CadFormat } from "./fileRouter";
@@ -52,10 +53,35 @@ export interface RenderImage {
   dataBase64: string;
 }
 
+/**
+ * What the picture was actually tessellated at — the effective quality plus the
+ * deflection pair and triangle count that produced it (roadmap "Tessellation
+ * quality for `render_snapshot`", closed).
+ *
+ * Reported rather than left implicit because "does `fine` really give me a
+ * denser picture?" is otherwise unanswerable without a separate probe: the only
+ * evidence available at the call site is the image, and comparing PNG bytes
+ * proves *a* difference, not density. The triangle count is the numeric fact,
+ * and echoing the name alongside it means a caller never has to know that
+ * `standard` is linear 0.1 / angular 0.5 to interpret it.
+ *
+ * Absent whenever no render happened — a mesh-format source, or Playwright
+ * absent (both of which return before this call ever tessellates), so the
+ * field's absence is meaningful rather than a hole.
+ */
+export interface RenderTessellation {
+  quality: TessellationQuality;
+  linearDeflection: number;
+  angularDeflectionRad: number;
+  /** Total triangles across every face sent to the page. */
+  triangleCount: number;
+}
+
 export interface RenderResult {
   supported: boolean;
   reason?: string;
   images?: RenderImage[];
+  tessellation?: RenderTessellation;
 }
 
 /** Two opposed isometrics (negating all 3 components guarantees every
@@ -228,6 +254,15 @@ export async function renderSnapshot(
     composite?: boolean;
     /** Frame this entity instead of the whole model, in every requested view. */
     frameEntity?: string;
+    /**
+     * Tessellation density for the picture. A NAME, not a deflection pair, so
+     * the same vocabulary the tool schemas expose reaches all the way down;
+     * it is mapped to deflections here by `tessellationParamsFor` rather than
+     * by a params→name reverse lookup that would have to live in
+     * `tessellationQuality.ts`. Omitted ⇒ `DEFAULT_TESSELLATION_QUALITY`
+     * (`"standard"`), which is byte-for-byte the density this path always used.
+     */
+    quality?: TessellationQuality;
   }
 ): Promise<RenderResult> {
   if (!nodeSupportsPlaywright()) return { supported: false, reason: NODE_TOO_OLD_REASON };
@@ -239,7 +274,18 @@ export async function renderSnapshot(
     return { supported: false, reason: `${NOT_AVAILABLE_REASON} (${(err as Error).message})` };
   }
 
-  const { groups, edges, points, tree } = await loadBRep(extensionPath, bytes, format, ops);
+  const quality = opts.quality ?? DEFAULT_TESSELLATION_QUALITY;
+  const params = tessellationParamsFor(quality);
+  const { groups, edges, points, tree } = await loadBRep(extensionPath, bytes, format, ops, params);
+  // Facts about the geometry actually rendered, computed from the buffers
+  // already in hand — no second kernel call, and no way for them to drift from
+  // the picture that was built from those same buffers.
+  const tessellation: RenderTessellation = {
+    quality,
+    linearDeflection: params.linearDeflection,
+    angularDeflectionRad: params.angularDeflectionRad,
+    triangleCount: groups.reduce((n, g) => n + g.faces.reduce((m, f) => m + f.buffers.indices.length / 3, 0), 0),
+  };
   const geometryMsg: HostToWebview = {
     type: "geometry",
     meshes: groups.flatMap((g) =>
@@ -368,6 +414,7 @@ export async function renderSnapshot(
       return {
         supported: true,
         images: [composited],
+        tessellation,
         ...(errors.length > 0 || frameWarnings.length > 0
           ? {
               reason: [
@@ -382,7 +429,7 @@ export async function renderSnapshot(
       ...(errors.length > 0 ? [`Some views failed: ${errors.join("; ")}`] : []),
       ...frameWarnings,
     ];
-    return { supported: true, images, ...(notes.length > 0 ? { reason: notes.join(" ") } : {}) };
+    return { supported: true, images, tessellation, ...(notes.length > 0 ? { reason: notes.join(" ") } : {}) };
   } finally {
     if (browser) await browser.close();
     if (server) server.close();

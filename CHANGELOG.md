@@ -4,6 +4,42 @@ All notable changes to the "CAD Preview" extension are documented in this file.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/); this project does not yet strictly follow Semantic Versioning (pre-1.0 releases moved fast and bundled multiple features per bump).
 
+## [3.10.0] - 2026-09-29
+
+### Fixed
+
+- **Opening a `.bdf` Nastran deck this extension exported now works end to end.** `.bdf` has been routed as a Nastran bulk-data deck for a while, with the missing `BEGIN BULK` line added on read — but the deck this extension's own Gmsh export produces, `examples/Nastran/block-tets.bdf`, was then rejected by the mesh reader, so the file opened as a route you could select and nothing more. It is not a limitation any more, and the smoke test had been pinned to the *failure* string rather than to success, which is how a stale expectation survives a fix. A normalized deck now reads, converts to a 60-facet boundary spanning exactly 3×4×5 (the source model's own extents), meshes (1255 elements), and round-trips through an exported `.bdf` that reopens and re-meshes. The smoke test now asserts the analytic volume 3×4×5 = 60 instead of the absence of an error, because "did not throw" is the kind of check that passes just as happily on wrong geometry. **The one remaining caveat is unchanged:** every `.bdf` fixture here is this project's own output, so a deck written by a real Nastran tool — `GRID`/`CQUAD`/`CTETRA` cards, free- or small-field formatting, continuation lines, a solver section — is still unverified. That is recorded as the rest of the roadmap item, not as something this change claims.
+- **meshio++ upgraded from 16.22.0 to 16.27.0.** Five releases of drift, verified against the published packages rather than a changelog: the loader rules this extension depends on are unchanged (it is still ESM-only with no `require` condition, so the load stays a dynamic `import()`; the sequential build is still the one selected; its console output still cannot reach the MCP server's JSON-RPC stream; the four files staged into the packaged extension are byte-for-byte the same set), and the mesh data behaves identically on every committed fixture — MED/MDPA/GiD/Nastran/OpenFOAM all still load, mesh and export exactly as before, the region→Parts correlation still reads the same parent-cell array, and the CAD-to-mesh colour-by-field path returns the same values. The EnSight boundary defect that keeps `.case` un-routed is unchanged at exactly half the source extent, and is still caught by the guard that refuses it rather than displaying a wrong model. The bundled sequential WASM grows 257 KB (+2.2%).
+
+### Known issues
+
+- **`@modelcontextprotocol/sdk` is behind (1.30.1 → 1.31.0), along with three dev-only packages.** The weekly dependency watch reports it and it is left for a separate pass, so this release's verification diff has exactly one variable. `three` is already current at 0.186.1 and needed nothing.
+
+## [3.9.0] - 2026-09-29
+
+### Added
+
+- **A point or straight line you place in the model can be meshed on exactly.** The **Point / Line / Arc** tool appends standalone wireframe geometry that belongs to no face, and assigning one to a Part previously had no effect on the mesh: Gmsh's STEP importer drops such free geometry when it reads the exported file that is the meshing input, so the load or sensor location you picked landed somewhere inside an element and a solver had no node to attach to. A Part's free point or straight line is now created in the mesher's model directly, so a node lands **exactly** on it — and the Part's own group holds that node, which is what makes it reachable through the Part's Kratos `SubModelPart`, the block a solver reads to apply a boundary condition. It needs no new setting and no new tool: the existing Part assignment is the entire trigger, so ▶ Generate in the viewer and headless `generate_mesh` / `export_mesh` / `export_mdpa` all get it identically, and a Part on an *existing* vertex or edge is left completely untouched (same mesh, 381 nodes, with and without). A **curved** free edge cannot be expressed as a two-endpoint line, so it is reported by name in the generate/export warnings and the model meshes normally without it, rather than being quietly replaced by its chord — the one deliberate narrowing, since a wrong chord is a wrong mesh that looks right.
+
+### Fixed
+
+- **Dependabot alert for `ip-address`** (CVE-2026-101910, medium) resolved by a lockfile bump, 10.4.0 → 10.7.2. It is transitive — `@modelcontextprotocol/sdk` → `express-rate-limit` — so no manifest changed. Worth recording that it was never reachable in the shipped extension: neither the extension bundle nor the MCP-server bundle inlines it, and `node_modules` is excluded from the `.vsix`. Still fixed, because a lockfile pin below a patched version is a real supply-chain liability for anyone installing from source.
+
+### Known issues
+
+- `npm run mcp:smoke` still has one stale assertion, unchanged from 3.7.0: it expects a Nastran bulk-data limitation that meshio++ removed several releases ago, so it fails with "unexpected success". The compatibility corpus was updated for this; the smoke assertion was not. CI does not run this harness, which is why it went unnoticed. Everything else in that harness passes (633 checks), including the 17 new ones for the feature above. Because a failed assertion stops the run, the new block is deliberately placed before it.
+
+## [3.8.0] - 2026-09-28
+
+### Added
+
+- **A mesh refinement sweep can be cancelled while it runs.** A sweep meshes one model at several sizes to compare meshing cost and element quality, and until now it could be started but not stopped: the kernel already cancelled in-flight work on both surfaces, but the sweep loop itself never checked for it, so a long sweep had to be waited out. The sweep section of the FE Mesh panel now has its own **Cancel** button. It is deliberately not wired through the panel's existing busy state, which would also have disabled Generate and Export for the sweep's duration — a behaviour change well beyond making a sweep cancellable. A sweep stopped part-way through a size reports that size as a failed row rather than pretending it completed, and the option to persist one run's options as the document default is skipped for a cancelled sweep, so a cancelled run can never silently apply whichever size happened to be in progress.
+- **The headless render tools can trade speed for picture quality, and now report which they used.** The `draft`/`standard`/`fine` tessellation presets already existed as a VS Code setting, but they reached only the interactive viewer: an agent calling `render_snapshot`, `screenshot_shape` or `render_ops_prefix` always got the one default density, with no way to ask for more and no way to find out what it had. All three now take an optional `tessellationQuality`, and the response reports a `tessellation` block naming the quality actually used together with its deflections and the resulting triangle count — without which "does `fine` really give me a denser picture?" has no answer at the call site, since comparing image bytes would prove *a* difference rather than density. Omitting the parameter is indistinguishable from passing `standard`, which is the density every render has always used, so no existing call changes. An unrecognized value warns and falls back to `standard` rather than quietly rendering at a density nobody asked for. This deliberately does not follow the `cadPreview.tessellationQuality` setting, which is an interactive-viewer preference: an agent's render stays reproducible regardless of a user's editor settings. `compare_models`' optional snapshots are not covered by this yet.
+
+### Known issues
+
+- `npm run mcp:smoke` still has one stale assertion, unchanged from 3.7.0: it expects a Nastran bulk-data limitation that meshio++ removed several releases ago, so it fails with "unexpected success". The compatibility corpus was updated for this; the smoke assertion was not. CI does not run this harness, which is why it went unnoticed. Everything else in that harness passes (616 checks), including the new render-quality assertions.
+
 ## [3.7.1] - 2026-09-27
 
 ### Changed
@@ -670,6 +706,9 @@ This release republishes v1.9.0's full changelog (below) unchanged; v1.9.0 itsel
 
 - Initial release: read-only 3D preview for CAD and mesh files (STEP, IGES, BREP, STL, OBJ, PLY, glTF) inside a VS Code custom editor, using OpenCascade.js (OCCT WASM) in the extension host for B-rep formats and Three.js in the webview for rendering.
 
+[3.10.0]: https://github.com/loumalouomega/CAD-Preview/compare/v3.9.0...v3.10.0
+[3.9.0]: https://github.com/loumalouomega/CAD-Preview/compare/v3.8.0...v3.9.0
+[3.8.0]: https://github.com/loumalouomega/CAD-Preview/compare/v3.7.1...v3.8.0
 [3.7.1]: https://github.com/loumalouomega/CAD-Preview/compare/v3.7.0...v3.7.1
 [3.7.0]: https://github.com/loumalouomega/CAD-Preview/compare/v3.6.0...v3.7.0
 [3.6.0]: https://github.com/loumalouomega/CAD-Preview/compare/v3.5.0...v3.6.0

@@ -2846,6 +2846,57 @@ try {
   // The view union / composite / screenshot_shape (roadmap "camera-aware
   // snapshots"), under the same Chromium tolerance — they share the engine.
   if (render.supported) {
+    // tessellationQuality (roadmap "Tessellation quality for render_snapshot"):
+    // the item's done-when was "a fine render has visibly more triangles in the
+    // picture, and omitting the parameter changes nothing". Both halves are
+    // asserted NUMERICALLY here, from the `tessellation` fact the response now
+    // carries -- comparing PNG bytes would only prove *a* difference, not
+    // density. Single-view renders keep this to one image (and one browser
+    // launch) per tier; the tessellation is computed once per call regardless.
+    const ONE_VIEW = { kind: "named", name: "iso-ftl" };
+    const tierOf = async (tessellationQuality) => {
+      const r = await call("render_snapshot", {
+        path: model,
+        view: ONE_VIEW,
+        ...(tessellationQuality === undefined ? {} : { tessellationQuality }),
+      });
+      const label = tessellationQuality ?? "default";
+      assert(r.supported === true && r.images.length === 1, `a ${label} render returns one image`);
+      assert(
+        r.tessellation && Number.isFinite(r.tessellation.triangleCount) && r.tessellation.triangleCount > 0,
+        `a ${label} render reports a real triangle count (got ${JSON.stringify(r.tessellation)})`
+      );
+      return r.tessellation;
+    };
+    const tDefault = await tierOf(undefined);
+    const tDraft = await tierOf("draft");
+    const tStandard = await tierOf("standard");
+    const tFine = await tierOf("fine");
+    assert(tDefault.quality === "standard", `omitting the parameter renders at standard (got ${JSON.stringify(tDefault.quality)})`);
+    assert(
+      tDefault.triangleCount === tStandard.triangleCount,
+      `omitting the parameter is indistinguishable from passing standard (got ${tDefault.triangleCount} vs ${tStandard.triangleCount})`
+    );
+    assert(
+      tDraft.triangleCount < tStandard.triangleCount && tStandard.triangleCount < tFine.triangleCount,
+      `triangle count increases with quality (draft ${tDraft.triangleCount} < standard ${tStandard.triangleCount} < fine ${tFine.triangleCount})`
+    );
+    assert(
+      tFine.triangleCount > tStandard.triangleCount * 2,
+      `fine is genuinely denser, not a marginal nudge (${tFine.triangleCount} vs ${tStandard.triangleCount})`
+    );
+    assert(
+      tDraft.linearDeflection > tStandard.linearDeflection && tStandard.linearDeflection > tFine.linearDeflection,
+      `the reported deflections really do tighten with quality (${tDraft.linearDeflection}/${tStandard.linearDeflection}/${tFine.linearDeflection})`
+    );
+    const badQuality = await call("render_snapshot", { path: model, view: ONE_VIEW, tessellationQuality: "ultra" });
+    assert(
+      badQuality.supported === true &&
+        badQuality.tessellation?.quality === "standard" &&
+        badQuality.warnings.some((w) => /not one of draft/.test(w)),
+      `an unrecognized quality warns and falls back to standard rather than rendering silently (got ${JSON.stringify(badQuality.tessellation)})`
+    );
+
     const named = await call("render_snapshot", { path: model, view: { kind: "named", name: "iso-ftl" } });
     assert(
       named.images.length === 1 && named.images[0].label === "ISO-FTL",
@@ -3115,6 +3166,11 @@ try {
     "sweep TSV carries a header plus one line per run"
   );
   assert(/do NOT establish FE-solution convergence/.test(sweep.note), "sweep response carries the convergence disclaimer");
+  // Pins the new field over the REAL server, not just a fake pipeline: without
+  // this, dropping `cancelled` from the tool's return would break no live
+  // assertion at all (its cancellation paths are unreachable from this client,
+  // which never sends `notifications/cancelled`).
+  assert(sweep.cancelled === false, `an uncancelled sweep reports cancelled: false (got ${JSON.stringify(sweep.cancelled)})`);
   const sweepAfter = JSON.stringify((await call("get_state", { path: sweepModel })).meshOptions);
   assert(sweepBefore === sweepAfter, "a sweep without applyIndex leaves the stored options untouched");
   const sweepApplied = await call("compare_mesh_refinement", { path: sweepModel, sizes: sweepSizes, applyIndex: 1 });
@@ -4011,10 +4067,232 @@ try {
     `generate_mesh on a gapped-id MDPA: ${gapMeshed.nodeCount} nodes, ${gapMeshed.elementCount} elements`
   );
 
+  // ── Embedded points and curves (roadmap "Embedded points and curves") ──────
+  // A Part's FREE point/line — the wireframe an `addPoint`/`addLine` op appends
+  // to the model — is not part of any face, so Gmsh's OCC importer drops it
+  // from the exported STEP that IS the meshing input, and the mesher puts no
+  // node on it. This block proves the fix end to end through the real server.
+  {
+    // block.stp is a 3x4x5 box centred on the origin: x +-1.5, y +-2, z +-2.5.
+    // The coordinates are deliberately non-round so a coincidental element node
+    // cannot satisfy a distance assertion by luck, and so the point is nowhere
+    // near a box corner (the correlation tolerance is 1e-3 x the bbox
+    // diagonal, ~0.0071 here — the nearest corner is 1.43 away).
+    const LOAD_POINT = [0.37, -1.13, 2.5]; // interior of the z=+2.5 face
+    const LINE_A = [-0.9, -1.1, 2.5];
+    const LINE_B = [0.9, 1.1, 2.5];
+    const dist3 = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
+    const distToSeg = (p, a, b) => {
+      const ab = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+      const len2 = ab[0] ** 2 + ab[1] ** 2 + ab[2] ** 2;
+      const t = Math.max(0, Math.min(1, ((p[0] - a[0]) * ab[0] + (p[1] - a[1]) * ab[1] + (p[2] - a[2]) * ab[2]) / len2));
+      return dist3(p, [a[0] + ab[0] * t, a[1] + ab[1] * t, a[2] + ab[2] * t]);
+    };
+    const minDist = (coords, p) => Math.min(...coords.map((c) => dist3(c, p)));
+    const onSeg = (coords, a, b) => coords.filter((c) => distToSeg(c, a, b) < 1e-9).length;
+    const nodeCountOf = (mshText) => parseMshNodeCoords(mshText).length;
+
+    const addFreeOps = [
+      { op: "addPoint", position: LOAD_POINT },
+      { op: "addLine", start: LINE_A, end: LINE_B },
+    ];
+
+    // The free entities' `point-N`/`edge-N` ids are positional indices into
+    // the whole-shape enumeration and the line's OWN two endpoints come first,
+    // so `.at(-1)` is not "the free point". Look them up BY POSITION through
+    // `inspect` instead — self-verifying, and it independently pins that the
+    // entity really landed where it was asked to.
+    const findPointIdByPosition = async (modelPath, want) => {
+      const { pointCount } = await call("load_model", { path: modelPath });
+      for (let i = 0; i < pointCount; i++) {
+        const f = await call("inspect", { path: modelPath, entityId: `point-${i}` });
+        if (f.center && dist3(f.center, want) < 1e-6) return `point-${i}`;
+      }
+      return null;
+    };
+    const findEdgeIdByCentre = async (modelPath, want) => {
+      const { edgeCount } = await call("load_model", { path: modelPath });
+      for (let i = 0; i < edgeCount; i++) {
+        const f = await call("inspect", { path: modelPath, entityId: `edge-${i}` });
+        if (f.center && dist3(f.center, want) < 1e-6) return `edge-${i}`;
+      }
+      return null;
+    };
+    // The arc's own bbox centre is a geometric guess (and a first draft got it
+    // wrong: a 0°->180° arc's bbox centre is the MIDPOINT of its bbox, not a
+    // point on the arc). Diff against a pristine copy instead — structural, and
+    // it cannot be mis-guessed.
+    const findNewEdgeId = async (modelPath, baseModelPath) => {
+      const { edgeCount } = await call("load_model", { path: modelPath });
+      const baseCentres = [];
+      const { edgeCount: baseCount } = await call("load_model", { path: baseModelPath });
+      for (let i = 0; i < baseCount; i++) {
+        const f = await call("inspect", { path: baseModelPath, entityId: `edge-${i}` });
+        if (f.center) baseCentres.push(f.center);
+      }
+      for (let i = 0; i < edgeCount; i++) {
+        const f = await call("inspect", { path: modelPath, entityId: `edge-${i}` });
+        if (f.center && !baseCentres.some((c) => dist3(c, f.center) < 1e-6)) return `edge-${i}`;
+      }
+      return null;
+    };
+
+    // ---- Control FIRST: the free entities exist, but NO Part references them.
+    // Nothing may be forced onto the mesh, so no node lands on the point. This
+    // is what makes the positive assertion discriminating — a first draft
+    // asserted only the positive case and would have passed against a box that
+    // never grew the entities at all.
+    const ctlModel = path.join(dir, "embed-control.stp");
+    fs.copyFileSync(path.join(ROOT, "examples", "STP", "block.stp"), ctlModel);
+    await call("apply_edit_ops", { path: ctlModel, ops: addFreeOps });
+    const ctlOut = path.join(dir, "embed-control.msh");
+    await call("export_mesh", { path: ctlModel, format: "msh", outputPath: ctlOut, options: { sizeMin: 0, sizeMax: 0.7 } });
+    const ctlText = fs.readFileSync(ctlOut, "utf8");
+    const ctlCoords = parseMshNodeCoords(ctlText);
+    const ctlMin = minDist(ctlCoords, LOAD_POINT);
+    assert(ctlMin > 1e-3, `control (free entities, no Part): no node lands on the load point (closest ${ctlMin.toFixed(6)})`);
+    assert(onSeg(ctlCoords, LINE_A, LINE_B) === 0, `control: no node lands on the free line (got ${onSeg(ctlCoords, LINE_A, LINE_B)})`);
+
+    // ---- The real case: one Part holding BOTH free entities.
+    const embedModel = path.join(dir, "embed.stp");
+    fs.copyFileSync(path.join(ROOT, "examples", "STP", "block.stp"), embedModel);
+    await call("apply_edit_ops", { path: embedModel, ops: addFreeOps });
+    const freeVertexId = await findPointIdByPosition(embedModel, LOAD_POINT);
+    const freeEdgeId = await findEdgeIdByCentre(embedModel, [(LINE_A[0] + LINE_B[0]) / 2, (LINE_A[1] + LINE_B[1]) / 2, 2.5]);
+    assert(freeVertexId !== null, `the free point has a point-N id at its requested position (got ${freeVertexId})`);
+    assert(freeEdgeId !== null, `the free line has an edge-N id at its midpoint (got ${freeEdgeId})`);
+
+    await call("set_part", { path: embedModel, name: "Load", points: [freeVertexId], lines: [freeEdgeId] });
+    const embedOut = path.join(dir, "embed.msh");
+    const embedRes = await call("export_mesh", {
+      path: embedModel,
+      format: "msh",
+      outputPath: embedOut,
+      options: { sizeMin: 0, sizeMax: 0.7 },
+    });
+    const embedText = fs.readFileSync(embedOut, "utf8");
+    const embedCoords = parseMshNodeCoords(embedText);
+    const embedMin = minDist(embedCoords, LOAD_POINT);
+    assert(
+      embedMin < 1e-9,
+      `a Part's free point gets a mesh node EXACTLY on it (${embedMin.toExponential(3)}; control ${ctlMin.toFixed(6)})`
+    );
+    assert(
+      !embedRes.warnings.some((w) => /curved free edge/i.test(w)),
+      `a straight free line needs no warning (got ${JSON.stringify(embedRes.warnings)})`
+    );
+    const embedOnLine = onSeg(embedCoords, LINE_A, LINE_B);
+    assert(
+      embedOnLine >= 2,
+      `a Part's free line is meshed, with nodes exactly on it (${embedOnLine} nodes, control 0)`
+    );
+
+    // ---- The strongest form of the promise: the node is reachable through the
+    // Part's own Kratos sub-model-part, which is what a downstream solver
+    // reads to apply a point load.
+    const embedMdpa = path.join(dir, "embed.mdpa");
+    await call("export_mesh", {
+      path: embedModel,
+      format: "mdpaElements",
+      outputPath: embedMdpa,
+      options: { sizeMin: 0, sizeMax: 0.7, dimension: 3 },
+    });
+    const mdpaText = fs.readFileSync(embedMdpa, "utf8");
+    // Two regex traps in one line, both hit live while writing this block:
+    //  - a non-greedy `End SubModelPart` (no anchor) stops at
+    //    `End SubModelPartNodes` and yields a block with no nodes in it;
+    //  - `^End SubModelPartNodes$` cannot match either, because mdpaWriter
+    //    indents the inner blocks by four spaces and only the outer
+    //    `End SubModelPart` sits in column 0. So the outer block anchors on
+    //    the line start, and the inner one relies on its longer, unique token.
+    const smpBlock = (mdpaText.match(/Begin SubModelPart Load\b[\s\S]*?^End SubModelPart$/m) ?? [])[0];
+    assert(!!smpBlock, 'the MDPA carries a SubModelPart named "Load"');
+    const nodesBlock = smpBlock.match(/Begin SubModelPartNodes([\s\S]*?)End SubModelPartNodes/);
+    assert(!!nodesBlock, "the Load SubModelPart has a SubModelPartNodes block");
+    const smpNodeIds = new Set(
+      (nodesBlock[1] ?? "")
+        .split("\n")
+        .map((l) => l.trim())
+        .filter((l) => /^\d+$/.test(l))
+        .map(Number),
+    );
+    assert(smpNodeIds.size > 0, `SubModelPartNodes lists real node ids (${smpNodeIds.size})`);
+    // Map those ids back to coordinates through the MDPA's own node table.
+    const mdpaNodes = new Map();
+    for (const line of (mdpaText.match(/Begin Nodes([\s\S]*?)End Nodes/)?.[1] ?? "").split("\n")) {
+      const m = line.trim().match(/^(\d+)\s+(\S+)\s+(\S+)\s+(\S+)/);
+      if (m) mdpaNodes.set(Number(m[1]), [Number(m[2]), Number(m[3]), Number(m[4])]);
+    }
+    const smpCoords = [...smpNodeIds].map((id) => mdpaNodes.get(id)).filter(Boolean);
+    const smpMin = smpCoords.length ? minDist(smpCoords, LOAD_POINT) : Infinity;
+    assert(
+      smpMin < 1e-9,
+      `the load node is inside the Load SubModelPart — a solver finds it there (closest of ${smpCoords.length}: ${smpMin.toExponential(3)})`
+    );
+
+    // ---- Backwards compatibility: a Part on a REAL model vertex (the common,
+    // pre-existing case) must leave the mesh byte-for-byte alone. Same document,
+    // same size, with and without such a Part.
+    const cornerModel = path.join(dir, "embed-corner.stp");
+    fs.copyFileSync(path.join(ROOT, "examples", "STP", "block.stp"), cornerModel);
+    const cornerBase = await call("generate_mesh", { path: cornerModel, options: { sizeMin: 0, sizeMax: 0.7 } });
+    await call("set_part", { path: cornerModel, name: "Corner", points: ["point-0"] });
+    const cornerAfter = await call("generate_mesh", { path: cornerModel, options: { sizeMin: 0, sizeMax: 0.7 } });
+    assert(
+      cornerAfter.nodeCount === cornerBase.nodeCount,
+      `a Part on a real model vertex leaves the mesh unchanged (${cornerAfter.nodeCount} vs ${cornerBase.nodeCount} nodes)`
+    );
+
+    // ---- A CURVED free edge cannot be a two-endpoint Gmsh line, so it must be
+    // reported by name rather than silently approximated by its chord.
+    const arcBase = path.join(dir, "embed-arc-base.stp");
+    fs.copyFileSync(path.join(ROOT, "examples", "STP", "block.stp"), arcBase);
+    const arcModel = path.join(dir, "embed-arc.stp");
+    fs.copyFileSync(path.join(ROOT, "examples", "STP", "block.stp"), arcModel);
+    await call("apply_edit_ops", {
+      path: arcModel,
+      ops: [{ op: "addArc", center: [0, 0, 2.5], normal: [0, 0, 1], radius: 0.6, startAngleDeg: 0, endAngleDeg: 180 }],
+    });
+    const arcEdgeId = await findNewEdgeId(arcModel, arcBase);
+    assert(arcEdgeId !== null, `the free arc has an edge-N id (got ${arcEdgeId})`);
+    await call("set_part", { path: arcModel, name: "Arc", lines: [arcEdgeId] });
+    const arcRes = await call("generate_mesh", { path: arcModel, options: { sizeMin: 0, sizeMax: 0.7 } });
+    assert(
+      arcRes.warnings.some((w) => /curved free edge/i.test(w) && w.includes(arcEdgeId)),
+      `a curved free edge is reported by name, never chord-approximated (got ${JSON.stringify(arcRes.warnings)})`
+    );
+    assert(arcRes.elementCount > 0, `the arc document still meshes normally (${arcRes.elementCount} elements)`);
+
+    // ---- The size-slider case: a finer mesh must still keep the node exact
+    // (the feature must not be an artefact of one coarse size).
+    const fineRes = await call("export_mesh", {
+      path: embedModel,
+      format: "msh",
+      outputPath: path.join(dir, "embed-fine.msh"),
+      options: { sizeMin: 0, sizeMax: 0.2 },
+    });
+    const fineCoords = parseMshNodeCoords(fs.readFileSync(path.join(dir, "embed-fine.msh"), "utf8"));
+    assert(
+      fineCoords.length > embedCoords.length && minDist(fineCoords, LOAD_POINT) < 1e-9,
+      `the node stays exact at a finer size (${fineCoords.length} vs ${embedCoords.length} nodes, distance ${minDist(fineCoords, LOAD_POINT).toExponential(3)})`
+    );
+    assert(fineRes.warnings.length === embedRes.warnings.length, "a finer size produces no new warnings");
+  }
+
   // Nastran bulk data (examples/Nastran/block-tets.bdf — this extension's own
-  // Gmsh export of block.stp). Routing and the ambiguity caveat work, but the
-  // current meshio++ reader rejects this deck even after BEGIN BULK
-  // normalization. Pin the known limitation until a reader/parser is added.
+  // Gmsh export of the 3x4x5 block.stp). This deck has NO `BEGIN BULK` line,
+  // so the read-side normalization is load-bearing; the route and the
+  // ambiguity caveat have always worked.
+  //
+  // It used to be PINNED AS A KNOWN LIMITATION, asserting the meshio++
+  // `Not a meshio++-C++ Nastran file` refusal. That stopped being true before
+  // meshio++ 16.22.0 and is definitively false at 16.27.0: after normalization
+  // the deck reads as line+triangle+tetra (32 points) and its boundary
+  // converts to 60 facets spanning exactly 3x4x5 — block.stp's own extents.
+  // So the assertion now requires SUCCESS rather than a specific error string.
+  // It pins node/element counts, which is what the headless surface can
+  // express for a meshio-only format; see the note below for the two stronger
+  // claims deliberately left to the corpus and to a probe.
   const bdfModel = path.join(dir, "block-tets.bdf");
   fs.copyFileSync(path.join(ROOT, "examples", "Nastran", "block-tets.bdf"), bdfModel);
   const bdfLoaded = await call("load_model", { path: bdfModel });
@@ -4026,15 +4304,39 @@ try {
     bdfLoaded.warnings.some((w) => /Nastran bulk-data deck/.test(w)),
     `load_model surfaces the .bdf ambiguity caveat (got: ${JSON.stringify(bdfLoaded.warnings)})`
   );
-  const bdfMeshing = await callTolerant("generate_mesh", {
+  const bdfMeshing = await call("generate_mesh", {
     path: bdfModel,
     options: { sizeMax: 1 },
   });
-  const bdfMeshingError = bdfMeshing.error ?? "";
   assert(
-    /Not a meshio\+\+-C\+\+ Nastran file/.test(bdfMeshingError),
-    `Gmsh-written .bdf reports the tracked meshio++ limitation (got: ${bdfMeshingError || (bdfMeshing.value ? "unexpected success" : "no error result")})`
+    bdfMeshing.nodeCount > 0 && bdfMeshing.elementCount > 0,
+    `a normalized Gmsh-written .bdf meshes (got ${bdfMeshing.nodeCount} nodes, ${bdfMeshing.elementCount} elements, error: ${bdfMeshing.error ?? "none"})`
   );
+  // The fixture IS the round trip: block-tets.bdf is this extension's own Gmsh
+  // export of block.stp, so opening it and meshing it *is* export -> reimport ->
+  // mesh, and the export direction is covered separately by the compat corpus's
+  // `export-bdf` row (which also reloads and re-meshes).
+  //
+  // Two things are deliberately NOT asserted here, both because claiming them
+  // would be claiming something this codebase cannot deliver:
+  //
+  // 1. An analytic volume. 3x4x5 = 60 is known exactly, and pinning it would
+  //    beat any count — but `get_mass_properties` is B-rep + STL/OBJ/PLY/glTF
+  //    only, and no headless tool reports a bounding box for a meshio-only
+  //    source. That gap is why the "Nastran bulk-deck import" roadmap item is
+  //    narrowed, not closed, and it is why a count-only pass must not be read as
+  //    geometric proof (see examples/EnSight/README.md). The extent IS verified —
+  //    60 facets spanning 3x4x5 through the real `convertToStlBoundary` — but in
+  //    a probe, until a tool can express it.
+  // 2. Re-meshing a deck this extension re-exported FROM this script's own
+  //    `bull.stp`. That fails with Gmsh's `classifySurfaces: Wrong topology of
+  //    boundary mesh for parametrization`, for a reason unrelated to Nastran:
+  //    a second meshing pass over the re-extracted boundary of an
+  //    already-tetrahedralized volume is a much harder case for Gmsh's STL
+  //    reclassification than a normal import. Already recorded for `.msh`, and
+  //    the compat corpus re-meshes from block.stp — a clean box — which is why
+  //    it passes there. The claim this fixture supports is "a generated .bdf
+  //    re-opens and meshes", not "any .bdf re-meshes".
 
   // OpenFOAM polyMesh import (examples/OpenFOAM/hex-case — see its README).
   // A `.foam` marker is NOT a mesh; its sibling constant/polyMesh/ holds the

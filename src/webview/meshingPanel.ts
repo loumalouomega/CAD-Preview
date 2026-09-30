@@ -51,6 +51,10 @@ export interface MeshingPanelCallbacks {
    * forwarded. */
   onPartMeshGrading: (index: number, grading: MeshGrading | undefined) => void;
   onGenerate: () => void;
+  /** Cancel a running meshing job by its request id. Used by the toolbar Cancel
+   * AND by the refinement sweep's own Cancel button (roadmap "Cancel a mesh
+   * refinement sweep mid-run", closed) — the same `meshingCancel` round trip, so
+   * the host's owner-scoped cancellation is reused rather than duplicated. */
   onCancel?: (requestId: string) => void;
   /** Measure the generated boundary's deviation from the reference at `tolerance` (mm). */
   onDeviation?: (tolerance: number) => void;
@@ -161,11 +165,17 @@ export class MeshingPanel {
   private readonly sweepSizes: HTMLInputElement;
   private readonly sweepWrite: HTMLInputElement;
   private readonly sweepRun: HTMLButtonElement;
+  private readonly sweepCancel: HTMLButtonElement;
   private readonly sweepCopy: HTMLButtonElement;
   private readonly sweepStatus: HTMLElement;
   private readonly sweepTable: HTMLElement;
   private readonly sweepNote: HTMLElement;
   private lastSweepRuns: MeshSweepRun[] = [];
+  /** The in-flight sweep's request id, or null. Set by the wiring the moment it
+   * mints one (`setSweepRequestId`) — the panel deliberately does NOT mint ids
+   * itself, so the Cancel button can post the SAME id the host registered the
+   * meshing job under. Cleared whenever the sweep settles. */
+  private sweepRequestId: string | null = null;
   private readonly meshOpsSelect: HTMLSelectElement;
   private readonly meshOpsRatio: HTMLInputElement;
   private readonly meshOpsMethod: HTMLSelectElement;
@@ -658,6 +668,26 @@ export class MeshingPanel {
       cb.onSweep(sizes, this.sweepWrite.checked);
     });
     sweepBtns.appendChild(this.sweepRun);
+    // The sweep's own Cancel (roadmap "Cancel a mesh refinement sweep mid-run",
+    // closed). It posts the SAME `meshingCancel` message the toolbar's Cancel
+    // uses, carrying this sweep's request id, so the host aborts this job's
+    // controller and kills its kernel call. It is deliberately NOT wired
+    // through `setBusy`, which would also disable Generate/Export for the
+    // sweep's duration — a behaviour change beyond making a sweep cancellable.
+    this.sweepCancel = document.createElement("button");
+    this.sweepCancel.type = "button";
+    this.sweepCancel.id = "meshing-sweep-cancel";
+    this.sweepCancel.textContent = "Cancel";
+    this.sweepCancel.title = "Stop the sweep after the current run; completed runs are kept";
+    this.sweepCancel.disabled = true;
+    this.sweepCancel.addEventListener("click", () => {
+      const requestId = this.sweepRequestId;
+      if (!requestId) return;
+      this.sweepCancel.disabled = true;
+      this.renderSweepStatus("Cancelling sweep…", false);
+      cb.onCancel?.(requestId);
+    });
+    sweepBtns.appendChild(this.sweepCancel);
     this.sweepCopy = document.createElement("button");
     this.sweepCopy.type = "button";
     this.sweepCopy.id = "meshing-sweep-copy";
@@ -1005,16 +1035,42 @@ export class MeshingPanel {
   }
 
   /**
+   * Records the request id the wiring minted for an in-flight sweep, enabling
+   * the section's Cancel button. `null` disables it again — the wiring calls
+   * this from `onSweep` and again on every `meshSweepResult`/`meshSweepError`,
+   * so a stale id can never be re-cancelled.
+   */
+  setSweepRequestId(requestId: string | null): void {
+    this.sweepRequestId = requestId;
+    this.sweepCancel.disabled = requestId === null;
+  }
+
+  /**
    * Renders a sweep's rows as a table (size, status, nodes, elements, ms,
    * min/mean quality — the same numbers `compare_mesh_refinement` returns),
    * plus the tool's "trends are not convergence" note.
+   *
+   * `cancelled` (roadmap "Cancel a mesh refinement sweep mid-run") means the
+   * loop stopped early, so `runs` is legitimately shorter than the requested
+   * sizes. That is stated in the status line rather than left to look like a
+   * short comparison: the table shows only runs that actually completed, which
+   * is the honest list.
    */
-  renderSweepResult(runs: MeshSweepRun[], warnings: string[], note: string, outputDir: string | null): void {
+  renderSweepResult(runs: MeshSweepRun[], cancelled: boolean, warnings: string[], note: string, outputDir: string | null): void {
     this.sweepRun.disabled = false;
+    this.sweepRequestId = null;
+    this.sweepCancel.disabled = true;
     this.lastSweepRuns = runs;
     this.sweepCopy.disabled = runs.length === 0;
     const failed = runs.filter((r) => r.status === "error").length;
-    const lines = [`${runs.length - failed} of ${runs.length} run${runs.length === 1 ? "" : "s"} meshed.`];
+    const plural = runs.length === 1;
+    const lines = [`${runs.length - failed} of ${runs.length} run${plural ? "" : "s"} meshed.`];
+    // Derived from the `cancelled` FLAG, not from a host warning string: the
+    // flag is the authoritative fact, and deriving it here keeps the panel's
+    // rendering independent of prose the host chose to send.
+    if (cancelled) {
+      lines.push(`Sweep cancelled — only the ${runs.length} completed run${plural ? " was" : "s were"} meshed.`);
+    }
     if (outputDir) lines.push(`Meshes written to ${outputDir}.`);
     lines.push(...warnings);
     this.renderSweepStatus(lines.join(" "), false);
@@ -1052,7 +1108,14 @@ export class MeshingPanel {
   }
 
   renderSweepStatus(text: string, isError: boolean): void {
-    if (isError) this.sweepRun.disabled = false;
+    if (isError) {
+      this.sweepRun.disabled = false;
+      // An error settles the sweep too (a declined folder dialog, a bad size
+      // list, a genuinely failed request) — arm nothing for a Cancel that can
+      // no longer reach a job.
+      this.sweepRequestId = null;
+      this.sweepCancel.disabled = true;
+    }
     this.sweepStatus.textContent = text;
     this.sweepStatus.classList.toggle("meshing-status-error", isError);
   }

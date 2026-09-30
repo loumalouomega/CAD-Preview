@@ -29,6 +29,7 @@ import {
   synthesizeSelectorTool,
   renderSnapshotTool,
   renderOpsPrefixTool,
+  screenshotShapeTool,
   searchStandardPartsTool,
   downloadStandardPartTool,
   generateMeshTool,
@@ -277,6 +278,11 @@ const FAKE_RENDER_RESULT: RenderResult = {
     { label: "TOP", mimeType: "image/png", dataBase64: "dG9w" },
     { label: "FRONT", mimeType: "image/png", dataBase64: "ZnJvbnQ=" },
   ],
+  // A SUCCESSFUL render always reports this now (roadmap "Tessellation quality
+  // for render_snapshot"), so the shared fake carries one — an absent field
+  // here would model a shape the real `renderSnapshot` can no longer produce
+  // on a supported path.
+  tessellation: { quality: "standard", linearDeflection: 0.1, angularDeflectionRad: 0.5, triangleCount: 1756 },
 };
 
 const FAKE_PART_SEARCH_RESULT: PartSearchResult = {
@@ -1174,6 +1180,67 @@ describe("render_snapshot", () => {
     expect(c.pipeline.renderSnapshot).not.toHaveBeenCalled();
     expect(result.supported).toBe(false);
     expect(result.warnings[0]).toMatch(/mesh-format/i);
+  });
+
+  // ── tessellationQuality (roadmap "Tessellation quality for render_snapshot") ──
+  it("forwards a recognized tessellationQuality to the pipeline", async () => {
+    const c = ctx();
+    await renderSnapshotTool(c, { path: stpModel, tessellationQuality: "fine" });
+    const opts = vi.mocked(c.pipeline.renderSnapshot).mock.lastCall![4];
+    expect(opts.quality).toBe("fine");
+  });
+
+  it("leaves quality undefined when omitted, so the pipeline's opts are unchanged", async () => {
+    // Precisely what "unchanged" means here, stated so a future hard-coded
+    // "standard" default cannot slip in: `quality` is present-but-undefined
+    // (exactly like the pre-existing `views`/`composite` keys), and the whole
+    // object still deep-equals the shape `renderSnapshot` has always received —
+    // which is the only sense in which the standing `toHaveBeenCalledWith`
+    // assertion above holds, since equality ignores undefined-valued keys.
+    const c = ctx();
+    await renderSnapshotTool(c, { path: stpModel });
+    const opts = vi.mocked(c.pipeline.renderSnapshot).mock.lastCall![4];
+    expect(opts.quality).toBeUndefined();
+    expect(opts).toEqual({ focus: undefined, hide: undefined, wireframe: undefined, views: undefined, composite: undefined });
+  });
+
+  it("warns and falls back on an unrecognized quality rather than throwing or rendering silently", async () => {
+    const c = ctx();
+    const result = await renderSnapshotTool(c, { path: stpModel, tessellationQuality: "ultra" });
+    const opts = vi.mocked(c.pipeline.renderSnapshot).mock.lastCall![4];
+    expect(opts.quality).toBe("standard");
+    expect(result.warnings.some((w) => /tessellationQuality "ultra" is not one of/.test(w))).toBe(true);
+  });
+
+  it("does not warn for a recognized quality", async () => {
+    const c = ctx();
+    const result = await renderSnapshotTool(c, { path: stpModel, tessellationQuality: "draft" });
+    expect(result.warnings.some((w) => /tessellationQuality/.test(w))).toBe(false);
+  });
+
+  it("reports the tessellation the pipeline actually used", async () => {
+    const c = ctx(
+      fakePipeline({
+        renderSnapshot: vi.fn(async () => ({
+          ...FAKE_RENDER_RESULT,
+          tessellation: { quality: "fine" as const, linearDeflection: 0.03, angularDeflectionRad: 0.15, triangleCount: 9022 },
+        })),
+      })
+    );
+    const result = await renderSnapshotTool(c, { path: stpModel, tessellationQuality: "fine" });
+    expect(result.tessellation).toEqual({
+      quality: "fine",
+      linearDeflection: 0.03,
+      angularDeflectionRad: 0.15,
+      triangleCount: 9022,
+    });
+  });
+
+  it("omits the tessellation fact entirely when the pipeline reports none", async () => {
+    const c = ctx(fakePipeline({ renderSnapshot: vi.fn(async () => ({ supported: false, reason: "Every view failed" })) }));
+    const result = await renderSnapshotTool(c, { path: stpModel });
+    expect(result.tessellation).toBeUndefined();
+    expect("tessellation" in result).toBe(false);
   });
 });
 
@@ -3497,6 +3564,73 @@ describe("compare_mesh_refinement", () => {
     expect(onProgress.mock.calls.map((call) => call[0].progress)).toEqual([0, 1, 1, 2]);
     expect(onProgress.mock.calls[3][0]).toMatchObject({ progress: 2, total: 2 });
   });
+
+  it("is not flagged cancelled on an ordinary sweep", async () => {
+    const c = ctx();
+    const result = await compareMeshRefinementTool(c, { path: stpModel, sizes: [4, 2] });
+    expect(result.cancelled).toBe(false);
+  });
+
+  // Cancellation (roadmap "Cancel a mesh refinement sweep mid-run") — the MCP
+  // request's own abort signal, the same one `notifications/cancelled`
+  // produces.
+  it("returns only the completed rows and leaves no further kernel work when the signal aborts mid-run", async () => {
+    const controller = new AbortController();
+    let started = 0;
+    const generateMesh = vi.fn(async (_ext: string, _input: unknown, _options: { sizeMax: number }) => {
+      started++;
+      // The click lands while the SECOND of four runs is in flight.
+      if (started === 2) {
+        controller.abort();
+        throw new Error('kernel-worker: "generateMesh" was cancelled');
+      }
+      return FAKE_MESH_RESULT;
+    });
+    const c = ctx(fakePipeline({ generateMesh }));
+    const result = await compareMeshRefinementTool(c, { path: stpModel, sizes: [4, 2, 1, 0.5] }, undefined, controller.signal);
+    // Exactly the one completed run — the interrupted one yields NO row, so
+    // there is no partial row that could read as a completed one.
+    expect(result.runs.map((r) => [r.size, r.status])).toEqual([[4, "ok"]]);
+    expect(result.cancelled).toBe(true);
+    // Two calls, not four: nothing was queued after the abort.
+    expect(generateMesh).toHaveBeenCalledTimes(2);
+    // The TSV describes only what actually ran.
+    expect(result.tsv.split("\n")).toHaveLength(2);
+  });
+
+  it("stops before the first run when the signal is already aborted", async () => {
+    const c = ctx();
+    const controller = new AbortController();
+    controller.abort();
+    const result = await compareMeshRefinementTool(c, { path: stpModel, sizes: [4, 2] }, undefined, controller.signal);
+    expect(c.pipeline.generateMesh).not.toHaveBeenCalled();
+    expect(result.runs).toEqual([]);
+    expect(result.cancelled).toBe(true);
+  });
+
+  it("does not apply applyIndex on a cancelled sweep, and says why", async () => {
+    const controller = new AbortController();
+    let started = 0;
+    const c = ctx(
+      fakePipeline({
+        generateMesh: vi.fn(async (_ext: string, _input: unknown, _options: { sizeMax: number }) => {
+          started++;
+          if (started === 2) {
+            controller.abort();
+            throw new Error('kernel-worker: "generateMesh" was cancelled');
+          }
+          return FAKE_MESH_RESULT;
+        }),
+      })
+    );
+    const result = await compareMeshRefinementTool(c, { path: stpModel, sizes: [4, 2, 1], applyIndex: 1 }, undefined, controller.signal);
+    expect(result.cancelled).toBe(true);
+    expect(result.applied).toBeNull();
+    expect(result.warnings.some((w) => /applyIndex 1 was NOT applied/.test(w))).toBe(true);
+    // A partial comparison must never silently set the document's mesh size.
+    const { readMeshOptions } = await import("./mcpSidecars");
+    await expect(fs.stat(`${stpModel}.mesh.json`)).rejects.toThrow();
+  });
 });
 
 describe("export_mesh", () => {
@@ -4606,6 +4740,71 @@ describe("render_ops_prefix", () => {
     const withRender = await renderOpsPrefixTool(available, { path: stpModel, throughIndex: -1, render: true });
     expect(withRender.images).toHaveLength(4);
     expect(available.pipeline.renderSnapshot).toHaveBeenCalled();
+  });
+
+  it("forwards tessellationQuality to the prefix render and reports the tessellation used", async () => {
+    await writeEdits(stpModel, [], []);
+    const c = ctx();
+    const result = await renderOpsPrefixTool(c, { path: stpModel, throughIndex: -1, render: true, tessellationQuality: "fine" });
+    expect(vi.mocked(c.pipeline.renderSnapshot).mock.lastCall![4].quality).toBe("fine");
+    // The summary `loadBRep` is deliberately left at the default: entitySummary
+    // reads only counts, so a finer tessellation there would cost time for
+    // nothing. Pinned so the two are not "helpfully" unified later.
+    expect(vi.mocked(c.pipeline.loadBRep).mock.lastCall![4]).toBeUndefined();
+    expect(result.tessellation).toEqual(FAKE_RENDER_RESULT.tessellation);
+  });
+
+  it("omits the tessellation fact when no render was requested", async () => {
+    await writeEdits(stpModel, [], []);
+    const c = ctx();
+    const result = await renderOpsPrefixTool(c, { path: stpModel, throughIndex: -1 });
+    expect("tessellation" in result).toBe(false);
+  });
+
+  it("does not report a bad quality as substituted when no render happens at all", async () => {
+    // The warning says "rendering at X instead", so it must never appear on a
+    // call that renders nothing. All three render tools resolve the value only
+    // after the mesh-source and renderer-available gates; pinned here so the
+    // three cannot drift apart.
+    await writeEdits(stpModel, [], []);
+    const c = ctx();
+    const noRender = await renderOpsPrefixTool(c, { path: stpModel, throughIndex: -1, tessellationQuality: "ultra" });
+    expect(noRender.warnings).toEqual([]);
+
+    const unavailable = ctx(fakePipeline({ isRenderAvailable: vi.fn(async () => ({ available: false, reason: "no chromium" })) }));
+    const deadRenderer = await renderOpsPrefixTool(unavailable, {
+      path: stpModel,
+      throughIndex: -1,
+      render: true,
+      tessellationQuality: "ultra",
+    });
+    expect(deadRenderer.warnings.join("\n")).not.toMatch(/tessellationQuality/);
+  });
+});
+
+describe("screenshot_shape", () => {
+  it("forwards tessellationQuality, warns on a bad value, and leaves it undefined when omitted", async () => {
+    const fine = ctx();
+    await screenshotShapeTool(fine, { path: stpModel, entityId: "face-0", tessellationQuality: "fine" });
+    expect(vi.mocked(fine.pipeline.renderSnapshot).mock.lastCall![4].quality).toBe("fine");
+    expect(fine.pipeline.renderSnapshot).toHaveBeenCalledTimes(1);
+
+    const omitted = ctx();
+    const plain = await screenshotShapeTool(omitted, { path: stpModel, entityId: "face-0" });
+    expect(vi.mocked(omitted.pipeline.renderSnapshot).mock.lastCall![4].quality).toBeUndefined();
+    expect(plain.tessellation).toEqual(FAKE_RENDER_RESULT.tessellation);
+
+    const bad = ctx();
+    const warned = await screenshotShapeTool(bad, { path: stpModel, entityId: "face-0", tessellationQuality: "coarse" });
+    expect(vi.mocked(bad.pipeline.renderSnapshot).mock.lastCall![4].quality).toBe("standard");
+    expect(warned.warnings.some((w) => /tessellationQuality "coarse" is not one of/.test(w))).toBe(true);
+  });
+
+  it("still refuses mesh sources without touching the pipeline", async () => {
+    const c = ctx();
+    const result = await screenshotShapeTool(c, { path: stlModel, entityId: "node-0" });
+    expect(c.pipeline.renderSnapshot).not.toHaveBeenCalled();
+    expect(result.supported).toBe(false);
   });
 });
 
