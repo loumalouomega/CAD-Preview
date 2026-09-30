@@ -4,6 +4,18 @@ All notable changes to the "CAD Preview" extension are documented in this file.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/); this project does not yet strictly follow Semantic Versioning (pre-1.0 releases moved fast and bundled multiple features per bump).
 
+## [3.10.1] - 2026-09-30
+
+### Fixed
+
+- **Mesh generation no longer leaves Gmsh's thread count to chance — and checks the pin rather than assuming it took.** Every Gmsh prepare (Generate, every export format, `.geo_unrolled`) now sets `General.NumThreads` and `Mesh.MaxNumThreads1D`/`2D`/`3D` to `1` and then **re-reads all four**, throwing `Could not enforce <key>=1` if any of them came back as something else. The read-back is the point: a cap that silently failed to apply is indistinguishable from no cap, which is the same failure mode as the dead worker pool this extension already had to fix once — a bundled gmsh spawns its Emscripten pthread pool eagerly at `initialize()` (4 workers, confirmed), and each one re-executed the bundle and died on `require("vscode")`, leaving the main thread to block forever on a pool that could never come up. That is fixed at the packaging layer (the package stays `external`, so its workers start on a real standalone file); this is the second, cheaper layer — nothing now depends on that packaging rule alone to keep meshing single-threaded, which is the same posture fTetWild already has by loading its serial WASM build (`{ threads: false }`) and OCCT has by running only inside the one serialized kernel-queue call. **No visible mesh change, and that is measured rather than assumed:** against the shipped `@loumalouomega/gmsh-wasm` 0.3.0 (Gmsh 5.0.0-git-29726e7) the defaults were *already* `General.NumThreads=1` with the three `Mesh.MaxNumThreads*` at `0` (Gmsh's "unbounded", which a `General.NumThreads=1` build never actually reaches). Reverting this hunk and re-running `npm run mcp:smoke` gives the same 557 passing checks, in the same order, with byte-identical mesh results — so the `0`s becoming an explicit `1` changes what is *verified*, not what is produced. Two details worth keeping: the live WASM returns `{value: 1}` from `option.getNumber`, not a bare number (the read accepts both shapes), and `General.Cpu` does not exist in this build, so it is not part of the check.
+
+### Known issues
+
+Both of these are **pre-existing at v3.10.0** — each was reproduced by reverting this release's only code change and re-running, so neither is a regression from the thread cap. They are recorded rather than silently folded into a release whose whole content is one 8-line hunk.
+- **`npm run mcp:smoke` stops on its final check**: `generate_mesh` on the extension's own exported `.xdmf` returns `XDMF: unknown mixed topology index` (557 checks pass first). The three checks before it on the same file pass — the `.xdmf` + `.h5` pair is written, the embedded HDF references are rewritten to the companion's real filename, and `load_model` re-opens the deck — so the writer and the load path are both fine and it is specifically the mesh-generation re-read that meshio++ refuses. Identical failure, same check count, at v3.10.0, which points at the 16.22.0 → 16.27.0 bump rather than at anything here.
+- **`scripts/compat/runtime-packages.test.mjs` is 2/6 red**, on `assert.ok(mesh.cell_data.cell_tags[0] instanceof BigInt64Array)` and the matching `surface:parent_cell` assertion. Measured at 16.27.0: both arrays are now `Float64Array` rather than `BigInt64Array`, carrying the identical values (`[-1, -2]`). **Nothing in `src/` is affected** — every read goes through `meshioService.ts`'s `numericArray()`, which accepts either kind and exists precisely because the bigint form fails silently downstream — so the assertions are pinning an upstream implementation detail that moved, not a behavior the extension relies on. The rest of the suite is green (2472/2474).
+
 ## [3.10.0] - 2026-09-29
 
 ### Fixed
@@ -706,6 +718,7 @@ This release republishes v1.9.0's full changelog (below) unchanged; v1.9.0 itsel
 
 - Initial release: read-only 3D preview for CAD and mesh files (STEP, IGES, BREP, STL, OBJ, PLY, glTF) inside a VS Code custom editor, using OpenCascade.js (OCCT WASM) in the extension host for B-rep formats and Three.js in the webview for rendering.
 
+[3.10.1]: https://github.com/loumalouomega/CAD-Preview/compare/v3.10.0...v3.10.1
 [3.10.0]: https://github.com/loumalouomega/CAD-Preview/compare/v3.9.0...v3.10.0
 [3.9.0]: https://github.com/loumalouomega/CAD-Preview/compare/v3.8.0...v3.9.0
 [3.8.0]: https://github.com/loumalouomega/CAD-Preview/compare/v3.7.1...v3.8.0
