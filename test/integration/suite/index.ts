@@ -699,7 +699,7 @@ test("Export… writes a structurally valid binary STL serialized by the real we
   const before = fs.readFileSync(staged);
   assert(await openDocument(staged), "the STEP fixture opens");
 
-  await withModals([pick("STL"), pick("Native"), save(out)], async () => {
+  await withModals([pick("STL"), pick("Native"), pick("As displayed"), save(out)], async () => {
     await vscode.commands.executeCommand("cad-preview.export");
     await waitForFile(out);
   });
