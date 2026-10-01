@@ -660,12 +660,10 @@ test("A B-rep source is never touched by mesh-save recovery", async () => {
 
 test("Export… offers the real export targets and writes the chosen one", async () => {
   const staged = stage(STEP_FIXTURE);
-  // BREP, not STL, is deliberate: B-rep targets are written HOST-side by
-  // `exportBRep` (OCCT), whereas the mesh targets (STL/OBJ/PLY/glTF) are
-  // serialized in the WEBVIEW by `meshExporters.ts` and posted back. This VS Code
-  // runs with WebGL2 blocklisted, so the webview has no Three.js scene to
-  // serialize and a mesh export never completes — a real, permanent limit of
-  // this harness, not a flake. Mesh-target export stays webview-harness/F5 work.
+  // BREP here: B-rep targets are written HOST-side by `exportBRep` (OCCT),
+  // whereas the mesh targets (STL/OBJ/PLY/glTF) are serialized in the WEBVIEW by
+  // `meshExporters.ts` and posted back — that join is the next two cases, which
+  // reuse THIS case's open document (see `sharedExportDoc`).
   const out = path.join(path.dirname(staged), "exported.brep");
   assert(await openDocument(staged), "the STEP fixture opens");
 
@@ -682,6 +680,68 @@ test("Export… offers the real export targets and writes the chosen one", async
   assert(offered[0] === "STEP", `the source's own B-rep format leads the quick-pick (save in place), offered ${JSON.stringify(offered)}`);
   assert(record.quickPicks.length >= 2, "a second quick-pick asked for the export unit");
   assert(fs.existsSync(out) && fs.statSync(out).size > 0, "the chosen format is written to the chosen path");
+  // Deliberately NOT closed: the two mesh-export cases below run against this
+  // same live webview. The suite can only hold a limited number of live
+  // webviews (a standalone case here made the unrelated "Save modal
+  // cancellation" case never see its webview post `ready`, twice in CI), so new
+  // assertions piggyback on an existing document lifecycle instead of opening a
+  // fresh one.
+  sharedExportDoc = staged;
+});
+
+/** The STEP document the "Export… offers the real export targets" case leaves open. */
+let sharedExportDoc: string | undefined;
+
+/** That document if its tab is still the active one, else a freshly staged + opened one. */
+async function exportDocument(): Promise<string> {
+  if (sharedExportDoc && vscode.window.tabGroups.activeTabGroup.activeTab?.label === path.basename(sharedExportDoc)) {
+    return sharedExportDoc;
+  }
+  const staged = stage(STEP_FIXTURE);
+  assert(await openDocument(staged), "the STEP fixture opens");
+  return staged;
+}
+
+// Mesh-target export — the join `test:webview` cannot reach. The serializers
+// (`meshExporters.ts`) are asserted structurally in `test:webview`, and the
+// host's save/write half is asserted above for B-rep targets; what no harness
+// had ever driven is the two together in ONE VS Code: command → format pick →
+// unit pick → the REAL webview serializes its Three.js scene → `exportResult`
+// posts back → save dialog → bytes on disk. This VS Code now gets software GL
+// (`--enable-unsafe-swiftshader` in `runTest.ts`), so the scene exists.
+// No `setExportMeshStub` here — the stub would defeat the very join under test.
+test("Export… writes a structurally valid binary STL serialized by the real webview", async () => {
+  const staged = await exportDocument();
+  const out = path.join(path.dirname(staged), "exported.stl");
+  const before = fs.readFileSync(staged);
+
+  await withModals([pick("STL"), pick("Native"), pick("As displayed"), save(out)], async () => {
+    await vscode.commands.executeCommand("cad-preview.export");
+    await waitForFile(out);
+  });
+
+  const buf = fs.readFileSync(out);
+  assert(buf.length > 84, `the STL has a header and at least one triangle (${buf.length} bytes)`);
+  const count = buf.readUInt32LE(80);
+  assert(count > 0, `the header declares a non-zero triangle count (${count})`);
+  assert(buf.length === 84 + count * 50, `the byte length is exactly 84 + 50 x triangles (${buf.length} vs ${84 + count * 50}) — an empty or truncated scene would not satisfy this`);
+  assert(fs.readFileSync(staged).equals(before), "the source file is byte-identical — an export never writes it");
+});
+
+test("Export… writes a glTF Binary (.glb) serialized by the real webview", async () => {
+  const staged = await exportDocument();
+  const out = path.join(path.dirname(staged), "exported.glb");
+
+  await withModals([pick("glTF Binary"), pick("Native"), save(out)], async () => {
+    await vscode.commands.executeCommand("cad-preview.export");
+    await waitForFile(out);
+  });
+
+  const buf = fs.readFileSync(out);
+  assert(buf.length > 20, `the .glb has a header and chunks (${buf.length} bytes)`);
+  assert(buf.toString("latin1", 0, 4) === "glTF", "the file starts with the glTF binary magic");
+  assert(buf.readUInt32LE(4) === 2, "glTF container version 2");
+  assert(buf.readUInt32LE(8) === buf.length, "the header's declared total length equals the file size");
   await closeAll();
 });
 
