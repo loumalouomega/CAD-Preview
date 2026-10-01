@@ -167,7 +167,7 @@ It does **not** admit AGPL code, so TetGen stays rejected. Every new bundled dep
 
 | Wave | Outcome | Start with | Exit signal |
 | --- | --- | --- | --- |
-| Upkeep | The base stays current and trustworthy | Done: the dependency watch, "Verify the dependency watch on GitHub", has run — it published issue #84 and re-dispatching reported `unchanged`. Verification-debt burn-down (1.1) next | The verification debt count has started falling |
+| Upkeep | The base stays current and trustworthy | Done: the dependency watch, "Verify the dependency watch on GitHub", has run — it published issue #84 and re-dispatching reported `unchanged`. The verification-debt gate has shipped and ten claims are closed; the host-side halves (1.1) are next | The verification debt count keeps falling by closure |
 | Parity | Everything an agent can do, a user can do, and the reverse | Done: headless mesh-edit replay closed the last listed gap (as did the hole-table, refinement-sweep, free-text-note and mesh-source FE-export gaps). Justified remainders: mesh `inspect`/mass facts, `promote_mesh_to_brep` and `repair_mesh` read the raw file (their ids and outputs are defined over it; `save_model` bakes first), and glTF has no own-format save (its exporter emits only `.glb`) | Headless tools see the same edited mesh the viewer shows, or each remaining difference is justified |
 | Meshing probes | Decide on remeshing and on conformal assemblies | The MMG core probe (4.1), then conformal multi-body meshing (4.2), then Gmsh optimisation (4.4) | Each probe filed with measured results and a decision |
 | Geometry probes | Decide which never-called OCCT capabilities become ops | Imprint and split faces (3.1), then B-rep repair (3.2) | Each probe filed with measured results and a decision |
@@ -183,18 +183,13 @@ These are outcome groupings, not release numbers. Independent small items can sh
 
 *Area: Platform.*
 
-- **Evidence:**
-  - `CLAUDE.md` marks about forty features "Verification gap, stated plainly" or "F5-only": exercised only by hand in an Extension Development Host, if at all.
-  - Several of them touch the source-write path (save-in-place, revert, hot-exit restore), where a regression costs user data.
-  - Both automated harnesses exist and already cover similar ground: `npm run test:webview` drives the real viewer bundle, and `npm run test:integration` drives a real VS Code.
-- **First useful increment (M):** move the ten highest-risk features into those harnesses:
-  - **Already covered — drop from this list.** Re-verified against the harnesses' actual case names while closing the perf-harness-coverage item (closed; see `CLAUDE.md`), so the item is not worked twice: *save-in-place and revert for B-rep and mesh sources* (`test:integration`'s `Save in place bakes ops into the source with .bak + watermark`, `Revert drops the op list to the save point`, `Watermark-write failure rolls the source back`, `Mesh save-in-place (STL)`, and six interrupted-save recovery cases, plus `test:webview`'s three `save point` cases); *the live operation preview* (three `op preview bands` cases); *the drawing-sheet settings form* (an integration case plus a webview case); *the Clash, Primitives and Mesh-ops panels* (6 + 4 + 1 webview cases); *SVG and DXF import* (`dxfImport.test.ts`, `dxfSilhouette.test.ts`, and the `import_svg` cases in `mcpTools.test.ts`).
-  - **Still open:**
-    - the transform gizmo — only `gizmoTransform.test.ts`'s math is covered; the drag interaction in the real viewer is not;
-    - the join between mesh-target export and the save dialog — the export picker's option *list* is asserted, the join itself is not.
-
-  Then add a check to `npm test` that fails when the count of unresolved verification gaps rises, with a small allowlist file that states why. **The originally-worded `grep -c` version of this gate is known to be wrong and should not be built as written:** `CLAUDE.md` is a chronological session log, so its gap notes outlive the gaps they describe (one entry still carries a note it explicitly calls "resolved and … stale"). A text count would be trivially gameable by rewording and would ratchet upward on every honest retrospective. Count something *structural* instead — machine-readable markers that a later entry retracts, plus a checked-in baseline number — so closing a gap lowers the count.
-- **Done when:** the count has fallen by ten, and a new unverified feature cannot land silently.
+- **Done so far:** the gate shipped — `src/verificationGaps.ts`, run by `npm test`, over `scripts/verification-gaps/registry.json` and a checked-in baseline. Every "Verification gap" note in `CLAUDE.md` carries a `[vg:<id>]` marker, so a new unverified feature cannot land silently; an entry closes only by naming harness test titles that literally exist, so rewording cannot close it and renaming the test re-opens it. Ten claims moved from F5-only into `npm run test:webview` (641 → 747 checks): real transform-gizmo drags (translate/rotate/scale, preview-only, discard on leaving the form, grid snap), and the Mesh Health, Region fit, Macros, Mass Properties, Pin + tolerance, colour-by-field and linked-camera panels. Writing the Region fit case found and fixed a real defect: Pick seed did nothing unless Selection mode was on. The full account, including what this does **not** claim, is in `CLAUDE.md`'s "Verification-debt burn-down".
+- **Still open (56 unresolved entries):**
+  - **The mesh-target export join** is written (two `test:integration` cases: STL and glTF Binary through the real webview) but has **never been run** — the sandbox that wrote it cannot download VS Code. It stays `test-written`, which counts as unresolved, until a CI run is seen green. Closing it is a one-line registry change plus lowering the baseline.
+  - **Entity-point snapping** of a live gizmo drag has no end-to-end case; it needs a fixture with a deterministic vertex target.
+  - **The host halves** of nearly every panel — quick-picks, save dialogs, `provider.ts` handlers — are what `test:webview` structurally cannot reach. They belong in `test:integration`, using the modal stubs and Test seams already there.
+- **Next increment (M):** take the ten host-side entries with the highest data-loss or write-path risk into `test:integration`, one case per entry, then lower the baseline by exactly as many as were closed.
+- **Done when:** the unresolved count has fallen by a further ten **by closure** (not by rewording), and the first green CI run has closed the export-join entry.
 
 #### 1.2 Nastran bulk-deck import {#nastran-bulk-deck-import}
 

@@ -1,0 +1,463 @@
+{
+  "version": 1,
+  "entries": [
+    {
+      "id": "verification",
+      "section": "Verification (Phase 2+3)",
+      "gap": "no real Extension Development Host session was run in this environment. The interactive flow this change touches most — opening a B-rep file, editing it repeatedly, confi",
+      "status": "open"
+    },
+    {
+      "id": "mesh-health-panel",
+      "section": "Mesh → B-rep promotion (roadmap item, closed — both phases)",
+      "gap": "this environment cannot run a real Extension Development Host session, so the panel's actual button click → request → render round trip has NOT been exercised end-to-end ",
+      "status": "closed",
+      "closedBy": [
+        "mesh health: a native STL shows the panel, Check posts a request, the report renders",
+        "mesh health: Repair and Promote are mirror-image gates; stale replies and the decimate flag"
+      ]
+    },
+    {
+      "id": "phase-2",
+      "section": "Phase 2 — actual promotion (a one-shot export)",
+      "gap": "the actual button click → quick-picks → save dialog → write flow has NOT been exercised in a real Extension Development Host session. See \"Verify a change\" below.",
+      "status": "open"
+    },
+    {
+      "id": "auto-decimate-checkbox",
+      "section": "Auto-decimate under `MAX_HEALABLE_TRIANGLES` (roadmap Tier 1 item, closed)",
+      "gap": "the checkbox click-through has NOT been exercised in a real Extension Development Host session (same standing caveat); the MCP path is verified live above. Full `mcp:smok",
+      "status": "closed",
+      "closedBy": [
+        "mesh health: Repair and Promote are mirror-image gates; stale replies and the decimate flag"
+      ]
+    },
+    {
+      "id": "sidecar-and-source-external-change-reconci",
+      "section": "Sidecar and source external-change reconciliation (roadmap item, closed)",
+      "gap": "`provider.ts` has zero existing unit-test coverage anywhere in this codebase (it's `vscode`-API-dependent throughout, and `vscode` isn't a real importable module outside ",
+      "status": "open"
+    },
+    {
+      "id": "view-state-persistence",
+      "section": "View-state persistence (roadmap item, closed)",
+      "gap": "`provider.ts`/`main.ts`'s webview wiring have no unit-test coverage path (`vscode`-API-dependent / DOM-dependent respectively). Verified via `tsc`/`npx vitest run`/`npm r",
+      "status": "open"
+    },
+    {
+      "id": "per-band-operation-preview-colouring",
+      "section": "Per-band operation-preview colouring (roadmap Tier 1, closed)",
+      "gap": "no real Extension Development Host session was run here — the two-tone overlay's feel in a live webview (light and dark themes) needs the F5 checklist below (extrude → ca",
+      "status": "open"
+    },
+    {
+      "id": "author-profiles-on-a-named-construction-pl",
+      "section": "Author profiles on a named construction plane (roadmap Tier 1, closed)",
+      "gap": "the plane-picker feel and tilted-rectangle stability across reopen need the F5 checklist below (pick a plane → sketch lands on it; move the plane → sketch follows; delete",
+      "status": "open"
+    },
+    {
+      "id": "volume-and-point-selection-predicates",
+      "section": "Volume and point selection predicates (roadmap Tier 1, closed)",
+      "gap": "no real Extension Development Host session was run here — the new dropdown options in a live webview need the F5 checklist below (Vol smallest → one solid assigned; Point",
+      "status": "open"
+    },
+    {
+      "id": "zoom-to-selection",
+      "section": "Zoom to selection (roadmap Tier 1, closed)",
+      "gap": "no real Extension Development Host session was run here — the Command Palette entry and the menu click-through in a live webview need the F5 checklist below (select a fac",
+      "status": "open"
+    },
+    {
+      "id": "transform-gizmo",
+      "section": "Transform gizmo (roadmap item, closed)",
+      "gap": "(`clipCap.ts`, `labelOverlay.ts`, the external-change-reconciliation watchers, …): this environment cannot run a real Extension Development Host session, so the actual mo",
+      "status": "closed",
+      "closedBy": [
+        "gizmo: dragging the X arrow previews a Move along X only; Apply commits it once",
+        "gizmo: rotate ring and scale handle drive their forms; nothing commits until Apply",
+        "gizmo: leaving the form discards an uncommitted drag (no stranded preview)"
+      ]
+    },
+    {
+      "id": "split-view",
+      "section": "Split view — synchronized quad viewports (roadmap item, all 3 phases closed)",
+      "gap": "the Transform Gizmo drag inside a split view and the human feel of the toggle are F5-only; see \"Verify a change\" below for the manual steps.",
+      "status": "open"
+    },
+    {
+      "id": "import-svg",
+      "section": "`import_svg` (new MCP tool)",
+      "gap": "the interactive click-through (File ▸ Import SVG… with a real transformed, text-derived \"O\" → Build → Surface on all its edges → Extrude/`wrap`) has NOT been exercised in",
+      "status": "open"
+    },
+    {
+      "id": "free-points-and-lines-are-meshed-on",
+      "section": "Free points and lines are meshed on (roadmap \"Embedded points and curves\", closed)",
+      "gap": "no real Extension Development Host session was run here. Placing an `addPoint`, assigning it to a Part and pressing ▶ Generate in a live webview — and the \"curved free ed",
+      "status": "open"
+    },
+    {
+      "id": "distance-graded-mesh-sizing-anchored-on-a",
+      "section": "Distance-graded mesh sizing anchored on a Part (roadmap \"Boundary-layer and distance-threshold mesh sizing\", Phase 1, closed)",
+      "gap": "the panel click-through (dragging the toggle, typing into the four fields) has NOT been exercised in a real Extension Development Host session — `npm run test:webview` dr",
+      "status": "open"
+    },
+    {
+      "id": "ftetwild-robust-volume-meshing",
+      "section": "fTetWild robust volume meshing (roadmap \"Robust volumetric meshing from a skin mesh\", closed — via a route the item's own text never considered)",
+      "gap": "the FE Mesh panel's Engine `<select>` and the Mesh Health panel's Repair (robust)… button both compile clean and are wired following established patterns exactly, but nei",
+      "status": "open"
+    },
+    {
+      "id": "chrome-redesign-toolbar-dock-document-chip",
+      "section": "Chrome redesign: toolbar, dock, document chip, status line (design-led, closed)",
+      "gap": "no Extension Development Host session was run. The feel of the dock and popover in a real editor, the chip beside a real tab, and the live cursor readout on a real model ",
+      "status": "open"
+    },
+    {
+      "id": "pass-3",
+      "section": "Pass 3 — matching the mockup (sidebar, status bar, pill, kernel readiness)",
+      "gap": "no Extension Development Host session — the hover-reveal feel of the Parts and tree rows, how the new line glyphs read in light and high-contrast themes, and the real ker",
+      "status": "open"
+    },
+    {
+      "id": "pass-4",
+      "section": "Pass 4 — the remaining gaps to the mockup",
+      "gap": "no Extension Development Host session — the feel of the smaller toolbar, the new glyphs in light and high-contrast themes, and the collapse chevron's placement in a real ",
+      "status": "open"
+    },
+    {
+      "id": "pass-5",
+      "section": "Pass 5 — the last gaps to the mockup",
+      "gap": "how a 0.35 tint reads in light and high-contrast themes — where the accent and the face colours differ from the dark-theme fixture — is F5-only.",
+      "status": "open"
+    },
+    {
+      "id": "region-fit-actions",
+      "section": "Phase 2 — turn a fit into a stored plane / a primitive op (S, gated on item 7’s `plane-N` sidecar, now closed)",
+      "gap": "the actual click → request → render → save/add round trip has NOT been exercised end-to-end in a real Extension Development Host session — see “Verify a change” below. Th",
+      "status": "closed",
+      "closedBy": [
+        "region fit: Pick seed is one-shot, posts a world point, and the reply gates the three actions",
+        "region fit: an error reply is shown and disables the actions; a B-rep source hides the section"
+      ]
+    },
+    {
+      "id": "standard-parts-thumbnails",
+      "section": "Standard-parts thumbnails (roadmap Tier 1, closed)",
+      "gap": "no live-network run here — a real step.parts search in a live webview (thumbnails appear; airplane-mode search still lists text with no hangs) needs the F5 checklist belo",
+      "status": "open"
+    },
+    {
+      "id": "macros-panel-save-prompt",
+      "section": "Saved parametric scripts — the macro library (roadmap Tier 1, closed)",
+      "gap": "the Macros panel's click-through (Save current → name prompt → Run with edited parameters → Delete) has NOT been exercised in a real Extension Development Host session. S",
+      "status": "open",
+      "note": "Run/Delete/parameter rows are now covered (macros-panel-run-delete); the Save current name-prompt is a host-side flow."
+    },
+    {
+      "id": "bundled-starter-macro-library",
+      "section": "Bundled starter macro library (roadmap Tier 1 item, closed)",
+      "gap": "no real Extension Development Host session was run here — the bundled rows rendering, Run-on-blank click-through, and Delete-refusal in a live webview need the F5 checkli",
+      "status": "open",
+      "note": "The read-only (no Delete) row rule is covered by the macros webview case; the Run-on-a-blank-model host click-through remains."
+    },
+    {
+      "id": "hole-table-feature-schedule",
+      "section": "Hole table / feature schedule (roadmap Tier 1, closed)",
+      "gap": "Zero webview surface — fully covered by unit + smoke in this environment, stated plainly instead of the usual F5 caveat.",
+      "status": "none",
+      "note": "The feature has zero webview surface and is fully covered by unit + mcp:smoke tests."
+    },
+    {
+      "id": "explain-the-geometry-under-the-cursor",
+      "section": "Explain the geometry under the cursor (roadmap Tier 1, closed — hover tooltip + inspector card)",
+      "gap": "the visual placement/edge-flipping of the tooltip near the viewport border, and how the card reads at a glance.",
+      "status": "open"
+    },
+    {
+      "id": "multi-view-drawing-sheets",
+      "section": "Multi-view drawing sheets (roadmap Tier 1, closed)",
+      "gap": "the format/paper quick-pick flow and the rendered sheet's actual on-screen legibility (title-block text size, view-label placement, dash visibility at print scale) have N",
+      "status": "open"
+    },
+    {
+      "id": "svg-silhouette-export",
+      "section": "SVG silhouette export (roadmap item, closed)",
+      "gap": "the File ▾ → Export Silhouette SVG… click → view quick-pick → unit quick-pick → save dialog flow has NOT been exercised in a real Extension Development Host session. See ",
+      "status": "open"
+    },
+    {
+      "id": "progress-reporting-and-cancellation",
+      "section": "Progress reporting and cancellation (roadmap item, closed as stage-boundary only — explicitly NOT the OCCT-forked-child-process item)",
+      "gap": "`provider.ts` has no unit-test coverage (`vscode`-API-dependent throughout). Verified via `tsc`/`npx vitest run`/`npm run build`/`npm run mcp:smoke` (all clean — `mcp:smo",
+      "status": "open"
+    },
+    {
+      "id": "cheap-thin-wrapper-ops-mined-from-fluidcad",
+      "section": "Cheap thin-wrapper ops mined from FluidCAD (roadmap item 10, closed — all six sub-items)",
+      "gap": "`npm test` could not execute — vitest 4 needs Node ≥ 20 and the shell had Node 18 — so the new unit tests were validated by `tsc` alone and left to CI, and `edits-edit.pn",
+      "status": "none",
+      "note": "Retracted in its own entry: the toolchain now runs under VS Code's Electron as Node 24, so vitest and the new unit tests do run here."
+    },
+    {
+      "id": "thin-walled-sweep-family-features",
+      "section": "Thin-walled sweep-family features — `.thin()` (roadmap item 8, first cut)",
+      "gap": "the panel's new Wall/Outward fields have NOT been exercised in a real Extension Development Host session. See \"Verify a change\".",
+      "status": "open"
+    },
+    {
+      "id": "open-profile",
+      "section": "Open-profile (wire) operand for the sweep-family ops (roadmap item 8, second cut, closed)",
+      "gap": "the `Set path` / `Add section` buttons and picking a profile in Line mode have NOT been exercised in a real Extension Development Host session. See \"Verify a change\".",
+      "status": "open"
+    },
+    {
+      "id": "region-pick-drill",
+      "section": "Region pick + drill (roadmap item 1, `.pick(regions)` + `.drill()`, closed)",
+      "gap": "the Regions row and Drill composer have NOT been exercised in a real Extension Development Host session. See \"Verify a change\".",
+      "status": "open"
+    },
+    {
+      "id": "wrap-sketch-onto-cylinder-cone",
+      "section": "Wrap sketch onto cylinder/cone — `wrap()` (roadmap item 1, closed)",
+      "gap": "the Wrap composer (target Type/Axis/Radius/Half-angle/Thickness/Variant row) has NOT been exercised in a real Extension Development Host session. See \"Verify a change\".",
+      "status": "open"
+    },
+    {
+      "id": "loft-guide-rails",
+      "section": "Loft guide rails — resampled-intermediate fallback (roadmap item 1, closed as fallback)",
+      "gap": "the **Set rail** row has NOT been exercised in a real Extension Development Host session. See \"Verify a change\".",
+      "status": "open"
+    },
+    {
+      "id": "build-time-classification-buckets",
+      "section": "Build-time classification buckets (roadmap item 7 Phase 1, closed)",
+      "gap": "the chip rendering, click-to-highlight feel, and tooltip layout have NOT been exercised in a real Extension Development Host session — see \"Verify a change\" below.",
+      "status": "open"
+    },
+    {
+      "id": "interactive-half",
+      "section": "Interactive half — pin-as-query row (follow-up, closed)",
+      "gap": "the host handler (`provider.ts`, no unit-test path) and the human feel of the row are F5-only — same caveat as every other webview-touching feature. The test fakes the ke",
+      "status": "open"
+    },
+    {
+      "id": "openscad-csg-import",
+      "section": "OpenSCAD .csg import (roadmap Tier 2 item 2, path (a), closed)",
+      "gap": "opening a `.csg` in a real Extension Development Host session (glue: selector registration, open-dialog filter, `handleBRep` status posts) has NOT been exercised — same c",
+      "status": "open"
+    },
+    {
+      "id": "complete-the-openscad-csg-node-coverage",
+      "section": "Complete the OpenSCAD `.csg` node coverage (roadmap Tier 1 item 2, closed — *issue #35*)",
+      "gap": "opening an extrude-bearing `.csg` in a real Extension Development Host session has NOT been exercised — same standing caveat as the path-(a) item above (the interactive g",
+      "status": "open"
+    },
+    {
+      "id": "openscad-scad-via-installed-binary",
+      "section": "OpenSCAD `.scad` via installed binary (roadmap Tier 2 item 2, path (b), closed)",
+      "gap": "Interactive open carries the standard F5-only caveat, same as `.csg`.",
+      "status": "open"
+    },
+    {
+      "id": "clash-panel",
+      "section": "Clash panel (roadmap Tier 2 \"Clash panel\", closed)",
+      "gap": "no real Extension Development Host session was run here. The host handlers (operand resolution, empty-side short-circuit, `<2`-usable-Parts error, `C(n,2)` guard) are cov",
+      "status": "open"
+    },
+    {
+      "id": "bounded-assembly-interference-checks",
+      "section": "Bounded assembly interference checks (roadmap Tier 1, closed)",
+      "gap": "no real Extension Development Host session was run here — the Check-all click-through with a budget needs the F5 checklist below.",
+      "status": "open"
+    },
+    {
+      "id": "mesh-operations-panel-for-meshio-sources",
+      "section": "Mesh-operations panel for meshio sources (roadmap Tier 2 item, closed)",
+      "gap": "no real Extension Development Host session was run here — the Run-click → save-dialog → write flow and the section's show/hide across source kinds need the F5 checklist b",
+      "status": "open"
+    },
+    {
+      "id": "bom-copy-button",
+      "section": "BOM \"Copy\" button (roadmap Tier 2 item, closed)",
+      "gap": "no real Extension Development Host session was run here — the click → host compute → clipboard round trip in a real VS Code webview (clipboard permission, focus) needs th",
+      "status": "open"
+    },
+    {
+      "id": "tier-0-phase-1",
+      "section": "Tier 0 Phase 1 — same-format save-in-place (roadmap Tier 0, all three phases closed; Phase 3 below)",
+      "gap": "the interactive click-through (Export → own format → modal → save dialog → reload, `.bak` on disk, watcher silence) has NOT been exercised in a real Extension Development",
+      "status": "open"
+    },
+    {
+      "id": "tier-0-phase-2",
+      "section": "Tier 0 Phase 2 — genuinely editable document (roadmap Tier 0, Phase 2 closed; Phase 3 closed below)",
+      "gap": "no live Extension Development Host session here — the five API members, dirty-dot feel, Ctrl+S bake + clear, `File: Revert File`, Save-As copy, and hot-exit restore need ",
+      "status": "open"
+    },
+    {
+      "id": "tier-0-phase-3",
+      "section": "Tier 0 Phase 3 — mesh save-in-place + headless save_model (roadmap Tier 0, closed)",
+      "gap": "no live Extension Development Host session here — the Export-own-format modal → `.bak` → reload, Ctrl+S mesh bake + clear, and glTF-exclusion need the F5 checklist below.",
+      "status": "open"
+    },
+    {
+      "id": "save-reopen-and-recovery-regression-covera",
+      "section": "Save, reopen and recovery regression coverage (roadmap Tier 1, closed)",
+      "gap": "the quick-pick/save-dialog chains and failure modals are now covered; what no harness reaches is whether the render *looks* right after each recovery and any real user ge",
+      "status": "open"
+    },
+    {
+      "id": "parity-gaps",
+      "section": "Parity gaps (roadmap Tier 1, closed — all four)",
+      "gap": "the host halves of the hole-table copy and the sweep (`provider.ts` handlers) and the feel of the inline note field are F5-only; the sweep's folder dialog is not exercise",
+      "status": "open"
+    },
+    {
+      "id": "primitive-recognition-panel",
+      "section": "Primitive-recognition panel (roadmap Tier 2 item, closed — Tier 2 now empty)",
+      "gap": "no real Extension Development Host session was run here — the Recognize → Apply → Export → Save-macro click-through in a live VS Code webview (including the Export quick-",
+      "status": "open"
+    },
+    {
+      "id": "sidebar-layout-and-keyboard-usability",
+      "section": "Sidebar layout and keyboard usability (roadmap Tier 1 item, closed)",
+      "gap": "the *feel* of a live drag, the roving-focus feel across real VS Code themes and at real editor zoom (100/110/133%), and high-contrast-theme readability are F5-only. Every",
+      "status": "open"
+    },
+    {
+      "id": "contribution-templates-and-durable-referen",
+      "section": "Contribution templates and durable references (roadmap Tier 1 item 2, closed)",
+      "gap": "no real GitHub render pass was run — the templates' actual button appearance/live behavior on the GitHub UI is inferred from its documented shapes, not viewed.",
+      "status": "open"
+    },
+    {
+      "id": "saved-view-bookmarks",
+      "section": "Saved view bookmarks (roadmap Tier 1 item, closed)",
+      "gap": "the human feel of the menu interaction and restore framing in a live host is F5-only.",
+      "status": "open"
+    },
+    {
+      "id": "reusable-meshing-presets",
+      "section": "Reusable meshing presets (roadmap Tier 1 item, closed)",
+      "gap": "no real Extension Development Host session — the Apply→re-render→generate click-through and the Save name-prompt flow need the F5 checklist (open any model → Saved preset",
+      "status": "open"
+    },
+    {
+      "id": "measured-mesh-refinement-comparison",
+      "section": "Measured mesh-refinement comparison (roadmap Tier 1 item, closed)",
+      "gap": "`mcp:smoke` never sends `notifications/cancelled`, so a *live* cancelled sweep is not reachable through that harness without new client machinery — the deterministic clai",
+      "status": "open"
+    },
+    {
+      "id": "drawing-sheet-settings-and-reusable-templa",
+      "section": "Drawing-sheet settings and reusable templates (roadmap Tier 1, closed)",
+      "gap": "the form's feel.",
+      "status": "open"
+    },
+    {
+      "id": "simulation-handoff-manifest-and-boundary-c",
+      "section": "Simulation handoff manifest and boundary coverage (roadmap Tier 1, closed)",
+      "gap": "the checkbox's status line in a live session (the message is covered by `test:webview`).",
+      "status": "open"
+    },
+    {
+      "id": "preparation-report-bundle",
+      "section": "Preparation report bundle (roadmap Tier 1, closed)",
+      "gap": "opening the HTML from the notification.",
+      "status": "open"
+    },
+    {
+      "id": "recoverable-mesh-save-in-place",
+      "section": "Recoverable mesh save-in-place (roadmap 1.5, \"Recoverable mesh source saves\", closed)",
+      "gap": "the recovery *modal*'s feel in a live session (both buttons offered by name is asserted, but which one a user reaches for is not) and the status/error wording's readabili",
+      "status": "open"
+    },
+    {
+      "id": "meshio-16-22-0-16-27-0",
+      "section": "meshio++ 16.22.0 → 16.27.0 — five releases, and the one assertion that was pinning a fix rather than a bug",
+      "gap": "the Nastran **viewer** open is still",
+      "status": "open"
+    },
+    {
+      "id": "macros-panel-run-delete",
+      "section": "Saved parametric scripts — the macro library",
+      "gap": "The Macros panel rows, parameter fields, Run payload, Delete and macroApplyOps had never been driven in a real webview.",
+      "status": "closed",
+      "closedBy": [
+        "macros: rows, parameter fields, Run payload, and the bundled-starter read-only rule",
+        "macros: macroApplyOps lands on the same undoable op stack as hand edits"
+      ]
+    },
+    {
+      "id": "gizmo-grid-snap",
+      "section": "Grid and entity snapping",
+      "gap": "Grid snapping quantising a live gizmo drag was covered only by the pure snap math.",
+      "status": "closed",
+      "closedBy": [
+        "gizmo: grid snap quantises the drag to the grid size; turning it off frees the drag"
+      ]
+    },
+    {
+      "id": "gizmo-point-snap",
+      "section": "Grid and entity snapping",
+      "gap": "Entity-point snapping a live gizmo drag onto a vertex has no end-to-end coverage (the snap tolerance is 1% of the model diagonal, so a deterministic target needs its own fixture).",
+      "status": "open",
+      "note": "Left open deliberately rather than asserted weakly."
+    },
+    {
+      "id": "mass-properties-panel",
+      "section": "Settings, screenshot, mass properties, and measurement",
+      "gap": "Compute for none/one/many selected entities, the stale-reply guard, the Units re-render and the mesh-source local path were F5-only.",
+      "status": "closed",
+      "closedBy": [
+        "mass properties: Compute posts for the whole model; the reply renders; Units rescales without a request",
+        "mass properties: more than one selected entity is refused locally with guidance",
+        "mass properties: a mesh source computes locally and never posts a request"
+      ]
+    },
+    {
+      "id": "pin-tolerance-fields",
+      "section": "Dimension-style rendering + tolerance bands",
+      "gap": "The inline nom/+/− pin fields, the symmetric default, the half-filled-band warning and out-of-band flagging were F5-only.",
+      "status": "closed",
+      "closedBy": [
+        "pin: the tolerance fields exist only while pinnable; a band pins with its frozen measurement",
+        "pin: Nominal without + pins WITHOUT a band and says so; Clear removes the fields again",
+        "pin: a saved annotation outside its band is flagged from the frozen facts"
+      ]
+    },
+    {
+      "id": "colour-by-field",
+      "section": "meshio++ integration",
+      "gap": "The colour-by-field picker (non-scalar arrays disabled up front), request, legend and failure reset were F5-only.",
+      "status": "closed",
+      "closedBy": [
+        "colour by field: non-scalar arrays are disabled up front; a pick posts a request and the reply draws a legend",
+        "colour by field: a failed pick clears the overlay and legend, not just the dropdown"
+      ]
+    },
+    {
+      "id": "linked-cameras",
+      "section": "Split view — synchronized quad viewports",
+      "gap": "Applying a relayed camera without echoing viewChanged (the documented ping-pong hazard) was F5-only.",
+      "status": "closed",
+      "closedBy": [
+        "linked cameras: the toggle posts setCamerasLinked; applying a relayed camera moves the view WITHOUT echoing viewChanged"
+      ]
+    },
+    {
+      "id": "export-mesh-join",
+      "section": "Webview and host-side test harnesses",
+      "gap": "The Export command's mesh targets end to end: format pick → the real webview serializes → save dialog → bytes on disk.",
+      "status": "test-written",
+      "closedBy": [
+        "Export… writes a structurally valid binary STL serialized by the real webview",
+        "Export… writes a glTF Binary (.glb) serialized by the real webview"
+      ],
+      "note": "Written and type-checked but NOT yet run: this environment cannot download VS Code for test:integration. The first green CI run closes it."
+    }
+  ]
+}

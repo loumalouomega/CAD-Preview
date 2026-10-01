@@ -685,6 +685,52 @@ test("Export… offers the real export targets and writes the chosen one", async
   await closeAll();
 });
 
+// Mesh-target export — the join `test:webview` cannot reach. The serializers
+// (`meshExporters.ts`) are asserted structurally in `test:webview`, and the
+// host's save/write half is asserted above for B-rep targets; what no harness
+// had ever driven is the two together in ONE VS Code: command → format pick →
+// unit pick → the REAL webview serializes its Three.js scene → `exportResult`
+// posts back → save dialog → bytes on disk. This VS Code now gets software GL
+// (`--enable-unsafe-swiftshader` in `runTest.ts`), so the scene exists.
+// No `setExportMeshStub` here — the stub would defeat the very join under test.
+test("Export… writes a structurally valid binary STL serialized by the real webview", async () => {
+  const staged = stage(STEP_FIXTURE);
+  const out = path.join(path.dirname(staged), "exported.stl");
+  const before = fs.readFileSync(staged);
+  assert(await openDocument(staged), "the STEP fixture opens");
+
+  await withModals([pick("STL"), pick("Native"), save(out)], async () => {
+    await vscode.commands.executeCommand("cad-preview.export");
+    await waitForFile(out);
+  });
+
+  const buf = fs.readFileSync(out);
+  assert(buf.length > 84, `the STL has a header and at least one triangle (${buf.length} bytes)`);
+  const count = buf.readUInt32LE(80);
+  assert(count > 0, `the header declares a non-zero triangle count (${count})`);
+  assert(buf.length === 84 + count * 50, `the byte length is exactly 84 + 50 x triangles (${buf.length} vs ${84 + count * 50}) — an empty or truncated scene would not satisfy this`);
+  assert(fs.readFileSync(staged).equals(before), "the source file is byte-identical — an export never writes it");
+  await closeAll();
+});
+
+test("Export… writes a glTF Binary (.glb) serialized by the real webview", async () => {
+  const staged = stage(STEP_FIXTURE);
+  const out = path.join(path.dirname(staged), "exported.glb");
+  assert(await openDocument(staged), "the STEP fixture opens");
+
+  await withModals([pick("glTF Binary"), pick("Native"), save(out)], async () => {
+    await vscode.commands.executeCommand("cad-preview.export");
+    await waitForFile(out);
+  });
+
+  const buf = fs.readFileSync(out);
+  assert(buf.length > 20, `the .glb has a header and chunks (${buf.length} bytes)`);
+  assert(buf.toString("latin1", 0, 4) === "glTF", "the file starts with the glTF binary magic");
+  assert(buf.readUInt32LE(4) === 2, "glTF container version 2");
+  assert(buf.readUInt32LE(8) === buf.length, "the header's declared total length equals the file size");
+  await closeAll();
+});
+
 test("Save in place bakes ops into the source with .bak + watermark", async () => {
   // Tier 0 Phase 1: picking the source's own B-rep format writes back to the
   // open document instead of exporting. Pre-write a one-op sidecar so there

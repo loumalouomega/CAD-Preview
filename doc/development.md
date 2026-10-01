@@ -212,6 +212,18 @@ Run all tests: `npm test`
 
 Run a specific test file: `npx vitest run src/fileRouter.test.ts`
 
+### The verification-gap gate
+
+Features that were checked only by hand carry a "Verification gap" note in `CLAUDE.md`. `npm test` keeps that debt from growing silently (`src/verificationGaps.test.ts`):
+
+- Every such note must end in a `[vg:<id>]` marker naming an entry in `scripts/verification-gaps/registry.json`. A new unverified feature therefore fails the suite until it is registered.
+- An entry becomes `closed` only by listing `closedBy` — exact `test("…")` titles from `scripts/webview-test/run.mjs` or `test/integration/suite/index.ts`. Rewording a note cannot close it, and renaming or deleting the covering test re-opens it. `test-written` means a test exists but has not yet been seen green, and still counts as unresolved.
+- `scripts/verification-gaps/baseline.json` caps the unresolved count. Closing an entry means lowering it by one in the same change; the gate fails if the count falls without the baseline following.
+
+To close a gap: write the harness case, bug-inject it (confirm the fault turns it red), set the entry's `status` and `closedBy`, and lower the baseline.
+
+`WEBVIEW_TEST_ONLY="<substring>" node scripts/webview-test/run.mjs` runs only the matching `test:webview` cases, which is the fast loop for writing one. If Playwright wants a newer Chromium than the one installed and you cannot download one, point its expected path at the installed headless shell instead of reinstalling.
+
 ## VS Code Remote / SSH
 
 When using VS Code Remote or SSH, the **running extension** is the installed copy in `~/.vscode-server/extensions/`, not the `dist/` directory in the workspace. Rebuilding alone won't show your changes.
