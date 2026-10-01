@@ -452,12 +452,12 @@
       "id": "export-mesh-join",
       "section": "Webview and host-side test harnesses",
       "gap": "The Export command's mesh targets end to end: format pick → the real webview serializes → save dialog → bytes on disk.",
-      "status": "test-written",
+      "status": "closed",
       "closedBy": [
         "Export… writes a structurally valid binary STL serialized by the real webview",
         "Export… writes a glTF Binary (.glb) serialized by the real webview"
       ],
-      "note": "Written and type-checked but NOT yet run: this environment cannot download VS Code for test:integration. The first green CI run closes it."
+      "note": "Seen green in CI on PR #90 (run 36875850807): STL is 84 + 50 x 12 bytes, glTF carries the glTF magic and a declared length equal to the file size, both serialized by the real webview."
     }
   ]
 }
