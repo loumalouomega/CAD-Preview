@@ -2465,7 +2465,9 @@ export class Viewer {
     const down = this.pointerDownPos;
     this.pointerDownPos = null;
     if (this.transformControls.dragging) return; // ditto — a gizmo drag-release must never also pick an entity
-    if (!down || (!this.measureMode && this.selectionMode === null) || !this.model) return;
+    // `onFitSeedPick` is a one-shot capture that must work with selection and
+    // measure modes both off (the normal state) — it is NOT a selection mode.
+    if (!down || (!this.measureMode && this.selectionMode === null && !this.onFitSeedPick) || !this.model) return;
     // Ignore drags (orbit/pan) — only a near-stationary click selects.
     if (Math.hypot(event.clientX - down.x, event.clientY - down.y) > 4) return;
 

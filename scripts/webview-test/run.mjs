@@ -3732,6 +3732,781 @@ test("new blank: an EMPTY geometry message yields a usable blank document", asyn
   assert(state.subtab2dTitle === "", `the 2D sketch subtab is not greyed (got ${JSON.stringify(state.subtab2dTitle)})`);
 });
 
+// ── Transform gizmo (roadmap Tier 1 "Verification-debt burn-down") ────────
+//
+// The gizmo's per-target delta MATH is unit-tested (`gizmoTransform.test.ts`);
+// what was never exercised is the real drag: TransformControls' pointer
+// handling, `OrbitControls` suspension, the live push into the Move/Rotate/
+// Scale form, and the "preview only — Apply commits" contract.
+//
+// No production hook is needed to find the handle. TransformControls' materials
+// are unlit and `toneMapped: false`, so its X/Y/Z handles render as the exact
+// pure colours (255,0,0)/(0,255,0)/(0,0,255), which no shaded model pixel
+// reaches. The handle is located by screenshot, then dragged with real mouse
+// events.
+
+/** Selects the volume under the viewport centre (Vol mode) and opens an Edit-tab op form. */
+async function openGizmoForm(page, opName) {
+  await page.click("#select-menu");
+  await page.click("#sel-toggle");
+  await page.click('.sel-mode[data-mode="volume"]');
+  await page.click("#select-menu"); // close via the trigger — see pickCentreIntoNewPart
+  await sleep(150);
+  const box = await viewportBox(page);
+  await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+  await sleep(300);
+  await page.evaluate(() => [...document.querySelectorAll(".edits-tab")].find((b) => b.textContent === "Edit")?.click());
+  await sleep(150);
+  await page.evaluate(
+    (n) => [...document.querySelectorAll(".op-btn")].find((b) => b.querySelector(".op-name")?.textContent === n)?.click(),
+    opName
+  );
+  await sleep(500);
+}
+
+/**
+ * Finds a gizmo handle by its pure colour. Returns the gizmo centre (centroid of
+ * all three pure-colour sets), the farthest pixel of the wanted colour, and a
+ * grab point 75% of the way out — on the shaft/ring, not on the arrow tip's
+ * edge, where a one-pixel miss would fall through to OrbitControls.
+ */
+async function gizmoHandle(page, axis, frac = 0.75) {
+  const want = { x: [255, 0, 0], y: [0, 255, 0], z: [0, 0, 255] }[axis];
+  const box = await viewportBox(page);
+  const shot = await shotWithoutToast(page, () => page.locator("#app").screenshot());
+  const found = await page.evaluate(
+    async ({ b64, want }) => {
+      const bmp = await createImageBitmap(await (await fetch(`data:image/png;base64,${b64}`)).blob());
+      const c = document.createElement("canvas");
+      c.width = bmp.width;
+      c.height = bmp.height;
+      c.getContext("2d").drawImage(bmp, 0, 0);
+      const { data } = c.getContext("2d").getImageData(0, 0, c.width, c.height);
+      let sx = 0, sy = 0, n = 0;
+      const mine = [];
+      for (let y = 0; y < c.height; y++) {
+        for (let x = 0; x < c.width; x++) {
+          // Skip the orientation cube's corner — it draws axis arrows too.
+          if (x < 110 && y < 110) continue;
+          const i = (y * c.width + x) * 4;
+          const r = data[i], g = data[i + 1], b = data[i + 2];
+          const pure = (r === 255 && !g && !b) || (g === 255 && !r && !b) || (b === 255 && !r && !g);
+          if (!pure) continue;
+          sx += x; sy += y; n++;
+          if (r === want[0] && g === want[1] && b === want[2]) mine.push([x, y]);
+        }
+      }
+      return { n, cx: sx / Math.max(n, 1), cy: sy / Math.max(n, 1), mine };
+    },
+    { b64: shot.toString("base64"), want }
+  );
+  if (found.n === 0 || found.mine.length === 0) return null;
+  let far = found.mine[0], best = -1;
+  for (const [x, y] of found.mine) {
+    const d = (x - found.cx) ** 2 + (y - found.cy) ** 2;
+    if (d > best) { best = d; far = [x, y]; }
+  }
+  const dx = far[0] - found.cx, dy = far[1] - found.cy;
+  return {
+    centre: [box.x + found.cx, box.y + found.cy],
+    tip: [box.x + far[0], box.y + far[1]],
+    grab: [box.x + found.cx + dx * frac, box.y + found.cy + dy * frac],
+    dir: [dx / Math.hypot(dx, dy), dy / Math.hypot(dx, dy)],
+  };
+}
+
+async function dragFromTo(page, from, to) {
+  await page.mouse.move(from[0], from[1]);
+  await page.mouse.down();
+  const steps = 8;
+  for (let i = 1; i <= steps; i++) {
+    await page.mouse.move(from[0] + ((to[0] - from[0]) * i) / steps, from[1] + ((to[1] - from[1]) * i) / steps);
+    await sleep(30);
+  }
+  await page.mouse.up();
+  await sleep(250);
+}
+
+const formVec = (page, name) =>
+  page.evaluate(
+    (n) => [...document.querySelectorAll(`#edits-params input[data-name="${n}"]`)].map((i) => Number(i.value)),
+    name
+  );
+const sentCount = (page, type) => page.evaluate((t) => (window.__sent ?? []).filter((m) => m.type === t).length, type);
+
+test("gizmo: dragging the X arrow previews a Move along X only; Apply commits it once", async (page) => {
+  await populate(page);
+  await openGizmoForm(page, "Move");
+  const h = await gizmoHandle(page, "x");
+  assert(h !== null, "the translate gizmo's X handle is visible after selecting a volume and opening Move");
+  if (!h) return;
+  const edits0 = await sentCount(page, "editsChanged");
+  const view0 = await sentCount(page, "viewChanged");
+  const before = await frameSignature(page);
+  await dragFromTo(page, h.grab, [h.grab[0] + h.dir[0] * 70, h.grab[1] + h.dir[1] * 70]);
+
+  const vec = await formVec(page, "vec");
+  assert(Math.abs(vec[0]) > 0.5, `the live drag wrote a non-zero X delta into the form (got ${JSON.stringify(vec)})`);
+  assert(Math.abs(vec[1]) < 1e-3 && Math.abs(vec[2]) < 1e-3, "the X-arrow drag is constrained: Y and Z stay 0");
+  assert((await sentCount(page, "editsChanged")) === edits0, "a drag is a PREVIEW — it pushes no op until Apply");
+  assert((await sentCount(page, "viewChanged")) === view0, "the gizmo drag did not also orbit the camera");
+  const during = await frameSignature(page);
+  assert(during.hash !== before.hash, "the model visibly moved during the drag");
+
+  await page.click("#edits-params .compose-apply");
+  await sleep(300);
+  const sent = await page.evaluate(() => (window.__sent ?? []).filter((m) => m.type === "editsChanged").at(-1) ?? null);
+  const op = sent?.ops?.at(-1);
+  assert((await sentCount(page, "editsChanged")) === edits0 + 1, "Apply pushes exactly one editsChanged");
+  assert(op?.op === "translate" && Math.abs(op.vec[0] - vec[0]) < 1e-3, `the committed op carries the dragged delta (got ${JSON.stringify(op)})`);
+});
+
+test("gizmo: rotate ring and scale handle drive their forms; nothing commits until Apply", async (page) => {
+  await populate(page);
+  await openGizmoForm(page, "Rotate");
+  const ring = await gizmoHandle(page, "x", 1); // grab ON the ring (its farthest pixel), not inside it
+  assert(ring !== null, "the rotate gizmo's X ring is visible");
+  if (!ring) return;
+  const edits0 = await sentCount(page, "editsChanged");
+  // A ring is dragged along its TANGENT: perpendicular to the radial direction.
+  const tangent = [-ring.dir[1], ring.dir[0]];
+  await dragFromTo(page, ring.grab, [ring.grab[0] + tangent[0] * 60, ring.grab[1] + tangent[1] * 60]);
+  const angle = (await formVec(page, "angleDeg"))[0];
+  const axisDir = await formVec(page, "axisDir");
+  assert(Math.abs(angle) > 1, `the ring drag wrote a non-zero angle into the form (got ${angle}°)`);
+  assert(
+    Math.abs(Math.abs(axisDir[0]) - 1) < 1e-3 && Math.abs(axisDir[1]) < 1e-3 && Math.abs(axisDir[2]) < 1e-3,
+    `the X ring rotates about the X axis (got axisDir ${JSON.stringify(axisDir)})`
+  );
+  assert((await sentCount(page, "editsChanged")) === edits0, "a rotate drag is a preview — no op until Apply");
+
+  // Switching form discards the preview and re-attaches for the next mode.
+  await page.evaluate(() => [...document.querySelectorAll(".op-btn")].find((b) => b.querySelector(".op-name")?.textContent === "Scale")?.click());
+  await sleep(500);
+  const handle = await gizmoHandle(page, "x", 0.92);
+  assert(handle !== null, "the scale gizmo's X handle is visible after switching form");
+  if (!handle) return;
+  await dragFromTo(page, handle.grab, [handle.grab[0] + handle.dir[0] * 50, handle.grab[1] + handle.dir[1] * 50]);
+  const factors = await formVec(page, "factors");
+  assert(factors[0] > 1.05, `dragging the X handle outward scales up along X (got ${JSON.stringify(factors)})`);
+  assert(Math.abs(factors[1] - 1) < 1e-3 && Math.abs(factors[2] - 1) < 1e-3, "the X-handle scale leaves Y and Z at 1");
+  assert((await sentCount(page, "editsChanged")) === edits0, "a scale drag is a preview too");
+  await page.click("#edits-params .compose-apply");
+  await sleep(300);
+  const op = await page.evaluate(() => (window.__sent ?? []).filter((m) => m.type === "editsChanged").at(-1)?.ops?.at(-1) ?? null);
+  assert(op?.op === "scale" && Math.abs(op.factors[0] - factors[0]) < 1e-3, `Apply commits the dragged scale (got ${JSON.stringify(op)})`);
+});
+
+test("gizmo: leaving the form discards an uncommitted drag (no stranded preview)", async (page) => {
+  await populate(page);
+  // Reference render: the model selected, no gizmo, nothing dragged. Closing the form detaches the gizmo.
+  await openGizmoForm(page, "Move");
+  await page.evaluate(() => [...document.querySelectorAll(".edits-tab")].find((b) => b.textContent === "Geometry")?.click());
+  await sleep(400);
+  const pristine = await frameSignature(page);
+
+  await page.evaluate(() => [...document.querySelectorAll(".edits-tab")].find((b) => b.textContent === "Edit")?.click());
+  await page.evaluate(() => [...document.querySelectorAll(".op-btn")].find((b) => b.querySelector(".op-name")?.textContent === "Move")?.click());
+  await sleep(500);
+  const h = await gizmoHandle(page, "x");
+  if (!h) { assert(false, "gizmo handle visible"); return; }
+  await dragFromTo(page, h.grab, [h.grab[0] + h.dir[0] * 90, h.grab[1] + h.dir[1] * 90]);
+  // Control: the drag really moved something (otherwise "restored" below would be vacuous).
+  const dragged = (await formVec(page, "vec"))[0];
+  assert(Math.abs(dragged) > 5, `precondition: the drag produced a real delta (got ${dragged})`);
+  await page.evaluate(() => [...document.querySelectorAll(".edits-tab")].find((b) => b.textContent === "Geometry")?.click());
+  await sleep(500);
+  const afterLeaving = await frameSignature(page);
+  assert(afterLeaving.hash === pristine.hash, "switching away without Apply restores the model exactly (pixel-identical to the undragged render)");
+  assert((await sentCount(page, "editsChanged")) === 0, "nothing was committed");
+});
+
+test("gizmo: grid snap quantises the drag to the grid size; turning it off frees the drag", async (page) => {
+  await populate(page);
+  await page.click("#view-menu");
+  await page.click("#snap-grid");
+  await page.click("#view-menu"); // close via the trigger
+  await openDockMore(page);
+  await page.fill("#vc-grid-size", "5");
+  await page.click("#vc-more"); // close the popover
+  await sleep(100);
+  assert((await page.getAttribute("#snap-grid", "aria-checked")) === "true", "precondition: Snap to grid is on");
+
+  await openGizmoForm(page, "Move");
+  const h = await gizmoHandle(page, "x");
+  if (!h) { assert(false, "gizmo handle visible"); return; }
+  // Several different drag lengths — a continuous drag would land on non-multiples for most of them.
+  const lengths = [37, 61, 83];
+  const dxs = [];
+  for (const len of lengths) {
+    await dragFromTo(page, h.grab, [h.grab[0] + h.dir[0] * len, h.grab[1] + h.dir[1] * len]);
+    dxs.push((await formVec(page, "vec"))[0]);
+    // Re-grab from where the gizmo now sits: a fresh form selection resets the proxy.
+    await page.evaluate(() => [...document.querySelectorAll(".edits-tab")].find((b) => b.textContent === "Geometry")?.click());
+    await page.evaluate(() => [...document.querySelectorAll(".edits-tab")].find((b) => b.textContent === "Edit")?.click());
+    await page.evaluate(() => [...document.querySelectorAll(".op-btn")].find((b) => b.querySelector(".op-name")?.textContent === "Move")?.click());
+    await sleep(400);
+  }
+  assert(dxs.every((d) => Math.abs(d) > 1), `each drag produced a real delta (got ${JSON.stringify(dxs)})`);
+  assert(
+    dxs.every((d) => Math.abs(d / 5 - Math.round(d / 5)) < 1e-6),
+    `every drag lands on a multiple of the grid size 5 (got ${JSON.stringify(dxs)})`
+  );
+
+  // Control: with snapping off the same kind of drag is NOT quantised — otherwise the assertion above proves nothing.
+  await page.click("#view-menu");
+  await page.click("#snap-grid");
+  await page.click("#view-menu");
+  const h2 = await gizmoHandle(page, "x");
+  if (!h2) { assert(false, "gizmo handle visible after snap off"); return; }
+  await dragFromTo(page, h2.grab, [h2.grab[0] + h2.dir[0] * 47, h2.grab[1] + h2.dir[1] * 47]);
+  const free = (await formVec(page, "vec"))[0];
+  assert(Math.abs(free / 5 - Math.round(free / 5)) > 0.01, `with snap off the delta is continuous (got ${free})`);
+});
+
+// ── Mesh Health panel ─────────────────────────────────────────────────────
+//
+// The kernel half (`checkMeshHealth`, promote, repair) is covered live by
+// `mcp:smoke`. What had never been exercised in a real webview is the panel's
+// own contract: eligibility, the request it posts (including the opt-in
+// auto-decimate flag), how a report renders, the Promote/Repair gates (which
+// are deliberate mirror images of each other) and the stale-reply guard.
+
+async function openStl(page) {
+  await populate(page);
+  await post(page, { type: "loadUrl", url: "/examples/STL/cube.stl", format: "stl" });
+  await sleep(700);
+  await openAdvanced(page);
+}
+
+const healReport = (components) => ({ componentCount: components.length, components });
+const healComp = (over) => ({
+  index: 0, triangleCount: 12, freeEdgeCount: 0, nonManifoldEdgeCount: 0, degenerateFaceCount: 0,
+  requiredTolerance: 1e-6, areaDeltaPct: 0, volumeDeltaPct: 0, ...over,
+});
+const lastSent = (page, type) => page.evaluate((t) => (window.__sent ?? []).filter((m) => m.type === t).at(-1) ?? null, type);
+
+test("mesh health: a native STL shows the panel, Check posts a request, the report renders", async (page) => {
+  await openStl(page);
+  const shown = await page.evaluate(() => document.getElementById("mesh-health-panel")?.offsetParent !== null);
+  assert(shown, "the Mesh Health section is genuinely rendered for a native STL source");
+  const promote0 = await page.evaluate(() => document.getElementById("mesh-health-promote").disabled);
+  const repair0 = await page.evaluate(() => document.getElementById("mesh-health-repair").disabled);
+  assert(promote0 && repair0, "Promote and Repair both start disabled — no report yet");
+
+  await page.click("#mesh-health-check");
+  const req = await lastSent(page, "meshHealRequest");
+  assert(req !== null && typeof req.requestId === "string", "Check posts a meshHealRequest with a requestId");
+  assert(req?.autoDecimate === false, "auto-decimate is off by default and rides the request as false");
+
+  await post(page, { type: "meshHealResult", requestId: req.requestId, report: healReport([healComp({})]) });
+  await sleep(150);
+  const text = await page.evaluate(() => document.getElementById("mesh-health-body").textContent);
+  assert(text.includes("Free edges") && text.includes("1e-6"), `the report row shows the free-edge count and the required tolerance (got ${JSON.stringify(text)})`);
+  assert(!text.includes("Component 0"), "a single-component report is not titled as a numbered component");
+  const gates = await page.evaluate(() => ({
+    promote: document.getElementById("mesh-health-promote").disabled,
+    repair: document.getElementById("mesh-health-repair").disabled,
+  }));
+  assert(gates.promote === false, "a component that closed enables Promote to B-rep");
+  assert(gates.repair === true, "…and leaves Repair disabled — there is nothing to repair");
+});
+
+test("mesh health: Repair and Promote are mirror-image gates; stale replies and the decimate flag", async (page) => {
+  await openStl(page);
+  await page.check("#mesh-health-decimate");
+  await page.click("#mesh-health-check");
+  const req = await lastSent(page, "meshHealRequest");
+  assert(req?.autoDecimate === true, "ticking Auto-decimate sets the flag on the request");
+
+  // A component that never closed: Repair enabled, Promote disabled.
+  const open = healComp({ freeEdgeCount: 3, requiredTolerance: null, areaDeltaPct: null, volumeDeltaPct: null });
+  await post(page, {
+    type: "meshHealResult", requestId: req.requestId,
+    report: { ...healReport([open]), decimated: { fromTriangles: 99904, toTriangles: 1000, ratio: 0.01 } },
+  });
+  await sleep(150);
+  const gates = await page.evaluate(() => ({
+    promote: document.getElementById("mesh-health-promote").disabled,
+    repair: document.getElementById("mesh-health-repair").disabled,
+    text: document.getElementById("mesh-health-body").textContent,
+  }));
+  assert(gates.repair === false && gates.promote === true, "a component that did NOT close enables Repair and disables Promote");
+  assert(gates.text.includes("did not close"), "the unclosed component says so rather than showing a tolerance");
+  assert(gates.text.includes("99904") && gates.text.includes("auto-decimated"), "a decimated report names the resampling — never silent");
+
+  // The two buttons post the parameter-free messages.
+  await page.click("#mesh-health-repair");
+  assert((await lastSent(page, "repairMeshButtonClicked")) !== null, "Repair posts repairMeshButtonClicked");
+
+  // A reply carrying a superseded requestId must not repaint.
+  const before = await page.evaluate(() => document.getElementById("mesh-health-body").textContent);
+  await post(page, { type: "meshHealResult", requestId: "stale", report: healReport([healComp({ triangleCount: 777 })]) });
+  await sleep(150);
+  assert((await page.evaluate(() => document.getElementById("mesh-health-body").textContent)) === before, "a stale-requestId reply is ignored");
+
+  // An error reply renders as an error message and disables both actions.
+  await page.click("#mesh-health-check");
+  const req2 = await lastSent(page, "meshHealRequest");
+  await post(page, { type: "meshHealError", requestId: req2.requestId, message: "mesh too large" });
+  await sleep(150);
+  const err = await page.evaluate(() => ({
+    cls: document.querySelector("#mesh-health-body .mesh-health-message")?.className ?? "",
+    text: document.getElementById("mesh-health-body").textContent,
+    promote: document.getElementById("mesh-health-promote").disabled,
+    repair: document.getElementById("mesh-health-repair").disabled,
+  }));
+  assert(err.cls.includes("error") && err.text.includes("mesh too large"), "an error reply is shown as an error message");
+  assert(err.promote && err.repair, "an error reply disables both actions");
+});
+
+// ── Region fit panel ──────────────────────────────────────────────────────
+//
+// Pick seed arms a ONE-SHOT world-point capture; the click posts
+// `fitRegionRequest`; the fit itself is host-computed (covered by `mcp:smoke`),
+// so the reply is faked. What this pins is the interactive contract: the gating
+// of the three "use this fit" buttons on which candidates exist, and that
+// "Save plane"/"Add cylinder" land in the right model (planes sidecar vs op stack).
+
+const planeCand = { kind: "plane", primitive: { kind: "plane", point: [1, 2, 3], normal: [0, 0, 1] }, residual: 1e-9, residualFrac: 1e-9 };
+const cylCand = { kind: "cylinder", primitive: { kind: "cylinder", base: [0, 0, 0], axis: [0, 0, 1], radius: 4, height: 10 }, residual: 2e-2, residualFrac: 5e-3 };
+const regionFit = (candidates, over = {}) => ({
+  seedTriangle: 0, triangleCount: 2, capped: false, regionArea: 100, regionDiagonal: 14, freeEdgeCount: 0, nonManifoldEdgeCount: 0,
+  candidates, simplest: candidates[0]?.kind ?? null, simplestRule: "residual < 1e-3", warnings: [], ...over,
+});
+
+test("region fit: Pick seed is one-shot, posts a world point, and the reply gates the three actions", async (page) => {
+  await openStl(page);
+  const shown = await page.evaluate(() => document.getElementById("region-fit-panel")?.offsetParent !== null);
+  assert(shown, "the Region fit section is rendered for a native mesh source");
+  const gates0 = await page.evaluate(() => ["save-plane", "add-cylinder", "add-sphere"].map((k) => document.getElementById(`region-fit-${k}`).disabled));
+  assert(gates0.every(Boolean), "all three actions start disabled — there is no fit yet");
+
+  await page.click("#region-fit-pick");
+  assert(await page.evaluate(() => document.getElementById("region-fit-pick").disabled), "Pick seed disables itself while armed");
+  const box = await viewportBox(page);
+  await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+  await sleep(300);
+  const req = await lastSent(page, "fitRegionRequest");
+  assert(req !== null && typeof req.requestId === "string", "the surface click posts a fitRegionRequest");
+  assert(Array.isArray(req?.point) && req.point.length === 3 && req.point.every(Number.isFinite), `the request carries a finite world-space point (got ${JSON.stringify(req?.point)})`);
+  assert(!(await page.evaluate(() => document.getElementById("region-fit-pick").disabled)), "Pick seed re-enables once the click is consumed");
+
+  // One-shot: a second click on the model must NOT post a second request.
+  await page.mouse.click(box.x + box.width / 2 + 5, box.y + box.height / 2 + 5);
+  await sleep(250);
+  assert((await page.evaluate(() => (window.__sent ?? []).filter((m) => m.type === "fitRegionRequest").length)) === 1, "the capture is one-shot — later clicks post nothing");
+
+  // A plane + cylinder reply: plane and cylinder actions enable, sphere stays off.
+  await post(page, { type: "fitRegionResult", requestId: req.requestId, fit: regionFit([planeCand, cylCand]) });
+  await sleep(150);
+  const gates = await page.evaluate(() => ({
+    plane: document.getElementById("region-fit-save-plane").disabled,
+    cyl: document.getElementById("region-fit-add-cylinder").disabled,
+    sph: document.getElementById("region-fit-add-sphere").disabled,
+    text: document.getElementById("region-fit-body").textContent,
+  }));
+  assert(gates.plane === false && gates.cyl === false && gates.sph === true, "actions enable exactly for the candidates that exist");
+  assert(gates.text.includes("plane") && gates.text.includes("cylinder") && gates.text.includes("residual"), "candidates render with their residuals — facts, not a verdict");
+
+  // A stale reply is ignored.
+  await post(page, { type: "fitRegionResult", requestId: "stale", fit: regionFit([planeCand], { triangleCount: 999 }) });
+  await sleep(150);
+  assert(!(await page.evaluate(() => document.getElementById("region-fit-body").textContent)).includes("999"), "a stale-requestId reply is ignored");
+
+  // Save plane → planes sidecar write; Add cylinder → op stack.
+  await page.click("#region-fit-save-plane");
+  await sleep(200);
+  const planes = await lastSent(page, "planesChanged");
+  const saved = planes?.planes?.at(-1);
+  assert(saved && eq(saved.point, [1, 2, 3]) && eq(saved.normal, [0, 0, 1]), `Save plane persists the fitted plane (got ${JSON.stringify(saved)})`);
+  assert(typeof saved?.derivedFrom === "string" && saved.derivedFrom.includes("mesh region fit"), "the saved plane records its provenance");
+
+  await page.click("#region-fit-add-cylinder");
+  await sleep(200);
+  const op = (await lastSent(page, "editsChanged"))?.ops?.at(-1);
+  assert(op?.op === "addCylinder" && op.radius === 4 && op.height === 10, `Add cylinder pushes an addCylinder op with the fitted size (got ${JSON.stringify(op)})`);
+});
+
+test("region fit: an error reply is shown and disables the actions; a B-rep source hides the section", async (page) => {
+  await openStl(page);
+  await page.click("#region-fit-pick");
+  const box = await viewportBox(page);
+  await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+  await sleep(300);
+  const req = await lastSent(page, "fitRegionRequest");
+  await post(page, { type: "fitRegionError", requestId: req.requestId, message: "seed triangle is degenerate" });
+  await sleep(150);
+  const st = await page.evaluate(() => ({
+    text: document.getElementById("region-fit-body").textContent,
+    off: ["save-plane", "add-cylinder", "add-sphere"].every((k) => document.getElementById(`region-fit-${k}`).disabled),
+  }));
+  assert(st.text.includes("degenerate") && st.off, "the error is shown and every action is disabled");
+
+  // Loading a B-rep supersedes the mesh: the section must go away again.
+  await populate(page);
+  await sleep(300);
+  assert(!(await page.evaluate(() => document.getElementById("region-fit-panel")?.offsetParent !== null)), "a B-rep source hides the Region fit section");
+});
+
+// ── Macros panel ──────────────────────────────────────────────────────────
+//
+// The compile/run machinery is covered by `mcpTools.test.ts` and `mcp:smoke`
+// (a saved macro run with an overridden parameter produces different geometry).
+// What was never exercised is the panel: rows from a `macros` hydration, the
+// per-parameter fields, what Run posts, the read-only rule for bundled starters,
+// and that `macroApplyOps` lands on the SAME undoable op stack as hand edits.
+
+const macroList = [
+  { name: "bolt-circle", description: "A ring of holes", parameters: [{ name: "N", expr: "4" }, { name: "R", expr: "30" }] },
+  { name: "spring", description: "Helical spring (bundled)", parameters: [{ name: "P", expr: "5" }], readOnly: true },
+];
+
+test("macros: rows, parameter fields, Run payload, and the bundled-starter read-only rule", async (page) => {
+  await populate(page);
+  await openAdvanced(page); // Macros live in the collapsed Advanced group
+  await post(page, { type: "macros", macros: macroList });
+  await sleep(150);
+  const rows = await page.evaluate(() =>
+    [...document.querySelectorAll("#macros-body .macro-item")].map((r) => ({
+      name: r.querySelector(".macro-name")?.textContent,
+      params: [...r.querySelectorAll(".macro-param-input")].map((i) => i.value),
+      buttons: [...r.querySelectorAll(".macro-btn")].map((b) => b.textContent),
+    }))
+  );
+  assert(eq(rows.map((r) => r.name), ["bolt-circle", "spring"]), `both macros are listed (got ${JSON.stringify(rows.map((r) => r.name))})`);
+  assert(eq(rows[0].params, ["4", "30"]), "parameter fields are seeded with the saved defaults");
+  assert(eq(rows[0].buttons, ["Run", "✕"]), "a caller-owned macro has Run and Delete");
+  assert(eq(rows[1].buttons, ["Run"]), "a bundled starter has Run and NO Delete button at all");
+
+  // Edit a parameter, then Run: the payload carries the EDITED value, as strings.
+  await page.fill('#macros-body .macro-item:nth-child(1) .macro-param:nth-of-type(1) .macro-param-input', "8");
+  await page.click("#macros-body .macro-item:nth-child(1) .macro-btn");
+  const run = await lastSent(page, "macroRun");
+  assert(run?.name === "bolt-circle", "Run names the macro");
+  assert(run?.parameters?.N === "8" && run?.parameters?.R === "30", `the edited value rides along; untouched ones keep their default (got ${JSON.stringify(run?.parameters)})`);
+
+  // An edited value survives a re-render of the list (a host refresh must not eat typing).
+  await post(page, { type: "macros", macros: macroList });
+  await sleep(150);
+  const kept = await page.evaluate(() => document.querySelector("#macros-body .macro-item .macro-param-input")?.value);
+  assert(kept === "8", `a typed parameter survives a list refresh (got ${kept})`);
+
+  await page.click("#macros-body .macro-item:nth-child(1) .macro-btn:nth-of-type(2)");
+  assert((await lastSent(page, "macroDelete"))?.name === "bolt-circle", "Delete posts macroDelete for that macro");
+  await page.click("#macros-save");
+  assert((await lastSent(page, "macroSaveCurrent")) !== null, "Save current posts macroSaveCurrent");
+});
+
+test("macros: macroApplyOps lands on the same undoable op stack as hand edits", async (page) => {
+  await populate(page);
+  // The hydrated fixture history is not an `editsChanged` post (hydration is silent), so count it from the fixture.
+  const before = fixture("edits").ops.length;
+  const ops = [
+    { op: "addBox", center: [0, 0, 0], size: [1, 2, 3] },
+    { op: "addBox", center: [10, 0, 0], size: [1, 2, 3] },
+  ];
+  await post(page, { type: "macroApplyOps", ops });
+  await sleep(300);
+  const after = (await lastSent(page, "editsChanged"))?.ops ?? [];
+  assert(after.length === before + 2, `both macro ops are pushed onto the stack (had ${before}, now ${after.length})`);
+  assert(after.at(-1)?.op === "addBox" && eq(after.at(-1).center, [10, 0, 0]), "in order, verbatim");
+
+  await page.click("#edits-undo");
+  await sleep(300);
+  const undone = (await lastSent(page, "editsChanged"))?.ops ?? [];
+  assert(undone.length === before + 1, `a macro's ops are undoable one by one (now ${undone.length})`);
+});
+
+// ── Mass Properties panel ─────────────────────────────────────────────────
+//
+// OCCT's `BRepGProp` numbers are covered live by `mcp:smoke`. The panel's own
+// contract is what had no automated coverage: what Compute posts for each
+// selection shape, the "exactly one entity" guard, that a B-rep never computes
+// locally, and that a Units change re-renders the CACHED raw (mm) result
+// without another host round trip (the `lastRawMassProperties` design).
+
+const massReply = (over = {}) => ({
+  volume: 25.4 ** 3, area: 6 * 25.4 ** 2, length: null, centerOfMass: [0, 0, 0],
+  momentsOfInertia: { ixx: 1, iyy: 1, izz: 1, ixy: 0, ixz: 0, iyz: 0 }, ...over,
+});
+const massText = (page) => page.evaluate(() => document.getElementById("mass-body")?.textContent ?? "");
+
+test("mass properties: Compute posts for the whole model; the reply renders; Units rescales without a request", async (page) => {
+  await populate(page);
+  await openAdvanced(page);
+  await page.click("#mass-refresh");
+  const req = await lastSent(page, "massPropertiesRequest");
+  assert(req !== null && req.entityId === null, `Compute with nothing selected asks for the WHOLE model (got ${JSON.stringify(req)})`);
+
+  await post(page, { type: "massPropertiesResult", requestId: req.requestId, properties: massReply() });
+  await sleep(150);
+  let text = await massText(page);
+  assert(text.includes("Volume") && text.includes("mm"), `the reply renders with the default unit label (got ${JSON.stringify(text.slice(0, 80))})`);
+
+  const requests0 = await sentCount(page, "massPropertiesRequest");
+  await page.selectOption("#vc-unit", "in");
+  await sleep(150);
+  text = await massText(page);
+  assert(/Volume \(in³\)/.test(text), "switching Units relabels the cached result in inches");
+  assert(/\b1\b/.test(text.replace(/[^0-9. ]/g, " ")) || text.includes("1.000"), `25.4³ mm³ reads as 1 in³ (got ${JSON.stringify(text.slice(0, 120))})`);
+  assert((await sentCount(page, "massPropertiesRequest")) === requests0, "a Units change re-renders locally — no new host request");
+
+  // Stale replies and error replies.
+  const shownBefore = await massText(page);
+  await post(page, { type: "massPropertiesResult", requestId: "stale", properties: massReply({ volume: 3 * 25.4 ** 3 }) });
+  await sleep(150);
+  assert((await massText(page)) === shownBefore, "a stale-requestId reply does not repaint the panel");
+  await page.click("#mass-refresh");
+  const req2 = await lastSent(page, "massPropertiesRequest");
+  await post(page, { type: "massPropertiesError", requestId: req2.requestId, message: "kernel unavailable" });
+  await sleep(150);
+  assert((await massText(page)).includes("kernel unavailable"), "an error reply is shown");
+});
+
+test("mass properties: more than one selected entity is refused locally with guidance", async (page) => {
+  await populate(page);
+  await openAdvanced(page);
+  // Surf mode + the Planar filter selects several faces at once.
+  await page.click("#select-menu");
+  await page.click("#sel-toggle");
+  await page.click('.sel-mode[data-mode="surface"]');
+  await page.selectOption("#filter-pred", "planar");
+  await page.click("#filter-replace");
+  await sleep(200);
+  await page.click("#select-menu");
+  const before = await sentCount(page, "massPropertiesRequest");
+  await page.click("#mass-refresh");
+  await sleep(150);
+  assert((await massText(page)).includes("exactly one"), `the guidance names the rule (got ${JSON.stringify((await massText(page)).slice(0, 100))})`);
+  assert((await sentCount(page, "massPropertiesRequest")) === before, "no request is sent for a multi-entity selection");
+});
+
+test("mass properties: a mesh source computes locally and never posts a request", async (page) => {
+  await openStl(page);
+  await page.click("#mass-refresh");
+  await sleep(300);
+  assert((await sentCount(page, "massPropertiesRequest")) === 0, "a mesh source posts zero massPropertiesRequest messages");
+  const text = await massText(page);
+  assert(/Volume/.test(text) && /1,?000/.test(text), `the cube's volume is computed client-side (got ${JSON.stringify(text.slice(0, 120))})`);
+});
+
+// ── Pin + tolerance fields (measurement annotations) ──────────────────────
+//
+// The tolerance maths is unit-tested (`toleranceBand.test.ts`) and the
+// sidecar parse/round trip too. The interactive contract was not: the inline
+// nom/+/− fields exist only while a measurement is pinnable, a band needs
+// Nominal AND +, a half-filled band must SAY so rather than silently pin
+// without one, and an out-of-band row is flagged from frozen facts.
+
+async function completeDistanceMeasurement(page) {
+  await page.click("#measure-menu");
+  await page.click("#measure-toggle");
+  await page.click("#measure-menu"); // close via the trigger (see pickCentreIntoNewPart)
+  await sleep(150);
+  const box = await viewportBox(page);
+  await page.mouse.click(box.x + box.width / 2 - 40, box.y + box.height / 2);
+  await sleep(200);
+  await page.mouse.click(box.x + box.width / 2 + 40, box.y + box.height / 2 + 10);
+  await sleep(300);
+}
+
+const lastAnnotation = (page) => page.evaluate(() => (window.__sent ?? []).filter((m) => m.type === "annotationsChanged").at(-1)?.annotations?.at(-1) ?? null);
+
+test("pin: the tolerance fields exist only while pinnable; a band pins with its frozen measurement", async (page) => {
+  await populate(page);
+  const hidden0 = await page.evaluate(() => ({
+    group: document.getElementById("measure-tol-group").offsetParent === null,
+    pin: document.getElementById("measure-pin-btn").offsetParent === null,
+  }));
+  assert(hidden0.group && hidden0.pin, "before any measurement, Pin and the tolerance fields are not rendered");
+
+  await completeDistanceMeasurement(page);
+  const shown = await page.evaluate(() => ({
+    group: document.getElementById("measure-tol-group").offsetParent !== null,
+    pin: document.getElementById("measure-pin-btn").offsetParent !== null,
+    readout: document.getElementById("measure-readout").textContent,
+  }));
+  assert(shown.pin && shown.group, `a completed measurement reveals Pin and the nom/+/− fields (readout ${JSON.stringify(shown.readout)})`);
+
+  await page.fill("#measure-tol-nominal", "10");
+  await page.fill("#measure-tol-plus", "0.05");
+  await page.click("#measure-pin-btn");
+  await sleep(300);
+  const ann = await lastAnnotation(page);
+  assert(ann !== null && ann.tool === "distance", `Pin persists a distance annotation (got ${JSON.stringify(ann?.tool)})`);
+  assert(ann?.tolerance?.nominal === 10 && ann.tolerance.plus === 0.05, "the band carries Nominal and +");
+  assert(ann?.tolerance?.minus === 0.05, "− defaults to + (symmetric ±)");
+  assert(Number.isFinite(ann?.tolerance?.measured), "the RAW numeric measurement is frozen into the band (never re-parsed from text)");
+  const row = await page.evaluate(() => document.getElementById("annotations-list")?.textContent ?? "");
+  assert(row.includes("[10 ±0.05]"), `the Saved row shows the decorated label (got ${JSON.stringify(row)})`);
+});
+
+test("pin: Nominal without + pins WITHOUT a band and says so; Clear removes the fields again", async (page) => {
+  await populate(page);
+  await completeDistanceMeasurement(page);
+  await page.fill("#measure-tol-nominal", "10");
+  await page.click("#measure-pin-btn");
+  await sleep(300);
+  const ann = await lastAnnotation(page);
+  assert(ann !== null && ann.tolerance === undefined, "an incomplete band is not persisted");
+  const status = await page.evaluate(() => document.getElementById("status")?.textContent ?? "");
+  assert(status.includes("without a tolerance band"), `the status line says the band was dropped (got ${JSON.stringify(status)})`);
+
+  await page.click("#measure-menu");
+  await page.click("#measure-clear");
+  await page.click("#measure-menu");
+  await sleep(150);
+  const gone = await page.evaluate(() => document.getElementById("measure-tol-group").offsetParent === null && document.getElementById("measure-pin-btn").offsetParent === null);
+  assert(gone, "Clear hides Pin and the tolerance fields again");
+});
+
+test("pin: a saved annotation outside its band is flagged from the frozen facts", async (page) => {
+  await populate(page);
+  const mk = (id, measured) => ({
+    id, tool: "distance", text: `${measured} mm`, anchorPoint: [0, 0, 0], linePoints: [[0, 0, 0], [measured, 0, 0]],
+    volumes: [], surfaces: ["face-0"], lines: [], points: [], tolerance: { nominal: 10, plus: 0.05, minus: 0.05, measured },
+  });
+  await post(page, { type: "annotations", annotations: [mk("ann-in", 10.02), mk("ann-out", 12)] });
+  await sleep(250);
+  const rows = await page.evaluate(() =>
+    [...document.querySelectorAll("#annotations-list .annotation-row-text")].map((e) => ({ text: e.textContent, out: e.classList.contains("annotation-out-of-tolerance") }))
+  );
+  assert(rows.length === 2, `both annotations are listed (got ${rows.length})`);
+  assert(rows[0].out === false && !rows[0].text.includes("outside"), "an in-band annotation is not flagged");
+  assert(rows[1].out === true && rows[1].text.includes("outside tolerance"), "an out-of-band annotation is flagged and says so");
+});
+
+// ── Colour by field (meshio++ imports) ────────────────────────────────────
+//
+// Values come from `readMeshioFieldValues` (live-WASM verified in `mcp:smoke`);
+// the picker's contract is webview-only: non-scalar arrays are disabled UP
+// FRONT with the reason, a pick posts `colorFieldRequest`, the reply draws an
+// overlay + legend, and a FAILED pick must clear the overlay and legend rather
+// than leave the previous field's colours under a "None" dropdown.
+
+const tetStl = [
+  "solid tet",
+  "facet normal 0 0 1", "outer loop", "vertex 0 0 0", "vertex 1 0 0", "vertex 0 1 0", "endloop", "endfacet",
+  "facet normal 0 -1 0", "outer loop", "vertex 0 0 0", "vertex 0 0 1", "vertex 1 0 0", "endloop", "endfacet",
+  "facet normal -1 0 0", "outer loop", "vertex 0 0 0", "vertex 0 1 0", "vertex 0 0 1", "endloop", "endfacet",
+  "facet normal 0.577 0.577 0.577", "outer loop", "vertex 1 0 0", "vertex 0 0 1", "vertex 0 1 0", "endloop", "endfacet",
+  "endsolid tet",
+].join("\n");
+
+const fieldMeta = {
+  regions: [], fieldDataNames: [], pointDataNames: ["Temperature", "Grad"], cellDataNames: ["cell_tags"],
+  arrays: [
+    { name: "Temperature", location: "point", numComponents: 1, min: 1, max: 5, numNan: 0, consistent: true },
+    { name: "Grad", location: "point", numComponents: 3, min: 0, max: 1, numNan: 0, consistent: true },
+    { name: "cell_tags", location: "cell", numComponents: 1, min: -2, max: -1, numNan: 0, consistent: true },
+  ],
+};
+
+async function loadFieldMesh(page) {
+  await populate(page);
+  await post(page, { type: "loadMeshBytes", sourceFormat: "vtu", dataBase64: Buffer.from(tetStl, "utf8").toString("base64"), meshioMetadata: fieldMeta });
+  await sleep(800);
+  await openDockMore(page);
+}
+
+test("colour by field: non-scalar arrays are disabled up front; a pick posts a request and the reply draws a legend", async (page) => {
+  await loadFieldMesh(page);
+  const opts = await page.evaluate(() =>
+    [...document.querySelectorAll("#vc-colorfield-select option")].map((o) => ({ value: o.value, disabled: o.disabled, text: o.textContent }))
+  );
+  assert(eq(opts.map((o) => o.value), ["", "point:Temperature", "point:Grad", "cell:cell_tags"]), `the picker lists None plus every declared array (got ${JSON.stringify(opts.map((o) => o.value))})`);
+  const grad = opts.find((o) => o.value === "point:Grad");
+  assert(grad.disabled && grad.text.includes("3 components"), "a 3-component array is disabled with its width in the label — not offered and failed after the click");
+  assert(opts.filter((o) => o.disabled).length === 1, "only the non-scalar array is disabled");
+
+  const before = await frameSignature(page);
+  await page.selectOption("#vc-colorfield-select", "point:Temperature");
+  const req = await lastSent(page, "colorFieldRequest");
+  assert(req?.field === "Temperature" && req?.kind === "point", `the pick posts the field name and kind (got ${JSON.stringify(req)})`);
+
+  const values = Buffer.from(new Float32Array([1, 2, 3, 1, 4, 5, 2, 3, 4, 5, 1, 2]).buffer).toString("base64");
+  await post(page, { type: "colorFieldResult", requestId: "stale", values, min: 1, max: 5 });
+  await sleep(150);
+  assert(await page.evaluate(() => document.getElementById("vc-colorfield-legend").hidden), "a stale-requestId reply draws nothing");
+
+  await post(page, { type: "colorFieldResult", requestId: req.requestId, values, min: 1, max: 5 });
+  await sleep(400);
+  const legend = await page.evaluate(() => ({
+    hidden: document.getElementById("vc-colorfield-legend").hidden,
+    min: document.getElementById("vc-colorfield-min").textContent,
+    max: document.getElementById("vc-colorfield-max").textContent,
+  }));
+  assert(!legend.hidden && legend.min === "1" && legend.max === "5", `the legend shows the field's range (got ${JSON.stringify(legend)})`);
+  assert((await frameSignature(page)).hash !== before.hash, "the model is recoloured by the overlay");
+});
+
+test("colour by field: a failed pick clears the overlay and legend, not just the dropdown", async (page) => {
+  await loadFieldMesh(page);
+  const base = await frameSignature(page);
+  await page.selectOption("#vc-colorfield-select", "point:Temperature");
+  const req1 = await lastSent(page, "colorFieldRequest");
+  const values = Buffer.from(new Float32Array([1, 2, 3, 1, 4, 5, 2, 3, 4, 5, 1, 2]).buffer).toString("base64");
+  await post(page, { type: "colorFieldResult", requestId: req1.requestId, values, min: 1, max: 5 });
+  await sleep(400);
+  const coloured = await frameSignature(page);
+  assert(coloured.hash !== base.hash, "precondition: the first field is on screen");
+
+  await page.selectOption("#vc-colorfield-select", "cell:cell_tags");
+  const req2 = await lastSent(page, "colorFieldRequest");
+  await post(page, { type: "colorFieldError", requestId: req2.requestId, message: "no finite values" });
+  await sleep(400);
+  const st = await page.evaluate(() => ({
+    sel: document.getElementById("vc-colorfield-select").value,
+    legendHidden: document.getElementById("vc-colorfield-legend").hidden,
+  }));
+  assert(st.sel === "" && st.legendHidden, "the dropdown snaps back to None AND the legend is hidden");
+  assert((await frameSignature(page)).hash === base.hash, "the PREVIOUS field's colours are gone — the render matches the uncoloured model");
+});
+
+// ── Linked cameras ────────────────────────────────────────────────────────
+//
+// The host relay is covered nowhere (it needs two live tabs), but the webview
+// half carries the documented hazard: `frameFromDirection`/`setOrthographic`
+// end in `controls.update()` → "change" → `viewChanged` → host relay →
+// `linkedCamera` → … an infinite ping-pong unless applying a linked camera is
+// suppressed. A control (a real local orbit DOES post `viewChanged`) keeps the
+// "posted nothing" assertion from being vacuous.
+
+test("linked cameras: the toggle posts setCamerasLinked; applying a relayed camera moves the view WITHOUT echoing viewChanged", async (page) => {
+  await populate(page);
+  await page.click("#view-menu");
+  await page.click("#link-cameras");
+  await page.click("#view-menu");
+  const sent = await lastSent(page, "setCamerasLinked");
+  assert(sent?.enabled === true, "ticking Link cameras posts setCamerasLinked{enabled:true}");
+
+  // The host's authoritative answer drives the tick.
+  await post(page, { type: "camerasLinked", enabled: false });
+  await sleep(150);
+  assert((await page.getAttribute("#link-cameras", "aria-checked")) === "false", "camerasLinked{enabled:false} un-ticks the menu row (last host write wins)");
+
+  // A relayed camera: re-aims the view, switches projection, and must stay silent.
+  // (Done BEFORE any local orbit: a prior drag leaves OrbitControls damping residual that
+  // would legitimately fire "change" later and muddy what is being asserted.)
+  const v0 = await sentCount(page, "viewChanged");
+  const before = await frameSignature(page);
+  await post(page, { type: "linkedCamera", camera: { viewDirection: [0, 0, 1], cameraUp: [0, 1, 0], orthographic: true } });
+  await sleep(1500); // longer than the 500 ms view-save debounce, several frames for damping to settle
+  const after = await frameSignature(page);
+  assert(after.hash !== before.hash, "the relayed camera visibly changed the view");
+  assert((await sentCount(page, "viewChanged")) === v0, "applying a relayed camera posts NO viewChanged — no relay ping-pong");
+
+  // Control: a real local orbit DOES post viewChanged (after the 500 ms debounce) —
+  // otherwise the silence above could simply mean viewChanged never fires in this harness.
+  const box = await viewportBox(page);
+  await dragFromTo(page, [box.x + box.width / 2 - 60, box.y + box.height / 2 + 80], [box.x + box.width / 2 + 20, box.y + box.height / 2 + 60]);
+  // Damping keeps firing "change" (re-arming the debounce) until the orbit settles, so wait for the post rather than for a fixed time.
+  await page.waitForFunction((n) => (window.__sent ?? []).filter((m) => m.type === "viewChanged").length > n, v0, { timeout: 8000 }).catch(() => {});
+  const v1 = await sentCount(page, "viewChanged");
+  assert(v1 > v0, `control: a local orbit posts viewChanged (${v0} → ${v1})`);
+});
+
 // ── Runner ────────────────────────────────────────────────────────────────
 
 // ── Clip plane and the stencil clip cap ───────────────────────────────────
