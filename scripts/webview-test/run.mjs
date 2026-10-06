@@ -472,6 +472,44 @@ test("mesh export: every target serializes real geometry from the live scene", a
  * and the stale-response guard. The host half (save dialog → write) is
  * F5-only, like every other `provider.ts` save flow.
  */
+test("MMG remesh: validated options, source eligibility, guarded replies and owned cancellation", async (page) => {
+  await populate(page);
+  const fileDisabled = () => page.locator('#meshing-remesh-source option[value="file"]').evaluate(el => el.disabled);
+  assert(await fileDisabled(), "MMG raw-file mode is disabled for CAD; generated mode is available");
+  const runStyle = await page.locator("#meshing-remesh-run").evaluate(el => {
+    const style = getComputedStyle(el);
+    return { color: style.color, background: style.backgroundColor, font: style.fontFamily };
+  });
+  assert(runStyle.color !== "rgb(0, 0, 0)" && runStyle.background === "rgba(0, 0, 0, 0)" && !runStyle.font.includes("Arial"), "MMG action uses the panel's themed button style, not a browser default");
+  await page.fill("#meshing-remesh-hausd", "-1");
+  await page.click("#meshing-remesh-run");
+  assert(!(await page.evaluate(() => window.__sent.some(m => m.type === "remeshRequest"))), "MMG refuses invalid options before posting");
+  await page.fill("#meshing-remesh-hausd", "0.005");
+  await page.fill("#meshing-remesh-hmax", "1");
+  await page.click("#meshing-remesh-run");
+  const request = await page.waitForFunction(() => window.__sent.findLast(m => m.type === "remeshRequest")).then(h => h.jsonValue());
+  assert(request.source === "generated" && request.options.hmax === 1 && request.options.hausd === 0.005, "MMG posts current generation settings and validated remesh sizes");
+  await post(page, { type: "remeshResult", requestId: "stale", warnings: [], cancelled: true });
+  assert(await page.locator("#meshing-remesh-run").isDisabled(), "MMG ignores a stale reply");
+  await page.click("#meshing-cancel");
+  assert(await page.evaluate(id => window.__sent.some(m => m.type === "meshingCancel" && m.requestId === id), request.requestId), "MMG Cancel carries its owned request id");
+  await post(page, { type: "remeshResult", requestId: request.requestId, cancelled: true, warnings: [] });
+  await post(page, { type: "meshingJobSettled", requestId: request.requestId });
+  await page.waitForFunction(() => document.getElementById("meshing-remesh-status")?.textContent.includes("no file written"));
+  assert(!(await page.locator("#meshing-remesh-run").isDisabled()), "MMG cancelled result releases its Run button");
+  assert((await page.locator("#meshing-remesh-status").textContent()).includes("no file written"), "MMG reports cancellation rather than success");
+  await post(page, { type: "loadMeshBytes", sourceFormat: "med", dataBase64: fs.readFileSync(path.join(ROOT, "examples/STL/cube.stl")).toString("base64") });
+  await sleep(800);
+  assert(!(await fileDisabled()), "MMG file mode is available for a meshio source");
+  await page.click("#meshing-remesh-run");
+  const raw = await page.waitForFunction(id => window.__sent.findLast(m => m.type === "remeshRequest" && m.requestId !== id), request.requestId).then(h => h.jsonValue());
+  assert(raw.source === "file" && !raw.stl, "MMG file mode uses the original FE file, not a displayed STL skin");
+  await post(page, { type: "remeshError", requestId: raw.requestId, message: "MMG does not accept hexahedron" });
+  await post(page, { type: "meshingJobSettled", requestId: raw.requestId });
+  await page.waitForFunction(() => document.getElementById("meshing-remesh-status")?.textContent.includes("hexahedron"));
+  assert((await page.locator("#meshing-remesh-status").textContent()).includes("hexahedron"), "MMG surfaces unsupported-cell errors inline");
+});
+
 test("mesh ops: section tracks source kind and posts a guarded request", async (page) => {
   await populate(page);
 
@@ -5710,7 +5748,7 @@ test("status bar: sits below the canvas, holds the facts, and clears the dock", 
       text: document.getElementById("kernel-status-text").textContent,
       tone: document.getElementById("kernel-status").dataset.tone,
     }));
-  const idle = { occt: "idle", gmsh: "idle", meshio: "idle", ftetwild: "idle" };
+  const idle = { occt: "idle", gmsh: "idle", meshio: "idle", ftetwild: "idle", mmg: "idle" };
   await post(page, { type: "kernelStatus", state: idle });
   await sleep(60);
   let k = await kernel();

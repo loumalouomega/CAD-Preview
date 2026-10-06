@@ -1,4 +1,8 @@
 import { importRuntimePackage } from "./runtimePackage";
+import { remeshMmg } from "./mmgService";
+import { prepareMmgMesh, harvestMmgMesh } from "./mmgMesh";
+import type { MmgOptions } from "./mmgOptions";
+import { explicitTriangleRegions, triangleCoordinateKey } from "./meshioTriangleRegions";
 import { boundaryExtentMismatches, describeExtentMismatch, extentOf } from "./meshioBoundary";
 
 // meshio++ WASM module (`@meshioplusplus/wasm`) — the third host-side WASM
@@ -464,6 +468,28 @@ export interface MeshioOpsResult {
   warnings: string[];
 }
 
+/** MMG writes a new, region-bearing MED mesh. Never overwrites the source,
+ * converts unsupported cells, or claims an optim-only quality improvement. */
+export async function remeshMesh(
+  extensionPath: string, sourceBytes: Uint8Array, meshioFormat: string,
+  options: MmgOptions = {}, sourceName?: string, companions?: readonly MeshioCompanion[]
+) {
+  const m = await getMeshio();
+  const staged = stageMeshioSource(m, sourceBytes, meshioFormat, sourceName, companions);
+  const outPath = "/mmg.med";
+  try {
+    const mesh = m.readMesh(staged.primaryPath, meshioFormat);
+    const bridge = prepareMmgMesh(mesh);
+    const output = await remeshMmg(extensionPath, bridge.input, options);
+    const result = harvestMmgMesh(output, bridge);
+    m.writeMesh(outPath, result);
+    return { bytes: m.FS.readFile(outPath) as Uint8Array, report: output.report,
+      regionNames: (result.regions ?? []).map(r => r.name), warnings: [...bridge.warnings,
+        ...(output.report.lowFailure ? ["MMG returned LOWFAILURE: the output is usable but remeshing did not fully converge."] : [])] };
+  } catch (error) { throw wrapMeshioFault(error); }
+  finally { unstageMeshioSource(m, staged.allPaths, [outPath]); }
+}
+
 /**
  * Runs a declarative list of meshio++ mesh operations over a source file and
  * writes the result.
@@ -795,15 +821,12 @@ export interface MeshioBoundaryResult {
  * computed against makes the geometry/region-index correspondence correct
  * by construction, not by assumption.
  *
- * **Gated to the tetrahedral/triangular case only, by design.** If the
- * extracted boundary contains anything other than plain `"triangle"`
- * (3-node) cell blocks — e.g. quads from a hexahedral volume, or a
- * higher-order block — this falls back to the plain, already-verified
- * {@link convertToStlBoundary} with no region correlation at all (`regions`
- * omitted), rather than risk a subtly-wrong triangulation for cell types no
- * fixture has validated yet (see CLAUDE.md: "needs real diverse-format
- * fixtures... before it would be safe to ship" — the triangle-only case is
- * what got validated). Same fallback for: no `kind: "cell"` regions at all,
+ * Quad/hex boundaries use the verified simplexify step below, preserving
+ * parent-cell provenance. Explicit physical triangle groups in mixed volume
+ * meshes are correlated by exact facet coordinates first; only unassigned
+ * facets fall back to parent-cell membership. The display still admits one
+ * region per facet (overlapping cell memberships survive in the source mesh).
+ * Fallback for: no `kind: "cell"` regions at all,
  * `readMesh`/`extractSurface` throwing, or the correlation coming back
  * empty. Never throws — errors degrade to the plain STL boundary, since a
  * failed region correlation must never block an import `convertToStlBoundary`
@@ -868,6 +891,7 @@ export async function convertToStlBoundaryWithRegions(
       ids: new Set<number>(Array.from(r.entries as any as Iterable<number>)),
     }));
     const regionNames = regionSets.map((r) => r.name);
+    const surfaceRegions = explicitTriangleRegions(mesh, regionSets);
 
     const pts: Float64Array = boundary.points;
     const dim: number = boundary.dim;
@@ -899,8 +923,8 @@ export async function convertToStlBoundaryWithRegions(
         );
 
         const parentId = parentIds ? parentIds[t] : undefined;
-        let regionIdx = -1;
-        if (parentId !== undefined) {
+        let regionIdx = surfaceRegions.get(triangleCoordinateKey(pts, dim, [i0, i1, i2])) ?? -1;
+        if (regionIdx === -1 && parentId !== undefined) {
           for (let r = 0; r < regionSets.length; r++) {
             if (regionSets[r].ids.has(parentId)) { regionIdx = r; break; }
           }

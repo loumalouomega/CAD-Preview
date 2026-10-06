@@ -63,6 +63,7 @@ import {
   decomposeToPrimitivesTool,
   fitMeshRegionTool,
   transformMeshTool,
+  remeshMeshTool,
   inspectMeshioFieldsTool,
   pinAnnotation,
   promoteMeshToBrepTool,
@@ -687,6 +688,22 @@ server.registerTool(
   },
   wrap((args: { pathA: string; pathB: string; includeSnapshots?: boolean }) => compareModelsTool(ctx, args))
 );
+
+server.registerTool("remesh_mesh", {
+  description: "MMG remeshing of an existing triangle/tetra FE mesh or a generated mesh. Writes a NEW .med file and Parts sidecar; named cell regions survive, fields are dropped with warnings. Not an optim-only quality guarantee.",
+  inputSchema: {
+    path: modelPath, outputPath: z.string().describe("Unused absolute .med output path (the Parts sidecar must also be absent)"),
+    source: z.enum(["file", "generated"]).optional().describe("file (default): original meshio FE file; generated: freshly mesh the current edited geometry/settings/Parts"),
+    options: z.object({
+      hausd: z.number().positive().optional().describe("Geometric control parameter: defaults to 0.005 of the bbox diagonal, or an absolute length if hausdRelative is false"),
+      hausdRelative: z.boolean().optional().describe("Default true: interpret hausd as a bbox-diagonal fraction"),
+      hmin: z.number().positive().optional().describe("Minimum edge length in source units (generated CAD is mm)"),
+      hmax: z.number().positive().optional().describe("Maximum edge length in source units (generated CAD is mm)"),
+      hgrad: z.number().min(1).optional().describe("Dimensionless gradation, at least 1; omitted sizes/gradation retain MMG defaults"),
+    }).strict().optional(),
+    meshOptions: z.record(z.string(), z.unknown()).optional().describe("generate_mesh options overrides, used only for source=generated"),
+  },
+}, wrap((args: Parameters<typeof remeshMeshTool>[1]) => remeshMeshTool(ctx, args)));
 
 server.registerTool(
   "transform_mesh",

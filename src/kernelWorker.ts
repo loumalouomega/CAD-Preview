@@ -42,6 +42,7 @@ import {
   readMeshioProvenance,
   decimateStlBoundary,
   runMeshioOps,
+  remeshMesh,
   readMeshioFieldValues,
 } from "./meshioService";
 import { checkMeshHealth, promoteMeshToBrep } from "./meshHeal";
@@ -146,6 +147,7 @@ const handlers: Record<keyof DocumentPipeline, Handler> = {
   readMeshioProvenance: readMeshioProvenance as Handler,
   decimateStlBoundary: decimateStlBoundary as Handler,
   runMeshioOps: runMeshioOps as Handler,
+  remeshMesh: remeshMesh as Handler,
   loadBRepCachedForDocument: loadBRepCachedForDocument as Handler,
   disposeBRepCacheForDocument: disposeBRepCacheForDocument as Handler,
   readMeshioFieldValues: readMeshioFieldValues as Handler,

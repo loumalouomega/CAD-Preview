@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
-export const watched = ['opencascade.js', '@loumalouomega/gmsh-wasm', '@meshioplusplus/wasm',
+export const watched = ['opencascade.js', '@loumalouomega/gmsh-wasm', '@loumalouomega/mmg-wasm', '@meshioplusplus/wasm',
   'float-tetwild-wasm', 'three', '@modelcontextprotocol/sdk'];
 const marker = '<!-- cad-preview-dependency-watch -->';
 const title = 'Runtime dependency updates available';

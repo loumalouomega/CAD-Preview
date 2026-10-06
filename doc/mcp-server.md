@@ -75,10 +75,52 @@ A distributable agent skill lives at `skills/CAD-Preview/SKILL.md` (triggered on
 
 ## Tools
 
+### `remesh_mesh` — MMG remeshing
+
+```json
+{
+  "path": "/work/two-material-tets.med",
+  "outputPath": "/work/two-material-remeshed.med",
+  "source": "file",
+  "options": { "hausd": 0.005, "hmax": 0.6, "hgrad": 1.3 }
+}
+```
+
+`source: "file"` (default) remeshes the raw meshio-readable FE file plus its
+companions; pending display edits are reported but not baked in. Use
+`source: "generated"` with optional `meshOptions` to regenerate edited CAD/mesh
+geometry with the same input/options/Parts resolver as `generate_mesh`, then
+remesh that result. Native STL/OBJ/PLY/glTF and CAD sources need generated mode.
+Only linear triangles/tetrahedra are accepted; hex/quad/pyramid/prism/quadratic
+input is refused, not silently converted. OpenFOAM raw-file mode is unavailable.
+
+`hausd` defaults to `0.005` **of the bbox diagonal**; `hausdRelative: false`
+makes it absolute. `hmin`/`hmax` are lengths in source coordinate units (`mm`
+for generated B-rep geometry); `hgrad` is dimensionless and must be `>=1`.
+Unknown/non-finite options and `hmin > hmax` fail validation. These parameters
+do not certify two-sided geometric error or promise non-decreasing minSICN.
+
+Writes a new `.med` and `.parts.json`; both paths must be unused. Named cell
+regions, including overlaps, survive through integer references. Parts are
+rebuilt with fresh facet ids and matching names/colours/flat sizes. Manually
+assigned Parts without named cell-region counterparts fail before writing.
+Interior-only/overlapping groups may survive in MED without a selectable Part,
+with a warning. Point/side regions, result fields and CAD selectors/grading do
+not transfer. Returns `written`, `partsPath`, `report`, `regionNames`, `parts`,
+and `warnings`. `report` records module (`mmg3d`/`mmgs`), node/top-dimensional
+cell counts before/after, effective absolute `hausd`, allocation target
+`memoryMb: 128`, retained `wasmBytes`, elapsed remesh time and `lowFailure`.
+LOWFAILURE is reported explicitly; STRONGFAILURE resets MMG and fails the call.
+The memory target is **not an OS/RSS cap**. The existing worker watchdog and
+MCP request cancellation apply. See [MMG remeshing](./gmsh-integration.md#mmg-remeshing).
+
+### Tool catalog
+
 Every tool takes an absolute `path` to the model file, and every result carries a `warnings` array reporting graceful degradations. Call `describe_capabilities` first — it returns the full op catalog with per-kind parameter documentation. If your client auto-attaches resources, the same catalog is already available at `cad-preview://capabilities` (and per-op at `cad-preview://op/{kind}`) without spending a tool call.
 
 | Tool | What it does |
 | --- | --- |
+| `remesh_mesh` | MMG triangle/tetra remeshing from a raw meshio FE file or freshly generated edited geometry; new MED + rebound Parts, named cell regions preserved, result fields dropped with warnings. See the reference above. |
 | `describe_capabilities` | Op catalog (all edit-op kinds + parameter docs + B-rep-only/topology-changing flags), entity-id scheme, export target matrix, mesh export formats, mesh option defaults, headless limitations. |
 | `load_model` | Load the model (sidecar edits replayed) and return the component tree, entity-id inventory (`solid-N`/`face-N`/`edge-N`/`point-N` — the ids used as op operands and part members), bounding box, and sidecar summary. If a persisted op silently skipped during replay (see `apply_edit_ops` below), the response's `warnings` say so explicitly rather than leaving an unchanged-looking model unexplained. For a meshio-only source, `warnings` also names any regions and point/cell/field data arrays the file declares — each such document-derived name wrapped in `⟦envelope markers⟧` (see "Untrusted text" below) and stripped of control/format characters; a source whose `kind: "cell"` regions correlate to a pure-triangle boundary (e.g. a tetrahedral volume mesh) gets one Part auto-created per region on first load (never overwriting an existing non-empty parts sidecar) — see `get_state`'s `parts` for the result, and "Richer meshio++ import visibility" in CLAUDE.md for the full mechanism and its scope (quad/hex boundaries and non-`"cell"` regions still degrade to read-only-visibility-only, same as before). An OpenFOAM (`.foam` marker) source is geometry-only by construction — meshio++ surfaces no patch names or field data for it — so the response carries a single geometry-only warning instead of metadata. For `.msh`/`.inp` (ambiguous extensions — see the capability matrix footnote below) `warnings` also carries a one-line caveat naming the assumed format. For a `.csg` (OpenSCAD) source, `warnings` carries parse/build notes — skipped `hull()`/`minkowski()`/2D constructs and faceting approximations (see `doc/file-formats.md`'s "OpenSCAD CSG" section). For a `.scad` source the same notes apply post-conversion, plus conversion chatter itself — or, without an openscad binary, a null inventory with the install hint instead of geometry. For an STL/OBJ/PLY/glTF source, `load_model` returns `meshEntities` (per-component ids with triangle counts, plus triangle/vertex counts and id patterns) and the whole-model bbox instead of the B-rep inventory, with warnings naming the headless id scheme and any unbaked mesh edits. For a meshio-only source carrying a provenance block it recognises, `warnings` quotes the block's lines (envelope-wrapped as untrusted document text) — e.g. a file this extension's own `export_mesh` wrote, whose block records the source document plus the conversion chain (engine, sizes, shape, unit, edits-baked). For an STL/OBJ/PLY source, `load_model` first settles any interrupted save-in-place (see "Recovering an interrupted mesh save" below) and reports it in `warnings`. |
 | `get_mass_properties` | Volume, surface area, length, center of mass, and moments of inertia (about the centroid) for the whole model or one entity — B-rep sources via OCCT `BRepGProp`; STL/OBJ/PLY/glTF sources via headless triangle integration (volume/area/centroid/`watertight`, no length or inertia); other mesh formats return `supported: false`. All lengths/areas/volumes are in the model's internal cascade unit (millimetres — OCCT's STEP reader auto-converts every shape to it regardless of the source file's declared unit, e.g. inches); this tool never applies the extension's webview-only display-unit selector, so a caller wanting a different unit converts the raw mm-based numbers itself. |
@@ -345,6 +387,11 @@ The marker is deliberately not a seventh sidecar: it is per-save state, not docu
 `save_preprocess`/`load_preprocess` package/restore the CAD source plus whichever of the `.edits.json`/`.parts.json`/`.annotations.json`/`.mesh.json` sidecars exist on disk as a single portable `.zip` — a missing sidecar (e.g. mesh options never set) is simply omitted from the archive, never an error. The `.geo` script is not packaged at all (roadmap "Archive integrity", closed — neither reader ever restored a packaged one verbatim, so it was pure dead weight); the mesh options sidecar (if any) is re-written through the normal options path on restore instead, which regenerates `.geo` fresh — same one-way-generation rule as every other write path. `load_preprocess` also checks `outputPath`'s format against the archive's own source format (`readPreprocessZip` already having verified the archive's per-entry checksums and `minimumReaderVersion` first) — restoring a STEP archive to a `.stl` path now throws a clear error instead of silently succeeding.
 
 ## Headless capability matrix
+
+MMG is orthogonal to the Generate column below: `remesh_mesh source=file`
+operates on meshio linear triangle/tetra FE sources (excluding OpenFOAM),
+while `source=generated` accepts the same geometry sources as `generate_mesh`.
+Its output is a new region-bearing MED mesh, not an own-format source save.
 
 | Source format | Load/inventory | Edit ops | Mesh | Export |
 | --- | --- | --- | --- | --- |

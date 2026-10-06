@@ -22,6 +22,8 @@ import { encodeBuffer, type Part } from "../../src/protocol";
 import { DEFAULT_MESH_OPTIONS } from "../../src/meshOptions";
 import { viewerBodyHtml } from "../../src/viewerDom";
 import { MESH_EXPORT_FORMATS } from "../../src/meshExportFormats";
+import { remeshMesh, convertToStlBoundaryWithRegions } from "../../src/meshioService";
+import { buildPartsFromMeshioRegions } from "../../src/meshioRegionParts";
 
 // This entry is bundled into `.build/` before running, so `import.meta.url`
 // can't locate the repo. It is always launched from the repo root (the
@@ -155,6 +157,19 @@ async function main(): Promise<void> {
   });
 
   // --- Tutorial step fixtures (the "per-step tutorial screenshots" feature) -
+  // Real MMG output, with named material regions and fresh facet ids. The
+  // capture harness must never fabricate counts or show an unremeshed skin
+  // as though it were the output.
+  const mmg = await remeshMesh(ROOT, fs.readFileSync(path.join(ROOT, "examples/MED/two-material-tets.med")), "med", { hmax: 0.6 });
+  const mmgBoundary = await convertToStlBoundaryWithRegions(mmg.bytes, "med");
+  if (!mmgBoundary.regions) throw new Error("MMG screenshot output lost its material regions");
+  const mmgParts = buildPartsFromMeshioRegions(mmgBoundary.stlBytes, mmgBoundary.regions);
+  writeJson("mmg-mesh.json", { type: "loadMeshBytes", sourceFormat: "med",
+    dataBase64: Buffer.from(mmgBoundary.stlBytes).toString("base64"),
+    regionAssignment: { regionNames: mmgBoundary.regions.regionNames, triangleRegionIndex: encodeBuffer(mmgBoundary.regions.triangleRegion) } });
+  writeJson("mmg-parts.json", { type: "parts", parts: mmgParts });
+  writeJson("mmg-report.json", { report: mmg.report, warnings: mmg.warnings });
+
   // Every tutorial starts from block.stp (not bull.stp) and its op-list ids
   // were probed live (pinned in scripts/mcp-smoke/run.mjs). Each entry below
   // is a cumulative prefix of its page's "Full operation list", tessellated

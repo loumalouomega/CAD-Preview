@@ -48,6 +48,7 @@ async function remesh(input: Mesh, surface = false, optim = false, hausd = 0.01,
   const api = surface ? mmg.mmgs : mmg.mmg3d;
   const h = api.init();
   try {
+    if (process.env.MMG_MEMORY_MB) api.setIparameter(h.mesh, h.met, api.IPARAM_mem, Number(process.env.MMG_MEMORY_MB));
     if (surface) mmg.mmgs.setMeshSize(h.mesh, input.vertices.length / 3, input.cells.length / 3, 0);
     else mmg.mmg3d.setMeshSize(h.mesh, input.vertices.length / 3, input.cells.length / 4, 0, 0, 0, 0);
     api.setVertices(h.mesh, input.vertices, null);
@@ -141,6 +142,7 @@ async function strongFailure(input: Mesh): Promise<string> {
   const api = mmg.mmg3d;
   const h = api.init({ levelset: true });
   try {
+    if (process.env.MMG_MEMORY_MB) api.setIparameter(h.mesh, h.met, api.IPARAM_mem, Number(process.env.MMG_MEMORY_MB));
     api.setMeshSize(h.mesh, input.vertices.length / 3, input.cells.length / 4, 0, 0, 0, 0);
     api.setVertices(h.mesh, input.vertices, null);
     api.setTetrahedra(h.mesh, input.cells, input.refs);
@@ -213,10 +215,26 @@ export async function runMmgProbe(full = true): Promise<any> {
     start = performance.now();
     for (let i = 0; i < 20; i++) {
       await remesh(input, false, false, hausd, hmax);
+      if (process.env.MMG_MEMORY_MB) {
+        const largeVolume = await remesh(tets, false, false, 0.01, 2);
+        assert(Math.abs(tetVolume(largeVolume) / tetVolume(tets) - 1) < 0.01);
+        assert.deepEqual([...new Set(largeVolume.refs)], [1]);
+        const largeSurface = await remesh(surf, true);
+        assert.equal(largeSurface.cells.length, coarse.cells.length);
+        assert.deepEqual([...new Set(largeSurface.refs)], [1]);
+        for (let v = 0; v < largeSurface.vertices.length; v += 3) {
+          assert(Math.abs(Math.hypot(...largeSurface.vertices.slice(v, v + 3)) - 10) <= 0.01);
+        }
+      }
       const mmg = await getMmg();
       facts.memory.push({ iteration: i + 1, ...process.memoryUsage(), wasmBytes: (mmg.module.HEAPU8 as Uint8Array).byteLength });
     }
     facts.repeatMs = performance.now() - start;
+    if (process.env.MMG_MEMORY_MB) {
+      facts.memoryBudget = { mmgMemoryMb: Number(process.env.MMG_MEMORY_MB), rssCeilingBytes: 1.5 * 1024 ** 3 };
+      assert(facts.memory.every((sample: any) => sample.rss <= facts.memoryBudget.rssCeilingBytes));
+      assert.equal(facts.memory[19].wasmBytes, facts.memory[0].wasmBytes);
+    }
     facts.decision = facts.optim.nonDecreasing ? "pass-numerical-gates; transport still required" : "partial: optim does not guarantee non-decreasing minSICN";
   }
   facts.logLines = logs.length;

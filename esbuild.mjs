@@ -161,6 +161,7 @@ function copyWasm() {
   const binaries = [
     ["node_modules/opencascade.js/dist/opencascade.wasm.wasm", "dist/opencascade.wasm.wasm"],
     ["node_modules/@loumalouomega/gmsh-wasm/dist/gmsh-core.wasm", "dist/gmsh-core.wasm"],
+    ["node_modules/@loumalouomega/mmg-wasm/dist/mmg-core.wasm", "dist/mmg-core.wasm"],
   ];
   for (const [srcRel, dstRel] of binaries) {
     const src = path.join(__dirname, srcRel);

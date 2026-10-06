@@ -255,7 +255,7 @@ try {
   assert(capsText.length > 100, "resources/read cad-preview://capabilities returns JSON text");
 
   const tools = (await request("tools/list", {})).tools.map((t) => t.name);
-  assert(tools.length === 68, `tools/list exposes 68 tools (got ${tools.length}: ${tools.join(", ")})`);
+  assert(tools.length === 69, `tools/list exposes 69 tools (got ${tools.length}: ${tools.join(", ")})`);
   for (const t of ["list_workspace_models", "check_interference_all", "generate_bom", "generate_hole_table", "render_ops_prefix", "check_tolerance", "inspect_meshio_fields", "pin_annotation", "import_svg", "save_mesh_preset", "list_mesh_presets", "apply_mesh_preset", "compare_mesh_refinement", "export_tessellated_stl", "estimate_mesh_budget", "analyze_passages", "measure_mesh_deviation", "save_sheet_template", "list_sheet_templates", "batch_export", "check_handoff_manifest", "generate_prep_report", "job_status", "job_cancel", "check_brep_health"]) {
     assert(tools.includes(t), `tools/list exposes ${t}`);
   }
@@ -4001,6 +4001,34 @@ try {
     "load_model does not re-auto-create Parts on a document that already has them"
   );
   assert(medReloaded.sidecars.parts.length === 2, "reopen still reports exactly the same 2 parts, not duplicated");
+
+  // MMG remesh: real stdio tool + worker, references, fields warning, Parts
+  // rebound to the new topology, and no source write.
+  const medBeforeMmg = fs.readFileSync(medFixture);
+  const mmgOut = path.join(dir, "mmg-remeshed.med");
+  const mmgResult = await call("remesh_mesh", { path: medFixture, outputPath: mmgOut, options: { hmax: 0.6 } });
+  assert(mmgResult.report.module === "mmg3d" && mmgResult.report.outputCells > 2, "MMG changes a real tetrahedral mesh");
+  assert(mmgResult.report.memoryMb === 128 && mmgResult.report.wasmBytes < 256 * 1024 ** 2, "MMG sets its bounded allocation target before sizing");
+  assert(["MaterialA", "MaterialB"].every(name => mmgResult.regionNames.includes(name)), "MMG preserves both material references");
+  assert(mmgResult.warnings.some(w => /data was dropped/.test(w)), "MMG warns about dropped fields");
+  const mmgState = await call("get_state", { path: mmgOut });
+  assert(mmgState.parts.length === 2 && mmgState.parts.every(p => p.surfaces.length > 0), "MMG writes rebound, selectable Parts in its new sidecar");
+  const mmgReopened = await call("load_model", { path: mmgOut });
+  assert(mmgReopened.sidecars.parts.length === 2, "MMG output reopens with both Parts");
+  assert(fs.readFileSync(medFixture).equals(medBeforeMmg), "MMG leaves its source byte-identical");
+  const mmgNoOverwrite = await request("tools/call", { name: "remesh_mesh", arguments: { path: medFixture, outputPath: medFixture } });
+  assert(mmgNoOverwrite.isError, "MMG refuses to overwrite its source");
+  const mmgHexPath = path.join(dir, "mmg-hex.med");
+  fs.copyFileSync(path.join(ROOT, "examples", "MED", "single-hex.med"), mmgHexPath);
+  const mmgRejectHex = await request("tools/call", { name: "remesh_mesh", arguments: { path: mmgHexPath, outputPath: path.join(dir, "mmg-no-hex.med") } });
+  assert(mmgRejectHex.isError && !fs.existsSync(path.join(dir, "mmg-no-hex.med")), "MMG refuses hex input without producing an output");
+  const mmgRecovery = await call("remesh_mesh", { path: medFixture, outputPath: path.join(dir, "mmg-after-refusal.med"), options: { hmax: 0.7 } });
+  assert(mmgRecovery.report.outputCells > 0, "MMG serves a healthy call after unsupported input");
+  const mmgCad = path.join(dir, "mmg-block.stp");
+  fs.copyFileSync(path.join(ROOT, "examples", "STP", "block.stp"), mmgCad);
+  await call("set_part", { path: mmgCad, name: "Wall", surfaces: ["face-0"], color: "#ff0000" });
+  const mmgGenerated = await call("remesh_mesh", { path: mmgCad, source: "generated", meshOptions: { sizeMax: 2 }, outputPath: path.join(dir, "mmg-generated.med"), options: { hmax: 1 } });
+  assert(mmgGenerated.parts.some(p => p.name === "Wall" && p.color === "#ff0000" && p.surfaces.length > 0), "MMG generated mode preserves a physical boundary Part and colour");
 
   // Still geometry-only for anything beyond regions (point/cell/field data
   // arrays) — the region→Parts correlation above is additive, not a

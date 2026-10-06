@@ -4,8 +4,8 @@ Runs a TypeScript file against the real OCCT, Gmsh, meshio++ and fTetWild WASM
 kernels, so a probe can establish a fact about a binding without writing a
 build script first.
 
-The MMG feasibility probe additionally uses the pinned **devDependency**
-`@loumalouomega/mmg-wasm` (LGPL-3.0-or-later); it is not a shipped kernel.
+MMG now uses the pinned **production dependency** `@loumalouomega/mmg-wasm`
+0.1.0 (LGPL-3.0-or-later), loaded lazily only for remeshing.
 
 ```sh
 npm run probe -- scripts/probe/examples/bull-counts.ts          # builds first
@@ -33,13 +33,27 @@ bundle is rewritten). It captures the worker's otherwise-discarded stdout,
 checks typed-array wire tags, and strictly parses every MCP stdout line as
 JSON-RPC. The temporary `mmg_probe` tool is **not** part of the product API.
 
-The core task is **closed with a partial outcome**: both remeshers work, but `optim` has
-lowered minSICN on the motivating fixture. Exact call shapes and measurements
-are in `CLAUDE.md`'s "MMG core feasibility probe" section; memory admission and
-conditional implementation are a separate roadmap follow-up, "MMG remeshing
-of FE meshes — memory admission". The core run can retain
-roughly 1.3 GB RSS with all three exercised kernels; use the isolated process,
-not a long-lived development host.
+The core experiment has a **partial outcome**: both remeshers work, but `optim`
+has lowered minSICN. The product therefore excludes automatic post-Generate
+optimisation and any quality-improvement guarantee. Task 4.17 implements the
+ordinary volume/surface paths after the separate memory experiment:
+
+```sh
+MMG_MEMORY_MB=128 npm run probe -- scripts/probe/examples/mmg-core.ts --run
+npm run probe -- scripts/probe/examples/mmg-product.ts
+```
+
+The budgeted core run sets `IPARAM_mem` **before allocation**, checks a preset
+**1.5 GiB process-RSS ceiling**, and repeats both the ~10k-tet fTetWild input
+and ~100k-triangle sphere **20 times**, alongside the small two-material fixture.
+It rechecks volume/references, surface counts and retained WASM capacity. Samples
+are recorded after each iteration, not a certified instantaneous peak or a
+leak-free guarantee at every scale. MMG retained 96,665,600 bytes, versus
+802,816,000 without the memory parameter. The unbudgeted core run may still
+retain ~1.3 GB RSS; use an isolated process. `mmg-product.ts` exercises the
+**real shipped** service/client/worker (no injected API), including MED material
+Parts, a generated CAD boundary Part and the sphere. Full MCP/stdout regression
+is `npm run mcp:smoke`. See `CLAUDE.md` for measurements and validation.
 
 `run.mjs` bundles the entry with `scripts/nodeBundleConfig.mjs`, the same
 Node/CJS recipe `esbuild.mjs` uses for the shipped bundles. It then runs the

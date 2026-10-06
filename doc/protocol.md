@@ -866,6 +866,26 @@ Sent in reply to `meshHealRequest` (webview → host, below) — roadmap "Mesh �
 { "type": "meshHealError", "requestId": "1234-0.56", "message": "Mesh healability check requires an STL/OBJ/PLY source." }
 ```
 
+### `remeshRequest` / `remeshResult` / `remeshError`
+
+The FE panel posts `{type: "remeshRequest", requestId, source: "file" | "generated",
+options: MmgOptions, meshOptions: MeshOptions, stl?: string}`. `options` admits
+only `hausd`, `hausdRelative`, `hmin`, `hmax`, `hgrad` through the shared strict
+validator. File mode reads the original meshio FE file and companions; generated
+mode uses the existing edited-geometry Generate path (`stl` is needed for mesh
+sources). The host asks for an unused `.med` path and writes the mesh plus rebound
+Parts. No overlay replacement occurs.
+
+`remeshResult` echoes `requestId` with `written`, `warnings` and `report`:
+`{module: "mmg3d" | "mmgs", inputNodes, outputNodes, inputCells, outputCells,
+hausd, memoryMb, wasmBytes, elapsedMs, lowFailure}`. Counts refer to top-dimension
+cells. `hausd` is the effective absolute parameter; `memoryMb: 128` is MMG's
+allocation target, **not** an OS/RSS limit. A dismissed save dialog instead posts
+`{type: "remeshResult", requestId, cancelled: true, warnings: []}`. Failure posts
+`{type: "remeshError", requestId, message}`. All branches settle the owned job
+through `meshingJobSettled`; the existing `meshingCancel` can interrupt it. The
+webview ignores stale ids and renders the counts/path/warnings inline.
+
 ### `meshioOpsResult` / `meshioOpsError`
 
 Sent in reply to `meshioOpsRequest` (webview → host, below) — roadmap Tier 1 "Mesh-operations panel for meshio sources". `steps`/`warnings` are `runMeshioOps`'s own per-step report verbatim (one entry per requested op, including the ones that did nothing — a step that cannot run is reported with `applied: false` and its reason, never silent). **meshio++-imported sources only** (every `loadMeshBytes` source except OpenFOAM, whose case-staged reader has no `readMesh` path); the FE Mesh panel's Mesh-ops section hides itself otherwise, so the host gate is a backstop, not the primary UX. The result file itself is written through the shared save flow (`promptSaveAndWrite`, same shape as Repair) — success/failure of the write surface through the generic `status`/`error` messages; this pair only carries the report back to the panel.

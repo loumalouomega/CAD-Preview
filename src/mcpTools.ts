@@ -104,6 +104,8 @@ import type { compareModels, CompareSource } from "./modelDiffHost";
 import type { ModelDiff } from "./modelDiff";
 import type { convertToStlBoundary, convertToStlBoundaryWithRegions, convertFoamCaseToStlBoundary, exportViaMeshio, readMeshioMetadata, readMeshioDataInfo, readMeshioProvenance, decimateStlBoundary, runMeshioOps, MeshioDataArrayInfo } from "./meshioService";
 import { buildPartsFromMeshioRegions } from "./meshioRegionParts";
+import { validateMmgOptions, type MmgOptions } from "./mmgOptions";
+import { remeshedParts } from "./mmgParts";
 import { buildMeshProvenanceNotes } from "./meshProvenanceNotes";
 import { evaluateToleranceBand } from "./toleranceBand";
 import { meshioCompanionCandidates } from "./meshioCompanions";
@@ -199,7 +201,7 @@ import { kernelVersions } from "./kernelVersions";
 import { sha256Hex } from "./hash";
 import { renderPrepReportHtml, serializePrepReport, type PrepReport, type ReportImage, type ReportSection } from "./prepReport";
 import { holeTableTsv, type HoleTableRow } from "./holeTable";
-import { parsePartsJson } from "./partsSidecar";
+import { parsePartsJson, serializePartsJson } from "./partsSidecar";
 import { parseAnnotationsJson, ANNOTATION_TOOLS, MAX_NOTE_LENGTH } from "./annotationsSidecar";
 import { parsePlanesJson, nextPlaneId } from "./planesSidecar";
 import { parseEditsJson, replayTail } from "./editsSidecar";
@@ -251,6 +253,7 @@ export interface Pipeline {
   readMeshioProvenance: typeof readMeshioProvenance;
   decimateStlBoundary: typeof decimateStlBoundary;
   runMeshioOps: typeof runMeshioOps;
+  remeshMesh: typeof import("./meshioService").remeshMesh;
   checkMeshHealth: typeof checkMeshHealth;
   checkBrepHealth: typeof checkBrepHealth;
   recognizePrimitives: typeof recognizePrimitives;
@@ -558,6 +561,7 @@ export function describeCapabilities() {
       "decompose_to_primitives (B-rep sources only) recognizes each solid as a box/sphere/cylinder/cone/torus when its face inventory matches exactly and emits a creation op per recognized solid with each dimension bound to a named variable via exprs — the first programmatic producer of expression strings — plus a parametric script document; optionally writes a new B-rep file (export model, like promote_mesh_to_brep) and/or saves the script to the macro library. Unrecognized solids are reported in perSolid with a reason, never a guess. This is a one-shot emit/export, not an in-place replacement — the source file is never modified.",
       "check_mesh_health/promote_mesh_to_brep build one OCCT face per triangle and sew them, so both refuse a mesh above 50000 triangles with an actionable error rather than exhausting the WASM heap — most relevant for glTF, a rendering-oriented format whose real-world files are routinely far larger than hand-authored STL/OBJ/PLY. Pass autoDecimate:true to run over a meshio++-decimated mesh instead (target ~1000 triangles; the response reports the ratio actually applied and warns that it describes the decimated mesh, never silently) — but note the sewing cost scales steeply past ~1k triangles, which is why the target is ~2% of the ceiling rather than just under it; and a decimated mesh can heal degenerately (decimation artifacts break the solidify — the report's own healedVolume/volumeDeltaPct/nonManifoldEdgeCount reveal it, and promote refuses to write such a solid rather than emitting a wrong file).",
       "repair_mesh (STL/OBJ/PLY/glTF sources only) writes a NEW watertight STL file at outputPath by tetrahedralizing the mesh with fTetWild and taking the resulting volume mesh's own boundary — watertight/manifold by construction regardless of how broken the input was, since fTetWild survives holes/self-intersections/non-manifold edges Gmsh's own classifySurfaces path rejects. A one-shot export (the source is untouched); the natural next step is re-running check_mesh_health/promote_mesh_to_brep on the repaired output. Unlike those two, it has no triangle-count ceiling (a different cost profile than the per-triangle OCCT sewing pipeline) — a very large/slow mesh may instead hit this server's own per-call timeout.",
+      "remesh_mesh uses MMG on linear triangle/tetra meshes, writing a NEW MED file and rebound Parts sidecar. source=file reads a meshio source; source=generated uses generate_mesh's edited geometry/options. hausd defaults to 0.5% of the bbox diagonal; hmin/hmax use model units. MMG's allocation target is 128 MiB, not an OS RSS cap. Named cell regions survive through integer references; point/cell fields are dropped with a warning. Unsupported hex/quad/quadratic cells are refused, never silently linearised. This is not a repair operation or an unconditional quality-improvement guarantee.",
       "inspect_meshio_fields (meshio++ sources only) lists a file's scalar result fields headlessly — per-array name, point|cell location, component width, finite-only min/max, NaN count — summaries only, never raw values. A multi-component array is reported with its width, not an error. Read-only, never mutates or persists anything.",
       "check_interference resolves a Part name OR raw solid ids per operand, single pair per call; its assembly-wide sibling check_interference_all runs every PAIR of Parts in one call instead — cost is O(n²) boolean evaluations worst case, cut to only geometrically-plausible pairs by a bounding-box pre-filter (rows carry screenedByBbox:true when the AABB test alone decided, which is a fact about how the answer was derived, not a different answer). Bound it with maxPairs/maxBooleans (deterministic i<j order; screened pairs are free); pairs past the budget return unchecked:true and are NOT clash-free (totalPairs/checkedPairs/screenedPairs/uncheckedCount/partial describe the outcome). On documents with many Parts, pass an explicit parts subset.",
       "measure_exact's kind:'distance' returns the exact MINIMUM plus where it lands (fromPoint/toPoint), centreDistance (what measure reports), axisDistance for two cylindrical faces (shortest infinite-axis separation — hole-to-hole spacing independent of the finite surfaces' clearance), and — for two planar faces — angleDeg and the perpendicular parallelDistance with primary:'parallel'. There is deliberately NO maximum-distance field: both OCCT paths for it were probed against the live WASM and are genuinely unavailable in this build.",
@@ -2251,6 +2255,55 @@ export async function transformMeshTool(
     steps: result.steps,
     warnings: result.warnings,
   };
+}
+
+/** Reference-preserving MMG remesh, always to a NEW MED file. Generated
+ * mode uses the same edited input/options/Parts path as generate_mesh. */
+export async function remeshMeshTool(
+  ctx: ToolContext,
+  params: { path: string; outputPath: string; source?: "file" | "generated"; options?: MmgOptions; meshOptions?: Partial<MeshOptions> }
+) {
+  const route = requireRoute(params.path);
+  const options = validateMmgOptions(params.options ?? {});
+  const outputPath = path.resolve(params.outputPath);
+  assertNotSourcePath(params.path, outputPath);
+  assertNotSourcePath(params.path, `${outputPath}.parts.json`);
+  if (path.extname(outputPath).toLowerCase() !== ".med") throw new Error("remesh_mesh outputPath must end in .med (region-preserving output)");
+  for (const target of [outputPath, `${outputPath}.parts.json`]) {
+    try { await fs.lstat(target); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") continue; throw error; }
+    throw new Error(`MMG always writes new files; choose an unused output path. Already exists: ${target}`);
+  }
+  if (params.source !== undefined && params.source !== "file" && params.source !== "generated") throw new Error("remesh_mesh source must be file or generated");
+  const warnings: string[] = [];
+  let bytes: Uint8Array, format: string, sourceName: string | undefined;
+  let companions: Awaited<ReturnType<typeof resolveMeshioCompanions>> | undefined;
+  const original = await readParts(params.path);
+  if (params.source === "generated") {
+    const input = await resolveMeshInputHeadless(ctx, params.path, route, warnings);
+    const base = await effectiveMeshOptions(params.path, params.meshOptions);
+    const resolved = await resolveMeshPartsAndOptionsHeadless(params.path, input, base, warnings);
+    const generated = await ctx.pipeline.generateMesh(ctx.extensionPath, input, resolved.options, resolved.parts);
+    bytes = Buffer.from(generated.mshText, "utf8");
+    format = "gmsh";
+    warnings.push(...(generated.warnings ?? []));
+  } else {
+    if (route.strategy !== "meshio" || route.format === "openfoam") throw new Error("remesh_mesh file mode requires a meshio-readable triangle/tetra mesh; use source: generated for CAD/native mesh sources");
+    bytes = await readModelBytes(params.path);
+    companions = await resolveMeshioCompanions(params.path, route.format, bytes);
+    sourceName = path.basename(params.path);
+    format = route.format;
+    const edits = await readEditsResolved(params.path);
+    if (edits.ops.length) warnings.push("File mode remeshes the raw FE mesh; pending display edits are not baked in. Use generated mode to remesh edited geometry.");
+  }
+  const result = await ctx.pipeline.remeshMesh(ctx.extensionPath, bytes, format, options, sourceName, companions);
+  const boundary = await ctx.pipeline.convertToStlBoundaryWithRegions(result.bytes, "med");
+  const built = boundary.regions ? buildPartsFromMeshioRegions(boundary.stlBytes, boundary.regions) : [];
+  const rebound = remeshedParts(built, original, result.regionNames);
+  await fs.writeFile(outputPath, result.bytes, { flag: "wx" });
+  await fs.writeFile(partsSidecarPath(outputPath), serializePartsJson(path.basename(outputPath), rebound.parts), { flag: "wx" });
+  return { written: outputPath, partsPath: `${outputPath}.parts.json`, report: result.report, regionNames: result.regionNames,
+    parts: rebound.parts, warnings: [...warnings, ...result.warnings, ...rebound.warnings] };
 }
 
 /**

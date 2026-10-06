@@ -11,6 +11,15 @@ VS Code extensions run in two separate JavaScript environments:
 
 The two processes communicate exclusively through VS Code's `postMessage` / `onDidReceiveMessage` API. They share no memory. See [Host ↔ Webview Protocol](./protocol.md) for the message schema.
 
+Heavy kernels actually run in the existing serialized **forked kernel worker**
+behind the extension host/MCP entry points; the host retains file I/O and UI
+dialogs. MMG follows that same path (`Pipeline.remeshMesh` → meshio bridge →
+lazy MMG CJS runtime), so cancellation/watchdog terminate its worker, not VS
+Code. The webview never imports MMG. File mode reads the original FE data;
+generated mode creates a fresh edited-geometry mesh. The result is a new MED
+plus rebound Parts sidecar, not an automatically replaced overlay. See
+[MMG remeshing](./gmsh-integration.md#mmg-remeshing).
+
 ```
 Extension host (Node)                     Webview (Chromium)
 ─────────────────────────────────────     ─────────────────────────────────────────
