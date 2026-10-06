@@ -4,6 +4,12 @@ All notable changes to the "CAD Preview" extension are documented in this file.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/); this project does not yet strictly follow Semantic Versioning (pre-1.0 releases moved fast and bundled multiple features per bump).
 
+## [3.11.0] - 2026-10-06
+
+### Added
+
+- **MMG remeshing for FE meshes.** **FE Mesh → Mesh ops · Remesh (MMG)** and the headless `remesh_mesh` MCP tool refine/coarsen a linear triangle/tetra mesh under MMG control parameters (`hausd` defaulting to 0.5% of the bbox diagonal, plus `hmin`/`hmax`/`hgrad`). Two input modes: the original meshio-readable FE file, or freshly generated edited geometry with current settings/Parts. Output is always a new `.med` file plus a rebound `.parts.json` sidecar; the source is never overwritten and existing outputs are refused. Named cell regions survive through integer references (including overlaps); Parts are rebuilt against new facet ids with matching colours/sizes. Result fields and point/side groups are dropped with warnings; hex/quad/pyramid/prism/quadratic input is refused rather than converted. This is ordinary remeshing, not an automatic quality optimiser or post-Generate pass. Verified with `npm run build` + `tsc` clean, unit 2516 passed, webview 758 checks, host integration 277 checks, compat corpus 41 rows, packaged-VSIX asset and isolated-runtime MMG checks, live product probe (material volumes preserved, sphere error within bound), `docs:build` clean, and real-pipeline screenshots (`mmg-remesh.png`, `mmg-remesh-result.png`). Closes former roadmap task 4.17 (PR #93).
+
 ## [3.10.1] - 2026-09-30
 
 ### Fixed
@@ -721,6 +727,7 @@ This release republishes v1.9.0's full changelog (below) unchanged; v1.9.0 itsel
 
 - Initial release: read-only 3D preview for CAD and mesh files (STEP, IGES, BREP, STL, OBJ, PLY, glTF) inside a VS Code custom editor, using OpenCascade.js (OCCT WASM) in the extension host for B-rep formats and Three.js in the webview for rendering.
 
+[3.11.0]: https://github.com/loumalouomega/CAD-Preview/compare/v3.10.1...v3.11.0
 [3.10.1]: https://github.com/loumalouomega/CAD-Preview/compare/v3.10.0...v3.10.1
 [3.10.0]: https://github.com/loumalouomega/CAD-Preview/compare/v3.9.0...v3.10.0
 [3.9.0]: https://github.com/loumalouomega/CAD-Preview/compare/v3.8.0...v3.9.0
