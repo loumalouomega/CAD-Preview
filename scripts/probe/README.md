@@ -4,10 +4,41 @@ Runs a TypeScript file against the real OCCT, Gmsh, meshio++ and fTetWild WASM
 kernels, so a probe can establish a fact about a binding without writing a
 build script first.
 
+The MMG feasibility probe additionally uses the pinned **devDependency**
+`@loumalouomega/mmg-wasm` (LGPL-3.0-or-later); it is not a shipped kernel.
+
 ```sh
 npm run probe -- scripts/probe/examples/bull-counts.ts          # builds first
 node scripts/probe/run.mjs --no-build path/to/probe.ts [args…]   # reuse dist/
 ```
+
+### MMG core and transport experiment
+
+```sh
+npm run probe -- scripts/probe/examples/mmg-core.ts --run
+node scripts/probe/examples/mmg-transport.mjs
+```
+
+The core experiment checks region references and volumes, fTetWild-output
+optimisation through Gmsh minSICN, sphere coarsening, STRONGFAILURE recovery,
+empty-harvest rejection and 20 repeated remeshes. It prints JSON facts to
+**stderr**. An exit code of zero means the experiment completed, **not** that
+every admission gate passed: read `decision` and `optim.nonDecreasing`.
+
+The transport experiment also runs the complete core experiment and asserts
+zero stdout bytes. It builds temporary copies of the real kernel-worker,
+kernel-client and MCP entries under the ignored `.build/mmg-transport/`,
+injecting one probe-only method with an esbuild plugin (no source or shipped
+bundle is rewritten). It captures the worker's otherwise-discarded stdout,
+checks typed-array wire tags, and strictly parses every MCP stdout line as
+JSON-RPC. The temporary `mmg_probe` tool is **not** part of the product API.
+
+The measured outcome is **partial**: both remeshers work, but `optim` has
+lowered minSICN on the motivating fixture. Exact call shapes and measurements
+are in `CLAUDE.md`'s "MMG core feasibility probe" section; remaining scope is
+in the roadmap's "MMG remeshing of FE meshes" item. The core run can retain
+roughly 1.3 GB RSS with all three exercised kernels; use the isolated process,
+not a long-lived development host.
 
 `run.mjs` bundles the entry with `scripts/nodeBundleConfig.mjs`, the same
 Node/CJS recipe `esbuild.mjs` uses for the shipped bundles. It then runs the

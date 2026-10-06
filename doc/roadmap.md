@@ -169,7 +169,7 @@ It does **not** admit AGPL code, so TetGen stays rejected. Every new bundled dep
 | --- | --- | --- | --- |
 | Upkeep | The base stays current and trustworthy | Done: the dependency watch, "Verify the dependency watch on GitHub", has run — it published issue #84 and re-dispatching reported `unchanged`. The verification-debt gate has shipped and ten claims are closed; the host-side halves (1.1) are next | The verification debt count keeps falling by closure |
 | Parity | Everything an agent can do, a user can do, and the reverse | Done: headless mesh-edit replay closed the last listed gap (as did the hole-table, refinement-sweep, free-text-note and mesh-source FE-export gaps). Justified remainders: mesh `inspect`/mass facts, `promote_mesh_to_brep` and `repair_mesh` read the raw file (their ids and outputs are defined over it; `save_model` bakes first), and glTF has no own-format save (its exporter emits only `.glb`) | Headless tools see the same edited mesh the viewer shows, or each remaining difference is justified |
-| Meshing probes | Decide on remeshing and on conformal assemblies | The MMG core probe (4.1), then conformal multi-body meshing (4.2), then Gmsh optimisation (4.4) | Each probe filed with measured results and a decision |
+| Meshing probes | Decide on remeshing and on conformal assemblies | MMG core probe (4.1) is partial: volume/surface/transport work, unconditional optimisation failed; narrow its admission before shipping. Conformal multi-body meshing (4.2), then Gmsh optimisation (4.4) can proceed independently | Each probe filed with measured results and a decision |
 | Geometry probes | Decide which never-called OCCT capabilities become ops | Imprint and split faces (3.1), then B-rep repair (3.2) | Each probe filed with measured results and a decision |
 | Strategic | Remove the kernel ceiling | The self-built OCCT WASM probe (6.1) | The existing test suites pass unchanged against the new build |
 
@@ -558,7 +558,7 @@ None of these depends on another's result.
 
 | ID | Item | Needs | Why here |
 | --- | --- | --- | --- |
-| 4.1 | MMG remeshing of FE meshes | `@loumalouomega/mmg-wasm` installed as a devDependency for the probe | Opens a whole capability class (remeshing), and two later rows reuse its loader |
+| 4.1 | MMG remeshing of FE meshes | Core probe partial; pinned devDependency 0.1.0 | Volume/surface remeshing works; quality guarantee failed, memory admission remains |
 | 4.2 | Conformal multi-body meshing | — | Assemblies are the common case for FE input, and the fix is already in the binary |
 | 4.3 | Hausdorff-bounded surface coarsening | the MMG core loader; meshio++ already bundled | Fixes a known defect (a degenerate heal after auto-decimate), and may need no new dependency at all |
 | 4.4 | Gmsh mesh optimisation | — | Already in the binary; cheap; directly improves every generated mesh |
@@ -584,6 +584,8 @@ Only 4.10 depends on another item's *result*: adaptive remeshing needs the MMG c
   - named regions (our Parts) survive through MMG's per-cell references;
   - nothing reaches stdout;
   - a STRONGFAILURE resets the kernel instead of poisoning it.
+- **Measured 2026-10-06 — partial, not implementation-ready:** `scripts/probe/examples/mmg-core.ts` and `mmg-transport.mjs` establish that both modules load, reference-preserving volume remeshing and surface coarsening work, the captured worker/standalone fd 1 is empty, MCP stdout is clean JSON-RPC, and a real missing-material STRONGFAILURE resets and recovers. Two-material tets **2 → 37**, volume relative delta **2.22e-16**, both refs and individual material volumes retained. Sphere **99,904 → 12,416 triangles**, max radial vertex error **3.676e-5** at `hausd=0.01`. **The optimisation gate failed in two independent runs:** Gmsh minSICN **0.427485 → 0.271894**, then **0.345839 → 0.322069**. Twenty warm small remeshes retained a stable **802,816,000-byte MMG heap**, ~1.31 GB combined process RSS: bounded in that experiment but a substantial memory cost. Exact calls, timings, versions, cleanup and limitations are in `CLAUDE.md`'s "MMG core feasibility probe" section. MMG remains dev-only; no product API shipped.
+- **Surviving admission question (S):** admit reference-preserving volume/surface remeshing **without** a minimum-quality guarantee only after a practical per-job memory budget is measured on repeated larger inputs (the 20 small repeats do not answer that). Do not re-run the same `optim` call expecting a guarantee: its negative result is recorded under [Rejected scope](#rejected-scope). Any different optimisation strategy needs independently measured quality and geometry, not a renamed option.
 - **Evidence today:**
   - **From VSCode-MDPA-Preview** (see the review above): MMG remeshing ships there, with all three modules, typed-array I/O, per-reference local parameters and frozen entities.
   - **Here:** the gap is real. `transform_mesh` offers clean/decimate/smooth/subdivide/refine, and `repair_mesh` offers fTetWild, but nothing remeshes to a target size or error bound. Refining with meshio++'s `refine` only splits elements; it never coarsens or relocates.
@@ -592,7 +594,7 @@ Only 4.10 depends on another item's *result*: adaptive remeshing needs the MMG c
   - **What differs from meshio++:**
     - the package is dual ESM/CJS, so the CJS build must be aliased (`import.meta.url` is undefined in our CJS bundles, the same trap gmsh-wasm had);
     - it takes `wasmBinary`, so a copy into `dist/` works, unlike meshio++.
-- **Probe (S):**
+- **Completed core probe protocol (S; partial):**
   1. **Load and stdout.** Load through a `getMmg()` singleton that passes `wasmBinary`, `print` and `printErr`. Run one remesh inside `npm run probe`, then again through a throwaway `dist/mcp-server.js` build. Assert zero bytes on fd 1 (the `mcp:smoke` stdout discipline).
   2. **Region survival (mmg3d).** Remesh `examples/MED/two-material-tets.med`:
      - `hausd` = 0.5 % of the bbox diagonal;
@@ -607,17 +609,18 @@ Only 4.10 depends on another item's *result*: adaptive remeshing needs the MMG c
      - Provoke a STRONGFAILURE: a multi-material map missing one reference. Assert a thrown error, a reset singleton, and a successful next call.
      - Assert an empty harvest is reported as an error.
   6. **Timing.** Record wall-clock timing for each step, and memory growth across 20 repeated remeshes.
-- **Decision gate:**
+- **Original decision gate (not passed):**
   - **Pass:** all six steps hold.
   - **Fail on stdout or loading:** Kernel-blocked, with the failing call recorded.
   - **Partial (mmgs works, mmg3d does not, or the reverse):** keep the item, narrowed to the working module.
+  - **Observed partial:** both modules work, but `optim` violates the stated quality guarantee. Keep only the reference-preserving remeshing admission; the automatic optimisation phase below is not admitted.
 - **If admitted:**
   - **Phase 1 (M): a `remesh_mesh` MCP tool plus a **Remesh (MMG)** action in the FE Mesh panel's Mesh ops section**, for meshio sources and for a generated mesh.
-    - **Options:** `hausd` (relative by default), `hmin`, `hmax`, `hgrad`, `optimOnly`.
+    - **Options:** `hausd` (relative by default), `hmin`, `hmax`, `hgrad`. The original `optimOnly` quality-improvement promise is excluded by the probe.
     - **Result:** a new file, never the source (the `repair_mesh` precedent). Parts are carried through references.
     - **Point/cell data:** dropped with a warning until the adaptive item lands.
     - **Licence and packaging tasks:** the package stays in `WASM_EXTERNALS`; add a `.vscodeignore` carve-out; add a README "Licensing" paragraph stating LGPL-3.0-or-later and what that means for the combined work; add LICENSE attribution; `npm run compat:vsix` must list the new files.
-  - **Phase 2 (M): an optional MMG optimisation pass after Generate** (Gmsh or fTetWild output). It is gated behind a `MeshOptions` field, so existing documents mesh byte-identically.
+  - **Former Phase 2 (post-Generate MMG optimisation): not admitted.** See the measured negative result under Rejected scope; a different strategy requires a new probe.
 - **Out of scope:**
   - Lagrangian `move` (it needs MMG's elasticity library, which the WASM build lacks).
   - Hexahedral, pyramid and quadratic input (MMG rejects them; say so, rather than silently linearising).
@@ -1032,6 +1035,8 @@ Three groups, three different revival rules. Each says what would change our min
 ### Rejected scope
 
 *Revivable only under a different framing — the objection is to what the feature would make this tool, not to whether it could be built. Narrower alternatives are identified below; some already ship.*
+
+- **MMG `optim` as an unconditional quality improvement or automatic post-Generate pass.** The MMG core probe (0.1.0 / MMG 5.8.0, 2026-10-06) used `mmg3d.setIparameter(mesh,met,IPARAM_optim,1)` then `remesh(mesh,met)` on fTetWild output of `examples/STL/holed-cube.stl`. Gmsh independently measured minSICN falling **0.427485 → 0.271894**, then **0.345839 → 0.322069**; the repeat also changed **9,503 → 24,322 tets**. The binding works, but the quality-improvement promise does not. **What survives:** ordinary reference-preserving volume and surface remeshing under [MMG remeshing of FE meshes](#mmg-remeshing-of-fe-meshes), without this guarantee. **Revive only** for a different explicit strategy that passes independent quality and geometry checks on the motivating fixture; do not silently substitute MMG's own metric for the Gmsh minSICN gate.
 
 - **Interactive sketching with geometric constraints** — rejected, not deferred. It is the single clearest "this is a modeling application now" feature, and CAD-Preview is a preview/inspect/prepare tool. More concretely: the numeric profile and curve forms are **not** a degraded mouse — they accept parametric variable expressions (`L*2`, `R*cos(i*360/N)`) that a click-to-place tool cannot express, so replacing them with drawing would trade away a distinguishing capability for a familiar one. The argument has only got stronger: no constraint solver exists anywhere in the codebase (the sole `constraint` hit is `mate`'s doc comment), while the expression-driven sketch vocabulary has kept growing to sixteen creation ops. Worth noting that SketchForge, a dedicated sketch application, still has no constraint solver either — building this would mean shipping the weak two-thirds of the feature.
 
