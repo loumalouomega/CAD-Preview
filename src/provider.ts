@@ -24,6 +24,8 @@ import { normalizeTessellationQuality, tessellationParamsFor } from "./tessellat
 import { detectStepLengthUnit } from "./stepUnits";
 import { detectIgesLengthUnit } from "./igesUnits";
 import { buildPartsFromMeshioRegions } from "./meshioRegionParts";
+import { validateMmgOptions } from "./mmgOptions";
+import { remeshedParts } from "./mmgParts";
 import { buildMeshProvenanceNotes } from "./meshProvenanceNotes";
 import { meshioCompanionCandidates } from "./meshioCompanions";
 import type { MeshioCompanion } from "./meshioService";
@@ -3155,6 +3157,69 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
           // A dismissed save dialog is a quiet no-op (no result post), mirroring every other save flow here.
         } catch (err) {
           post({ type: "meshioOpsError", requestId: msg.requestId, message: (err as Error).message });
+        }
+        return;
+      }
+
+      if (msg.type === "remeshRequest") {
+        try {
+          await this.runMeshingJob(document.uri, msg.requestId, post, async () => {
+            if (!route) throw new Error("Unsupported source format");
+            const options = validateMmgOptions(msg.options);
+            if (msg.source !== "file" && msg.source !== "generated") throw new Error("MMG input must be file or generated");
+            const saveUri = await vscode.window.showSaveDialog({
+              defaultUri: vscode.Uri.file(document.uri.fsPath.replace(/\.[^.]+$/, "") + "-remeshed.med"),
+              filters: { "MED mesh (named regions)": ["med"] },
+            });
+            if (!saveUri) { post({ type: "remeshResult", requestId: msg.requestId, cancelled: true, warnings: [] }); return; }
+            if (saveUri.toString() === document.uri.toString() || saveUri.fsPath === document.uri.fsPath) throw new Error("MMG always writes a new file; choose a path different from the source");
+            if (!saveUri.path.toLowerCase().endsWith(".med")) throw new Error("MMG output must be .med to preserve named regions");
+            for (const target of [saveUri, saveUri.with({ path: `${saveUri.path}.parts.json` })]) {
+              try { await vscode.workspace.fs.stat(target); }
+              catch (error) { if ((error as vscode.FileSystemError).code === "FileNotFound") continue; throw error; }
+              throw new Error(`MMG always writes new files; choose an unused output path. Already exists: ${target.fsPath}`);
+            }
+            this.assertMeshingJobActive();
+            let bytes: Uint8Array, format: string, name: string | undefined;
+            let companions: Awaited<ReturnType<typeof resolveMeshioCompanionsFor>> | undefined;
+            const warnings: string[] = [];
+            const pipeline = this.docPipeline(document.uri);
+            if (msg.source === "generated") {
+              const input = await this.resolveMeshInput(document.uri, route, currentEdits, msg.stl, "mm", currentBakedThrough);
+              if (!input) throw new Error("No geometry to generate a mesh from");
+              const resolved = await this.resolveMeshPartsAndOptions(document.uri, input, msg.meshOptions);
+              const generated = await pipeline.generateMesh(this.context.extensionPath, input, resolved.options, resolved.parts);
+              bytes = Buffer.from(generated.mshText, "utf8");
+              format = "gmsh";
+              warnings.push(...(generated.warnings ?? []));
+            } else {
+              if (route.strategy !== "meshio" || route.format === "openfoam") throw new Error("File mode requires a meshio-readable triangle/tetra FE mesh");
+              bytes = await vscode.workspace.fs.readFile(document.uri);
+              name = path.basename(document.uri.fsPath);
+              format = route.format;
+              companions = await resolveMeshioCompanionsFor(document.uri, name, format, bytes);
+              if (replayTail(currentEdits, currentBakedThrough).length) warnings.push("File mode remeshes the original FE mesh; display edits are not baked in. Use generated mode for edited geometry.");
+            }
+            const result = await pipeline.remeshMesh(this.context.extensionPath, bytes, format, options, name, companions);
+            const boundary = await pipeline.convertToStlBoundaryWithRegions(result.bytes, "med");
+            const built = boundary.regions ? buildPartsFromMeshioRegions(boundary.stlBytes, boundary.regions) : [];
+            const rebound = remeshedParts(built, currentParts, result.regionNames);
+            this.assertMeshingJobActive();
+            // Remeshing can take minutes. Recheck after it, so a file created
+            // while the worker ran is not mistaken for our unused save path.
+            for (const target of [saveUri, sidecarUri(saveUri)]) {
+              assertNotDirty(target);
+              try { await vscode.workspace.fs.stat(target); }
+              catch (error) { if ((error as vscode.FileSystemError).code === "FileNotFound") continue; throw error; }
+              throw new Error(`MMG output appeared while remeshing; choose an unused path. Already exists: ${target.fsPath}`);
+            }
+            await vscode.workspace.fs.writeFile(saveUri, result.bytes);
+            await writeParts(saveUri, rebound.parts);
+            post({ type: "remeshResult", requestId: msg.requestId, report: result.report, written: saveUri.fsPath,
+              warnings: [...warnings, ...result.warnings, ...rebound.warnings] });
+          });
+        } catch (error) {
+          post({ type: "remeshError", requestId: msg.requestId, message: (error as Error).message });
         }
         return;
       }

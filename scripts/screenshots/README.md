@@ -39,4 +39,9 @@ npm run test:webview   # build → fixtures → assertions
 
 Edit the `SHOTS` array in `capture.mjs`: each entry is `{ file, setup(page), target }`, where `target` is `{}` (full page), `{ sel: "#id" }` (element crop), or `{ clip: {x,y,width,height} }`. Then re-run `npm run docs:screenshots` and embed the new PNG in the relevant `doc/*.md` page with `![alt](/screenshots/<file>.png)`.
 
+The MMG controls/output shots use `mmg-*.json` fixtures from a **real**
+`remeshMesh` call on `examples/MED/two-material-tets.med`. The output shot
+reopens the actual remeshed MED boundary with rebuilt material Parts; its
+tetrahedron counts come from the same call, never hand-authored numbers.
+
 Nothing here ships in the packaged `.vsix` — it is dev tooling only.

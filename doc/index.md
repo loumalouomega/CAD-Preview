@@ -69,8 +69,12 @@ features:
     details: Export a technical drawing sheet with several views (front/top/right/iso by default) laid out at one shared scale, orthographically aligned per first- or third-angle projection, inside a frame with a title block. "Fit" sizes the sheet to the views at 1:1; a named ISO paper size (A4–A0) picks the largest standard scale that fits. A pinned measurement is drawn once, in whichever view shows it at true length.
 
   - icon: 🧮
-    title: FE Mesh Generation (Gmsh)
+    title: FE Mesh Generation and Remeshing
     details: Generate a finite-element mesh of the open model with Gmsh compiled to WebAssembly, shown as an overlay on top of the existing geometry, alongside a quality summary (min/mean element quality plus a histogram). Options autosave to a `<model>.mesh.json` sidecar plus a generated `<model>.geo` script; export the result as hand-written Kratos MDPA (the default, preserving named Parts as SubModelParts) or any Gmsh format the panel offers (.msh, .msh2, .geo_unrolled, VTK, I-DEAS Universal, Abaqus, Nastran, SU2, INRIA Medit, STL, Diffpack, OFF). For a dirty mesh-format source Gmsh's own meshing rejects, an Engine choice switches to fTetWild, a tetrahedralizer built to survive holes/self-intersections/non-manifold edges. The CAD file stays read-only.
+
+  - icon: 🔁
+    title: MMG Remeshing
+    details: Refine/coarsen linear triangle or tetrahedral FE meshes with MMG, from an original meshio-readable file or freshly generated edited geometry. Writes a new MED mesh with named cell regions and rebound Parts. Result fields are dropped with warnings; hex/quad/quadratic input is refused. Not an automatic quality optimiser.
 
   - icon: 🤖
     title: MCP Server for AI Agents

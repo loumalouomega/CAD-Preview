@@ -37,6 +37,7 @@ export const wasmPathPlugin = {
 export const WASM_EXTERNALS = Object.freeze([
   "vscode",
   "@loumalouomega/gmsh-wasm",
+  "@loumalouomega/mmg-wasm",
   "@meshioplusplus/wasm",
   "float-tetwild-wasm",
   "playwright",
@@ -80,6 +81,7 @@ export function kernelVersions() {
   return {
     "opencascade.js": read("opencascade.js"),
     "@loumalouomega/gmsh-wasm": read("@loumalouomega/gmsh-wasm"),
+    "@loumalouomega/mmg-wasm": read("@loumalouomega/mmg-wasm"),
     "@meshioplusplus/wasm": read("@meshioplusplus/wasm"),
     "float-tetwild-wasm": read("float-tetwild-wasm"),
   };

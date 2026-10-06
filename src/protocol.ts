@@ -626,6 +626,8 @@ export type HostToWebview =
    * written to a new file via the shared save flow. Mirrors
    * `meshHealRequest`'s requestId + stale-response-guard idiom. */
   | { type: "meshioOpsResult"; requestId: string; steps: Array<{ op: string; applied: boolean; detail: string }>; warnings: string[] }
+  | { type: "remeshResult"; requestId: string; report?: Awaited<ReturnType<typeof import("./meshioService").remeshMesh>>["report"]; written?: string; warnings: string[]; cancelled?: boolean }
+  | { type: "remeshError"; requestId: string; message: string }
   | { type: "meshioOpsError"; requestId: string; message: string }
   | { type: "fitRegionResult"; requestId: string; fit: MeshRegionFit }
   | { type: "fitRegionError"; requestId: string; message: string }
@@ -895,6 +897,7 @@ export type WebviewToHost =
    * surface through the generic `status`/`error` messages — this pair only
    * carries the per-step report back to the panel. */
   | { type: "meshioOpsRequest"; requestId: string; ops: MeshioOpSpec[] }
+  | { type: "remeshRequest"; requestId: string; source: "file" | "generated"; options: import("./mmgOptions").MmgOptions; meshOptions: MeshOptions; stl?: string }
   | { type: "fitRegionRequest"; requestId: string; point: [number, number, number] }
   /** Primitive-recognition panel: run `recognizePrimitives` over the
    * currently-open B-rep source. No params beyond `requestId` — the host

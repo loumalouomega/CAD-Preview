@@ -44,6 +44,8 @@ import { hashBytes, serializeSaveJournal } from "../../../src/saveJournal";
 import { writePlanes } from "../../../src/planesStore";
 import { writeCustomBackup, restoreCustomBackup } from "../../../src/customBackup";
 import { ModelsTreeDataProvider } from "../../../src/modelsView";
+import { DEFAULT_MESH_OPTIONS } from "../../../src/meshOptions";
+import { parsePartsJson } from "../../../src/partsSidecar";
 
 const EXTENSION_ID = "kratos-multiphysics.cad-preview";
 const VIEW_TYPE = "cad-preview.mesh";
@@ -1758,6 +1760,63 @@ test("an external .planes.json edit is reconciled into the webview", async () =>
     sub.dispose();
   }
   await closeAll();
+});
+
+test("MMG host remesh writes a new mesh and rebound material Parts without touching the source", async () => {
+  const api = await saveTestApi();
+  assert(!!api?.simulateWebviewMessage && !!api.onDidPostMessage, "MMG host test seams are available");
+  const staged = stage(path.join(ROOT, "examples/MED/two-material-tets.med"));
+  const sourceBytes = fs.readFileSync(staged);
+  assert(await openDocument(staged), "MMG MED source opens");
+  const dest = path.join(path.dirname(staged), "mmg-host.med");
+  const seen: Array<{ type: string; written?: string; warnings?: string[] }> = [];
+  const sub = api!.onDidPostMessage!(m => seen.push(m));
+  try {
+    const record = await withModals([save(dest)], async () => {
+      await api!.simulateWebviewMessage!(vscode.Uri.file(staged), { type: "remeshRequest", requestId: "mmg-host", source: "file", options: { hmax: 0.6 }, meshOptions: DEFAULT_MESH_OPTIONS });
+    });
+    assert(record.saveDialogs[0]?.filters?.["MED mesh (named regions)"]?.[0] === "med", "MMG save dialog offers its region-preserving format");
+    assert(seen.some(m => m.type === "remeshResult" && m.written === dest), "MMG handler posts the actual output path");
+    assert(fs.existsSync(dest) && fs.statSync(dest).size > 0, "MMG handler writes the remeshed FE file");
+    const parts = parsePartsJson(fs.readFileSync(`${dest}.parts.json`, "utf8"));
+    assert(parts.length === 2 && parts.every(p => p.surfaces.length > 0), "MMG handler rebinds both material Parts to new facet ids");
+    assert(fs.readFileSync(staged).equals(sourceBytes), "MMG host flow leaves the source unchanged");
+    assert(seen.some(m => m.warnings?.some(w => /data was dropped/.test(w))), "MMG host flow reports dropped field data");
+  } finally { sub.dispose(); await closeAll(); }
+});
+
+test("MMG host generated mode preserves a CAD boundary Part", async () => {
+  const api = await saveTestApi();
+  assert(!!api?.simulateWebviewMessage && !!api.onDidPostMessage, "MMG generated host seams are available");
+  const staged = stage(STEP_FIXTURE);
+  fs.writeFileSync(`${staged}.parts.json`, JSON.stringify({ version: 1, source: path.basename(staged), parts: [{ name: "Wall", color: "#ff0000", volumes: [], surfaces: ["face-0"], lines: [], points: [] }] }));
+  assert(await openDocument(staged), "MMG CAD source opens");
+  const dest = path.join(path.dirname(staged), "mmg-generated.med");
+  await withModals([save(dest)], async () => {
+    await api!.simulateWebviewMessage!(vscode.Uri.file(staged), { type: "remeshRequest", requestId: "mmg-generated", source: "generated", options: { hmax: 1 }, meshOptions: { ...DEFAULT_MESH_OPTIONS, sizeMax: 2 } });
+  });
+  assert(fs.existsSync(dest), "MMG generated host flow writes its remeshed result");
+  const parts = parsePartsJson(fs.readFileSync(`${dest}.parts.json`, "utf8"));
+  assert(parts.some(p => p.name === "Wall" && p.color === "#ff0000" && p.surfaces.length > 0), "MMG generated host flow preserves boundary Part name, colour and membership");
+  await closeAll();
+});
+
+test("MMG host dismissal and source-path refusal do not write", async () => {
+  const api = await saveTestApi();
+  assert(!!api?.simulateWebviewMessage && !!api.onDidPostMessage, "MMG refusal host seams are available");
+  const staged = stage(path.join(ROOT, "examples/MED/two-material-tets.med"));
+  const bytes = fs.readFileSync(staged);
+  assert(await openDocument(staged), "MMG source opens for dismissal/refusal");
+  const seen: Array<{ type: string; cancelled?: boolean; message?: string }> = [];
+  const sub = api!.onDidPostMessage!(m => seen.push(m));
+  const message = { type: "remeshRequest", requestId: "mmg-dismiss", source: "file", options: {}, meshOptions: DEFAULT_MESH_OPTIONS };
+  try {
+    await withModals([cancel()], () => api!.simulateWebviewMessage!(vscode.Uri.file(staged), message));
+    assert(seen.some(m => m.type === "remeshResult" && m.cancelled), "MMG dismissed save is explicitly cancelled");
+    await withModals([save(staged)], () => api!.simulateWebviewMessage!(vscode.Uri.file(staged), { ...message, requestId: "mmg-refuse" }));
+    assert(seen.some(m => m.type === "remeshError" && /new file/.test(m.message ?? "")), "MMG refuses the original source as output");
+    assert(fs.readFileSync(staged).equals(bytes), "MMG dismissal/refusal leaves the source byte-identical");
+  } finally { sub.dispose(); await closeAll(); }
 });
 
 /**

@@ -277,6 +277,19 @@ Op order is preserved (replay depends on it). Parsing is tolerant: malformed ops
 
 BREP rather than STEP or IGES: a live probe confirmed all three writers accept an empty compound, so this is a preference rather than a constraint, but BREP is OCCT's native serialization, carries no unit header to declare for geometry that isn't there yet, and skips the STEP/IGES unit-detection read path. Two consequences worth knowing: the `.brep` on disk never grows (ship it together with its `.edits.json`, or Export/Save Preprocess to get something standalone), and since the export list always excludes a document's own format, a blank document's **Export…** offers STEP/IGES plus every mesh format but not BREP.
 
+## MMG remesh outputs
+
+**Remesh (MMG)** / **`remesh_mesh`** writes a new **`.med`** mesh and a normal
+**`<output>.parts.json`** sidecar. Both paths must be unused; the source is never
+overwritten. Named **cell** regions, including boundary triangle groups and
+overlapping memberships, are carried through MMG integer references. Parts are
+rebuilt against the output's facet ids, not copied with stale `face-N` ids.
+Colours and flat mesh sizes survive by matching region names. Point/side groups,
+result fields and CAD selector/grading metadata do not transfer and are reported
+as warnings. Interior-only groups still exist in MED even without a selectable
+boundary Part. No new sidecar format is introduced; remesh settings are per-call,
+not added to `.mesh.json`. See [MMG remeshing](./gmsh-integration.md#mmg-remeshing).
+
 ## Mesh Options Sidecar (`<model>.mesh.json`) and Generated `.geo` Script
 
 The **FE Mesh** panel's finite-element mesh generation settings (via [Gmsh](https://gmsh.info) compiled to WebAssembly — see [GMSH Integration](./gmsh-integration.md)) are stored in a **third** JSON sidecar next to the CAD file — e.g. `bull.stp` → `bull.stp.mesh.json`. Like parts and edits, this never modifies the CAD file. It is read on open (`readMeshOptions()`) and autosaved, debounced (~500 ms, its own timer), on every options change (`writeMeshOptions()`), both in `src/meshOptionsStore.ts`; parse/serialize live in the vscode-free `src/meshOptionsSidecar.ts` so they are unit-tested.

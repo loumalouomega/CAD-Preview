@@ -47,7 +47,7 @@ async function heroChrome(page, { gmsh }) {
   await post(page, { type: "documentInfo", name: "bull.stp", path: "/work/bull.stp", format: "step", dirty: true, unsavedEdits: 3 });
   await post(page, {
     type: "kernelStatus",
-    state: { occt: "ready", gmsh: gmsh ? "ready" : "idle", meshio: "idle", ftetwild: "idle" },
+    state: { occt: "ready", gmsh: gmsh ? "ready" : "idle", meshio: "idle", ftetwild: "idle", mmg: "idle" },
   });
   // The same library the fe-mesh-panel shot posts, so the Preset picker reads
   // like a session that has the built-in starters rather than the pre-hydration
@@ -133,6 +133,20 @@ async function heroSelection(page) {
 }
 
 // ── Shot list ────────────────────────────────────────────────────────────
+async function populateMmg(page) {
+  // A new MED document has no bull.stp tree/op history. Hydrate the same
+  // fresh state the real host sends, rather than carrying populate()'s edits.
+  await post(page, { type: "edits", ops: [], variables: [] });
+  await post(page, { type: "viewState", view: null });
+  await post(page, fixture("mmg-mesh"));
+  await sleep(800);
+  await post(page, fixture("mmg-parts"));
+  await page.click("#edits-header > .panel-chevron");
+  await page.fill("#meshing-remesh-hmax", "0.6");
+  await page.locator("#meshing-remesh").scrollIntoViewIfNeeded();
+  await sleep(300);
+}
+
 const SHOTS = [
   {
     file: "viewer-main.png",
@@ -289,6 +303,23 @@ const SHOTS = [
   },
   { file: "variables.png", setup: populate, target: { sel: "#variables-section" } },
   { file: "edit-history.png", setup: populate, target: { sel: "#edits-body" } },
+  {
+    file: "mmg-remesh.png",
+    setup: populateMmg,
+    target: { sel: "#meshing-remesh" },
+  },
+  {
+    file: "mmg-remesh-result.png",
+    setup: async (page) => {
+      await populateMmg(page);
+      await post(page, { type: "documentInfo", name: "two-material-remeshed.med", path: "/work/two-material-remeshed.med", format: "med", dirty: false });
+      await post(page, { type: "kernelStatus", state: { occt: "idle", gmsh: "idle", meshio: "ready", ftetwild: "idle", mmg: "ready" } });
+      const { report, warnings } = fixture("mmg-report");
+      await post(page, { type: "status", text: `Opened MMG result: ${report.inputCells} → ${report.outputCells} tetrahedra. ${warnings.join(" ")}` });
+      await sleep(300);
+    },
+    target: {},
+  },
   {
     file: "fe-mesh-panel.png",
     setup: async (page) => {

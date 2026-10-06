@@ -4193,7 +4193,8 @@ input[type="range"].meshing-slider:focus {
   padding: 4px 4px;
   border-radius: var(--ui-r-sm);
 }
-#meshing-export {
+#meshing-export,
+#meshing-remesh-run {
   display: inline-flex;
   align-items: center;
   gap: var(--ui-s-1);
@@ -4208,9 +4209,11 @@ input[type="range"].meshing-slider:focus {
   border-radius: var(--ui-r-sm);
   cursor: pointer;
 }
-#meshing-export:hover {
+#meshing-export:hover,
+#meshing-remesh-run:hover:not(:disabled) {
   background: var(--vscode-toolbar-hoverBackground, rgba(90, 93, 94, 0.31));
 }
+#meshing-remesh-run:disabled { opacity: 0.35; cursor: default; }
 
 /* ── Advanced group: a card ────────────────────────────────────────────── */
 
