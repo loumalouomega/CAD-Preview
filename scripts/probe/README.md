@@ -33,10 +33,11 @@ bundle is rewritten). It captures the worker's otherwise-discarded stdout,
 checks typed-array wire tags, and strictly parses every MCP stdout line as
 JSON-RPC. The temporary `mmg_probe` tool is **not** part of the product API.
 
-The measured outcome is **partial**: both remeshers work, but `optim` has
+The core task is **closed with a partial outcome**: both remeshers work, but `optim` has
 lowered minSICN on the motivating fixture. Exact call shapes and measurements
-are in `CLAUDE.md`'s "MMG core feasibility probe" section; remaining scope is
-in the roadmap's "MMG remeshing of FE meshes" item. The core run can retain
+are in `CLAUDE.md`'s "MMG core feasibility probe" section; memory admission and
+conditional implementation are a separate roadmap follow-up, "MMG remeshing
+of FE meshes — memory admission". The core run can retain
 roughly 1.3 GB RSS with all three exercised kernels; use the isolated process,
 not a long-lived development host.
 
