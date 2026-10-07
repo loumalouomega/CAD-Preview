@@ -120,10 +120,10 @@ This review lists every capability that is **bound in a shipped kernel but never
 - **`plugin.run` and `onelab`:** unused. There is no `view.*` namespace in this binding, so a plugin's output could only be reached through a written `.pos` file.
 - **`model.occ.*` modelling calls** (`fuse`, `fillet`, …): deliberately unused, since OCCT owns modelling here.
 - **`model.occ.fragment` was likewise removed from the table below** — probed, passed, and shipped as the default-on `conformal` mesh option (touching solids share interface nodes; Parts resolve after the renumbering; see `doc/gmsh-integration.md#conformal-multi-body-meshing-roadmap-42`). `model.mesh.optimize` is now also called (shipped as the `optimize` enum); only `Relocate3D` was probed a no-op and is not offered.
+- **`model.mesh.setCompound` was removed from the table below** — probed and *failed*: on `bull.stp`, compounding the four smooth-linked face groups ([4, 3, 2, 2] faces, all 36 faces correlated, physical group intact, valid `.msh`) repeatably *lowered* minimum quality (minSICN 0.0269 → 0.0104, bit-identical across three runs; mean 0.7289 → 0.7157) instead of raising it. The binding works; the quality promise does not. See Rejected scope.
 
 | Calls | Would enable | Item |
 | --- | --- | --- |
-| `model.mesh.setCompound` | Meshing across the sliver faces and patch seams of dirty STEP files as if they were one face | [Compound meshing across sliver faces](#compound-meshing-across-sliver-faces) |
 | `model.occ.healShapes`, `model.occ.removeAllDuplicates` | An optional healing pass before meshing | [Pre-mesh healing](#pre-mesh-healing) |
 | `model.mesh.setPeriodic` | Periodic meshes for representative-volume-element studies | [Periodic meshing](#periodic-meshing) |
 | `model.mesh.getJacobians` | Jacobian-based validity for curved (order 2) elements, which `minSICN` alone does not certify | [Jacobian validity for high-order meshes](#jacobian-validity-for-high-order-meshes) |
@@ -177,7 +177,7 @@ It does **not** admit AGPL code, so TetGen stays rejected. Every new bundled dep
 | --- | --- | --- | --- |
 | Upkeep | The base stays current and trustworthy | Done: the dependency watch, "Verify the dependency watch on GitHub", has run — it published issue #84 and re-dispatching reported `unchanged`. The verification-debt gate has shipped and ten claims are closed; the host-side halves (1.1) are next | The verification debt count keeps falling by closure |
 | Parity | Everything an agent can do, a user can do, and the reverse | Done: headless mesh-edit replay closed the last listed gap (as did the hole-table, refinement-sweep, free-text-note and mesh-source FE-export gaps). Justified remainders: mesh `inspect`/mass facts, `promote_mesh_to_brep` and `repair_mesh` read the raw file (their ids and outputs are defined over it; `save_model` bakes first), and glTF has no own-format save (its exporter emits only `.glb`) | Headless tools see the same edited mesh the viewer shows, or each remaining difference is justified |
-| Meshing probes | Decide on remeshing and on conformal assemblies | MMG core probe is closed with a partial outcome: volume/surface/transport work, unconditional optimisation failed. MMG remeshing has shipped (former 4.17): shared service, MCP tool and panel with real-pipeline screenshots and packaged-runtime verification. Conformal multi-body meshing and Gmsh mesh optimisation have shipped (former 4.2, former 4.4), each with probe-measured results and a decision. Hausdorff-bounded surface coarsening (4.3), then compound meshing across sliver faces (4.5), can proceed independently | Each probe filed with measured results and a decision |
+| Meshing probes | Decide on remeshing and on conformal assemblies | MMG core probe is closed with a partial outcome: volume/surface/transport work, unconditional optimisation failed. MMG remeshing has shipped (former 4.17): shared service, MCP tool and panel with real-pipeline screenshots and packaged-runtime verification. Conformal multi-body meshing and Gmsh mesh optimisation have shipped (former 4.2, former 4.4), each with probe-measured results and a decision. Manifold mesh booleans (4.6), then Jacobian validity for high-order meshes (4.7), can proceed independently | Each probe filed with measured results and a decision |
 | Geometry probes | Decide which never-called OCCT capabilities become ops | Imprint and split faces (3.1), then B-rep repair (3.2) | Each probe filed with measured results and a decision |
 | Strategic | Remove the kernel ceiling | The self-built OCCT WASM probe (6.1) | The existing test suites pass unchanged against the new build |
 
@@ -567,7 +567,6 @@ None of these depends on another's result.
 | ID | Item | Needs | Why here |
 | --- | --- | --- | --- |
 | 4.3 | Hausdorff-bounded surface coarsening | the MMG core loader; meshio++ already bundled | Fixes a known defect (a degenerate heal after auto-decimate), and may need no new dependency at all |
-| 4.5 | Compound meshing across sliver faces | — | Dirty STEP input is the norm; reuses the shipped conformal `$Elements` walker |
 | 4.6 | Manifold mesh booleans | `manifold-3d` installed for the probe | Replaces the one mesh operation that can produce non-manifold output |
 | 4.7 | Jacobian validity for high-order meshes | — | Order-2 meshes ship today with no validity check beyond `minSICN` |
 | 4.8 | Anisotropic boundary layers | a `$Elements` walker | The largest Gmsh probe, and the first live exercise of `dimension: 2` |
@@ -602,26 +601,8 @@ The MMG core probe is complete; its working volume/surface paths and negative op
   - **Pass:** at least one candidate heals to within 2 % of the analytic volume with zero non-manifold edges.
   - **Fail:** every candidate heals degenerately. Record the numbers and keep the pinned refusal.
 - **If admitted (S):** auto-decimate's backend switches to the winning candidate. Its `decimated` report names the method and the Hausdorff bound. The `mcp:smoke` degenerate assertions flip to a successful promote, as the auto-decimate write-up anticipated. If meshio++ wins, this item needs **no** MMG dependency — state that outcome explicitly instead of bundling MMG for it.
+- **Probe result (negative, 2026-10-07, meshio++ 16.27.0 / MMG 0.1.0):** all three candidates fail the gate, so the pinned degenerate-heal refusal stays. Measured through the unchanged `checkMeshHealth`: decimate at ratio 0.01 (exactly 1000 tris) closes at 1e-6 with 4 non-manifold edges but heals to volume exactly 0, reproducing the known finding; meshio++ `remesh` isotropic at numClusters 500 → 958 tris plus a `line:26` boundary-dual block, 40 free edges in an equatorial band, never closes (preserveBoundary=false: 960 tris, 38 free, never closes — the openness is not the boundary seeding); mmgs at hausd 0.01 (absolute 0.346 on the 34.64 diagonal) → 391 tris, 25 free edges, never closes. Two corrections to the sketch above: `remesh`'s numClusters counts *vertices* (F ≈ 2V — 500 clusters → 958 tris, 1000 → 1941), and hausd is an upper deviation bound, not a triangle target. The 5k repeat was not run: no candidate met the 1k gate, and decimate-at-5k is already recorded past the 300 s watchdog. Do not re-run without a new candidate or a new meshio++/MMG version.
 - **Out of scope:** raising `MAX_HEALABLE_TRIANGLES`; the per-triangle sewing cost is the real limit.
-
-##### 4.5 Compound meshing across sliver faces {#compound-meshing-across-sliver-faces}
-
-*Area: Meshing.*
-
-- **Hypothesis:** `gmsh.model.mesh.setCompound(2, faceTags)`, declared and never called, meshes a group of small or sliver faces as one surface. This removes the tiny elements that patch seams in imported STEP files force today.
-- **Evidence today:**
-  - Imported STEP files often split one smooth surface into many patches. The display-edge work already detects such seams (`smooth` edges).
-  - Gmsh respects every patch boundary, so a seam forces nodes along it, and sliver patches force tiny elements.
-  - The worst-element overlay and the quality histogram show the result, but nothing addresses it.
-- **Probe (S):**
-  1. Pick a model with smooth seams: `bull.stp` has nine by the smooth-edge classifier.
-  2. Group the faces on each side of every smooth seam and call `setCompound`.
-  3. Compare against a plain generate: minimum quality, element count, and the number of elements under the 0.2 worst-element threshold.
-  4. Confirm that a Part on one of the merged faces still gets its triangles.
-- **Decision gate:**
-  - **Pass:** measurably better minimum quality with Parts intact.
-  - **Fail, or Parts are lost:** recorded.
-- **If admitted (M):** an opt-in "Merge smooth patches" mesh option, driven by the existing smooth-edge classification.
 
 ##### 4.6 Manifold mesh booleans {#manifold-mesh-booleans}
 
@@ -640,6 +621,7 @@ The MMG core probe is complete; its working volume/surface paths and negative op
 - **Decision gate:**
   - **Pass:** manifold output, and time at most twice `three-bvh-csg`'s.
   - **Fail:** recorded.
+- **Probe result (pass, 2026-10-07, manifold-3d 3.5.3):** all three gates clear, each twice-measured. Cube-minus-through-cylinder: manifold closes at 1e-6 with 0 free / 0 non-manifold edges (272 tris, 9 ms) and heals to 874.54 against the analytic 874.34 (0.02% — the cylinder's 14 units vs the 10 inside the cube is accounted, not assumed). Sphere-minus-box at 100k: manifold 94,530 tris in 190 ms with 0 free / 0 non-manifold; three-bvh-csg 95,350 tris in 422 ms with 1191 free + 4 non-manifold. Manifold is both exact and faster (0.45×), so the time gate is moot. Three corrections to the sketch above: `new Manifold()` **throws** `"Not manifold"` on non-manifold soup (a clean input contract — refuse by name, never silently proceed); the raw `await Module()` factory resolves *before* embind finishes, leaving a `Manifold` stub with no statics and no `getMesh` — init must go through the package's own `instantiateManifold()` (which calls `module.setup()`); and the glue self-locates `manifold.wasm` via `import.meta.url`, which breaks under bundling (ENOENT beside the bundle) — product use needs `setWasmUrl` plus a shipped `.wasm`, the meshio++ precedent. The three-bvh-csg baseline needs one honest qualification: its subtract output is systematically *open* (34–907 free edges across box/cylinder/notch/blind configurations, both mesh-bvh 0.9.7 and 0.9.15, product-identical call shape; closed only for contained/disjoint operands), so the comparison flatters manifold — and separately, the shipped path **throws** an uncaught `TypeError` on uv-less meshes (every loader and tessellator output; only three.js primitives carry uv, which is all the unit tests ever built with). That throw is fixed in the same pass (`ensureUvForCsg` in `meshEdits.ts`, pinned by two bug-injected unit tests), not left for the migration.
 - **If admitted (M):**
   - `manifold-3d` becomes the mesh boolean engine, with `three-bvh-csg` as the fallback.
   - The dense-mesh guard is re-measured.
@@ -948,6 +930,8 @@ Three groups, three different revival rules. Each says what would change our min
 - **MMG `optim` as an unconditional quality improvement or automatic post-Generate pass.** The MMG core probe (0.1.0 / MMG 5.8.0, 2026-10-06) used `mmg3d.setIparameter(mesh,met,IPARAM_optim,1)` then `remesh(mesh,met)` on fTetWild output of `examples/STL/holed-cube.stl`. Gmsh independently measured minSICN falling **0.427485 → 0.271894**, then **0.345839 → 0.322069**; the repeat also changed **9,503 → 24,322 tets**. The binding works, but the quality-improvement promise does not. **What survives:** ordinary reference-preserving volume and surface remeshing (shipped; see `doc/gmsh-integration.md#mmg-remeshing`), without this guarantee. **Revive only** for a different explicit strategy that passes independent quality and geometry checks on the motivating fixture; do not silently substitute MMG's own metric for the Gmsh minSICN gate.
 
 - **Gmsh `optimize("Relocate3D")` as a mesh optimisation mode.** Probed live (gmsh-wasm 0.3.0, `bull.stp` at the smoke-test size, two full runs): worst-element minSICN came back bit-identical (0.027591537627954913 both runs, mean +0.0017) — a no-op on what matters, while Netgen and HighOrderElastic measurably move the same numbers (shipped as the `optimize` enum; see `doc/gmsh-integration.md#mesh-optimisation-roadmap-44`). **Revive only** with a measured min/mean gain on the same fixture from a newer Gmsh build.
+
+- **Compound meshing across sliver faces (`model.mesh.setCompound`).** Probed live (gmsh-wasm 0.3.0, `bull.stp` at the smoke-test size, three full runs, bit-identical): compounding the four smooth-linked face groups ([4, 3, 2, 2] faces from 9 smooth edges; all 36 faces bbox-correlated; Part physical group intact; valid `.msh`) repeatably *lowered* minimum quality (minSICN 0.0269 → 0.0104; mean 0.7289 → 0.7157; sub-0.2 count 31 → 30; elements 1700 → 1650) instead of raising it. The binding works — accepted without a throw — but the quality promise is backwards, so there is no "Merge smooth patches" option to offer. **Revive only** with a real fixture where compounding measurably raises minimum quality with Parts intact, on the same harness.
 
 - **Interactive sketching with geometric constraints** — rejected, not deferred. It is the single clearest "this is a modeling application now" feature, and CAD-Preview is a preview/inspect/prepare tool. More concretely: the numeric profile and curve forms are **not** a degraded mouse — they accept parametric variable expressions (`L*2`, `R*cos(i*360/N)`) that a click-to-place tool cannot express, so replacing them with drawing would trade away a distinguishing capability for a familiar one. The argument has only got stronger: no constraint solver exists anywhere in the codebase (the sole `constraint` hit is `mate`'s doc comment), while the expression-driven sketch vocabulary has kept growing to sixteen creation ops. Worth noting that SketchForge, a dedicated sketch application, still has no constraint solver either — building this would mean shipping the weak two-thirds of the feature.
 
