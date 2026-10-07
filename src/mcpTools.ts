@@ -57,11 +57,13 @@ import {
   SIZE_MAX_SENTINEL,
   validateMeshOptions,
   validateMeshGrading,
+  validateMeshStructured,
   applyStlPartSizeOverride,
   scaleMeshOptionsForUnit,
   scalePartsMeshSizeForUnit,
   type MeshOptions,
   type MeshGrading,
+  type MeshStructured,
 } from "./meshOptions";
 import { scaleStlBytes } from "./stlParser";
 import { resolveEffectiveSource, ScadUnavailableError } from "./scadService";
@@ -541,7 +543,7 @@ export function describeCapabilities() {
         'elementShape "simplex" = triangles/tetrahedra, "subdivided" = all-quad/all-hex, "hexDominant" = mixed tet/hex (3D only, RTree recombiner) — NOT exportable to Kratos MDPA (export_mesh throws a clear error; other formats like msh/vtk are unaffected). elementOrder 2 adds mid-side nodes (quadratic).',
         "algorithm3D defaults to 1 (Delaunay, Gmsh's own default) — a wasm32 stack-overflow that used to make it hang/produce an empty mesh on re-imported CAD was fixed upstream in gmsh-wasm 0.3.0. Frontal (4) and HXT (10) remain valid alternatives.",
         'optimize is "none" (no generate-time optimization either), "default" (generate-time Mesh.Optimize only), "netgen" (plus model.mesh.optimize("Netgen") — repeatable min/mean gain, but it refines the mesh and linearizes quadratic meshes to tet4, both warned, never silent), or "highOrder" (plus optimize("HighOrderElastic"), order-2 only — it halves invalid curved elements on the probe fixture rather than clearing them, and a linear mesh warns and runs the default instead). Pre-enum booleans still parse (true → "default", false → "none").',
-        "A part's meshSize gives local refinement (B-rep sources only). A part's meshGrading grades the mesh AROUND the part with distance — sizeAtWall within distNear, growing linearly to sizeFar at distFar (set_part; B-rep sources only, same as physical groups and meshSize; ignored on a mesh-format source).",
+        "A part's meshSize gives local refinement (B-rep sources only). A part's meshGrading grades the mesh AROUND the part with distance — sizeAtWall within distNear, growing linearly to sizeFar at distFar (set_part; B-rep sources only, same as physical groups and meshSize; ignored on a mesh-format source). A part's meshStructured sets transfinite divisions (nodes per meshed edge) for an exact mapped grid on regular regions (set_part; B-rep sources only; a non-regular region fails loudly at generate, never silently unstructured).",
         "conformal (default true) fragments every imported solid (gmsh.model.occ.fragment over all volumes) before meshing, so touching solids share interface nodes — Parts resolve after the renumbering, so physical groups and Kratos SubModelParts survive per body. Single-solid output is identical with and without it; mesh sources ignore it. generate_mesh reports conformalApplied; the handoff manifest records meshOptions.conformal plus the applied fact.",
         'engine "gmsh" (default) is the classifySurfaces/createGeometry/addSurfaceLoop/addVolume path — fast, but needs a watertight/manifold/well-oriented boundary. engine "ftetwild" is an alternative volume mesher (fTetWild) for a dirty mesh-format 3D source that Gmsh rejects or silently produces no elements for (holes, self-intersections, non-manifold edges) — meaningless for a B-rep source (exact geometry already) or dimension !== 3, both of which silently fall back to "gmsh" with a warning rather than erroring. Only dimension/sizeMax (mapped to fTetWild\'s own target-edge-length fraction), ftetwildEpsRel (its envelope size, also a bbox-diagonal fraction), ftetwildManifoldSurface (force a manifold boundary), ftetwildCoarsen (fewer, larger tets), and ftetwildDisableFiltering (skip interior filtering — returns a hull fill, NOT the part interior; inspection only) apply under "ftetwild" — sizeMin/algorithm2D/algorithm3D/elementOrder/elementShape/stlAngle are all ignored. repair_mesh honors the stored options (still forcing engine/dimension). generate_mesh\'s response reports engineUsed and any fallback warnings.',
         "save_mesh_preset / list_mesh_presets / apply_mesh_preset manage named, reusable option bundles (the macro library's bundled-plus-user pattern: bundled starters coarse-preview, balanced, fine-detail, robust-repair, plus your own caller-named file). A preset stores global options only — never Part sizing or entity assignments — with explicit authored units (converted to mm on apply) and a pinned engine. Preset names describe density intent, never a mesh-quality guarantee.",
@@ -4018,6 +4020,7 @@ export async function setPart(params: {
   points?: string[];
   meshSize?: number | null;
   meshGrading?: MeshGrading | null;
+  meshStructured?: MeshStructured | null;
   /**
    * Optional re-executable selector (roadmap "Selector synthesis") stored
    * beside the raw ids as annotation+cache: the host re-resolves it against
@@ -4090,6 +4093,12 @@ export async function setPart(params: {
         : params.meshGrading !== undefined
           ? validateMeshGrading(params.meshGrading) ?? existing?.meshGrading
           : existing?.meshGrading,
+    meshStructured:
+      params.meshStructured === null
+        ? undefined
+        : params.meshStructured !== undefined
+          ? validateMeshStructured(params.meshStructured) ?? existing?.meshStructured
+          : existing?.meshStructured,
     ...(selector && selectorOpKind ? { selector, selectorOpKind } : {}),
   };
   if (typeof params.meshSize === "number" && !(Number.isFinite(params.meshSize) && params.meshSize > 0)) {
@@ -4099,6 +4108,9 @@ export async function setPart(params: {
     warnings.push(
       "meshGrading must have sizeAtWall > 0, sizeFar >= sizeAtWall, distNear >= 0 and distFar > distNear — ignored."
     );
+  }
+  if (params.meshStructured !== undefined && params.meshStructured !== null && !validateMeshStructured(params.meshStructured)) {
+    warnings.push("meshStructured must have an integer divisions >= 2 — ignored.");
   }
   if (index === -1) parts.push(part);
   else parts[index] = part;

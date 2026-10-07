@@ -115,6 +115,29 @@ export interface MeshOptions {
 }
 
 /**
+ * Structured (transfinite) meshing divisions for one `Part` (roadmap 4.9):
+ * every meshed edge of the part's entities gets exactly this many nodes, so
+ * a regular region meshes as an exact mapped grid instead of unstructured
+ * tets. A count, not a length — unit conversion never touches it.
+ */
+export interface MeshStructured {
+  divisions: number; // nodes per edge (>= 2; 2 degenerates to one element per edge)
+}
+
+/**
+ * Validates one raw value into a clean {@link MeshStructured}, or `undefined`
+ * — all-or-nothing like {@link validateMeshGrading} (a fractional or sub-2
+ * count has no sensible reading), same tolerant-parse convention: a `Part`
+ * with an invalid value keeps everything except the structuring.
+ */
+export function validateMeshStructured(raw: unknown): MeshStructured | undefined {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
+  const divisions = (raw as Record<string, unknown>).divisions;
+  if (typeof divisions !== "number" || !Number.isInteger(divisions) || divisions < 2) return undefined;
+  return { divisions };
+}
+
+/**
  * Distance-graded sizing anchored on a `Part` (roadmap "Boundary-layer and
  * distance-threshold mesh sizing", Phase 1) — a Gmsh `Distance` + `Threshold`
  * field pair (`gmshSizingFields.ts`'s `addDistanceThresholdField`): elements

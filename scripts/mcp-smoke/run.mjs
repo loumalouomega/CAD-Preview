@@ -3033,6 +3033,44 @@ try {
     "generate_mesh still accepts pre-enum optimize:true as the default mode"
   );
 
+  // Structured (transfinite) meshing per Part (roadmap 4.9): an exact mapped
+  // grid on a regular region, coexisting with unstructured neighbours.
+  const structSeed = path.join(dir, "structured-seed.brep");
+  fs.copyFileSync(path.join(ROOT, "examples", "BREP", "blank.brep"), structSeed);
+  await call("apply_edit_ops", { path: structSeed, ops: [{ op: "addBox", center: [1.5, 2, 2.5], size: [3, 4, 5] }] });
+  const structStep = path.join(dir, "structured.stp");
+  await call("export_brep", { path: structSeed, targetFormat: "step", outputPath: structStep });
+  await call("set_part", { path: structStep, name: "Block", volumes: ["solid-0"], meshStructured: { divisions: 6 } });
+  const structured = await call("generate_mesh", { path: structStep, options: { sizeMin: 0, sizeMax: 2 } });
+  assert(
+    structured.elementCount === 125,
+    `generate_mesh with a structured whole-solid part emits exactly (6-1)^3 = 125 hexes (got ${structured.elementCount})`
+  );
+  const structMdpaOut = path.join(dir, "structured.mdpa");
+  await call("export_mesh", { path: structStep, format: "mdpaElements", outputPath: structMdpaOut, options: { sizeMin: 0, sizeMax: 2 } });
+  const structMdpa = fs.readFileSync(structMdpaOut, "utf8");
+  assert(
+    structMdpa.includes("Begin Elements Element3D8N") && /Begin SubModelPart Block/.test(structMdpa),
+    "structured MDPA carries Element3D8N cells with a populated Block SubModelPart"
+  );
+  // Non-regular target: a cylinder's side is one smooth face with a seam
+  // edge pair, not four transfinite curves — the kernel must refuse it.
+  // (A second disjoint box is NOT a negative: two mappable volumes mesh
+  // fine side by side, verified live — only curved topology refuses.)
+  await call("set_part", { path: structStep, name: "Block", meshStructured: null });
+  await call("apply_edit_ops", { path: structStep, ops: [{ op: "addCylinder", center: [50, 50, 50], axis: [0, 0, 1], radius: 2, height: 5 }] });
+  await call("set_part", { path: structStep, name: "Bad", volumes: ["solid-1"], meshStructured: { divisions: 6 } });
+  const badStruct = await request("tools/call", {
+    name: "generate_mesh",
+    arguments: { path: structStep, options: { sizeMin: 0, sizeMax: 2 } },
+  });
+  const badText = badStruct.content?.[0]?.text ?? "";
+  assert(
+    badStruct.isError === true && /transfinite/i.test(badText),
+    `generate_mesh fails loudly (not silently unstructured) when a structured region is not regular (got: ${badText.slice(0, 160)})`
+  );
+  await call("set_part", { path: structStep, name: "Bad", remove: true });
+
   // Hex-dominant (RTree, elementShape:"hexDominant") always mixes in an
   // unmapped gmsh element type (140, "trihedron") alongside tets/hexes —
   // confirms generation + the overlay/quality pipeline tolerate it (graceful

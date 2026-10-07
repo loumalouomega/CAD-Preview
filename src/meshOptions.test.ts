@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   validateMeshOptions,
   validateMeshGrading,
+  validateMeshStructured,
   applyStlPartSizeOverride,
   gmshShapeOptions,
   scaleMeshOptionsForUnit,
@@ -276,6 +277,19 @@ describe("validateMeshGrading", () => {
     expect(validateMeshGrading({ sizeFar: 1, distNear: 0.3, distFar: 1.5 })).toBeUndefined();
     expect(validateMeshGrading({ ...valid, sizeAtWall: "x" })).toBeUndefined();
     expect(validateMeshGrading({ ...valid, distFar: NaN })).toBeUndefined();
+  });
+});
+
+describe("validateMeshStructured", () => {
+  it("accepts an integer divisions >= 2", () => {
+    expect(validateMeshStructured({ divisions: 2 })).toEqual({ divisions: 2 });
+    expect(validateMeshStructured({ divisions: 6 })).toEqual({ divisions: 6 });
+  });
+
+  it("returns undefined for non-objects and malformed counts", () => {
+    for (const bad of [undefined, null, "6", 6, [], { divisions: 1 }, { divisions: 0 }, { divisions: 2.5 }, { divisions: "6" }, {}]) {
+      expect(validateMeshStructured(bad)).toBeUndefined();
+    }
   });
 });
 

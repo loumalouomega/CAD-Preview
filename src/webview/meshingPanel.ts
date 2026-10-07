@@ -1,4 +1,4 @@
-import { SIZE_MAX_SENTINEL, DEFAULT_MESH_OPTIONS, validateMeshGrading, type MeshOptions, type MeshGrading } from "../meshOptions";
+import { SIZE_MAX_SENTINEL, DEFAULT_MESH_OPTIONS, validateMeshGrading, validateMeshStructured, type MeshOptions, type MeshGrading, type MeshStructured } from "../meshOptions";
 import type { QualitySummary } from "../meshQuality";
 import { TOOLBAR_ICONS } from "../toolbarIcons";
 import { MESH_EXPORT_FORMATS, type MeshExportFormatId } from "../meshExportFormats";
@@ -51,6 +51,11 @@ export interface MeshingPanelCallbacks {
    * `undefined` — an invalid band is caught and shown inline, never
    * forwarded. */
   onPartMeshGrading: (index: number, grading: MeshGrading | undefined) => void;
+  /** A part's structured-meshing divisions changed in the "Part sizes"
+   * section (`undefined` = clear it). Only called with a valid
+   * `{divisions}` or `undefined` — anything else shows inline, never
+   * forwarded (same contract as `onPartMeshGrading`). */
+  onPartMeshStructured: (index: number, structured: MeshStructured | undefined) => void;
   onGenerate: () => void;
   /** Cancel a running meshing job by its request id. Used by the toolbar Cancel
    * AND by the refinement sweep's own Cancel button (roadmap "Cancel a mesh
@@ -1231,7 +1236,7 @@ export class MeshingPanel {
    * meshing controls. Hidden while no parts exist.
    */
   renderParts(parts: Part[]): void {
-    const local = parts.some((p) => p.meshSize != null || p.meshGrading != null);
+    const local = parts.some((p) => p.meshSize != null || p.meshGrading != null || p.meshStructured != null);
     if (local !== this.partsHaveLocalSizing) {
       this.partsHaveLocalSizing = local;
       this.syncSlider();
@@ -1294,6 +1299,15 @@ export class MeshingPanel {
       gradeToggle.classList.toggle("active", part.meshGrading != null);
       row.appendChild(gradeToggle);
 
+      const structToggle = document.createElement("button");
+      structToggle.type = "button";
+      structToggle.className = "meshing-part-struct-toggle";
+      structToggle.textContent = "Struct";
+      structToggle.title = "Structured (transfinite) meshing for this part: exact node count per meshed edge — a mapped grid on regular regions (B-rep sources only)";
+      structToggle.setAttribute("aria-expanded", "false");
+      structToggle.classList.toggle("active", part.meshStructured != null);
+      row.appendChild(structToggle);
+
       this.partsBody.appendChild(row);
 
       const gradingRow = this.buildPartGradingRow(index, part.meshGrading);
@@ -1304,6 +1318,16 @@ export class MeshingPanel {
         const nowHidden = !gradingRow.hidden;
         gradingRow.hidden = nowHidden;
         gradeToggle.setAttribute("aria-expanded", String(!nowHidden));
+      });
+
+      const structRow = this.buildPartStructuredRow(index, part.meshStructured);
+      structRow.hidden = true;
+      this.partsBody.appendChild(structRow);
+
+      structToggle.addEventListener("click", () => {
+        const nowHidden = !structRow.hidden;
+        structRow.hidden = nowHidden;
+        structToggle.setAttribute("aria-expanded", String(!nowHidden));
       });
     });
   }
@@ -1370,6 +1394,57 @@ export class MeshingPanel {
       this.cb.onPartMeshGrading(index, valid);
     };
     for (const inp of [wallInput, farInput, nearInput, farDistInput]) inp.addEventListener("change", commit);
+
+    return row;
+  }
+
+  /**
+   * Builds the (initially hidden) structured-meshing row for one part: a
+   * single divisions input plus an inline error line. Same contract as the
+   * grading row above: blank clears (`undefined`), a valid integer commits,
+   * anything else shows inline and never forwards.
+   */
+  private buildPartStructuredRow(index: number, initial: MeshStructured | undefined): HTMLDivElement {
+    const row = document.createElement("div");
+    // Shares the grading row's layout + [hidden] override (same collapse
+    // hazard), with its own marker class so the Grade webview test can tell
+    // the two rows apart.
+    row.className = "meshing-part-grading meshing-part-structured";
+
+    const wrap = document.createElement("label");
+    wrap.className = "meshing-part-grading-field";
+    const span = document.createElement("span");
+    span.textContent = "Divisions";
+    wrap.appendChild(span);
+    const inp = document.createElement("input");
+    inp.type = "number";
+    inp.className = "meshing-num";
+    inp.title = "Nodes per meshed edge of this part's entities (integer ≥ 2)";
+    inp.min = "2";
+    inp.step = "1";
+    inp.value = initial != null ? String(initial.divisions) : "";
+    wrap.appendChild(inp);
+    row.appendChild(wrap);
+
+    const error = document.createElement("span");
+    error.className = "meshing-part-grading-error";
+    row.appendChild(error);
+
+    inp.addEventListener("change", () => {
+      const raw = inp.value.trim();
+      if (raw === "") {
+        error.textContent = "";
+        this.cb.onPartMeshStructured(index, undefined);
+        return;
+      }
+      const valid = validateMeshStructured({ divisions: Number(raw) });
+      if (!valid) {
+        error.textContent = "Needs an integer ≥ 2.";
+        return;
+      }
+      error.textContent = "";
+      this.cb.onPartMeshStructured(index, valid);
+    });
 
     return row;
   }
