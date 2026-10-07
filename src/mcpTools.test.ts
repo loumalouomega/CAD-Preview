@@ -212,6 +212,7 @@ const FAKE_MESH_RESULT: MeshResult = {
   mshText: "$MeshFormat\n4.1 0 8\n$EndMeshFormat\n",
   engineUsed: "gmsh",
   warnings: [],
+  conformalApplied: false,
 };
 
 const FAKE_BREP_HEALTH: BrepHealthReport = {

@@ -24,6 +24,7 @@ describe("parseMeshJson", () => {
       ftetwildManifoldSurface: true,
       ftetwildCoarsen: false,
       ftetwildDisableFiltering: false,
+      conformal: true,
     };
     const text = JSON.stringify({ version: 1, source: "bull.stp", options });
     expect(parseMeshJson(text)).toEqual(options);
@@ -82,6 +83,7 @@ describe("generateGeoScript", () => {
       ftetwildManifoldSurface: false,
       ftetwildCoarsen: false,
       ftetwildDisableFiltering: false,
+      conformal: true,
     };
     const script = generateGeoScript("bull.stp", options);
 
@@ -95,6 +97,11 @@ describe("generateGeoScript", () => {
     expect(script).toContain("Mesh.SubdivisionAlgorithm = 0;");
     expect(script).toContain("Mesh.Optimize = 1;");
     expect(script.trim().endsWith("Mesh 2;")).toBe(true);
+  });
+
+  it("records the conformal choice as a comment", () => {
+    expect(generateGeoScript("a.stp", { ...DEFAULT_MESH_OPTIONS, conformal: true })).toContain("// conformal: fragment");
+    expect(generateGeoScript("a.stp", { ...DEFAULT_MESH_OPTIONS, conformal: false })).toContain("// conformal: off");
   });
 
   it("emits Blossom recombination for a 2D subdivided (quad) mesh", () => {

@@ -208,6 +208,7 @@ const GMSH_ONLY_FIELDS: readonly (keyof MeshOptions)[] = [
   "elementOrder",
   "elementShape",
   "stlAngle",
+  "conformal",
 ];
 
 /**

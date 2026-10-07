@@ -79,6 +79,17 @@ export interface MeshOptions {
    * serial build, where it has no effect. */
   ftetwildDisableFiltering: boolean;
   /**
+   * Conformal multi-body meshing (roadmap 4.2): call
+   * `gmsh.model.occ.fragment` over every imported solid before meshing, so
+   * touching solids share interface nodes. Parts are resolved AFTER the
+   * renumbering via the existing bbox-centre match, so physical groups survive.
+   * Defaults on: single-solid output is identical with and without it (probe:
+   * block.stp 381 nodes / 1282 elements either way), multi-solid goes from
+   * duplicate interface nodes (44 dups on two touching boxes) to zero. Only
+   * meaningful for a B-rep source with 2+ volumes; mesh sources ignore it.
+   */
+  conformal: boolean;
+  /**
    * Advisory element budget (roadmap "Mesh size and memory budget preview"):
    * when the pre-generation estimate exceeds it the panel/tool WARNS — it
    * never blocks a generate. Optional: absent means no budget.
@@ -156,6 +167,7 @@ export const DEFAULT_MESH_OPTIONS: MeshOptions = {
   ftetwildManifoldSurface: false,
   ftetwildCoarsen: false,
   ftetwildDisableFiltering: false,
+  conformal: true,
 };
 
 /**
@@ -250,6 +262,8 @@ export function validateMeshOptions(raw: unknown): MeshOptions | null {
   const ftetwildDisableFiltering =
     typeof o.ftetwildDisableFiltering === "boolean" ? o.ftetwildDisableFiltering : DEFAULT_MESH_OPTIONS.ftetwildDisableFiltering;
 
+  const conformal = typeof o.conformal === "boolean" ? o.conformal : DEFAULT_MESH_OPTIONS.conformal;
+
   const out: MeshOptions = {
     dimension,
     sizeMin,
@@ -265,6 +279,7 @@ export function validateMeshOptions(raw: unknown): MeshOptions | null {
     ftetwildManifoldSurface,
     ftetwildCoarsen,
     ftetwildDisableFiltering,
+    conformal,
   };
   // Optional and omitted when absent, so an untouched sidecar stays byte-stable.
   if (isFiniteNumber(o.budgetElements) && o.budgetElements >= 1) out.budgetElements = Math.round(o.budgetElements);

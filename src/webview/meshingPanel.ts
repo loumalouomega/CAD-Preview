@@ -149,6 +149,7 @@ export class MeshingPanel {
   private readonly elementOrderSelect: HTMLSelectElement;
   private readonly elementShapeSelect: HTMLSelectElement;
   private readonly optimizeCheckbox: HTMLInputElement;
+  private readonly conformalCheckbox: HTMLInputElement;
   private readonly stlAngleInput: HTMLInputElement;
   private readonly budgetInput: HTMLInputElement;
   private deviationBtn: HTMLButtonElement | null = null;
@@ -536,6 +537,22 @@ export class MeshingPanel {
     optimizeRow.appendChild(this.optimizeCheckbox);
     form.appendChild(optimizeRow);
 
+    const conformalRow = document.createElement("label");
+    conformalRow.className = "meshing-field meshing-checkbox";
+    const conformalLabel = document.createElement("span");
+    conformalLabel.className = "meshing-label";
+    conformalLabel.textContent = "Conformal";
+    conformalRow.appendChild(conformalLabel);
+    this.conformalCheckbox = document.createElement("input");
+    this.conformalCheckbox.type = "checkbox";
+    this.conformalCheckbox.title =
+      "Fragment touching solids before meshing so they share interface nodes (B-rep multi-solid only; single-solid output is identical either way).";
+    this.conformalCheckbox.addEventListener("change", () => {
+      cb.onOptionsChange({ conformal: this.conformalCheckbox.checked });
+    });
+    conformalRow.appendChild(this.conformalCheckbox);
+    form.appendChild(conformalRow);
+
     this.stlAngleInput = this.numberField(form, "STL angle (°)", 40);
     this.stlAngleInput.title = "Only used by engine: Gmsh (classifySurfaces' angle threshold) — ignored under fTetWild.";
     this.stlAngleInput.addEventListener("change", () => {
@@ -909,6 +926,7 @@ export class MeshingPanel {
     if (hexDominantOpt) hexDominantOpt.disabled = options.dimension !== 3;
     this.elementShapeSelect.value = options.elementShape;
     this.optimizeCheckbox.checked = options.optimize;
+    this.conformalCheckbox.checked = options.conformal;
     this.stlAngleInput.value = String(options.stlAngle);
     this.budgetInput.value = options.budgetElements ? String(options.budgetElements) : "";
     this.ftetwildEpsRelInput.value = String(options.ftetwildEpsRel);

@@ -203,6 +203,10 @@ export interface MeshResult {
   /** Non-fatal, worth-surfacing notes — currently only an engine-fallback
    * explanation (see `engineUsed` above); empty when nothing was downgraded. */
   warnings: string[];
+  /** True when `options.conformal` actually fragmented 2+ volumes this run.
+   * False for single-solid (no-op), mesh sources, and when the option is off.
+   * Recorded in the handoff manifest via `meshOptions` + `HandoffFacts`. */
+  conformalApplied: boolean;
 }
 
 /** A highlight overlay of the mesh's worst-quality elements, closing the
@@ -243,7 +247,7 @@ async function loadGeometryAndApplyOptions(
   input: MeshGenerationInput,
   options: MeshOptions,
   parts: Part[]
-): Promise<{ tmpPath: string; groupMaps: PartGroupMaps | null; warnings: string[] }> {
+): Promise<{ tmpPath: string; groupMaps: PartGroupMaps | null; warnings: string[]; conformalApplied: boolean }> {
   gmsh.clear();
   gmsh.model.add(`model-${++_modelCounter}`);
 
@@ -254,11 +258,34 @@ async function loadGeometryAndApplyOptions(
   // one case: a Part's curved free edge, which cannot be forced onto the mesh
   // (see `gmshEmbed.ts`). Collected here and merged into `MeshResult.warnings`.
   const warnings: string[] = [];
+  let conformalApplied = false;
 
   let groupMaps: PartGroupMaps | null = null;
   if (input.kind === "brep") {
     gmsh.model.occ.importShapes(tmpPath);
     gmsh.model.occ.synchronize();
+    // Conformal multi-body meshing (roadmap 4.2): fragment every imported
+    // solid against the rest so touching solids share interface nodes. Probed
+    // live (gmsh-wasm 0.3.0): two touching boxes go from 44 duplicate
+    // interface nodes to 0 with an unchanged element count, tags preserved as
+    // [3,1,3,2]; three boxes and `fragment(all, [])` behave identically;
+    // single-solid output is byte-identical with and without (block.stp 381 /
+    // 1282 either way), so default-on is safe. Parts MUST resolve after this
+    // renumbering — hence applyPartsToGmshModel runs after, never before.
+    if (options.conformal) {
+      try {
+        const vols = (gmsh.model.getEntities(3).dimTags as number[]) ?? [];
+        if (vols.length >= 4) {
+          gmsh.model.occ.fragment([...vols], []);
+          gmsh.model.occ.synchronize();
+          conformalApplied = true;
+        }
+      } catch (err) {
+        warnings.push(
+          `Conformal fragment failed (${(err as Error)?.message ?? String(err)}) — meshed without it; touching solids may share no nodes.`
+        );
+      }
+    }
     groupMaps = await applyPartsToGmshModel(extensionPath, gmsh, input.stepBytes, parts, warnings);
   } else {
     gmsh.merge(tmpPath);
@@ -308,7 +335,7 @@ async function loadGeometryAndApplyOptions(
   // must always be 1 regardless of whether `parts` is empty.
   gmsh.option.setNumber("Mesh.SaveAll", 1);
 
-  return { tmpPath, groupMaps, warnings };
+  return { tmpPath, groupMaps, warnings, conformalApplied };
 }
 
 /**
@@ -387,7 +414,7 @@ async function populateMeshedModel(
   input: MeshGenerationInput,
   options: MeshOptions,
   parts: Part[]
-): Promise<{ tmpPath: string | null; groupMaps: PartGroupMaps | null; engineUsed: MeshEngine; warnings: string[] }> {
+): Promise<{ tmpPath: string | null; groupMaps: PartGroupMaps | null; engineUsed: MeshEngine; warnings: string[]; conformalApplied: boolean }> {
   const { engine, warnings } = effectiveEngine(input, options);
 
   if (engine === "gmsh") {
@@ -398,6 +425,7 @@ async function populateMeshedModel(
       groupMaps: loaded.groupMaps,
       engineUsed: "gmsh",
       warnings: [...warnings, ...loaded.warnings],
+      conformalApplied: loaded.conformalApplied,
     };
   }
 
@@ -434,7 +462,7 @@ async function populateMeshedModel(
   // exist), but set for consistency/future-proofing at negligible cost.
   gmsh.option.setNumber("Mesh.SaveAll", 1);
 
-  return { tmpPath, groupMaps: null, engineUsed: "ftetwild", warnings };
+  return { tmpPath, groupMaps: null, engineUsed: "ftetwild", warnings, conformalApplied: false };
 }
 
 /**
@@ -482,6 +510,7 @@ export async function generateMesh(
       worstElements,
       engineUsed: loaded.engineUsed,
       warnings: loaded.warnings,
+      conformalApplied: loaded.conformalApplied,
     };
   } finally {
     if (tmpPath) {
@@ -749,6 +778,9 @@ export interface HandoffFacts {
    * only when the mesh is representable in MDPA (hex-dominant is not). */
   subModelParts?: Array<{ name: string; nodeCount: number; volumeCellCount: number; surfaceCellCount: number }>;
   warnings: string[];
+  /** True when `options.conformal` fragmented 2+ volumes this run — recorded
+   * in the handoff manifest alongside `meshOptions.conformal`. */
+  conformalApplied: boolean;
 }
 
 /**
@@ -824,6 +856,7 @@ export async function computeHandoffFacts(
       overlaps,
       subModelParts,
       warnings,
+      conformalApplied: loaded.conformalApplied,
     };
   } finally {
     if (tmpPath) {

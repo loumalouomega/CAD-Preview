@@ -32,6 +32,7 @@ describe("validateMeshOptions", () => {
       ftetwildManifoldSurface: true,
       ftetwildCoarsen: false,
       ftetwildDisableFiltering: false,
+      conformal: true,
     };
     expect(validateMeshOptions(opts)).toEqual(opts);
   });
@@ -325,6 +326,7 @@ describe("DEFAULT_MESH_OPTIONS", () => {
       ftetwildManifoldSurface: false,
       ftetwildCoarsen: false,
       ftetwildDisableFiltering: false,
+      conformal: true,
     });
   });
 
@@ -335,6 +337,13 @@ describe("DEFAULT_MESH_OPTIONS", () => {
     expect(validateMeshOptions({ ftetwildManifoldSurface: "yes" })?.ftetwildManifoldSurface).toBe(false);
     expect(validateMeshOptions({ ftetwildCoarsen: 1 })?.ftetwildCoarsen).toBe(false);
     expect(validateMeshOptions({})?.ftetwildDisableFiltering).toBe(false);
+  });
+
+  it("defaults conformal on, keeps explicit off", () => {
+    expect(DEFAULT_MESH_OPTIONS.conformal).toBe(true);
+    expect(validateMeshOptions({})?.conformal).toBe(true);
+    expect(validateMeshOptions({ conformal: false })?.conformal).toBe(false);
+    expect(validateMeshOptions({ conformal: "yes" })?.conformal).toBe(true);
   });
 
   it("defaults sizeMax to the unbounded sentinel the webview seeds over", () => {

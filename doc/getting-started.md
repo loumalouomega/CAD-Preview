@@ -579,6 +579,7 @@ While a mesh is generating or exporting, the panel shows **Cancel** beside Gener
 | **Element shape** | **Triangles / Tetrahedra** (default), **Quads / Hexahedra** (recombines the mesh into quadrilaterals in 2D / hexahedra in 3D), or **Hex-Dominant (3D)** (a mixed tet/hex mesh via Gmsh's RTree recombiner — not exportable to Kratos MDPA, use a different export format) |
 | **Element order** | Linear (1) or quadratic (2) elements — quadratic adds mid-side nodes (the overlay still draws the corner geometry) |
 | **Optimize** | Run Gmsh's mesh optimizer after generation |
+| **Conformal** | Fragment touching solids before meshing so they share interface nodes (B-rep multi-solid only, default on; single-solid output is identical either way; mesh sources ignore it). Parts resolve after the renumbering, so physical groups and Kratos SubModelParts survive per body |
 | **STL angle (°)** | Surface-classification angle for mesh/STL sources (disabled for B-rep documents, which never reclassify) — only used by engine: Gmsh |
 | **fTetWild envelope (eps)** | fTetWild's envelope size, as a fraction of the model's bounding-box diagonal — smaller stays closer to the input surface (slower). Only used by engine: fTetWild |
 | **▶ Generate** | Run Gmsh now with the current options and show the result as an overlay |
