@@ -1,6 +1,62 @@
 # GMSH Integration (FE Meshing)
 
-CAD Preview can generate a finite-element mesh (nodes + tetrahedra/triangles, GMSH's native `.msh` format) from the model currently open in the editor, using [Gmsh](https://gmsh.info) compiled to WebAssembly via [`@loumalouomega/gmsh-wasm`](https://github.com/loumalouomega/GMSH-JS). This is a distinct pipeline from the B-rep tessellation used for display (see [Architecture](architecture.md)) — meshing is opt-in, triggered from the **FE Mesh** panel, and its output is an overlay on top of the existing view, never a replacement for it.
+CAD Preview can generate a finite-element mesh (nodes + tetrahedra/triangles,
+Gmsh's native `.msh` format) from the open model using
+[`@loumalouomega/gmsh-wasm`](https://github.com/loumalouomega/GMSH-JS). This
+opt-in FE Mesh pipeline is distinct from B-rep display tessellation; its
+generated overlay never replaces the model. MMG separately remeshes existing
+or freshly generated FE meshes into new files, as described below.
+
+## MMG remeshing
+
+![Remeshed two-material MED output reopened with both named Parts.](/screenshots/mmg-remesh-result.png)
+
+**FE Mesh → Mesh ops · Remesh (MMG)…** and MCP **`remesh_mesh`** share the
+worker-side `meshioService.remeshMesh` pipeline. This is an opt-in operation,
+not a post-Generate optimiser. It runs **mmg3d** for linear tetrahedral volumes
+and **mmgs** for triangle surfaces, including planar triangles. Hexahedra,
+quads, pyramids, prisms and quadratic cells are refused; no implicit
+linearisation/simplexification is performed. Vertex/line cells are dropped
+with warnings. OpenFOAM case markers are not accepted in raw-file mode.
+
+Choose **Original FE mesh file** for a meshio-readable source (pending display
+edits are not baked in), or **Generate with current settings** to regenerate
+from the current edited geometry/options/Parts before remeshing. Generated mode
+does not reuse a potentially stale overlay. The output is an unused **`.med`**
+path plus the usual **`.parts.json`** sidecar; the original remains unchanged.
+Opening the new file displays the result. The old document/overlay is not replaced.
+
+Both destinations are checked before work and the host rechecks after the
+worker returns; MCP additionally uses exclusive creation for each file. The
+pair is not a filesystem transaction: an I/O failure can leave the new MED
+without its Parts sidecar. Such a call reports failure, never success.
+
+Options: `hausd` defaults to `0.005 × bbox diagonal`; set `hausdRelative: false`
+headlessly for an absolute bound. `hmin` and `hmax` use the source coordinates'
+unit (generated B-rep coordinates are mm), and `hgrad` is dimensionless (`>=1`).
+These are MMG control parameters, not a certified two-sided error measurement
+or a guarantee of non-decreasing Gmsh minSICN. The panel explicitly supplies
+`hgrad: 1.3`; omitted headless sizes/gradation retain MMG's defaults.
+
+Cell-region memberships, including overlaps, are encoded as integer reference
+combinations and rebuilt from the output references. Losing a named input
+reference is a failure, not a silently ungrouped output. Boundary triangle
+groups correlate to exact output facets on reopen; volume regions use parent
+cell provenance. Parts receive **new** facet ids and keep matching names,
+colours and flat mesh sizes. Interior-only/overlapping groups may remain in
+the mesh without their own selectable boundary Part (reported explicitly).
+Manually assigned Parts with no named cell region are refused. Old CAD
+selectors/grading are not copied. Point/side regions and point/cell/field data
+are dropped with warnings; field transfer is deferred to adaptive remeshing.
+
+MMG loads lazily, in the existing serialized, cancellable kernel worker. Its
+`IPARAM_mem=128` allocation target is set **before** `setMeshSize`; this avoids
+the default ~766 MiB retained heap. This is **not an OS memory/RSS cap**.
+Admission used a 1.5 GiB process-RSS ceiling on 20 repeated larger volume and
+surface jobs (see `CLAUDE.md` for measured facts). Larger/finer meshes can still
+fail allocation and should be retried coarser or smaller. Handles are freed
+in `finally`; STRONGFAILURE/abort resets the singleton, and timeout/cancellation
+kills the worker. MMG remains an external, replaceable LGPL-3.0-or-later runtime.
 
 ## Host-only execution, lazy WASM init
 

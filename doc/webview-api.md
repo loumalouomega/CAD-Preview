@@ -57,6 +57,7 @@ The webview runs in a Chromium browser context. These modules are bundled into `
 | `src/webview/meshFacets.ts` | Segment a mesh into coplanar facets → per-face sub-meshes (unit-tested) |
 | `src/webview/meshingModel.ts` | Current FE-mesh `MeshOptions` store, DOM-free (unit-tested) |
 | `src/webview/meshingPanel.ts` | FE Mesh panel DOM — size slider/presets, part sizes, Advanced settings, Generate/Export/Cancel/Clear, quality histogram |
+| `src/mmgOptions.ts` | Shared strict MMG per-call options validation (`hausd` relative by default, `hmin`, `hmax`, `hgrad`); no WASM/VS Code imports |
 | `src/webview/meshSizeHeuristics.ts` | Pure size-slider math: bbox default, log mapping, element-count estimate (unit-tested) |
 | `src/webview/visibilityState.ts` | Transient Parts hide/isolate + Tree per-node hide state, DOM-free (unit-tested) |
 | `src/webview/treeFilter.ts` | Pure Components-tree label-substring filter + ancestor inclusion (unit-tested) |
@@ -108,6 +109,7 @@ Entry point for the webview bundle. Not exported — all logic runs at module le
 | `"viewState"` | Stores `msg.view` (`ViewState \| null`) as `pendingViewState`. Applies it (or the default isometric, if `null`) once geometry has ALSO arrived, via `applyInitialViewIfNeeded()` — a no-op after the document's first load. A LATER `"viewState"` (an external `.view.json` change reconciled by the host) applies immediately instead, via the shared `applyViewState()` helper |
 | `"meshingResult"` | `viewer.setMeshOverlay(buildFEMesh(msg.positions, msg.indices, msg.edges, msg.elementGroups))`; if `msg.worstElements` is present, `viewer.setWorstElementsOverlay(buildWorstElementsHighlight(msg.positions, msg.worstElements.indices))` and auto-show it (else clear it) → `MeshingPanel.render(..., { nodeCount, elementCount, elapsedMs, quality: msg.quality, worstElements: msg.worstElements })` |
 | `"meshingError"` | `MeshingPanel.render(..., { error: msg.message })` |
+| `"remeshResult"` / `"remeshError"` | Guarded by `remeshRequestId`; `MeshingPanel.finishRemesh` renders counts, output path, warnings or cancellation/error and releases Run. The existing `meshingJobSettled` releases FE progress/Cancel |
 | `"viewerDefaults"` | `viewer.applyDefaults(msg)` (background/grid-axes apply immediately; up-axis stored for the next `setModel()`) → `meshSizePreset` feeds `syncMeshSizeSeed()`. Order-independent relative to `"geometry"`/`"loadUrl"` — arrives in the `ready` handshake alongside `"parts"`/`"meshingOptions"` |
 | `"screenshotRequest"` | `viewer.render()` (force a fresh frame) → `viewer.captureScreenshotBase64()` → posts back `"screenshotResult"`/`"screenshotError"`, correlated by `msg.requestId` |
 | `"massPropertiesResult"` | `renderMassProperties(msg.properties)` — caches the raw (mm) result and renders it converted to `currentDisplayUnit` (see `src/webview/units.ts` below); ignored if `msg.requestId` doesn't match the latest request |
@@ -998,6 +1000,19 @@ function decodeU32(b64: string): Uint32Array
 Decode a base64 string (via `atob`) to a typed array. Browser-side counterparts to `encodeBuffer()` on the host.
 
 ---
+
+## MMG FE-panel interaction
+
+`MeshingPanel` builds `#meshing-remesh` for every geometry source. Its
+`onRemesh(source, options)` callback receives strictly validated `MmgOptions`;
+file mode is enabled only for a meshio source (not OpenFOAM), otherwise
+generated mode is selected. Hausd is a bbox fraction in this UI; optional
+edge sizes are in source units. `finishRemesh(text, error?)` releases Run and
+renders the report/path/warnings inline. The action uses the same FE progress
+and Cancel controls as Generate/Export, but a separate request id guards its
+replies. Generated mesh sources supply freshly exported displayed STL;
+generated CAD sources use the host's edited B-rep path. Neither result reply
+replaces the old model or FE overlay. See [protocol](./protocol.md#remeshrequest-remeshresult-remesherror).
 
 ## `src/webview/meshLoaders.ts`
 

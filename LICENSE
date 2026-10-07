@@ -3,6 +3,15 @@ Copyright (C) 2026 Vicente Mataix Ferrándiz
 
 SPDX-License-Identifier: GPL-3.0-or-later
 
+Bundled library attribution: MMG 5.8.0 (MMG Consortium / MmgTools), via
+@loumalouomega/mmg-wasm 0.1.0 (V. Mataix Ferrándiz), LGPL-3.0-or-later.
+The library retains its own licence; the combined application is GPL-3.0-or-later.
+The packaged LGPL text is node_modules/@loumalouomega/mmg-wasm/LICENSE.
+Source and build instructions: https://github.com/loumalouomega/MMG-WASM
+and https://github.com/MmgTools/mmg . The external runtime glue and
+dist/mmg-core.wasm are replaceable, and debugging library modifications
+(including reverse engineering for that purpose) is permitted.
+
 This program is free software: you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
 the Free Software Foundation, either version 3 of the License, or

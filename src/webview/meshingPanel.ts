@@ -6,6 +6,7 @@ import { DISPLAY_UNITS, UNIT_LABELS, type DisplayUnit } from "../lengthUnits";
 import type { Part, MeshPresetSummary } from "../protocol";
 import { estimateMeshBudget, budgetWarning, formatBytes, formatCountRange } from "../meshBudget";
 import { MESHIO_OP_IDS, MESHIO_OP_LABELS, type MeshioOpId, type MeshioOpSpec } from "../meshioOps";
+import { validateMmgOptions, type MmgOptions } from "../mmgOptions";
 import { parseSweepSizes, sweepTsv, type MeshSweepRun } from "../meshSweep";
 import {
   LARGE_ELEMENT_COUNT,
@@ -75,6 +76,7 @@ export interface MeshingPanelCallbacks {
    * modified). The wiring posts `meshioOpsRequest` and renders the per-step
    * report from `meshioOpsResult`. */
   onMeshOps: (ops: MeshioOpSpec[]) => void;
+  onRemesh: (source: "file" | "generated", options: MmgOptions) => void;
   /** Run a refinement sweep over `sizes` (mm) with the current options; the
    * wiring posts `meshSweepRequest` (roadmap Tier 1 "Parity gaps" — the
    * interactive half of `compare_mesh_refinement`). */
@@ -162,6 +164,9 @@ export class MeshingPanel {
 
   /** Mesh-ops section (meshio++ sources only) — one operation per Run. */
   private readonly meshOpsSection: HTMLElement;
+  private readonly remeshSource: HTMLSelectElement;
+  private readonly remeshRun: HTMLButtonElement;
+  private readonly remeshStatus: HTMLElement;
   private readonly sweepSizes: HTMLInputElement;
   private readonly sweepWrite: HTMLInputElement;
   private readonly sweepRun: HTMLButtonElement;
@@ -796,6 +801,50 @@ export class MeshingPanel {
     this.meshOpsSection.appendChild(opsForm);
     this.body.appendChild(this.meshOpsSection);
 
+    const mmgSection = document.createElement("div");
+    mmgSection.className = "meshing-section";
+    mmgSection.id = "meshing-remesh";
+    const mmgTitle = document.createElement("div");
+    mmgTitle.className = "meshing-section-title";
+    mmgTitle.textContent = "Mesh ops · Remesh (MMG)";
+    mmgSection.appendChild(mmgTitle);
+    const mmgForm = document.createElement("div");
+    mmgForm.className = "meshing-form";
+    this.remeshSource = this.select(mmgForm, "Input", [["generated", "Generate with current settings"], ["file", "Original FE mesh file"]]);
+    this.remeshSource.id = "meshing-remesh-source";
+    const hausd = this.numberField(mmgForm, "Hausd (bbox fraction)", 0.005);
+    hausd.id = "meshing-remesh-hausd";
+    hausd.step = "0.001";
+    const hmin = this.numberField(mmgForm, "Min edge (optional)", 0);
+    hmin.id = "meshing-remesh-hmin";
+    hmin.value = "";
+    const hmax = this.numberField(mmgForm, "Max edge (optional)", 0);
+    hmax.id = "meshing-remesh-hmax";
+    hmax.value = "";
+    const hgrad = this.numberField(mmgForm, "Gradation", 1.3);
+    hgrad.id = "meshing-remesh-hgrad";
+    this.remeshRun = document.createElement("button");
+    this.remeshRun.id = "meshing-remesh-run";
+    this.remeshRun.type = "button";
+    this.remeshRun.textContent = "Remesh (MMG)…";
+    this.remeshRun.title = "Linear triangles/tetrahedra only; writes a new MED file with named regions. Fields are dropped. No quality-improvement guarantee.";
+    this.remeshRun.addEventListener("click", () => {
+      try {
+        const options = validateMmgOptions({ hausd: Number(hausd.value), hgrad: Number(hgrad.value),
+          ...(hmin.value.trim() ? { hmin: Number(hmin.value) } : {}), ...(hmax.value.trim() ? { hmax: Number(hmax.value) } : {}) });
+        this.remeshRun.disabled = true;
+        this.renderRemeshStatus("Remeshing… (Cancel in the FE toolbar)");
+        cb.onRemesh(this.remeshSource.value as "file" | "generated", options);
+      } catch (error) { this.renderRemeshStatus((error as Error).message, true); }
+    });
+    mmgForm.appendChild(this.remeshRun);
+    this.remeshStatus = document.createElement("div");
+    this.remeshStatus.id = "meshing-remesh-status";
+    this.remeshStatus.className = "meshing-status";
+    mmgForm.appendChild(this.remeshStatus);
+    mmgSection.appendChild(mmgForm);
+    this.body.appendChild(mmgSection);
+
     // ── Export row (format · unit · Export) — LAST in the body. It acts on the
     // result of every option above it (Part sizes, Advanced settings), so it
     // closes the panel the way the design mockup has it, rather than sitting
@@ -1000,11 +1049,25 @@ export class MeshingPanel {
    */
   setMeshioOpsAvailable(enabled: boolean): void {
     this.meshOpsSection.hidden = !enabled;
+    this.remeshSource.querySelector<HTMLOptionElement>('option[value="file"]')!.disabled = !enabled;
+    this.remeshSource.value = enabled ? "file" : "generated";
+    this.remeshRun.disabled = false;
+    this.remeshStatus.textContent = "";
     if (!enabled) {
       this.meshOpsRun.disabled = false;
       this.meshOpsStatus.textContent = "";
       this.meshOpsStatus.classList.remove("meshing-status-error");
     }
+  }
+
+  renderRemeshStatus(text: string, error = false): void {
+    this.remeshStatus.textContent = text;
+    this.remeshStatus.classList.toggle("meshing-status-error", error);
+  }
+
+  finishRemesh(text: string, error = false): void {
+    this.remeshRun.disabled = false;
+    this.renderRemeshStatus(text, error);
   }
 
   /** Shows only the parameter rows the selected operation actually reads. */
@@ -1284,6 +1347,7 @@ export class MeshingPanel {
    */
   setBusy(busy: boolean, requestId?: string, message = "Generating…"): void {
     this.generateBtn.disabled = busy;
+    this.remeshRun.disabled = busy;
     this.exportBtn.disabled = busy;
     this.exportFormatSelect.disabled = busy;
     this.exportUnitSelect.disabled = busy;

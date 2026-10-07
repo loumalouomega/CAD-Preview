@@ -2,7 +2,7 @@
   "name": "cad-preview",
   "displayName": "CAD Preview",
   "description": "Interactive 3D preview, non-destructive editing, and FE mesh generation for CAD and mesh files (STEP, IGES, BREP, STL, OBJ, PLY, glTF, VTK, MED, CGNS, and more) inside VS Code, with an MCP server for AI agents.",
-  "version": "3.10.1",
+  "version": "3.11.0",
   "publisher": "kratos-multiphysics",
   "license": "GPL-3.0-or-later",
   "icon": "images/icon.png",
@@ -427,6 +427,7 @@
   },
   "dependencies": {
     "@loumalouomega/gmsh-wasm": "^0.3.0",
+    "@loumalouomega/mmg-wasm": "0.1.0",
     "@meshioplusplus/wasm": "^16.27.0",
     "@modelcontextprotocol/sdk": "^1.30.1",
     "fflate": "^0.8.3",
@@ -439,7 +440,7 @@
     "zod": "^4.6.5"
   },
   "devDependencies": {
-    "@types/node": "^26.6.2",
+    "@types/node": "^26.6.3",
     "@types/three": "^0.186.0",
     "@types/vscode": "^1.138.0",
     "@vscode/test-electron": "^3.1.0",
@@ -448,17 +449,21 @@
     "playwright": "^1.63.0",
     "typescript": "^7.0.2",
     "vitepress": "^1.3.4",
-    "vitest": "^5.0.1"
+    "vitest": "^5.0.2"
   },
   "overrides": {
     "undici": "^6.21.0",
     "vite": "^6.4.3",
-    "fast-uri": "^3.1.7",
+    "fast-uri": "^3.1.8",
     "nanoid": "^3.3.18",
     "qs": "^6.16.0",
     "hono": "^4.13.7",
     "@hono/node-server": "^2.0.11",
-    "js-yaml": "^4.3.2"
+    "js-yaml": "^4.3.2",
+    "proxy-addr": "^2.0.8",
+    "source-map-js": "^1.2.2",
+    "vue": "^3.5.42",
+    "@vue/server-renderer": "^3.5.42"
   },
   "allowScripts": {
     "@vscode/vsce-sign@2.0.9": true,

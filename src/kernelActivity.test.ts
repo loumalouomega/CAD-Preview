@@ -15,6 +15,7 @@ describe("kernelsFor", () => {
     expect(kernelsFor("loadBRepCachedForDocument")).toEqual(["occt"]);
     expect(kernelsFor("generateMesh")).toEqual(["gmsh"]);
     expect(kernelsFor("repairMesh")).toEqual(["ftetwild", "gmsh"]);
+    expect(kernelsFor("remeshMesh")).toEqual(["meshio", "mmg"]);
   });
 
   it("is empty for a function that loads no WASM, and for an unknown name", () => {
@@ -73,6 +74,13 @@ describe("reduceKernelState", () => {
 });
 
 describe("describeKernelState", () => {
+  it("reports MMG only after remesh use and resets it with the worker", () => {
+    let s = step(initialKernelState(), "start", "remeshMesh");
+    expect(describeKernelState(s)).toEqual({ text: "meshio++ loading… · MMG loading…", tone: "loading" });
+    s = step(s, "success", "remeshMesh");
+    expect(describeKernelState(s)).toEqual({ text: "meshio++ ready · MMG ready", tone: "ready" });
+    expect(describeKernelState(reduceKernelState(s, { type: "reset" })).text).toBe("Kernels idle");
+  });
   it("says idle when nothing has been used — the lazy-WASM invariant, not a fault", () => {
     expect(describeKernelState(initialKernelState())).toEqual({ text: "Kernels idle", tone: "idle" });
   });

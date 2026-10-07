@@ -13,6 +13,7 @@ test/**
 !dist/kernel-worker.js
 !dist/opencascade.wasm.wasm
 !dist/gmsh-core.wasm
+!dist/mmg-core.wasm
 !dist/macros/starter-library.json
 !dist/mesh-presets/starter-presets.json
 !dist/sheet-templates/starter-templates.json
@@ -33,6 +34,13 @@ node_modules/**
 !node_modules/@loumalouomega/gmsh-wasm/dist/gmsh-core.cjs
 !node_modules/@loumalouomega/gmsh-wasm/dist/gmsh-descriptor.cjs
 !node_modules/@loumalouomega/gmsh-wasm/dist/runtime.cjs
+# MMG is a separately replaceable LGPL runtime; its WASM is in dist/.
+!node_modules/@loumalouomega/mmg-wasm/package.json
+!node_modules/@loumalouomega/mmg-wasm/dist/mmg.cjs
+!node_modules/@loumalouomega/mmg-wasm/dist/mmg-core.cjs
+!node_modules/@loumalouomega/mmg-wasm/dist/mmg-descriptor.cjs
+!node_modules/@loumalouomega/mmg-wasm/dist/runtime.cjs
+!node_modules/@loumalouomega/mmg-wasm/LICENSE
 # ESM kernels are staged beside the bundles; inventory: scripts/runtimeAssets.mjs.
 !dist/meshio/package.json
 !dist/meshio/src/index.mjs

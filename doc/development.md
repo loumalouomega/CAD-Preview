@@ -104,6 +104,8 @@ Press **F5** in VS Code (with the `launch.json` already configured) to open the 
 | `examples/OBJ/cube.obj` | OBJ | OBJ loader, default material |
 | `examples/PLY/cube.ply` | PLY | PLY loader, normal computation |
 | `examples/GLTF/cube.gltf` | glTF | GLTFLoader, scene hierarchy |
+| `examples/MED/two-material-tets.med` | MED | MMG volume remesh, material regions/Parts and dropped-field warning |
+| `examples/STL/large-sphere-100k.stl` | STL | MMG surface probe and sampled vertex-to-sphere error |
 
 ### Manual checklist
 
@@ -119,6 +121,7 @@ After any non-trivial change, run through:
 8. Click a row in the component tree — solid highlights, others dim. Click again to deselect.
 9. Click **Export** on `bull.stp` — quick-pick offers IGES/BREP/STL/OBJ/PLY/glTF (not STEP); export to each and reopen the output to confirm it round-trips. On `cube.stl`, confirm only OBJ/PLY/glTF are offered.
 10. Open and close the same file several times — extension host memory stays flat (no OCCT heap leak). Repeat with export/cancel cycles.
+11. Open `two-material-tets.med`, use **FE Mesh → Remesh (MMG)…** with Max edge `0.6`, and save to an unused MED path. Open the output: both material Parts remain selectable. Repeat on `block.stp` in generated mode with a face Part. Refuse the original/existing output paths; dismiss the save dialog and use Cancel during work without changing the source.
 
 ## Project Structure
 
@@ -292,6 +295,14 @@ Before adding any new **bundled** dependency (see the License section in [`CLAUD
 
 ## Embedding the kernel runtime
 
+MMG is an additional **external CJS** runtime: copy the carved-back
+`node_modules/@loumalouomega/mmg-wasm/{package.json,LICENSE,dist/*.cjs}` files
+and **`dist/mmg-core.wasm`** into the consuming extension layout. It is loaded
+only by a remesh, through `createRequire` (not an inlined ESM factory). Preserve
+the import-meta shim, the LGPL notice, and replaceability of the library. The
+VSIX checker has an independent required MMG file list as well as carve-outs.
+MMG 0.1.0 is pinned in production dependencies, not probe-only/dev-only.
+
 The build stages meshio++ under `dist/meshio/` and fTetWild under
 `dist/ftetwild/`. Copy these directories intact beside a consuming CJS bundle;
 they contain package metadata, ESM glue and self-located WASM binaries. The
@@ -316,10 +327,20 @@ MCP tests before shipping. This change does not modify KKSS.
 
 ## Dependency watch
 
+For MMG packaging, also run
+`node scripts/compat/mmg-vsix.mjs /path/to/cad-preview.vsix`. It extracts the
+archive into an isolated `/tmp/opencode` directory (no repository package
+fallback), invokes its real MCP tool, remeshes and reopens both material Parts,
+checks a planar surface remesh and freshly generated translated CAD with a
+coloured/sized boundary Part, and verifies refusal/recovery paths. The generated
+MED's coordinates are read through the archive's own meshio runtime to prove
+pending edits landed. It checks dropped-field warnings/source preservation and
+parses every MCP stdout line as JSON-RPC.
+
 `node scripts/dependency-watch.mjs` reports installed-versus-latest versions
 without writing to GitHub. The Monday workflow also supports manual dispatch
 and uses `--publish` to create or update one tracking issue. It monitors the
-four WASM packages, Three.js and the MCP SDK, including releases beyond caret
+five WASM packages, Three.js and the MCP SDK, including releases beyond caret
 ranges. Unchanged reports do not generate repeated updates; a current report
 leaves existing issues alone. Registry errors fail the job.
 

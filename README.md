@@ -116,6 +116,13 @@ The source format itself is never offered. B-rep targets are written entirely in
 
 ## MCP Server
 
+**Remesh existing FE meshes:** **FE Mesh → Mesh ops · Remesh (MMG)** (also the
+`remesh_mesh` MCP tool) refines/coarsens a linear triangle/tetra mesh or a mesh
+generated with the current settings. It writes a new `.med` mesh and rebound
+Parts sidecar, preserves named cell regions, and warns that result fields are
+dropped. See [MMG remeshing](doc/gmsh-integration.md#mmg-remeshing) for sizes,
+memory limits and unsupported inputs. It is not an automatic quality optimiser.
+
 CAD-Preview ships a standalone MCP (Model Context Protocol) stdio server so AI agents can drive the same pipeline headless — load models, apply edit operations, manage parts and parametric variables, and generate/export FE meshes — with no VS Code involved. It persists to the same `.edits.json`/`.parts.json`/`.mesh.json` sidecars the extension reads, so agent edits show up when you open the file (and never touches the CAD source file). After `npm run build`, register it with e.g. Claude Code:
 
 ```bash
@@ -213,7 +220,13 @@ CAD-Preview is distributed under the **GPL-3.0-or-later**. See [LICENSE](LICENSE
 
 CAD-Preview bundles [`@loumalouomega/gmsh-wasm`](https://github.com/loumalouomega/GMSH-JS), which compiles the Gmsh mesh generator and statically links it (together with OpenCASCADE Technology) into a single WebAssembly binary. Gmsh is distributed under the **GNU General Public License, version 2 or later** (GPL-2.0-or-later), with a linking exception that covers Netgen, METIS, OpenCASCADE, and ParaView.
 
-CAD-Preview itself is distributed under the **GPL-3.0-or-later** — see [LICENSE](LICENSE) for the full text. This was `GPL-2.0-or-later` (which Gmsh's own license, and every other bundled dependency, would still be compatible with on its own) until 2026-09-24, when the project committed to `doc/roadmap.md`'s [Build and bundle an OpenSCAD WASM port](doc/roadmap.md#build-and-bundle-an-openscad-wasm-port) item: a real OpenSCAD build genuinely links CGAL (GPLv3-or-later/LGPLv3-or-later, no GPLv2 option) and/or Manifold (Apache-2.0, which the FSF's own compatibility guidance treats as GPLv3-compatible but *not* GPLv2-compatible), so shipping that binary forces a GPL-3.0-or-later floor regardless of which of the two backends the eventual build uses — confirmed directly against OpenSCAD's own `COPYING` file and the FSF's license-compatibility notes, not assumed. The relicense was made ahead of that dependency actually landing (nothing bundled *today* requires it beyond Gmsh's own already-compatible `GPL-2.0-or-later`) specifically to avoid a second license churn once it does.
+CAD-Preview itself is distributed under the **GPL-3.0-or-later** — see [LICENSE](LICENSE).
+It was GPL-2.0-or-later until 2026-09-24, when the project committed to the
+[OpenSCAD WASM port](doc/roadmap.md#build-and-bundle-an-openscad-wasm-port): its
+CGAL/Manifold backends require GPLv3-compatible terms. The relicense preceded
+that dependency landing. The now-bundled LGPL-3.0-or-later MMG runtime is also
+compatible with the GPLv3 combined work and independently requires
+GPLv3-compatible terms for that combination.
 
 OpenCASCADE Technology (OCCT) is used in two places in this extension: directly, via [`opencascade.js`](https://github.com/donalffons/opencascade.js), for the native B-rep read/export pipeline, and indirectly, inside gmsh-wasm's meshing pipeline. OCCT is licensed under the **GNU Lesser General Public License, version 2.1**, with an additional exception granted by its authors.
 
@@ -221,7 +234,19 @@ Anyone who needs to use Gmsh under terms other than the GPL can obtain a separat
 
 The MCP server bundle additionally includes [`@modelcontextprotocol/sdk`](https://github.com/modelcontextprotocol/typescript-sdk) and [`zod`](https://github.com/colinhacks/zod), both distributed under the **MIT License** — GPL-compatible, so bundling them into the shipped extension is fine. [`fflate`](https://github.com/101arrowz/fflate) (used to build/read the Save/Load Preprocess `.zip` archives, in both the extension and MCP server bundles) is also **MIT**-licensed. [`@meshioplusplus/wasm`](https://github.com/loumalouomega/meshioplusplus) (mesh I/O for VTK/MED/CGNS/Exodus/XDMF/MDPA and more, compiled to WebAssembly, used to import those formats and to export generated FE meshes to MED/CGNS) is also **MIT**-licensed, including the compiled `.wasm` binary as shipped in its npm package.
 
-[`float-tetwild-wasm`](https://github.com/loumalouomega/fTetWild) (the optional, alternative volume-mesh engine for dirty triangle meshes — see [Features](#features) below) is **MPL-2.0**-licensed, including the compiled `.wasm` binaries as shipped in its npm package. MPL-2.0 is a weak, file-level copyleft license that is explicitly compatible with GPL relicensing (MPL-2.0 §3.3) — the "Incompatible With Secondary Licenses" notice that would block that is not attached to this codebase's source, confirmed by checking its actual license file. Bundling it does not, on its own, require any particular GPL version — fTetWild's own dependency set (geogram, libigl, Eigen, spdlog, fmt) is BSD-3/MPL-2.0/MIT throughout, with no CGAL or GMP in the compiled binary. (CAD-Preview's overall license is GPL-3.0-or-later regardless, for the unrelated reason given above — see `doc/roadmap.md`'s "Non-goals" for TetGen/CGAL/ParMmg, and its "Meshing library review" for the proposed, LGPL-3.0-licensed MMG remesher.)
+[`float-tetwild-wasm`](https://github.com/loumalouomega/fTetWild) (the optional, alternative volume-mesh engine for dirty triangle meshes — see [Features](#features) below) is **MPL-2.0**-licensed, including the compiled `.wasm` binaries as shipped in its npm package. MPL-2.0 is a weak, file-level copyleft license that is explicitly compatible with GPL relicensing (MPL-2.0 §3.3) — the "Incompatible With Secondary Licenses" notice that would block that is not attached to this codebase's source, confirmed by checking its actual license file. Bundling it does not, on its own, require any particular GPL version — fTetWild's own dependency set (geogram, libigl, Eigen, spdlog, fmt) is BSD-3/MPL-2.0/MIT throughout, with no CGAL or GMP in the compiled binary. CAD-Preview's overall license is GPL-3.0-or-later regardless; see `doc/roadmap.md`'s "Non-goals" for TetGen/CGAL/ParMmg.
+
+[`@loumalouomega/mmg-wasm`](https://github.com/loumalouomega/MMG-WASM) **0.1.0**
+(MMG **5.8.0**, the optional remesher) is **LGPL-3.0-or-later**, compatible with
+the combined work's **GPL-3.0-or-later** licence. Its CJS glue remains external
+under `node_modules/@loumalouomega/mmg-wasm/`, its binary is separately
+replaceable at `dist/mmg-core.wasm`, and the VSIX includes the package's LGPL
+text beside this project's GPL text. No library modifications are made; source
+and build instructions are at [MMG-WASM](https://github.com/loumalouomega/MMG-WASM)
+and [MMG](https://github.com/MmgTools/mmg). You may replace/rebuild these library
+files and debug modifications; no restriction on reverse engineering for that
+purpose is imposed. Redistribution must retain the notices and satisfy the
+applicable source/relinking obligations, not merely copy the WASM binary.
 
 [`node-hid`](https://github.com/node-hid/node-hid) (SpaceMouse 6DOF input — only the extension-host bundle, loaded lazily) is **MIT OR X11**-licensed, including the per-platform `.node` prebuilds as shipped in its npm package — GPL-compatible, so bundling the linux-x64 / darwin-arm64 / darwin-x64 / win32-x64 prebuilds is fine. Only those four prebuilds ship (other platforms get a clear message, not a crash); the package is never imported by the MCP/kernel bundles.
 
@@ -231,6 +256,7 @@ The MCP server bundle additionally includes [`@modelcontextprotocol/sdk`](https:
 - **OpenCASCADE Technology (OCCT)** — <https://dev.opencascade.org>
 - **meshio++** — V. Mataix Ferrándiz. <https://github.com/loumalouomega/meshioplusplus>
 - **fTetWild** — Y. Hu, T. Schneider, B. Wang, D. Zorin, D. Panozzo. <https://github.com/wildmeshing/fTetWild>
+- **MMG** — MMG Consortium / MmgTools. <https://www.mmgtools.org>; WASM bindings: V. Mataix Ferrándiz. <https://github.com/loumalouomega/MMG-WASM>
 
 </details>
 

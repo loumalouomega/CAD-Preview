@@ -31,7 +31,7 @@ function build(overrides: Partial<Parameters<typeof buildHandoffManifest>[0]> = 
     unit: "mm",
     scaleFactor: 1,
     meshOptions: DEFAULT_MESH_OPTIONS,
-    kernels: { "opencascade.js": "1.1.1", "@loumalouomega/gmsh-wasm": "0.3.0", "@meshioplusplus/wasm": null, "float-tetwild-wasm": null },
+    kernels: { "opencascade.js": "1.1.1", "@loumalouomega/gmsh-wasm": "0.3.0", "@loumalouomega/mmg-wasm": null, "@meshioplusplus/wasm": null, "float-tetwild-wasm": null },
     outputs: [{ path: "/m/a.mdpa", format: "mdpaElements", bytes: new TextEncoder().encode("Begin Nodes") }],
     parts: [part("Inlet", ["face-1"]), part("Wall", ["face-2"]), part("Ghost", ["face-99"]), part("Empty")],
     facts,

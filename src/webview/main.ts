@@ -1180,6 +1180,7 @@ const meshingModel = new MeshingModel(() => {
   meshingPanel.render(meshingModel.get());
 });
 let activeMeshingRequestId: string | null = null;
+let remeshRequestId: string | null = null;
 
 /** Snapshot of the displayed model as base64 STL, for mesh-source documents only. */
 async function currentStlIfMeshSource(): Promise<string | undefined> {
@@ -1220,6 +1221,21 @@ const meshingPanel = new MeshingPanel(document.getElementById("meshing-panel")!,
     const requestId = `${Date.now()}-${Math.random()}`;
     meshioOpsRequestId = requestId;
     post({ type: "meshioOpsRequest", requestId, ops });
+  },
+  onRemesh: async (source, options) => {
+    const requestId = crypto.randomUUID();
+    remeshRequestId = requestId;
+    activeMeshingRequestId = requestId;
+    meshingPanel.setBusy(true, requestId, "Remeshing…");
+    try {
+      post({ type: "remeshRequest", requestId, source, options, meshOptions: meshingModel.get(),
+        ...(source === "generated" ? { stl: await currentStlIfMeshSource() } : {}) });
+    } catch (error) {
+      remeshRequestId = null;
+      activeMeshingRequestId = null;
+      meshingPanel.setBusy(false);
+      meshingPanel.finishRemesh((error as Error).message, true);
+    }
   },
   // Refinement sweep (roadmap Tier 1 "Parity gaps"): stale-guarded like every
   // other round trip; a mesh source sends its displayed geometry, as Generate does.
@@ -5229,6 +5245,7 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
       // one except OpenFOAM (geometry-only case staging, no readMesh path).
       meshingPanel.setMeshioOpsAvailable(msg.sourceFormat !== "openfoam");
       meshioOpsRequestId = null; // a new document supersedes any in-flight op
+      remeshRequestId = null;
       bomRequestId = null; holeTableRequestId = null; // same for an in-flight BOM request (eligibility refreshes in loadMeshObjectFromUrl once sourceKind settles)
       clashPanel.setEligible(false); // meshio boundary has no B-rep booleans
       setPrimitivesEligible(false); // meshio boundary has no analytic surfaces
@@ -5700,6 +5717,18 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
       if (msg.requestId !== meshioOpsRequestId) break; // stale — a newer run/load superseded it
       meshioOpsRequestId = null;
       meshingPanel.renderMeshOpsResult(msg.steps, msg.warnings);
+      break;
+
+    case "remeshResult":
+      if (msg.requestId !== remeshRequestId) break;
+      remeshRequestId = null;
+      meshingPanel.finishRemesh(msg.cancelled ? "Remesh cancelled — no file written." :
+        `${msg.report?.module}: ${msg.report?.inputCells} → ${msg.report?.outputCells} cells. Saved ${msg.written}. ${msg.warnings.join(" · ")}`);
+      break;
+    case "remeshError":
+      if (msg.requestId !== remeshRequestId) break;
+      remeshRequestId = null;
+      meshingPanel.finishRemesh(msg.message, true);
       break;
 
     case "meshioOpsError":

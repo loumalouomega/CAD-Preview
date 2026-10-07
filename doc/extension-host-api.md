@@ -71,6 +71,8 @@ The extension host is a Node.js process. These modules run there — never in th
 | `src/toolbarIcons.ts` | **Generated** — monochrome, `currentColor`-based toolbar/panel icons (vscode-free) |
 | `src/uiGlyphs.ts` | Hand-authored `currentColor` line glyphs for the sidebar/status-bar chrome — **not** generated; kept out of `toolbarIcons.ts` so that file stays purely generated (vscode-free) |
 | `src/kernelActivity.ts` | Pure kernel-readiness rules (which kernels each pipeline call touches, the reducer, the status-bar text) — consumed by `kernelClient.ts` and the webview (vscode-free, unit-tested) |
+| `src/mmgService.ts` / `src/mmgOptions.ts` | Lazy MMG external CJS singleton, 128 MiB allocation target before mesh allocation, triangle/tetra remesh with copied typed-array harvest, strict options and STRONGFAILURE/abort reset |
+| `src/mmgMesh.ts` / `src/mmgParts.ts` / `src/meshioTriangleRegions.ts` | Cell-region combination references, output topology reconstruction, name-based Part metadata rebinding, and exact facet-coordinate correlation for explicit physical boundary groups |
 | `src/hash.ts` | The one shared `sha256Hex` (Node `crypto`) — preprocess checksums, sidecar revisions |
 | `src/sidecarRevision.ts` | Pure external-change conflict rules: per-kind known revision (fingerprint), pending-local state, `classifyDiskChange` (echo / adopt / conflict), `canWrite`, and the prompt's `summarizeConflict` text (vscode-free, unit-tested) |
 | `src/triangleDistance.ts` | Pure point-to-triangle-mesh distance: `closestPointOnTriangle` and a uniform 3D grid (`buildTriangleGrid3D` / `nearestOnGrid`, exact via a ring lower bound) — no THREE, host-safe (unit-tested against brute force) |
@@ -790,6 +792,17 @@ async function exportViaMeshio(
   outMeshioFormat: string
 ): Promise<{ bytes: Uint8Array; companion?: { name: string; bytes: Uint8Array } }>
 
+async function remeshMesh(
+  extensionPath: string,
+  sourceBytes: Uint8Array,
+  meshioFormat: string,
+  options?: MmgOptions,
+  sourceName?: string,
+  companions?: readonly MeshioCompanion[]
+): Promise<{
+  bytes: Uint8Array; report: MmgReport; regionNames: string[]; warnings: string[]
+}>
+
 interface MeshioRegionSummary { name: string; kind: string; numEntries: number }
 interface MeshioMetadataSummary {
   regions: MeshioRegionSummary[]
@@ -828,9 +841,54 @@ async function readMeshioFieldValues(
 
 `readMeshioMetadata()` is a cheap, read-only sibling to `convertToStlBoundary()` — via `readMetadata()` (explicitly documented as loading a file's shape without its heavy geometry/ data arrays), it reports the region names and point/cell/field data array names a source file declares. Never throws (a malformed/unreadable file degrades to every field empty — this is purely supplementary information, must never block or fail an import `convertToStlBoundary` would otherwise handle fine). Used for the metadata-only status line/warning; the actual region→Parts correlation below is a separate function.
 
-`convertToStlBoundaryWithRegions()` (roadmap "Richer meshio++ import", closed) is what actually turns a region into a Part. It `readMesh()`s the full `Mesh` (not the cheap `readMetadata()`) and calls `extractSurface(mesh, recordParentIds=true)`, whose `cell_data["surface:parent_cell"]` gives each boundary triangle the global, block-major index of its original parent cell — exactly what a `kind: "cell"` `Region.entries` indexes, so membership is a plain `Set.has()` test. Builds the returned STL bytes directly from `extractSurface`'s own boundary mesh (not from a second `convertSurface` call) so the geometry/region-index correspondence is correct by construction, not by an assumed match between two independently-callable APIs. Falls back to the plain `convertToStlBoundary()` result (`regions` omitted) whenever the boundary isn't pure `"triangle"` blocks (e.g. a hexahedral volume's quad boundary), there are no `kind: "cell"` regions, or nothing correlates — never throws. `provider.ts`'s `handleMeshio()` (interactively) and `mcpTools.ts`'s `loadModel()` (headlessly, via the injected `Pipeline`) both call it and, when the parts sidecar is still empty, feed the result to `src/meshioRegionParts.ts`'s `buildPartsFromMeshioRegions()` to auto-create one Part per region. See CLAUDE.md's "meshio++ integration" section for the full write-up.
+`convertToStlBoundaryWithRegions()` turns named cell regions into selectable
+boundary Parts. It reads the full `Mesh`, calls
+`extractSurface(mesh, recordParentIds=true)`, and builds STL directly from
+that boundary so geometry and assignments cannot drift. Explicit physical
+triangle groups are matched by exact coordinates first
+(`meshioTriangleRegions.ts`); unassigned facets use global block-major parent
+cell membership. Quad/hex boundaries use the verified simplexify path.
+The display picks one region per facet, even when the FE mesh carries overlaps.
+No regions, failed correlation or unsupported boundary blocks degrade to plain
+STL without assignments; import never fails just because correlation failed.
+Both `provider.ts` and MCP use this same result with
+`buildPartsFromMeshioRegions`, including when rebinding remeshed Parts.
 
 `readMeshioFieldValues()` (roadmap "Colour-by-scalar-field for meshio++ imports", closed) reads one named field's actual VALUES, on demand — called only once the webview's "Colour by field" selector picks a field (`provider.ts`'s `colorFieldRequest` handler), not eagerly like `readMeshioMetadata()`. Reuses the identical `readMesh()` → `extractSurface(mesh, recordParentIds=true)` sequence as `convertToStlBoundaryWithRegions()`, so its output correlates onto the same boundary triangle soup (verified deterministic — identical input bytes always produce byte-identical boundary geometry/order). `kind: "point"` needs no correlation math at all: `extractSurface` already subsets AND reorders `point_data` to match its own output `points` (verified with a deliberately interior point excluded from the boundary — its value is correctly dropped, not just truncated), so `boundary.point_data[fieldName]` is read directly and expanded from per-point to per-corner via each triangle's own point indices. `kind: "cell"` reuses `cell_data["surface:parent_cell"]` exactly as region correlation does: the original mesh's `cell_data[fieldName]` is flattened block-major and each triangle's parent-cell value is broadcast to its 3 corners. Returns `null` (never throws) for a missing field, a non-scalar (multi-component) field, or a non-pure-triangle boundary.
+
+## MMG services and reference bridge
+
+```typescript
+function getMmg(extensionPath: string): Promise<Mmg>
+function resetMmg(): void
+function wrapMmgFault(error: unknown): Error
+function validateMmgOptions(value: unknown): MmgOptions
+interface MmgMesh {
+  positions: Float64Array
+  triangles: Int32Array; triangleRefs: Int32Array
+  tetrahedra: Int32Array; tetraRefs: Int32Array
+}
+async function remeshMmg(extensionPath: string, input: MmgMesh, options?: MmgOptions)
+type MmgReport = Awaited<ReturnType<typeof remeshMmg>>["report"]
+function prepareMmgMesh(mesh: Mesh)
+function harvestMmgMesh(output: MmgMesh, bridge: ReturnType<typeof prepareMmgMesh>): Mesh
+function remeshedParts(built: Part[], original: Part[], regionNames: string[]): {
+  parts: Part[]; warnings: string[]
+}
+```
+
+`mmgService.ts` lazy-loads external CJS with explicit `dist/mmg-core.wasm`.
+Connectivity is **one-based** at this boundary; the meshio bridge validates
+indices before narrowing and pads planar 2D coordinates to xyz. It refuses
+unsupported cell types, encodes overlapping memberships as reference
+combinations, and fails on a lost named triangle/tetra reference.
+`remeshMmg` sets `IPARAM_mem=128` before allocation, copies harvest arrays,
+and frees every handle in `finally`. Rejected initialisation is uncached;
+STRONGFAILURE/abort resets the singleton. `report.lowFailure` and the pipeline
+warning distinguish partial convergence from a fully converged return.
+See [MMG remeshing](./gmsh-integration.md#mmg-remeshing) for options, measured
+memory admission and output/field/Part policies. None of these modules imports
+VS Code or loads MMG simply because an unrelated meshio operation is imported.
 
 ## `src/meshioCompanions.ts`
 

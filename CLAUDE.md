@@ -31,9 +31,94 @@ Project memory for CAD-Preview — a VS Code extension that previews and edits 3
 
 This project is licensed **GPL-3.0-or-later** (not MIT) — `GPL-2.0-or-later` until 2026-09-24. The floor is set by two independent things: `@loumalouomega/gmsh-wasm`, which statically links the GPL-2.0-or-later-licensed Gmsh (and OpenCASCADE) into its shipped WASM binary (this alone only required `GPL-2.0-or-later`), and the committed-to "Build and bundle an OpenSCAD WASM port" roadmap item — a real OpenSCAD build genuinely links CGAL (GPLv3-or-later/LGPLv3-or-later) and/or Manifold (Apache-2.0, GPLv3-compatible but not GPLv2-compatible per the FSF's own list), which forces `GPL-3.0-or-later` regardless of which backend the eventual build settles on. The relicense landed ahead of that dependency actually shipping, specifically to avoid a second license churn once it does. **Before adding any new dependency that gets bundled into the shipped extension** (i.e. anything that ends up in the packaged `.vsix`, not just a dev/build-time tool), check its license for GPL compatibility first — see the README's "Licensing" section for the current rationale and attribution.
 
+## MMG feasibility evidence and product integration (2026-10-06)
+
+`@loumalouomega/mmg-wasm` **0.1.0** (MMG **5.8.0**, LGPL-3.0-or-later,
+compatible with this project's GPL-3.0-or-later) is now a **production dependency**.
+The original core probe alone was not implementation. Its all-six-gates admission
+did **not** pass: the quality-optimisation claim fails despite both remeshers
+working. Former task **4.17** (closed) narrowed the product to ordinary reference-preserving
+volume/surface remeshing, then admitted it through the separate budgeted experiment
+below. Do not claim an unconditional minSICN gain or automatic post-Generate pass.
+
+Reproduce with `npm run probe -- scripts/probe/examples/mmg-core.ts --run`, then `node scripts/probe/examples/mmg-transport.mjs`. The latter also runs the full core experiment; it injects a temporary `mmgProbe` method into **copies** of the real worker/client/MCP sources via esbuild, under ignored `scripts/probe/.build/mmg-transport/`. The standalone and directly captured worker fd 1 both contain **zero bytes**; every MCP stdout line parses as JSON-RPC (initialize and tools/call only). The temporary worker returns genuinely marshaled `Float64Array`/`Int32Array` harvests. No temporary tool is registered in the shipped MCP server. Probe completion (exit zero) is deliberately separate from admission: JSON `decision` and `optim.nonDecreasing` state the result.
+
+- **Versions actually run:** Node-side kernels `opencascade.js` 1.1.1, gmsh-wasm 0.3.0, meshio++ 16.27.0 and fTetWild 0.2.0; MMG 0.1.0. The installed top-level packages were checked with `npm ls --depth=0` before the experiment.
+- **Loader call shape:** `createRequire(<repo>/package.json)("@loumalouomega/mmg-wasm")({wasmBinary, print, printErr})`, where `wasmBinary` is read from the exported `@loumalouomega/mmg-wasm/mmg-core.wasm` path. This selects the external **require** condition (`dist/mmg.cjs`), not an inlined ESM import; no alias or shipped dist copy is necessary for this probe. Lazy cached Promise; rejected init is un-cached. The callbacks are supplied at initialization and collect diagnostics through a mutable array; console diagnostics from the existing Gmsh route are redirected to stderr.
+- **Typed-array calls (one-based connectivity):** `api.init()` → `mmg3d.setMeshSize(mesh,np,ne,0,0,0,0)` or `mmgs.setMeshSize(mesh,np,nt,0)` → `setVertices(mesh,Float64Array,null)` → `setTetrahedra(mesh,Int32Array,Int32Array refs)` or `setTriangles(...)` → `setIparameter(mesh,met,IPARAM_verbose,-1)` → `setDparameter(mesh,met,DPARAM_hausd,hausd)` (and optional `DPARAM_hmax`) → `remesh(mesh,met)` → `getMeshSize(mesh)` → `getVertices(mesh,np)` and `getTetrahedra(mesh,ne)` / `getTriangles(mesh,nt)`. `api.free(handles)` runs in `finally` on success and failure; MEMFS staging files in meshio/Gmsh are unlinked and Gmsh models removed in `finally`. MMG itself uses no MEMFS paths for remeshing.
+- **Region/volume gate passed:** `examples/MED/two-material-tets.med`, read through meshio's real `readMesh`, provides cell regions MaterialA/MaterialB. Explicit region→integer map 1/2, not inference from array order after remeshing; overlapping/unassigned entries are rejected. `hausd = 0.005 * sqrt(6) = 0.01224744871391589`, `hmax = mean unique edge / 2 = 0.6150593228814153`. **2 → 37 tets**, refs 1 and 2 retained, bbox `[0,1] × [0,1] × [-1,1]` unchanged. Total volume **1/3 → 0.33333333333333326**, relative delta **2.22e-16**; each material stays at **1/6** to floating-point precision (also asserted). Cold load+remesh ~0.4 s. This demonstrates the integer bridge, not end-to-end persisted Part sidecars or every possible reference configuration.
+- **Surface gate passed:** `examples/STL/large-sphere-100k.stl`, parsed and welded by the existing pure parsers, **99,904 → 12,416 triangles** at absolute `hausd=0.01`. Max output-vertex distance from the analytic radius-10 sphere at the origin **3.676e-5**, ~0.71 s including parse/weld. This is the requested vertex-to-sphere check, **not** a certified two-sided Hausdorff measurement of triangle interiors.
+- **Failure gate passed:** `mmg3d.init({levelset:true})`, set the scalar solution with `setSolSize(mesh,ls,MMG5_Vertex,np,MMG5_Scalar)` + `setScalarSols`, set `IPARAM_numberOfMat=1` **before** `setMultiMat(mesh,met,1,1,3,4)`, deliberately omit input ref 2, then `levelset(mesh,ls,met)` throws **`MMG3D_mmg3dls failed (MMG5_STRONGFAILURE)`**. Reset the cached Promise explicitly, free the old handles, assert a new factory generation and a successful subsequent ordinary remesh. STRONGFAILURE is a wrapper error, not necessarily a WASM abort, so an abort-only regex would miss this reset requirement. `np<=0` **or** cell count `<=0` is independently rejected by the harvest guard. No deliberate low-level WASM abort was induced; do not claim abort recovery from this evidence.
+- **Optimisation gate failed, twice:** fTetWild output of `examples/STL/holed-cube.stl` → `setIparameter(mesh,met,IPARAM_optim,1)` → `remesh`. Independently evaluate both meshes through `tetsToMsh41`, `gmsh.merge`, `getElements(3).elementTags`, then `getElementQualities(tags,"minSICN").elementsQuality`. First complete run: **0.427485 → 0.271894** (MMG ~0.79 s, fTetWild ~1.25 s). Independent repeat: **0.345839 → 0.322069**, **9,503 → 24,322 tets** (MMG ~1.88 s, fTetWild ~2.08 s while unit tests ran concurrently). fTetWild output varies, but both runs disprove "minSICN must not fall". MMG returned normally; this is not a dead binding. The `optim` flag is also **not** evidence of fixed topology or a no-insertion pass.
+- **Memory/timing facts, not a leak-free certification:** 20 warm remeshes of the two-material fixture after the larger operations took **6.83 s** in the repeat. MMG's `module.HEAPU8.byteLength` stayed **802,816,000 bytes** throughout; process RSS stayed **1,311,506,432 bytes**, JS heap used rose ~0.56 MB and array buffers ~30 KB before GC. The retained WASM high-water capacity is large (~766 MiB) and does not shrink when handles are freed. These 20 small repeats do not establish a production memory budget or absence of leaks on large repeated inputs.
+
+**Former 4.17 memory admission (closed):** before running, choose **128 MiB MMG allocation
+target** and a **1.5 GiB process-RSS ceiling**. Reproduce:
+`MMG_MEMORY_MB=128 npm run probe -- scripts/probe/examples/mmg-core.ts --run`.
+The crucial call is `setIparameter(mesh,met,IPARAM_mem,128)` **before**
+`setMeshSize` (otherwise the default ~800MB arrays already exist). Twenty
+iterations each remesh the two-material fixture, **9,679 input tets** from
+fTetWild's holed cube, and **99,904 sphere triangles**. Larger-volume reference
+and volume checks run every iteration; sphere output remains 12,416 triangles.
+The budgeted two-material run still preserves both 1/6 material volumes and
+total volume to **2.22e-16 relative error**; sphere max output-vertex radial
+error remains **3.676e-5** at `hausd=0.01`. Repeat time **25.36s**, MMG capacity
+**96,665,600 bytes** in every sample, RSS **677,863,424–697,131,008 bytes**
+with MMG/Gmsh/fTetWild/meshio exercised. The ceiling was not changed after the
+result. Samples are **after each iteration**, not certified instantaneous peak
+RSS, and bounded repetitions are not a leak-free guarantee for arbitrary sizes.
+The allocation target is not an OS memory limit; retained WASM capacity does not
+shrink on `free`. Larger/finer inputs may fail and should be retried coarser/smaller.
+
+**Implemented product boundary:** `meshioService.remeshMesh` stages source and
+companions, reads through meshio++, prepares one-based arrays via `mmgMesh.ts`,
+runs the lazy `mmgService.ts` singleton, reconstructs regions and writes MED.
+`mmgOptions.ts` strictly validates `hausd` (0.005 bbox fraction by default),
+`hausdRelative`, `hmin`, `hmax`, `hgrad`; no `optimOnly` or user memory override.
+The existing worker/client Pipeline and kernel-readiness map carry `remeshMesh`.
+`remesh_mesh` and **FE Mesh → Mesh ops · Remesh (MMG)** expose raw meshio-file
+and freshly-generated edited-geometry modes. Generated mode uses the same
+Generate resolvers/settings/Parts, not a stale overlay. Output is a new MED
+and standard Parts sidecar; existing output paths and source overwrites are
+refused. The old document and overlay remain untouched; open the new file to
+view the result. Worker cancellation/watchdog and stderr-only diagnostics apply.
+
+**References/Parts:** overlapping cell-region memberships become combination
+reference ids, rebuilt after harvest. Losing any named input reference fails
+before output write. Explicit triangle physical groups in a volume mesh must
+correlate by **exact facet coordinates**, not tetra parent membership
+(`meshioTriangleRegions.ts`); the live generated `block.stp` / `Wall` fixture
+exposed this missing correlation. Volume regions retain parent-cell provenance.
+Parts are built against the new region-aware facet ids, with name-matched
+colours and flat sizes. Interior-only/overlapping regions may survive in MED
+without a selectable boundary Part (explicit warning). Manually assigned Parts
+with no named cell-region counterpart are refused. Point/side regions and
+point/cell/field data are dropped with warnings; CAD selectors/grading are not
+copied. Hex/quad/pyramid/prism/quadratic input is refused, never linearised;
+line/vertex cells are dropped with warnings. No field transfer, ParMmg or move API.
+
+**Packaging/licence:** MMG remains external CJS, resolved lazily via
+`createRequire(import.meta.url)`; do not import its factory eagerly from
+`meshioService` (that breaks embedding consumers with no MMG installed even
+when they never remesh). `dist/mmg-core.wasm` is copied by esbuild; the five
+package metadata/glue files and LGPL licence are carved into `.vscodeignore`.
+`compat:vsix` independently requires these assets. README and LICENSE carry
+attribution, replaceability and source/build links. `mmg-product.ts` reruns the
+real service/worker/client, material Parts, generated `Wall` Part and sphere;
+the temporary transport probe remains evidence only, not the public API.
+
+**Completion (former task 4.17, closed 2026-10-06):** implementation and verification closed this item, per the roadmap rule (closed items leave this list; the write-up lives here). Validation on the closing tree: `npm run build` + `tsc --noEmit` clean; `npm test` 2,516 passed (170 files); `test:webview` 758 checks passed (including MMG panel/themed-button coverage); host integration 277 checks passed (including file/generated/cancel/refusal MMG cases); `compat` 41 rows passed; `compat:vsix` asset check passed; isolated packaged-VSIX MMG runtime passed (volume 2 → 38 tets with both material Parts, planar surface 2 → 128 triangles, generated translated CAD with rebound Wall colour/size, refusal/recovery paths, JSON-RPC-only stdout); live product probe preserves both 1/6 material volumes and total volume, sphere sampled vertex error within the absolute bound; `docs:build` passed; screenshots regenerated from the real product pipeline (`mmg-remesh.png`, `mmg-remesh-result.png`). The full `mcp:smoke` suite remains sensitive to unrelated OCCT heap pressure (unmodified HEAD baseline also fails, at a different OCCT step); MMG smoke checks themselves pass and are additionally covered by the isolated packaged-runtime regression above. Screenshots use the real product pipeline's two-material remeshed boundary/report and regenerated shipped DOM.
+
 ## Architecture (non-negotiable invariants)
 
 - **Owned FE-mesh jobs.** The webview assigns one request UUID per Generate/Export; `provider.ts` and the standalone MCP server attach stable owner/request IDs to the serialized kernel queue. Cancellation removes only that owner's queued work or terminates only its active worker call. MCP queue-managed `export_mesh` also writes an atomic versioned receipt before dispatch and exposes owner-checked `cad_job_status` / `cad_job_cancel`; after restart, a receipt without a live kernel record is `uncertain` and is never automatically replayed. `doc/protocol.md`, `doc/webview-api.md`, and `doc/mcp-server.md` define the contracts.
+
+  Remesh uses that same ownership/cancellation path, with its own request id.
+  MCP creates both output files exclusively; the interactive host rechecks
+  both destination URIs after the long-running worker call and refuses dirty
+  buffers. The two filesystem writes are not a transaction: a write failure
+  can leave a new MED file without its Parts sidecar. Do not report success
+  until both writes finish.
 
 - **OpenCascade.js (OCCT WASM) runs in the Node extension host**, never in the webview. The host parses + tessellates B-rep shapes and posts plain typed-array `ArrayBuffer`s (base64-encoded `{positions, indices}`) to the webview. The webview runs **only Three.js**.
 - **Lazy WASM init.** Never call the factory in `activate()`. Initialize it on the first B-rep open and memoize it as a module singleton (`src/occtService.ts`). Opening a pure-mesh file (STL/OBJ/PLY/glTF) must never load the WASM.

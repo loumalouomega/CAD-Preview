@@ -21,7 +21,7 @@
 
 import type { DocumentPipeline } from "./kernelClient";
 
-export type Kernel = "occt" | "gmsh" | "meshio" | "ftetwild";
+export type Kernel = "occt" | "gmsh" | "meshio" | "ftetwild" | "mmg";
 export type KernelPhase = "idle" | "loading" | "ready";
 export type KernelState = Record<Kernel, KernelPhase>;
 
@@ -30,10 +30,11 @@ export const KERNEL_LABELS: Record<Kernel, string> = {
   gmsh: "Gmsh",
   meshio: "meshio++",
   ftetwild: "fTetWild",
+  mmg: "MMG",
 };
 
 /** Display order: the two everyday kernels first. */
-export const KERNEL_ORDER: readonly Kernel[] = ["occt", "gmsh", "meshio", "ftetwild"];
+export const KERNEL_ORDER: readonly Kernel[] = ["occt", "gmsh", "meshio", "ftetwild", "mmg"];
 
 const O: Kernel[] = ["occt"];
 const G: Kernel[] = ["gmsh"];
@@ -77,6 +78,7 @@ export const KERNELS_BY_FUNCTION: Record<keyof DocumentPipeline, readonly Kernel
   readMeshioProvenance: M,
   decimateStlBoundary: M,
   runMeshioOps: M,
+  remeshMesh: ["meshio", "mmg"],
   loadBRepCachedForDocument: O,
   disposeBRepCacheForDocument: NONE,
   readMeshioFieldValues: M,
@@ -100,7 +102,7 @@ export function kernelsFor(fn: string): readonly Kernel[] {
 }
 
 export function initialKernelState(): KernelState {
-  return { occt: "idle", gmsh: "idle", meshio: "idle", ftetwild: "idle" };
+  return { occt: "idle", gmsh: "idle", meshio: "idle", ftetwild: "idle", mmg: "idle" };
 }
 
 export type KernelEvent =
