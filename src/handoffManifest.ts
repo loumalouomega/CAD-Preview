@@ -93,6 +93,9 @@ export function buildHandoffManifest(input: ManifestInput): HandoffManifest {
     };
   });
   const notes = [...(input.notes ?? []), ...facts.warnings];
+  if (facts.conformalApplied) {
+    notes.push("Conformal fragment applied — touching solids share interface nodes (gmsh.model.occ.fragment over all volumes, Parts resolved after).");
+  }
   if (input.scaleFactor !== 1) {
     notes.push(`Geometry and mesh sizes were scaled by ${input.scaleFactor} (mm → ${input.unit}) at export; meshOptions are recorded in native mm.`);
   }

@@ -5241,7 +5241,10 @@ test("FE Mesh Part sizes: Grade toggle starts collapsed, expands, commits, and c
   // while its row stays collapsed by default (the fix this case pins).
   const initial = await page.evaluate(() => {
     const rows = [...document.querySelectorAll("#meshing-part-sizes .meshing-part-row")];
-    const gradingRows = [...document.querySelectorAll("#meshing-part-sizes .meshing-part-grading")];
+    // Struct rows share the grading row's layout classes (same collapse
+    // hazard) but carry their own marker — exclude them here.
+    const gradingRows = [...document.querySelectorAll("#meshing-part-sizes .meshing-part-grading:not(.meshing-part-structured)")];
+    const structRows = [...document.querySelectorAll("#meshing-part-sizes .meshing-part-structured")];
     return {
       rowCount: rows.length,
       toggles: rows.map((r) => {
@@ -5250,6 +5253,12 @@ test("FE Mesh Part sizes: Grade toggle starts collapsed, expands, commits, and c
       }),
       gradingRowCount: gradingRows.length,
       allHiddenAndInvisible: gradingRows.every((r) => r.hidden && r.offsetParent === null),
+      structRowCount: structRows.length,
+      structHiddenAndInvisible: structRows.every((r) => r.hidden && r.offsetParent === null),
+      structToggles: rows.map((r) => {
+        const t = r.querySelector(".meshing-part-struct-toggle");
+        return { present: !!t, active: t?.classList.contains("active") ?? false, ariaExpanded: t?.getAttribute("aria-expanded") ?? null };
+      }),
     };
   });
   assert(initial.rowCount === 3, `three part rows rendered (got ${initial.rowCount})`);
@@ -5259,6 +5268,14 @@ test("FE Mesh Part sizes: Grade toggle starts collapsed, expands, commits, and c
   assert(
     initial.gradingRowCount === 3 && initial.allHiddenAndInvisible,
     `every grading row starts genuinely invisible, not just [hidden]-attributed-but-still-rendered (got ${JSON.stringify(initial)})`
+  );
+  assert(
+    initial.structRowCount === 3 && initial.structHiddenAndInvisible,
+    `every Struct row starts genuinely invisible too (got ${JSON.stringify(initial)})`
+  );
+  assert(
+    initial.structToggles.every((t) => t.present && t.active === false && t.ariaExpanded === "false"),
+    `every Struct toggle starts present, inactive and collapsed (got ${JSON.stringify(initial.structToggles)})`
   );
 
   // Expand the active (Contact faces) row and confirm it pre-fills with the
@@ -5338,6 +5355,96 @@ test("FE Mesh Part sizes: Grade toggle starts collapsed, expands, commits, and c
     return p ? p.meshGrading : "no-such-part";
   });
   assert(cleared == null, `clearing every field removes the band (got ${JSON.stringify(cleared)})`);
+});
+
+test("FE Mesh Part sizes: Struct toggle expands, commits divisions, rejects, and clears", async (page) => {
+  await populate(page);
+
+  // Expand the first part's Struct row (no fixture part carries divisions,
+  // so every Struct toggle starts inactive — expand by position, not class).
+  await page.evaluate(() => {
+    document.querySelectorAll("#meshing-part-sizes .meshing-part-row")[0]
+      .querySelector(".meshing-part-struct-toggle").click();
+  });
+  await sleep(150);
+  const expanded = await page.evaluate(() => {
+    const row = [...document.querySelectorAll("#meshing-part-sizes .meshing-part-row")][0]
+      .querySelector(".meshing-part-struct-toggle");
+    const structRow = row.closest(".meshing-part-row").nextElementSibling.nextElementSibling;
+    return {
+      isStruct: structRow.classList.contains("meshing-part-structured"),
+      hidden: structRow.hidden,
+      visible: structRow.offsetParent !== null,
+      ariaExpanded: row.getAttribute("aria-expanded"),
+    };
+  });
+  assert(expanded.isStruct === true, "the Struct toggle reveals the structured row (the sibling after the grading row)");
+  assert(expanded.hidden === false && expanded.visible === true, "clicking Struct reveals the row");
+  assert(expanded.ariaExpanded === "true", "aria-expanded reflects the row's real visibility");
+
+  // Commit valid divisions — a real {divisions} must reach partsChanged.
+  await page.evaluate(() => (window.__sent.length = 0));
+  await page.evaluate(() => {
+    const row = [...document.querySelectorAll("#meshing-part-sizes .meshing-part-row")][0]
+      .querySelector(".meshing-part-struct-toggle");
+    const structRow = row.closest(".meshing-part-row").nextElementSibling.nextElementSibling;
+    const input = structRow.querySelector("input");
+    input.value = "6";
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+  await sleep(150);
+  const committed = await page.evaluate(() => {
+    const parts = (window.__sent || []).findLast((x) => x.type === "partsChanged")?.parts ?? [];
+    const firstName = [...document.querySelectorAll("#meshing-part-sizes .meshing-part-row")][0]
+      .querySelector(".meshing-part-name")?.textContent;
+    return parts.find((p) => p.name === firstName)?.meshStructured ?? null;
+  });
+  assert(committed?.divisions === 6, `valid divisions post partsChanged with the count (got ${JSON.stringify(committed)})`);
+
+  // Invalid divisions (1, then fractional) post nothing and show inline errors.
+  for (const bad of ["1", "2.5"]) {
+    await page.evaluate(() => (window.__sent.length = 0));
+    await page.evaluate((value) => {
+      const row = [...document.querySelectorAll("#meshing-part-sizes .meshing-part-row")][0]
+        .querySelector(".meshing-part-struct-toggle");
+      const structRow = row.closest(".meshing-part-row").nextElementSibling.nextElementSibling;
+      const input = structRow.querySelector("input");
+      input.value = value;
+      input.dispatchEvent(new Event("change", { bubbles: true }));
+    }, bad);
+    await sleep(150);
+    const rejected = await page.evaluate(() => {
+      const row = [...document.querySelectorAll("#meshing-part-sizes .meshing-part-row")][0]
+        .querySelector(".meshing-part-struct-toggle");
+      const structRow = row.closest(".meshing-part-row").nextElementSibling.nextElementSibling;
+      return {
+        posted: (window.__sent || []).some((x) => x.type === "partsChanged"),
+        errorText: structRow.querySelector(".meshing-part-grading-error")?.textContent ?? "",
+      };
+    });
+    assert(rejected.posted === false, `divisions ${bad} posts nothing`);
+    assert(rejected.errorText.length > 0, `divisions ${bad} shows an inline error instead`);
+  }
+
+  // Clearing the field removes the structuring entirely.
+  await page.evaluate(() => (window.__sent.length = 0));
+  await page.evaluate(() => {
+    const row = [...document.querySelectorAll("#meshing-part-sizes .meshing-part-row")][0]
+      .querySelector(".meshing-part-struct-toggle");
+    const structRow = row.closest(".meshing-part-row").nextElementSibling.nextElementSibling;
+    const input = structRow.querySelector("input");
+    input.value = "";
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+  await sleep(150);
+  const clearedStruct = await page.evaluate(() => {
+    const parts = (window.__sent || []).findLast((x) => x.type === "partsChanged")?.parts ?? [];
+    const firstName = [...document.querySelectorAll("#meshing-part-sizes .meshing-part-row")][0]
+      .querySelector(".meshing-part-name")?.textContent;
+    const p = parts.find((p) => p.name === firstName);
+    return p ? p.meshStructured : "no-such-part";
+  });
+  assert(clearedStruct == null, `clearing the field removes the structuring (got ${JSON.stringify(clearedStruct)})`);
 });
 
 

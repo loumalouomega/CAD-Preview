@@ -105,6 +105,16 @@ describe("parsePartsJson", () => {
     const missingText = JSON.stringify({ parts: [{ ...base }] });
     expect(parsePartsJson(missingText)[0].meshGrading).toBeUndefined();
   });
+
+  it("parses a valid meshStructured count and drops an invalid one", () => {
+    const base = { name: "P", color: "#fff", volumes: [], surfaces: [], lines: [], points: [] };
+
+    expect(parsePartsJson(JSON.stringify({ parts: [{ ...base, meshStructured: { divisions: 6 } }] }))[0].meshStructured).toEqual({ divisions: 6 });
+    for (const bad of [{ divisions: 1 }, { divisions: 2.5 }, { divisions: "6" }, {}, null]) {
+      expect(parsePartsJson(JSON.stringify({ parts: [{ ...base, meshStructured: bad }] }))[0].meshStructured).toBeUndefined();
+    }
+    expect(parsePartsJson(JSON.stringify({ parts: [{ ...base }] }))[0].meshStructured).toBeUndefined();
+  });
 });
 
 describe("serializePartsJson", () => {
@@ -132,6 +142,15 @@ describe("serializePartsJson", () => {
     const parts: Part[] = [{
       name: "P", color: "#123456", volumes: ["solid-0"], surfaces: [], lines: [], points: [],
       meshGrading: { sizeAtWall: 0.15, sizeFar: 1, distNear: 0.3, distFar: 1.5 },
+    }];
+    const text = serializePartsJson("model.step", parts);
+    expect(parsePartsJson(text)).toEqual(parts);
+  });
+
+  it("round-trips a part's meshStructured", () => {
+    const parts: Part[] = [{
+      name: "P", color: "#123456", volumes: ["solid-0"], surfaces: [], lines: [], points: [],
+      meshStructured: { divisions: 6 },
     }];
     const text = serializePartsJson("model.step", parts);
     expect(parsePartsJson(text)).toEqual(parts);

@@ -17,13 +17,14 @@ describe("parseMeshJson", () => {
       algorithm3D: 1,
       elementOrder: 2,
       elementShape: "subdivided",
-      optimize: false,
+      optimize: "none",
       stlAngle: 25,
       engine: "ftetwild",
       ftetwildEpsRel: 5e-4,
       ftetwildManifoldSurface: true,
       ftetwildCoarsen: false,
       ftetwildDisableFiltering: false,
+      conformal: true,
     };
     const text = JSON.stringify({ version: 1, source: "bull.stp", options });
     expect(parseMeshJson(text)).toEqual(options);
@@ -75,13 +76,14 @@ describe("generateGeoScript", () => {
       algorithm3D: 4,
       elementOrder: 1,
       elementShape: "simplex",
-      optimize: true,
+      optimize: "default",
       stlAngle: 40,
       engine: "gmsh",
       ftetwildEpsRel: 1e-3,
       ftetwildManifoldSurface: false,
       ftetwildCoarsen: false,
       ftetwildDisableFiltering: false,
+      conformal: true,
     };
     const script = generateGeoScript("bull.stp", options);
 
@@ -95,6 +97,11 @@ describe("generateGeoScript", () => {
     expect(script).toContain("Mesh.SubdivisionAlgorithm = 0;");
     expect(script).toContain("Mesh.Optimize = 1;");
     expect(script.trim().endsWith("Mesh 2;")).toBe(true);
+  });
+
+  it("records the conformal choice as a comment", () => {
+    expect(generateGeoScript("a.stp", { ...DEFAULT_MESH_OPTIONS, conformal: true })).toContain("// conformal: fragment");
+    expect(generateGeoScript("a.stp", { ...DEFAULT_MESH_OPTIONS, conformal: false })).toContain("// conformal: off");
   });
 
   it("emits Blossom recombination for a 2D subdivided (quad) mesh", () => {
@@ -132,9 +139,15 @@ describe("generateGeoScript", () => {
   });
 
   it("encodes optimize=false as 0", () => {
-    const options: MeshOptions = { ...DEFAULT_MESH_OPTIONS, optimize: false };
+    const options: MeshOptions = { ...DEFAULT_MESH_OPTIONS, optimize: "none" };
     const script = generateGeoScript("cube.stl", options);
     expect(script).toContain("Mesh.Optimize = 0;");
+  });
+
+  it("notes the post-pass a .geo script cannot reproduce", () => {
+    const script = generateGeoScript("cube.stl", { ...DEFAULT_MESH_OPTIONS, optimize: "netgen" });
+    expect(script).toContain("Mesh.Optimize = 1;");
+    expect(script).toContain("model.mesh.optimize()");
   });
 
   it("uses the given dimension in the trailing Mesh command", () => {

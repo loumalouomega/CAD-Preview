@@ -1,5 +1,5 @@
 import type { Part } from "../protocol";
-import type { MeshGrading } from "../meshOptions";
+import type { MeshGrading, MeshStructured } from "../meshOptions";
 import type { SelectedEntity } from "./selection";
 import type { EntityColorMap } from "./viewer";
 
@@ -79,6 +79,13 @@ export class PartsModel {
     this.onChange();
   }
 
+  setMeshStructured(index: number, structured: MeshStructured | undefined): void {
+    const p = this.parts[index];
+    if (!p) return;
+    p.meshStructured = structured;
+    this.onChange();
+  }
+
   remove(index: number): void {
     if (index < 0 || index >= this.parts.length) return;
     this.parts.splice(index, 1);
@@ -155,6 +162,7 @@ function clone(p: Part): Part {
     // copied or it silently unpersists" defect class this file's own comment
     // already names for `selector`.
     meshGrading: p.meshGrading,
+    meshStructured: p.meshStructured,
     // A stored selector is data, not derived state — dropping it here would
     // silently unpersist the query on the next autosave (the exact
     // `AnnotationsModel.clone`-omitted-`tolerance` defect class). The query

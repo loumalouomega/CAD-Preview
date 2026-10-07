@@ -2183,7 +2183,8 @@ input[type="range"].meshing-slider:focus {
   flex: 0 0 64px;
 }
 
-.meshing-part-grade-toggle {
+.meshing-part-grade-toggle,
+.meshing-part-struct-toggle {
   flex-shrink: 0;
   font: inherit;
   font-size: var(--ui-fs-micro);
@@ -2194,10 +2195,12 @@ input[type="range"].meshing-slider:focus {
   border-radius: var(--ui-r-xs);
   cursor: pointer;
 }
-.meshing-part-grade-toggle:hover {
+.meshing-part-grade-toggle:hover,
+.meshing-part-struct-toggle:hover {
   background: var(--vscode-button-secondaryHoverBackground, #45494e);
 }
-.meshing-part-grade-toggle.active {
+.meshing-part-grade-toggle.active,
+.meshing-part-struct-toggle.active {
   color: var(--vscode-button-foreground, #fff);
   background: var(--vscode-button-background, #0e70c0);
 }

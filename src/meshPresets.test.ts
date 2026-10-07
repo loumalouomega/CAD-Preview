@@ -112,6 +112,16 @@ describe("inapplicablePresetFields", () => {
     expect(inapplicablePresetFields(preset)).toEqual(["elementOrder"]);
   });
 
+  it("lists a non-default optimize mode under fTetWild", () => {
+    const preset: MeshPreset = {
+      ...gmshPreset,
+      name: "robust",
+      engine: "ftetwild",
+      options: { ...DEFAULT_MESH_OPTIONS, optimize: "netgen" },
+    };
+    expect(inapplicablePresetFields(preset)).toEqual(["optimize"]);
+  });
+
   it("lists non-default fTetWild-only fields under Gmsh", () => {
     const preset: MeshPreset = {
       ...gmshPreset,

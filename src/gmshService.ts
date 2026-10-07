@@ -168,6 +168,47 @@ function runMeshGenerate(gmsh: GmshApi, options: MeshOptions): void {
   }
 }
 
+/**
+ * Explicit post-generate optimisation pass for `MeshOptions.optimize`'s
+ * `"netgen"` / `"highOrder"` modes (roadmap 4.4) — the generate-time
+ * `Mesh.Optimize` flag above is a different, always-on-unless-`"none"`
+ * mechanism. Same abort discipline as `runMeshGenerate`: an aborted
+ * Emscripten instance is corrupt, so reset the singleton and rethrow an
+ * actionable error rather than a bare "memory access out of bounds".
+ *
+ * Gating is probe-derived, not guessed: `"netgen"` runs at either order but
+ * LINEARIZES a quadratic mesh (verified: tet10 -> tet4, 3394 -> 2385 nodes),
+ * so an order-2 run warns rather than silently downgrading; `"highOrder"`
+ * runs only at order 2 (9 -> 4 invalid on the probe fixture) and a linear
+ * mesh warns and keeps the default instead — `HighOrderElastic` on a linear
+ * mesh is unprobed behavior. `"Relocate3D"` is deliberately absent: probed
+ * bit-identical worst-element minSICN, i.e. a no-op on what matters.
+ */
+function runMeshOptimizePostPass(gmsh: GmshApi, options: MeshOptions, warnings: string[]): void {
+  const mode = options.optimize;
+  if (mode !== "netgen" && mode !== "highOrder") return;
+  if (mode === "highOrder" && options.elementOrder !== 2) {
+    warnings.push(
+      'Optimize "highOrder" needs elementOrder 2 — ran the default generate-time optimizer instead, with no post-pass.'
+    );
+    return;
+  }
+  const method = mode === "netgen" ? "Netgen" : "HighOrderElastic";
+  try {
+    gmsh.model.mesh.optimize(method);
+  } catch (err) {
+    const raw = ((err as Error)?.message ?? String(err)).trim();
+    if (!isWasmAbort(raw)) throw err;
+    resetGmsh();
+    throw new Error(`Gmsh crashed while running the "${method}" mesh optimizer (${raw || "WASM abort"}). Try optimize "default" instead, or a coarser Size max.`);
+  }
+  if (mode === "netgen" && options.elementOrder === 2) {
+    warnings.push(
+      'Netgen linearized the quadratic mesh to linear tet4 (verified behavior of this Gmsh build) — the quality summary and node count below describe the linearized result.'
+    );
+  }
+}
+
 export type MeshGenerationInput =
   | { kind: "brep"; stepBytes: Uint8Array }
   | { kind: "stl"; stlBytes: Uint8Array };
@@ -203,6 +244,10 @@ export interface MeshResult {
   /** Non-fatal, worth-surfacing notes — currently only an engine-fallback
    * explanation (see `engineUsed` above); empty when nothing was downgraded. */
   warnings: string[];
+  /** True when `options.conformal` actually fragmented 2+ volumes this run.
+   * False for single-solid (no-op), mesh sources, and when the option is off.
+   * Recorded in the handoff manifest via `meshOptions` + `HandoffFacts`. */
+  conformalApplied: boolean;
 }
 
 /** A highlight overlay of the mesh's worst-quality elements, closing the
@@ -243,7 +288,7 @@ async function loadGeometryAndApplyOptions(
   input: MeshGenerationInput,
   options: MeshOptions,
   parts: Part[]
-): Promise<{ tmpPath: string; groupMaps: PartGroupMaps | null; warnings: string[] }> {
+): Promise<{ tmpPath: string; groupMaps: PartGroupMaps | null; warnings: string[]; conformalApplied: boolean }> {
   gmsh.clear();
   gmsh.model.add(`model-${++_modelCounter}`);
 
@@ -254,11 +299,39 @@ async function loadGeometryAndApplyOptions(
   // one case: a Part's curved free edge, which cannot be forced onto the mesh
   // (see `gmshEmbed.ts`). Collected here and merged into `MeshResult.warnings`.
   const warnings: string[] = [];
+  let conformalApplied = false;
 
   let groupMaps: PartGroupMaps | null = null;
   if (input.kind === "brep") {
     gmsh.model.occ.importShapes(tmpPath);
     gmsh.model.occ.synchronize();
+    // Conformal multi-body meshing (roadmap 4.2): fragment every imported
+    // solid against the rest so touching solids share interface nodes. Probed
+    // live (gmsh-wasm 0.3.0): two touching boxes go from 44 duplicate
+    // interface nodes to 0 with an unchanged element count, tags preserved as
+    // [3,1,3,2]; three boxes and `fragment(all, [])` behave identically;
+    // single-solid output is byte-identical with and without (block.stp 381 /
+    // 1282 either way), so default-on is safe. Parts MUST resolve after this
+    // renumbering — hence applyPartsToGmshModel runs after, never before.
+    if (options.conformal) {
+      try {
+        const vols = (gmsh.model.getEntities(3).dimTags as number[]) ?? [];
+        if (vols.length >= 4) {
+          gmsh.model.occ.fragment([...vols], []);
+          gmsh.model.occ.synchronize();
+          conformalApplied = true;
+        }
+      } catch (err) {
+        // A failed OCC fragment may already have changed Gmsh's current model.
+        // Continuing would certify neither the requested conformal mesh nor a
+        // clean non-conformal fallback. Refuse instead; the next call clears
+        // the model. An Emscripten abort also poisons this singleton.
+        const reason = (err as Error)?.message ?? String(err);
+        if (isWasmAbort(reason)) resetGmsh();
+        try { gmsh.FS.unlink(tmpPath); } catch { /* model may have aborted */ }
+        throw new Error(`Conformal fragment failed (${reason}) — no mesh was produced. Retry with conformal: false to mesh the unfragmented solids.`);
+      }
+    }
     groupMaps = await applyPartsToGmshModel(extensionPath, gmsh, input.stepBytes, parts, warnings);
   } else {
     gmsh.merge(tmpPath);
@@ -299,7 +372,7 @@ async function loadGeometryAndApplyOptions(
   gmsh.option.setNumber("Mesh.RecombineAll", shape.recombineAll);
   gmsh.option.setNumber("Mesh.SubdivisionAlgorithm", shape.subdivisionAlgorithm);
   gmsh.option.setNumber("Mesh.Recombine3DAll", shape.recombine3DAll);
-  gmsh.option.setNumber("Mesh.Optimize", options.optimize ? 1 : 0);
+  gmsh.option.setNumber("Mesh.Optimize", options.optimize === "none" ? 0 : 1);
   // Gmsh's default (0) writes only elements belonging to a physical group once
   // ANY physical group exists in the model — i.e. the instant one part has a
   // resolved entity, `gmsh.write()` would silently drop every other
@@ -308,7 +381,7 @@ async function loadGeometryAndApplyOptions(
   // must always be 1 regardless of whether `parts` is empty.
   gmsh.option.setNumber("Mesh.SaveAll", 1);
 
-  return { tmpPath, groupMaps, warnings };
+  return { tmpPath, groupMaps, warnings, conformalApplied };
 }
 
 /**
@@ -387,17 +460,19 @@ async function populateMeshedModel(
   input: MeshGenerationInput,
   options: MeshOptions,
   parts: Part[]
-): Promise<{ tmpPath: string | null; groupMaps: PartGroupMaps | null; engineUsed: MeshEngine; warnings: string[] }> {
+): Promise<{ tmpPath: string | null; groupMaps: PartGroupMaps | null; engineUsed: MeshEngine; warnings: string[]; conformalApplied: boolean }> {
   const { engine, warnings } = effectiveEngine(input, options);
 
   if (engine === "gmsh") {
     const loaded = await loadGeometryAndApplyOptions(extensionPath, gmsh, input, options, parts);
     runMeshGenerate(gmsh, options);
+    runMeshOptimizePostPass(gmsh, options, warnings);
     return {
       tmpPath: loaded.tmpPath,
       groupMaps: loaded.groupMaps,
       engineUsed: "gmsh",
       warnings: [...warnings, ...loaded.warnings],
+      conformalApplied: loaded.conformalApplied,
     };
   }
 
@@ -434,7 +509,7 @@ async function populateMeshedModel(
   // exist), but set for consistency/future-proofing at negligible cost.
   gmsh.option.setNumber("Mesh.SaveAll", 1);
 
-  return { tmpPath, groupMaps: null, engineUsed: "ftetwild", warnings };
+  return { tmpPath, groupMaps: null, engineUsed: "ftetwild", warnings, conformalApplied: false };
 }
 
 /**
@@ -468,7 +543,7 @@ export async function generateMesh(
     gmsh.write(outPath);
     const mshText = gmsh.FS.readFile(outPath, { encoding: "utf8" }) as string;
 
-    const { quality, worstElements } = computeQualityAndWorstElements(gmsh, options.dimension, tagToIndex);
+    const { quality, worstElements } = computeQualityAndWorstElements(gmsh, options.dimension, tagToIndex, options.elementOrder);
 
     return {
       positions,
@@ -482,6 +557,7 @@ export async function generateMesh(
       worstElements,
       engineUsed: loaded.engineUsed,
       warnings: loaded.warnings,
+      conformalApplied: loaded.conformalApplied,
     };
   } finally {
     if (tmpPath) {
@@ -749,6 +825,9 @@ export interface HandoffFacts {
    * only when the mesh is representable in MDPA (hex-dominant is not). */
   subModelParts?: Array<{ name: string; nodeCount: number; volumeCellCount: number; surfaceCellCount: number }>;
   warnings: string[];
+  /** True when `options.conformal` fragmented 2+ volumes this run — recorded
+   * in the handoff manifest alongside `meshOptions.conformal`. */
+  conformalApplied: boolean;
 }
 
 /**
@@ -824,6 +903,7 @@ export async function computeHandoffFacts(
       overlaps,
       subModelParts,
       warnings,
+      conformalApplied: loaded.conformalApplied,
     };
   } finally {
     if (tmpPath) {
@@ -1279,10 +1359,22 @@ export const MAX_WORST_ELEMENTS = 2000;
  * Lines ghost-line technique) — so it stays visible no matter how deeply
  * buried, with no clip plane or cutaway needed.
  */
+/**
+ * Reference-tetrahedron nodes of a tet10 (4 corners + 6 edge midpoints) for
+ * `getJacobians` sampling (roadmap 4.7). The Jacobian mapping of a quadratic
+ * element is itself quadratic, so corner-only sampling can miss an interior
+ * inversion — the full 10-node set is the element's own interpolation nodes.
+ */
+const TET10_SAMPLE_POINTS: number[] = [
+  0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1,
+  0.5, 0, 0, 0, 0.5, 0, 0, 0, 0.5, 0.5, 0.5, 0, 0.5, 0, 0.5, 0, 0.5, 0.5,
+];
+
 export function computeQualityAndWorstElements(
   gmsh: GmshApi,
   dimension: MeshOptions["dimension"],
-  tagToIndex: Map<number, number>
+  tagToIndex: Map<number, number>,
+  elementOrder: MeshOptions["elementOrder"] = 1
 ): { quality?: QualitySummary; worstElements?: WorstElementsOverlay } {
   const dim = dimension === 1 ? 1 : dimension;
   try {
@@ -1293,6 +1385,36 @@ export function computeQualityAndWorstElements(
     const values = result.elementsQuality;
     if (!Array.isArray(values) || values.length !== tags.length) return {};
     const quality = summarizeQuality(values);
+    // Jacobian-based invalid count for order-2 volume meshes (roadmap 4.7):
+    // a supplementary count, not a second quality metric — probed live to
+    // coincide exactly with minSICN<=0 on bull.stp and 4pinplug.stp (9/9 and
+    // 20/20, plus the 4/4 remaining after HighOrderElastic), so its value is
+    // independent certification from an analytic determinant rather than
+    // broader detection. tet10 blocks only (the simplex order-2 volume cell);
+    // other quadratic types are out of scope, stated not silent. A count
+    // needs no per-element pairing, so whole-model tag=-1 ordering is
+    // irrelevant. Any failure (or length mismatch) omits the field rather
+    // than failing the generate — the minSICN summary is unaffected.
+    if (dimension === 3 && elementOrder === 2) {
+      try {
+        const ti = els.elementTypes.findIndex((t) => t === 11);
+        if (ti >= 0 && els.elementTags[ti].length > 0) {
+          const jac = gmsh.model.mesh.getJacobians(11, TET10_SAMPLE_POINTS, -1) as { determinants: number[] };
+          const perPoint = TET10_SAMPLE_POINTS.length / 3;
+          if (Array.isArray(jac.determinants) && jac.determinants.length === els.elementTags[ti].length * perPoint) {
+            let invalid = 0;
+            for (let e = 0; e < els.elementTags[ti].length; e++) {
+              for (let p = 0; p < perPoint; p++) {
+                if (jac.determinants[e * perPoint + p] < 0) { invalid++; break; }
+              }
+            }
+            quality.invalidElements = invalid;
+          }
+        }
+      } catch {
+        /* Jacobian unavailable — quality summary stands without the count */
+      }
+    }
     if (dimension !== 3) return { quality };
 
     const worst: Array<{ type: number; nodeTags: number[]; quality: number }> = [];

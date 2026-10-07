@@ -82,6 +82,19 @@ describe("PartsModel", () => {
     expect(m.list()[0].meshSize).toBe(1.5);
   });
 
+  it("sets, clears, and clones a part's meshStructured", () => {
+    const onChange = vi.fn();
+    const m = new PartsModel(onChange);
+    m.create();
+    m.setMeshStructured(0, { divisions: 6 });
+    expect(m.list()[0].meshStructured).toEqual({ divisions: 6 });
+    m.setMeshStructured(0, undefined);
+    expect(m.list()[0].meshStructured).toBeUndefined();
+    expect(onChange).toHaveBeenCalledTimes(3); // create + 2 setMeshStructured calls
+    m.load([{ name: "X", color: "#abcdef", volumes: [], surfaces: [], lines: [], points: [], meshStructured: { divisions: 4 } }]);
+    expect(m.list()[0].meshStructured).toEqual({ divisions: 4 });
+  });
+
   it("isolates internal state via clones", () => {
     const m = new PartsModel(() => {});
     m.create();

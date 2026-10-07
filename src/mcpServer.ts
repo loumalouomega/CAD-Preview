@@ -1263,7 +1263,7 @@ server.registerTool(
   "set_part",
   {
     description:
-      "Create, update, or remove a named part (FEM sub-model-part) grouping entity ids from load_model's inventory. Parts drive per-part colours, Gmsh physical groups in mesh exports (B-rep sources), optional per-part meshSize refinement (a flat size confined to the part's own entities), and optional meshGrading (a distance-graded size AROUND the part — sizeAtWall within distNear, growing to sizeFar at distFar; B-rep sources only, same as physical groups and meshSize). Omitted fields keep their current values; meshSize/meshGrading: null clears them. Optional selector stores a re-executable SelectorQuery beside the raw surfaces cache (same shape resolve_selector takes) — the host re-resolves it against the current op list and overwrites surfaces on an oracle-clean result; null clears a stored one.",
+      "Create, update, or remove a named part (FEM sub-model-part) grouping entity ids from load_model's inventory. Parts drive per-part colours, Gmsh physical groups in mesh exports (B-rep sources), optional per-part meshSize refinement (a flat size confined to the part's own entities), and optional meshGrading (a distance-graded size AROUND the part — sizeAtWall within distNear, growing to sizeFar at distFar; B-rep sources only, same as physical groups and meshSize), and optional meshStructured (transfinite node count per meshed edge for an exact mapped grid on regular regions; B-rep sources only). Omitted fields keep their current values; meshSize/meshGrading/meshStructured: null clears them. Optional selector stores a re-executable SelectorQuery beside the raw surfaces cache (same shape resolve_selector takes) — the host re-resolves it against the current op list and overwrites surfaces on an oracle-clean result; null clears a stored one.",
     inputSchema: {
       path: modelPath,
       name: z.string().describe("Part name (the upsert key)"),
@@ -1284,6 +1284,13 @@ server.registerTool(
         .nullable()
         .optional()
         .describe("Distance-graded sizing anchored on this part; null clears"),
+      meshStructured: z
+        .object({
+          divisions: z.number().describe("Nodes per meshed edge of this part's entities (integer >= 2)"),
+        })
+        .nullable()
+        .optional()
+        .describe("Structured (transfinite) meshing for this part — exact mapped grid on regular regions; B-rep sources only; null clears"),
       selector: z.looseObject({}).nullable().optional().describe("SelectorQuery to store (validated structurally); null clears a stored one"),
     },
   },
@@ -1299,6 +1306,7 @@ server.registerTool(
       points?: string[];
       meshSize?: number | null;
       meshGrading?: { sizeAtWall: number; sizeFar: number; distNear: number; distFar: number } | null;
+      meshStructured?: { divisions: number } | null;
       selector?: unknown;
     }) => setPart(args)
   )

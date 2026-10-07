@@ -1195,6 +1195,7 @@ const meshingPanel = new MeshingPanel(document.getElementById("meshing-panel")!,
   // Same store the Parts panel edits — one Part.meshSize, two mirrored inputs.
   onPartMeshSize: (index, size) => partsModel.setMeshSize(index, size),
   onPartMeshGrading: (index, grading) => partsModel.setMeshGrading(index, grading),
+  onPartMeshStructured: (index, structured) => partsModel.setMeshStructured(index, structured),
   onDeviation: async (tolerance) => {
     const requestId = `${Date.now()}-${Math.random()}`;
     meshDeviationRequestId = requestId;

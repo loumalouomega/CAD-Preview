@@ -19,6 +19,7 @@ const facts: HandoffFacts = {
   overlaps: [{ dim: 2, entityTag: 3, groups: ["Inlet", "Wall"] }],
   subModelParts: [{ name: "Inlet", nodeCount: 10, volumeCellCount: 0, surfaceCellCount: 12 }],
   warnings: [],
+  conformalApplied: false,
 };
 
 function build(overrides: Partial<Parameters<typeof buildHandoffManifest>[0]> = {}) {

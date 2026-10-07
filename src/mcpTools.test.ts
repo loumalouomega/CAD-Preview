@@ -212,6 +212,7 @@ const FAKE_MESH_RESULT: MeshResult = {
   mshText: "$MeshFormat\n4.1 0 8\n$EndMeshFormat\n",
   engineUsed: "gmsh",
   warnings: [],
+  conformalApplied: false,
 };
 
 const FAKE_BREP_HEALTH: BrepHealthReport = {
@@ -3002,6 +3003,23 @@ describe("set_part", () => {
 
     await setPart({ path: stpModel, name: "P", meshGrading: null });
     expect((await readParts(stpModel))[0].meshGrading).toBeUndefined();
+  });
+
+  it("sets, updates, clears, and rejects invalid meshStructured divisions", async () => {
+    await setPart({ path: stpModel, name: "P", surfaces: ["face-0"], meshStructured: { divisions: 6 } });
+    expect((await readParts(stpModel))[0].meshStructured).toEqual({ divisions: 6 });
+    await setPart({ path: stpModel, name: "P", meshStructured: { divisions: 4 } });
+    expect((await readParts(stpModel))[0].meshStructured).toEqual({ divisions: 4 });
+
+    // Invalid counts keep the existing value and warn, rather than clobbering it.
+    for (const bad of [{ divisions: 1 }, { divisions: 2.5 }, { divisions: "6" }]) {
+      const result = await setPart({ path: stpModel, name: "P", meshStructured: bad as unknown as { divisions: number } });
+      expect((await readParts(stpModel))[0].meshStructured).toEqual({ divisions: 4 }); // unchanged
+      expect(result.warnings.some((w) => /meshStructured/.test(w))).toBe(true);
+    }
+
+    await setPart({ path: stpModel, name: "P", meshStructured: null });
+    expect((await readParts(stpModel))[0].meshStructured).toBeUndefined();
   });
 
   it("warns that meshGrading is ignored entirely for a mesh-format source", async () => {

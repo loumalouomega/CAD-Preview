@@ -13,6 +13,11 @@ export interface QualitySummary {
   /** `buckets` counts; bucket `i` covers the quality range `[i/buckets, (i+1)/buckets)`,
    * except the last bucket, which also absorbs anything >= 1 (a perfect element). */
   histogram: number[];
+  /** Elements with a negative Jacobian determinant at any sampled node
+   * (roadmap 4.7) — present only for order-2 meshes, where curving mid-side
+   * nodes onto the surface can invert an element. Absent otherwise (and when
+   * the Jacobian call itself is unavailable); never fabricated. */
+  invalidElements?: number;
 }
 
 /**

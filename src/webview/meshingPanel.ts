@@ -1,4 +1,4 @@
-import { SIZE_MAX_SENTINEL, DEFAULT_MESH_OPTIONS, validateMeshGrading, type MeshOptions, type MeshGrading } from "../meshOptions";
+import { SIZE_MAX_SENTINEL, DEFAULT_MESH_OPTIONS, validateMeshGrading, validateMeshStructured, type MeshOptions, type MeshGrading, type MeshStructured } from "../meshOptions";
 import type { QualitySummary } from "../meshQuality";
 import { TOOLBAR_ICONS } from "../toolbarIcons";
 import { MESH_EXPORT_FORMATS, type MeshExportFormatId } from "../meshExportFormats";
@@ -51,6 +51,11 @@ export interface MeshingPanelCallbacks {
    * `undefined` — an invalid band is caught and shown inline, never
    * forwarded. */
   onPartMeshGrading: (index: number, grading: MeshGrading | undefined) => void;
+  /** A part's structured-meshing divisions changed in the "Part sizes"
+   * section (`undefined` = clear it). Only called with a valid
+   * `{divisions}` or `undefined` — anything else shows inline, never
+   * forwarded (same contract as `onPartMeshGrading`). */
+  onPartMeshStructured: (index: number, structured: MeshStructured | undefined) => void;
   onGenerate: () => void;
   /** Cancel a running meshing job by its request id. Used by the toolbar Cancel
    * AND by the refinement sweep's own Cancel button (roadmap "Cancel a mesh
@@ -148,7 +153,9 @@ export class MeshingPanel {
   private readonly algorithm3DSelect: HTMLSelectElement;
   private readonly elementOrderSelect: HTMLSelectElement;
   private readonly elementShapeSelect: HTMLSelectElement;
-  private readonly optimizeCheckbox: HTMLInputElement;
+  private readonly optimizeSelect: HTMLSelectElement;
+  private readonly conformalCheckbox: HTMLInputElement;
+  private sourceKind: "brep" | "mesh" = "brep";
   private readonly stlAngleInput: HTMLInputElement;
   private readonly budgetInput: HTMLInputElement;
   private deviationBtn: HTMLButtonElement | null = null;
@@ -522,19 +529,34 @@ export class MeshingPanel {
       cb.onOptionsChange({ elementOrder: Number(this.elementOrderSelect.value) as MeshOptions["elementOrder"] });
     });
 
-    const optimizeRow = document.createElement("label");
-    optimizeRow.className = "meshing-field meshing-checkbox";
-    const optimizeLabel = document.createElement("span");
-    optimizeLabel.className = "meshing-label";
-    optimizeLabel.textContent = "Optimize";
-    optimizeRow.appendChild(optimizeLabel);
-    this.optimizeCheckbox = document.createElement("input");
-    this.optimizeCheckbox.type = "checkbox";
-    this.optimizeCheckbox.addEventListener("change", () => {
-      cb.onOptionsChange({ optimize: this.optimizeCheckbox.checked });
+    this.optimizeSelect = this.select(form, "Optimize", [
+      ["none", "Off"],
+      ["default", "Default"],
+      ["netgen", "Netgen"],
+      ["highOrder", "High-order elastic"],
+    ]);
+    this.optimizeSelect.title =
+      "Default runs Gmsh's generate-time optimizer. Netgen measurably raises min/mean quality but refines the mesh and linearizes quadratic meshes (warned, never silent). High-order untangles curved quadratic elements (order 2 only).";
+    this.optimizeSelect.addEventListener("change", () => {
+      cb.onOptionsChange({ optimize: this.optimizeSelect.value as MeshOptions["optimize"] });
     });
-    optimizeRow.appendChild(this.optimizeCheckbox);
-    form.appendChild(optimizeRow);
+
+    const conformalRow = document.createElement("label");
+    conformalRow.className = "meshing-field meshing-checkbox";
+    const conformalLabel = document.createElement("span");
+    conformalLabel.className = "meshing-label";
+    conformalLabel.textContent = "Conformal";
+    conformalRow.appendChild(conformalLabel);
+    this.conformalCheckbox = document.createElement("input");
+    this.conformalCheckbox.id = "meshing-conformal";
+    this.conformalCheckbox.type = "checkbox";
+    this.conformalCheckbox.title =
+      "Fragment touching solids before meshing so they share interface nodes (B-rep multi-solid only; single-solid output is identical either way).";
+    this.conformalCheckbox.addEventListener("change", () => {
+      cb.onOptionsChange({ conformal: this.conformalCheckbox.checked });
+    });
+    conformalRow.appendChild(this.conformalCheckbox);
+    form.appendChild(conformalRow);
 
     this.stlAngleInput = this.numberField(form, "STL angle (°)", 40);
     this.stlAngleInput.title = "Only used by engine: Gmsh (classifySurfaces' angle threshold) — ignored under fTetWild.";
@@ -908,7 +930,8 @@ export class MeshingPanel {
     const hexDominantOpt = this.elementShapeSelect.querySelector<HTMLOptionElement>('option[value="hexDominant"]');
     if (hexDominantOpt) hexDominantOpt.disabled = options.dimension !== 3;
     this.elementShapeSelect.value = options.elementShape;
-    this.optimizeCheckbox.checked = options.optimize;
+    this.optimizeSelect.value = options.optimize;
+    this.conformalCheckbox.checked = options.conformal;
     this.stlAngleInput.value = String(options.stlAngle);
     this.budgetInput.value = options.budgetElements ? String(options.budgetElements) : "";
     this.ftetwildEpsRelInput.value = String(options.ftetwildEpsRel);
@@ -917,8 +940,9 @@ export class MeshingPanel {
     this.ftetwildDisableFilteringCheckbox.checked = options.ftetwildDisableFiltering;
 
     // fTetWild ignores sizeMin/algorithm2D/algorithm3D/elementOrder/
-    // elementShape/stlAngle entirely (see gmshService.ts's populateMeshedModel
-    // doc comment) — greyed, not hidden, so switching back to Gmsh doesn't
+    // elementShape/optimize/stlAngle entirely (see gmshService.ts's
+    // populateMeshedModel doc comment) — greyed, not hidden, so switching
+    // back to Gmsh doesn't
     // need re-entering them. A UX nicety only: `effectiveEngine`'s own
     // downgrade + `validateMeshOptions` already make every combination safe
     // regardless of what this panel currently disables.
@@ -928,7 +952,9 @@ export class MeshingPanel {
     this.algorithm3DSelect.disabled = ftetwild;
     this.elementOrderSelect.disabled = ftetwild;
     this.elementShapeSelect.disabled = ftetwild;
+    this.optimizeSelect.disabled = ftetwild;
     this.stlAngleInput.disabled = ftetwild;
+    this.conformalCheckbox.disabled = ftetwild || this.sourceKind === "mesh";
     this.ftetwildEpsRelInput.disabled = !ftetwild;
     this.ftetwildManifoldSurfaceCheckbox.disabled = !ftetwild;
     this.ftetwildCoarsenCheckbox.disabled = !ftetwild;
@@ -972,6 +998,15 @@ export class MeshingPanel {
     summary.className = "meshing-quality-summary";
     summary.textContent = `Quality (minSICN) — min: ${quality.min.toFixed(3)} · mean: ${quality.mean.toFixed(3)}`;
     this.qualityEl.appendChild(summary);
+    // Jacobian-based invalid count (order-2 only — absent otherwise, never
+    // fabricated). Invalids already light the worst-elements overlay via the
+    // shared 0.2 threshold; this line names them.
+    if (quality.invalidElements !== undefined) {
+      const invalid = document.createElement("div");
+      invalid.className = "meshing-quality-invalid";
+      invalid.textContent = `${quality.invalidElements} invalid (Jacobian < 0)`;
+      this.qualityEl.appendChild(invalid);
+    }
 
     const total = quality.histogram.reduce((a, b) => a + b, 0);
     const bars = document.createElement("div");
@@ -1036,9 +1071,14 @@ export class MeshingPanel {
    * hidden) for B-rep documents — mirrors `editsPanel.setBRepOnly`.
    */
   setSourceKind(kind: "brep" | "mesh"): void {
+    this.sourceKind = kind;
     this.stlAngleInput.disabled = kind === "brep";
     this.stlAngleInput.title =
       kind === "brep" ? "Only used for mesh/STL sources" : "Surface-classification angle for mesh/STL sources";
+    // Conformal fragmentation only runs on the B-rep OCC-import path; a mesh
+    // source ignores the option, so grey it out exactly like the fTetWild
+    // row above greys Gmsh-only fields (render() applies the same rule).
+    this.conformalCheckbox.disabled = kind === "mesh" || this.lastOptions?.engine === "ftetwild";
   }
 
   /**
@@ -1196,7 +1236,7 @@ export class MeshingPanel {
    * meshing controls. Hidden while no parts exist.
    */
   renderParts(parts: Part[]): void {
-    const local = parts.some((p) => p.meshSize != null || p.meshGrading != null);
+    const local = parts.some((p) => p.meshSize != null || p.meshGrading != null || p.meshStructured != null);
     if (local !== this.partsHaveLocalSizing) {
       this.partsHaveLocalSizing = local;
       this.syncSlider();
@@ -1259,6 +1299,15 @@ export class MeshingPanel {
       gradeToggle.classList.toggle("active", part.meshGrading != null);
       row.appendChild(gradeToggle);
 
+      const structToggle = document.createElement("button");
+      structToggle.type = "button";
+      structToggle.className = "meshing-part-struct-toggle";
+      structToggle.textContent = "Struct";
+      structToggle.title = "Structured (transfinite) meshing for this part: exact node count per meshed edge — a mapped grid on regular regions (B-rep sources only)";
+      structToggle.setAttribute("aria-expanded", "false");
+      structToggle.classList.toggle("active", part.meshStructured != null);
+      row.appendChild(structToggle);
+
       this.partsBody.appendChild(row);
 
       const gradingRow = this.buildPartGradingRow(index, part.meshGrading);
@@ -1269,6 +1318,16 @@ export class MeshingPanel {
         const nowHidden = !gradingRow.hidden;
         gradingRow.hidden = nowHidden;
         gradeToggle.setAttribute("aria-expanded", String(!nowHidden));
+      });
+
+      const structRow = this.buildPartStructuredRow(index, part.meshStructured);
+      structRow.hidden = true;
+      this.partsBody.appendChild(structRow);
+
+      structToggle.addEventListener("click", () => {
+        const nowHidden = !structRow.hidden;
+        structRow.hidden = nowHidden;
+        structToggle.setAttribute("aria-expanded", String(!nowHidden));
       });
     });
   }
@@ -1335,6 +1394,57 @@ export class MeshingPanel {
       this.cb.onPartMeshGrading(index, valid);
     };
     for (const inp of [wallInput, farInput, nearInput, farDistInput]) inp.addEventListener("change", commit);
+
+    return row;
+  }
+
+  /**
+   * Builds the (initially hidden) structured-meshing row for one part: a
+   * single divisions input plus an inline error line. Same contract as the
+   * grading row above: blank clears (`undefined`), a valid integer commits,
+   * anything else shows inline and never forwards.
+   */
+  private buildPartStructuredRow(index: number, initial: MeshStructured | undefined): HTMLDivElement {
+    const row = document.createElement("div");
+    // Shares the grading row's layout + [hidden] override (same collapse
+    // hazard), with its own marker class so the Grade webview test can tell
+    // the two rows apart.
+    row.className = "meshing-part-grading meshing-part-structured";
+
+    const wrap = document.createElement("label");
+    wrap.className = "meshing-part-grading-field";
+    const span = document.createElement("span");
+    span.textContent = "Divisions";
+    wrap.appendChild(span);
+    const inp = document.createElement("input");
+    inp.type = "number";
+    inp.className = "meshing-num";
+    inp.title = "Nodes per meshed edge of this part's entities (integer ≥ 2)";
+    inp.min = "2";
+    inp.step = "1";
+    inp.value = initial != null ? String(initial.divisions) : "";
+    wrap.appendChild(inp);
+    row.appendChild(wrap);
+
+    const error = document.createElement("span");
+    error.className = "meshing-part-grading-error";
+    row.appendChild(error);
+
+    inp.addEventListener("change", () => {
+      const raw = inp.value.trim();
+      if (raw === "") {
+        error.textContent = "";
+        this.cb.onPartMeshStructured(index, undefined);
+        return;
+      }
+      const valid = validateMeshStructured({ divisions: Number(raw) });
+      if (!valid) {
+        error.textContent = "Needs an integer ≥ 2.";
+        return;
+      }
+      error.textContent = "";
+      this.cb.onPartMeshStructured(index, valid);
+    });
 
     return row;
   }

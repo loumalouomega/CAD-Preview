@@ -6,6 +6,23 @@ import { makeFaceMaterial } from "./geometryBuilder";
 /** Single shared CSG evaluator (cheap to keep; avoids re-alloc per boolean). */
 const csg = new Evaluator();
 
+/**
+ * three-bvh-csg's shared Evaluator interpolates position/uv/normal across
+ * every operand, so a geometry missing ANY of the three throws an uncaught
+ * TypeError inside `evaluate()` — and no loader or tessellator here writes
+ * `uv` (only three.js primitives carry it, which is exactly what every unit
+ * test builds with, so the suite stayed green while every real-file boolean
+ * and hole threw). Fill a zero uv on the way into each Brush rather than
+ * narrowing the Evaluator's shared attribute list: uv-carrying meshes keep
+ * their interpolated uvs, and the result stays exporter-safe. Found live by
+ * the manifold-booleans probe (4.6), which is also why that probe's own
+ * three-bvh-csg arm adds uvs before brushing.
+ */
+function ensureUvForCsg(geo: THREE.BufferGeometry): void {
+  if (geo.getAttribute("uv")) return;
+  geo.setAttribute("uv", new THREE.BufferAttribute(new Float32Array(geo.getAttribute("position").count * 2), 2));
+}
+
 /** Above this many combined triangles, a `three-bvh-csg` boolean/hole would
  * likely freeze the webview's main thread — degrade to a status message
  * instead. Tuned empirically against THIS codebase's `Evaluator` (not a
@@ -181,6 +198,8 @@ function applyMeshBoolean(
     return false;
   }
 
+  ensureUvForCsg(aMesh.geometry);
+  ensureUvForCsg(bMesh.geometry);
   const brushA = new Brush(aMesh.geometry);
   aMesh.updateWorldMatrix(true, false);
   brushA.matrix.copy(aMesh.matrixWorld);
@@ -251,6 +270,7 @@ function applyMeshHole(
     tools.push(toolBrush(new THREE.CylinderGeometry(op.radius, op.csRadius, coneDepth, 32), coneDepth));
   }
 
+  ensureUvForCsg(targetMesh.geometry);
   const targetBrush = new Brush(targetMesh.geometry);
   targetMesh.updateWorldMatrix(true, false);
   targetBrush.matrix.copy(targetMesh.matrixWorld);

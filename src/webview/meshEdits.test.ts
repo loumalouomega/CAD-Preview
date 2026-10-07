@@ -210,6 +210,50 @@ describe("applyEditsMesh booleans (three-bvh-csg)", () => {
   });
 });
 
+describe("booleans/holes on uv-less meshes (loader/B-rep output)", () => {
+  // No loader or tessellator here writes `uv` — only three.js primitives
+  // carry it — while three-bvh-csg's shared Evaluator interpolates
+  // position/uv/normal across every operand and throws an uncaught TypeError
+  // inside evaluate() when one is missing. These cases pin the ensureUvForCsg
+  // guard with the geometries production actually brushes; every pre-existing
+  // boolean/hole case above uses uv-carrying BoxGeometry and stayed green
+  // through the defect. Found live by the manifold-booleans probe (4.6).
+  function uvLessRoot(): THREE.Object3D {
+    const root = new THREE.Group();
+    for (const x of [0, 1]) {
+      const g = new THREE.BoxGeometry(2, 2, 2);
+      g.deleteAttribute("uv");
+      const mesh = new THREE.Mesh(g);
+      mesh.position.set(x, 0, 0);
+      root.add(mesh);
+    }
+    let i = 0;
+    root.traverse((o) => { o.userData.groupId = `node-${i++}`; });
+    return root;
+  }
+
+  it("boolean subtract applies instead of throwing inside evaluate()", () => {
+    const root = uvLessRoot();
+    const outcomes: OpOutcome[] = [];
+    applyEditsMesh(root, [{ op: "boolean", kind: "subtract", a: ["node-1"], b: ["node-2"] }], outcomes);
+    expect(outcomes).toHaveLength(1);
+    expect(outcomes[0].applied).toBe(true);
+    const meshes: THREE.Mesh[] = [];
+    root.traverse((o) => { if ((o as THREE.Mesh).isMesh) meshes.push(o as THREE.Mesh); });
+    expect(meshes).toHaveLength(1);
+  });
+
+  it("addHole applies on a uv-less target", () => {
+    const root = uvLessRoot();
+    const outcomes: OpOutcome[] = [];
+    applyEditsMesh(root, [{
+      op: "addHole", targets: ["node-1"], position: [0, 0, 1], axis: [0, 0, -1], radius: 0.3, depth: 3,
+    }], outcomes);
+    expect(outcomes).toHaveLength(1);
+    expect(outcomes[0].applied).toBe(true);
+  });
+});
+
 describe("applyEditsMesh primitives", () => {
   function emptyRoot(): THREE.Object3D {
     return new THREE.Group();

@@ -46,6 +46,9 @@ export type MeshElementShape = "simplex" | "subdivided" | "hexDominant";
  */
 export type MeshEngine = "gmsh" | "ftetwild";
 
+/** Post-generate optimisation pass — see `MeshOptions.optimize`. */
+export type MeshOptimizeMode = "none" | "default" | "netgen" | "highOrder";
+
 export interface MeshOptions {
   dimension: 1 | 2 | 3;
   sizeMin: number;
@@ -54,7 +57,21 @@ export interface MeshOptions {
   algorithm3D: number; // Mesh.Algorithm3D
   elementOrder: 1 | 2;
   elementShape: MeshElementShape;
-  optimize: boolean;
+  /**
+   * Post-generate mesh optimisation (roadmap 4.4, probed live against
+   * gmsh-wasm 0.3.0 on bull.stp — see `doc/gmsh-integration.md`): `"none"`
+   * skips even the generate-time `Mesh.Optimize` flag; `"default"` is today's
+   * behavior (generate-time flag only); `"netgen"` additionally runs
+   * `model.mesh.optimize("Netgen")` (repeatable min/mean gain, but it refines
+   * — +42% elements on the probe fixture — and it LINEARIZES a quadratic mesh
+   * to tet4, warned about, never silent); `"highOrder"` runs
+   * `optimize("HighOrderElastic")`, order-2 only (9 -> 4 invalid on the probe
+   * fixture — an improvement, not a guarantee — and unprobed on linear
+   * meshes, so a linear mesh warns and runs the default instead).
+   * `"Relocate3D"` was probed and is deliberately NOT a mode: worst-element
+   * minSICN came back bit-identical, i.e. a no-op on what matters.
+   */
+  optimize: MeshOptimizeMode;
   stlAngle: number; // classifySurfaces angle, degrees
   engine: MeshEngine;
   /** fTetWild's envelope size, as a fraction of the input's bounding-box
@@ -79,11 +96,45 @@ export interface MeshOptions {
    * serial build, where it has no effect. */
   ftetwildDisableFiltering: boolean;
   /**
+   * Conformal multi-body meshing (roadmap 4.2): call
+   * `gmsh.model.occ.fragment` over every imported solid before meshing, so
+   * touching solids share interface nodes. Parts are resolved AFTER the
+   * renumbering via the existing bbox-centre match, so physical groups survive.
+   * Defaults on: single-solid output is identical with and without it (probe:
+   * block.stp 381 nodes / 1282 elements either way), multi-solid goes from
+   * duplicate interface nodes (44 dups on two touching boxes) to zero. Only
+   * meaningful for a B-rep source with 2+ volumes; mesh sources ignore it.
+   */
+  conformal: boolean;
+  /**
    * Advisory element budget (roadmap "Mesh size and memory budget preview"):
    * when the pre-generation estimate exceeds it the panel/tool WARNS — it
    * never blocks a generate. Optional: absent means no budget.
    */
   budgetElements?: number;
+}
+
+/**
+ * Structured (transfinite) meshing divisions for one `Part` (roadmap 4.9):
+ * every meshed edge of the part's entities gets exactly this many nodes, so
+ * a regular region meshes as an exact mapped grid instead of unstructured
+ * tets. A count, not a length — unit conversion never touches it.
+ */
+export interface MeshStructured {
+  divisions: number; // nodes per edge (>= 2; 2 degenerates to one element per edge)
+}
+
+/**
+ * Validates one raw value into a clean {@link MeshStructured}, or `undefined`
+ * — all-or-nothing like {@link validateMeshGrading} (a fractional or sub-2
+ * count has no sensible reading), same tolerant-parse convention: a `Part`
+ * with an invalid value keeps everything except the structuring.
+ */
+export function validateMeshStructured(raw: unknown): MeshStructured | undefined {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
+  const divisions = (raw as Record<string, unknown>).divisions;
+  if (typeof divisions !== "number" || !Number.isInteger(divisions) || divisions < 2) return undefined;
+  return { divisions };
 }
 
 /**
@@ -149,13 +200,14 @@ export const DEFAULT_MESH_OPTIONS: MeshOptions = {
   algorithm3D: 1 /* Delaunay — Gmsh's own default; see the "Meshing (GMSH-JS)" section of CLAUDE.md for why this was Frontal (4) before gmsh-wasm 0.3.0 */,
   elementOrder: 1,
   elementShape: "simplex",
-  optimize: true,
+  optimize: "default",
   stlAngle: 40,
   engine: "gmsh",
   ftetwildEpsRel: 1e-3, // fTetWild's own default
   ftetwildManifoldSurface: false,
   ftetwildCoarsen: false,
   ftetwildDisableFiltering: false,
+  conformal: true,
 };
 
 /**
@@ -231,7 +283,16 @@ export function validateMeshOptions(raw: unknown): MeshOptions | null {
   const algorithm2D = isFiniteNumber(o.algorithm2D) ? o.algorithm2D : DEFAULT_MESH_OPTIONS.algorithm2D;
   const algorithm3D = isFiniteNumber(o.algorithm3D) ? o.algorithm3D : DEFAULT_MESH_OPTIONS.algorithm3D;
 
-  const optimize = typeof o.optimize === "boolean" ? o.optimize : DEFAULT_MESH_OPTIONS.optimize;
+  // Backward-compatible: the pre-enum boolean parses as default/none, so
+  // every existing sidecar, preset and MCP caller keeps working unchanged.
+  const optimize: MeshOptions["optimize"] =
+    o.optimize === true
+      ? "default"
+      : o.optimize === false
+        ? "none"
+        : o.optimize === "none" || o.optimize === "default" || o.optimize === "netgen" || o.optimize === "highOrder"
+          ? o.optimize
+          : DEFAULT_MESH_OPTIONS.optimize;
 
   const stlAngle =
     isFiniteNumber(o.stlAngle) && o.stlAngle > 0 && o.stlAngle < 180 ? o.stlAngle : DEFAULT_MESH_OPTIONS.stlAngle;
@@ -250,6 +311,8 @@ export function validateMeshOptions(raw: unknown): MeshOptions | null {
   const ftetwildDisableFiltering =
     typeof o.ftetwildDisableFiltering === "boolean" ? o.ftetwildDisableFiltering : DEFAULT_MESH_OPTIONS.ftetwildDisableFiltering;
 
+  const conformal = typeof o.conformal === "boolean" ? o.conformal : DEFAULT_MESH_OPTIONS.conformal;
+
   const out: MeshOptions = {
     dimension,
     sizeMin,
@@ -265,6 +328,7 @@ export function validateMeshOptions(raw: unknown): MeshOptions | null {
     ftetwildManifoldSurface,
     ftetwildCoarsen,
     ftetwildDisableFiltering,
+    conformal,
   };
   // Optional and omitted when absent, so an untouched sidecar stays byte-stable.
   if (isFiniteNumber(o.budgetElements) && o.budgetElements >= 1) out.budgetElements = Math.round(o.budgetElements);

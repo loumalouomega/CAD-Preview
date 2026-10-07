@@ -233,6 +233,9 @@ export async function applyPartsToGmshModel(
         const fieldTag = addDistanceThresholdField(gmsh, resolvedTags, part.meshGrading);
         if (fieldTag !== null) sizeFieldTags.push(fieldTag);
       }
+      if (part.meshStructured != null) {
+        applyTransfiniteForPart(gmsh, part.name, resolvedTags, part.meshStructured.divisions);
+      }
     }
 
     setBackgroundMin(gmsh, sizeFieldTags);
@@ -317,6 +320,62 @@ function resolveTags(ids: string[], map: Map<string, number>): number[] {
     if (t !== undefined) tags.push(t);
   }
   return tags;
+}
+
+/** Boundary entity tags of one dimension lower (`getBoundary` with
+ * `combined: true`, unsigned — a SurfacesList-style tag is unsigned, same
+ * convention `gmshSizingFields.ts`'s volume-to-surface conversion uses). */
+function boundaryTags(gmsh: GmshApi, dim: 3 | 2, tags: number[], wantDim: 2 | 1): number[] {
+  if (tags.length === 0) return [];
+  const flat: number[] = [];
+  for (const t of tags) flat.push(dim, t);
+  const boundary = gmsh.model.getBoundary(flat, true, false, false) as { outDimTags: number[] };
+  const out: number[] = [];
+  for (let i = 0; i < boundary.outDimTags.length; i += 2) {
+    if (boundary.outDimTags[i] === wantDim) out.push(Math.abs(boundary.outDimTags[i + 1]));
+  }
+  return [...new Set(out)];
+}
+
+/**
+ * Structured (transfinite) meshing for one part (roadmap 4.9, probed live):
+ * every meshed edge of the part's entities gets exactly `divisions` nodes,
+ * so a regular region meshes as an exact mapped grid (`(n-1)^3` hexes on a
+ * box at `divisions: n`, zero tets — verified, coexisting with unstructured
+ * neighbours through pyramid transitions). Volumes pull in their boundary
+ * surfaces and those surfaces' bounding curves (a transfinite volume needs
+ * all three levels constrained); explicit surface/curve tags join the same
+ * sets. A kernel rejection throws naming the part (fail-fast: Gmsh offers no
+ * rollback, and a half-constrained model is worse than none) — never a
+ * silent unstructured fallback.
+ */
+function applyTransfiniteForPart(
+  gmsh: GmshApi,
+  partName: string,
+  tags: { volTags: number[]; surfTags: number[]; curveTags: number[] },
+  divisions: number
+): void {
+  const surfaces = new Set<number>(tags.surfTags);
+  for (const s of boundaryTags(gmsh, 3, tags.volTags, 2)) surfaces.add(s);
+  const curves = new Set<number>(tags.curveTags);
+  for (const s of surfaces) {
+    for (const c of boundaryTags(gmsh, 2, [s], 1)) curves.add(c);
+  }
+  try {
+    for (const c of curves) gmsh.model.mesh.setTransfiniteCurve(c, divisions);
+    for (const s of surfaces) {
+      gmsh.model.mesh.setTransfiniteSurface(s);
+      gmsh.model.mesh.setRecombine(2, s);
+    }
+    for (const v of tags.volTags) {
+      gmsh.model.mesh.setTransfiniteVolume(v);
+      gmsh.model.mesh.setRecombine(3, v);
+    }
+  } catch (err) {
+    throw new Error(
+      `Part "${partName}": transfinite constraints rejected at divisions ${divisions} (${(err as Error)?.message ?? String(err)}) — clear its structured divisions or pick a regular region.`
+    );
+  }
 }
 
 function addIndex(set: Set<number>, i: number | null): void {

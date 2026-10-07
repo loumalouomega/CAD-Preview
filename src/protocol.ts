@@ -1,7 +1,7 @@
 import type { CadFormat } from "./fileRouter";
 import type { EditOp } from "./editOps";
 import type { ParamVariable } from "./editVariables";
-import type { MeshOptions, MeshGrading, MeshEngine } from "./meshOptions";
+import type { MeshOptions, MeshGrading, MeshStructured, MeshEngine } from "./meshOptions";
 import type { MeshExportFormatId } from "./meshExportFormats";
 import type { ViewerDefaults } from "./viewerDefaults";
 import type { MassProperties } from "./massProperties";
@@ -88,6 +88,13 @@ export interface Part {
    * AROUND the part, which is what a CFD/thermal mesh needs at a wall.
    */
   meshGrading?: MeshGrading;
+  /**
+   * Optional structured (transfinite) meshing divisions (roadmap 4.9): every
+   * meshed edge of this part's entities gets exactly `divisions` nodes, so a
+   * regular region meshes as an exact mapped grid. B-rep sources only (same
+   * gate as physical groups and `meshSize`); a count, never unit-converted.
+   */
+  meshStructured?: MeshStructured;
   /**
    * Optional re-executable selector (roadmap "Selector synthesis") naming
    * this part's surfaces without baking in positional ids. The `surfaces`

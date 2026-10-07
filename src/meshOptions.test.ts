@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   validateMeshOptions,
   validateMeshGrading,
+  validateMeshStructured,
   applyStlPartSizeOverride,
   gmshShapeOptions,
   scaleMeshOptionsForUnit,
@@ -25,13 +26,14 @@ describe("validateMeshOptions", () => {
       algorithm3D: 1,
       elementOrder: 2,
       elementShape: "subdivided" as const,
-      optimize: false,
+      optimize: "none" as const,
       stlAngle: 30,
       engine: "ftetwild" as const,
       ftetwildEpsRel: 2e-3,
       ftetwildManifoldSurface: true,
       ftetwildCoarsen: false,
       ftetwildDisableFiltering: false,
+      conformal: true,
     };
     expect(validateMeshOptions(opts)).toEqual(opts);
   });
@@ -111,10 +113,12 @@ describe("validateMeshOptions", () => {
     expect(validateMeshOptions({ algorithm2D: 8 })?.algorithm2D).toBe(8);
   });
 
-  it("defaults optimize unless it is a boolean", () => {
-    expect(validateMeshOptions({ optimize: true })?.optimize).toBe(true);
-    expect(validateMeshOptions({ optimize: false })?.optimize).toBe(false);
-    expect(validateMeshOptions({ optimize: "true" })?.optimize).toBe(DEFAULT_MESH_OPTIONS.optimize);
+  it("accepts the optimize enum, parsing pre-enum booleans as default/none", () => {
+    expect(validateMeshOptions({ optimize: true })?.optimize).toBe("default");
+    expect(validateMeshOptions({ optimize: false })?.optimize).toBe("none");
+    expect(validateMeshOptions({ optimize: "netgen" })?.optimize).toBe("netgen");
+    expect(validateMeshOptions({ optimize: "highOrder" })?.optimize).toBe("highOrder");
+    expect(validateMeshOptions({ optimize: "Relocate3D" })?.optimize).toBe(DEFAULT_MESH_OPTIONS.optimize);
     expect(validateMeshOptions({ optimize: 1 })?.optimize).toBe(DEFAULT_MESH_OPTIONS.optimize);
   });
 
@@ -276,6 +280,19 @@ describe("validateMeshGrading", () => {
   });
 });
 
+describe("validateMeshStructured", () => {
+  it("accepts an integer divisions >= 2", () => {
+    expect(validateMeshStructured({ divisions: 2 })).toEqual({ divisions: 2 });
+    expect(validateMeshStructured({ divisions: 6 })).toEqual({ divisions: 6 });
+  });
+
+  it("returns undefined for non-objects and malformed counts", () => {
+    for (const bad of [undefined, null, "6", 6, [], { divisions: 1 }, { divisions: 0 }, { divisions: 2.5 }, { divisions: "6" }, {}]) {
+      expect(validateMeshStructured(bad)).toBeUndefined();
+    }
+  });
+});
+
 describe("gmshShapeOptions", () => {
   const plain = { recombineAll: 0, subdivisionAlgorithm: 0, recombine3DAll: 0, algorithm3DOverride: null };
 
@@ -318,13 +335,14 @@ describe("DEFAULT_MESH_OPTIONS", () => {
       algorithm3D: 1,
       elementOrder: 1,
       elementShape: "simplex",
-      optimize: true,
+      optimize: "default",
       stlAngle: 40,
       engine: "gmsh",
       ftetwildEpsRel: 1e-3,
       ftetwildManifoldSurface: false,
       ftetwildCoarsen: false,
       ftetwildDisableFiltering: false,
+      conformal: true,
     });
   });
 
@@ -335,6 +353,13 @@ describe("DEFAULT_MESH_OPTIONS", () => {
     expect(validateMeshOptions({ ftetwildManifoldSurface: "yes" })?.ftetwildManifoldSurface).toBe(false);
     expect(validateMeshOptions({ ftetwildCoarsen: 1 })?.ftetwildCoarsen).toBe(false);
     expect(validateMeshOptions({})?.ftetwildDisableFiltering).toBe(false);
+  });
+
+  it("defaults conformal on, keeps explicit off", () => {
+    expect(DEFAULT_MESH_OPTIONS.conformal).toBe(true);
+    expect(validateMeshOptions({})?.conformal).toBe(true);
+    expect(validateMeshOptions({ conformal: false })?.conformal).toBe(false);
+    expect(validateMeshOptions({ conformal: "yes" })?.conformal).toBe(true);
   });
 
   it("defaults sizeMax to the unbounded sentinel the webview seeds over", () => {
