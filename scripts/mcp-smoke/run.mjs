@@ -225,6 +225,41 @@ function parseMshNodeCoords(mshText) {
   return coords;
 }
 
+/** Top-dimensional node-tag sets keyed by Gmsh volume tag, plus node positions.
+ * Unlike comparing coincident coordinates, intersecting tags proves two
+ * volumes actually share the SAME mesh nodes at their interface. */
+function mshVolumeNodes(mshText) {
+  const nodeLines = (mshText.split("$Nodes\n")[1]?.split("$EndNodes")[0] ?? "").trim().split("\n");
+  const coords = new Map();
+  let cursor = 1;
+  const blocks = Number(nodeLines[0]?.split(/\s+/)[0]);
+  for (let b = 0; b < blocks; b++) {
+    const [dim, , parametric, count] = nodeLines[cursor++].trim().split(/\s+/).map(Number);
+    const tags = nodeLines.slice(cursor, cursor + count).map(Number);
+    cursor += count;
+    for (const tag of tags) {
+      const xyz = nodeLines[cursor++].trim().split(/\s+/).map(Number);
+      if (xyz.length !== 3 + (parametric ? dim : 0)) throw new Error(`Malformed MSH node ${tag}`);
+      coords.set(tag, xyz.slice(0, 3));
+    }
+  }
+  const elementLines = (mshText.split("$Elements\n")[1]?.split("$EndElements")[0] ?? "").trim().split("\n");
+  const volumes = new Map();
+  cursor = 1;
+  for (let b = 0, count = Number(elementLines[0]?.split(/\s+/)[0]); b < count; b++) {
+    const [dim, tag, , n] = elementLines[cursor++].trim().split(/\s+/).map(Number);
+    for (let i = 0; i < n; i++) {
+      const nodes = elementLines[cursor++].trim().split(/\s+/).map(Number).slice(1);
+      if (dim === 3) {
+        const set = volumes.get(tag) ?? new Set();
+        for (const node of nodes) set.add(node);
+        volumes.set(tag, set);
+      }
+    }
+  }
+  return { coords, volumes: [...volumes.values()] };
+}
+
 // --- the scenario ------------------------------------------------------------
 
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cad-preview-mcp-smoke-"));
@@ -2970,6 +3005,29 @@ try {
 
   const meshed = await call("generate_mesh", { path: model, options: { sizeMax: bbox.diagonal / 15 } });
   assert(meshed.nodeCount > 0 && meshed.elementCount > 0, `generate_mesh: ${meshed.nodeCount} nodes, ${meshed.elementCount} elements in ${meshed.elapsedMs} ms`);
+
+  // Gmsh mesh optimisation (roadmap 4.4): Netgen raises min/mean quality
+  // while refining; HighOrderElastic improves (not clears) invalid curved
+  // order-2 elements; pre-enum booleans still parse. Directional asserts —
+  // exact counts live in the probe write-up, not here.
+  const smokeSize = { sizeMax: bbox.diagonal / 15 };
+  const netgenMeshed = await call("generate_mesh", { path: model, options: { ...smokeSize, optimize: "netgen" } });
+  assert(
+    netgenMeshed.quality.min > meshed.quality.min && netgenMeshed.quality.mean > meshed.quality.mean &&
+      netgenMeshed.elementCount > meshed.elementCount,
+    `generate_mesh optimize:"netgen" improves min/mean at more elements (${meshed.quality.min}/${meshed.quality.mean}/${meshed.elementCount} → ${netgenMeshed.quality.min}/${netgenMeshed.quality.mean}/${netgenMeshed.elementCount})`
+  );
+  const quadBase = await call("generate_mesh", { path: model, options: { ...smokeSize, elementOrder: 2 } });
+  const quadOpt = await call("generate_mesh", { path: model, options: { ...smokeSize, elementOrder: 2, optimize: "highOrder" } });
+  assert(
+    quadBase.quality.min < 0 && quadOpt.quality.min > quadBase.quality.min,
+    `generate_mesh optimize:"highOrder" reduces (not clears) order-2 invalids (${quadBase.quality.min} → ${quadOpt.quality.min})`
+  );
+  const boolOpt = await call("generate_mesh", { path: model, options: { ...smokeSize, optimize: true } });
+  assert(
+    boolOpt.elementCount === meshed.elementCount && boolOpt.quality.min === meshed.quality.min,
+    "generate_mesh still accepts pre-enum optimize:true as the default mode"
+  );
 
   // Hex-dominant (RTree, elementShape:"hexDominant") always mixes in an
   // unmapped gmsh element type (140, "trihedron") alongside tets/hexes —
@@ -6992,6 +7050,57 @@ try {
     const sheets = await call("batch_export", { inputs: [a, b], target: "sheet-svg", outDir: path.join(dir, "batch-sheets"), template: "iso-a3-first" });
     assert(sheets.summary.ok === 2, `the drawing-sheet target exports through the template (${JSON.stringify(sheets.summary)})`);
     assert(fs.readFileSync(path.join(dir, "batch.tsv"), "utf8").split("\n").length === 5, "the TSV report has a header plus one row per file");
+  }
+
+  // --- conformal multi-body meshing (roadmap "Conformal multi-body meshing") ---
+  {
+    const seed = path.join(dir, "conformal-seed.brep");
+    fs.copyFileSync(path.join(ROOT, "examples", "BREP", "blank.brep"), seed);
+    await call("apply_edit_ops", { path: seed, ops: [
+      { op: "addBox", center: [5, 5, 5], size: [10, 10, 10] },
+      { op: "addBox", center: [15, 5, 5], size: [10, 10, 10] },
+    ] });
+    const assembly = path.join(dir, "conformal.step");
+    await call("export_brep", { path: seed, targetFormat: "step", outputPath: assembly });
+    await call("set_part", { path: assembly, name: "BoxA", volumes: ["solid-0"] });
+    await call("set_part", { path: assembly, name: "BoxB", volumes: ["solid-1"] });
+    const offOptions = { sizeMin: 0, sizeMax: 2, conformal: false };
+    const onOptions = { ...offOptions, conformal: true };
+    const off = path.join(dir, "conformal-off.msh");
+    const on = path.join(dir, "conformal-on.msh");
+    await call("export_mesh", { path: assembly, format: "msh", outputPath: off, options: offOptions });
+    await call("export_mesh", { path: assembly, format: "msh", outputPath: on, options: onOptions });
+    const offMesh = mshVolumeNodes(fs.readFileSync(off, "utf8"));
+    const onMesh = mshVolumeNodes(fs.readFileSync(on, "utf8"));
+    assert(offMesh.volumes.length === 2 && onMesh.volumes.length === 2, "conformal control and result both contain two meshed bodies");
+    const shared = (v) => [...v[0]].filter((tag) => v[1].has(tag));
+    const offShared = shared(offMesh.volumes);
+    const onShared = shared(onMesh.volumes);
+    assert(offShared.length === 0, "independent touching boxes have no shared volume node tags");
+    assert(onShared.length > 10 && onShared.every((tag) => Math.abs(onMesh.coords.get(tag)?.[0] - 10) < 1e-9),
+      `fragmented volumes share nodes ONLY on their x=10 interface (${onShared.length} shared)`);
+    const conformal = await call("generate_mesh", { path: assembly, options: onOptions });
+    const independent = await call("generate_mesh", { path: assembly, options: offOptions });
+    assert(conformal.conformalApplied === true && independent.conformalApplied === false &&
+      conformal.nodeCount < independent.nodeCount,
+      `generate_mesh reports applied fragmentation and removes duplicate nodes (${independent.nodeCount} → ${conformal.nodeCount})`);
+    const mdpa = path.join(dir, "conformal.mdpa");
+    const exported = await call("export_mesh", { path: assembly, format: "mdpaElements", outputPath: mdpa, options: onOptions, manifest: true });
+    const manifest = JSON.parse(fs.readFileSync(exported.manifest, "utf8"));
+    const bodyParts = manifest.parts.filter((p) => p.name === "BoxA" || p.name === "BoxB");
+    assert(manifest.meshOptions.conformal === true && manifest.notes.some((n) => /Conformal fragment applied/.test(n)),
+      "handoff manifest records requested and applied conformal meshing");
+    assert(bodyParts.length === 2 && bodyParts.every((p) => p.status === "resolved" && p.subModelPart?.volumeCellCount > 0),
+      "both body Parts survive fragmentation with nonempty volume groups");
+    const mdpaText = fs.readFileSync(mdpa, "utf8");
+    assert(bodyParts.every((p) => new RegExp(`Begin SubModelPart ${p.name}\\n[\\s\\S]*?Begin SubModelPartElements\\n[\\s\\S]*?\\d+\\n`).test(mdpaText)),
+      "MDPA keeps one populated SubModelPart per body");
+    const single = path.join(dir, "conformal-single.stp");
+    fs.copyFileSync(path.join(ROOT, "examples", "STP", "block.stp"), single);
+    const singleOff = await call("generate_mesh", { path: single, options: { sizeMin: 0, sizeMax: 1, conformal: false } });
+    const singleOn = await call("generate_mesh", { path: single, options: { sizeMin: 0, sizeMax: 1, conformal: true } });
+    assert(singleOn.conformalApplied === false && singleOn.nodeCount === singleOff.nodeCount && singleOn.elementCount === singleOff.elementCount,
+      "a single solid never fragments and has unchanged mesh counts");
   }
 
   // --- simulation handoff manifest (roadmap "Simulation handoff manifest and boundary coverage") ---

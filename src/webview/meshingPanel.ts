@@ -148,8 +148,9 @@ export class MeshingPanel {
   private readonly algorithm3DSelect: HTMLSelectElement;
   private readonly elementOrderSelect: HTMLSelectElement;
   private readonly elementShapeSelect: HTMLSelectElement;
-  private readonly optimizeCheckbox: HTMLInputElement;
+  private readonly optimizeSelect: HTMLSelectElement;
   private readonly conformalCheckbox: HTMLInputElement;
+  private sourceKind: "brep" | "mesh" = "brep";
   private readonly stlAngleInput: HTMLInputElement;
   private readonly budgetInput: HTMLInputElement;
   private deviationBtn: HTMLButtonElement | null = null;
@@ -523,19 +524,17 @@ export class MeshingPanel {
       cb.onOptionsChange({ elementOrder: Number(this.elementOrderSelect.value) as MeshOptions["elementOrder"] });
     });
 
-    const optimizeRow = document.createElement("label");
-    optimizeRow.className = "meshing-field meshing-checkbox";
-    const optimizeLabel = document.createElement("span");
-    optimizeLabel.className = "meshing-label";
-    optimizeLabel.textContent = "Optimize";
-    optimizeRow.appendChild(optimizeLabel);
-    this.optimizeCheckbox = document.createElement("input");
-    this.optimizeCheckbox.type = "checkbox";
-    this.optimizeCheckbox.addEventListener("change", () => {
-      cb.onOptionsChange({ optimize: this.optimizeCheckbox.checked });
+    this.optimizeSelect = this.select(form, "Optimize", [
+      ["none", "Off"],
+      ["default", "Default"],
+      ["netgen", "Netgen"],
+      ["highOrder", "High-order elastic"],
+    ]);
+    this.optimizeSelect.title =
+      "Default runs Gmsh's generate-time optimizer. Netgen measurably raises min/mean quality but refines the mesh and linearizes quadratic meshes (warned, never silent). High-order untangles curved quadratic elements (order 2 only).";
+    this.optimizeSelect.addEventListener("change", () => {
+      cb.onOptionsChange({ optimize: this.optimizeSelect.value as MeshOptions["optimize"] });
     });
-    optimizeRow.appendChild(this.optimizeCheckbox);
-    form.appendChild(optimizeRow);
 
     const conformalRow = document.createElement("label");
     conformalRow.className = "meshing-field meshing-checkbox";
@@ -544,6 +543,7 @@ export class MeshingPanel {
     conformalLabel.textContent = "Conformal";
     conformalRow.appendChild(conformalLabel);
     this.conformalCheckbox = document.createElement("input");
+    this.conformalCheckbox.id = "meshing-conformal";
     this.conformalCheckbox.type = "checkbox";
     this.conformalCheckbox.title =
       "Fragment touching solids before meshing so they share interface nodes (B-rep multi-solid only; single-solid output is identical either way).";
@@ -925,7 +925,7 @@ export class MeshingPanel {
     const hexDominantOpt = this.elementShapeSelect.querySelector<HTMLOptionElement>('option[value="hexDominant"]');
     if (hexDominantOpt) hexDominantOpt.disabled = options.dimension !== 3;
     this.elementShapeSelect.value = options.elementShape;
-    this.optimizeCheckbox.checked = options.optimize;
+    this.optimizeSelect.value = options.optimize;
     this.conformalCheckbox.checked = options.conformal;
     this.stlAngleInput.value = String(options.stlAngle);
     this.budgetInput.value = options.budgetElements ? String(options.budgetElements) : "";
@@ -935,8 +935,9 @@ export class MeshingPanel {
     this.ftetwildDisableFilteringCheckbox.checked = options.ftetwildDisableFiltering;
 
     // fTetWild ignores sizeMin/algorithm2D/algorithm3D/elementOrder/
-    // elementShape/stlAngle entirely (see gmshService.ts's populateMeshedModel
-    // doc comment) — greyed, not hidden, so switching back to Gmsh doesn't
+    // elementShape/optimize/stlAngle entirely (see gmshService.ts's
+    // populateMeshedModel doc comment) — greyed, not hidden, so switching
+    // back to Gmsh doesn't
     // need re-entering them. A UX nicety only: `effectiveEngine`'s own
     // downgrade + `validateMeshOptions` already make every combination safe
     // regardless of what this panel currently disables.
@@ -946,7 +947,9 @@ export class MeshingPanel {
     this.algorithm3DSelect.disabled = ftetwild;
     this.elementOrderSelect.disabled = ftetwild;
     this.elementShapeSelect.disabled = ftetwild;
+    this.optimizeSelect.disabled = ftetwild;
     this.stlAngleInput.disabled = ftetwild;
+    this.conformalCheckbox.disabled = ftetwild || this.sourceKind === "mesh";
     this.ftetwildEpsRelInput.disabled = !ftetwild;
     this.ftetwildManifoldSurfaceCheckbox.disabled = !ftetwild;
     this.ftetwildCoarsenCheckbox.disabled = !ftetwild;
@@ -1054,9 +1057,14 @@ export class MeshingPanel {
    * hidden) for B-rep documents — mirrors `editsPanel.setBRepOnly`.
    */
   setSourceKind(kind: "brep" | "mesh"): void {
+    this.sourceKind = kind;
     this.stlAngleInput.disabled = kind === "brep";
     this.stlAngleInput.title =
       kind === "brep" ? "Only used for mesh/STL sources" : "Surface-classification angle for mesh/STL sources";
+    // Conformal fragmentation only runs on the B-rep OCC-import path; a mesh
+    // source ignores the option, so grey it out exactly like the fTetWild
+    // row above greys Gmsh-only fields (render() applies the same rule).
+    this.conformalCheckbox.disabled = kind === "mesh" || this.lastOptions?.engine === "ftetwild";
   }
 
   /**

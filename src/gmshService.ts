@@ -168,6 +168,47 @@ function runMeshGenerate(gmsh: GmshApi, options: MeshOptions): void {
   }
 }
 
+/**
+ * Explicit post-generate optimisation pass for `MeshOptions.optimize`'s
+ * `"netgen"` / `"highOrder"` modes (roadmap 4.4) — the generate-time
+ * `Mesh.Optimize` flag above is a different, always-on-unless-`"none"`
+ * mechanism. Same abort discipline as `runMeshGenerate`: an aborted
+ * Emscripten instance is corrupt, so reset the singleton and rethrow an
+ * actionable error rather than a bare "memory access out of bounds".
+ *
+ * Gating is probe-derived, not guessed: `"netgen"` runs at either order but
+ * LINEARIZES a quadratic mesh (verified: tet10 -> tet4, 3394 -> 2385 nodes),
+ * so an order-2 run warns rather than silently downgrading; `"highOrder"`
+ * runs only at order 2 (9 -> 4 invalid on the probe fixture) and a linear
+ * mesh warns and keeps the default instead — `HighOrderElastic` on a linear
+ * mesh is unprobed behavior. `"Relocate3D"` is deliberately absent: probed
+ * bit-identical worst-element minSICN, i.e. a no-op on what matters.
+ */
+function runMeshOptimizePostPass(gmsh: GmshApi, options: MeshOptions, warnings: string[]): void {
+  const mode = options.optimize;
+  if (mode !== "netgen" && mode !== "highOrder") return;
+  if (mode === "highOrder" && options.elementOrder !== 2) {
+    warnings.push(
+      'Optimize "highOrder" needs elementOrder 2 — ran the default generate-time optimizer instead, with no post-pass.'
+    );
+    return;
+  }
+  const method = mode === "netgen" ? "Netgen" : "HighOrderElastic";
+  try {
+    gmsh.model.mesh.optimize(method);
+  } catch (err) {
+    const raw = ((err as Error)?.message ?? String(err)).trim();
+    if (!isWasmAbort(raw)) throw err;
+    resetGmsh();
+    throw new Error(`Gmsh crashed while running the "${method}" mesh optimizer (${raw || "WASM abort"}). Try optimize "default" instead, or a coarser Size max.`);
+  }
+  if (mode === "netgen" && options.elementOrder === 2) {
+    warnings.push(
+      'Netgen linearized the quadratic mesh to linear tet4 (verified behavior of this Gmsh build) — the quality summary and node count below describe the linearized result.'
+    );
+  }
+}
+
 export type MeshGenerationInput =
   | { kind: "brep"; stepBytes: Uint8Array }
   | { kind: "stl"; stlBytes: Uint8Array };
@@ -281,9 +322,14 @@ async function loadGeometryAndApplyOptions(
           conformalApplied = true;
         }
       } catch (err) {
-        warnings.push(
-          `Conformal fragment failed (${(err as Error)?.message ?? String(err)}) — meshed without it; touching solids may share no nodes.`
-        );
+        // A failed OCC fragment may already have changed Gmsh's current model.
+        // Continuing would certify neither the requested conformal mesh nor a
+        // clean non-conformal fallback. Refuse instead; the next call clears
+        // the model. An Emscripten abort also poisons this singleton.
+        const reason = (err as Error)?.message ?? String(err);
+        if (isWasmAbort(reason)) resetGmsh();
+        try { gmsh.FS.unlink(tmpPath); } catch { /* model may have aborted */ }
+        throw new Error(`Conformal fragment failed (${reason}) — no mesh was produced. Retry with conformal: false to mesh the unfragmented solids.`);
       }
     }
     groupMaps = await applyPartsToGmshModel(extensionPath, gmsh, input.stepBytes, parts, warnings);
@@ -326,7 +372,7 @@ async function loadGeometryAndApplyOptions(
   gmsh.option.setNumber("Mesh.RecombineAll", shape.recombineAll);
   gmsh.option.setNumber("Mesh.SubdivisionAlgorithm", shape.subdivisionAlgorithm);
   gmsh.option.setNumber("Mesh.Recombine3DAll", shape.recombine3DAll);
-  gmsh.option.setNumber("Mesh.Optimize", options.optimize ? 1 : 0);
+  gmsh.option.setNumber("Mesh.Optimize", options.optimize === "none" ? 0 : 1);
   // Gmsh's default (0) writes only elements belonging to a physical group once
   // ANY physical group exists in the model — i.e. the instant one part has a
   // resolved entity, `gmsh.write()` would silently drop every other
@@ -420,6 +466,7 @@ async function populateMeshedModel(
   if (engine === "gmsh") {
     const loaded = await loadGeometryAndApplyOptions(extensionPath, gmsh, input, options, parts);
     runMeshGenerate(gmsh, options);
+    runMeshOptimizePostPass(gmsh, options, warnings);
     return {
       tmpPath: loaded.tmpPath,
       groupMaps: loaded.groupMaps,

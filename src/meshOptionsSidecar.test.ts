@@ -17,7 +17,7 @@ describe("parseMeshJson", () => {
       algorithm3D: 1,
       elementOrder: 2,
       elementShape: "subdivided",
-      optimize: false,
+      optimize: "none",
       stlAngle: 25,
       engine: "ftetwild",
       ftetwildEpsRel: 5e-4,
@@ -76,7 +76,7 @@ describe("generateGeoScript", () => {
       algorithm3D: 4,
       elementOrder: 1,
       elementShape: "simplex",
-      optimize: true,
+      optimize: "default",
       stlAngle: 40,
       engine: "gmsh",
       ftetwildEpsRel: 1e-3,
@@ -139,9 +139,15 @@ describe("generateGeoScript", () => {
   });
 
   it("encodes optimize=false as 0", () => {
-    const options: MeshOptions = { ...DEFAULT_MESH_OPTIONS, optimize: false };
+    const options: MeshOptions = { ...DEFAULT_MESH_OPTIONS, optimize: "none" };
     const script = generateGeoScript("cube.stl", options);
     expect(script).toContain("Mesh.Optimize = 0;");
+  });
+
+  it("notes the post-pass a .geo script cannot reproduce", () => {
+    const script = generateGeoScript("cube.stl", { ...DEFAULT_MESH_OPTIONS, optimize: "netgen" });
+    expect(script).toContain("Mesh.Optimize = 1;");
+    expect(script).toContain("model.mesh.optimize()");
   });
 
   it("uses the given dimension in the trailing Mesh command", () => {

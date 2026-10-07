@@ -39,7 +39,7 @@ describe("MeshingModel", () => {
 
   it("load replaces wholesale rather than merging with prior state", () => {
     const m = new MeshingModel(() => {});
-    m.update({ dimension: 2, optimize: false });
+    m.update({ dimension: 2, optimize: "none" });
     m.load(DEFAULT_MESH_OPTIONS);
     expect(m.get()).toEqual(DEFAULT_MESH_OPTIONS);
   });

@@ -72,7 +72,14 @@ export function generateGeoScript(sourceName: string, options: MeshOptions): str
     `Mesh.RecombineAll = ${shape.recombineAll};`,
     `Mesh.SubdivisionAlgorithm = ${shape.subdivisionAlgorithm};`,
     `Mesh.Recombine3DAll = ${shape.recombine3DAll};`,
-    `Mesh.Optimize = ${options.optimize ? 1 : 0};`,
+    `Mesh.Optimize = ${options.optimize === "none" ? 0 : 1};`,
+    ...(options.optimize === "netgen" || options.optimize === "highOrder"
+      ? [
+          `// optimize: ${options.optimize} — this document was post-optimized via model.mesh.optimize(),`,
+          "// which has no .geo-script equivalent. Running this script reproduces the generate-time",
+          "// mesh only, not the post-pass.",
+        ]
+      : []),
     options.engine === "ftetwild"
       ? "// engine: fTetWild — this document was volume-meshed by fTetWild, not Gmsh's\n" +
         "// own mesher, so there is no Gmsh directive that reproduces it. Running\n" +

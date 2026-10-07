@@ -25,7 +25,7 @@ describe("validateMeshOptions", () => {
       algorithm3D: 1,
       elementOrder: 2,
       elementShape: "subdivided" as const,
-      optimize: false,
+      optimize: "none" as const,
       stlAngle: 30,
       engine: "ftetwild" as const,
       ftetwildEpsRel: 2e-3,
@@ -112,10 +112,12 @@ describe("validateMeshOptions", () => {
     expect(validateMeshOptions({ algorithm2D: 8 })?.algorithm2D).toBe(8);
   });
 
-  it("defaults optimize unless it is a boolean", () => {
-    expect(validateMeshOptions({ optimize: true })?.optimize).toBe(true);
-    expect(validateMeshOptions({ optimize: false })?.optimize).toBe(false);
-    expect(validateMeshOptions({ optimize: "true" })?.optimize).toBe(DEFAULT_MESH_OPTIONS.optimize);
+  it("accepts the optimize enum, parsing pre-enum booleans as default/none", () => {
+    expect(validateMeshOptions({ optimize: true })?.optimize).toBe("default");
+    expect(validateMeshOptions({ optimize: false })?.optimize).toBe("none");
+    expect(validateMeshOptions({ optimize: "netgen" })?.optimize).toBe("netgen");
+    expect(validateMeshOptions({ optimize: "highOrder" })?.optimize).toBe("highOrder");
+    expect(validateMeshOptions({ optimize: "Relocate3D" })?.optimize).toBe(DEFAULT_MESH_OPTIONS.optimize);
     expect(validateMeshOptions({ optimize: 1 })?.optimize).toBe(DEFAULT_MESH_OPTIONS.optimize);
   });
 
@@ -319,7 +321,7 @@ describe("DEFAULT_MESH_OPTIONS", () => {
       algorithm3D: 1,
       elementOrder: 1,
       elementShape: "simplex",
-      optimize: true,
+      optimize: "default",
       stlAngle: 40,
       engine: "gmsh",
       ftetwildEpsRel: 1e-3,

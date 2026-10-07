@@ -207,6 +207,7 @@ const GMSH_ONLY_FIELDS: readonly (keyof MeshOptions)[] = [
   "algorithm3D",
   "elementOrder",
   "elementShape",
+  "optimize",
   "stlAngle",
   "conformal",
 ];

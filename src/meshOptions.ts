@@ -46,6 +46,9 @@ export type MeshElementShape = "simplex" | "subdivided" | "hexDominant";
  */
 export type MeshEngine = "gmsh" | "ftetwild";
 
+/** Post-generate optimisation pass — see `MeshOptions.optimize`. */
+export type MeshOptimizeMode = "none" | "default" | "netgen" | "highOrder";
+
 export interface MeshOptions {
   dimension: 1 | 2 | 3;
   sizeMin: number;
@@ -54,7 +57,21 @@ export interface MeshOptions {
   algorithm3D: number; // Mesh.Algorithm3D
   elementOrder: 1 | 2;
   elementShape: MeshElementShape;
-  optimize: boolean;
+  /**
+   * Post-generate mesh optimisation (roadmap 4.4, probed live against
+   * gmsh-wasm 0.3.0 on bull.stp — see `doc/gmsh-integration.md`): `"none"`
+   * skips even the generate-time `Mesh.Optimize` flag; `"default"` is today's
+   * behavior (generate-time flag only); `"netgen"` additionally runs
+   * `model.mesh.optimize("Netgen")` (repeatable min/mean gain, but it refines
+   * — +42% elements on the probe fixture — and it LINEARIZES a quadratic mesh
+   * to tet4, warned about, never silent); `"highOrder"` runs
+   * `optimize("HighOrderElastic")`, order-2 only (9 -> 4 invalid on the probe
+   * fixture — an improvement, not a guarantee — and unprobed on linear
+   * meshes, so a linear mesh warns and runs the default instead).
+   * `"Relocate3D"` was probed and is deliberately NOT a mode: worst-element
+   * minSICN came back bit-identical, i.e. a no-op on what matters.
+   */
+  optimize: MeshOptimizeMode;
   stlAngle: number; // classifySurfaces angle, degrees
   engine: MeshEngine;
   /** fTetWild's envelope size, as a fraction of the input's bounding-box
@@ -160,7 +177,7 @@ export const DEFAULT_MESH_OPTIONS: MeshOptions = {
   algorithm3D: 1 /* Delaunay — Gmsh's own default; see the "Meshing (GMSH-JS)" section of CLAUDE.md for why this was Frontal (4) before gmsh-wasm 0.3.0 */,
   elementOrder: 1,
   elementShape: "simplex",
-  optimize: true,
+  optimize: "default",
   stlAngle: 40,
   engine: "gmsh",
   ftetwildEpsRel: 1e-3, // fTetWild's own default
@@ -243,7 +260,16 @@ export function validateMeshOptions(raw: unknown): MeshOptions | null {
   const algorithm2D = isFiniteNumber(o.algorithm2D) ? o.algorithm2D : DEFAULT_MESH_OPTIONS.algorithm2D;
   const algorithm3D = isFiniteNumber(o.algorithm3D) ? o.algorithm3D : DEFAULT_MESH_OPTIONS.algorithm3D;
 
-  const optimize = typeof o.optimize === "boolean" ? o.optimize : DEFAULT_MESH_OPTIONS.optimize;
+  // Backward-compatible: the pre-enum boolean parses as default/none, so
+  // every existing sidecar, preset and MCP caller keeps working unchanged.
+  const optimize: MeshOptions["optimize"] =
+    o.optimize === true
+      ? "default"
+      : o.optimize === false
+        ? "none"
+        : o.optimize === "none" || o.optimize === "default" || o.optimize === "netgen" || o.optimize === "highOrder"
+          ? o.optimize
+          : DEFAULT_MESH_OPTIONS.optimize;
 
   const stlAngle =
     isFiniteNumber(o.stlAngle) && o.stlAngle > 0 && o.stlAngle < 180 ? o.stlAngle : DEFAULT_MESH_OPTIONS.stlAngle;
