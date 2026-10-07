@@ -126,7 +126,7 @@ This review lists every capability that is **bound in a shipped kernel but never
 | --- | --- | --- |
 | `model.occ.healShapes`, `model.occ.removeAllDuplicates` | An optional healing pass before meshing | [Pre-mesh healing](#pre-mesh-healing) |
 | `model.mesh.setPeriodic` | Periodic meshes for representative-volume-element studies | [Periodic meshing](#periodic-meshing) |
-| `model.mesh.getJacobians` | Jacobian-based validity for curved (order 2) elements, which `minSICN` alone does not certify | [Jacobian validity for high-order meshes](#jacobian-validity-for-high-order-meshes) |
+| `model.mesh.getJacobians` | Jacobian-based validity for curved (order 2) elements, which `minSICN` alone does not certify | Shipped as `QualitySummary.invalidElements` (order-2 only) — exact coincidence with `minSICN <= 0` on every measured fixture, so independent certification rather than broader detection (see `doc/gmsh-integration.md`) |
 
 **Red in the manifest, so out of reach until the OCCT build changes:**
 
@@ -177,7 +177,7 @@ It does **not** admit AGPL code, so TetGen stays rejected. Every new bundled dep
 | --- | --- | --- | --- |
 | Upkeep | The base stays current and trustworthy | Done: the dependency watch, "Verify the dependency watch on GitHub", has run — it published issue #84 and re-dispatching reported `unchanged`. The verification-debt gate has shipped and ten claims are closed; the host-side halves (1.1) are next | The verification debt count keeps falling by closure |
 | Parity | Everything an agent can do, a user can do, and the reverse | Done: headless mesh-edit replay closed the last listed gap (as did the hole-table, refinement-sweep, free-text-note and mesh-source FE-export gaps). Justified remainders: mesh `inspect`/mass facts, `promote_mesh_to_brep` and `repair_mesh` read the raw file (their ids and outputs are defined over it; `save_model` bakes first), and glTF has no own-format save (its exporter emits only `.glb`) | Headless tools see the same edited mesh the viewer shows, or each remaining difference is justified |
-| Meshing probes | Decide on remeshing and on conformal assemblies | MMG core probe is closed with a partial outcome: volume/surface/transport work, unconditional optimisation failed. MMG remeshing has shipped (former 4.17): shared service, MCP tool and panel with real-pipeline screenshots and packaged-runtime verification. Conformal multi-body meshing and Gmsh mesh optimisation have shipped (former 4.2, former 4.4), each with probe-measured results and a decision. Manifold mesh booleans (4.6), then Jacobian validity for high-order meshes (4.7), can proceed independently | Each probe filed with measured results and a decision |
+| Meshing probes | Decide on remeshing and on conformal assemblies | MMG core probe is closed with a partial outcome: volume/surface/transport work, unconditional optimisation failed. MMG remeshing has shipped (former 4.17): shared service, MCP tool and panel with real-pipeline screenshots and packaged-runtime verification. Conformal multi-body meshing and Gmsh mesh optimisation have shipped (former 4.2, former 4.4), each with probe-measured results and a decision. Manifold mesh booleans (4.6) probed passing (migration pending); next are the $Elements-walker pair Anisotropic boundary layers (4.8) and Structured meshing per Part (4.9), which can proceed independently | Each probe filed with measured results and a decision |
 | Geometry probes | Decide which never-called OCCT capabilities become ops | Imprint and split faces (3.1), then B-rep repair (3.2) | Each probe filed with measured results and a decision |
 | Strategic | Remove the kernel ceiling | The self-built OCCT WASM probe (6.1) | The existing test suites pass unchanged against the new build |
 
@@ -568,7 +568,6 @@ None of these depends on another's result.
 | --- | --- | --- | --- |
 | 4.3 | Hausdorff-bounded surface coarsening | the MMG core loader; meshio++ already bundled | Fixes a known defect (a degenerate heal after auto-decimate), and may need no new dependency at all |
 | 4.6 | Manifold mesh booleans | `manifold-3d` installed for the probe | Replaces the one mesh operation that can produce non-manifold output |
-| 4.7 | Jacobian validity for high-order meshes | — | Order-2 meshes ship today with no validity check beyond `minSICN` |
 | 4.8 | Anisotropic boundary layers | a `$Elements` walker | The largest Gmsh probe, and the first live exercise of `dimension: 2` |
 | 4.9 | Structured meshing per Part | the same `$Elements` walker | Exact element counts make the probe discriminating; shares the walker with 4.8 |
 | 4.10 | Metric-driven adaptive remeshing | verified MMG volume path | Reuses the shipped MMG volume path without assuming any quality guarantee; highest value of the MMG items but the most moving parts |
@@ -626,23 +625,6 @@ The MMG core probe is complete; its working volume/surface paths and negative op
   - `manifold-3d` becomes the mesh boolean engine, with `three-bvh-csg` as the fallback.
   - The dense-mesh guard is re-measured.
   - README Licensing gains the Apache-2.0 attribution.
-
-##### 4.7 Jacobian validity for high-order meshes {#jacobian-validity-for-high-order-meshes}
-
-*Area: Meshing.*
-
-- **Hypothesis:** `gmsh.model.mesh.getJacobians`, declared and never called, returns per-element Jacobian determinants. A negative determinant flags an inverted curved element that `minSICN` does not catch.
-- **Evidence today:**
-  - Quadratic meshes (`elementOrder: 2`) ship with the same quality summary as linear ones.
-  - Curving mid-side nodes onto a curved surface can invert an element near a tight fillet, and nothing checks for it.
-- **Probe (S):**
-  1. Generate `bull.stp` at order 2 with a coarse size, and count elements with any negative Jacobian determinant.
-  2. Confirm a linear mesh reports none.
-  3. Confirm the shipped `highOrder` optimiser's remaining invalids against `getJacobians` — HighOrderElastic improves (9 → 4 on `bull.stp` at order 2) rather than clears, so the Jacobian check is still the certifier; see `doc/gmsh-integration.md#mesh-optimisation-roadmap-44`.
-- **Decision gate:**
-  - **Pass:** negative determinants detected where expected.
-  - **Fail:** the call throws or returns nothing usable.
-- **If admitted (S):** an "invalid elements" count in the quality summary for order-2 meshes, fed into the worst-element overlay.
 
 ##### 4.8 Anisotropic boundary layers for 2D Gmsh meshes {#anisotropic-boundary-layers-for-2d-gmsh-meshes}
 

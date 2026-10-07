@@ -543,7 +543,7 @@ export async function generateMesh(
     gmsh.write(outPath);
     const mshText = gmsh.FS.readFile(outPath, { encoding: "utf8" }) as string;
 
-    const { quality, worstElements } = computeQualityAndWorstElements(gmsh, options.dimension, tagToIndex);
+    const { quality, worstElements } = computeQualityAndWorstElements(gmsh, options.dimension, tagToIndex, options.elementOrder);
 
     return {
       positions,
@@ -1359,10 +1359,22 @@ export const MAX_WORST_ELEMENTS = 2000;
  * Lines ghost-line technique) — so it stays visible no matter how deeply
  * buried, with no clip plane or cutaway needed.
  */
+/**
+ * Reference-tetrahedron nodes of a tet10 (4 corners + 6 edge midpoints) for
+ * `getJacobians` sampling (roadmap 4.7). The Jacobian mapping of a quadratic
+ * element is itself quadratic, so corner-only sampling can miss an interior
+ * inversion — the full 10-node set is the element's own interpolation nodes.
+ */
+const TET10_SAMPLE_POINTS: number[] = [
+  0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1,
+  0.5, 0, 0, 0, 0.5, 0, 0, 0, 0.5, 0.5, 0.5, 0, 0.5, 0, 0.5, 0, 0.5, 0.5,
+];
+
 export function computeQualityAndWorstElements(
   gmsh: GmshApi,
   dimension: MeshOptions["dimension"],
-  tagToIndex: Map<number, number>
+  tagToIndex: Map<number, number>,
+  elementOrder: MeshOptions["elementOrder"] = 1
 ): { quality?: QualitySummary; worstElements?: WorstElementsOverlay } {
   const dim = dimension === 1 ? 1 : dimension;
   try {
@@ -1373,6 +1385,36 @@ export function computeQualityAndWorstElements(
     const values = result.elementsQuality;
     if (!Array.isArray(values) || values.length !== tags.length) return {};
     const quality = summarizeQuality(values);
+    // Jacobian-based invalid count for order-2 volume meshes (roadmap 4.7):
+    // a supplementary count, not a second quality metric — probed live to
+    // coincide exactly with minSICN<=0 on bull.stp and 4pinplug.stp (9/9 and
+    // 20/20, plus the 4/4 remaining after HighOrderElastic), so its value is
+    // independent certification from an analytic determinant rather than
+    // broader detection. tet10 blocks only (the simplex order-2 volume cell);
+    // other quadratic types are out of scope, stated not silent. A count
+    // needs no per-element pairing, so whole-model tag=-1 ordering is
+    // irrelevant. Any failure (or length mismatch) omits the field rather
+    // than failing the generate — the minSICN summary is unaffected.
+    if (dimension === 3 && elementOrder === 2) {
+      try {
+        const ti = els.elementTypes.findIndex((t) => t === 11);
+        if (ti >= 0 && els.elementTags[ti].length > 0) {
+          const jac = gmsh.model.mesh.getJacobians(11, TET10_SAMPLE_POINTS, -1) as { determinants: number[] };
+          const perPoint = TET10_SAMPLE_POINTS.length / 3;
+          if (Array.isArray(jac.determinants) && jac.determinants.length === els.elementTags[ti].length * perPoint) {
+            let invalid = 0;
+            for (let e = 0; e < els.elementTags[ti].length; e++) {
+              for (let p = 0; p < perPoint; p++) {
+                if (jac.determinants[e * perPoint + p] < 0) { invalid++; break; }
+              }
+            }
+            quality.invalidElements = invalid;
+          }
+        }
+      } catch {
+        /* Jacobian unavailable — quality summary stands without the count */
+      }
+    }
     if (dimension !== 3) return { quality };
 
     const worst: Array<{ type: number; nodeTags: number[]; quality: number }> = [];

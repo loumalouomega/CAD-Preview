@@ -3020,6 +3020,10 @@ try {
   const quadBase = await call("generate_mesh", { path: model, options: { ...smokeSize, elementOrder: 2 } });
   const quadOpt = await call("generate_mesh", { path: model, options: { ...smokeSize, elementOrder: 2, optimize: "highOrder" } });
   assert(
+    quadBase.quality.invalidElements === 9 && quadOpt.quality.invalidElements === 4,
+    `Jacobian invalid count tracks the minSICN invalids exactly (9 → 4, got ${quadBase.quality.invalidElements} → ${quadOpt.quality.invalidElements})`
+  );
+  assert(
     quadBase.quality.min < 0 && quadOpt.quality.min > quadBase.quality.min,
     `generate_mesh optimize:"highOrder" reduces (not clears) order-2 invalids (${quadBase.quality.min} → ${quadOpt.quality.min})`
   );

@@ -243,6 +243,63 @@ describe("computeQualityAndWorstElements", () => {
     expect(worstElements!.indices.length).toBe(4 * 3);
   });
 
+  it("order-2 counts Jacobian-negative tet10s, omitting the field when unavailable", () => {
+    // A fake exposing type-11 blocks plus getJacobians over 10 sample points
+    // per element: element 1 clean, element 2 inverted at one point.
+    const dets = [...Array(10).fill(0.5), ...Array(9).fill(0.5), -0.1];
+    const gmsh = {
+      model: {
+        mesh: {
+          getElements: () => ({ elementTypes: [11], elementTags: [[1, 2]], nodeTags: [[]] }),
+          getElementQualities: () => ({ elementsQuality: [0.9, 0.8] }),
+          getJacobians: () => ({ determinants: dets }),
+        },
+      },
+    };
+    const { quality, worstElements } = computeQualityAndWorstElements(gmsh, 3, identityLookup, 2);
+    expect(quality!.invalidElements).toBe(1);
+    expect(worstElements).toBeUndefined(); // no minSICN below threshold: count only, no overlay
+  });
+
+  it("order-2 omits invalidElements when getJacobians throws or mis-shapes", () => {
+    const throwing = {
+      model: {
+        mesh: {
+          getElements: () => ({ elementTypes: [11], elementTags: [[1]], nodeTags: [[]] }),
+          getElementQualities: () => ({ elementsQuality: [0.4] }),
+          getJacobians: () => { throw new Error("nope"); },
+        },
+      },
+    };
+    expect(computeQualityAndWorstElements(throwing, 3, identityLookup, 2).quality!.invalidElements).toBeUndefined();
+    const misshaped = {
+      model: {
+        mesh: {
+          getElements: () => ({ elementTypes: [11], elementTags: [[1, 2]], nodeTags: [[]] }),
+          getElementQualities: () => ({ elementsQuality: [0.4, 0.5] }),
+          getJacobians: () => ({ determinants: [0.5] }),
+        },
+      },
+    };
+    expect(computeQualityAndWorstElements(misshaped, 3, identityLookup, 2).quality!.invalidElements).toBeUndefined();
+  });
+
+  it("order-1 never touches getJacobians", () => {
+    let called = false;
+    const gmsh = {
+      model: {
+        mesh: {
+          getElements: () => ({ elementTypes: [4], elementTags: [[1]], nodeTags: [[[0, 1, 2, 3]]] }),
+          getElementQualities: () => ({ elementsQuality: [0.9] }),
+          getJacobians: () => { called = true; return { determinants: [] }; },
+        },
+      },
+    };
+    const { quality } = computeQualityAndWorstElements(gmsh, 3, identityLookup);
+    expect(called).toBe(false);
+    expect(quality!.invalidElements).toBeUndefined();
+  });
+
   it("caps at MAX_WORST_ELEMENTS, keeping the lowest-quality elements first", () => {
     const regular: FakeElement[] = Array.from({ length: MAX_WORST_ELEMENTS }, (_, i) => ({
       // Strictly below threshold, ranging worst (-0.5) to least-bad (~-0.3001)

@@ -993,6 +993,15 @@ export class MeshingPanel {
     summary.className = "meshing-quality-summary";
     summary.textContent = `Quality (minSICN) — min: ${quality.min.toFixed(3)} · mean: ${quality.mean.toFixed(3)}`;
     this.qualityEl.appendChild(summary);
+    // Jacobian-based invalid count (order-2 only — absent otherwise, never
+    // fabricated). Invalids already light the worst-elements overlay via the
+    // shared 0.2 threshold; this line names them.
+    if (quality.invalidElements !== undefined) {
+      const invalid = document.createElement("div");
+      invalid.className = "meshing-quality-invalid";
+      invalid.textContent = `${quality.invalidElements} invalid (Jacobian < 0)`;
+      this.qualityEl.appendChild(invalid);
+    }
 
     const total = quality.histogram.reduce((a, b) => a + b, 0);
     const bars = document.createElement("div");
