@@ -192,12 +192,12 @@ These are outcome groupings, not release numbers. Independent small items can sh
 *Area: Platform.*
 
 - **Done so far:** the gate shipped — `src/verificationGaps.ts`, run by `npm test`, over `scripts/verification-gaps/registry.json` and a checked-in baseline. Every "Verification gap" note in `CLAUDE.md` carries a `[vg:<id>]` marker, so a new unverified feature cannot land silently; an entry closes only by naming harness test titles that literally exist, so rewording cannot close it and renaming the test re-opens it. Ten claims moved from F5-only into `npm run test:webview` (641 → 747 checks): real transform-gizmo drags (translate/rotate/scale, preview-only, discard on leaving the form, grid snap), and the Mesh Health, Region fit, Macros, Mass Properties, Pin + tolerance, colour-by-field and linked-camera panels. Writing the Region fit case found and fixed a real defect: Pick seed did nothing unless Selection mode was on. The full account, including what this does **not** claim, is in `CLAUDE.md`'s "Verification-debt burn-down".
-- **Still open (56 unresolved entries):**
-  - **The mesh-target export join** is written (two `test:integration` cases: STL and glTF Binary through the real webview) but has **never been run** — the sandbox that wrote it cannot download VS Code. It stays `test-written`, which counts as unresolved, until a CI run is seen green. Closing it is a one-line registry change plus lowering the baseline.
+- **Mesh-target export join: closed.** Two `test:integration` cases (STL and glTF Binary through the real webview) were seen green in CI on PR #90; the baseline dropped 56 → 55.
+- **Still open (55 unresolved entries):**
   - **Entity-point snapping** of a live gizmo drag has no end-to-end case; it needs a fixture with a deterministic vertex target.
   - **The host halves** of nearly every panel — quick-picks, save dialogs, `provider.ts` handlers — are what `test:webview` structurally cannot reach. They belong in `test:integration`, using the modal stubs and Test seams already there.
 - **Next increment (M):** take the ten host-side entries with the highest data-loss or write-path risk into `test:integration`, one case per entry, then lower the baseline by exactly as many as were closed.
-- **Done when:** the unresolved count has fallen by a further ten **by closure** (not by rewording), and the first green CI run has closed the export-join entry.
+- **Done when:** the unresolved count has fallen by a further ten **by closure** (not by rewording); the export-join entry has already closed on its first green CI run.
 
 #### 1.2 Nastran bulk-deck import {#nastran-bulk-deck-import}
 
