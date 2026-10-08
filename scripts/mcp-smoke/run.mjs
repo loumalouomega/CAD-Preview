@@ -3006,7 +3006,7 @@ try {
   const meshed = await call("generate_mesh", { path: model, options: { sizeMax: bbox.diagonal / 15 } });
   assert(meshed.nodeCount > 0 && meshed.elementCount > 0, `generate_mesh: ${meshed.nodeCount} nodes, ${meshed.elementCount} elements in ${meshed.elapsedMs} ms`);
 
-  // Gmsh mesh optimisation (roadmap 4.4): Netgen raises min/mean quality
+  // Gmsh mesh optimisation: Netgen raises min/mean quality
   // while refining; HighOrderElastic improves (not clears) invalid curved
   // order-2 elements; pre-enum booleans still parse. Directional asserts —
   // exact counts live in the probe write-up, not here.
@@ -3033,7 +3033,7 @@ try {
     "generate_mesh still accepts pre-enum optimize:true as the default mode"
   );
 
-  // Structured (transfinite) meshing per Part (roadmap 4.9): an exact mapped
+  // Structured (transfinite) meshing per Part: an exact mapped
   // grid on a regular region, coexisting with unstructured neighbours.
   const structSeed = path.join(dir, "structured-seed.brep");
   fs.copyFileSync(path.join(ROOT, "examples", "BREP", "blank.brep"), structSeed);

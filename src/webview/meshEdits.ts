@@ -15,7 +15,7 @@ const csg = new Evaluator();
  * and hole threw). Fill a zero uv on the way into each Brush rather than
  * narrowing the Evaluator's shared attribute list: uv-carrying meshes keep
  * their interpolated uvs, and the result stays exporter-safe. Found live by
- * the manifold-booleans probe (4.6), which is also why that probe's own
+ * the manifold-booleans probe, which is also why that probe's own
  * three-bvh-csg arm adds uvs before brushing.
  */
 function ensureUvForCsg(geo: THREE.BufferGeometry): void {

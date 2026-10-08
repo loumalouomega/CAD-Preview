@@ -1,6 +1,6 @@
 /**
  * Keeps positional roadmap-item citations out of the tree, per
- * `doc/roadmap.md`'s own "How this file works" rule: task IDs (`1.1`, `4.10`)
+ * `doc/roadmap.md`'s own "How this file works" rule: task IDs (`1.1`, `2.11`)
  * are renumbered at each planning review, so code and other documents cite an
  * item by name, never by number.
  *

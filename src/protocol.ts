@@ -89,7 +89,7 @@ export interface Part {
    */
   meshGrading?: MeshGrading;
   /**
-   * Optional structured (transfinite) meshing divisions (roadmap 4.9): every
+   * Optional structured (transfinite) meshing divisions (roadmap "Structured meshing per Part"): every
    * meshed edge of this part's entities gets exactly `divisions` nodes, so a
    * regular region meshes as an exact mapped grid. B-rep sources only (same
    * gate as physical groups and `meshSize`); a count, never unit-converted.

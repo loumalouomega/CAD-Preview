@@ -338,7 +338,7 @@ function boundaryTags(gmsh: GmshApi, dim: 3 | 2, tags: number[], wantDim: 2 | 1)
 }
 
 /**
- * Structured (transfinite) meshing for one part (roadmap 4.9, probed live):
+ * Structured (transfinite) meshing for one part (roadmap "Structured meshing per Part", probed live):
  * every meshed edge of the part's entities gets exactly `divisions` nodes,
  * so a regular region meshes as an exact mapped grid (`(n-1)^3` hexes on a
  * box at `divisions: n`, zero tets — verified, coexisting with unstructured

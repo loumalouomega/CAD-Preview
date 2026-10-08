@@ -58,7 +58,7 @@ export interface MeshOptions {
   elementOrder: 1 | 2;
   elementShape: MeshElementShape;
   /**
-   * Post-generate mesh optimisation (roadmap 4.4, probed live against
+   * Post-generate mesh optimisation (probed live against
    * gmsh-wasm 0.3.0 on bull.stp — see `doc/gmsh-integration.md`): `"none"`
    * skips even the generate-time `Mesh.Optimize` flag; `"default"` is today's
    * behavior (generate-time flag only); `"netgen"` additionally runs
@@ -96,7 +96,7 @@ export interface MeshOptions {
    * serial build, where it has no effect. */
   ftetwildDisableFiltering: boolean;
   /**
-   * Conformal multi-body meshing (roadmap 4.2): call
+   * Conformal multi-body meshing: call
    * `gmsh.model.occ.fragment` over every imported solid before meshing, so
    * touching solids share interface nodes. Parts are resolved AFTER the
    * renumbering via the existing bbox-centre match, so physical groups survive.
@@ -115,7 +115,7 @@ export interface MeshOptions {
 }
 
 /**
- * Structured (transfinite) meshing divisions for one `Part` (roadmap 4.9):
+ * Structured (transfinite) meshing divisions for one `Part` (roadmap "Structured meshing per Part"):
  * every meshed edge of the part's entities gets exactly this many nodes, so
  * a regular region meshes as an exact mapped grid instead of unstructured
  * tets. A count, not a length — unit conversion never touches it.

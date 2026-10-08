@@ -35,7 +35,7 @@ JSON-RPC. The temporary `mmg_probe` tool is **not** part of the product API.
 
 The core experiment has a **partial outcome**: both remeshers work, but `optim`
 has lowered minSICN. The product therefore excludes automatic post-Generate
-optimisation and any quality-improvement guarantee. Task 4.17 implements the
+optimisation and any quality-improvement guarantee. The shipped MMG remeshing implements the
 ordinary volume/surface paths after the separate memory experiment:
 
 ```sh

@@ -14,7 +14,7 @@ export interface QualitySummary {
    * except the last bucket, which also absorbs anything >= 1 (a perfect element). */
   histogram: number[];
   /** Elements with a negative Jacobian determinant at any sampled node
-   * (roadmap 4.7) — present only for order-2 meshes, where curving mid-side
+   * (roadmap "Jacobian validity for high-order meshes") — present only for order-2 meshes, where curving mid-side
    * nodes onto the surface can invert an element. Absent otherwise (and when
    * the Jacobian call itself is unavailable); never fabricated. */
   invalidElements?: number;

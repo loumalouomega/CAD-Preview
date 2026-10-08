@@ -170,7 +170,7 @@ function runMeshGenerate(gmsh: GmshApi, options: MeshOptions): void {
 
 /**
  * Explicit post-generate optimisation pass for `MeshOptions.optimize`'s
- * `"netgen"` / `"highOrder"` modes (roadmap 4.4) — the generate-time
+ * `"netgen"` / `"highOrder"` modes (roadmap "Mesh optimisation") — the generate-time
  * `Mesh.Optimize` flag above is a different, always-on-unless-`"none"`
  * mechanism. Same abort discipline as `runMeshGenerate`: an aborted
  * Emscripten instance is corrupt, so reset the singleton and rethrow an
@@ -305,7 +305,7 @@ async function loadGeometryAndApplyOptions(
   if (input.kind === "brep") {
     gmsh.model.occ.importShapes(tmpPath);
     gmsh.model.occ.synchronize();
-    // Conformal multi-body meshing (roadmap 4.2): fragment every imported
+    // Conformal multi-body meshing: fragment every imported
     // solid against the rest so touching solids share interface nodes. Probed
     // live (gmsh-wasm 0.3.0): two touching boxes go from 44 duplicate
     // interface nodes to 0 with an unchanged element count, tags preserved as
@@ -1361,7 +1361,7 @@ export const MAX_WORST_ELEMENTS = 2000;
  */
 /**
  * Reference-tetrahedron nodes of a tet10 (4 corners + 6 edge midpoints) for
- * `getJacobians` sampling (roadmap 4.7). The Jacobian mapping of a quadratic
+ * `getJacobians` sampling (roadmap "Jacobian validity for high-order meshes"). The Jacobian mapping of a quadratic
  * element is itself quadratic, so corner-only sampling can miss an interior
  * inversion — the full 10-node set is the element's own interpolation nodes.
  */
@@ -1385,7 +1385,7 @@ export function computeQualityAndWorstElements(
     const values = result.elementsQuality;
     if (!Array.isArray(values) || values.length !== tags.length) return {};
     const quality = summarizeQuality(values);
-    // Jacobian-based invalid count for order-2 volume meshes (roadmap 4.7):
+    // Jacobian-based invalid count for order-2 volume meshes (roadmap "Jacobian validity for high-order meshes"):
     // a supplementary count, not a second quality metric — probed live to
     // coincide exactly with minSICN<=0 on bull.stp and 4pinplug.stp (9/9 and
     // 20/20, plus the 4/4 remaining after HighOrderElastic), so its value is

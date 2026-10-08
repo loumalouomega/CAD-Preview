@@ -23,6 +23,8 @@ This page is aspirational, not a release commitment — items may be re-ordered,
 
 Existing implementation references were checked against the repository where noted. New candidates remain proposals, not promises of kernel support. The previous review was 2026-09-16.
 
+**Extended 2026-10-08.** This is an extension, not a planning review, so nothing was re-ranked. [Layers](#layers-distinct-from-parts) was added as 2.8 and [multilingual user interface](#multilingual-user-interface) as 5.2. Task IDs in sections 2 and 4 were made continuous, so each section counts from 1 with no gaps. The former IDs of closed Meshing items (4.2, 4.4, 4.7 and 4.9) are no longer used, because the same numbers now belong to open items; those items are cited by name.
+
 Everything previously shipped is tracked in `CHANGELOG.md`, and `CLAUDE.md` has a per-feature section with the verified implementation details for anything currently in the codebase — this page is for what's **not** built yet, plus the Non-goals that record why a direction was rejected so it isn't re-proposed.
 
 ## How this file works
@@ -33,7 +35,7 @@ Everything previously shipped is tracked in `CHANGELOG.md`, and `CLAUDE.md` has 
   - **3–5. Probe-gated:** a hypothesis with a discriminating experiment, grouped by area — geometry, meshing and platform.
   - **6. Strategic:** multi-phase bets that gate other items or reopen Non-goals.
 - **Each item carries an area tag** — *Geometry*, *Meshing*, *Formats*, *Drawings*, *Parity*, *Platform* or *Ecosystem* — so the file can be read by area as well as by tier.
-- **A closed item is removed from this list entirely**, not struck through — its write-up moves to `CLAUDE.md` (a per-feature section with the verified implementation details) and its history stays in git. **Every item has a task ID `S.N`** (section, then position within it — `1.1`, `2.3`, `4.10`), shown in its heading and in the order tables, so a task can be named in an issue, a commit or a conversation. **IDs are renumbered at each planning review**, when items close and sections shift, so an ID is only meaningful against the review date at the top of this page. Code and other documents therefore still cite an item by **name** (the `docRoadmapRefs` gate enforces this), and headings keep an explicit `{#anchor}` so name-based links survive the numbering.
+- **A closed item is removed from this list entirely**, not struck through — its write-up moves to `CLAUDE.md` (a per-feature section with the verified implementation details) and its history stays in git. **Every item has a task ID `S.N`** (section, then position within it — `1.1`, `2.3`, `2.11`), shown in its heading and in the order tables, so a task can be named in an issue, a commit or a conversation. **IDs are renumbered at each planning review**, when items close and sections shift, so an ID is only meaningful against the review date at the top of this page. Positions within a section run without gaps after each renumbering. Code and other documents therefore still cite an item by **name** (the `docRoadmapRefs` gate enforces this), and headings keep an explicit `{#anchor}` so name-based links survive the numbering.
 - **Probe-gated items are hypotheses, not implementation-ready work.** Evidence may be a binding-manifest entry, an upstream API, or a proposed geometric construction. Green in `node_modules/opencascade.js/dist/Supported APIs.md` is **necessary but not sufficient** — both the STEP-unit and the IGES-writer findings started green and only resolved (one negative, one positive) under a real probe, and `HLRAppli_ReflectLines` was green, functional, *and still the wrong tool*. Each probe carries a firm **S** estimate of its own; the implementation phases listed under an item's *If admitted* are conditional, tagged provisionally, and re-estimated once the probe establishes useful output, failure behaviour and cost.
 - **Non-goals are not one thing.** They are split into three groups below because each has a different revival rule, and each group says plainly **what would change our mind**. A rejection nobody re-checks is how a capability stays "permanently out of reach" long after it stopped being — four entries in this file were found stale exactly that way.
 - **An item that corresponds to a known GitHub issue names it inline.** The issue is the request and discussion thread; this file is the proposed scope. Reconcile disagreements against current code and the issue before implementation; neither document automatically overrides a newer decision.
@@ -55,7 +57,7 @@ Closed. All four transferable gaps it found have shipped: narrow-passage preflig
 
 At the review date, meshing was *generate* (Gmsh, fTetWild) plus *repair*
 (fTetWild, meshio++ ops). Ordinary MMG triangle/tetra remeshing has since
-shipped (former task 4.17); automatic quality improvement and field-driven
+shipped (see `CLAUDE.md`); automatic quality improvement and field-driven
 adaptation remain separate, unimplemented scope. This review also covers capabilities already
 in bundled binaries but never called.
 
@@ -71,8 +73,8 @@ product's integration as evidence. Other MMG features below remain probe-gated.
 | --- | --- | --- | --- | --- |
 | MMG — mmg3d / mmgs / mmg2d (`@loumalouomega/mmg-wasm`) | LGPL-3.0-or-later | Yes; mmg3d/mmgs exposed | Ordinary reference-preserving volume/surface remeshing (`hausd`/`hmin`/`hmax`/`hgrad`); metric/local-size/level-set APIs are not product features yet | Shipped (see `CLAUDE.md` and `doc/gmsh-integration.md#mmg-remeshing`), plus [Hausdorff-bounded surface coarsening](#hausdorff-bounded-surface-coarsening-for-the-heal-ceiling), [Metric-driven adaptive remeshing](#metric-driven-adaptive-remeshing-from-a-field) |
 | meshio++ 16.7.0 surface `remesh` (clustering), `estimateError` (ZZ), `interpolate` / `conservativeInterpolate`, `sampleDistance` | MIT | Yes, never called | A licence-free surface remesher to measure MMG against; an error estimator to drive adaptation; mass-preserving field transfer across a remesh | Baseline in the coarsening probe; the field-transfer half of adaptive remeshing |
-| Gmsh `mesh.optimize` (`"Netgen"`, `"HighOrder"`, `"HighOrderElastic"`, …) | GPL-2.0-or-later (Netgen linked in) | Yes; `optimize()` called via the `optimize` enum | Quality optimisation after generate; untangling curved quadratic elements | Shipped as `MeshOptions.optimize` (`none`/`default`/`netgen`/`highOrder`) — repeatable Netgen gain plus a partial HighOrderElastic untangle; `Relocate3D` probed a bit-identical no-op and is not offered (see `doc/gmsh-integration.md#mesh-optimisation-roadmap-44`) |
-| Gmsh `setTransfiniteCurve/Surface/Volume/Automatic` + `setRecombine` | GPL-2.0-or-later | Yes; transfinite constraints applied via `Part.meshStructured` | Structured, mapped hex/quad meshes on regular regions | Shipped as `Part.meshStructured { divisions }` — exact mapped grids with a loud refuse on non-regular regions; `setTransfiniteAutomatic` accepts nothing on the surveyed fixture (see `doc/gmsh-integration.md#structured-meshing-per-part-roadmap-49`) |
+| Gmsh `mesh.optimize` (`"Netgen"`, `"HighOrder"`, `"HighOrderElastic"`, …) | GPL-2.0-or-later (Netgen linked in) | Yes; `optimize()` called via the `optimize` enum | Quality optimisation after generate; untangling curved quadratic elements | Shipped as `MeshOptions.optimize` (`none`/`default`/`netgen`/`highOrder`) — repeatable Netgen gain plus a partial HighOrderElastic untangle; `Relocate3D` probed a bit-identical no-op and is not offered (see `doc/gmsh-integration.md#mesh-optimisation`) |
+| Gmsh `setTransfiniteCurve/Surface/Volume/Automatic` + `setRecombine` | GPL-2.0-or-later | Yes; transfinite constraints applied via `Part.meshStructured` | Structured, mapped hex/quad meshes on regular regions | Shipped as `Part.meshStructured { divisions }` — exact mapped grids with a loud refuse on non-regular regions; `setTransfiniteAutomatic` accepts nothing on the surveyed fixture (see `doc/gmsh-integration.md#structured-meshing-per-part`) |
 | Gmsh `setSizeCallback` | GPL-2.0-or-later | Declared green in 0.3.0, never called | Sizing from a JS function, e.g. a sampled deviation or error field | [JS mesh-size callback](#js-mesh-size-callback) |
 | Gmsh `partition` / `unpartition` (METIS linked in) | GPL-2.0-or-later | Yes, never called | Domain decomposition for distributed solvers | [METIS partitioning for Kratos MPI export](#metis-partitioning-for-kratos-mpi-export) |
 | TetGen | AGPL-3.0 | No | Constrained Delaunay tets | Rejected — see [Other meshing kernels](#rejected-scope) |
@@ -119,7 +121,7 @@ This review lists every capability that is **bound in a shipped kernel but never
 
 - **`plugin.run` and `onelab`:** unused. There is no `view.*` namespace in this binding, so a plugin's output could only be reached through a written `.pos` file.
 - **`model.occ.*` modelling calls** (`fuse`, `fillet`, …): deliberately unused, since OCCT owns modelling here.
-- **`model.occ.fragment` was likewise removed from the table below** — probed, passed, and shipped as the default-on `conformal` mesh option (touching solids share interface nodes; Parts resolve after the renumbering; see `doc/gmsh-integration.md#conformal-multi-body-meshing-roadmap-42`). `model.mesh.optimize` is now also called (shipped as the `optimize` enum); only `Relocate3D` was probed a no-op and is not offered.
+- **`model.occ.fragment` was likewise removed from the table below** — probed, passed, and shipped as the default-on `conformal` mesh option (touching solids share interface nodes; Parts resolve after the renumbering; see `doc/gmsh-integration.md#conformal-multi-body-meshing`). `model.mesh.optimize` is now also called (shipped as the `optimize` enum); only `Relocate3D` was probed a no-op and is not offered.
 - **`model.mesh.setCompound` was removed from the table below** — probed and *failed*: on `bull.stp`, compounding the four smooth-linked face groups ([4, 3, 2, 2] faces, all 36 faces correlated, physical group intact, valid `.msh`) repeatably *lowered* minimum quality (minSICN 0.0269 → 0.0104, bit-identical across three runs; mean 0.7289 → 0.7157) instead of raising it. The binding works; the quality promise does not. See Rejected scope.
 
 | Calls | Would enable | Item |
@@ -146,9 +148,9 @@ CAD-Preview is embedded in [KKSS](https://github.com/loumalouomega/KKSS) as its 
 | --- | --- | --- |
 | Every new capability reachable through this repository's MCP server, since that is the only way the KKSS assistant sees it | KKSS roadmap | Already a house rule ("Shared capabilities must reach both consumers" above) |
 | A small, reproducible structural example that a geometry-to-results tutorial can reuse | KKSS roadmap | [Canonical worked example](#canonical-worked-example-for-the-simulation-tutorial) |
-| Performance baselines covering more than the OCCT and Gmsh paths | KKSS roadmap | [Perf harness coverage](#perf-harness-coverage-for-meshio-and-openscad-loads) |
+| Performance baselines covering more than the OCCT and Gmsh paths | KKSS roadmap | Shipped; see `CLAUDE.md` |
 | One UI vocabulary across both extensions: view snaps 1–6 and `i` proposed for upstreaming, and "Cut Plane" / "REAR" renames pending | VSCode-MDPA-Preview `doc/ui-design-system.md` | [Shared UI design system](#shared-ui-design-system-with-vscode-mdpa-preview) |
-| A scheduled job that compares dependency pins with npm | VSCode-MDPA-Preview roadmap | [Dependency currency](#dependency-currency) |
+| A scheduled job that compares dependency pins with npm | VSCode-MDPA-Preview roadmap | Shipped; see `CLAUDE.md` |
 | Consume CAD's mesh handoff manifest | VSCode-MDPA-Preview roadmap | Already shipped on this side (`export_mesh {manifest: true}`); the consuming half is theirs |
 
 Two stale lines found in the sibling repositories are theirs to fix, not ours:
@@ -177,7 +179,7 @@ It does **not** admit AGPL code, so TetGen stays rejected. Every new bundled dep
 | --- | --- | --- | --- |
 | Upkeep | The base stays current and trustworthy | Done: the dependency watch, "Verify the dependency watch on GitHub", has run — it published issue #84 and re-dispatching reported `unchanged`. The verification-debt gate has shipped and ten claims are closed; the host-side halves (1.1) are next | The verification debt count keeps falling by closure |
 | Parity | Everything an agent can do, a user can do, and the reverse | Done: headless mesh-edit replay closed the last listed gap (as did the hole-table, refinement-sweep, free-text-note and mesh-source FE-export gaps). Justified remainders: mesh `inspect`/mass facts, `promote_mesh_to_brep` and `repair_mesh` read the raw file (their ids and outputs are defined over it; `save_model` bakes first), and glTF has no own-format save (its exporter emits only `.glb`) | Headless tools see the same edited mesh the viewer shows, or each remaining difference is justified |
-| Meshing probes | Decide on remeshing and on conformal assemblies | MMG core probe is closed with a partial outcome: volume/surface/transport work, unconditional optimisation failed. MMG remeshing has shipped (former 4.17): shared service, MCP tool and panel with real-pipeline screenshots and packaged-runtime verification. Conformal multi-body meshing and Gmsh mesh optimisation have shipped (former 4.2, former 4.4), each with probe-measured results and a decision. Manifold mesh booleans (4.6) probed passing (migration pending). Structured meshing per Part has shipped (former 4.9) as `Part.meshStructured` with exact-count smoke coverage. Metric-driven adaptive remeshing (4.10), then pre-mesh healing (4.12), can proceed independently | Each probe filed with measured results and a decision |
+| Meshing probes | Decide on remeshing and on conformal assemblies | MMG core probe is closed with a partial outcome: volume/surface/transport work, unconditional optimisation failed. MMG remeshing has shipped: shared service, MCP tool and panel with real-pipeline screenshots and packaged-runtime verification. Conformal multi-body meshing and Gmsh mesh optimisation have shipped, each with probe-measured results and a decision. Manifold mesh booleans (4.2) probed passing (migration pending). Structured meshing per Part has shipped as `Part.meshStructured` with exact-count smoke coverage. Metric-driven adaptive remeshing (4.4), then pre-mesh healing (4.5), can proceed independently | Each probe filed with measured results and a decision |
 | Geometry probes | Decide which never-called OCCT capabilities become ops | Imprint and split faces (3.1), then B-rep repair (3.2) | Each probe filed with measured results and a decision |
 | Strategic | Remove the kernel ceiling | The self-built OCCT WASM probe (6.1) | The existing test suites pass unchanged against the new build |
 
@@ -301,7 +303,45 @@ These are outcome groupings, not release numbers. Independent small items can sh
 - **Done when:** on a fixture with sub-1 %-diagonal features, a ray that misses at `standard` hits the intended edge at `fine`, and omitting the parameter is indistinguishable from passing `standard`.
 - **Related follow-up, deliberately not folded in:** `compare_models`' optional `includeSnapshots` is the fourth render call site and still has no `tessellationQuality`, so its before/after images render at the `standard` default. It is absent on purpose rather than forgotten — each render parameter widens a surface whose images cost a browser launch apiece — but it should get the same parameter eventually, and `doc/mcp-server.md` says so at that tool's own row so a reader is not left guessing why it lacks what its siblings have.
 
-#### 2.8 meshio++ `feature_edges` replaces the hand-rolled winding check {#meshio-feature-edges-winding-check}
+#### 2.8 Layers, distinct from Parts {#layers-distinct-from-parts}
+
+*Area: Drawings. Effort: M.*
+
+- **What a layer is.** A named container for presentation and drawing output: visibility, lock, a colour, and the layer that a drawing export writes its entities onto. It is the drafting meaning of "layer" (construction, hidden, dimensions, centre lines), not a second kind of Part.
+- **Layers and Parts answer different questions.** The words collide in everyday use, and `Parts` already drive the Parts panel and `<model>.parts.json`, so the two stay apart in the data model, the UI and the sidecar:
+
+| | Parts | Layers (proposed) |
+| --- | --- | --- |
+| Question answered | Which entities form a finite-element sub-model? | Which entities are shown, locked or drawn together? |
+| Meshing | Names, sizes, grading and physical groups follow them | Never: a hidden layer is still meshed |
+| Solver output | Kratos `SubModelPart`s and `.msh` physical groups | None |
+| Drawing output | None | The layer filter, and the drawing layer each entity lands on |
+| Persisted visibility | No: hide and isolate are session-only | Yes: a layer hidden in the viewer stays hidden for drawings and agents |
+| Sidecar | `<model>.parts.json` | `<model>.layers.json` (new) |
+
+- **Membership.** Each solid, face, edge or point belongs to at most one layer. Unassigned entities sit on the default layer, which cannot be deleted. Membership is an `EntityIdBag`, so it rebinds through the same `remapPartEntityIds` pass Parts use, with the same "rebound N, dropped M" reporting. Layers are keyed by a never-reused `layer-N` id, as construction planes are, so a rename or deletion cannot silently retarget a drawing filter.
+- **Decisions to settle at admission.**
+  - **A seventh sidecar.** Membership must be rebound, so it cannot live in `<model>.view.json`, which is display state and is never rebound. A seventh sidecar carries the costs the six existing ones carry: a file watcher, a revision-tracker entry, a dirty-guard call, a preprocess-archive entry and a `list_workspace_models` companion. Those costs are why this item is M. The save journal stays outside the count, as it is today.
+  - **Locks.** A locked entity stays selectable for measurement and inspection. It refuses as an edit operand and as a Transform Gizmo target, in the host and the webview alike, with a named diagnostic. Construction guides already enforce refusals this way.
+  - **Export default.** Drawing exports include every layer unless told otherwise. A default that quietly dropped a hidden layer would be the silent-cap failure this codebase rejects, so "visible layers only" is an explicit choice: a checkbox in the interactive dialogs and a parameter headless.
+  - **Scope of the filter.** Solid exports (STEP, IGES, BREP, STL and the rest) are not filtered in the first increment. The drawing exports are the first consumers.
+- **Reuses shipped machinery.** The sidecar template is `partsSidecar.ts` and `partsStore.ts`, rebinding is `entityRebind.ts`, and hide and lock flow through the visibility state the viewer already applies to Parts. The DXF writer already draws onto named layers (`0`, `HIDDEN`, `DIMENSIONS`, `BORDER`, `TITLE`), so a user layer whose name collides with one of those is written with a prefix. Sidebar placement follows the Parts section.
+- **STEP layers are a separate question.** Reading or writing XCAF layer assignments is the probe in [Read PMI, layers and materials from STEP](#read-pmi-layers-and-materials-from-step), and this item does not depend on it. If that probe passes, imported STEP layers would map onto this sidecar on import rather than become a second model.
+- **First useful increment (M):**
+  - The sidecar with its default layer, membership with rebinding, and persisted visibility and lock, with tolerant parsing as every sidecar here has.
+  - A **Layers** section beside Parts: create, rename, delete (members return to the default layer), show or hide, lock, and an *Assign to layer* action on the current selection in any pick mode.
+  - MCP parity: `list_layers`, `set_layer` (create, rename, delete, visibility, lock, colour), `assign_layer` (entity ids, with unknown ids reported rather than dropped), and `layers` in `get_state`, documented in `describe_capabilities`.
+- **Second increment (S):** the optional `layers` filter on `export_svg_silhouette`, `export_technical_drawing` and `export_drawing_sheet`, and on their File ▸ Export entries. SVG output gains one `<g>` group per layer. DXF output gains a `LAYER` table with each layer's name and colour. The writer emits no such table today, and its own comment in `src/dxfSilhouette.ts` notes that it writes no `TABLES` section.
+- **Done when:**
+  - Creating, renaming or deleting a layer leaves `<model>.parts.json`, every meshing output and every mass figure byte-identical. This is the test that keeps the two concepts apart.
+  - A topology-changing edit rebinds membership and reports what it dropped. It never repoints a member silently.
+  - A locked entity refuses as an edit operand with a named diagnostic, from the Edits panel and from `apply_edit_ops` alike.
+  - A drawing export restricted to one layer contains exactly that layer's edges, cross-checked against the unrestricted export.
+  - A layer survives reopen, and `list_layers` agrees with the panel on the same file.
+- **Out of scope:** nested layers or layer groups; line weights and linetypes beyond colour; a second membership per entity; layer-driven meshing or suppression (use Parts, or a future suppression feature); materials per layer.
+- **Documentation when it ships:** the header's "six-sidecar persistence model" and the Non-goals' "The six sidecars" both become seven. `doc/file-formats.md`, `doc/mcp-server.md` and `doc/getting-started.md` gain the sidecar, the tools and a Layers section.
+
+#### 2.9 meshio++ `feature_edges` replaces the hand-rolled winding check {#meshio-feature-edges-winding-check}
 
 *Area: Meshing. Effort: S–M.*
 
@@ -310,7 +350,7 @@ These are outcome groupings, not release numbers. Independent small items can sh
 - **First useful increment (S–M):** report `inconsistentEdgeIds` (not just a count) from `analyzeMeshioSurfaces` using `featureEdges`' `feature:kind === "inconsistent"`, and cross-check it against the existing `inconsistentPairCount` on `flipped-winding-tet.stl` and the clean fixtures. If they agree on every committed fixture, retire the hand-rolled counter and say so in the same commit — one implementation of a fact, the same rule that removed the duplicated edge enumerator. A disagreement is a finding in itself and belongs in the write-up either way.
 - **Done when:** the count has one implementation, the pure analyzer's limitation is documented as a deliberate boundary rather than an open gap, and a fixture whose two implementations disagree cannot land silently.
 
-#### 2.9 meshio++ `check_quality` as a caller-supplied quality gate {#meshio-check-quality-gate}
+#### 2.10 meshio++ `check_quality` as a caller-supplied quality gate {#meshio-check-quality-gate}
 
 *Area: Meshing. Effort: S–M.*
 
@@ -319,7 +359,7 @@ These are outcome groupings, not release numbers. Independent small items can sh
 - **First useful increment (S–M):** an `estimate_mesh_budget`-shaped sibling: an MCP tool plus a panel row that runs the gate over the generated mesh and reports per-check results. It belongs **beside** the existing Gmsh `minSICN` summary rather than replacing it — the two metrics measure different things (a Jacobian on the actual cells vs. a shape-quality index), and a user needs both. The meshing spec for the docs lives in `doc/gmsh-integration.md`, which is where the comparison belongs.
 - **Done when:** a caller can state a threshold, get per-check facts back, and a deliberately bad mesh and a deliberately good one are distinguishable on the same fixture. Interactive and MCP reach the same result, per the parity rule.
 
-#### 2.10 meshio++ `hausdorff_distance` as a cross-check on the deviation map {#meshio-hausdorff-deviation-cross-check}
+#### 2.11 meshio++ `hausdorff_distance` as a cross-check on the deviation map {#meshio-hausdorff-deviation-cross-check}
 
 *Area: Meshing. Effort: S.*
 
@@ -566,19 +606,19 @@ None of these depends on another's result.
 
 | ID | Item | Needs | Why here |
 | --- | --- | --- | --- |
-| 4.3 | Hausdorff-bounded surface coarsening | the MMG core loader; meshio++ already bundled | Fixes a known defect (a degenerate heal after auto-decimate), and may need no new dependency at all |
-| 4.6 | Manifold mesh booleans | `manifold-3d` installed for the probe | Replaces the one mesh operation that can produce non-manifold output |
-| 4.8 | Anisotropic boundary layers | a `$Elements` walker | The largest Gmsh probe, and the first live exercise of `dimension: 2` |
-| 4.10 | Metric-driven adaptive remeshing | verified MMG volume path | Reuses the shipped MMG volume path without assuming any quality guarantee; highest value of the MMG items but the most moving parts |
-| 4.12 | Pre-mesh healing | — | Worth measuring against fTetWild before building any UI |
-| 4.13 | Hex-dominant MDPA export | — | Closes a documented refusal; may end in Kernel-blocked |
-| 4.14 | Periodic meshing | — | Niche (representative-volume-element studies) |
-| 4.15 | JS mesh-size callback | — | Only needed if a sizing source outgrows Gmsh's declarative fields |
-| 4.16 | METIS partitioning for Kratos MPI export | — | Lowest value; no user has asked for partitioned output yet |
+| 4.1 | Hausdorff-bounded surface coarsening | the MMG core loader; meshio++ already bundled | Fixes a known defect (a degenerate heal after auto-decimate), and may need no new dependency at all |
+| 4.2 | Manifold mesh booleans | `manifold-3d` installed for the probe | Replaces the one mesh operation that can produce non-manifold output |
+| 4.3 | Anisotropic boundary layers | a `$Elements` walker | The largest Gmsh probe, and the first live exercise of `dimension: 2` |
+| 4.4 | Metric-driven adaptive remeshing | verified MMG volume path | Reuses the shipped MMG volume path without assuming any quality guarantee; highest value of the MMG items but the most moving parts |
+| 4.5 | Pre-mesh healing | — | Worth measuring against fTetWild before building any UI |
+| 4.6 | Hex-dominant MDPA export | — | Closes a documented refusal; may end in Kernel-blocked |
+| 4.7 | Periodic meshing | — | Niche (representative-volume-element studies) |
+| 4.8 | JS mesh-size callback | — | Only needed if a sizing source outgrows Gmsh's declarative fields |
+| 4.9 | METIS partitioning for Kratos MPI export | — | Lowest value; no user has asked for partitioned output yet |
 
-The MMG core probe is complete; its working volume/surface paths and negative optimisation result are recorded in `CLAUDE.md`. MMG remeshing has shipped through the former 4.17 (shared `remeshMesh` service, `remesh_mesh` MCP tool and FE-panel action, with memory admission, documentation, real-pipeline screenshots and packaged-runtime verification). Conformal multi-body meshing (former 4.2) has shipped as the default-on `conformal` mesh option with handoff-manifest recording, Gmsh mesh optimisation (former 4.4) has shipped as the `optimize` enum, and structured meshing per Part (former 4.9) has shipped as `Part.meshStructured` — probe numbers and findings are in `doc/gmsh-integration.md`. 4.10 can probe adaptation using that shipped volume path without assuming any quality guarantee; 4.3's meshio++ half stands alone. Existing IDs stay unchanged until the next planning review.
+The MMG core probe is complete; its working volume/surface paths and negative optimisation result are recorded in `CLAUDE.md`. MMG remeshing has shipped (shared `remeshMesh` service, `remesh_mesh` MCP tool and FE-panel action, with memory admission, documentation, real-pipeline screenshots and packaged-runtime verification). Conformal multi-body meshing has shipped as the default-on `conformal` mesh option with handoff-manifest recording, Gmsh mesh optimisation has shipped as the `optimize` enum, and structured meshing per Part has shipped as `Part.meshStructured` — probe numbers and findings are in `doc/gmsh-integration.md`. 4.4 can probe adaptation using that shipped volume path without assuming any quality guarantee; 4.1's meshio++ half stands alone. IDs in this section were made continuous on 2026-10-08 (see the header).
 
-##### 4.3 Hausdorff-bounded surface coarsening for the heal ceiling {#hausdorff-bounded-surface-coarsening-for-the-heal-ceiling}
+##### 4.1 Hausdorff-bounded surface coarsening for the heal ceiling {#hausdorff-bounded-surface-coarsening-for-the-heal-ceiling}
 
 *Area: Meshing.*
 
@@ -602,7 +642,7 @@ The MMG core probe is complete; its working volume/surface paths and negative op
 - **Probe result (negative, 2026-10-07, meshio++ 16.27.0 / MMG 0.1.0):** all three candidates fail the gate, so the pinned degenerate-heal refusal stays. Measured through the unchanged `checkMeshHealth`: decimate at ratio 0.01 (exactly 1000 tris) closes at 1e-6 with 4 non-manifold edges but heals to volume exactly 0, reproducing the known finding; meshio++ `remesh` isotropic at numClusters 500 → 958 tris plus a `line:26` boundary-dual block, 40 free edges in an equatorial band, never closes (preserveBoundary=false: 960 tris, 38 free, never closes — the openness is not the boundary seeding); mmgs at hausd 0.01 (absolute 0.346 on the 34.64 diagonal) → 391 tris, 25 free edges, never closes. Two corrections to the sketch above: `remesh`'s numClusters counts *vertices* (F ≈ 2V — 500 clusters → 958 tris, 1000 → 1941), and hausd is an upper deviation bound, not a triangle target. The 5k repeat was not run: no candidate met the 1k gate, and decimate-at-5k is already recorded past the 300 s watchdog. Do not re-run without a new candidate or a new meshio++/MMG version.
 - **Out of scope:** raising `MAX_HEALABLE_TRIANGLES`; the per-triangle sewing cost is the real limit.
 
-##### 4.6 Manifold mesh booleans {#manifold-mesh-booleans}
+##### 4.2 Manifold mesh booleans {#manifold-mesh-booleans}
 
 *Area: Meshing.*
 
@@ -625,7 +665,7 @@ The MMG core probe is complete; its working volume/surface paths and negative op
   - The dense-mesh guard is re-measured.
   - README Licensing gains the Apache-2.0 attribution.
 
-##### 4.8 Anisotropic boundary layers for 2D Gmsh meshes {#anisotropic-boundary-layers-for-2d-gmsh-meshes}
+##### 4.3 Anisotropic boundary layers for 2D Gmsh meshes {#anisotropic-boundary-layers-for-2d-gmsh-meshes}
 
 *Area: Meshing.*
 
@@ -644,7 +684,7 @@ The MMG core probe is complete; its working volume/surface paths and negative op
 - **Out of scope:** 3D layers on OCC-imported solids unless step 4 proves the route; STL sources (no entity correlation, the same rule physical groups follow).
 - **Not a substitute:** MMG's per-reference local sizes (shipped MMG remeshing, see `doc/gmsh-integration.md#mmg-remeshing`) refine isotropically near a wall. They do not build stacked, ratio-graded layers, so a passed MMG probe does not close this item.
 
-##### 4.10 Metric-driven adaptive remeshing from a field {#metric-driven-adaptive-remeshing-from-a-field}
+##### 4.4 Metric-driven adaptive remeshing from a field {#metric-driven-adaptive-remeshing-from-a-field}
 
 *Area: Meshing.*
 
@@ -668,7 +708,7 @@ The MMG core probe is complete; its working volume/surface paths and negative op
   - Level-set discretisation (MMG `-ls`, cutting a mesh along an isosurface into two materials). It is a separate workflow with its own reference rules (MMG reserves references 2/3), and it waits for a concrete request.
   - Solver coupling. Adaptation is a single, user-triggered pass, never a loop.
 
-##### 4.12 Pre-mesh healing {#pre-mesh-healing}
+##### 4.5 Pre-mesh healing {#pre-mesh-healing}
 
 *Area: Meshing.*
 
@@ -684,7 +724,7 @@ The MMG core probe is complete; its working volume/surface paths and negative op
   - **Fail:** recorded. fTetWild remains the answer.
 - **If admitted (S):** an opt-in `heal` mesh option recorded in the handoff manifest.
 
-##### 4.13 Hex-dominant MDPA export {#hex-dominant-mdpa-export}
+##### 4.6 Hex-dominant MDPA export {#hex-dominant-mdpa-export}
 
 *Area: Meshing.*
 
@@ -701,7 +741,7 @@ The MMG core probe is complete; its working volume/surface paths and negative op
   - **Fail:** the shape is ambiguous → Kernel-blocked, and the refusal stays.
 - **If admitted (S–M):** MDPA export splits type 140 and says so in its warnings and in the handoff manifest.
 
-##### 4.14 Periodic meshing {#periodic-meshing}
+##### 4.7 Periodic meshing {#periodic-meshing}
 
 *Area: Meshing.*
 
@@ -715,7 +755,7 @@ The MMG core probe is complete; its working volume/surface paths and negative op
   - **Fail:** recorded.
 - **If admitted (M):** a periodic-pair mesh option between two Parts, with the node pairs written to the MDPA as a SubModelPart pair.
 
-##### 4.15 JS mesh-size callback {#js-mesh-size-callback}
+##### 4.8 JS mesh-size callback {#js-mesh-size-callback}
 
 *Area: Meshing.*
 
@@ -731,7 +771,7 @@ The MMG core probe is complete; its working volume/surface paths and negative op
   - **Fail:** a throw, an abort or no effect → Kernel-blocked, with the finding recorded in `doc/gmsh-integration.md` too.
 - **If admitted:** no feature by itself. This probe is an enabler, recorded so a future sizing source can choose it knowingly. The known cost is stated: a callback is not declarative, so it cannot round-trip through `.geo`, `.geo_unrolled` or the `.mesh.json` sidecar.
 
-##### 4.16 METIS partitioning for Kratos MPI export {#metis-partitioning-for-kratos-mpi-export}
+##### 4.9 METIS partitioning for Kratos MPI export {#metis-partitioning-for-kratos-mpi-export}
 
 *Area: Meshing.*
 
@@ -770,6 +810,38 @@ The MMG core probe is complete; its working volume/surface paths and negative op
   - **Pass:** within the ceiling. A pool capped at N workers, with the shared worker as overflow, becomes the design.
   - **Fail:** recorded. The shared worker stays, and the trade-off is re-stated with numbers.
 - **If admitted (M):** `kernelClient.ts` maps each owner to a worker, and the watchdog and cancel paths kill only the owning worker.
+
+##### 5.2 Multilingual user interface {#multilingual-user-interface}
+
+*Area: Platform.*
+
+- **Hypothesis:** the interface can be translated, and numbers localised, without changing any machine-readable contract. Those contracts are the sidecar JSON, the expression grammar, the MCP outputs and the format writers. VS Code's own mechanisms can carry the host half: `package.nls.<locale>.json` for manifest strings and `vscode.l10n` bundles for runtime strings.
+- **Evidence today:**
+  - User-facing text is English literal throughout: about 165 status and notification call sites in `src/` (tests excluded), plus the static markup in `src/viewerDom.ts` and the panel classes.
+  - `package.json` has no `%key%` references and no `package.nls*.json`, so even command titles and setting descriptions are English-only.
+  - Numbers are where the difficulty lies. `src/paramExpr.ts` treats `,` as the separator between function arguments (`paramExpr.ts:154`), so a decimal comma cannot be admitted naively inside an expression.
+  - The locale has already bitten once: the Part-size fields moved from `type="number"` to `type="text"`, because a number input renders through the OS locale, so `4.0231` read `4,0231` on a Spanish machine.
+  - Five files pin `en-US` explicitly (`tessellationExport.ts`, `provider.ts`, `dockStats.ts`, `entityExplain.ts` and `meshingPanel.ts`). A locale switch has to decide, file by file, whether each pin is a contract or a formatting choice.
+- **Probe (S):**
+  1. *Grammar.* List every place a comma is significant: function arguments in `paramExpr.ts`, and any list-valued field. Then test whether a decimal comma can be admitted in a plain numeric field only, parsed before the expression grammar and rejected inside an expression with a message that names the rule. Unit-test that `.`-decimal input is unchanged, and that `1,5` in a numeric field reads as 1.5 under the chosen rule.
+  2. *Platform localisation.* In `test:integration`, launch the test VS Code with `--locale=es` and throwaway `package.nls.es.json` and `l10n/bundle.l10n.es.json` files. Assert that a manifest title and a host notification both resolve to their Spanish text.
+  3. *Catalogue cost.* Move the status and notification strings and the static `viewerDom.ts` labels into a throwaway catalogue with one extra locale. Record the gzip growth of `media/viewer.js` and `dist/extension.js`, and confirm `test:webview` passes with the locale forced. As a starting proposal, a ceiling of 10 % growth of the viewer bundle per locale, to be confirmed with the maintainer.
+  4. *Contract boundary.* Confirm from `describe_capabilities` and the sidecar parsers that no machine-readable key is derived from display text.
+- **Decision gate:**
+  - **Pass:** one unambiguous number-input rule, platform localisation resolves, and growth stays inside the ceiling.
+  - **Partial:** no safe input rule → localise display only, keep `.`-decimal input with a visible hint, and record that as the decision. Localised display alone is still a product.
+  - **Fail:** platform localisation does not resolve under `--locale` → webview catalogue only, manifest strings stay English, recorded here.
+- **If admitted (L, provisional; each phase is verified on its own):**
+  - **Phase 1 (M):** externalise every string into one English-source catalogue. A structural gate in `npm test` fails on a key used in source but missing from the catalogue, in the style of the documentation coverage gate. The English build must not change: `test:webview` stays green, and regenerated screenshots show no unintended text change.
+  - **Phase 2 (S–M):** locale-aware number and unit display through `Intl.NumberFormat`, using the rule the probe chose. Plurals go through `Intl.PluralRules`, never string concatenation. Each of the five pinned `en-US` files is decided explicitly.
+  - **Phase 3 (M):** manifest strings through `package.nls.<locale>.json`, host notifications through `vscode.l10n`, and the first translated locale. Which language comes first is the maintainer's decision. The phase includes a translator workflow and an English fallback for missing keys.
+  - **Phase 4 (L, a separate decision):** documentation localisation through VitePress locales. Not part of Phases 1–3.
+- **Out of scope:**
+  - MCP tool descriptions, error text and output keys stay English. An agent consumes the contract, and translating the contract would mean a second surface to test.
+  - Right-to-left layout.
+  - Machine translation of shipped strings without a reviewer.
+  - Locale-dependent sidecar or export formats. Every file this extension writes keeps `.` decimals.
+- **Done when:** a second locale passes `test:webview` and `test:integration` with its own catalogue; the gate reports zero missing keys for that locale; English screenshots are unchanged apart from intentional text edits; and each of the five pinned `en-US` files has a recorded decision.
 
 ### 6. Strategic — multi-phase bets {#strategic-—-multi-phase-bets}
 
@@ -889,7 +961,7 @@ Three groups, three different revival rules. Each says what would change our min
 
 - **MMG `optim` as an unconditional quality improvement or automatic post-Generate pass.** The MMG core probe (0.1.0 / MMG 5.8.0, 2026-10-06) used `mmg3d.setIparameter(mesh,met,IPARAM_optim,1)` then `remesh(mesh,met)` on fTetWild output of `examples/STL/holed-cube.stl`. Gmsh independently measured minSICN falling **0.427485 → 0.271894**, then **0.345839 → 0.322069**; the repeat also changed **9,503 → 24,322 tets**. The binding works, but the quality-improvement promise does not. **What survives:** ordinary reference-preserving volume and surface remeshing (shipped; see `doc/gmsh-integration.md#mmg-remeshing`), without this guarantee. **Revive only** for a different explicit strategy that passes independent quality and geometry checks on the motivating fixture; do not silently substitute MMG's own metric for the Gmsh minSICN gate.
 
-- **Gmsh `optimize("Relocate3D")` as a mesh optimisation mode.** Probed live (gmsh-wasm 0.3.0, `bull.stp` at the smoke-test size, two full runs): worst-element minSICN came back bit-identical (0.027591537627954913 both runs, mean +0.0017) — a no-op on what matters, while Netgen and HighOrderElastic measurably move the same numbers (shipped as the `optimize` enum; see `doc/gmsh-integration.md#mesh-optimisation-roadmap-44`). **Revive only** with a measured min/mean gain on the same fixture from a newer Gmsh build.
+- **Gmsh `optimize("Relocate3D")` as a mesh optimisation mode.** Probed live (gmsh-wasm 0.3.0, `bull.stp` at the smoke-test size, two full runs): worst-element minSICN came back bit-identical (0.027591537627954913 both runs, mean +0.0017) — a no-op on what matters, while Netgen and HighOrderElastic measurably move the same numbers (shipped as the `optimize` enum; see `doc/gmsh-integration.md#mesh-optimisation`). **Revive only** with a measured min/mean gain on the same fixture from a newer Gmsh build.
 
 - **Compound meshing across sliver faces (`model.mesh.setCompound`).** Probed live (gmsh-wasm 0.3.0, `bull.stp` at the smoke-test size, three full runs, bit-identical): compounding the four smooth-linked face groups ([4, 3, 2, 2] faces from 9 smooth edges; all 36 faces bbox-correlated; Part physical group intact; valid `.msh`) repeatably *lowered* minimum quality (minSICN 0.0269 → 0.0104; mean 0.7289 → 0.7157; sub-0.2 count 31 → 30; elements 1700 → 1650) instead of raising it. The binding works — accepted without a throw — but the quality promise is backwards, so there is no "Merge smooth patches" option to offer. **Revive only** with a real fixture where compounding measurably raises minimum quality with Parts intact, on the same harness.
 
@@ -907,7 +979,7 @@ Three groups, three different revival rules. Each says what would change our min
   - **TetGen** is AGPL-3.0: a stronger copyleft than anything bundled so far. It adds nothing fTetWild (robust tets from dirty input) and Gmsh (constrained Delaunay, which already uses tetgen-derived boundary recovery) do not already cover.
   - **CGAL's Mesh_3 and Polygon_mesh_processing remeshers** are GPL-3.0-or-later — no longer a licence barrier now that CAD-Preview is itself `GPL-3.0-or-later`, so this is *not pursued* rather than *blocked*. There is no standalone WASM build of them, and their capabilities are covered by MMG (isotropic surface remeshing) and meshio++'s clustering `remesh`. (A future OpenSCAD WASM build may statically link CGAL internally; that does not expose CGAL's meshers to JS.)
   - **ParMmg** is MMG over MPI. A single-process WASM worker has no MPI, and the meshes this extension handles fit a sequential MMG.
-  - **A standalone Netgen** would duplicate the copy already linked into the bundled Gmsh, which is reachable through the shipped `optimize: "netgen"` mode (see `doc/gmsh-integration.md#mesh-optimisation-roadmap-44`).
+  - **A standalone Netgen** would duplicate the copy already linked into the bundled Gmsh, which is reachable through the shipped `optimize: "netgen"` mode (see `doc/gmsh-integration.md#mesh-optimisation`).
 
   **What would change our mind:**
   - For TetGen: a relicensing decision to AGPL-3.0-or-later made for other reasons (its licence is a stronger copyleft than the project's own `GPL-3.0-or-later`).

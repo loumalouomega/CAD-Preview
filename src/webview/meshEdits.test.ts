@@ -217,7 +217,7 @@ describe("booleans/holes on uv-less meshes (loader/B-rep output)", () => {
   // inside evaluate() when one is missing. These cases pin the ensureUvForCsg
   // guard with the geometries production actually brushes; every pre-existing
   // boolean/hole case above uses uv-carrying BoxGeometry and stayed green
-  // through the defect. Found live by the manifold-booleans probe (4.6).
+  // through the defect. Found live by the manifold-booleans probe.
   function uvLessRoot(): THREE.Object3D {
     const root = new THREE.Group();
     for (const x of [0, 1]) {
