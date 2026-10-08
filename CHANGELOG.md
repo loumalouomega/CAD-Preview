@@ -4,6 +4,12 @@ All notable changes to the "CAD Preview" extension are documented in this file.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/); this project does not yet strictly follow Semantic Versioning (pre-1.0 releases moved fast and bundled multiple features per bump).
 
+## [Unreleased]
+
+### Security
+
+- **`@modelcontextprotocol/sdk` 1.30.1 → 1.31.0 closes Dependabot alert GHSA-6qxp-vccf-f47h (high, CVSS 7.5).** The advisory covers SDK releases from 1.12.0 up to, but not including, 1.31.0: the SDK's OAuth client could send credentials to an authorization server chosen by the MCP server. The MCP server bundle does not include that client code, and 1.31.0 changes only the OAuth/auth modules and their examples, so the server's tools are unchanged. 1.31.0 is the smallest patched release; 1.32.x also changes the server core and is left for a separate pass. `npm audit` reports no vulnerabilities after the change.
+
 ## [3.11.0] - 2026-10-06
 
 ### Added
