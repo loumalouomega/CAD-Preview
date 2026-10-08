@@ -370,6 +370,23 @@
           "default": "openscad",
           "description": "OpenSCAD binary used to convert .scad sources to .csg on open (resolved via PATH when bare). Wins over the OPENSCAD_BINARY environment variable, which is the headless (MCP server) escape hatch. Unused when no .scad file is opened."
         },
+        "cadPreview.openscadBackend": {
+          "type": "string",
+          "enum": ["auto", "cgal", "manifold"],
+          "enumDescriptions": [
+            "Pass no backend flag: whatever the installed OpenSCAD defaults to. Works with every OpenSCAD release.",
+            "Force the CGAL engine (--backend=cgal). The long-standing default; slower on large boolean trees.",
+            "Force the Manifold engine (--backend=manifold): much faster booleans, but needs a recent (2025+) OpenSCAD snapshot."
+          ],
+          "default": "auto",
+          "description": "Geometry engine OpenSCAD evaluates .scad sources with. Leave on auto unless your OpenSCAD supports --backend. Headless twin: the OPENSCAD_BACKEND environment variable (cgal or manifold). Unused when no .scad file is opened."
+        },
+        "cadPreview.openscadLibraryPaths": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [],
+          "description": "Extra OpenSCAD library folders (BOSL2, MCAD, ...) prepended to OPENSCADPATH for the conversion only, so `use <BOSL2/std.scad>` resolves without copying libraries beside every model. Absolute paths. Unused when no .scad file is opened."
+        },
         "cadPreview.kernelTimeoutMinutes": {
           "type": "number",
           "default": 5,

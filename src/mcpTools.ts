@@ -66,7 +66,8 @@ import {
   type MeshStructured,
 } from "./meshOptions";
 import { scaleStlBytes } from "./stlParser";
-import { resolveEffectiveSource, ScadUnavailableError } from "./scadService";
+import { convertScadToCsg, resolveEffectiveSource, ScadUnavailableError } from "./scadService";
+import { parseScadParameters, validateScadOverrides, type ScadParameter } from "./scadParams";
 import { validateSelectorQuery } from "./selectorQuery";
 import { clean, envelope } from "./untrustedText";
 import { MESH_EXPORT_FORMATS, meshExportFormat, companionSaveName, type MeshExportFormat } from "./meshExportFormats";
@@ -574,7 +575,7 @@ export function describeCapabilities() {
       "export_svg_silhouette writes an OUTLINE only — no hidden-line removal, so it is NOT a dimensioned 2D technical drawing: back-facing geometry isn't drawn, but neither are interior feature edges off the silhouette. OCCT's HLRBRep_* hidden-line classes are entirely unavailable in this WASM build, and HLRAppli_ReflectLines (the one green alternative) was probed and produced a strictly worse drawing, so the outline is derived from triangle adjacency instead — which is also why it works for STL/OBJ/PLY/glTF sources, not just B-rep. Treat the result as a review/illustration artifact; use measure/measure_exact for any dimension you need to be sure of. For a drawing WITH hidden-line removal — interior feature edges, occluded runs dashed — use export_technical_drawing, which gets there on the same triangle adjacency rather than through the unavailable kernel API.",
       "export_drawing_sheet places several views (default front/top/right/iso) on ONE sheet at a shared scale with a title block, orthographically aligned per first-angle (default) or third-angle projection. It is the one drawing tool with dimension logic beyond baking a pin verbatim: each pinned annotation is drawn exactly once, in the orthographic view where its measured line reads at true length (never foreshortened, never repeated). paper:'fit' (default) sizes the sheet to the content at 1:1 or an explicit scale; a named ISO paper size picks the largest ISO 5455 standard scale that fits and reports if none does, rather than silently clipping. No unit conversion — a sheet's scale ratio is only meaningful against the model's native millimetres.",
       "B-rep sources (.step/.stp/.iges/.igs/.brep/.csg): full pipeline — load, edit, mesh, export. `.scad` converts to `.csg` first via a user-installed openscad binary (see below); without one every .scad tool returns supported:false.",
-      ".scad sources: identical to .csg once converted — which needs the openscad binary (cadPreview.openscadBinary setting, OPENSCAD_BINARY env override, else PATH). Absent binary → supported:false with an install hint on every .scad call, never a throw. Conversion runs `openscad -o <tmp>/model.csg <real path>` with cwd = the source directory (relative use/include/import keep working), capped at a 2-minute kill; openscad's own stderr chatter surfaces as warnings.",
+      ".scad sources: identical to .csg once converted — which needs the openscad binary (cadPreview.openscadBinary setting, OPENSCAD_BINARY env override, else PATH). Absent binary → supported:false with an install hint on every .scad call, never a throw. Conversion runs `openscad -o <tmp>/model.csg <real path>` with cwd = the source directory (relative use/include/import keep working), capped at a 2-minute kill; openscad's own stderr chatter surfaces as warnings. OPENSCAD_BACKEND (cgal|manifold; manifold needs a 2025+ OpenSCAD) selects the engine and OPENSCADPATH (or cadPreview.openscadLibraryPaths interactively) supplies library folders such as BOSL2. list_scad_parameters reads a file's Customizer parameters from its text (no binary needed); convert_scad re-evaluates it with `-D` overrides and writes a new .csg, leaving the .scad untouched.",
       ".stl sources: meshable headless; pending edit ops ARE baked into the meshed geometry by the kernel worker's headless mesh-edit replay (the same three.js engine and ids the viewer uses; a skipped op is reported by index), and parts cannot become physical groups.",
       ".obj/.ply/.gltf/.glb sources: meshable headless (host-side parsed into a welded triangle mesh via the same dedicated parsers compare_models/check_mesh_health/promote_mesh_to_brep already use, then re-serialized as STL for the meshing pipeline — no webview needed); pending edit ops are baked in by the headless mesh-edit replay (loaded with the viewer's own three.js loaders so node-N ids match), and parts cannot become physical groups, same as .stl. save_model bakes an STL/OBJ/PLY source in place in its own format; glTF has no same-format writer (its exporter emits only .glb).",
       ".vtk/.vtu/.med/.cgns/.exo(.e)/.xdmf/.mdpa/.foam/.msh(.msh2)/.inp/.unv/.su2/.mesh/.post.msh sources (meshio++): meshable headless from the raw file bytes (converted host-side to an STL boundary surface, no webview needed — more capable than .obj/.ply/.gltf here); pending edit ops are baked over that converted boundary (the node-0 mesh the viewer edits), same as .stl. Not exportable headless (export_mesh targets a source-agnostic generated FE mesh, not the source document itself).",
@@ -6766,4 +6767,99 @@ export async function generatePrepReportTool(
     sections: sections.map((s) => ({ id: s.id, status: s.status, reason: s.reason ?? null })),
     warnings: notes,
   };
+}
+
+// ---------------------------------------------------------------------------
+// OpenSCAD Customizer: list_scad_parameters / convert_scad
+//
+// The Customizer parameters of a `.scad` file are plain top-level literals the
+// source itself declares, so READING them needs no OpenSCAD binary at all —
+// `list_scad_parameters` works on a machine without one. CHANGING them means
+// evaluating the file again with `-D name=value`, which does need the binary:
+// `convert_scad` runs that and writes the result as a `.csg`, a brand-new file
+// that `load_model` and every other tool then open as an ordinary document.
+// The `.scad` source is never written and no sidecar is added — the override
+// lives in the generated file, the same "produce a new file, don't mutate"
+// shape `promote_mesh_to_brep` and `download_standard_part` use.
+// ---------------------------------------------------------------------------
+
+async function readScadSource(modelPath: string): Promise<string> {
+  const route = requireRoute(modelPath);
+  if (route.format !== "scad") {
+    throw new Error(`${path.basename(modelPath)} is not an OpenSCAD .scad source (Customizer parameters exist only there).`);
+  }
+  return new TextDecoder("utf-8").decode(await readModelBytes(modelPath));
+}
+
+/**
+ * Lists a `.scad` file's Customizer parameters: name, type, default, group,
+ * description, range / option list. Facts about the source text only —
+ * nothing is evaluated, so a parameter that the model never actually reads
+ * still appears, and one assigned through an expression does not.
+ */
+export async function listScadParameters(params: { path: string; includeHidden?: boolean }): Promise<{
+  path: string;
+  parameters: ScadParameter[];
+  count: number;
+  hiddenCount: number;
+  warnings: string[];
+}> {
+  const all = parseScadParameters(await readScadSource(params.path));
+  const parameters = params.includeHidden ? all : all.filter((p) => !p.hidden);
+  const warnings: string[] = [];
+  if (all.length === 0) {
+    warnings.push(
+      "No Customizer parameters found: only single-line top-level `name = literal;` assignments before the first module/function count. The file can still be converted unchanged with convert_scad."
+    );
+  }
+  return { path: params.path, parameters, count: parameters.length, hiddenCount: all.length - parameters.length, warnings };
+}
+
+/**
+ * Evaluates a `.scad` file with optional parameter overrides and writes the
+ * resulting `.csg` to `outputPath`. Overrides are validated against the
+ * file's own Customizer parameters (unknown names and wrong types are reported
+ * and dropped, never guessed at); `$fn`/`$fa`/`$fs` are accepted undeclared.
+ * Needs the openscad binary — without one the result is `supported: false`
+ * with the install hint, like every other `.scad` path.
+ */
+export async function convertScadTool(params: {
+  path: string;
+  outputPath: string;
+  parameters?: Record<string, unknown>;
+  backend?: string;
+  libraryPaths?: string[];
+  overwrite?: boolean;
+}): Promise<{
+  supported: boolean;
+  written?: string;
+  bytes?: number;
+  applied: Record<string, unknown>;
+  warnings: string[];
+}> {
+  const text = await readScadSource(params.path);
+  assertNotSourcePath(params.path, params.outputPath);
+  if (routeFile(params.outputPath)?.format !== "csg") {
+    throw new Error(`outputPath must end in .csg (got ${path.basename(params.outputPath)}) — convert_scad writes the evaluated CSG tree, which load_model then opens.`);
+  }
+  const warnings: string[] = [];
+  const checked = validateScadOverrides(parseScadParameters(text), params.parameters ?? {});
+  warnings.push(...checked.warnings);
+  if (!params.overwrite) {
+    const exists = await fs.stat(params.outputPath).then(() => true, () => false);
+    if (exists) throw new Error(`${params.outputPath} already exists — pass overwrite: true to replace it.`);
+  }
+  try {
+    const { csgBytes, warnings: convWarnings } = await convertScadToCsg(params.path, {
+      backend: params.backend,
+      libraryPaths: params.libraryPaths,
+      defines: checked.defines,
+    });
+    warnings.push(...convWarnings);
+    await fs.writeFile(params.outputPath, csgBytes);
+    return { supported: true, written: params.outputPath, bytes: csgBytes.length, applied: checked.defines, warnings };
+  } catch (err) {
+    if (err instanceof ScadUnavailableError) return { supported: false, applied: {}, warnings: [...warnings, err.reason] };
+    throw err;
+  }
 }

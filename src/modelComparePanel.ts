@@ -2,6 +2,7 @@ import * as vscode from "vscode";
 import { routeFile, COMPARABLE_MESH_FORMATS, type CadFormat, type MeshParseFormat } from "./fileRouter";
 import { resolveExternalBuffers } from "./gltfParser";
 import { resolveEffectiveSource, ScadUnavailableError } from "./scadService";
+import { readScadSettings } from "./scadSettings";
 import { readEdits } from "./editsStore";
 import { replayTail } from "./editsSidecar";
 import type { CompareSource } from "./modelDiffHost";
@@ -46,13 +47,12 @@ async function resolveCompareSource(uri: vscode.Uri): Promise<{ source: CompareS
     let bytes: Uint8Array;
     let format: CadFormat;
     try {
-      const binary = vscode.workspace.getConfiguration("cadPreview").get<string>("openscadBinary") ?? undefined;
       const src = await resolveEffectiveSource({
         modelPath: uri.fsPath,
         format: route.format,
         readBytes: async () => rawBytes,
         warnings,
-        binary,
+        ...readScadSettings(),
       });
       bytes = src.bytes;
       format = src.format;

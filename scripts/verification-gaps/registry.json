@@ -458,6 +458,13 @@
         "Export… writes a glTF Binary (.glb) serialized by the real webview"
       ],
       "note": "Seen green in CI on PR #90 (run 36875850807): STL is 84 + 50 x 12 bytes, glTF carries the glTF magic and a declared length equal to the file size, both serialized by the real webview."
+    },
+    {
+      "id": "openscad-backend-and-libraries",
+      "section": "OpenSCAD backend, library paths and Customizer overrides",
+      "gap": "`--backend=manifold` against a real OpenSCAD snapshot that supports it (only the argv shape and the rejection message are tested, through stub binaries), and the interactive path: the three `cadPreview.openscad*` settings read by `readScadSettings()` and honoured when a `.scad` opens in a real Extension Development Host.",
+      "status": "open",
+      "note": "No OpenSCAD binary is installed where this was written, so even the stock invocation was exercised only through stubs; the only live-binary evidence in the repo is the 2026-09-07 run against OpenSCAD 2021.01, which predates --backend."
     }
   ]
 }

@@ -50,6 +50,8 @@ import {
   type SnapshotView,
   listParametricScripts,
   listMeshPresets,
+  listScadParameters,
+  convertScadTool,
   applyMeshPreset,
   saveMeshPreset,
   listStandardHoleSizes,
@@ -1403,6 +1405,38 @@ server.registerTool(
 
 const presetLibraryPath = z.string().describe("Absolute path to the mesh-preset library JSON file (you name it; it is created on first save)");
 const optionalPresetLibraryPath = z.string().optional().describe("Absolute path to your mesh-preset library JSON file. Omit to use the bundled starter presets (coarse-preview, balanced, fine-detail, robust-repair) — pass it to union that file's entries on top (yours win name collisions).");
+
+server.registerTool(
+  "list_scad_parameters",
+  {
+    description:
+      "List an OpenSCAD .scad file's Customizer parameters — the top-level `name = literal;` assignments before the first module/function, with their type, default, [Group] header, description comment and `// [min:max]` / `// [a, b:Label]` range or option list. Reads the source TEXT only: no openscad binary is needed and nothing is evaluated. Pair with convert_scad to re-evaluate the file at other values. Parameters in a [Hidden] group are omitted unless includeHidden is set.",
+    inputSchema: {
+      path: z.string().describe("Absolute path to the .scad file"),
+      includeHidden: z.boolean().optional().describe("Also list parameters in the [Hidden] group (default false)"),
+    },
+  },
+  wrap((args: { path: string; includeHidden?: boolean }) => listScadParameters(args))
+);
+
+server.registerTool(
+  "convert_scad",
+  {
+    description:
+      "Evaluate an OpenSCAD .scad file with the user-installed openscad binary and write the resulting .csg to outputPath — optionally with Customizer parameter overrides (`parameters`, applied as `-D name=value`; see list_scad_parameters), a geometry backend (cgal | manifold; manifold needs a recent OpenSCAD) and extra library folders (prepended to OPENSCADPATH, e.g. a BOSL2 checkout). The .scad source is never modified; open the written .csg with load_model. Unknown parameter names and wrong types are reported and NOT applied. Without openscad installed the result is supported:false with an install hint (set OPENSCAD_BINARY or cadPreview.openscadBinary).",
+    inputSchema: {
+      path: z.string().describe("Absolute path to the .scad file"),
+      outputPath: z.string().describe("Absolute path of the .csg file to write (must end in .csg; must not be the source)"),
+      parameters: z.looseObject({}).optional().describe("Customizer overrides by name: numbers, booleans, strings, or flat arrays of numbers/strings. $fn/$fa/$fs are accepted too."),
+      backend: z.string().optional().describe("cgal | manifold | auto (default: auto, or the OPENSCAD_BACKEND env var). Manifold needs a 2025+ OpenSCAD."),
+      libraryPaths: z.array(z.string()).optional().describe("Extra OpenSCAD library folders, prepended to OPENSCADPATH for this conversion only"),
+      overwrite: z.boolean().optional().describe("Replace an existing outputPath (default false)"),
+    },
+  },
+  wrap((args: { path: string; outputPath: string; parameters?: Record<string, unknown>; backend?: string; libraryPaths?: string[]; overwrite?: boolean }) =>
+    convertScadTool(args)
+  )
+);
 
 server.registerTool(
   "save_mesh_preset",
