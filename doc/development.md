@@ -4,7 +4,7 @@
 
 - **Node.js 20** or later (LTS recommended)
 - **npm** (included with Node.js)
-- **VS Code 1.80+** for running the Extension Development Host
+- **VS Code 1.140+** (the `engines.vscode` floor in `package.json`) for running the Extension Development Host
 - **Git**
 
 ## Setup
