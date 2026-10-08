@@ -446,7 +446,7 @@
     "@loumalouomega/gmsh-wasm": "^0.3.0",
     "@loumalouomega/mmg-wasm": "0.1.0",
     "@meshioplusplus/wasm": "^16.31.0",
-    "@modelcontextprotocol/sdk": "^1.31.0",
+    "@modelcontextprotocol/sdk": "^1.32.1",
     "fflate": "^0.8.3",
     "float-tetwild-wasm": "^0.2.0",
     "node-hid": "^3.4.0",
