@@ -43,6 +43,7 @@ import {
 import type { CadFormat, FileRoute, MeshParseFormat } from "./fileRouter";
 import { COMPARABLE_MESH_FORMATS, ambiguityCaveatFor, matchExtension } from "./fileRouter";
 import { resolveEffectiveSource } from "./scadService";
+import { readScadSettings } from "./scadSettings";
 import { connectSpaceMouse, disconnectSpaceMouse } from "./spaceMouse";
 import { isMeshioFieldFailure, describeMeshioFieldFailure, isHealableSizeError, AUTO_DECIMATE_TARGET_TRIANGLES, stlBytesForHeal } from "./meshioService";
 import { validateMeshioOpSpec } from "./meshioOps";
@@ -3371,13 +3372,12 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
       format: CadFormat,
       warnings: string[]
     ): Promise<{ bytes: Uint8Array; format: CadFormat }> {
-      const binary = vscode.workspace.getConfiguration("cadPreview").get<string>("openscadBinary") ?? undefined;
       return resolveEffectiveSource({
         modelPath: uri.fsPath,
         format,
         readBytes: async () => vscode.workspace.fs.readFile(uri),
         warnings,
-        binary,
+        ...readScadSettings(),
       });
     }
 

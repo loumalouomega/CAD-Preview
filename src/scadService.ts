@@ -50,6 +50,7 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { CadFormat } from "./fileRouter";
+import { formatScadValue, isValidScadName, type ScadValue } from "./scadParams";
 
 const execFileAsync = promisify(execFileCb);
 
@@ -58,6 +59,15 @@ const execFileAsync = promisify(execFileCb);
 export const OPENSCAD_BINARY_ENV = "OPENSCAD_BINARY";
 /** Binary name resolved via PATH when nothing else is configured. */
 export const DEFAULT_OPENSCAD_BINARY = "openscad";
+/** Env override for the geometry backend (headless twin of
+ * `cadPreview.openscadBackend`): `cgal` or `manifold`. Anything else is unset. */
+export const OPENSCAD_BACKEND_ENV = "OPENSCAD_BACKEND";
+/** OpenSCAD's own library search-path variable. openscad reads it natively, so
+ * an inherited value already works; configured paths are PREPENDED to it. */
+export const OPENSCAD_LIBRARY_ENV = "OPENSCADPATH";
+/** Geometry engines OpenSCAD can evaluate with. `manifold` (much faster on
+ * large booleans) needs a 2025+ snapshot; `cgal` is the long-standing default. */
+export type ScadBackend = "cgal" | "manifold";
 /**
  * Conversion backstop (2 min): `.scad` evaluation is unbounded in general
  * (CGAL on a hostile model, `import` of a huge mesh), so an unbounded wait
@@ -98,6 +108,48 @@ export function resolveOpenscadBinary(explicit?: string): string {
   return DEFAULT_OPENSCAD_BINARY;
 }
 
+/**
+ * Backend resolution: explicit (the `cadPreview.openscadBackend` setting) →
+ * env → unset. `"auto"`, empty and unrecognised values all mean unset, which
+ * passes NO flag — so a stock OpenSCAD that predates `--backend` keeps working
+ * untouched until a user opts in.
+ */
+export function resolveScadBackend(explicit?: string): ScadBackend | undefined {
+  for (const raw of [explicit, process.env[OPENSCAD_BACKEND_ENV]]) {
+    const v = raw?.trim().toLowerCase();
+    if (v === "cgal" || v === "manifold") return v;
+    if (v === "auto") return undefined;
+  }
+  return undefined;
+}
+
+/**
+ * Child environment with `libraryPaths` prepended to any inherited
+ * `OPENSCADPATH` (the platform path delimiter), so BOSL2 and friends kept in a
+ * shared folder resolve for `use <BOSL2/std.scad>`. Blank entries are dropped;
+ * with no paths the environment is returned unchanged.
+ */
+export function scadChildEnv(libraryPaths?: readonly string[], base: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  const extra = (libraryPaths ?? []).map((p) => p.trim()).filter((p) => p !== "");
+  if (extra.length === 0) return base;
+  const inherited = base[OPENSCAD_LIBRARY_ENV];
+  return { ...base, [OPENSCAD_LIBRARY_ENV]: [...extra, ...(inherited && inherited.trim() !== "" ? [inherited] : [])].join(path.delimiter) };
+}
+
+/** The argv for a conversion. Order matters only for readability: flags, `-D`s, then `-o <out> <in>`. */
+export function scadArgs(outPath: string, absSource: string, opts: { backend?: ScadBackend; defines?: Record<string, ScadValue> } = {}): string[] {
+  const args: string[] = [];
+  if (opts.backend) args.push(`--backend=${opts.backend}`);
+  for (const [name, value] of Object.entries(opts.defines ?? {})) {
+    // Names are validated here too (not only in scadParams) because this is the
+    // one place a caller-supplied string becomes argv.
+    if (!isValidScadName(name)) throw new Error(`Invalid OpenSCAD variable name for -D: "${name}"`);
+    args.push("-D", `${name}=${formatScadValue(value)}`);
+  }
+  args.push("-o", outPath, absSource);
+  return args;
+}
+
 function isMissingBinary(err: unknown): boolean {
   return err instanceof Error && (err as NodeJS.ErrnoException).code === "ENOENT";
 }
@@ -132,6 +184,12 @@ export interface ScadConvertOptions {
   binary?: string;
   /** Override for tests (stub `slow.sh`); production uses {@link SCAD_CONVERT_TIMEOUT_MS}. */
   timeoutMs?: number;
+  /** `cadPreview.openscadBackend`; unset/`auto` passes no flag, falling back to {@link OPENSCAD_BACKEND_ENV}. */
+  backend?: string;
+  /** `cadPreview.openscadLibraryPaths`; prepended to `OPENSCADPATH` for the child only. */
+  libraryPaths?: string[];
+  /** Customizer overrides, each passed as `-D name=value` (validate with `validateScadOverrides` first). */
+  defines?: Record<string, ScadValue>;
 }
 
 export interface ScadConvertResult {
@@ -151,6 +209,7 @@ export interface ScadConvertResult {
 export async function convertScadToCsg(sourcePath: string, opts: ScadConvertOptions = {}): Promise<ScadConvertResult> {
   const binary = resolveOpenscadBinary(opts.binary);
   const timeoutMs = opts.timeoutMs ?? SCAD_CONVERT_TIMEOUT_MS;
+  const backend = resolveScadBackend(opts.backend);
   const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "cad-preview-scad-"));
   // The output name MUST end in `.csg` — openscad selects its exporter from
   // the `-o` extension.
@@ -165,8 +224,9 @@ export async function convertScadToCsg(sourcePath: string, opts: ScadConvertOpti
   try {
     let stderr = "";
     try {
-      const res = await execFileAsync(binary, ["-o", outPath, absSource], {
+      const res = await execFileAsync(binary, scadArgs(outPath, absSource, { backend, defines: opts.defines }), {
         cwd: path.dirname(absSource),
+        env: scadChildEnv(opts.libraryPaths),
         timeout: timeoutMs,
         maxBuffer: 4 * 1024 * 1024,
       });
@@ -186,7 +246,13 @@ export async function convertScadToCsg(sourcePath: string, opts: ScadConvertOpti
         );
       }
       const excerpt = String(e.stderr ?? (err as Error).message ?? err).slice(-MAX_STDERR_EXCERPT);
-      throw new Error(`openscad failed on ${path.basename(sourcePath)} (exit ${e.code ?? "?"}): ${excerpt}`);
+      // A stock build that predates the backend switch rejects the flag by
+      // name; say so rather than leaving the user to decode a getopt message.
+      const backendHint =
+        backend && /backend|unrecogni[sz]ed option|unknown option/i.test(excerpt)
+          ? ` — this OpenSCAD build may not support --backend=${backend} (needs a 2025+ snapshot); set cadPreview.openscadBackend to "auto" to omit it.`
+          : "";
+      throw new Error(`openscad failed on ${path.basename(sourcePath)} (exit ${e.code ?? "?"}): ${excerpt}${backendHint}`);
     }
     const warnings = stderr
       .split(/\r?\n/)
@@ -212,6 +278,8 @@ export async function convertScadToCsg(sourcePath: string, opts: ScadConvertOpti
 export interface EffectiveSourceOptions {
   binary?: string;
   timeoutMs?: number;
+  backend?: string;
+  libraryPaths?: string[];
 }
 
 /**
@@ -232,11 +300,18 @@ export async function resolveEffectiveSource(opts: {
   warnings: string[];
   binary?: string;
   timeoutMs?: number;
+  backend?: string;
+  libraryPaths?: string[];
 }): Promise<{ bytes: Uint8Array; format: CadFormat }> {
   if (opts.format !== "scad") {
     return { bytes: await opts.readBytes(), format: opts.format };
   }
-  const { csgBytes, warnings } = await convertScadToCsg(opts.modelPath, { binary: opts.binary, timeoutMs: opts.timeoutMs });
+  const { csgBytes, warnings } = await convertScadToCsg(opts.modelPath, {
+    binary: opts.binary,
+    timeoutMs: opts.timeoutMs,
+    backend: opts.backend,
+    libraryPaths: opts.libraryPaths,
+  });
   opts.warnings.push(...warnings);
   return { bytes: csgBytes, format: "csg" };
 }

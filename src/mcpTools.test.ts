@@ -69,6 +69,8 @@ import {
   saveMeshPreset,
   listMeshPresets,
   applyMeshPreset,
+  listScadParameters,
+  convertScadTool,
   type Pipeline,
   type ToolContext,
   exportDrawingSheetTool,
@@ -4908,5 +4910,74 @@ describe("export_drawing_sheet", () => {
     await fs.writeFile(vtkModel, "# vtk DataFile Version 2.0\n", "utf8");
     await expect(exportDrawingSheetTool(c, { path: vtkModel, outputPath: path.join(dir, "v.svg") })).rejects.toThrow(/no host-side geometry/);
     expect(c.pipeline.exportDrawingSheet).not.toHaveBeenCalled();
+  });
+});
+
+describe("OpenSCAD Customizer tools", () => {
+  const SCAD = "// Wall\nwall = 2; // [1:0.5:5]\nname = \"box\";\nmodule m() { cube(wall); }\nm();\n";
+  const ARGV_STUB = path.join(__dirname, "test-fixtures", "openscad-argv-stub.sh");
+  let scadPath: string;
+  let savedBinary: string | undefined;
+
+  beforeEach(async () => {
+    scadPath = path.join(dir, "part.scad");
+    await fs.writeFile(scadPath, SCAD);
+    await fs.chmod(ARGV_STUB, 0o755);
+    savedBinary = process.env.OPENSCAD_BINARY;
+  });
+  afterEach(() => {
+    if (savedBinary === undefined) delete process.env.OPENSCAD_BINARY;
+    else process.env.OPENSCAD_BINARY = savedBinary;
+    delete process.env.STUB_ARGV;
+  });
+
+  it("list_scad_parameters reads the source text with no binary involved", async () => {
+    process.env.OPENSCAD_BINARY = "definitely-not-a-real-binary-xyz";
+    const r = await listScadParameters({ path: scadPath });
+    expect(r.count).toBe(2);
+    expect(r.parameters[0]).toMatchObject({ name: "wall", kind: "number", default: 2, min: 1, step: 0.5, max: 5, description: "Wall" });
+    expect(r.warnings).toEqual([]);
+  });
+
+  it("list_scad_parameters warns on a file with none, and refuses a non-scad path", async () => {
+    const plain = path.join(dir, "plain.scad");
+    await fs.writeFile(plain, "cube(10);\n");
+    expect((await listScadParameters({ path: plain })).warnings[0]).toMatch(/No Customizer parameters/);
+    await expect(listScadParameters({ path: path.join(dir, "x.stl") })).rejects.toThrow(/not an OpenSCAD/);
+  });
+
+  it("convert_scad writes the .csg with -D overrides and reports what was applied", async () => {
+    process.env.OPENSCAD_BINARY = ARGV_STUB;
+    const argv = path.join(dir, "argv.txt");
+    process.env.STUB_ARGV = argv;
+    const out = path.join(dir, "out.csg");
+    const r = await convertScadTool({ path: scadPath, outputPath: out, parameters: { wall: 3, bogus: 1 } });
+    expect(r.supported).toBe(true);
+    expect(r.applied).toEqual({ wall: 3 });
+    expect(r.warnings.join("\n")).toMatch(/bogus.*not a Customizer parameter/);
+    expect((await fs.readFile(out, "utf8"))).toContain("cube(");
+    const args = (await fs.readFile(argv, "utf8")).split("\n");
+    expect(args.slice(0, 2)).toEqual(["-D", "wall=3"]);
+    // The source is never written.
+    expect(await fs.readFile(scadPath, "utf8")).toBe(SCAD);
+  });
+
+  it("convert_scad degrades to supported:false without a binary and writes nothing", async () => {
+    process.env.OPENSCAD_BINARY = "definitely-not-a-real-binary-xyz";
+    const out = path.join(dir, "none.csg");
+    const r = await convertScadTool({ path: scadPath, outputPath: out });
+    expect(r.supported).toBe(false);
+    expect(r.warnings.join(" ")).toMatch(/not found/);
+    await expect(fs.stat(out)).rejects.toThrow();
+  });
+
+  it("convert_scad refuses a bad output path, the source itself, and an unforced overwrite", async () => {
+    process.env.OPENSCAD_BINARY = ARGV_STUB;
+    await expect(convertScadTool({ path: scadPath, outputPath: path.join(dir, "o.stl") })).rejects.toThrow(/must end in \.csg/);
+    await expect(convertScadTool({ path: scadPath, outputPath: scadPath })).rejects.toThrow(/Refusing to overwrite/);
+    const out = path.join(dir, "exists.csg");
+    await fs.writeFile(out, "old");
+    await expect(convertScadTool({ path: scadPath, outputPath: out })).rejects.toThrow(/already exists/);
+    expect((await convertScadTool({ path: scadPath, outputPath: out, overwrite: true })).supported).toBe(true);
   });
 });

@@ -290,8 +290,8 @@ try {
   assert(capsText.length > 100, "resources/read cad-preview://capabilities returns JSON text");
 
   const tools = (await request("tools/list", {})).tools.map((t) => t.name);
-  assert(tools.length === 69, `tools/list exposes 69 tools (got ${tools.length}: ${tools.join(", ")})`);
-  for (const t of ["list_workspace_models", "check_interference_all", "generate_bom", "generate_hole_table", "render_ops_prefix", "check_tolerance", "inspect_meshio_fields", "pin_annotation", "import_svg", "save_mesh_preset", "list_mesh_presets", "apply_mesh_preset", "compare_mesh_refinement", "export_tessellated_stl", "estimate_mesh_budget", "analyze_passages", "measure_mesh_deviation", "save_sheet_template", "list_sheet_templates", "batch_export", "check_handoff_manifest", "generate_prep_report", "job_status", "job_cancel", "check_brep_health"]) {
+  assert(tools.length === 71, `tools/list exposes 71 tools (got ${tools.length}: ${tools.join(", ")})`);
+  for (const t of ["list_workspace_models", "check_interference_all", "generate_bom", "generate_hole_table", "render_ops_prefix", "check_tolerance", "inspect_meshio_fields", "pin_annotation", "import_svg", "save_mesh_preset", "list_mesh_presets", "apply_mesh_preset", "compare_mesh_refinement", "export_tessellated_stl", "estimate_mesh_budget", "analyze_passages", "measure_mesh_deviation", "save_sheet_template", "list_sheet_templates", "batch_export", "check_handoff_manifest", "generate_prep_report", "job_status", "job_cancel", "check_brep_health", "list_scad_parameters", "convert_scad"]) {
     assert(tools.includes(t), `tools/list exposes ${t}`);
   }
 
@@ -420,6 +420,56 @@ try {
       );
       console.log("(skipping .scad analytic asserts — no openscad binary; set OPENSCAD_BINARY to exercise)");
     }
+  }
+
+  // OpenSCAD Customizer: list_scad_parameters reads the .scad TEXT (no binary
+  // needed, so it is asserted unconditionally); convert_scad re-evaluates with
+  // -D overrides and needs the binary, so — like minimal.scad above — the
+  // analytic half runs only when one is installed and the default branch
+  // asserts the graceful supported:false path instead.
+  {
+    const paramScad = path.join(dir, "parametric.scad");
+    fs.copyFileSync(path.join(ROOT, "examples", "OpenSCAD", "parametric.scad"), paramScad);
+    const before = fs.readFileSync(paramScad);
+    const listed = await call("list_scad_parameters", { path: paramScad });
+    const names = listed.parameters.map((p) => p.name);
+    assert(
+      JSON.stringify(names) === JSON.stringify(["width", "depth", "thickness", "hole_radius", "show_hole", "finish"]),
+      `list_scad_parameters reads the Customizer parameters, hiding the [Hidden] group (got ${JSON.stringify(names)})`
+    );
+    assert(listed.hiddenCount === 1, `the [Hidden] $fn is counted but not listed (got hiddenCount ${listed.hiddenCount})`);
+    const width = listed.parameters.find((p) => p.name === "width");
+    assert(
+      width.default === 40 && width.min === 10 && width.step === 5 && width.max === 100 && width.group === "Plate" && /width/i.test(width.description),
+      `width carries default/range/group/description (got ${JSON.stringify(width)})`
+    );
+    assert(
+      listed.parameters.find((p) => p.name === "finish").options.length === 2,
+      "finish carries its two-entry option list"
+    );
+    const hiddenToo = await call("list_scad_parameters", { path: paramScad, includeHidden: true });
+    assert(hiddenToo.parameters.some((p) => p.name === "$fn" && p.hidden), "includeHidden lists the [Hidden] $fn");
+
+    const csgDefault = path.join(dir, "param-default.csg");
+    const csgWide = path.join(dir, "param-wide.csg");
+    const base = await call("convert_scad", { path: paramScad, outputPath: csgDefault });
+    if (base.supported) {
+      const wide = await call("convert_scad", { path: paramScad, outputPath: csgWide, parameters: { width: 60, bogus: 1 } });
+      assert(wide.applied.width === 60 && wide.warnings.join(" ").match(/bogus/), "convert_scad applies width and reports the unknown name");
+      const volOf = async (p) => (await call("get_mass_properties", { path: p })).volume;
+      const delta = (await volOf(csgWide)) - (await volOf(csgDefault));
+      assert(
+        Math.abs(delta - 2000) < 1,
+        `widening the plate 40 -> 60 adds exactly 20*20*5 = 2000 mm3 (got ${delta})`
+      );
+    } else {
+      assert(
+        base.warnings.join(" ").match(/openscad/i) && !fs.existsSync(csgDefault),
+        `no-binary convert_scad degrades to supported:false with an install hint and writes nothing (got ${JSON.stringify(base)})`
+      );
+      console.log("(skipping convert_scad analytic asserts — no openscad binary; set OPENSCAD_BINARY to exercise)");
+    }
+    assert(Buffer.compare(before, fs.readFileSync(paramScad)) === 0, "the .scad source is byte-identical after list/convert");
   }
 
   // Add a box beside the bull, sized/placed off the real bbox.
