@@ -83,6 +83,11 @@ export const UI_GLYPHS = {
   ),
   undo: g('<path d="M9 14 4 9l5-5"/><path d="M4 9h10a6 6 0 0 1 0 12h-3"/>'),
   redo: g('<path d="m15 14 5-5-5-5"/><path d="M20 9H10a6 6 0 0 0 0 12h3"/>'),
+  lock: g('<rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/>'),
+  // Layers section header — same diamond family as `layers` (which the
+  // Advanced group keeps) but only two tiers, so the pass-6 "no two headers
+  // share an icon" rule holds.
+  layersDim: g('<path d="m12 2 10 5-10 5L2 7Z"/><path d="m2 17 10 5 10-5"/>'),
 } as const;
 
 export type UiGlyphId = keyof typeof UI_GLYPHS;

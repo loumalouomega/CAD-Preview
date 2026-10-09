@@ -31,6 +31,18 @@ import { evaluateVariables, resolveEditOps, validateVariables, type ParamVariabl
 import { resolvePlaneRefs } from "./planeRefs";
 import { parseSvgDocument, svgSubpathsToPolylineOps } from "./svgImport";
 import { nestLoops } from "./loopNesting";
+import {
+  allocateLayerId,
+  assignLayerEntities,
+  defaultLayer,
+  deleteLayer,
+  layersWithDefault,
+  lockedOperandForOp,
+  parseLayersFile,
+  resolveLayerDrawFilter,
+  serializeLayersJson,
+  type LayerDrawSubset,
+} from "./layersSidecar";
 async function readEditsResolved(modelPath: string): Promise<{ ops: EditOp[]; fullOps: EditOp[]; variables: ParamVariable[]; bakedThrough: number }> {
   const parsed = await readEditsRaw(modelPath);
   const bakedThrough = parsed.bakedThrough;
@@ -73,7 +85,7 @@ import { clean, envelope } from "./untrustedText";
 import { MESH_EXPORT_FORMATS, meshExportFormat, companionSaveName, type MeshExportFormat } from "./meshExportFormats";
 import { sweepTsv, sweepOutputName, runMeshSweep, validateSweepSizes, SWEEP_NOTE } from "./meshSweep";
 import { allCatalogEntries, describeOp } from "./webview/opCatalog";
-import type { Part, Annotation, AnnotationTool, ConstructionPlane } from "./protocol";
+import type { Part, Annotation, AnnotationTool, ConstructionPlane, Layer } from "./protocol";
 import type { loadBRep, exportBRep, BRepResult } from "./occtService";
 import type { computeMassProperties, computeBom, computeHoleTable, MassProperties } from "./massProperties";
 import type { checkBrepHealth } from "./brepHealth";
@@ -172,6 +184,8 @@ import {
   writeEdits,
   readParts,
   writeParts,
+  readLayers,
+  writeLayers,
   readAnnotations,
   writeAnnotations,
   readPlanes,
@@ -181,6 +195,7 @@ import {
   assertNotSourcePath,
   editsSidecarPath,
   partsSidecarPath,
+  layersSidecarPath,
   annotationsSidecarPath,
   planesSidecarPath,
   meshOptionsSidecarPath,
@@ -580,7 +595,7 @@ export function describeCapabilities() {
       ".obj/.ply/.gltf/.glb sources: meshable headless (host-side parsed into a welded triangle mesh via the same dedicated parsers compare_models/check_mesh_health/promote_mesh_to_brep already use, then re-serialized as STL for the meshing pipeline — no webview needed); pending edit ops are baked in by the headless mesh-edit replay (loaded with the viewer's own three.js loaders so node-N ids match), and parts cannot become physical groups, same as .stl. save_model bakes an STL/OBJ/PLY source in place in its own format; glTF has no same-format writer (its exporter emits only .glb).",
       ".vtk/.vtu/.med/.cgns/.exo(.e)/.xdmf/.mdpa/.foam/.msh(.msh2)/.inp/.unv/.su2/.mesh/.post.msh sources (meshio++): meshable headless from the raw file bytes (converted host-side to an STL boundary surface, no webview needed — more capable than .obj/.ply/.gltf here); pending edit ops are baked over that converted boundary (the node-0 mesh the viewer edits), same as .stl. Not exportable headless (export_mesh targets a source-agnostic generated FE mesh, not the source document itself).",
       "Nastran .bdf is routed as a meshio source with an ambiguity caveat, but the bundled meshio++ reader currently rejects this extension's Gmsh-written deck (even after BEGIN BULK normalization); do not claim it can open or mesh these files. See the Nastran import roadmap item.",
-      "The CAD source file is never written except by the explicit opt-in save_model tool (STEP→STEP, IGES→IGES, BREP→BREP, STL→STL, OBJ→OBJ, PLY→PLY — glTF/meshio/CAD-text sources are refused); every other writer refuses the source path. Edits/parts/annotations/construction planes/mesh options otherwise persist to <model>.edits.json / .parts.json / .annotations.json / .planes.json / .mesh.json sidecars the extension reads on open. save_model cannot see whether the file is open in VS Code — save (or close) the editor session first so its autosave does not race the write.",
+      "The CAD source file is never written except by the explicit opt-in save_model tool (STEP→STEP, IGES→IGES, BREP→BREP, STL→STL, OBJ→OBJ, PLY→PLY — glTF/meshio/CAD-text sources are refused); every other writer refuses the source path. Edits/parts/layers/annotations/construction planes/mesh options otherwise persist to <model>.edits.json / .parts.json / .layers.json / .annotations.json / .planes.json / .mesh.json sidecars the extension reads on open. save_model cannot see whether the file is open in VS Code — save (or close) the editor session first so its autosave does not race the write.",
       "get_state's annotations are pinned interactively (Measure tool) or headlessly (pin_annotation) — apply_edit_ops/run_parametric_script/remove_edit_op still rebind their anchor ids across topology-changing ops via the same best-effort geometric match parts get, reported in warnings when it happens.",
       "resolve_selector (B-rep sources only) re-resolves a whole-bucket query {version: 1, source: {kind: 'bucket', op, role}} against the current op list — the first three rungs of the Selector-synthesis ladder. An optional induced filter (planar, surfaceType, normal dir, area thresholds over exact current-shape facts; one leaf or an AND-list) plus rank ({by:'area',order:'max'|'min',n}) narrows the bucket without baking in coordinates (e.g. the largest endCap face) — or {version: 1, source: {kind: 'scene', filter?, rank?}} drops the bucket anchor entirely (at least one of filter/rank required), e.g. the largest planar face in the model, in a single replay. Each returned bucket id carries its centre-distance/measure-delta oracle (trustworthy only at ~0 distance; the scene path returns no matches — the exact facts are the oracle); unresolved names reference ids with no confident match, an induced selection of zero is an honest empty (never a fallback), and bindable:false means the producing op was a pattern instance (use a scene query to match across all copies instead).",
       "synthesize_selector (B-rep sources only) is resolve_selector's inverse: given a picked entityId plus its producing op/role, it induces the constant-free-first query naming exactly that entity (qualitative leaves before the exact normal, area literals last) and verifies it live (exact re-execution plus centreDistance ~ 0) before returning — query:null with a reason means nothing exact exists, never a guess.",
@@ -2896,6 +2911,7 @@ export async function getState(params: { path: string }) {
   requireRoute(modelPath);
   const { fullOps, variables, bakedThrough } = await readEditsResolved(modelPath);
   const parts = await readParts(modelPath);
+  const { layers } = await readLayers(modelPath);
   const annotations = await readAnnotations(modelPath);
   const planes = await readPlanes(modelPath);
   const meshOptions = await readMeshOptions(modelPath);
@@ -2910,6 +2926,8 @@ export async function getState(params: { path: string }) {
       error: errors.get(v.name) ?? null,
     })),
     parts,
+    // Presentation/drawing layers, distinct from Parts — see `list_layers`.
+    layers,
     // Pinned interactively (Measure tool) or headlessly (pin_annotation) —
     // see `get_state` via `readAnnotations`; topology-changing ops rebind
     // their anchor ids (see `maybeRebindParts`).
@@ -2948,6 +2966,7 @@ export interface WorkspaceModelEntry {
   sidecars: {
     edits: boolean;
     parts: boolean;
+    layers: boolean;
     annotations: boolean;
     planes: boolean;
     meshOptions: boolean;
@@ -2968,7 +2987,7 @@ async function fileExists(p: string): Promise<boolean> {
 /**
  * Stateless headless discovery (roadmap "list_workspace_models", closed):
  * given a folder, walks it and returns every file `routeFile()` recognizes,
- * each with its detected format/strategy and which of its six possible
+ * each with its detected format/strategy and which of its seven possible
  * companions currently exist beside it. Purely additive tooling over
  * `routeFile()` + `mcpSidecars.ts`'s path derivations — NO new state
  * anywhere, no kernel-worker call, no interaction with any session; every
@@ -3054,6 +3073,7 @@ export async function listWorkspaceModels(params: { root: string }): Promise<{
         sidecars: {
           edits: await fileExists(editsSidecarPath(filePath)),
           parts: await fileExists(partsSidecarPath(filePath)),
+          layers: await fileExists(layersSidecarPath(filePath)),
           annotations: await fileExists(annotationsSidecarPath(filePath)),
           planes: await fileExists(planesSidecarPath(filePath)),
           meshOptions: await fileExists(meshOptionsSidecarPath(filePath)),
@@ -3081,12 +3101,13 @@ export async function listWorkspaceModels(params: { root: string }): Promise<{
  * lists (before/after) — the caller does not need to pre-compute a delta.
  * A no-op (returns `null`) when there's nothing to rebind — the lists are
  * identical, a mesh-format source (no B-rep to re-derive ids from), or the
- * pass itself found nothing to change (empty parts AND annotations lists /
- * no topology-changing op anywhere in the diff) — so callers can skip
+ * pass itself found nothing to change (empty parts AND annotations AND layers
+ * lists / no topology-changing op anywhere in the diff) — so callers can skip
  * writing sidecars and skip mentioning it in `warnings`. Also rebinds any
  * persisted `Annotation[]` (roadmap "Persisted, topology-anchored
- * annotations", closed) through the same shape-diff pass, at no extra OCCT
- * cost — see `rebindPartsAcrossOps`'s doc comment.
+ * annotations", closed) and `Layer[]` (roadmap "Layers, distinct from Parts")
+ * through the same shape-diff pass, at no extra OCCT cost — see
+ * `rebindPartsAcrossOps`'s doc comment.
  */
 async function maybeRebindParts(
   ctx: ToolContext,
@@ -3101,11 +3122,13 @@ async function maybeRebindParts(
   droppedCount: number;
   annotationReboundCount: number;
   annotationDroppedCount: number;
+  layerReboundCount: number;
+  layerDroppedCount: number;
   selectorWarnings: string[];
 } | null> {
   if (route.strategy !== "occt" || oldOps.length === newOps.length) return null;
-  const [parts, annotations] = await Promise.all([readParts(modelPath), readAnnotations(modelPath)]);
-  if (parts.length === 0 && annotations.length === 0) return null;
+  const [parts, annotations, { layers, nextId: layersNextId }] = await Promise.all([readParts(modelPath), readAnnotations(modelPath), readLayers(modelPath)]);
+  if (parts.length === 0 && annotations.length === 0 && layers.length === 0) return null;
   // Tier 0 save-in-place: both lists replay against the current (possibly
   // baked) bytes, so both are tailed identically — the diff stays meaningful.
   const oldTail = replayTail(oldOps, bakedThrough);
@@ -3116,7 +3139,7 @@ async function maybeRebindParts(
     // No openscad binary: nothing replays, so nothing rebinds — but say so
     // (the caller already notes the skipped replay; this notes the skipped
     // rebind) rather than silently leaving stale part ids unmentioned.
-    warnings.push(`Part/annotation rebind skipped — ${src.reason}`);
+    warnings.push(`Part/annotation/layer rebind skipped — ${src.reason}`);
     return null;
   }
   const { bytes, format } = src;
@@ -3138,28 +3161,33 @@ async function maybeRebindParts(
     oldTail,
     newTail,
     resolvedParts,
-    annotations
+    annotations,
+    layers
   );
   const partsChanged = result.parts !== parts;
   const annotationsChanged = result.annotations !== annotations;
+  const layersChanged = result.layers !== layers;
   // A frozen selector still warns even when nothing persisted — dropping the
   // warnings here would make a silently-stale query, the failure this whole
   // feature exists to prevent.
-  if (!partsChanged && !annotationsChanged && selected.warnings.length === 0) return null; // nothing topology-changing, or nothing matched
+  if (!partsChanged && !annotationsChanged && !layersChanged && selected.warnings.length === 0) return null; // nothing topology-changing, or nothing matched
   if (partsChanged) await writeParts(modelPath, result.parts);
   if (annotationsChanged) await writeAnnotations(modelPath, result.annotations);
+  if (layersChanged) await writeLayers(modelPath, result.layers, layersNextId);
   return {
     reboundCount: result.stats.rebound,
     droppedCount: result.stats.dropped,
     annotationReboundCount: result.annotationStats.rebound,
     annotationDroppedCount: result.annotationStats.dropped,
+    layerReboundCount: result.layerStats.rebound,
+    layerDroppedCount: result.layerStats.dropped,
     selectorWarnings: selected.warnings,
   };
 }
 
 /** Formats `maybeRebindParts`' result into a `warnings` sentence, appending
- * the annotation clause only when there was actually an annotation to
- * mention (most documents have none). */
+ * the annotation and layer clauses only when there was actually something to
+ * mention (most documents have neither). */
 function rebindWarningText(
   rebind: NonNullable<Awaited<ReturnType<typeof maybeRebindParts>>>,
   cause: string
@@ -3167,6 +3195,9 @@ function rebindWarningText(
   let text = `Rebound ${rebind.reboundCount} part-entity id(s) ${cause} (best-effort geometric match); dropped ${rebind.droppedCount} with no confident match.`;
   if (rebind.annotationReboundCount > 0 || rebind.annotationDroppedCount > 0) {
     text += ` Also rebound ${rebind.annotationReboundCount} annotation anchor id(s); dropped ${rebind.annotationDroppedCount}.`;
+  }
+  if (rebind.layerReboundCount > 0 || rebind.layerDroppedCount > 0) {
+    text += ` Also rebound ${rebind.layerReboundCount} layer-member id(s); dropped ${rebind.layerDroppedCount}.`;
   }
   for (const warning of rebind.selectorWarnings) text += ` ${warning}`;
   return text;
@@ -3185,6 +3216,7 @@ export async function applyEditOps(
 
   const report: Array<{ accepted: boolean; op?: EditOpKind; description?: string; reason?: string; applied?: boolean; diagnostic?: string; hint?: string }> = [];
   const accepted: EditOp[] = [];
+  const { layers } = await readLayers(modelPath).catch(() => ({ layers: [], nextId: 0 }));
   for (const raw of params.ops) {
     const op = validateEditOp(raw);
     if (!op) {
@@ -3196,6 +3228,15 @@ export async function applyEditOps(
         accepted: false,
         op: op.op,
         reason: `${op.op} is B-rep only; ${route.format} sources have no exact topology for it.`,
+      });
+      continue;
+    }
+    const locked = lockedOperandForOp(op, layers);
+    if (locked) {
+      report.push({
+        accepted: false,
+        op: op.op,
+        reason: `${locked.id} is on locked layer "${locked.layerName}" (${locked.layerId}) — unlock the layer to use it as an edit operand.`,
       });
       continue;
     }
@@ -3497,9 +3538,19 @@ async function compileAndApplyScript(
 
   const accepted: EditOp[] = [];
   let brepOnlyRejected = 0;
+  let lockRejected = 0;
+  const { layers } = await readLayers(modelPath).catch(() => ({ layers: [], nextId: 0 }));
   for (const op of compiled.ops) {
     if (route.strategy === "three" && BREP_ONLY_OPS.has(op.op)) {
       brepOnlyRejected++;
+      continue;
+    }
+    const locked = lockedOperandForOp(op, layers);
+    if (locked) {
+      lockRejected++;
+      compiled.issues.push(
+        `Dropped ${op.op}: ${locked.id} is on locked layer "${locked.layerName}" (${locked.layerId}) — unlock the layer to use it as an edit operand.`
+      );
       continue;
     }
     accepted.push(op);
@@ -3555,7 +3606,7 @@ async function compileAndApplyScript(
   return {
     applied: params.dryRun ? 0 : accepted.length - notApplied,
     notApplied,
-    rejected: compiled.report.reduce((n, r) => n + r.rejected, 0) + brepOnlyRejected,
+    rejected: compiled.report.reduce((n, r) => n + r.rejected, 0) + brepOnlyRejected + lockRejected,
     dryRun: params.dryRun === true,
     report: compiled.report,
     issues: compiled.issues,
@@ -4230,6 +4281,168 @@ export async function setPlane(params: {
     "A construction plane stores resolved vectors, not a live face reference — it is deliberately NOT rebound when a later op renumbers face ids, so it stays where it was put."
   );
   return { plane, planes: summarize(), warnings };
+}
+
+// ---------------------------------------------------------------------------
+// list_layers / set_layer / assign_layer (roadmap "Layers, distinct from Parts")
+
+const LAYER_ID_PATTERN = /^layer-\d+$/;
+// B-rep ids plus mesh ids (`node-N` volumes, `node-N/face-K` facets) — the
+// Layers panel assigns the current selection in any pick mode on any source
+// kind, so headless must accept every id the webview can produce.
+const LAYER_MEMBER_ID_PATTERN = /^(solid|face|edge|point|node)-\d+(\/face-\d+)?$/;
+
+/** A layer as `get_state` and the three tools report it. */
+function summarizeLayers(layers: Layer[]): Layer[] {
+  return layersWithDefault(layers);
+}
+
+function assertLayerMemberIds(ids: string[] | undefined, label: string): void {
+  if (ids === undefined) return;
+  for (const id of ids) {
+    if (typeof id !== "string" || !LAYER_MEMBER_ID_PATTERN.test(id)) {
+      throw new Error(`"${id}" is not a valid ${label} id — expected solid-N, face-N, edge-N, point-N, node-N or node-N/face-K.`);
+    }
+  }
+}
+
+/**
+ * Read-only inventory of a document's layers — the headless counterpart of
+ * the Layers panel. Kernel-free (no `ctx`): layers are sidecar JSON, like
+ * `set_variables`/`get_state`/`list_workspace_models`. Reports the implicit
+ * default layer when no sidecar exists yet.
+ */
+export async function listLayers(params: { path: string }) {
+  const modelPath = params.path;
+  requireRoute(modelPath);
+  const { layers, nextId } = await readLayers(modelPath);
+  return { layers: summarizeLayers(layers), nextId, warnings: [] as string[] };
+}
+
+/**
+ * Creates, updates, or deletes a named layer in `<model>.layers.json` — the
+ * same sidecar the Layers panel reads. Kernel-free (no `ctx`), the
+ * `set_plane` shape: addressed by `id` (stable, never reused), not by name.
+ *
+ * Deleting a layer returns its members to the default layer; the default
+ * layer itself cannot be deleted. Updating `visible`/`locked`/`color` keeps
+ * membership; updating membership directly is `assign_layer`'s job (passing
+ * member arrays here replaces them wholesale instead).
+ */
+export async function setLayer(params: {
+  path: string;
+  id?: string;
+  name?: string;
+  color?: string;
+  visible?: boolean;
+  locked?: boolean;
+  volumes?: string[];
+  surfaces?: string[];
+  lines?: string[];
+  points?: string[];
+  remove?: boolean;
+}) {
+  const modelPath = params.path;
+  requireRoute(modelPath);
+  const warnings: string[] = [];
+  let { layers, nextId } = await readLayers(modelPath);
+  // Materialize the implicit default before any mutation, so the first real
+  // layer lands beside it instead of colliding with its id.
+  if (layers.length === 0) layers = [defaultLayer()];
+
+  if (params.remove) {
+    if (!params.id) throw new Error("remove requires the layer's id.");
+    layers = deleteLayer(layers, params.id);
+    await writeLayers(modelPath, layers, nextId);
+    return { layers: summarizeLayers(layers), warnings };
+  }
+
+  if (params.id !== undefined && !LAYER_ID_PATTERN.test(params.id)) {
+    throw new Error(`"${params.id}" is not a valid layer id — expected layer-N.`);
+  }
+  const index = params.id ? layers.findIndex((l) => l.id === params.id) : -1;
+  if (params.id && index === -1 && params.name === undefined) {
+    throw new Error(`No layer with id "${params.id}" — creating one needs at least a name.`);
+  }
+  const existing: Layer | undefined = index === -1 ? undefined : layers[index];
+
+  if (params.color !== undefined && !/^#[0-9a-fA-F]{6}$/.test(params.color)) {
+    throw new Error(`"${params.color}" is not a CSS hex colour — expected #rrggbb.`);
+  }
+  assertLayerMemberIds(params.volumes, "volumes");
+  assertLayerMemberIds(params.surfaces, "surfaces");
+  assertLayerMemberIds(params.lines, "lines");
+  assertLayerMemberIds(params.points, "points");
+
+  // Ids are allocated, never derived from the current max: a deleted id must
+  // not come back under a new meaning, which would silently retarget a
+  // drawing filter naming it.
+  let allocated = existing?.id ?? params.id;
+  if (!allocated) {
+    const next = allocateLayerId(layers, nextId);
+    allocated = next.id;
+    nextId = next.nextId;
+  }
+  const layer: Layer = {
+    id: allocated,
+    name: params.name ?? existing?.name ?? `Layer ${layers.length}`,
+    color: params.color ?? existing?.color ?? defaultLayer().color,
+    visible: params.visible ?? existing?.visible ?? true,
+    locked: params.locked ?? existing?.locked ?? false,
+    volumes: params.volumes ?? existing?.volumes ?? [],
+    surfaces: params.surfaces ?? existing?.surfaces ?? [],
+    lines: params.lines ?? existing?.lines ?? [],
+    points: params.points ?? existing?.points ?? [],
+  };
+  if (existing) layers[index] = layer;
+  else layers.push(layer);
+  await writeLayers(modelPath, layers, nextId);
+
+  warnings.push(
+    "Layers answer which entities are shown, locked or drawn together — never which form a finite-element sub-model. A hidden layer is still meshed; layer membership reaches no solver output."
+  );
+  return { layer, layers: summarizeLayers(layers), warnings };
+}
+
+/**
+ * Assigns entity ids to a layer, removing each from whatever other layer
+ * holds it — an entity belongs to at most one layer. Kernel-free (no `ctx`).
+ *
+ * Malformed ids throw fail-fast; shape-valid ids are stored as given with a
+ * warning that they are not validated headless (the `set_part` precedent —
+ * use `load_model`'s inventory for valid ids). Unknown-but-shaped ids are
+ * thus reported, never silently dropped: they persist, and the op-change
+ * rebind reports what it could not match.
+ */
+export async function assignLayer(params: {
+  path: string;
+  id: string;
+  volumes?: string[];
+  surfaces?: string[];
+  lines?: string[];
+  points?: string[];
+}) {
+  const modelPath = params.path;
+  requireRoute(modelPath);
+  if (!LAYER_ID_PATTERN.test(params.id)) {
+    throw new Error(`"${params.id}" is not a valid layer id — expected layer-N.`);
+  }
+  assertLayerMemberIds(params.volumes, "volumes");
+  assertLayerMemberIds(params.surfaces, "surfaces");
+  assertLayerMemberIds(params.lines, "lines");
+  assertLayerMemberIds(params.points, "points");
+  const { layers, nextId } = await readLayers(modelPath);
+  const next = assignLayerEntities(layers, params.id, {
+    volumes: params.volumes,
+    surfaces: params.surfaces,
+    lines: params.lines,
+    points: params.points,
+  });
+  await writeLayers(modelPath, next, nextId);
+  const warnings = [
+    "Entity ids are not validated headless; unresolved ids persist and are reported (never silently repointed) by the op-change rebind. Use load_model's inventory for valid ids.",
+  ];
+  return { layers: summarizeLayers(next), warnings };
 }
 
 // ---------------------------------------------------------------------------
@@ -5733,6 +5946,7 @@ export async function saveModelTool(ctx: ToolContext, params: { path: string }) 
   }
   const parts = await readParts(modelPath);
   const annotations = await readAnnotations(modelPath);
+  const { layers, nextId: layersNextId } = await readLayers(modelPath);
   // Save at native mm (no conversion): a save must preserve the file's own
   // bytes' scale, unlike export_brep's optional unit conversion. The
   // interactive bake instead saves at the file's own declared unit; headless
@@ -5765,7 +5979,8 @@ export async function saveModelTool(ctx: ToolContext, params: { path: string }) 
         newFormat,
         [],
         parts,
-        annotations
+        annotations,
+        layers
       );
     // The rebind is read-only over bytes already in hand, so one retry
     // after a detected (and already reset) WASM abort is safe — a transient
@@ -5779,9 +5994,10 @@ export async function saveModelTool(ctx: ToolContext, params: { path: string }) 
     }
     if (rebindResult.parts !== parts) await writeParts(modelPath, rebindResult.parts);
     if (rebindResult.annotations !== annotations) await writeAnnotations(modelPath, rebindResult.annotations);
+    if (rebindResult.layers !== layers) await writeLayers(modelPath, rebindResult.layers, layersNextId);
   } catch (err) {
     warnings.push(
-      `Could not rebind entity ids across the save (${(err as Error).message}) — Part/annotation highlights were assigned against the pre-save geometry; verify them.`
+      `Could not rebind entity ids across the save (${(err as Error).message}) — Part/annotation/layer highlights were assigned against the pre-save geometry; verify them.`
     );
   }
   warnings.push(
@@ -5935,12 +6151,36 @@ async function meshCompareSource(
   return format === "gltf" ? { kind: "gltf", bytes, externalBuffers } : { kind: format, bytes };
 }
 
+/**
+ * Resolves an export tool's `layers` filter (layer names or ids) into
+ * per-layer drawing subsets (roadmap "Layers, distinct from Parts", second
+ * increment). Absent = the whole model, exactly as before. Shared by
+ * `export_svg_silhouette` / `export_technical_drawing` /
+ * `export_drawing_sheet` so the three tools' filter semantics cannot drift.
+ */
+async function resolveLayerFilterParam(
+  modelPath: string,
+  route: FileRoute,
+  names: string[] | undefined,
+  warnings: string[]
+): Promise<LayerDrawSubset[] | undefined> {
+  if (names === undefined) return undefined;
+  if (route.strategy !== "occt") {
+    throw new Error("The layers filter in drawing exports is B-rep only in this version — mesh sources draw unfiltered; omit layers.");
+  }
+  const { subsets, warnings: w } = resolveLayerDrawFilter((await readLayers(modelPath)).layers, names);
+  warnings.push(...w);
+  if (subsets.length === 0) {
+    throw new Error("None of the named layers matched — the drawing would be empty. Omit layers to draw every layer.");
+  }
+  return subsets;
+}
+
 async function resolveDrawingSource(
   ctx: ToolContext,
   modelPath: string,
   warnings: string[]
-): Promise<{ source: CompareSource; annotations: DimensionSource[] }> {
-  const route = requireDrawableRoute(modelPath);
+): Promise<{ source: CompareSource; annotations: DimensionSource[] }> {  const route = requireDrawableRoute(modelPath);
   // Pinned annotations ride the same drawing (roadmap "Dimension-style
   // rendering", Phase 2): their frozen world-space facts are projected
   // through this export's own view basis and baked in as dimension glyphs.
@@ -5993,10 +6233,12 @@ export async function exportDrawingSheetTool(
     /** A sheet template (bundled starters ∪ `libraryPath`) supplying any setting not given explicitly. */
     template?: string;
     libraryPath?: string;
+    /** Layer names/ids to restrict every view to (one group per layer in each view). Absent = every layer. B-rep sources only. */
+    layers?: string[];
   }
 ) {
   const modelPath = params.path;
-  requireDrawableRoute(modelPath);
+  const route = requireDrawableRoute(modelPath);
   const outputPath = path.resolve(params.outputPath);
   assertNotSourcePath(modelPath, outputPath);
   const warnings: string[] = [];
@@ -6012,7 +6254,7 @@ export async function exportDrawingSheetTool(
   }
   // One resolver for this tool AND the extension's Export Drawing Sheet form.
   const settings = resolveSheetSettings(
-    { views: params.views, format: params.format, paper: params.paper, projection: params.projection, scale: params.scale, title: params.title, fields: params.fields },
+    { views: params.views, format: params.format, paper: params.paper, projection: params.projection, scale: params.scale, title: params.title, fields: params.fields, layers: params.layers },
     template,
     { title: path.basename(modelPath) }
   );
@@ -6020,6 +6262,7 @@ export async function exportDrawingSheetTool(
   const { views, format, paper, projection, scale } = settings;
 
   const { source, annotations } = await resolveDrawingSource(ctx, modelPath, warnings);
+  const layerFilter = await resolveLayerFilterParam(modelPath, route, settings.layers, warnings);
   const result = await ctx.pipeline.exportDrawingSheet(ctx.extensionPath, source, {
     views,
     quality: normalizeTessellationQuality(params.tessellationQuality ?? "fine"),
@@ -6027,6 +6270,7 @@ export async function exportDrawingSheetTool(
     annotations,
     hiddenLines: params.hiddenLines ?? true,
     creaseAngleDeg: params.creaseAngleDeg,
+    ...(layerFilter ? { layerFilter } : {}),
     paper,
     projection,
     scale,
@@ -6048,6 +6292,7 @@ export async function exportDrawingSheetTool(
     views: result.views,
     triangleCount: result.triangleCount,
     ...(annotations.length > 0 ? { dimensionCount: drawnDimensions } : {}),
+    ...(layerFilter ? { layers: layerFilter.map((s) => ({ id: s.id, name: s.name })) } : {}),
     warnings: [
       ...warnings,
       ...(annotations.length > 0 && drawnDimensions < annotations.length
@@ -6073,6 +6318,7 @@ export async function saveSheetTemplate(params: {
   scale?: number | string;
   title?: string;
   fields?: TitleBlockFields;
+  layers?: string[];
   overwrite?: boolean;
 }) {
   const name = params.name.trim();
@@ -6121,10 +6367,12 @@ export async function exportSvgSilhouetteTool(
     strokeWidth?: number;
     tessellationQuality?: string;
     format?: string;
+    /** Layer names/ids to restrict the drawing to (one output group per layer). Absent = every layer. B-rep sources only. */
+    layers?: string[];
   }
-): Promise<{ written: string; bytes: number; view: string; segmentCount: number; triangleCount: number; unit: DisplayUnit; warnings: string[]; format: string; chainCount?: number; lineCount?: number; dimensionCount?: number }> {
+): Promise<{ written: string; bytes: number; view: string; segmentCount: number; triangleCount: number; unit: DisplayUnit; warnings: string[]; format: string; chainCount?: number; lineCount?: number; dimensionCount?: number; layers?: Array<{ id: string; name: string }> }> {
   const modelPath = params.path;
-  requireDrawableRoute(modelPath);
+  const route = requireDrawableRoute(modelPath);
 
   const outputPath = path.resolve(params.outputPath);
   assertNotSourcePath(modelPath, outputPath);
@@ -6176,6 +6424,7 @@ export async function exportSvgSilhouetteTool(
   }
 
   const { source, annotations } = await resolveDrawingSource(ctx, modelPath, warnings);
+  const layerFilter = await resolveLayerFilterParam(modelPath, route, params.layers, warnings);
 
   const result = await ctx.pipeline.exportSvgSilhouette(ctx.extensionPath, source, {
     direction,
@@ -6188,6 +6437,7 @@ export async function exportSvgSilhouetteTool(
     annotations,
     hiddenLines: params.hiddenLines,
     creaseAngleDeg: params.creaseAngleDeg,
+    ...(layerFilter ? { layerFilter } : {}),
   });
   const content = format === "dxf" ? (result.dxf ?? result.svg) : result.svg;
   await fs.writeFile(outputPath, content, "utf8");
@@ -6211,6 +6461,7 @@ export async function exportSvgSilhouetteTool(
     format,
     ...(format === "dxf" ? { chainCount: result.chainCount, lineCount: result.lineCount } : {}),
     ...(result.dimensionCount !== undefined ? { dimensionCount: result.dimensionCount } : {}),
+    ...(layerFilter ? { layers: layerFilter.map((s) => ({ id: s.id, name: s.name })) } : {}),
   };
 }
 
@@ -6233,9 +6484,10 @@ export async function savePreprocessTool(params: { path: string; outputPath: str
   assertNotSourcePath(modelPath, outputPath);
 
   const sourceName = path.basename(modelPath);
-  const [source, parts, annotations, planes, edits, meshOptions] = await Promise.all([
+  const [source, parts, layers, annotations, planes, edits, meshOptions] = await Promise.all([
     readModelBytes(modelPath),
     readOptionalFile(partsSidecarPath(modelPath)),
+    readOptionalFile(layersSidecarPath(modelPath)),
     readOptionalFile(annotationsSidecarPath(modelPath)),
     readOptionalFile(planesSidecarPath(modelPath)),
     readOptionalFile(editsSidecarPath(modelPath)),
@@ -6245,7 +6497,7 @@ export async function savePreprocessTool(params: { path: string; outputPath: str
   // Per-entry SHA-256 checksums (roadmap "Archive integrity", closed); the
   // generated .geo script is deliberately NOT packaged — see
   // buildPreprocessZip's doc comment.
-  const zipBytes = buildPreprocessZip({ sourceName, source, parts, annotations, planes, edits, meshOptions });
+  const zipBytes = buildPreprocessZip({ sourceName, source, parts, layers, annotations, planes, edits, meshOptions });
   await fs.writeFile(outputPath, zipBytes);
   return {
     written: outputPath,
@@ -6253,6 +6505,7 @@ export async function savePreprocessTool(params: { path: string; outputPath: str
     included: {
       source: sourceName,
       parts: parts !== undefined,
+      layers: layers !== undefined,
       annotations: annotations !== undefined,
       planes: planes !== undefined,
       edits: edits !== undefined,
@@ -6295,6 +6548,10 @@ export async function loadPreprocessTool(params: { zipPath: string; outputPath: 
   if (contents.parts !== undefined) {
     await writeParts(outputPath, parsePartsJson(contents.parts));
   }
+  if (contents.layers !== undefined) {
+    const parsedLayers = parseLayersFile(contents.layers);
+    await writeLayers(outputPath, parsedLayers.layers, parsedLayers.nextId);
+  }
   if (contents.annotations !== undefined) {
     await writeAnnotations(outputPath, parseAnnotationsJson(contents.annotations));
   }
@@ -6318,6 +6575,7 @@ export async function loadPreprocessTool(params: { zipPath: string; outputPath: 
     manifestSource: contents.manifest.source,
     restored: {
       parts: contents.parts !== undefined,
+      layers: contents.layers !== undefined,
       annotations: contents.annotations !== undefined,
       planes: contents.planes !== undefined,
       edits: contents.edits !== undefined,

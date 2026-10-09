@@ -162,3 +162,44 @@ describe("dimension glyphs in DXF export", () => {
     expect(result.dxf).not.toMatch(/NaN|Infinity/);
   });
 });
+
+describe("layered DXF export", () => {
+  const view = { direction: [0, 0, 1] as [number, number, number] };
+  const seg = (a: [number, number], b: [number, number]): [[number, number], [number, number]] => [a, b];
+
+  it("dxfLayerName prefixes collisions with reserved layers", async () => {
+    const { dxfLayerName } = await import("./dxfSilhouette");
+    expect(dxfLayerName("Dims")).toBe("Dims");
+    expect(dxfLayerName("HIDDEN")).toBe("LAYER_HIDDEN");
+    expect(dxfLayerName("0")).toBe("LAYER_0");
+  });
+
+  it("aciColorForCss maps primaries and defaults garbage to white", async () => {
+    const { aciColorForCss } = await import("./dxfSilhouette");
+    expect(aciColorForCss("#ff0000")).toBe(1);
+    expect(aciColorForCss("#00ff00")).toBe(3);
+    expect(aciColorForCss("#0000ff")).toBe(5);
+    expect(aciColorForCss("not a colour")).toBe(7);
+  });
+
+  it("layeredDxf emits a TABLES section and lands entities on their layers", async () => {
+    const { layeredDxf } = await import("./dxfSilhouette");
+    const r = layeredDxf(
+      [
+        { name: "Dims", color: "#ff0000", segments: [seg([0, 0], [10, 0])] },
+        { name: "HIDDEN", color: "#00ff00", segments: [seg([0, 5], [10, 5])], hiddenSegments: [seg([0, 6], [10, 6])] },
+      ],
+      view
+    );
+    expect(r.dxf).toMatch(/TABLES/);
+    expect(r.dxf).toMatch(/LAYER/);
+    expect(r.dxf).toMatch(/62\n1\n/); // red -> ACI 1 in the table
+    expect(r.dxf).toMatch(/8\nDims\n/); // visible geometry on its own layer
+    expect(r.dxf).toMatch(/8\nLAYER_HIDDEN\n/); // the collision prefix, not a merge into HIDDEN
+    expect(r.dxf).toMatch(/8\nHIDDEN\n/); // occluded runs keep the existing convention
+    expect(r.segmentCount).toBe(2);
+    // The writer's own output parses back through the repo's reader with no warnings.
+    const back = parseDxf(r.dxf);
+    expect(back.warnings).toEqual([]);
+  });
+});

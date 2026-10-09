@@ -32,6 +32,7 @@ The extension host is a Node.js process. These modules run there — never in th
 | `src/meshExtract.ts` | Extract WebGL geometry (faces + edges) from OCCT shapes |
 | `src/viewerDefaults.ts` | The `cadPreview.*` settings bag + `normalizeViewerDefaults` tolerance gate (vscode-free) |
 | `src/partsStore.ts` | Read/write the `<model>.parts.json` sidecar (vscode fs) |
+| `src/layersStore.ts` | Read/write the `<model>.layers.json` sidecar (vscode fs) — presentation/drawing layers |
 | `src/dirtyGuard.ts` | Refuses a sidecar write that would discard unsaved editor changes (fails open) |
 | `src/viewDirections.ts` | The shared named-view vocabulary (6 cardinal + 8 isometric octants), aliases, and orbit math (pure, unit-tested) |
 | `src/rayPick.ts` | Pure ray→entity picking over the tessellation (Möller–Trumbore faces, closest-approach edges/points; unit-tested) |
@@ -40,6 +41,7 @@ The extension host is a Node.js process. These modules run there — never in th
 | `src/scriptLibrary.ts` | Saved-script (macro) library parse/serialize + parameter-override merge (pure, unit-tested) |
 | `src/holeStandards.ts` | ISO metric / UNC / UNF tapped-hole and clearance sizes (pure, unit-tested) |
 | `src/partsSidecar.ts` | Pure parse/serialize for the parts sidecar (vscode-free, unit-tested) |
+| `src/layersSidecar.ts` | Pure parse/serialize + `nextId` allocation counter + lock-operand check + drawing-filter resolver for the layers sidecar (vscode-free, unit-tested) |
 | `src/annotationsStore.ts` | Read/write the `<model>.annotations.json` sidecar (vscode fs) — pinned measurements |
 | `src/annotationsSidecar.ts` | Pure parse/serialize for the annotations sidecar (vscode-free, unit-tested) |
 | `src/planesStore.ts` | Read/write the `<model>.planes.json` sidecar (vscode fs) — named construction planes |
@@ -614,7 +616,7 @@ class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocument> {
 - After a `finish` wrote the edits sidecar, `revisions.noteSynced("edits", …)` **must** record the new disk revision. The open-time seeding loop reads the pre-recovery bytes, so without this `canWrite` would compare against a stale revision and silently refuse the user's first autosave. The seeding loop's existing "skip if already known" guard makes either interleaving safe.
 - The `ask` branch's restore copies `<model>.bak` over the source, so it runs inside `withSourceWrite` — the same one-shot `expectOwnSourceSave` guard the save paths use — or the source watcher reloads the document underneath the recovery.
 
-Two more consequences of the marker being a separate file: `list_workspace_models` still reports exactly six companions (the marker is per-save state, not document state), and `save_preprocess` does not archive it. Gated on the three formats with a same-format writer, so STEP/IGES/BREP/glTF/meshio documents are never touched — including by a marker someone plants beside them.
+Two more consequences of the marker being a separate file: `list_workspace_models` still reports exactly seven companions (the marker is per-save state, not document state), and `save_preprocess` does not archive it. Gated on the three formats with a same-format writer, so STEP/IGES/BREP/glTF/meshio documents are never touched — including by a marker someone plants beside them.
 
 **`saveCustomDocumentAs(document, destination)`** — same-format copy, not a bake: source bytes + present sidecars to `destination` (watermark verbatim). No format conversion (that's Export).
 

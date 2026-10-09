@@ -4,13 +4,13 @@
     {
       "id": "verification",
       "section": "Verification (Phase 2+3)",
-      "gap": "no real Extension Development Host session was run in this environment. The interactive flow this change touches most — opening a B-rep file, editing it repeatedly, confi",
+      "gap": "no real Extension Development Host session was run in this environment. The interactive flow this change touches most \u2014 opening a B-rep file, editing it repeatedly, confi",
       "status": "open"
     },
     {
       "id": "mesh-health-panel",
-      "section": "Mesh → B-rep promotion (roadmap item, closed — both phases)",
-      "gap": "this environment cannot run a real Extension Development Host session, so the panel's actual button click → request → render round trip has NOT been exercised end-to-end ",
+      "section": "Mesh \u2192 B-rep promotion (roadmap item, closed \u2014 both phases)",
+      "gap": "this environment cannot run a real Extension Development Host session, so the panel's actual button click \u2192 request \u2192 render round trip has NOT been exercised end-to-end ",
       "status": "closed",
       "closedBy": [
         "mesh health: a native STL shows the panel, Check posts a request, the report renders",
@@ -19,8 +19,8 @@
     },
     {
       "id": "phase-2",
-      "section": "Phase 2 — actual promotion (a one-shot export)",
-      "gap": "the actual button click → quick-picks → save dialog → write flow has NOT been exercised in a real Extension Development Host session. See \"Verify a change\" below.",
+      "section": "Phase 2 \u2014 actual promotion (a one-shot export)",
+      "gap": "the actual button click \u2192 quick-picks \u2192 save dialog \u2192 write flow has NOT been exercised in a real Extension Development Host session. See \"Verify a change\" below.",
       "status": "open"
     },
     {
@@ -47,31 +47,31 @@
     {
       "id": "per-band-operation-preview-colouring",
       "section": "Per-band operation-preview colouring (roadmap Tier 1, closed)",
-      "gap": "no real Extension Development Host session was run here — the two-tone overlay's feel in a live webview (light and dark themes) needs the F5 checklist below (extrude → ca",
+      "gap": "no real Extension Development Host session was run here \u2014 the two-tone overlay's feel in a live webview (light and dark themes) needs the F5 checklist below (extrude \u2192 ca",
       "status": "open"
     },
     {
       "id": "author-profiles-on-a-named-construction-pl",
       "section": "Author profiles on a named construction plane (roadmap Tier 1, closed)",
-      "gap": "the plane-picker feel and tilted-rectangle stability across reopen need the F5 checklist below (pick a plane → sketch lands on it; move the plane → sketch follows; delete",
+      "gap": "the plane-picker feel and tilted-rectangle stability across reopen need the F5 checklist below (pick a plane \u2192 sketch lands on it; move the plane \u2192 sketch follows; delete",
       "status": "open"
     },
     {
       "id": "volume-and-point-selection-predicates",
       "section": "Volume and point selection predicates (roadmap Tier 1, closed)",
-      "gap": "no real Extension Development Host session was run here — the new dropdown options in a live webview need the F5 checklist below (Vol smallest → one solid assigned; Point",
+      "gap": "no real Extension Development Host session was run here \u2014 the new dropdown options in a live webview need the F5 checklist below (Vol smallest \u2192 one solid assigned; Point",
       "status": "open"
     },
     {
       "id": "zoom-to-selection",
       "section": "Zoom to selection (roadmap Tier 1, closed)",
-      "gap": "no real Extension Development Host session was run here — the Command Palette entry and the menu click-through in a live webview need the F5 checklist below (select a fac",
+      "gap": "no real Extension Development Host session was run here \u2014 the Command Palette entry and the menu click-through in a live webview need the F5 checklist below (select a fac",
       "status": "open"
     },
     {
       "id": "transform-gizmo",
       "section": "Transform gizmo (roadmap item, closed)",
-      "gap": "(`clipCap.ts`, `labelOverlay.ts`, the external-change-reconciliation watchers, …): this environment cannot run a real Extension Development Host session, so the actual mo",
+      "gap": "(`clipCap.ts`, `labelOverlay.ts`, the external-change-reconciliation watchers, \u2026): this environment cannot run a real Extension Development Host session, so the actual mo",
       "status": "closed",
       "closedBy": [
         "gizmo: dragging the X arrow previews a Move along X only; Apply commits it once",
@@ -81,32 +81,32 @@
     },
     {
       "id": "split-view",
-      "section": "Split view — synchronized quad viewports (roadmap item, all 3 phases closed)",
+      "section": "Split view \u2014 synchronized quad viewports (roadmap item, all 3 phases closed)",
       "gap": "the Transform Gizmo drag inside a split view and the human feel of the toggle are F5-only; see \"Verify a change\" below for the manual steps.",
       "status": "open"
     },
     {
       "id": "import-svg",
       "section": "`import_svg` (new MCP tool)",
-      "gap": "the interactive click-through (File ▸ Import SVG… with a real transformed, text-derived \"O\" → Build → Surface on all its edges → Extrude/`wrap`) has NOT been exercised in",
+      "gap": "the interactive click-through (File \u25b8 Import SVG\u2026 with a real transformed, text-derived \"O\" \u2192 Build \u2192 Surface on all its edges \u2192 Extrude/`wrap`) has NOT been exercised in",
       "status": "open"
     },
     {
       "id": "free-points-and-lines-are-meshed-on",
       "section": "Free points and lines are meshed on (roadmap \"Embedded points and curves\", closed)",
-      "gap": "no real Extension Development Host session was run here. Placing an `addPoint`, assigning it to a Part and pressing ▶ Generate in a live webview — and the \"curved free ed",
+      "gap": "no real Extension Development Host session was run here. Placing an `addPoint`, assigning it to a Part and pressing \u25b6 Generate in a live webview \u2014 and the \"curved free ed",
       "status": "open"
     },
     {
       "id": "distance-graded-mesh-sizing-anchored-on-a",
       "section": "Distance-graded mesh sizing anchored on a Part (roadmap \"Boundary-layer and distance-threshold mesh sizing\", Phase 1, closed)",
-      "gap": "the panel click-through (dragging the toggle, typing into the four fields) has NOT been exercised in a real Extension Development Host session — `npm run test:webview` dr",
+      "gap": "the panel click-through (dragging the toggle, typing into the four fields) has NOT been exercised in a real Extension Development Host session \u2014 `npm run test:webview` dr",
       "status": "open"
     },
     {
       "id": "ftetwild-robust-volume-meshing",
-      "section": "fTetWild robust volume meshing (roadmap \"Robust volumetric meshing from a skin mesh\", closed — via a route the item's own text never considered)",
-      "gap": "the FE Mesh panel's Engine `<select>` and the Mesh Health panel's Repair (robust)… button both compile clean and are wired following established patterns exactly, but nei",
+      "section": "fTetWild robust volume meshing (roadmap \"Robust volumetric meshing from a skin mesh\", closed \u2014 via a route the item's own text never considered)",
+      "gap": "the FE Mesh panel's Engine `<select>` and the Mesh Health panel's Repair (robust)\u2026 button both compile clean and are wired following established patterns exactly, but nei",
       "status": "open"
     },
     {
@@ -117,26 +117,26 @@
     },
     {
       "id": "pass-3",
-      "section": "Pass 3 — matching the mockup (sidebar, status bar, pill, kernel readiness)",
-      "gap": "no Extension Development Host session — the hover-reveal feel of the Parts and tree rows, how the new line glyphs read in light and high-contrast themes, and the real ker",
+      "section": "Pass 3 \u2014 matching the mockup (sidebar, status bar, pill, kernel readiness)",
+      "gap": "no Extension Development Host session \u2014 the hover-reveal feel of the Parts and tree rows, how the new line glyphs read in light and high-contrast themes, and the real ker",
       "status": "open"
     },
     {
       "id": "pass-4",
-      "section": "Pass 4 — the remaining gaps to the mockup",
-      "gap": "no Extension Development Host session — the feel of the smaller toolbar, the new glyphs in light and high-contrast themes, and the collapse chevron's placement in a real ",
+      "section": "Pass 4 \u2014 the remaining gaps to the mockup",
+      "gap": "no Extension Development Host session \u2014 the feel of the smaller toolbar, the new glyphs in light and high-contrast themes, and the collapse chevron's placement in a real ",
       "status": "open"
     },
     {
       "id": "pass-5",
-      "section": "Pass 5 — the last gaps to the mockup",
-      "gap": "how a 0.35 tint reads in light and high-contrast themes — where the accent and the face colours differ from the dark-theme fixture — is F5-only.",
+      "section": "Pass 5 \u2014 the last gaps to the mockup",
+      "gap": "how a 0.35 tint reads in light and high-contrast themes \u2014 where the accent and the face colours differ from the dark-theme fixture \u2014 is F5-only.",
       "status": "open"
     },
     {
       "id": "region-fit-actions",
-      "section": "Phase 2 — turn a fit into a stored plane / a primitive op (S, gated on item 7’s `plane-N` sidecar, now closed)",
-      "gap": "the actual click → request → render → save/add round trip has NOT been exercised end-to-end in a real Extension Development Host session — see “Verify a change” below. Th",
+      "section": "Phase 2 \u2014 turn a fit into a stored plane / a primitive op (S, gated on item 7\u2019s `plane-N` sidecar, now closed)",
+      "gap": "the actual click \u2192 request \u2192 render \u2192 save/add round trip has NOT been exercised end-to-end in a real Extension Development Host session \u2014 see \u201cVerify a change\u201d below. Th",
       "status": "closed",
       "closedBy": [
         "region fit: Pick seed is one-shot, posts a world point, and the reply gates the three actions",
@@ -146,33 +146,33 @@
     {
       "id": "standard-parts-thumbnails",
       "section": "Standard-parts thumbnails (roadmap Tier 1, closed)",
-      "gap": "no live-network run here — a real step.parts search in a live webview (thumbnails appear; airplane-mode search still lists text with no hangs) needs the F5 checklist belo",
+      "gap": "no live-network run here \u2014 a real step.parts search in a live webview (thumbnails appear; airplane-mode search still lists text with no hangs) needs the F5 checklist belo",
       "status": "open"
     },
     {
       "id": "macros-panel-save-prompt",
-      "section": "Saved parametric scripts — the macro library (roadmap Tier 1, closed)",
-      "gap": "the Macros panel's click-through (Save current → name prompt → Run with edited parameters → Delete) has NOT been exercised in a real Extension Development Host session. S",
+      "section": "Saved parametric scripts \u2014 the macro library (roadmap Tier 1, closed)",
+      "gap": "the Macros panel's click-through (Save current \u2192 name prompt \u2192 Run with edited parameters \u2192 Delete) has NOT been exercised in a real Extension Development Host session. S",
       "status": "open",
       "note": "Run/Delete/parameter rows are now covered (macros-panel-run-delete); the Save current name-prompt is a host-side flow."
     },
     {
       "id": "bundled-starter-macro-library",
       "section": "Bundled starter macro library (roadmap Tier 1 item, closed)",
-      "gap": "no real Extension Development Host session was run here — the bundled rows rendering, Run-on-blank click-through, and Delete-refusal in a live webview need the F5 checkli",
+      "gap": "no real Extension Development Host session was run here \u2014 the bundled rows rendering, Run-on-blank click-through, and Delete-refusal in a live webview need the F5 checkli",
       "status": "open",
       "note": "The read-only (no Delete) row rule is covered by the macros webview case; the Run-on-a-blank-model host click-through remains."
     },
     {
       "id": "hole-table-feature-schedule",
       "section": "Hole table / feature schedule (roadmap Tier 1, closed)",
-      "gap": "Zero webview surface — fully covered by unit + smoke in this environment, stated plainly instead of the usual F5 caveat.",
+      "gap": "Zero webview surface \u2014 fully covered by unit + smoke in this environment, stated plainly instead of the usual F5 caveat.",
       "status": "none",
       "note": "The feature has zero webview surface and is fully covered by unit + mcp:smoke tests."
     },
     {
       "id": "explain-the-geometry-under-the-cursor",
-      "section": "Explain the geometry under the cursor (roadmap Tier 1, closed — hover tooltip + inspector card)",
+      "section": "Explain the geometry under the cursor (roadmap Tier 1, closed \u2014 hover tooltip + inspector card)",
       "gap": "the visual placement/edge-flipping of the tooltip near the viewport border, and how the card reads at a glance.",
       "status": "open"
     },
@@ -185,25 +185,25 @@
     {
       "id": "svg-silhouette-export",
       "section": "SVG silhouette export (roadmap item, closed)",
-      "gap": "the File ▾ → Export Silhouette SVG… click → view quick-pick → unit quick-pick → save dialog flow has NOT been exercised in a real Extension Development Host session. See ",
+      "gap": "the File \u25be \u2192 Export Silhouette SVG\u2026 click \u2192 view quick-pick \u2192 unit quick-pick \u2192 save dialog flow has NOT been exercised in a real Extension Development Host session. See ",
       "status": "open"
     },
     {
       "id": "progress-reporting-and-cancellation",
-      "section": "Progress reporting and cancellation (roadmap item, closed as stage-boundary only — explicitly NOT the OCCT-forked-child-process item)",
-      "gap": "`provider.ts` has no unit-test coverage (`vscode`-API-dependent throughout). Verified via `tsc`/`npx vitest run`/`npm run build`/`npm run mcp:smoke` (all clean — `mcp:smo",
+      "section": "Progress reporting and cancellation (roadmap item, closed as stage-boundary only \u2014 explicitly NOT the OCCT-forked-child-process item)",
+      "gap": "`provider.ts` has no unit-test coverage (`vscode`-API-dependent throughout). Verified via `tsc`/`npx vitest run`/`npm run build`/`npm run mcp:smoke` (all clean \u2014 `mcp:smo",
       "status": "open"
     },
     {
       "id": "cheap-thin-wrapper-ops-mined-from-fluidcad",
-      "section": "Cheap thin-wrapper ops mined from FluidCAD (roadmap item 10, closed — all six sub-items)",
-      "gap": "`npm test` could not execute — vitest 4 needs Node ≥ 20 and the shell had Node 18 — so the new unit tests were validated by `tsc` alone and left to CI, and `edits-edit.pn",
+      "section": "Cheap thin-wrapper ops mined from FluidCAD (roadmap item 10, closed \u2014 all six sub-items)",
+      "gap": "`npm test` could not execute \u2014 vitest 4 needs Node \u2265 20 and the shell had Node 18 \u2014 so the new unit tests were validated by `tsc` alone and left to CI, and `edits-edit.pn",
       "status": "none",
       "note": "Retracted in its own entry: the toolchain now runs under VS Code's Electron as Node 24, so vitest and the new unit tests do run here."
     },
     {
       "id": "thin-walled-sweep-family-features",
-      "section": "Thin-walled sweep-family features — `.thin()` (roadmap item 8, first cut)",
+      "section": "Thin-walled sweep-family features \u2014 `.thin()` (roadmap item 8, first cut)",
       "gap": "the panel's new Wall/Outward fields have NOT been exercised in a real Extension Development Host session. See \"Verify a change\".",
       "status": "open"
     },
@@ -221,38 +221,38 @@
     },
     {
       "id": "wrap-sketch-onto-cylinder-cone",
-      "section": "Wrap sketch onto cylinder/cone — `wrap()` (roadmap item 1, closed)",
+      "section": "Wrap sketch onto cylinder/cone \u2014 `wrap()` (roadmap item 1, closed)",
       "gap": "the Wrap composer (target Type/Axis/Radius/Half-angle/Thickness/Variant row) has NOT been exercised in a real Extension Development Host session. See \"Verify a change\".",
       "status": "open"
     },
     {
       "id": "loft-guide-rails",
-      "section": "Loft guide rails — resampled-intermediate fallback (roadmap item 1, closed as fallback)",
+      "section": "Loft guide rails \u2014 resampled-intermediate fallback (roadmap item 1, closed as fallback)",
       "gap": "the **Set rail** row has NOT been exercised in a real Extension Development Host session. See \"Verify a change\".",
       "status": "open"
     },
     {
       "id": "build-time-classification-buckets",
       "section": "Build-time classification buckets (roadmap item 7 Phase 1, closed)",
-      "gap": "the chip rendering, click-to-highlight feel, and tooltip layout have NOT been exercised in a real Extension Development Host session — see \"Verify a change\" below.",
+      "gap": "the chip rendering, click-to-highlight feel, and tooltip layout have NOT been exercised in a real Extension Development Host session \u2014 see \"Verify a change\" below.",
       "status": "open"
     },
     {
       "id": "interactive-half",
-      "section": "Interactive half — pin-as-query row (follow-up, closed)",
-      "gap": "the host handler (`provider.ts`, no unit-test path) and the human feel of the row are F5-only — same caveat as every other webview-touching feature. The test fakes the ke",
+      "section": "Interactive half \u2014 pin-as-query row (follow-up, closed)",
+      "gap": "the host handler (`provider.ts`, no unit-test path) and the human feel of the row are F5-only \u2014 same caveat as every other webview-touching feature. The test fakes the ke",
       "status": "open"
     },
     {
       "id": "openscad-csg-import",
       "section": "OpenSCAD .csg import (roadmap Tier 2 item 2, path (a), closed)",
-      "gap": "opening a `.csg` in a real Extension Development Host session (glue: selector registration, open-dialog filter, `handleBRep` status posts) has NOT been exercised — same c",
+      "gap": "opening a `.csg` in a real Extension Development Host session (glue: selector registration, open-dialog filter, `handleBRep` status posts) has NOT been exercised \u2014 same c",
       "status": "open"
     },
     {
       "id": "complete-the-openscad-csg-node-coverage",
-      "section": "Complete the OpenSCAD `.csg` node coverage (roadmap Tier 1 item 2, closed — *issue #35*)",
-      "gap": "opening an extrude-bearing `.csg` in a real Extension Development Host session has NOT been exercised — same standing caveat as the path-(a) item above (the interactive g",
+      "section": "Complete the OpenSCAD `.csg` node coverage (roadmap Tier 1 item 2, closed \u2014 *issue #35*)",
+      "gap": "opening an extrude-bearing `.csg` in a real Extension Development Host session has NOT been exercised \u2014 same standing caveat as the path-(a) item above (the interactive g",
       "status": "open"
     },
     {
@@ -270,37 +270,37 @@
     {
       "id": "bounded-assembly-interference-checks",
       "section": "Bounded assembly interference checks (roadmap Tier 1, closed)",
-      "gap": "no real Extension Development Host session was run here — the Check-all click-through with a budget needs the F5 checklist below.",
+      "gap": "no real Extension Development Host session was run here \u2014 the Check-all click-through with a budget needs the F5 checklist below.",
       "status": "open"
     },
     {
       "id": "mesh-operations-panel-for-meshio-sources",
       "section": "Mesh-operations panel for meshio sources (roadmap Tier 2 item, closed)",
-      "gap": "no real Extension Development Host session was run here — the Run-click → save-dialog → write flow and the section's show/hide across source kinds need the F5 checklist b",
+      "gap": "no real Extension Development Host session was run here \u2014 the Run-click \u2192 save-dialog \u2192 write flow and the section's show/hide across source kinds need the F5 checklist b",
       "status": "open"
     },
     {
       "id": "bom-copy-button",
       "section": "BOM \"Copy\" button (roadmap Tier 2 item, closed)",
-      "gap": "no real Extension Development Host session was run here — the click → host compute → clipboard round trip in a real VS Code webview (clipboard permission, focus) needs th",
+      "gap": "no real Extension Development Host session was run here \u2014 the click \u2192 host compute \u2192 clipboard round trip in a real VS Code webview (clipboard permission, focus) needs th",
       "status": "open"
     },
     {
       "id": "tier-0-phase-1",
-      "section": "Tier 0 Phase 1 — same-format save-in-place (roadmap Tier 0, all three phases closed; Phase 3 below)",
-      "gap": "the interactive click-through (Export → own format → modal → save dialog → reload, `.bak` on disk, watcher silence) has NOT been exercised in a real Extension Development",
+      "section": "Tier 0 Phase 1 \u2014 same-format save-in-place (roadmap Tier 0, all three phases closed; Phase 3 below)",
+      "gap": "the interactive click-through (Export \u2192 own format \u2192 modal \u2192 save dialog \u2192 reload, `.bak` on disk, watcher silence) has NOT been exercised in a real Extension Development",
       "status": "open"
     },
     {
       "id": "tier-0-phase-2",
-      "section": "Tier 0 Phase 2 — genuinely editable document (roadmap Tier 0, Phase 2 closed; Phase 3 closed below)",
-      "gap": "no live Extension Development Host session here — the five API members, dirty-dot feel, Ctrl+S bake + clear, `File: Revert File`, Save-As copy, and hot-exit restore need ",
+      "section": "Tier 0 Phase 2 \u2014 genuinely editable document (roadmap Tier 0, Phase 2 closed; Phase 3 closed below)",
+      "gap": "no live Extension Development Host session here \u2014 the five API members, dirty-dot feel, Ctrl+S bake + clear, `File: Revert File`, Save-As copy, and hot-exit restore need ",
       "status": "open"
     },
     {
       "id": "tier-0-phase-3",
-      "section": "Tier 0 Phase 3 — mesh save-in-place + headless save_model (roadmap Tier 0, closed)",
-      "gap": "no live Extension Development Host session here — the Export-own-format modal → `.bak` → reload, Ctrl+S mesh bake + clear, and glTF-exclusion need the F5 checklist below.",
+      "section": "Tier 0 Phase 3 \u2014 mesh save-in-place + headless save_model (roadmap Tier 0, closed)",
+      "gap": "no live Extension Development Host session here \u2014 the Export-own-format modal \u2192 `.bak` \u2192 reload, Ctrl+S mesh bake + clear, and glTF-exclusion need the F5 checklist below.",
       "status": "open"
     },
     {
@@ -311,14 +311,14 @@
     },
     {
       "id": "parity-gaps",
-      "section": "Parity gaps (roadmap Tier 1, closed — all four)",
+      "section": "Parity gaps (roadmap Tier 1, closed \u2014 all four)",
       "gap": "the host halves of the hole-table copy and the sweep (`provider.ts` handlers) and the feel of the inline note field are F5-only; the sweep's folder dialog is not exercise",
       "status": "open"
     },
     {
       "id": "primitive-recognition-panel",
-      "section": "Primitive-recognition panel (roadmap Tier 2 item, closed — Tier 2 now empty)",
-      "gap": "no real Extension Development Host session was run here — the Recognize → Apply → Export → Save-macro click-through in a live VS Code webview (including the Export quick-",
+      "section": "Primitive-recognition panel (roadmap Tier 2 item, closed \u2014 Tier 2 now empty)",
+      "gap": "no real Extension Development Host session was run here \u2014 the Recognize \u2192 Apply \u2192 Export \u2192 Save-macro click-through in a live VS Code webview (including the Export quick-",
       "status": "open"
     },
     {
@@ -330,7 +330,7 @@
     {
       "id": "contribution-templates-and-durable-referen",
       "section": "Contribution templates and durable references (roadmap Tier 1 item 2, closed)",
-      "gap": "no real GitHub render pass was run — the templates' actual button appearance/live behavior on the GitHub UI is inferred from its documented shapes, not viewed.",
+      "gap": "no real GitHub render pass was run \u2014 the templates' actual button appearance/live behavior on the GitHub UI is inferred from its documented shapes, not viewed.",
       "status": "open"
     },
     {
@@ -342,13 +342,13 @@
     {
       "id": "reusable-meshing-presets",
       "section": "Reusable meshing presets (roadmap Tier 1 item, closed)",
-      "gap": "no real Extension Development Host session — the Apply→re-render→generate click-through and the Save name-prompt flow need the F5 checklist (open any model → Saved preset",
+      "gap": "no real Extension Development Host session \u2014 the Apply\u2192re-render\u2192generate click-through and the Save name-prompt flow need the F5 checklist (open any model \u2192 Saved preset",
       "status": "open"
     },
     {
       "id": "measured-mesh-refinement-comparison",
       "section": "Measured mesh-refinement comparison (roadmap Tier 1 item, closed)",
-      "gap": "`mcp:smoke` never sends `notifications/cancelled`, so a *live* cancelled sweep is not reachable through that harness without new client machinery — the deterministic clai",
+      "gap": "`mcp:smoke` never sends `notifications/cancelled`, so a *live* cancelled sweep is not reachable through that harness without new client machinery \u2014 the deterministic clai",
       "status": "open"
     },
     {
@@ -377,13 +377,13 @@
     },
     {
       "id": "meshio-16-22-0-16-27-0",
-      "section": "meshio++ 16.22.0 → 16.27.0 — five releases, and the one assertion that was pinning a fix rather than a bug",
+      "section": "meshio++ 16.22.0 \u2192 16.27.0 \u2014 five releases, and the one assertion that was pinning a fix rather than a bug",
       "gap": "the Nastran **viewer** open is still",
       "status": "open"
     },
     {
       "id": "macros-panel-run-delete",
-      "section": "Saved parametric scripts — the macro library",
+      "section": "Saved parametric scripts \u2014 the macro library",
       "gap": "The Macros panel rows, parameter fields, Run payload, Delete and macroApplyOps had never been driven in a real webview.",
       "status": "closed",
       "closedBy": [
@@ -421,7 +421,7 @@
     {
       "id": "pin-tolerance-fields",
       "section": "Dimension-style rendering + tolerance bands",
-      "gap": "The inline nom/+/− pin fields, the symmetric default, the half-filled-band warning and out-of-band flagging were F5-only.",
+      "gap": "The inline nom/+/\u2212 pin fields, the symmetric default, the half-filled-band warning and out-of-band flagging were F5-only.",
       "status": "closed",
       "closedBy": [
         "pin: the tolerance fields exist only while pinnable; a band pins with its frozen measurement",
@@ -441,7 +441,7 @@
     },
     {
       "id": "linked-cameras",
-      "section": "Split view — synchronized quad viewports",
+      "section": "Split view \u2014 synchronized quad viewports",
       "gap": "Applying a relayed camera without echoing viewChanged (the documented ping-pong hazard) was F5-only.",
       "status": "closed",
       "closedBy": [
@@ -451,11 +451,11 @@
     {
       "id": "export-mesh-join",
       "section": "Webview and host-side test harnesses",
-      "gap": "The Export command's mesh targets end to end: format pick → the real webview serializes → save dialog → bytes on disk.",
+      "gap": "The Export command's mesh targets end to end: format pick \u2192 the real webview serializes \u2192 save dialog \u2192 bytes on disk.",
       "status": "closed",
       "closedBy": [
-        "Export… writes a structurally valid binary STL serialized by the real webview",
-        "Export… writes a glTF Binary (.glb) serialized by the real webview"
+        "Export\u2026 writes a structurally valid binary STL serialized by the real webview",
+        "Export\u2026 writes a glTF Binary (.glb) serialized by the real webview"
       ],
       "note": "Seen green in CI on PR #90 (run 36875850807): STL is 84 + 50 x 12 bytes, glTF carries the glTF magic and a declared length equal to the file size, both serialized by the real webview."
     },
@@ -465,6 +465,25 @@
       "gap": "`--backend=manifold` against a real OpenSCAD snapshot that supports it (only the argv shape and the rejection message are tested, through stub binaries), and the interactive path: the three `cadPreview.openscad*` settings read by `readScadSettings()` and honoured when a `.scad` opens in a real Extension Development Host.",
       "status": "open",
       "note": "No OpenSCAD binary is installed where this was written, so even the stock invocation was exercised only through stubs; the only live-binary evidence in the repo is the 2026-09-07 run against OpenSCAD 2021.01, which predates --backend."
+    },
+    {
+      "id": "layers-distinct-from-parts",
+      "section": "Layers, distinct from Parts (roadmap 2.8, closed \u2014 both increments)",
+      "gap": "Layers panel create/assign/hide/lock, the host watcher/dirty-guard round trip, and the real filtered drawing export.",
+      "status": "closed",
+      "closedBy": [
+        "layers: section renders beside Parts with its own glyph; New posts with the counter",
+        "layers: Assign posts the picked face; hiding it makes it unpickable",
+        "layers: a locked member refuses Extrude Apply, then applies once unlocked",
+        "an external layers write reconciles, a dirty layers buffer refuses the write, and a filtered export draws one group"
+      ],
+      "note": "The sheet form's Layers checkboxes feel is tracked separately as layers-sheet-form; everything else is harness-covered."
+    },
+    {
+      "id": "layers-sheet-form",
+      "section": "Layers, distinct from Parts (roadmap 2.8, closed \u2014 both increments)",
+      "gap": "The Export Drawing Sheet form's Layers checkboxes (rendering, check/uncheck, template round trip) in a live session \u2014 the form has a Test seam the integration suite cannot drive through a webview panel.",
+      "status": "open"
     }
   ]
 }

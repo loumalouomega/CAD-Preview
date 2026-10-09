@@ -86,6 +86,9 @@ import {
   setVariables,
   setPart,
   setPlane,
+  listLayers,
+  setLayer,
+  assignLayer,
   setMeshOptions,
   generateMeshTool,
   exportMeshTool,
@@ -870,6 +873,7 @@ server.registerTool(
         .optional()
         .describe("Mesh sources only: dihedral angle above which an interior edge is drawn. Default 35°, chosen to clear a coarse STL cylinder's own facet angle. Too low turns the drawing into a wireframe (which is warned about)."),
       format: z.enum(["svg", "dxf"]).optional(),
+      layers: z.array(z.string()).optional().describe("Layer names/ids to restrict the drawing to (one output group per layer; SVG <g>, DXF LAYER table). Absent = every layer. B-rep sources only."),
     },
   },
   wrap(
@@ -884,6 +888,7 @@ server.registerTool(
       tessellationQuality?: string;
       creaseAngleDeg?: number;
       format?: "svg" | "dxf";
+      layers?: string[];
     }) => exportTechnicalDrawingTool(ctx, args)
   )
 );
@@ -911,6 +916,7 @@ server.registerTool(
       fields: sheetFieldsSchema,
       template: z.string().optional().describe("Sheet template name (bundled starters ∪ libraryPath) supplying any setting not given explicitly"),
       libraryPath: z.string().optional().describe("User sheet-template library JSON"),
+      layers: z.array(z.string()).optional().describe("Layer names/ids to restrict every view to (one group per layer in each view). Absent = every layer. B-rep sources only."),
     },
   },
   wrap(
@@ -929,6 +935,7 @@ server.registerTool(
       fields?: { author?: string; drawingNumber?: string; revision?: string; material?: string };
       template?: string;
       libraryPath?: string;
+      layers?: string[];
     }) => exportDrawingSheetTool(ctx, args)
   )
 );
@@ -988,6 +995,7 @@ server.registerTool(
       scale: z.union([z.number(), z.string()]).optional(),
       title: z.string().optional(),
       fields: sheetFieldsSchema,
+      layers: z.array(z.string()).optional().describe("Layer names/ids to restrict every view to"),
       overwrite: z.boolean().optional(),
     },
   },
@@ -1019,9 +1027,10 @@ server.registerTool(
       strokeWidth: z.number().optional().describe("SVG only: stroke width in output units (default: proportional to the drawing's size)"),
       tessellationQuality: z.string().optional().describe("B-rep sources only: draft | standard | fine (default fine)"),
       format: z.enum(["svg", "dxf"]).optional().describe("Output format: svg (default) or dxf"),
+      layers: z.array(z.string()).optional().describe("Layer names/ids to restrict the drawing to (one output group per layer; SVG <g>, DXF LAYER table). Absent = every layer. B-rep sources only."),
     },
   },
-  wrap((args: { path: string; outputPath: string; view?: string; direction?: number[]; up?: number[]; unit?: string; strokeWidth?: number; tessellationQuality?: string; format?: string }) =>
+  wrap((args: { path: string; outputPath: string; view?: string; direction?: number[]; up?: number[]; unit?: string; strokeWidth?: number; tessellationQuality?: string; format?: string; layers?: string[] }) =>
     exportSvgSilhouetteTool(ctx, args)
   )
 );
@@ -1340,6 +1349,80 @@ server.registerTool(
       derivedFrom?: string;
       remove?: boolean;
     }) => setPlane(args)
+  )
+);
+
+server.registerTool(
+  "list_layers",
+  {
+    description:
+      "Read-only inventory of a document's layers (presentation/drawing groups in <model>.layers.json) — the headless counterpart of the Layers panel. Layers answer which entities are shown, locked or drawn together — never which form a finite-element sub-model (that is Parts). Unassigned entities sit on the implicit default layer, which cannot be deleted. A hidden layer is still meshed and reaches no solver output.",
+    inputSchema: {
+      path: modelPath,
+    },
+  },
+  wrap((args: { path: string }) => listLayers(args))
+);
+
+server.registerTool(
+  "set_layer",
+  {
+    description:
+      "Create, update, or remove a named layer in <model>.layers.json. Addressed by id (stable, never reused — layer-N), not by name. Deleting a layer returns its members to the default layer; the default layer itself cannot be deleted. Visibility and lock persist; use assign_layer for membership (member arrays here replace wholesale instead).",
+    inputSchema: {
+      path: modelPath,
+      id: z.string().optional().describe("layer-N id; omit to create a new layer"),
+      name: z.string().optional().describe("Display name"),
+      color: z.string().optional().describe("CSS hex colour, e.g. #ff8800 (panel swatch + drawing-export colour)"),
+      visible: z.boolean().optional().describe("Persisted visibility — a hidden layer stays hidden for drawings and agents"),
+      locked: z.boolean().optional().describe("A locked entity refuses as an edit operand and as a Transform Gizmo target"),
+      volumes: z.array(z.string()).optional().describe("solid-N ids (replaces wholesale; prefer assign_layer)"),
+      surfaces: z.array(z.string()).optional().describe("face-N ids (replaces wholesale; prefer assign_layer)"),
+      lines: z.array(z.string()).optional().describe("edge-N ids (replaces wholesale; prefer assign_layer)"),
+      points: z.array(z.string()).optional().describe("point-N ids (replaces wholesale; prefer assign_layer)"),
+      remove: z.boolean().optional().describe("Remove the layer with this id instead of upserting (members return to Default)"),
+    },
+  },
+  wrap(
+    (args: {
+      path: string;
+      id?: string;
+      name?: string;
+      color?: string;
+      visible?: boolean;
+      locked?: boolean;
+      volumes?: string[];
+      surfaces?: string[];
+      lines?: string[];
+      points?: string[];
+      remove?: boolean;
+    }) => setLayer(args)
+  )
+);
+
+server.registerTool(
+  "assign_layer",
+  {
+    description:
+      "Assign entity ids to a layer, removing each from whatever other layer holds it — an entity belongs to at most one layer. Malformed ids throw; shape-valid ids persist as given (unresolved ids are reported by the op-change rebind, never silently repointed — use load_model's inventory for valid ids).",
+    inputSchema: {
+      path: modelPath,
+      id: z.string().describe("layer-N id to assign to"),
+      volumes: z.array(z.string()).optional().describe("solid-N ids"),
+      surfaces: z.array(z.string()).optional().describe("face-N ids"),
+      lines: z.array(z.string()).optional().describe("edge-N ids"),
+      points: z.array(z.string()).optional().describe("point-N ids"),
+    },
+  },
+  wrap(
+    (args: {
+      path: string;
+      id: string;
+      volumes?: string[];
+      surfaces?: string[];
+      lines?: string[];
+      points?: string[];
+    }) => assignLayer(args)
   )
 );
 

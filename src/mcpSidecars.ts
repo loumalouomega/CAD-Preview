@@ -3,7 +3,7 @@
  * `editsStore.ts` / `partsStore.ts` / `meshOptionsStore.ts` (which wrap the
  * same pure parsers in `vscode.workspace.fs`). Must stay byte-compatible with
  * what `provider.ts` reads on reopen: same `<model>.edits.json` /
- * `.parts.json` / `.planes.json` / `.mesh.json` / `.geo` filenames, same tolerant-read
+ * `.parts.json` / `.layers.json` / `.planes.json` / `.mesh.json` / `.geo` filenames, same tolerant-read
  * defaults, same one-way `.geo` regeneration on every options write.
  */
 import { bundledSheetTemplatesPath, parseSheetTemplatesJson, serializeSheetTemplatesJson, type SheetTemplateLibrary } from "./sheetTemplates";
@@ -12,8 +12,9 @@ import * as path from "path";
 import type { EditOp } from "./editOps";
 import type { ParamVariable } from "./editVariables";
 import { parseEditsJson, serializeEditsJson, type ParsedEdits } from "./editsSidecar";
-import type { Annotation, ConstructionPlane, Part } from "./protocol";
+import type { Annotation, ConstructionPlane, Layer, Part } from "./protocol";
 import { parsePartsJson, serializePartsJson } from "./partsSidecar";
+import { parseLayersFile, serializeLayersJson } from "./layersSidecar";
 import { parseAnnotationsJson, serializeAnnotationsJson } from "./annotationsSidecar";
 import { parsePlanesJson, serializePlanesJson } from "./planesSidecar";
 import { DEFAULT_MESH_OPTIONS, type MeshOptions } from "./meshOptions";
@@ -36,6 +37,11 @@ export function editsSidecarPath(modelPath: string): string {
 
 export function partsSidecarPath(modelPath: string): string {
   return `${modelPath}.parts.json`;
+}
+
+/** `<model>.layers.json` — presentation/drawing layers, distinct from Parts. */
+export function layersSidecarPath(modelPath: string): string {
+  return `${modelPath}.layers.json`;
 }
 
 export function annotationsSidecarPath(modelPath: string): string {
@@ -107,6 +113,22 @@ export async function readParts(modelPath: string): Promise<Part[]> {
 export async function writeParts(modelPath: string, parts: Part[]): Promise<void> {
   const text = serializePartsJson(path.basename(modelPath), parts);
   await fs.writeFile(partsSidecarPath(modelPath), text, "utf8");
+}
+
+/** Reads + validates the layers sidecar; `{ layers: [], nextId: 0 }` when missing or unreadable. */
+export async function readLayers(modelPath: string): Promise<{ layers: Layer[]; nextId: number }> {
+  try {
+    const text = await fs.readFile(layersSidecarPath(modelPath), "utf8");
+    return parseLayersFile(text);
+  } catch {
+    return { layers: [], nextId: 0 };
+  }
+}
+
+/** Writes the layers sidecar beside the model. The model file itself is never touched. */
+export async function writeLayers(modelPath: string, layers: Layer[], nextId: number): Promise<void> {
+  const text = serializeLayersJson(path.basename(modelPath), layers, nextId);
+  await fs.writeFile(layersSidecarPath(modelPath), text, "utf8");
 }
 
 /** Reads + validates the annotations sidecar; returns `[]` when missing or unreadable. */

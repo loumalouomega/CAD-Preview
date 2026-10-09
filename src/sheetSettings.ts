@@ -33,6 +33,8 @@ export interface SheetSettingsInput {
   scale?: number | string;
   title?: string;
   fields?: TitleBlockFields;
+  /** Layer names/ids to restrict every view to. Absent = every layer. */
+  layers?: string[];
 }
 
 export interface ResolvedSheetSettings {
@@ -43,6 +45,8 @@ export interface ResolvedSheetSettings {
   scale: number | undefined;
   title: string;
   fields: TitleBlockFields | undefined;
+  /** Layer names/ids, carried through verbatim for the caller to resolve against the sidecar. */
+  layers: string[] | undefined;
   warnings: string[];
 }
 
@@ -120,5 +124,12 @@ export function resolveSheetSettings(
   }
   const title = (pick("title") ?? "").trim() || defaults.title;
   const fields = cleanFields({ ...(template?.fields ?? {}), ...(input.fields ?? {}) });
-  return { views, format, paper, projection, scale, title, fields, warnings };
+  const rawLayers = pick("layers");
+  const layers = rawLayers !== undefined && (!Array.isArray(rawLayers) || !rawLayers.every((s) => typeof s === "string"))
+    ? undefined
+    : (rawLayers as string[] | undefined);
+  if (rawLayers !== undefined && layers === undefined) {
+    warnings.push("layers must be an array of layer names/ids — drawing every layer.");
+  }
+  return { views, format, paper, projection, scale, title, fields, layers, warnings };
 }

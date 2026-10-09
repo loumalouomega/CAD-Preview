@@ -82,6 +82,17 @@ export function viewerBodyHtml(): string {
         </div>
         <div id="parts-body"></div>
       </div>
+      <div id="layers-panel" class="side-section">
+        <div id="layers-header" class="panel-header">
+          <button class="panel-chevron" type="button" aria-expanded="true" title="Collapse section">${glyph("chevronDown")}</button>
+          <span class="panel-icon" aria-hidden="true">${glyph("layersDim")}</span>
+          <span id="layers-title" class="panel-title">Layers</span>
+          <div id="layers-header-actions">
+            <button id="layers-new" class="panel-primary-btn" title="New layer">${glyph("plus")} New</button>
+          </div>
+        </div>
+        <div id="layers-body"></div>
+      </div>
       <div id="edits-panel" class="side-section">
         <div id="edits-header" class="panel-header">
           <button class="panel-chevron" type="button" aria-expanded="true" title="Collapse section">${glyph("chevronDown")}</button>

@@ -64,6 +64,9 @@ import {
   setVariables,
   setPart,
   setPlane,
+  listLayers,
+  setLayer,
+  assignLayer,
   setMeshOptions,
   pinAnnotation,
   saveMeshPreset,
@@ -74,8 +77,9 @@ import {
   type Pipeline,
   type ToolContext,
   exportDrawingSheetTool,
+  exportSvgSilhouetteTool,
 } from "./mcpTools";
-import { readEdits, readParts, readAnnotations, readPlanes, writeAnnotations, writeEdits, editsSidecarPath, geoScriptPath, partsSidecarPath, annotationsSidecarPath, planesSidecarPath } from "./mcpSidecars";
+import { readEdits, readParts, readLayers, readAnnotations, readPlanes, writeAnnotations, writeEdits, editsSidecarPath, geoScriptPath, partsSidecarPath, layersSidecarPath, annotationsSidecarPath, planesSidecarPath } from "./mcpSidecars";
 import type { EditOp } from "./editOps";
 import { MESH_EXPORT_FORMATS } from "./meshExportFormats";
 import { BREP_ONLY_OPS, TOPOLOGY_CHANGING_OPS } from "./editOps";
@@ -503,17 +507,21 @@ function fakePipeline(overrides: Partial<Pipeline> = {}): Pipeline {
     readMeshioProvenance: vi.fn(async () => null),
     runMeshioOps: vi.fn(async () => ({ bytes: new Uint8Array([1, 2, 3]), steps: [], warnings: [] })),
     decimateStlBoundary: vi.fn(async (bytes: Uint8Array) => ({ bytes, fromTriangles: 99904, toTriangles: 996 })),
-    rebindPartsAcrossOps: vi.fn(async (_ext, _bytes, _format, _opsBefore, _newOps, parts, annotations = []) => ({
+    rebindPartsAcrossOps: vi.fn(async (_ext, _bytes, _format, _opsBefore, _newOps, parts, annotations = [], layers = []) => ({
       parts, // identity pass-through by default — matches the real "nothing to rebind" no-op contract
       annotations,
+      layers,
       stats: { considered: 0, rebound: 0, dropped: 0 },
       annotationStats: { considered: 0, rebound: 0, dropped: 0 },
+      layerStats: { considered: 0, rebound: 0, dropped: 0 },
     })),
-    rebindPartsAcrossSave: vi.fn(async (_ext, _oldBytes, _oldFormat, _oldOps, _newBytes, _newFormat, _newOps, parts, annotations = []) => ({
+    rebindPartsAcrossSave: vi.fn(async (_ext, _oldBytes, _oldFormat, _oldOps, _newBytes, _newFormat, _newOps, parts, annotations = [], layers = []) => ({
       parts, // identity pass-through by default, same contract as above
       annotations,
+      layers,
       stats: { considered: 0, rebound: 0, dropped: 0 },
       annotationStats: { considered: 0, rebound: 0, dropped: 0 },
+      layerStats: { considered: 0, rebound: 0, dropped: 0 },
     })),
     resolveBucketSelector: vi.fn(async () => ({ ids: [], unresolved: [], matches: [], bindable: true })),
     synthesizeSelector: vi.fn(async () => ({ query: null, ids: [], matches: [], bindable: true, reason: "fake" })),
@@ -2007,8 +2015,10 @@ describe("apply_edit_ops", () => {
         rebindPartsAcrossOps: vi.fn(async () => ({
           parts: [{ name: "P", color: "#fff", volumes: [], surfaces: ["face-2"], lines: [], points: [] }],
           annotations: [],
+          layers: [],
           stats: { considered: 1, rebound: 1, dropped: 0 },
           annotationStats: { considered: 0, rebound: 0, dropped: 0 },
+          layerStats: { considered: 0, rebound: 0, dropped: 0 },
         })),
       });
       const c = ctx(pipeline);
@@ -2030,8 +2040,10 @@ describe("apply_edit_ops", () => {
         rebindPartsAcrossOps: vi.fn(async () => ({
           parts: [{ name: "P", color: "#fff", volumes: [], surfaces: [], lines: [], points: [] }],
           annotations: [],
+          layers: [],
           stats: { considered: 1, rebound: 0, dropped: 1 },
           annotationStats: { considered: 0, rebound: 0, dropped: 0 },
+          layerStats: { considered: 0, rebound: 0, dropped: 0 },
         })),
       });
       const result = await applyEditOps(ctx(pipeline), {
@@ -2508,8 +2520,10 @@ describe("run_parametric_script", () => {
       rebindPartsAcrossOps: vi.fn(async () => ({
         parts: [{ name: "P", color: "#fff", volumes: [], surfaces: ["face-7"], lines: [], points: [] }],
         annotations: [],
+        layers: [],
         stats: { considered: 1, rebound: 1, dropped: 0 },
         annotationStats: { considered: 0, rebound: 0, dropped: 0 },
+        layerStats: { considered: 0, rebound: 0, dropped: 0 },
       })),
     });
     const result = await runParametricScriptTool(ctx(pipeline), {
@@ -2556,8 +2570,10 @@ describe("remove_edit_op", () => {
       rebindPartsAcrossOps: vi.fn(async () => ({
         parts: [{ name: "P", color: "#fff", volumes: [], surfaces: ["face-9"], lines: [], points: [] }],
         annotations: [],
+        layers: [],
         stats: { considered: 1, rebound: 1, dropped: 0 },
         annotationStats: { considered: 0, rebound: 0, dropped: 0 },
+        layerStats: { considered: 0, rebound: 0, dropped: 0 },
       })),
     });
     const c = ctx(pipeline);
@@ -3110,6 +3126,108 @@ describe("set_plane", () => {
     const state = await getState({ path: stpModel });
     expect(state.planes).toHaveLength(1);
     expect(state.planes[0].point).toEqual([1, 2, 3]);
+  });
+});
+
+describe("layers", () => {
+  it("lists the implicit default layer when no sidecar exists", async () => {
+    const listed = await listLayers({ path: stpModel });
+    expect(listed.layers).toEqual([
+      { id: "layer-0", name: "Default", color: "#b8b8b8", visible: true, locked: false, volumes: [], surfaces: [], lines: [], points: [] },
+    ]);
+  });
+
+  it("creates, updates, and removes a layer addressed by id", async () => {
+    const created = await setLayer({ path: stpModel, name: "Hidden", color: "#ff0000", visible: false });
+    expect(created.layer!.id).toBe("layer-1"); // beside the materialized default, never colliding with it
+    expect(created.layer!.visible).toBe(false);
+
+    await setLayer({ path: stpModel, id: "layer-1", name: "Hidden stuff", locked: true });
+    let layers = await readLayers(stpModel);
+    expect(layers.layers).toHaveLength(2);
+    expect(layers.layers[1]).toMatchObject({ name: "Hidden stuff", locked: true, color: "#ff0000" });
+
+    await setLayer({ path: stpModel, id: "layer-1", remove: true });
+    layers = await readLayers(stpModel);
+    expect(layers.layers.map((l) => l.id)).toEqual(["layer-0"]);
+  });
+
+  it("never REUSES an id, and refuses to delete the default layer", async () => {
+    await setLayer({ path: stpModel, name: "A" });
+    await setLayer({ path: stpModel, name: "B" });
+    await setLayer({ path: stpModel, id: "layer-1", remove: true });
+    const next = await setLayer({ path: stpModel, name: "C" });
+    expect(next.layer!.id).toBe("layer-3");
+    await expect(setLayer({ path: stpModel, id: "layer-0", remove: true })).rejects.toThrow(/default layer cannot be deleted/);
+    await expect(setLayer({ path: stpModel, id: "layer-9", remove: true })).rejects.toThrow(/No layer with id/);
+  });
+
+  it("rejects a malformed colour, id, or member id, persisting nothing", async () => {
+    await expect(setLayer({ path: stpModel, name: "Bad", color: "red" })).rejects.toThrow(/#rrggbb/);
+    await expect(setLayer({ path: stpModel, id: "nope", name: "Bad" })).rejects.toThrow(/layer-N/);
+    await expect(setLayer({ path: stpModel, name: "Bad", surfaces: ["face-x"] })).rejects.toThrow(/face-N/);
+    expect((await readLayers(stpModel)).layers).toHaveLength(0); // nothing persisted on rejection
+  });
+
+  it("assign_layer moves members so each entity sits on exactly one layer", async () => {
+    await setLayer({ path: stpModel, name: "A" });
+    await assignLayer({ path: stpModel, id: "layer-1", surfaces: ["face-1", "face-2"] });
+    await assignLayer({ path: stpModel, id: "layer-0", surfaces: ["face-1"] });
+    const layers = await readLayers(stpModel);
+    expect(layers.layers[0].surfaces).toEqual(["face-1"]);
+    expect(layers.layers[1].surfaces).toEqual(["face-2"]);
+  });
+
+  it("assign_layer throws for malformed ids but stores shaped ones with a warning", async () => {
+    await setLayer({ path: stpModel, name: "A" });
+    await expect(assignLayer({ path: stpModel, id: "layer-1", surfaces: ["nope"] })).rejects.toThrow(/face-N/);
+    const result = await assignLayer({ path: stpModel, id: "layer-1", surfaces: ["face-99"] });
+    expect(result.warnings.join(" ")).toMatch(/not validated headless/);
+    expect((await readLayers(stpModel)).layers[1].surfaces).toEqual(["face-99"]); // reported, never dropped
+  });
+
+  it("writes the sidecar beside the model, and get_state reflects it", async () => {
+    await setLayer({ path: stpModel, name: "Dims", color: "#00ff00" });
+    const onDisk = JSON.parse(await fs.readFile(layersSidecarPath(stpModel), "utf8"));
+    expect(onDisk.layers.map((l: { id: string }) => l.id)).toEqual(["layer-0", "layer-1"]);
+    const state = await getState({ path: stpModel });
+    expect(state.layers).toHaveLength(2);
+    expect(state.layers[1].name).toBe("Dims");
+  });
+
+  it("apply_edit_ops refuses an operand on a locked layer with a named diagnostic", async () => {
+    await setLayer({ path: stpModel, name: "Frozen", locked: true });
+    await assignLayer({ path: stpModel, id: "layer-1", surfaces: ["face-1"] });
+    const c = ctx();
+    const result = await applyEditOps(c, {
+      path: stpModel,
+      ops: [{ op: "defeature", faces: ["face-1"] }, { op: "addBox", center: [0, 0, 0], size: [1, 1, 1] }],
+    });
+    expect(result.report[0].accepted).toBe(false);
+    expect(result.report[0].reason).toMatch(/locked layer "Frozen" \(layer-1\)/);
+    expect(result.report[1].accepted).toBe(true); // no entity operands — unaffected
+    expect((await readEdits(stpModel)).ops).toHaveLength(1); // the refused op never persists
+  });
+
+  it("a locked layer rebinds membership across a topology change and warns", async () => {
+    await setLayer({ path: stpModel, name: "Frozen", locked: true });
+    await assignLayer({ path: stpModel, id: "layer-1", surfaces: ["face-1"] });
+    const pipeline = fakePipeline({
+      rebindPartsAcrossOps: vi.fn(async (_ext, _bytes, _format, _old, _new, parts, annotations = [], layers = []) => ({
+        parts,
+        annotations,
+        layers: layers.map((l: { surfaces: string[] }) => ({ ...l, surfaces: ["face-2"] })),
+        stats: { considered: 1, rebound: 0, dropped: 0 },
+        annotationStats: { considered: 0, rebound: 0, dropped: 0 },
+        layerStats: { considered: 1, rebound: 1, dropped: 0 },
+      })),
+    });
+    const result = await applyEditOps(ctx(pipeline), {
+      path: stpModel,
+      ops: [{ op: "addBox", center: [0, 0, 0], size: [1, 1, 1] }],
+    });
+    expect(result.warnings.some((w) => /layer-member id\(s\); dropped 0/.test(w))).toBe(true);
+    expect((await readLayers(stpModel)).layers[1].surfaces).toEqual(["face-2"]);
   });
 });
 
@@ -4168,6 +4286,7 @@ describe("save_preprocess", () => {
     expect(result.included).toEqual({
       source: "model.stp",
       parts: true,
+      layers: false,
       annotations: false,
       planes: false,
       edits: true,
@@ -4211,7 +4330,7 @@ describe("load_preprocess", () => {
     const result = await loadPreprocessTool({ zipPath: zipOut, outputPath: restored });
 
     expect(result.manifestSource).toBe("model.stp");
-    expect(result.restored).toEqual({ parts: true, annotations: false, planes: false, edits: true, meshOptions: false });
+    expect(result.restored).toEqual({ parts: true, layers: false, annotations: false, planes: false, edits: true, meshOptions: false });
     expect(await fs.readFile(restored, "utf8")).toBe(await fs.readFile(stpModel, "utf8"));
 
     const restoredEdits = await readEdits(restored);
@@ -4910,6 +5029,34 @@ describe("export_drawing_sheet", () => {
     await fs.writeFile(vtkModel, "# vtk DataFile Version 2.0\n", "utf8");
     await expect(exportDrawingSheetTool(c, { path: vtkModel, outputPath: path.join(dir, "v.svg") })).rejects.toThrow(/no host-side geometry/);
     expect(c.pipeline.exportDrawingSheet).not.toHaveBeenCalled();
+  });
+
+  it("forwards a layers filter to the pipeline and echoes the drawn layers", async () => {
+    await setLayer({ path: stpModel, name: "Dims" });
+    const c = ctx();
+    const r = await exportDrawingSheetTool(c, { path: stpModel, outputPath: path.join(dir, "l.svg"), layers: ["Dims", "nope"] });
+    const call = (c.pipeline.exportDrawingSheet as ReturnType<typeof vi.fn>).mock.calls[0][2];
+    expect(call.layerFilter.map((s: { id: string }) => s.id)).toEqual(["layer-1"]);
+    expect(r.layers).toEqual([{ id: "layer-1", name: "Dims" }]);
+    expect(r.warnings.join(" ")).toMatch(/Unknown layer "nope"/);
+  });
+
+  it("throws when no named layer matches, and refuses mesh sources with a filter", async () => {
+    const c = ctx();
+    await expect(
+      exportDrawingSheetTool(c, { path: stpModel, outputPath: path.join(dir, "l.svg"), layers: ["nope"] })
+    ).rejects.toThrow(/None of the named layers matched/);
+    expect(c.pipeline.exportDrawingSheet).not.toHaveBeenCalled();
+    await expect(
+      exportSvgSilhouetteTool(c, { path: stlModel, outputPath: path.join(dir, "l.svg"), layers: ["layer-0"] })
+    ).rejects.toThrow(/B-rep only/);
+  });
+
+  it("omits layerFilter when no layers param is given", async () => {
+    const c = ctx();
+    await exportDrawingSheetTool(c, { path: stpModel, outputPath: path.join(dir, "n.svg") });
+    const call = (c.pipeline.exportDrawingSheet as ReturnType<typeof vi.fn>).mock.calls[0][2];
+    expect("layerFilter" in call).toBe(false);
   });
 });
 

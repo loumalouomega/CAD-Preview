@@ -110,6 +110,40 @@ export interface Part {
   selectorOpKind?: string;
 }
 
+/**
+ * A named layer for presentation and drawing output (roadmap "Layers, distinct
+ * from Parts"): visibility, lock, a colour, and the drawing layer each entity
+ * lands on in a drawing export. The drafting meaning of "layer"
+ * (construction, hidden, dimensions, centre lines) — not a second kind of
+ * Part.
+ *
+ * Structurally shaped as an `EntityIdBag` (`volumes`/`surfaces`/`lines`/
+ * `points`, same as `Part`) purely so `src/entityRebind.ts`'s already-generic
+ * `remapPartEntityIds` can rebind membership across topology-changing edits
+ * with zero new matching code. Each entity belongs to at most one layer;
+ * unassigned entities sit on the default layer, which cannot be deleted.
+ * Persisted in `<model>.layers.json`.
+ */
+export interface Layer {
+  /** Never-reused id (`layer-N`) — a rename or deletion cannot silently
+   * retarget a drawing filter. */
+  id: string;
+  /** User-editable display name. */
+  name: string;
+  /** CSS hex, e.g. "#ff8800" — the panel swatch and the drawing-export colour. */
+  color: string;
+  /** Persisted visibility: a hidden layer stays hidden for drawings and agents
+   * (unlike Parts' session-only hide/isolate). */
+  visible: boolean;
+  /** A locked entity stays selectable for measurement/inspection but refuses
+   * as an edit operand and as a Transform Gizmo target. */
+  locked: boolean;
+  volumes: string[]; // solid ids
+  surfaces: string[]; // face ids
+  lines: string[]; // edge ids
+  points: string[]; // point (vertex) ids
+}
+
 /** Which measurement is being taken — shared between the webview's
  * `MeasurementState` and a persisted `Annotation`'s `tool` field, so the two
  * can never drift apart. */
@@ -433,6 +467,13 @@ export type HostToWebview =
       };
     }
   | { type: "parts"; parts: Part[] }
+  /** Full replacement of the document's layers — sent on the `ready`
+   * handshake and whenever `<model>.layers.json` changes externally.
+   * Applied silently by the webview's layers model (no `onChange` echo), the
+   * same contract `"parts"`/`"annotations"` rely on to avoid a write loop.
+   * `nextId` is the allocation counter the sidecar persists — the webview
+   * adopts it so a created layer never recycles a deleted id. */
+  | { type: "layers"; layers: Layer[]; nextId: number }
   | { type: "annotations"; annotations: Annotation[] }
   /** Full replacement of the document's construction planes — sent on the
    * `ready` handshake and whenever `<model>.planes.json` changes externally.
@@ -780,6 +821,7 @@ export type WebviewToHost =
   | { type: "ready" }
   | { type: "log"; message: string }
   | { type: "partsChanged"; parts: Part[] }
+  | { type: "layersChanged"; layers: Layer[]; nextId: number }
   | { type: "annotationsChanged"; annotations: Annotation[] }
   | { type: "planesChanged"; planes: ConstructionPlane[] }
   | { type: "editsChanged"; ops: EditOp[]; variables: ParamVariable[] }

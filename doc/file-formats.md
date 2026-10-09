@@ -190,6 +190,37 @@ Entity ids are the stable topological ids assigned during extraction (`solid-*`,
 
 A part may additionally carry a re-executable `selector` (a SelectorQuery, same shape `resolve_selector` takes) beside its raw `surfaces` cache, plus a `selectorOpKind` tag naming the producing op's kind at synthesis time. The host re-resolves the query against the current op list on open and after every op-list change, overwriting `surfaces` only on an oracle-clean result — otherwise the cache freezes with a warning (a stored op index that now addresses a different op kind freezes rather than repointing). A malformed selector is dropped while the part survives on its raw ids. `set_part` accepts the query and derives the kind tag server-side from the current op list, so write-time mismatch is impossible by construction.
 
+## Layers Sidecar (`<model>.layers.json`)
+
+Named **layers** for presentation and drawing output (roadmap "Layers, distinct from Parts") — visibility, lock, a colour, and the drawing layer each entity lands on — are stored in a **seventh** JSON sidecar next to the CAD file — e.g. `bull.stp` → `bull.stp.layers.json`. Like the other six, this never modifies the CAD file. It is read on open (`readLayers()`) and autosaved, debounced (~500 ms, its own timer), on every create/rename/delete/visibility/lock/assign (`writeLayers()`), both in `src/layersStore.ts`; parse/serialize live in the vscode-free `src/layersSidecar.ts` so they are unit-tested. The headless MCP server has a byte-compatible counterpart in `src/mcpSidecars.ts`, written by the `list_layers`/`set_layer`/`assign_layer` tools and reported by `get_state`.
+
+```json
+{
+  "version": 1,
+  "source": "bull.stp",
+  "nextId": 2,
+  "layers": [
+    {
+      "id": "layer-0",
+      "name": "Default",
+      "color": "#b8b8b8",
+      "visible": true,
+      "locked": false,
+      "volumes": [],
+      "surfaces": ["face-3"],
+      "lines": [],
+      "points": []
+    }
+  ]
+}
+```
+
+**Layers answer which entities are shown, locked or drawn together — never which form a finite-element sub-model.** That is Parts' question, and the two stay apart everywhere it matters: a hidden layer is still meshed (meshing reads only Parts), layer membership reaches no solver output (no physical groups, no `SubModelPart`s), and creating, renaming or deleting a layer leaves `<model>.parts.json`, every meshing output and every mass figure byte-identical. Each entity belongs to at most one layer; unassigned entities sit on the default layer, which cannot be deleted (deleting a layer returns its members to Default). Membership is an `EntityIdBag`, so it rebinds across topology-changing edits through the same `remapPartEntityIds` pass Parts use, with the same rebound/dropped reporting. A locked entity stays selectable for measurement and inspection but refuses as an edit operand and as a Transform Gizmo target, in the host and the webview alike, with a named diagnostic.
+
+`id` is `layer-N` and is **never reused** — allocation runs off a persisted `nextId` counter, not the current max, so deleting a layer and adding another cannot resurrect the old id under a new meaning (which would silently retarget a drawing filter naming it). Parsing is tolerant like the other sidecars: a malformed entry drops that one layer, not the file. **Included in the Preprocess Archive** (below).
+
+The drawing exports (`export_svg_silhouette`, `export_technical_drawing`, `export_drawing_sheet`) take an optional `layers` filter naming layers to restrict the drawing to — one output group per layer (SVG `<g>`, DXF `LAYER` table with each layer's name and colour). Absent = every layer. B-rep sources only; solid exports (STEP/IGES/BREP/STL/…) are never filtered.
+
 ## Edits Sidecar (`<model>.edits.json`)
 
 User-applied **edit operations** (transforms and booleans, and — in later milestones — feature modeling, assembly) are stored in a **second** JSON sidecar next to the CAD file — e.g. `bull.stp` → `bull.stp.edits.json`. Applying an edit itself never writes the CAD file — only this sidecar changes on every op. The sidecar holds an **ordered, replayable op-list** that is re-applied on every open, so the displayed model is `base shape ∘ ops`. It is read on open (`readEdits()`) and autosaved, debounced, on every change (`writeEdits()`), both in `src/editsStore.ts`; parse/serialize live in the vscode-free `src/editsSidecar.ts` so they are unit-tested.
@@ -429,7 +460,7 @@ Named **construction planes** (roadmap "A named, persisted construction-plane en
 
 ## Preprocess Archive (`.zip`)
 
-**File ▸ Save Preprocess…** (Ctrl+Alt+S) packages the CAD source file plus whichever of its sidecars — `<model>.parts.json`, `<model>.annotations.json`, `<model>.planes.json`, `<model>.edits.json`, `<model>.mesh.json` — currently exist on disk into a single `.zip`, so the whole working state of a document can be shared, archived, or moved as one file. Which pieces are included is purely file-existence-driven: a document that never had meshing options set simply has no `.mesh.json` in the archive — this is normal, not an error. Pending debounced sidecar writes are flushed immediately before packaging (the same flush **Save** triggers), so the archive always reflects the current in-editor state, not a stale on-disk one. The generated `.geo` script is deliberately **not** packaged (see below).
+**File ▸ Save Preprocess…** (Ctrl+Alt+S) packages the CAD source file plus whichever of its sidecars — `<model>.parts.json`, `<model>.layers.json`, `<model>.annotations.json`, `<model>.planes.json`, `<model>.edits.json`, `<model>.mesh.json` — currently exist on disk into a single `.zip`, so the whole working state of a document can be shared, archived, or moved as one file. Which pieces are included is purely file-existence-driven: a document that never had meshing options set simply has no `.mesh.json` in the archive — this is normal, not an error. Pending debounced sidecar writes are flushed immediately before packaging (the same flush **Save** triggers), so the archive always reflects the current in-editor state, not a stale on-disk one. The generated `.geo` script is deliberately **not** packaged (see below).
 
 The archive's internal layout (built by the pure, vscode-free — but Node-only, never imported by the webview — `src/preprocessArchive.ts`, shared by the extension and the MCP server):
 
@@ -438,6 +469,7 @@ manifest.json               { "version": 2, "minimumReaderVersion": 1, "source":
                                "checksums": { "bull.stp": "<sha256 hex>", "bull.stp.parts.json": "<sha256 hex>", ... } }
 bull.stp                    (the CAD source, byte-identical)
 bull.stp.parts.json         (only if it exists)
+bull.stp.layers.json        (only if it exists)
 bull.stp.annotations.json   (only if it exists)
 bull.stp.edits.json         (only if it exists)
 bull.stp.mesh.json          (only if it exists)

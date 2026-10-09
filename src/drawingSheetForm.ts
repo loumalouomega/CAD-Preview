@@ -24,6 +24,8 @@ export interface SheetFormOptions {
   saveTemplate: (settings: SheetSettingsInput) => Promise<string | undefined>;
   /** Pre-fill (the last settings used in this session). */
   initial?: SheetSettingsInput;
+  /** Layers to offer as per-view filter checkboxes (id + name). Absent/empty = no Layers fieldset. */
+  layers?: Array<{ id: string; name: string }>;
 }
 
 /** Test-only: when set, the form is not shown and this answer is returned. */
@@ -43,6 +45,11 @@ export async function showDrawingSheetForm(opts: SheetFormOptions): Promise<Shee
   const nonce = getNonce();
   const initial = opts.initial ?? {};
   const views = new Set(initial.views ?? DEFAULT_SHEET_VIEWS);
+  const formLayers = opts.layers ?? [];
+  // Checked by default (the export default: every layer unless told
+  // otherwise); an unchecked layer is excluded. `initial.layers` pre-fills
+  // from the last session or a template.
+  const checkedLayers = new Set(initial.layers ?? formLayers.map((l) => l.id));
   const scaleOptions = ["auto", ...STANDARD_SCALE_LABELS, "custom"];
   const initialScale = initial.scale === undefined ? "auto" : typeof initial.scale === "string" && scaleOptions.includes(initial.scale) ? initial.scale : "custom";
   const f = initial.fields ?? {};
@@ -69,6 +76,9 @@ export async function showDrawingSheetForm(opts: SheetFormOptions): Promise<Shee
 <fieldset><legend>Views</legend><div class="views">
   ${NAMED_VIEW_NAMES.map((v) => `<label><input type="checkbox" class="view" value="${esc(v)}" ${views.has(v) ? "checked" : ""}/> ${esc(v)}</label>`).join("")}
 </div></fieldset>
+${formLayers.length > 0 ? `<fieldset><legend>Layers</legend><div class="views">
+  ${formLayers.map((l) => `<label title="${esc(l.id)}"><input type="checkbox" class="layer" value="${esc(l.id)}" ${checkedLayers.has(l.id) || checkedLayers.has(l.name) ? "checked" : ""}/> ${esc(l.name)}</label>`).join("")}
+</div></fieldset>` : ""}
 <fieldset><legend>Sheet</legend><div class="grid">
   <span>Projection</span><select id="projection"><option value="first" ${initial.projection !== "third" ? "selected" : ""}>First-angle (ISO)</option><option value="third" ${initial.projection === "third" ? "selected" : ""}>Third-angle (ASME)</option></select>
   <span>Paper</span><select id="paper">${PAPER_SIZES.map((p) => `<option value="${p}" ${(initial.paper ?? "fit") === p ? "selected" : ""}>${p === "fit" ? "Fit to views" : p}</option>`).join("")}</select>
@@ -95,10 +105,17 @@ export async function showDrawingSheetForm(opts: SheetFormOptions): Promise<Shee
     const scale = scaleSel === "auto" ? undefined : scaleSel === "custom" ? $("scaleCustom").value.trim() : scaleSel;
     const fields = {};
     for (const k of ["author", "drawingNumber", "revision", "material"]) { const v = $(k).value.trim(); if (v) fields[k] = v; }
-    return { views, projection: $("projection").value, paper: $("paper").value, scale, format: $("format").value, title: $("title").value.trim(), fields };
+    const layerBoxes = [...document.querySelectorAll(".layer")];
+    // All checked = the default (every layer); only a real restriction is
+    // returned, so templates and settings stay minimal.
+    const layers = layerBoxes.length > 0 && layerBoxes.some((c) => !c.checked)
+      ? layerBoxes.filter((c) => c.checked).map((c) => c.value)
+      : undefined;
+    return { views, projection: $("projection").value, paper: $("paper").value, scale, format: $("format").value, title: $("title").value.trim(), fields, layers };
   }
   function apply(t) {
     if (t.views) for (const c of document.querySelectorAll(".view")) c.checked = t.views.includes(c.value);
+    if (t.layers) for (const c of document.querySelectorAll(".layer")) c.checked = t.layers.includes(c.value);
     if (t.projection) $("projection").value = t.projection;
     if (t.paper) $("paper").value = t.paper;
     if (t.format) $("format").value = t.format;

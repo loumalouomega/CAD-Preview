@@ -9,7 +9,7 @@ Candidate features for future CAD-Preview releases, prioritized by value versus 
   - fTetWild
   - a user-installed OpenSCAD binary for `.scad`
 - **Two more proposed below:** MMG and a self-built OpenSCAD WASM.
-- **The rest of the pipeline:** a full picking/selection pipeline in the webview, a six-sidecar persistence model, and an MCP server mirroring the pipeline headless.
+- **The rest of the pipeline:** a full picking/selection pipeline in the webview, a seven-sidecar persistence model, and an MCP server mirroring the pipeline headless.
 
 Many high-value features are cheap precisely because that infrastructure exists.
 
@@ -303,45 +303,7 @@ These are outcome groupings, not release numbers. Independent small items can sh
 - **Done when:** on a fixture with sub-1 %-diagonal features, a ray that misses at `standard` hits the intended edge at `fine`, and omitting the parameter is indistinguishable from passing `standard`.
 - **Related follow-up, deliberately not folded in:** `compare_models`' optional `includeSnapshots` is the fourth render call site and still has no `tessellationQuality`, so its before/after images render at the `standard` default. It is absent on purpose rather than forgotten — each render parameter widens a surface whose images cost a browser launch apiece — but it should get the same parameter eventually, and `doc/mcp-server.md` says so at that tool's own row so a reader is not left guessing why it lacks what its siblings have.
 
-#### 2.8 Layers, distinct from Parts {#layers-distinct-from-parts}
-
-*Area: Drawings. Effort: M.*
-
-- **What a layer is.** A named container for presentation and drawing output: visibility, lock, a colour, and the layer that a drawing export writes its entities onto. It is the drafting meaning of "layer" (construction, hidden, dimensions, centre lines), not a second kind of Part.
-- **Layers and Parts answer different questions.** The words collide in everyday use, and `Parts` already drive the Parts panel and `<model>.parts.json`, so the two stay apart in the data model, the UI and the sidecar:
-
-| | Parts | Layers (proposed) |
-| --- | --- | --- |
-| Question answered | Which entities form a finite-element sub-model? | Which entities are shown, locked or drawn together? |
-| Meshing | Names, sizes, grading and physical groups follow them | Never: a hidden layer is still meshed |
-| Solver output | Kratos `SubModelPart`s and `.msh` physical groups | None |
-| Drawing output | None | The layer filter, and the drawing layer each entity lands on |
-| Persisted visibility | No: hide and isolate are session-only | Yes: a layer hidden in the viewer stays hidden for drawings and agents |
-| Sidecar | `<model>.parts.json` | `<model>.layers.json` (new) |
-
-- **Membership.** Each solid, face, edge or point belongs to at most one layer. Unassigned entities sit on the default layer, which cannot be deleted. Membership is an `EntityIdBag`, so it rebinds through the same `remapPartEntityIds` pass Parts use, with the same "rebound N, dropped M" reporting. Layers are keyed by a never-reused `layer-N` id, as construction planes are, so a rename or deletion cannot silently retarget a drawing filter.
-- **Decisions to settle at admission.**
-  - **A seventh sidecar.** Membership must be rebound, so it cannot live in `<model>.view.json`, which is display state and is never rebound. A seventh sidecar carries the costs the six existing ones carry: a file watcher, a revision-tracker entry, a dirty-guard call, a preprocess-archive entry and a `list_workspace_models` companion. Those costs are why this item is M. The save journal stays outside the count, as it is today.
-  - **Locks.** A locked entity stays selectable for measurement and inspection. It refuses as an edit operand and as a Transform Gizmo target, in the host and the webview alike, with a named diagnostic. Construction guides already enforce refusals this way.
-  - **Export default.** Drawing exports include every layer unless told otherwise. A default that quietly dropped a hidden layer would be the silent-cap failure this codebase rejects, so "visible layers only" is an explicit choice: a checkbox in the interactive dialogs and a parameter headless.
-  - **Scope of the filter.** Solid exports (STEP, IGES, BREP, STL and the rest) are not filtered in the first increment. The drawing exports are the first consumers.
-- **Reuses shipped machinery.** The sidecar template is `partsSidecar.ts` and `partsStore.ts`, rebinding is `entityRebind.ts`, and hide and lock flow through the visibility state the viewer already applies to Parts. The DXF writer already draws onto named layers (`0`, `HIDDEN`, `DIMENSIONS`, `BORDER`, `TITLE`), so a user layer whose name collides with one of those is written with a prefix. Sidebar placement follows the Parts section.
-- **STEP layers are a separate question.** Reading or writing XCAF layer assignments is the probe in [Read PMI, layers and materials from STEP](#read-pmi-layers-and-materials-from-step), and this item does not depend on it. If that probe passes, imported STEP layers would map onto this sidecar on import rather than become a second model.
-- **First useful increment (M):**
-  - The sidecar with its default layer, membership with rebinding, and persisted visibility and lock, with tolerant parsing as every sidecar here has.
-  - A **Layers** section beside Parts: create, rename, delete (members return to the default layer), show or hide, lock, and an *Assign to layer* action on the current selection in any pick mode.
-  - MCP parity: `list_layers`, `set_layer` (create, rename, delete, visibility, lock, colour), `assign_layer` (entity ids, with unknown ids reported rather than dropped), and `layers` in `get_state`, documented in `describe_capabilities`.
-- **Second increment (S):** the optional `layers` filter on `export_svg_silhouette`, `export_technical_drawing` and `export_drawing_sheet`, and on their File ▸ Export entries. SVG output gains one `<g>` group per layer. DXF output gains a `LAYER` table with each layer's name and colour. The writer emits no such table today, and its own comment in `src/dxfSilhouette.ts` notes that it writes no `TABLES` section.
-- **Done when:**
-  - Creating, renaming or deleting a layer leaves `<model>.parts.json`, every meshing output and every mass figure byte-identical. This is the test that keeps the two concepts apart.
-  - A topology-changing edit rebinds membership and reports what it dropped. It never repoints a member silently.
-  - A locked entity refuses as an edit operand with a named diagnostic, from the Edits panel and from `apply_edit_ops` alike.
-  - A drawing export restricted to one layer contains exactly that layer's edges, cross-checked against the unrestricted export.
-  - A layer survives reopen, and `list_layers` agrees with the panel on the same file.
-- **Out of scope:** nested layers or layer groups; line weights and linetypes beyond colour; a second membership per entity; layer-driven meshing or suppression (use Parts, or a future suppression feature); materials per layer.
-- **Documentation when it ships:** the header's "six-sidecar persistence model" and the Non-goals' "The six sidecars" both become seven. `doc/file-formats.md`, `doc/mcp-server.md` and `doc/getting-started.md` gain the sidecar, the tools and a Layers section.
-
-#### 2.9 meshio++ `feature_edges` replaces the hand-rolled winding check {#meshio-feature-edges-winding-check}
+#### 2.8 meshio++ `feature_edges` replaces the hand-rolled winding check {#meshio-feature-edges-winding-check}
 
 *Area: Meshing. Effort: S–M.*
 
@@ -350,7 +312,7 @@ These are outcome groupings, not release numbers. Independent small items can sh
 - **First useful increment (S–M):** report `inconsistentEdgeIds` (not just a count) from `analyzeMeshioSurfaces` using `featureEdges`' `feature:kind === "inconsistent"`, and cross-check it against the existing `inconsistentPairCount` on `flipped-winding-tet.stl` and the clean fixtures. If they agree on every committed fixture, retire the hand-rolled counter and say so in the same commit — one implementation of a fact, the same rule that removed the duplicated edge enumerator. A disagreement is a finding in itself and belongs in the write-up either way.
 - **Done when:** the count has one implementation, the pure analyzer's limitation is documented as a deliberate boundary rather than an open gap, and a fixture whose two implementations disagree cannot land silently.
 
-#### 2.10 meshio++ `check_quality` as a caller-supplied quality gate {#meshio-check-quality-gate}
+#### 2.9 meshio++ `check_quality` as a caller-supplied quality gate {#meshio-check-quality-gate}
 
 *Area: Meshing. Effort: S–M.*
 
@@ -359,7 +321,7 @@ These are outcome groupings, not release numbers. Independent small items can sh
 - **First useful increment (S–M):** an `estimate_mesh_budget`-shaped sibling: an MCP tool plus a panel row that runs the gate over the generated mesh and reports per-check results. It belongs **beside** the existing Gmsh `minSICN` summary rather than replacing it — the two metrics measure different things (a Jacobian on the actual cells vs. a shape-quality index), and a user needs both. The meshing spec for the docs lives in `doc/gmsh-integration.md`, which is where the comparison belongs.
 - **Done when:** a caller can state a threshold, get per-check facts back, and a deliberately bad mesh and a deliberately good one are distinguishable on the same fixture. Interactive and MCP reach the same result, per the parity rule.
 
-#### 2.11 meshio++ `hausdorff_distance` as a cross-check on the deviation map {#meshio-hausdorff-deviation-cross-check}
+#### 2.10 meshio++ `hausdorff_distance` as a cross-check on the deviation map {#meshio-hausdorff-deviation-cross-check}
 
 *Area: Meshing. Effort: S.*
 
@@ -369,7 +331,7 @@ These are outcome groupings, not release numbers. Independent small items can sh
 - **Done when:** the deviation map's sampling caveat is either backed by an independent number or its residual error is characterized, and the sampled-vs-certified distinction in `doc/file-formats.md` and the tool description is accurate about which one a caller is reading.
 - **Recorded as available, deliberately not adopted** (meshio++ 16.23–16.27, same release window): `edit_regions` would introduce a second, parallel concept to `Part`, which is a JSON sidecar over CAD entity ids — the exact divergence `src/entityRebind.ts` exists to prevent, and mesh regions have no viewer-side representation at all. `match_periodic_nodes`, `resample_sequence` and `blend_steps` are periodic- and transient-solver workflows; this tool exports to solvers but does not run them or hold result series, so none has a user workflow here that meets this file's bar for a new item. Recorded so a future review does not re-derive the triage, not as a standing invitation.
 
-#### 2.12 OpenSCAD Customizer panel in the viewer {#openscad-customizer-panel}
+#### 2.11 OpenSCAD Customizer panel in the viewer {#openscad-customizer-panel}
 
 *Area: Formats, Parity. Effort: M.*
 
@@ -934,7 +896,7 @@ Three groups, three different revival rules. Each says what would change our min
 
 - **OCCT in the webview** — the kernel stays in the extension host; the webview runs only Three.js. Since the kernel-worker work this is *stronger* than the invariant requires: OCCT, Gmsh, meshio++ and fTetWild all run in a forked child process (`src/kernelWorker.ts`), one process further from the webview than the rule demands.
 
-- **No silent CAD-source writes.** Explicit save-in-place already ships through the editable custom editor and headless `save_model`; this is not a read-only application. Sidecar autosave and external-change reconciliation must not silently bake edits into the source. Preserve the confirmed-save contract, `bakedThrough` replay watermark and backup/recovery behaviour. The six sidecars retain state that has no home in the source format; see `CLAUDE.md` for the implementation history.
+- **No silent CAD-source writes.** Explicit save-in-place already ships through the editable custom editor and headless `save_model`; this is not a read-only application. Sidecar autosave and external-change reconciliation must not silently bake edits into the source. Preserve the confirmed-save contract, `bakedThrough` replay watermark and backup/recovery behaviour. The seven sidecars retain state that has no home in the source format; see `CLAUDE.md` for the implementation history.
 
 ### Kernel-blocked
 

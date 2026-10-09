@@ -27,7 +27,7 @@ import { surfacePropertiesAdaptive, volumePropertiesAdaptive } from "./brepGProp
 import { axisDistance } from "./axisDistance";
 import type { CadFormat } from "./fileRouter";
 import type { EditOp, Vec3 } from "./editOps";
-import type { Annotation, Part } from "./protocol";
+import type { Annotation, Layer, Part } from "./protocol";
 
 export type BRepFormat = Extract<CadFormat, "step" | "iges" | "brep" | "csg">;
 
@@ -1136,6 +1136,10 @@ export interface RebindStats {
  * `readShape`+`applyEditsBRep`+`collectAllEntitySignatures` round trip. Every
  * pre-existing call site is unaffected: omitting the parameter defaults it to
  * `[]`, and `remapPartEntityIds([], idMap)` is a no-op.
+ *
+ * `layers` (roadmap "Layers, distinct from Parts") is an OPTIONAL 8th
+ * parameter on the same terms: layer membership rebinds through the same pass
+ * and the same `idMap`, reported via `layerStats`.
  */
 export async function rebindPartsAcrossOps(
   extensionPath: string,
@@ -1144,22 +1148,23 @@ export async function rebindPartsAcrossOps(
   oldOps: EditOp[],
   newOps: EditOp[],
   parts: Part[],
-  annotations: Annotation[] = []
-): Promise<{ parts: Part[]; annotations: Annotation[]; stats: RebindStats; annotationStats: RebindStats }> {
+  annotations: Annotation[] = [],
+  layers: Layer[] = []
+): Promise<{ parts: Part[]; annotations: Annotation[]; layers: Layer[]; stats: RebindStats; annotationStats: RebindStats; layerStats: RebindStats }> {
   const EMPTY_STATS: RebindStats = { considered: 0, rebound: 0, dropped: 0 };
-  if (parts.length === 0 && annotations.length === 0) {
-    return { parts, annotations, stats: EMPTY_STATS, annotationStats: EMPTY_STATS };
+  if (parts.length === 0 && annotations.length === 0 && layers.length === 0) {
+    return { parts, annotations, layers, stats: EMPTY_STATS, annotationStats: EMPTY_STATS, layerStats: EMPTY_STATS };
   }
 
   let prefixLen = 0;
   const minLen = Math.min(oldOps.length, newOps.length);
   while (prefixLen < minLen && JSON.stringify(oldOps[prefixLen]) === JSON.stringify(newOps[prefixLen])) prefixLen++;
   if (prefixLen === oldOps.length && prefixLen === newOps.length) {
-    return { parts, annotations, stats: EMPTY_STATS, annotationStats: EMPTY_STATS }; // identical — nothing changed
+    return { parts, annotations, layers, stats: EMPTY_STATS, annotationStats: EMPTY_STATS, layerStats: EMPTY_STATS }; // identical — nothing changed
   }
   const hasTopologyChange = (ops: EditOp[]) => ops.some((op) => TOPOLOGY_CHANGING_OPS.has(op.op));
   if (!hasTopologyChange(oldOps.slice(prefixLen)) && !hasTopologyChange(newOps.slice(prefixLen))) {
-    return { parts, annotations, stats: EMPTY_STATS, annotationStats: EMPTY_STATS }; // nothing topology-relevant differs
+    return { parts, annotations, layers, stats: EMPTY_STATS, annotationStats: EMPTY_STATS, layerStats: EMPTY_STATS }; // nothing topology-relevant differs
   }
 
   const oc = await getOcct(extensionPath);
@@ -1168,8 +1173,10 @@ export async function rebindPartsAcrossOps(
 
   let currentParts = parts;
   let currentAnnotations = annotations;
+  let currentLayers = layers;
   const stats: RebindStats = { considered: 0, rebound: 0, dropped: 0 };
   const annotationStats: RebindStats = { considered: 0, rebound: 0, dropped: 0 };
+  const layerStats: RebindStats = { considered: 0, rebound: 0, dropped: 0 };
 
   /** One diff-and-remap step between two shapes' full op-lists — `from`
    * is where `currentParts` is currently valid, `to` is where they should
@@ -1209,6 +1216,17 @@ export async function rebindPartsAcrossOps(
         annotationStats.dropped += annResult.droppedCount;
       }
       annotationStats.considered++;
+
+      // Layers rebind through the same pass: a `Layer` is structurally an
+      // `EntityIdBag` too (see its doc comment in `protocol.ts`), so
+      // membership follows topology changes exactly like Part assignments.
+      if (currentLayers.length > 0) {
+        const layerResult = remapPartEntityIds(currentLayers, idMap);
+        currentLayers = layerResult.parts;
+        layerStats.rebound += layerResult.reboundCount;
+        layerStats.dropped += layerResult.droppedCount;
+      }
+      layerStats.considered++;
     } finally {
       for (let i = cleanupTo.length - 1; i >= 0; i--) {
         try {
@@ -1268,7 +1286,7 @@ export async function rebindPartsAcrossOps(
     }
   }
 
-  return { parts: currentParts, annotations: currentAnnotations, stats, annotationStats };
+  return { parts: currentParts, annotations: currentAnnotations, layers: currentLayers, stats, annotationStats, layerStats };
 }
 
 /**
@@ -1297,11 +1315,12 @@ export async function rebindPartsAcrossSave(
   newFormat: BRepFormat,
   newOps: EditOp[],
   parts: Part[],
-  annotations: Annotation[] = []
-): Promise<{ parts: Part[]; annotations: Annotation[]; stats: RebindStats; annotationStats: RebindStats }> {
+  annotations: Annotation[] = [],
+  layers: Layer[] = []
+): Promise<{ parts: Part[]; annotations: Annotation[]; layers: Layer[]; stats: RebindStats; annotationStats: RebindStats; layerStats: RebindStats }> {
   const EMPTY_STATS: RebindStats = { considered: 0, rebound: 0, dropped: 0 };
-  if (parts.length === 0 && annotations.length === 0) {
-    return { parts, annotations, stats: EMPTY_STATS, annotationStats: EMPTY_STATS };
+  if (parts.length === 0 && annotations.length === 0 && layers.length === 0) {
+    return { parts, annotations, layers, stats: EMPTY_STATS, annotationStats: EMPTY_STATS, layerStats: EMPTY_STATS };
   }
 
   const oc = await getOcct(extensionPath);
@@ -1315,8 +1334,10 @@ export async function rebindPartsAcrossSave(
 
   let currentParts = parts;
   let currentAnnotations = annotations;
+  let currentLayers = layers;
   const stats: RebindStats = { considered: 0, rebound: 0, dropped: 0 };
   const annotationStats: RebindStats = { considered: 0, rebound: 0, dropped: 0 };
+  const layerStats: RebindStats = { considered: 0, rebound: 0, dropped: 0 };
 
   try {
     const cleanupFrom: Array<{ delete(): void }> = [];
@@ -1348,6 +1369,17 @@ export async function rebindPartsAcrossSave(
         annotationStats.dropped += annResult.droppedCount;
       }
       annotationStats.considered++;
+
+      // Layers rebind through the same pass: a `Layer` is structurally an
+      // `EntityIdBag` too (see its doc comment in `protocol.ts`), so
+      // membership follows topology changes exactly like Part assignments.
+      if (currentLayers.length > 0) {
+        const layerResult = remapPartEntityIds(currentLayers, idMap);
+        currentLayers = layerResult.parts;
+        layerStats.rebound += layerResult.reboundCount;
+        layerStats.dropped += layerResult.droppedCount;
+      }
+      layerStats.considered++;
     } finally {
       for (let i = cleanupTo.length - 1; i >= 0; i--) {
         try {
@@ -1376,7 +1408,7 @@ export async function rebindPartsAcrossSave(
     }
   }
 
-  return { parts: currentParts, annotations: currentAnnotations, stats, annotationStats };
+  return { parts: currentParts, annotations: currentAnnotations, layers: currentLayers, stats, annotationStats, layerStats };
 }
 
 export interface BucketSelectorResult {

@@ -4,6 +4,12 @@ All notable changes to the "CAD Preview" extension are documented in this file.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/); this project does not yet strictly follow Semantic Versioning (pre-1.0 releases moved fast and bundled multiple features per bump).
 
+## [3.13.0] - 2026-10-09
+
+### Added
+
+- **Layers, distinct from Parts.** A named presentation/drawing layer (`<model>.layers.json`, the seventh sidecar) answers which entities are shown, locked or drawn together — never which form a finite-element sub-model. Each entity sits on at most one layer; unassigned entities sit on the implicit Default layer, which cannot be deleted. Membership rebinds across topology-changing edits through the same geometric pass Parts use (reported, never silently repointed); layer ids are allocated off a persisted counter so a deleted id is never recycled. A locked entity stays selectable for measurement but refuses as an edit operand and Transform Gizmo target, host and webview alike, with a named diagnostic. The Layers panel sits beside Parts (persisted visibility eye, lock button, assign-selection); headless parity is `list_layers` / `set_layer` / `assign_layer` plus `layers` in `get_state` (`tools/list` 71 → 74). Meshing and mass properties never read layers — a hidden layer is still meshed. The drawing exports take an optional `layers` filter (one output group per layer: SVG `<g>`, DXF `LAYER` table with ACI colours and collision prefixes; absent = every layer; B-rep only). Verified with unit tests (2607 passed), `mcp:smoke` fully green (1111 checks), Playwright webview suite (789 checks), real-VS-Code integration suite (287 checks), compat corpus (43 rows), and a regenerated `viewer-main.png`. Closes roadmap 2.8.
+
 ## [3.12.0] - 2026-10-08
 
 ### Added
@@ -745,6 +751,7 @@ This release republishes v1.9.0's full changelog (below) unchanged; v1.9.0 itsel
 
 - Initial release: read-only 3D preview for CAD and mesh files (STEP, IGES, BREP, STL, OBJ, PLY, glTF) inside a VS Code custom editor, using OpenCascade.js (OCCT WASM) in the extension host for B-rep formats and Three.js in the webview for rendering.
 
+[3.13.0]: https://github.com/loumalouomega/CAD-Preview/compare/v3.12.0...v3.13.0
 [3.12.0]: https://github.com/loumalouomega/CAD-Preview/compare/v3.11.0...v3.12.0
 [3.11.0]: https://github.com/loumalouomega/CAD-Preview/compare/v3.10.1...v3.11.0
 [3.10.1]: https://github.com/loumalouomega/CAD-Preview/compare/v3.10.0...v3.10.1

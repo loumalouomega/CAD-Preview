@@ -380,6 +380,7 @@ type HostToWebview =
       regionAssignment?: { regionNames: string[]; triangleRegionIndex: string }
     }
   | { type: 'parts';    parts: Part[] }
+  | { type: 'layers';   layers: Layer[]; nextId: number }
   | { type: 'annotations'; annotations: Annotation[] }
   | { type: 'edits';    ops: EditOp[]; variables: ParamVariable[]; bakedThrough?: number }
   | { type: 'status';   text: string }
@@ -1008,6 +1009,7 @@ type WebviewToHost =
   | { type: 'ready' }
   | { type: 'log'; message: string }
   | { type: 'partsChanged'; parts: Part[] }
+  | { type: 'layersChanged'; layers: Layer[]; nextId: number }
   | { type: 'annotationsChanged'; annotations: Annotation[] }
   | { type: 'editsChanged'; ops: EditOp[]; variables: ParamVariable[] }
   | { type: 'viewChanged'; view: ViewState }
@@ -1068,6 +1070,24 @@ Sent whenever the user mutates parts (create / rename / recolour / delete / assi
 
 ```json
 { "type": "partsChanged", "parts": [ { "name": "Inlet", "color": "#e6194b", "volumes": ["solid-0"], "surfaces": [], "lines": [], "points": [] } ] }
+```
+
+### `layers`
+
+Sent after geometry, once the host has read the layers sidecar (`<model>.layers.json`) — same timing/role as `parts`/`annotations`. Carries the saved layers (empty array when no sidecar exists — the default layer is implicit until the first real layer is created). The webview loads them into `LayersModel` (silent `load()`, no `onChange` echo — hydrating from disk must not post straight back as a write) and renders the Layers panel. `nextId` is the allocation counter the sidecar persists, adopted by the webview so a created layer never recycles a deleted id.
+
+Also sent when `<model>.layers.json` changes externally, via the same content-compared watcher every other sidecar uses — and resent by a rebind after a topology-changing edit, since layer membership (an `EntityIdBag` like Parts) is rematched geometrically on the same pass.
+
+```json
+{ "type": "layers", "layers": [ { "id": "layer-0", "name": "Default", "color": "#b8b8b8", "visible": true, "locked": false, "volumes": [], "surfaces": ["face-3"], "lines": [], "points": [] } ], "nextId": 1 }
+```
+
+### `layersChanged`
+
+Sent whenever the user mutates layers (create / rename / recolour / visibility / lock / assign / remove entity / delete). Same debounce (~500 ms, its own timer) and same never-writes-the-CAD-file rule as `partsChanged` — the host writes the full layer list to `<model>.layers.json` via `writeLayers()`.
+
+```json
+{ "type": "layersChanged", "layers": [ { "id": "layer-1", "name": "Dims", "color": "#ff0000", "visible": false, "locked": true, "volumes": [], "surfaces": [], "lines": [], "points": [] } ], "nextId": 2 }
 ```
 
 ### `planes`
