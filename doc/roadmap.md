@@ -27,6 +27,8 @@ Existing implementation references were checked against the repository where not
 
 **Extended 2026-10-09.** Extension, not a planning review. [Lower command bar for manual geometry ops](#lower-command-bar-for-manual-geometry-ops) was added as 2.1, top of Ready product work; the eleven existing section-2 items shifted to 2.2–2.12 with anchors unchanged, so name-based links survive. Its command table and examples were then extended in place for approval. [Define lines, arcs and curves from preexisting points](#build-curves-from-existing-points) was added as 2.0, above 2.1, as the section's top priority — deliberately out of the gapless 1..N sequence, to be normalized at the next planning review.
 
+**Extended 2026-10-09.** Extension, not a planning review. [Coincident-point prompt: collapse or keep independent](#coincident-point-collapse-or-independent) was added as 2.13 and [GiD-style geometry structure view](#geometry-structure-view) as 2.14, at the end of Ready product work; nothing was re-ranked.
+
 Everything previously shipped is tracked in `CHANGELOG.md`, and `CLAUDE.md` has a per-feature section with the verified implementation details for anything currently in the codebase — this page is for what's **not** built yet, plus the Non-goals that record why a direction was rejected so it isn't re-proposed.
 
 ## How this file works
@@ -440,6 +442,27 @@ These are outcome groupings, not release numbers. Independent small items can sh
 - **First useful increment (M):** a Customizer section in the sidebar, shown only for a `.scad` source and driven by the same `parseScadParameters` the tool uses, rendering a number field / checkbox / select / text field per parameter grouped by `[Group]` with the declared range. **Apply** re-runs the conversion with the values as `-D` overrides through `resolveEffectiveSource` (which would gain a `defines` field) and reloads the geometry. Overrides persist in the sidecar named above, replayed on open, and the source is still never written.
 - **Open questions to answer first:** whether a long conversion (seconds under CGAL) needs the cancellable-progress treatment `loadModel(true)` already gives a large STEP; how an override interacts with an edit-op list whose `edge-N` ids were authored against the default geometry (a changed dimension can renumber them — the same drift `entityRebind.ts` repairs for topology-changing ops, but here the *base* changes, which it does not handle); and whether the Manifold backend, which tessellates differently, should invalidate persisted ids.
 - **Done when:** changing a parameter in the panel re-evaluates the model and the same values reproduce through `convert_scad`, the source file is byte-identical, and an override survives a reopen.
+
+#### 2.13 Coincident-point prompt: collapse or keep independent {#coincident-point-collapse-or-independent}
+
+*Area: Geometry, Parity. Effort: S–M.*
+
+- **Evidence:** `addPoint` takes a raw `Vec3` only (`AddPointOp {position: Vec3}` in `src/editOps.ts`), and nothing checks it against existing geometry — a point authored at another point's coordinates silently becomes a second, independent `point-N` at the same location. The same silent duplication arises at curve endpoints once [Define lines, arcs and curves from preexisting points](#build-curves-from-existing-points) lets coordinates be typed raw beside point ids. GiD and similar pre-processors ask at this exact moment whether coincident points are one node or two.
+- **First useful increment (S–M):**
+  - Host-side, at apply time: when a new point's coordinates coincide with an existing `point-N` within the model's working tolerance, the op does not apply silently — interactively a small floating prompt names the existing point and offers **Collapse** (reuse the existing `point-N`, no new entity) or **Keep independent** (a second `point-N` at the same coordinates, as today). The choice is recorded on the op (`coincident: "reuse" | "independent"`), so replay, undo and headless runs are deterministic — never a modal that blocks a script.
+  - Headless (`apply_edit_ops`, command bar (2.1)): the same field is settable per call, defaulting to today's behaviour (`independent`) with a diagnostic that names the coincident point, so no script changes meaning silently.
+  - Panel and bar surface the prompt/choice wherever a raw coordinate can create a point (point form, curve endpoints typed raw).
+- **Done when:** on a fixture with a committed point, authoring the same coordinates — once via the panel, once headless — offers the choice interactively and honours the recorded field on replay; collapse leaves the `point-N` inventory unchanged, independent adds exactly one; a committed `test:webview` case covers the prompt end to end.
+- **Out of scope:** automatic sewing or healing of near-coincident geometry (the explicit repair op, 3.2); a general coincident-entity merge beyond points; snapping the new coordinates to the old ones (collapse reuses the id, it never moves either point).
+
+#### 2.14 GiD-style geometry structure view {#geometry-structure-view}
+
+*Area: Geometry. Effort: M.*
+
+- **Evidence:** the Display Mode selector (`src/webview/displayMode.ts`) offers five mutually exclusive tessellation renderings — `shaded` / `wireframe` / `xray` / `hiddenLines` / `flat` — and none of them shows the model's topological structure. GiD's geometry view (panel (a) in the reference image: skeletal line drawing with colour-coded entity kinds, as opposed to its mesh views (b)–(d), which this extension's shaded/wireframe modes already cover) lets the user see at a glance what the model is *made of*: points, lines, surfaces and volumes as distinct, easily recognisable primitives. The picking pipeline already enumerates exactly those kinds (`point-N` / `edge-N` / `face-N` / `solid-N`), but there is no view that renders them as such.
+- **First useful increment (M):** a sixth, webview-only display mode — **Geometry** — beside the existing five, rendering the B-rep structure skeletally: points as markers, edges as coloured lines, faces as outlines (translucent fill at most), volumes distinguished by their boundary shells, each kind in its own stable colour with a small legend. It reuses the shipped entity inventory and tessellation; no new kernel binding, no MCP tool (a purely visual interaction stays webview-only per the house rule).
+- **Done when:** on a committed multi-solid fixture, the Geometry mode shows every `point-N` / `edge-N` / `face-N` / `solid-N` recognisable by kind and selectable as today; a committed `test:webview` case toggles into the mode and screenshots it beside the shaded render for comparison.
+- **Out of scope:** mesh views — shaded/wireframe already cover GiD panels (b)–(d); dimension annotations in the structure view (the annotations feature owns those); per-Part colouring, which stays as it is.
 
 ### Probe-gated — establish feasibility before estimating
 
