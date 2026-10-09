@@ -25,6 +25,8 @@ Existing implementation references were checked against the repository where not
 
 **Extended 2026-10-08.** This is an extension, not a planning review, so nothing was re-ranked. [Layers](#layers-distinct-from-parts) was added as 2.8 and [multilingual user interface](#multilingual-user-interface) as 5.2. Task IDs in sections 2 and 4 were made continuous, so each section counts from 1 with no gaps. The former IDs of closed Meshing items (4.2, 4.4, 4.7 and 4.9) are no longer used, because the same numbers now belong to open items; those items are cited by name.
 
+**Extended 2026-10-09.** Extension, not a planning review. [Lower command bar for manual geometry ops](#lower-command-bar-for-manual-geometry-ops) was added as 2.1, top of Ready product work; the eleven existing section-2 items shifted to 2.2–2.12 with anchors unchanged, so name-based links survive. Its command table and examples were then extended in place for approval. [Define lines, arcs and curves from preexisting points](#build-curves-from-existing-points) was added as 2.0, above 2.1, as the section's top priority — deliberately out of the gapless 1..N sequence, to be normalized at the next planning review.
+
 Everything previously shipped is tracked in `CHANGELOG.md`, and `CLAUDE.md` has a per-feature section with the verified implementation details for anything currently in the codebase — this page is for what's **not** built yet, plus the Non-goals that record why a direction was rejected so it isn't re-proposed.
 
 ## How this file works
@@ -215,7 +217,105 @@ These are outcome groupings, not release numbers. Independent small items can sh
 
 *Admission: no kernel unknown remains. Either a probe passed and its call shapes are in `CLAUDE.md`, or the work only reuses shipped machinery. The estimate is firm.*
 
-#### 2.1 Post geometry before the XCAF assembly tree {#post-geometry-before-the-xcaf-assembly-tree}
+#### 2.0 Define lines, arcs and curves from preexisting points {#build-curves-from-existing-points}
+
+*Area: Geometry, Parity. Effort: M.*
+
+- **Evidence (verified 2026-10-09 — genuinely missing, not just unwired):** the curve-creation ops take raw coordinates only: `AddLineOp {start: Vec3, end: Vec3}`, `addPolyline {points: Vec3[]}`, `addThreePointArc {p1, p2, p3}`, and `addSpline` / `addBezier` / `addArc` / `addEllipseArc` / `addHelix` likewise (`src/editOps.ts`), while `validateEditOp`'s `asVec3` rejects anything that is not a number triple. The panel forms read typed vecs and say so — "Add a new standalone line (no selection needed)" (`src/webview/editsPanel.ts`) — and `referencedEntities` / `QUERYABLE_OPERAND_FIELDS` list no fields for any creation op, so there is not even a stored-query slot aimed at them. The picking pipeline can already select `point-N` entities (`src/webview/picking.ts`), but nothing consumes a picked point as a curve input; headless `OP_PARAM_DOCS` is coordinate-only too. A line between two existing vertices today means reading coordinates out of one surface and retyping them into another.
+- **First useful increment (M):**
+  - Op model: the coordinate fields of the eight curve ops (`addLine`, `addArc`, `addPolyline`, `addThreePointArc`, `addSpline`, `addBezier`, `addEllipseArc`, `addHelix` center) accept a `point-N` id wherever a `Vec3` goes today. Resolution is host-side at apply time through the same tolerant gate: an unresolvable id skips the op with the standard diagnostic/hint, never a throw and never a silent fallback to stale coordinates. The resolved coords ride alongside as cache, overwritten at every read — the `planeId` precedent (`mirror`, `splitByPlane`).
+  - Panel: each wireframe/curve form gains a "use picked points" affordance — picked `point-N` entities fill the coordinate fields in pick order, shown as ids, editable back to raw numbers at any time.
+  - Command bar (2.1): the same bodies accept point ids with completion, e.g. `addLine {"start":"point-3","end":"point-7"}`, and `$sel` expansion where the selection holds points.
+  - Rebind: point refs go through the existing topology-change rebind like every other operand — rebound or reported dropped, never silently repointed.
+- **Done when:** on a fixture with committed points, a line, an arc and a polyline built from point ids — once via the panel, once via the bar — produce geometry identical to the same coordinates typed raw; a deleted or renumbered point rebinds or reports, never repoints silently; a committed `test:webview` case picks two points and builds the line end to end.
+- **Out of scope:** dimensional or geometric constraints between the new curve and its points (the rejected sketch-solver scope); new pickable kinds (`point-N` selection already exists); profile centers (a follow-up once this ships).
+
+#### 2.1 Lower command bar for manual geometry ops {#lower-command-bar-for-manual-geometry-ops}
+
+*Area: Geometry, Parity. Effort: M.*
+
+- **Evidence:** every geometrical operation already exists in two places that agree with each other but has no typed entry. Headless, `apply_edit_ops` / `run_parametric_script` accept every `EditOpKind` in `src/editOps.ts`, documented per kind in `OP_PARAM_DOCS` (`src/mcpTools.ts`) and surfaced through `describe_capabilities`. Interactively, the GEOMETRY / EDIT tabs are driven by the single catalog in `src/webview/opCatalog.ts` (locked to `BREP_ONLY_OPS` and the op kinds by `opCatalog.test.ts`). A user today must click through the matching panel form; an agent has no interactive equivalent to point at, and a keyboard-driven user has no scriptable equivalent to the form. Nothing here needs a new kernel binding — it is a third front end over the same op model and the same `provider.ts` edit path.
+- **First useful increment (M):** a lower command bar docked above the status bar (`src/viewerDom.ts`), webview-only, no new MCP tool. It ships with every row of the command table below callable; the syntax and examples underneath are the proposal to approve or amend:
+  - Two-way interaction with the panel forms: typing an op name opens the matching panel form with its fields prefilled from the parsed text, and invoking a panel button echoes the equivalent command text into the bar. Both routes validate and persist through the identical path (`<model>.edits.json`, same `OpOutcome` diagnostic/hint per-row reporting as the Edits history), so they can never disagree.
+  - History (`Up`/`Down`), `Esc` clears, entity-id completion (`solid-N` / `face-N` / `edge-N` from the current inventory) and `$sel` for the live selection. An unrecognized name or bad params reports the `OP_PARAM_DOCS` line and the `describe_capabilities` pointer rather than failing silently. `BREP_ONLY_OPS` greying matches the panel exactly.
+- **Proposed syntax (to approve — edit freely):** `<command> [<json-body>]`, where `<command>` is the Bar command column (case-insensitive) and `<json-body>` is exactly the `OP_PARAM_DOCS` object for that row's op kind, with `$sel` allowed anywhere an id or id-array goes (expanded to the live selection at Enter). A bare `<command>` with no body never applies — it opens and prefills the matching panel form instead. Aliases: `union` / `subtract` / `intersect` for the three boolean panel buttons (`booleanUnion` / `booleanSubtract` / `booleanIntersect` over the single `boolean` kind), `surface` for `buildSurface`, `slot` for `edgeSlot`, `volume` for `buildVolume`.
+- **Worked examples (copy-paste shape of each family):**
+  - `addBox {"center":[0,0,0],"size":[10,5,3]}` — a 10×5×3 box at the origin.
+  - `addCylinder {"center":[0,0,0],"axis":[0,0,1],"radius":5,"height":20}` — base at the origin, up 20 in Z.
+  - `extrude {"profile":"face-6","dir":[0,0,1],"length":10}` — the sketch face 10 up.
+  - `extrude {"profileEdges":["edge-4","edge-5"],"dir":[0,0,1],"length":2,"thin":1}` — open wire, thin-walled.
+  - `revolve {"profile":"face-6","axisPoint":[0,0,0],"axisDir":[1,0,0],"angleDeg":90}` — quarter turn about X.
+  - `fillet {"edges":["edge-12","edge-13"],"radius":2}` — round two edges.
+  - `subtract {"a":["solid-1"],"b":["solid-2"]}` — cut B out of A.
+  - `translate {"targets":$sel,"vec":[5,0,0]}` — move the live selection 5 in X.
+  - `addHole {"targets":["solid-1"],"position":[5,2,3],"axis":[0,0,-1],"radius":2,"depth":10}` — hole down into the solid.
+  - `shell {"openingFaces":["face-3"],"thickness":-2}` — hollow inward, open at face-3.
+  - `splitByPlane {"targets":["solid-1"],"planePoint":[0,0,5],"planeNormal":[0,0,1],"keep":"both"}` — split at Z=5, keep both halves.
+  - Typing `extrude` alone focuses the panel's Extrude form; clicking Unite in the panel echoes `union {"a":[…],"b":[…]}` into the bar for editing and re-running.
+- **Command table (55 bar commands — approve or amend each row):**
+
+  | Group | Bar command | Op kind | Key params | Example body |
+  | --- | --- | --- | --- | --- |
+  | Transform | `translate` | `translate` | targets, vec | `{"targets":$sel,"vec":[5,0,0]}` |
+  | Transform | `rotate` | `rotate` | targets, axisPoint, axisDir, angleDeg | `{"targets":$sel,"axisPoint":[0,0,0],"axisDir":[0,0,1],"angleDeg":90}` |
+  | Transform | `scale` | `scale` | targets, center, factors | `{"targets":$sel,"center":[0,0,0],"factors":[2,2,2]}` |
+  | Transform | `mirror` | `mirror` | targets + plane (point/normal, planeId, or midplaneFaces) | `{"targets":$sel,"planePoint":[0,0,0],"planeNormal":[1,0,0]}` |
+  | Boolean | `union` | `boolean` | a, b (kind fixed) | `{"a":["solid-1"],"b":["solid-2"]}` |
+  | Boolean | `subtract` | `boolean` | a, b (kind fixed) | `{"a":["solid-1"],"b":["solid-2"]}` |
+  | Boolean | `intersect` | `boolean` | a, b (kind fixed) | `{"a":["solid-1"],"b":["solid-2"]}` |
+  | Refine | `fillet` | `fillet` | edges, radius | `{"edges":["edge-12"],"radius":2}` |
+  | Refine | `chamfer` | `chamfer` | edges, distance (+ distance2/angleDeg/face) | `{"edges":["edge-12"],"distance":1.5}` |
+  | Features | `extrude` | `extrude` | profile or profileEdges; dir; length or upToFace | `{"profile":"face-6","dir":[0,0,1],"length":10}` |
+  | Features | `revolve` | `revolve` | profile or profileEdges; axisPoint, axisDir, angleDeg | `{"profile":"face-6","axisPoint":[0,0,0],"axisDir":[1,0,0],"angleDeg":90}` |
+  | Features | `sweep` | `sweep` | profile or profileEdges; path | `{"profile":"face-6","path":"edge-9"}` |
+  | Features | `loft` | `loft` | profiles or profileEdgeSets; guides?, smoothing? | `{"profiles":["face-6","face-9"]}` |
+  | Features | `rib` | `rib` | spineEdges, dir, thin, upTo | `{"spineEdges":["edge-4"],"dir":[0,0,1],"thin":2,"upTo":"face-2"}` |
+  | Features | `wrap` | `wrap` | profile, target, radius, thickness, variant (+ targets) | `{"profile":"face-6","target":"cylinder","axisPoint":[0,0,0],"axisDir":[0,0,1],"radius":20,"thickness":1,"variant":"standalone"}` |
+  | Modify | `shell` | `shell` | openingFaces, thickness | `{"openingFaces":["face-3"],"thickness":-2}` |
+  | Modify | `draft` | `draft` | faces, angleDeg (validates, applied:false — kernel-broken) | `{"faces":["face-5"],"angleDeg":5}` |
+  | Modify | `defeature` | `defeature` | faces | `{"faces":["face-7"]}` |
+  | Modify | `splitByPlane` | `splitByPlane` | targets, plane…, keep | `{"targets":["solid-1"],"planePoint":[0,0,5],"planeNormal":[0,0,1],"keep":"both"}` |
+  | Modify | `section` | `section` | targets, plane… | `{"targets":["solid-1"],"planePoint":[0,0,5],"planeNormal":[0,0,1]}` |
+  | Modify | `drill` | `drill` | targets, profile or profileEdges, dir, length | `{"targets":["solid-1"],"profile":"face-8","dir":[0,0,-1],"length":12}` |
+  | Assembly | `explode` | `explode` | factor | `{"factor":1.5}` |
+  | Assembly | `mate` | `mate` | faceA, faceB | `{"faceA":"face-1","faceB":"face-4"}` |
+  | Assembly | `align` | `align` | targets, axis, extent, to | `{"targets":["solid-2"],"axis":"x","extent":"min","to":0}` |
+  | Assembly | `patternLinear` | `patternLinear` | targets, direction, spacing, count | `{"targets":["solid-3"],"direction":[1,0,0],"spacing":15,"count":4}` |
+  | Assembly | `patternCircular` | `patternCircular` | targets, axis or midaxisOf, angleDeg, count | `{"targets":["solid-3"],"axisPoint":[0,0,0],"axisDir":[0,0,1],"angleDeg":90,"count":4}` |
+  | Wireframe | `addPoint` | `addPoint` | position | `{"position":[1,2,3]}` |
+  | Wireframe | `addLine` | `addLine` | start, end | `{"start":[0,0,0],"end":[10,0,0]}` |
+  | Wireframe | `addArc` | `addArc` | center, normal, radius, start/endAngleDeg | `{"center":[0,0,0],"normal":[0,0,1],"radius":5,"startAngleDeg":0,"endAngleDeg":90}` |
+  | Curves | `addPolyline` | `addPolyline` | points[], closed | `{"points":[[0,0,0],[10,0,0],[10,5,0]],"closed":false}` |
+  | Curves | `addThreePointArc` | `addThreePointArc` | p1, p2, p3 | `{"p1":[0,0,0],"p2":[5,5,0],"p3":[10,0,0]}` |
+  | Curves | `addSpline` | `addSpline` | points[] | `{"points":[[0,0,0],[5,8,0],[10,0,0]]}` |
+  | Curves | `addBezier` | `addBezier` | controlPoints[] | `{"controlPoints":[[0,0,0],[5,10,0],[10,0,0]]}` |
+  | Curves | `addEllipseArc` | `addEllipseArc` | center, normal, up, radiusX/Y, angles | `{"center":[0,0,0],"normal":[0,0,1],"up":[0,1,0],"radiusX":6,"radiusY":3,"startAngleDeg":0,"endAngleDeg":180}` |
+  | Curves | `addHelix` | `addHelix` | center, axis, radius, pitch, turns | `{"center":[0,0,0],"axis":[0,0,1],"radius":5,"pitch":2,"turns":6}` |
+  | Profiles | `addCircleProfile` | `addCircleProfile` | center, normal, radius | `{"center":[0,0,10],"normal":[0,0,1],"radius":5}` |
+  | Profiles | `addRectangleProfile` | `addRectangleProfile` | center, normal, up, width, height | `{"center":[0,0,10],"normal":[0,0,1],"up":[0,1,0],"width":10,"height":6}` |
+  | Profiles | `addPolygonProfile` | `addPolygonProfile` | center, normal, up, radius, sides | `{"center":[0,0,10],"normal":[0,0,1],"up":[0,1,0],"radius":5,"sides":6}` |
+  | Profiles | `addEllipseProfile` | `addEllipseProfile` | center, normal, up, radiusX, radiusY | `{"center":[0,0,10],"normal":[0,0,1],"up":[0,1,0],"radiusX":6,"radiusY":3}` |
+  | Profiles | `addRoundedRectangleProfile` | `addRoundedRectangleProfile` | center, normal, up, width, height, cornerRadius | `{"center":[0,0,10],"normal":[0,0,1],"up":[0,1,0],"width":10,"height":6,"cornerRadius":1}` |
+  | Profiles | `addSlotProfile` | `addSlotProfile` | center, normal, up, length, width | `{"center":[0,0,10],"normal":[0,0,1],"up":[0,1,0],"length":12,"width":4}` |
+  | Profiles | `addTrapezoidProfile` | `addTrapezoidProfile` | center, normal, up, bottom/topWidth, height | `{"center":[0,0,10],"normal":[0,0,1],"up":[0,1,0],"bottomWidth":10,"topWidth":6,"height":5}` |
+  | Build-2D | `buildSurface` | `addSurfaceFromLines` | edges | `{"edges":["edge-4","edge-5","edge-6"]}` |
+  | Build-2D | `edgeSlot` | `addEdgeSlot` | edge, width | `{"edge":"edge-9","width":3}` |
+  | Primitives | `addBox` | `addBox` | center, size | `{"center":[0,0,0],"size":[10,5,3]}` |
+  | Primitives | `addSphere` | `addSphere` | center, radius | `{"center":[0,0,0],"radius":5}` |
+  | Primitives | `addCylinder` | `addCylinder` | center, axis, radius, height | `{"center":[0,0,0],"axis":[0,0,1],"radius":5,"height":20}` |
+  | Primitives | `addCone` | `addCone` | center, axis, radius1, radius2, height | `{"center":[0,0,0],"axis":[0,0,1],"radius1":5,"radius2":0,"height":12}` |
+  | Primitives | `addTorus` | `addTorus` | center, axis, majorRadius, minorRadius | `{"center":[0,0,0],"axis":[0,0,1],"majorRadius":10,"minorRadius":2}` |
+  | Primitives | `addPrism` | `addPrism` | center, axis, radius, sides, height | `{"center":[0,0,0],"axis":[0,0,1],"radius":5,"sides":6,"height":10}` |
+  | Primitives | `addWedge` | `addWedge` | center, axis, up, dx, dy, dz, ltx | `{"center":[0,0,0],"axis":[0,0,1],"up":[1,0,0],"dx":10,"dy":6,"dz":4,"ltx":2}` |
+  | Holes | `addHole` | `addHole` | targets, position, axis, radius, depth | `{"targets":["solid-1"],"position":[5,2,3],"axis":[0,0,-1],"radius":2,"depth":10}` |
+  | Holes | `addCounterboreHole` | `addCounterboreHole` | + cbRadius, cbDepth | `{"targets":["solid-1"],"position":[5,2,3],"axis":[0,0,-1],"radius":2,"depth":10,"cbRadius":4,"cbDepth":3}` |
+  | Holes | `addCountersinkHole` | `addCountersinkHole` | + csRadius, csAngleDeg | `{"targets":["solid-1"],"position":[5,2,3],"axis":[0,0,-1],"radius":2,"depth":10,"csRadius":4,"csAngleDeg":90}` |
+  | Build-3D | `buildVolume` | `addVolumeFromSurfaces` | faces | `{"faces":["face-1","face-2","face-3"]}` |
+- **Point operands (gated on 2.0):** the Wireframe and Curves rows above take raw coordinates until [Define lines, arcs and curves from preexisting points](#build-curves-from-existing-points) ships; then their coordinate fields accept `point-N` ids with no table change beyond the Key params column.
+- **Done when:** on a B-rep fixture, each table row resolves to its op kind and produces the identical persisted op and geometry as its panel button; a panel invocation echoes its command text; unknown input suggests the nearest command (the same `did you mean` rule the headless path uses); a committed `test:webview` case types one creation op and one edit op end to end, including one rejected input with the diagnostic shown.
+- **Out of scope:** a scripting language (`run_parametric_script` already covers sequences and `repeat`); natural-language parsing — the bar parses command names and params only; positional shorthand beyond `<command> <json-body>` plus `$sel` is a follow-up, not this increment.
+
+#### 2.2 Post geometry before the XCAF assembly tree {#post-geometry-before-the-xcaf-assembly-tree}
 
 *Area: Platform.*
 
@@ -226,7 +326,7 @@ These are outcome groupings, not release numbers. Independent small items can sh
   - Base-shape caching is unaffected: the tree cache already lives beside the base shape.
 - **Done when:** first geometry on `turbine.stp` arrives at roughly the pre-XCAF time, the tree still arrives, and `npm run perf` records both numbers.
 
-#### 2.2 Mesh display fidelity: OBJ materials, PLY colours, compressed glTF {#mesh-display-fidelity-obj-materials-ply-colours-compressed-gltf}
+#### 2.3 Mesh display fidelity: OBJ materials, PLY colours, compressed glTF {#mesh-display-fidelity-obj-materials-ply-colours-compressed-gltf}
 
 *Area: Formats.*
 
@@ -243,7 +343,7 @@ These are outcome groupings, not release numbers. Independent small items can sh
     - Decode host-side with `draco3d`, so Compare Models, Mesh Health and Promote accept the file too. `meshopt` follows the same pattern.
 - **Done when:** each has a committed fixture that renders correctly in `test:webview`, and the compressed fixture passes `check_mesh_health`.
 
-#### 2.3 More mesh formats through three's bundled loaders {#more-mesh-formats-through-three-s-bundled-loaders}
+#### 2.4 More mesh formats through three's bundled loaders {#more-mesh-formats-through-three-s-bundled-loaders}
 
 *Area: Formats.*
 
@@ -257,7 +357,7 @@ These are outcome groupings, not release numbers. Independent small items can sh
   - Every new format states its host-side status plainly: display-only unless a host parser is added. Compare Models, Mesh Health and headless meshing refuse it by name, the way meshio-only formats are refused today.
 - **Done when:** a committed `.3mf` fixture opens, edits, exports back to `.3mf`, and reopens with the same triangle count.
 
-#### 2.4 Shared UI design system with VSCode-MDPA-Preview {#shared-ui-design-system-with-vscode-mdpa-preview}
+#### 2.5 Shared UI design system with VSCode-MDPA-Preview {#shared-ui-design-system-with-vscode-mdpa-preview}
 
 *Area: Ecosystem.*
 
@@ -273,7 +373,7 @@ These are outcome groupings, not release numbers. Independent small items can sh
 - **Done when:** the snaps work in both extensions, the renames are settled, and the drift check runs in this repository's CI.
 - **Other repository's half:** the matching change in VSCode-MDPA-Preview, and its stale licence line.
 
-#### 2.5 Canonical worked example for the simulation tutorial {#canonical-worked-example-for-the-simulation-tutorial}
+#### 2.6 Canonical worked example for the simulation tutorial {#canonical-worked-example-for-the-simulation-tutorial}
 
 *Area: Ecosystem.*
 
@@ -285,7 +385,7 @@ These are outcome groupings, not release numbers. Independent small items can sh
   - Pin it in `mcp:smoke` with analytic volume and exact Part membership, like the bracket tutorial.
 - **Done when:** the page builds, its op list compiles under `npm test`, and the exported MDPA opens in VSCode-MDPA-Preview with both SubModelParts populated.
 
-#### 2.6 Unify same-domain faces as an edit op {#unify-same-domain-faces-as-an-edit-op}
+#### 2.7 Unify same-domain faces as an edit op {#unify-same-domain-faces-as-an-edit-op}
 
 *Area: Geometry.*
 
@@ -293,7 +393,7 @@ These are outcome groupings, not release numbers. Independent small items can sh
 - **First useful increment (M):** a `unifySameDomain` edit op — B-rep only, topology-changing (every downstream `face-N`/`edge-N` renumbers, so Parts and annotations go through the existing rebind), explicit and undoable, never an automatic consequence of a failed `check_brep_health`. Needs a panel button, which means a TikZ icon through the `icons/` pipeline (`pdflatex` + `pdftocairo`), an `OP_PARAM_DOCS` entry, the generic `produced` bucket role, and a `mcp:smoke` assertion on the fused-box face count and volume.
 - **Done when:** the fused-box fixture drops 10 → 6 faces through `apply_edit_ops` at an unchanged volume, and a Part on one of the merged faces is rebound or reported dropped, never silently repointed.
 
-#### 2.7 Tessellation quality for `hit_test` {#tessellation-quality-for-hit-test}
+#### 2.8 Tessellation quality for `hit_test` {#tessellation-quality-for-hit-test}
 
 *Area: Parity.*
 
@@ -303,7 +403,7 @@ These are outcome groupings, not release numbers. Independent small items can sh
 - **Done when:** on a fixture with sub-1 %-diagonal features, a ray that misses at `standard` hits the intended edge at `fine`, and omitting the parameter is indistinguishable from passing `standard`.
 - **Related follow-up, deliberately not folded in:** `compare_models`' optional `includeSnapshots` is the fourth render call site and still has no `tessellationQuality`, so its before/after images render at the `standard` default. It is absent on purpose rather than forgotten — each render parameter widens a surface whose images cost a browser launch apiece — but it should get the same parameter eventually, and `doc/mcp-server.md` says so at that tool's own row so a reader is not left guessing why it lacks what its siblings have.
 
-#### 2.8 meshio++ `feature_edges` replaces the hand-rolled winding check {#meshio-feature-edges-winding-check}
+#### 2.9 meshio++ `feature_edges` replaces the hand-rolled winding check {#meshio-feature-edges-winding-check}
 
 *Area: Meshing. Effort: S–M.*
 
@@ -312,7 +412,7 @@ These are outcome groupings, not release numbers. Independent small items can sh
 - **First useful increment (S–M):** report `inconsistentEdgeIds` (not just a count) from `analyzeMeshioSurfaces` using `featureEdges`' `feature:kind === "inconsistent"`, and cross-check it against the existing `inconsistentPairCount` on `flipped-winding-tet.stl` and the clean fixtures. If they agree on every committed fixture, retire the hand-rolled counter and say so in the same commit — one implementation of a fact, the same rule that removed the duplicated edge enumerator. A disagreement is a finding in itself and belongs in the write-up either way.
 - **Done when:** the count has one implementation, the pure analyzer's limitation is documented as a deliberate boundary rather than an open gap, and a fixture whose two implementations disagree cannot land silently.
 
-#### 2.9 meshio++ `check_quality` as a caller-supplied quality gate {#meshio-check-quality-gate}
+#### 2.10 meshio++ `check_quality` as a caller-supplied quality gate {#meshio-check-quality-gate}
 
 *Area: Meshing. Effort: S–M.*
 
@@ -321,7 +421,7 @@ These are outcome groupings, not release numbers. Independent small items can sh
 - **First useful increment (S–M):** an `estimate_mesh_budget`-shaped sibling: an MCP tool plus a panel row that runs the gate over the generated mesh and reports per-check results. It belongs **beside** the existing Gmsh `minSICN` summary rather than replacing it — the two metrics measure different things (a Jacobian on the actual cells vs. a shape-quality index), and a user needs both. The meshing spec for the docs lives in `doc/gmsh-integration.md`, which is where the comparison belongs.
 - **Done when:** a caller can state a threshold, get per-check facts back, and a deliberately bad mesh and a deliberately good one are distinguishable on the same fixture. Interactive and MCP reach the same result, per the parity rule.
 
-#### 2.10 meshio++ `hausdorff_distance` as a cross-check on the deviation map {#meshio-hausdorff-deviation-cross-check}
+#### 2.11 meshio++ `hausdorff_distance` as a cross-check on the deviation map {#meshio-hausdorff-deviation-cross-check}
 
 *Area: Meshing. Effort: S.*
 
@@ -331,7 +431,7 @@ These are outcome groupings, not release numbers. Independent small items can sh
 - **Done when:** the deviation map's sampling caveat is either backed by an independent number or its residual error is characterized, and the sampled-vs-certified distinction in `doc/file-formats.md` and the tool description is accurate about which one a caller is reading.
 - **Recorded as available, deliberately not adopted** (meshio++ 16.23–16.27, same release window): `edit_regions` would introduce a second, parallel concept to `Part`, which is a JSON sidecar over CAD entity ids — the exact divergence `src/entityRebind.ts` exists to prevent, and mesh regions have no viewer-side representation at all. `match_periodic_nodes`, `resample_sequence` and `blend_steps` are periodic- and transient-solver workflows; this tool exports to solvers but does not run them or hold result series, so none has a user workflow here that meets this file's bar for a new item. Recorded so a future review does not re-derive the triage, not as a standing invitation.
 
-#### 2.11 OpenSCAD Customizer panel in the viewer {#openscad-customizer-panel}
+#### 2.12 OpenSCAD Customizer panel in the viewer {#openscad-customizer-panel}
 
 *Area: Formats, Parity. Effort: M.*
 
