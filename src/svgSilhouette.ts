@@ -43,6 +43,16 @@ export interface SvgOptions {
    * to do its depth test.
    */
   hiddenSegments?: Array<[[number, number], [number, number]]>;
+  /**
+   * Per-layer geometry (roadmap "Layers, distinct from Parts"): when present,
+   * the drawing is emitted as one `<g id="layer-…">` group per entry INSTEAD
+   * of the flat `segments`/`hiddenSegments` paths above (which must then be
+   * empty). Each group holds that layer's own visible + dashed-hidden paths,
+   * so a drawing restricted to some layers carries its layer structure with
+   * it. `id` is the layer's `layer-N` id (already collision-free); dimensions
+   * stay global, after the groups.
+   */
+  layerGroups?: Array<{ id: string; segments: Seg2[]; hiddenSegments?: Seg2[] }>;
   /** Stroke width in OUTPUT units (i.e. after any unit conversion). Defaults
    * to `max(width, height) / 500`, which keeps lines proportionate at any
    * model scale — a fixed default would vanish on a large model and swamp a
@@ -213,8 +223,15 @@ function serialize(segments: Array<[[number, number], [number, number]]>, option
   const dims = options.dimensions;
   const drawings = dims?.drawings ?? [];
   const hiddenSegments = options.hiddenSegments ?? [];
+  const layerGroups = options.layerGroups;
 
-  const bounds = drawingBounds(segments, hiddenSegments, drawings);
+  const bounds = layerGroups && layerGroups.length > 0
+    ? drawingBounds(
+        layerGroups.flatMap((g) => g.segments),
+        layerGroups.flatMap((g) => g.hiddenSegments ?? []),
+        drawings
+      )
+    : drawingBounds(segments, hiddenSegments, drawings);
 
   // A model that projects to a single point, or produces no segments at all,
   // must still yield a VALID document — never a viewBox full of NaN/Infinity.
@@ -240,23 +257,48 @@ function serialize(segments: Array<[[number, number], [number, number]]>, option
   const strokeWidth = options.strokeWidth ?? Math.max(boxWidth, boxHeight) / 500;
   const decimals = decimalsFor(Math.max(boxWidth, boxHeight));
 
-  const layers = drawingLayers(segments, hiddenSegments, dims, { decimals, strokeWidth, stroke });
+  const style: LayerStyle = { decimals, strokeWidth, stroke };
+  let body = "";
+  let counted = segments.length;
+  let countedHidden: number | undefined = options.hiddenSegments !== undefined ? hiddenSegments.length : undefined;
+  if (layerGroups && layerGroups.length > 0) {
+    // One `<g>` per layer instead of the flat paths: each group holds that
+    // layer's own visible + dashed-hidden paths. Dimensions stay global,
+    // after the groups (they are not layer-attributed).
+    counted = 0;
+    countedHidden = layerGroups.some((g) => g.hiddenSegments !== undefined) ? 0 : undefined;
+    for (const g of layerGroups) {
+      const parts = drawingLayers(g.segments, g.hiddenSegments ?? [], undefined, style);
+      body += `<g id="${drawingLayerGroupId(g.id)}">${parts.hidden}${parts.visible}</g>`;
+      counted += g.segments.length;
+      if (countedHidden !== undefined) countedHidden += g.hiddenSegments?.length ?? 0;
+    }
+  } else {
+    const flat = drawingLayers(segments, hiddenSegments, dims, style);
+    body = flat.hidden + flat.visible;
+  }
+  const dimParts = drawingLayers([], [], dims, style);
 
   const svg =
     `<svg xmlns="http://www.w3.org/2000/svg" width="${fmt(boxWidth, decimals)}mm" height="${fmt(boxHeight, decimals)}mm" ` +
     `viewBox="${fmt(minX - pad, decimals)} ${fmt(minY - pad, decimals)} ${fmt(boxWidth, decimals)} ${fmt(boxHeight, decimals)}">` +
     titleTag +
-    layers.hidden +
-    layers.visible +
-    layers.dimensions +
+    body +
+    dimParts.dimensions +
     `</svg>\n`;
 
   return {
     svg,
-    segmentCount: segments.length,
-    ...(options.hiddenSegments !== undefined ? { hiddenSegmentCount: hiddenSegments.length } : {}),
-    ...(layers.dimensionCount !== undefined ? { dimensionCount: layers.dimensionCount } : {}),
+    segmentCount: counted,
+    ...(countedHidden !== undefined ? { hiddenSegmentCount: countedHidden } : {}),
+    ...(dimParts.dimensionCount !== undefined ? { dimensionCount: dimParts.dimensionCount } : {}),
   };
+}
+
+/** Sanitizes a layer id for an SVG group id (`layer-N` is already safe; this
+ * keeps a hand-built caller from emitting a broken document). */
+export function drawingLayerGroupId(id: string): string {
+  return id.replace(/[^A-Za-z0-9_-]/g, "_") || "layer";
 }
 
 interface LayerStyle {
@@ -377,14 +419,30 @@ export function sheetSvg(layout: SheetLayout, options: { stroke?: string; title?
 
   let body = "";
   for (const view of layout.views) {
-    const layers = drawingLayers(view.visible, view.hidden, view.dimensions, {
+    const style: LayerStyle = {
       decimals,
       strokeWidth: SHEET_STROKE.visible,
       hiddenStrokeWidth: SHEET_STROKE.hidden,
       glyphStrokeWidth: SHEET_STROKE.glyph,
       stroke,
-    });
-    body += `<g id="view-${viewId(view.name)}">${layers.hidden}${layers.visible}${layers.dimensions}${text(view.label)}</g>`;
+    };
+    let content: string;
+    if (view.layerGroups && view.layerGroups.length > 0) {
+      // One `<g>` per layer inside the view group (roadmap "Layers, distinct
+      // from Parts") — the same grouping the single-view writer emits.
+      content = view.layerGroups
+        .map((g) => {
+          const parts = drawingLayers(g.visible, g.hidden, undefined, style);
+          return `<g id="${drawingLayerGroupId(g.id)}">${parts.hidden}${parts.visible}</g>`;
+        })
+        .join("");
+      const dims = drawingLayers([], [], view.dimensions, style);
+      content += dims.dimensions;
+    } else {
+      const layers = drawingLayers(view.visible, view.hidden, view.dimensions, style);
+      content = `${layers.hidden}${layers.visible}${layers.dimensions}`;
+    }
+    body += `<g id="view-${viewId(view.name)}">${content}${text(view.label)}</g>`;
   }
   const w = fmt(layout.width, decimals);
   const h = fmt(layout.height, decimals);
@@ -672,6 +730,22 @@ export function technicalDrawingSvg(
 ): SvgResult {
   const dims = options.dimensions ?? computeDimensions(options.annotations, view, options.dimensionScaleHint);
   return serialize(visible, { ...options, dimensions: dims, hiddenSegments: hidden });
+}
+
+/**
+ * A drawing with one `<g>` group per included user layer (roadmap "Layers,
+ * distinct from Parts"): the caller ran the extraction per layer subset
+ * itself and passes the already-projected 2D runs — the flat
+ * `segments`/`hiddenSegments` paths are never mixed with this one, since a
+ * segment's layer is only known at extraction time.
+ */
+export function layeredSilhouetteSvg(
+  groups: Array<{ id: string; segments: Array<[[number, number], [number, number]]>; hiddenSegments?: Array<[[number, number], [number, number]]> }>,
+  view: ViewSpec,
+  options: SvgOptions = {}
+): SvgResult {
+  const dims = options.dimensions ?? computeDimensions(options.annotations, view, options.dimensionScaleHint);
+  return serialize([], { ...options, dimensions: dims, layerGroups: groups });
 }
 
 export function polylinesSvg(polylines: Float32Array[], view: ViewSpec, options: SvgOptions = {}): SvgResult {

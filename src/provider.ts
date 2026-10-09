@@ -36,6 +36,7 @@ import {
   type Part,
   type Annotation,
   type ConstructionPlane,
+  type Layer,
   type MeshPresetSummary,
   type ViewState,
   type SelectorSynthesizeResultEntry,
@@ -52,6 +53,7 @@ import type { CompareSource } from "./modelDiffHost";
 import { resolveExternalBuffers, type GltfExternalBuffers } from "./gltfParser";
 import { exportTargetsFor, EXPORT_EXTENSION, EXPORT_LABEL, UNIT_CONVERTIBLE_FORMATS, MESH_SAVE_IN_PLACE_FORMATS } from "./exportTargets";
 import { readParts, writeParts, sidecarUri } from "./partsStore";
+import { readLayers, writeLayers, layersSidecarUri } from "./layersStore";
 import { readAnnotations, writeAnnotations, annotationsSidecarUri } from "./annotationsStore";
 import { readPlanes, writePlanes, planesSidecarUri } from "./planesStore";
 import { readEdits, writeEdits, editsSidecarUri } from "./editsStore";
@@ -80,6 +82,7 @@ import { viewerBodyHtml } from "./viewerDom";
 import { normalizeViewerDefaults } from "./viewerDefaults";
 import { buildPreprocessZip, readPreprocessZip } from "./preprocessArchive";
 import { parsePartsJson } from "./partsSidecar";
+import { parseLayersFile, layersWithDefault, resolveLayerDrawFilter, type LayerDrawSubset } from "./layersSidecar";
 import { parseAnnotationsJson } from "./annotationsSidecar";
 import { parsePlanesJson } from "./planesSidecar";
 import { parseEditsJson, replayTail } from "./editsSidecar";
@@ -794,6 +797,7 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
     };
     const pending = new Map<string, PendingExport>();
     let partsSaveTimer: ReturnType<typeof setTimeout> | undefined;
+    let layersSaveTimer: ReturnType<typeof setTimeout> | undefined;
     let annotationsSaveTimer: ReturnType<typeof setTimeout> | undefined;
     let planesSaveTimer: ReturnType<typeof setTimeout> | undefined;
     let editsSaveTimer: ReturnType<typeof setTimeout> | undefined;
@@ -910,6 +914,14 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
     // File-menu "Save" can flush all three sidecars immediately. The webview
     // re-sends these on every change, so these copies are always current.
     let currentParts: Part[] = [];
+    // Presentation/drawing layers (roadmap "Layers, distinct from Parts") —
+    // same "retained for Save to flush" reason as `currentParts`. Membership
+    // rebinds across topology changes like Parts (see `rebindPartsOnChange`);
+    // visibility and lock are stored per layer, never rebound.
+    let currentLayers: Layer[] = [];
+    // Allocation counter for `layer-N` ids, persisted in the sidecar — a
+    // deleted id must never be recycled (see `allocateLayerId`).
+    let currentLayersNextId = 0;
     // Persisted, topology-anchored measurements (roadmap "Persisted,
     // topology-anchored annotations", closed) — same "retained for Save to
     // flush" reason as `currentParts`.
@@ -936,6 +948,7 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
     /** Immediately writes the parts/edits/mesh/view sidecars, bypassing the debounce. */
     const flushSidecars = async (): Promise<void> => {
       if (partsSaveTimer) clearTimeout(partsSaveTimer);
+      if (layersSaveTimer) clearTimeout(layersSaveTimer);
       if (annotationsSaveTimer) clearTimeout(annotationsSaveTimer);
       if (planesSaveTimer) clearTimeout(planesSaveTimer);
       if (editsSaveTimer) clearTimeout(editsSaveTimer);
@@ -944,6 +957,7 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
       try {
         await Promise.all([
           writeParts(document.uri, currentParts),
+          writeLayers(document.uri, currentLayers, currentLayersNextId),
           writeAnnotations(document.uri, currentAnnotations),
           writePlanes(document.uri, currentPlanes),
           writeEdits(document.uri, currentEdits, currentVariables, currentBakedThrough),
@@ -1069,7 +1083,7 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
      * stale-watermark write cannot land after it); (5) the source watcher
      * skips exactly one self-event via `expectOwnSourceSave`; (6) a two-byte
      * save-time rebind (`rebindPartsAcrossSave`: pre-save bytes + full ops vs
-     * post-save bytes + new tail) so Part/annotation highlights track the
+     * post-save bytes + new tail) so Part/annotation/layer highlights track the
      * renumbered file instead of merely warning about it.
      *
      * Op-list semantics: the file becomes `base ∘ ops[0..n]` and the sidecar
@@ -1182,7 +1196,8 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
             route.format as Extract<CadFormat, "step" | "iges" | "brep">,
             replayTail(currentEdits, currentBakedThrough),
             currentParts,
-            currentAnnotations
+            currentAnnotations,
+            currentLayers
           );
           if (rebindResult.parts !== currentParts) {
             currentParts = rebindResult.parts;
@@ -1194,11 +1209,16 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
             await writeAnnotations(document.uri, currentAnnotations);
             post({ type: "annotations", annotations: currentAnnotations });
           }
+          if (rebindResult.layers !== currentLayers) {
+            currentLayers = rebindResult.layers;
+            await writeLayers(document.uri, currentLayers, currentLayersNextId);
+            post({ type: "layers", layers: currentLayers, nextId: currentLayersNextId });
+          }
         } catch (err) {
           post({ type: "error", message: `Could not rebind entity ids across the save: ${(err as Error).message}` });
           post({
             type: "status",
-            text: "Part/annotation highlights were assigned against the pre-save geometry — verify them; re-assign anything that looks shifted.",
+            text: "Part/annotation/layer highlights were assigned against the pre-save geometry — verify them; re-assign anything that looks shifted.",
           });
         }
         post({ type: "status", text: `Saved in place to ${fileName} (${tail.length} op(s) baked)` });
@@ -1413,14 +1433,16 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
      */
     const revertToSavePoint = async (): Promise<void> => {
       if (partsSaveTimer) clearTimeout(partsSaveTimer);
+      if (layersSaveTimer) clearTimeout(layersSaveTimer);
       if (annotationsSaveTimer) clearTimeout(annotationsSaveTimer);
       if (planesSaveTimer) clearTimeout(planesSaveTimer);
       if (editsSaveTimer) clearTimeout(editsSaveTimer);
       if (meshSaveTimer) clearTimeout(meshSaveTimer);
       if (viewSaveTimer) clearTimeout(viewSaveTimer);
-      const [parsed, parts, annotations, planes] = await Promise.all([
+      const [parsed, parts, layersFile, annotations, planes] = await Promise.all([
         readEdits(document.uri),
         readParts(document.uri),
+        readLayers(document.uri),
         readAnnotations(document.uri),
         readPlanes(document.uri),
       ]);
@@ -1428,11 +1450,14 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
       currentEdits = parsed.ops.slice(0, parsed.bakedThrough);
       currentVariables = parsed.variables;
       currentParts = parts;
+      currentLayers = layersFile.layers;
+      currentLayersNextId = layersFile.nextId;
       currentAnnotations = annotations;
       currentPlanes = planes;
       await writeEdits(document.uri, currentEdits, currentVariables, currentBakedThrough);
       postEdits();
       post({ type: "parts", parts: currentParts });
+      post({ type: "layers", layers: currentLayers, nextId: currentLayersNextId });
       post({ type: "annotations", annotations: currentAnnotations });
       post({ type: "planes", planes: currentPlanes });
       currentMeshOptions = await this.sendMeshOptions(document.uri, post);
@@ -1542,11 +1567,13 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
      * parameter, reusing the identical `idMap` at zero extra OCCT cost) and
      * persists+posts `"annotations"` on the same terms — see `Annotation`'s
      * doc comment in `protocol.ts` for why it can reuse `Part`'s exact
-     * id-remapping machinery.
+     * id-remapping machinery. Layer membership (`currentLayers`) rides the
+     * same pass on the same terms (optional 8th parameter) and
+     * persists+posts `"layers"` on a real change.
      */
     const rebindPartsOnChange = async (previousOps: EditOp[], newOps: EditOp[]): Promise<void> => {
       if (!route || route.strategy !== "occt") return;
-      if (currentParts.length === 0 && currentAnnotations.length === 0) return;
+      if (currentParts.length === 0 && currentAnnotations.length === 0 && currentLayers.length === 0) return;
       if (JSON.stringify(previousOps) === JSON.stringify(newOps)) return;
       // Tier 0: both lists replay against the current (possibly baked) bytes,
       // so both are tailed identically — the diff stays meaningful.
@@ -1580,7 +1607,8 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
           previousTail,
           newTail,
           currentParts,
-          currentAnnotations
+          currentAnnotations,
+          currentLayers
         );
         if (result.parts !== currentParts) {
           currentParts = result.parts;
@@ -1591,6 +1619,11 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
           currentAnnotations = result.annotations;
           await writeAnnotations(document.uri, currentAnnotations);
           post({ type: "annotations", annotations: currentAnnotations });
+        }
+        if (result.layers !== currentLayers) {
+          currentLayers = result.layers;
+          await writeLayers(document.uri, currentLayers, currentLayersNextId);
+          post({ type: "layers", layers: currentLayers, nextId: currentLayersNextId });
         }
       } catch (err) {
         post({ type: "error", message: `Could not rebind entity ids: ${(err as Error).message}` });
@@ -1654,6 +1687,7 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
     const sidecarUriFor: Record<SidecarKind, vscode.Uri> = {
       edits: editsSidecarUri(document.uri),
       parts: sidecarUri(document.uri),
+      layers: layersSidecarUri(document.uri),
       planes: planesSidecarUri(document.uri),
       annotations: annotationsSidecarUri(document.uri),
       mesh: meshOptionsSidecarUri(document.uri),
@@ -1661,6 +1695,7 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
     const saveTimerOf: Record<SidecarKind, () => void> = {
       edits: () => editsSaveTimer && clearTimeout(editsSaveTimer),
       parts: () => partsSaveTimer && clearTimeout(partsSaveTimer),
+      layers: () => layersSaveTimer && clearTimeout(layersSaveTimer),
       planes: () => planesSaveTimer && clearTimeout(planesSaveTimer),
       annotations: () => annotationsSaveTimer && clearTimeout(annotationsSaveTimer),
       mesh: () => meshSaveTimer && clearTimeout(meshSaveTimer),
@@ -1690,6 +1725,7 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
     const writeLocal = async (kind: SidecarKind): Promise<void> => {
       if (kind === "edits") await writeEdits(document.uri, currentEdits, currentVariables, currentBakedThrough);
       else if (kind === "parts") await writeParts(document.uri, currentParts);
+      else if (kind === "layers") await writeLayers(document.uri, currentLayers, currentLayersNextId);
       else if (kind === "planes") await writePlanes(document.uri, currentPlanes);
       else if (kind === "annotations") await writeAnnotations(document.uri, currentAnnotations);
       else if (currentMeshOptions) {
@@ -1847,6 +1883,20 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
       };
     });
 
+    watchSidecar("layers", async () => {
+      const layersFile = await readLayers(document.uri);
+      if (JSON.stringify(layersFile.layers) === JSON.stringify(currentLayers)) return null;
+      return {
+        sides: { local: currentLayers.length, disk: layersFile.layers.length },
+        adopt: () => {
+          currentLayers = layersFile.layers;
+          currentLayersNextId = layersFile.nextId;
+          post({ type: "layers", layers: currentLayers, nextId: currentLayersNextId });
+          post({ type: "status", text: "Layers updated externally" });
+        },
+      };
+    });
+
     watchSidecar("planes", async () => {
       const planes = await readPlanes(document.uri);
       if (JSON.stringify(planes) === JSON.stringify(currentPlanes)) return null;
@@ -1939,7 +1989,7 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
         void this.handleScreenshot(document.uri, post, pending);
       },
       exportSvg: () => {
-        if (route) void this.handleExportSvg(document.uri, route, post, currentEdits, currentViewState, "svg", currentAnnotations, false, currentBakedThrough);
+        if (route) void this.handleExportSvg(document.uri, route, post, currentEdits, currentViewState, "svg", currentAnnotations, currentLayers, false, currentBakedThrough);
       },
       exportMesh: () => {
         void this.handleExportMesh(document.uri, route, currentEdits, currentMeshOptions, post, currentBakedThrough);
@@ -1948,13 +1998,13 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
         post({ type: "zoomToSelection" });
       },
       exportDxf: () => {
-        if (route) void this.handleExportSvg(document.uri, route, post, currentEdits, currentViewState, "dxf", currentAnnotations, false, currentBakedThrough);
+        if (route) void this.handleExportSvg(document.uri, route, post, currentEdits, currentViewState, "dxf", currentAnnotations, currentLayers, false, currentBakedThrough);
       },
       exportDrawing: () => {
-        if (route) void this.handleExportSvg(document.uri, route, post, currentEdits, currentViewState, "svg", currentAnnotations, true, currentBakedThrough);
+        if (route) void this.handleExportSvg(document.uri, route, post, currentEdits, currentViewState, "svg", currentAnnotations, currentLayers, true, currentBakedThrough);
       },
       exportSheet: () => {
-        if (route) void this.handleExportSheet(document.uri, route, post, currentEdits, currentAnnotations, currentBakedThrough);
+        if (route) void this.handleExportSheet(document.uri, route, post, currentEdits, currentAnnotations, currentLayers, currentBakedThrough);
       },
       post,
     };
@@ -2047,6 +2097,11 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
           currentAnnotations = annotations;
           post({ type: "annotations", annotations: currentAnnotations });
         });
+        void readLayers(document.uri).then((layersFile) => {
+          currentLayers = layersFile.layers;
+          currentLayersNextId = layersFile.nextId;
+          post({ type: "layers", layers: currentLayers, nextId: currentLayersNextId });
+        });
         void this.sendMeshOptions(document.uri, post).then((options) => {
           currentMeshOptions = options;
         });
@@ -2073,6 +2128,21 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
           void guardedAutosave("parts").then(
             undefined,
             (err) => post({ type: "error", message: `Could not save parts: ${(err as Error).message}` })
+          );
+        }, PARTS_SAVE_DEBOUNCE_MS);
+        return;
+      }
+
+      if (msg.type === "layersChanged") {
+        // Debounced autosave, own timer — mirrors partsChanged.
+        const layers: Layer[] = msg.layers;
+        currentLayers = layers;
+        if (layersSaveTimer) clearTimeout(layersSaveTimer);
+        revisions.markLocalPending("layers");
+        layersSaveTimer = setTimeout(() => {
+          void guardedAutosave("layers").then(
+            undefined,
+            (err) => post({ type: "error", message: `Could not save layers: ${(err as Error).message}` })
           );
         }, PARTS_SAVE_DEBOUNCE_MS);
         return;
@@ -3015,7 +3085,7 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
       }
 
       if (msg.type === "exportSvgRequest") {
-        if (route) void this.handleExportSvg(document.uri, route, post, currentEdits, currentViewState, "svg", currentAnnotations, false, currentBakedThrough);
+        if (route) void this.handleExportSvg(document.uri, route, post, currentEdits, currentViewState, "svg", currentAnnotations, currentLayers, false, currentBakedThrough);
         return;
       }
 
@@ -3037,17 +3107,17 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
       }
 
       if (msg.type === "exportDxfRequest") {
-        if (route) void this.handleExportSvg(document.uri, route, post, currentEdits, currentViewState, "dxf", currentAnnotations, false, currentBakedThrough);
+        if (route) void this.handleExportSvg(document.uri, route, post, currentEdits, currentViewState, "dxf", currentAnnotations, currentLayers, false, currentBakedThrough);
         return;
       }
 
       if (msg.type === "exportDrawingRequest") {
-        if (route) void this.handleExportSvg(document.uri, route, post, currentEdits, currentViewState, "svg", currentAnnotations, true, currentBakedThrough);
+        if (route) void this.handleExportSvg(document.uri, route, post, currentEdits, currentViewState, "svg", currentAnnotations, currentLayers, true, currentBakedThrough);
         return;
       }
 
       if (msg.type === "exportSheetRequest") {
-        if (route) void this.handleExportSheet(document.uri, route, post, currentEdits, currentAnnotations, currentBakedThrough);
+        if (route) void this.handleExportSheet(document.uri, route, post, currentEdits, currentAnnotations, currentLayers, currentBakedThrough);
         return;
       }
 
@@ -4075,6 +4145,44 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
   }
 
   /**
+   * Layer filter for the drawing exports (roadmap "Layers, distinct from
+   * Parts", second increment): "All layers" (the default — drawing exports
+   * include every layer unless told otherwise), "Visible layers only" (the
+   * explicit choice the item requires, so a hidden layer is never quietly
+   * dropped), or one named layer. Returns `undefined` for unfiltered,
+   * `null` when a mesh source picked a real filter (refused — the kernel only
+   * filters B-rep). Escape declines this optional step and draws everything,
+   * like `pickExportUnit`'s Escape, never cancels the export. Skipped
+   * entirely (no pick at all) when the document has only the implicit,
+   * member-less default layer — there is nothing to choose between.
+   */
+  private async pickLayersFilter(layers: Layer[], route: FileRoute): Promise<LayerDrawSubset[] | undefined | null> {
+    const full = layersWithDefault(layers);
+    const hasMembers = full.some((l) => l.volumes.length + l.surfaces.length + l.lines.length + l.points.length > 0);
+    if (full.length <= 1 && !hasMembers) return undefined;
+    type Choice = { label: string; description?: string; pick: "all" | "visible" | string };
+    const choices: Choice[] = [
+      { label: "All layers", description: "draw every layer", pick: "all" },
+      { label: "Visible layers only", description: "draw each currently-visible layer", pick: "visible" },
+      ...full.map((l): Choice => ({ label: l.name, description: l.id, pick: l.id })),
+    ];
+    const picked = await vscode.window.showQuickPick(choices, { placeHolder: "Drawing layers…" });
+    if (!picked || picked.pick === "all") return undefined;
+    const names = picked.pick === "visible" ? full.filter((l) => l.visible).map((l) => l.id) : [picked.pick];
+    if (route.strategy !== "occt") {
+      void vscode.window.showErrorMessage("The layers filter in drawing exports is B-rep only in this version — mesh sources draw unfiltered.");
+      return null;
+    }
+    const { subsets, warnings } = resolveLayerDrawFilter(full, names);
+    for (const w of warnings) void vscode.window.showWarningMessage(w);
+    if (subsets.length === 0) {
+      void vscode.window.showErrorMessage("None of the picked layers matched — the drawing would be empty.");
+      return null;
+    }
+    return subsets;
+  }
+
+  /**
    * Tier 0 Phase 1: the file's own declared unit as a `DisplayUnit`
    * (`"mm"` when the format carries no unit metadata or declares an
    * unrecognized one) — the same `detectStepLengthUnit`/
@@ -4408,6 +4516,7 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
     viewState: ViewState | undefined,
     format: "svg" | "dxf" = "svg",
     annotations: Annotation[] = [],
+    layers: Layer[] = [],
     /** Produce a technical DRAWING (hidden-line removal) rather than an
      * outline. Shares this whole view/unit/save flow deliberately — the only
      * difference is what the pipeline draws. */
@@ -4438,6 +4547,8 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
     const picked = await vscode.window.showQuickPick(choices, { placeHolder: "Silhouette view…" });
     if (!picked) return; // the primary choice — Escape cancels the export
 
+    const layerFilter = await this.pickLayersFilter(layers, route);
+    if (layerFilter === null) return; // mesh source + explicit filter choice is refused inside
     const unit = await this.pickExportUnit();
     const ext = format;
     const filterLabel = format === "dxf" ? "DXF Drawing" : "SVG Drawing";
@@ -4465,6 +4576,7 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
           format,
           annotations,
           hiddenLines,
+          ...(layerFilter ? { layerFilter } : {}),
         });
         for (const warning of result.warnings) post({ type: "status", text: warning });
         const content = format === "dxf" ? (result.dxf ?? result.svg) : result.svg;
@@ -4490,6 +4602,7 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
     post: (msg: HostToWebview) => void,
     ops: EditOp[],
     annotations: Annotation[],
+    layers: Layer[],
     bakedThrough: number
   ): Promise<void> {
     if (route.strategy !== "occt" && !COMPARABLE_MESH_FORMATS.has(route.format)) {
@@ -4512,6 +4625,7 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
       defaultTitle: name,
       initial: this.lastSheetSettings,
       templates: mergedTemplates,
+      layers: layers.map((l) => ({ id: l.id, name: l.name })),
       saveTemplate: async (settings) => {
         const templateName = (await vscode.window.showInputBox({ prompt: "Template name", placeHolder: "e.g. company-a3" }))?.trim();
         if (!templateName) return undefined;
@@ -4532,6 +4646,23 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
     }
     for (const w of settings.warnings) post({ type: "status", text: w });
     const format = settings.format;
+    // Layers checkboxes resolve against this session's layers (roadmap
+    // "Layers, distinct from Parts", second increment) — the same
+    // `resolveLayerDrawFilter` the MCP tool uses, so both paths agree.
+    let sheetLayerFilter: LayerDrawSubset[] | undefined;
+    if (settings.layers !== undefined) {
+      const resolved = resolveLayerDrawFilter(layers, settings.layers);
+      for (const w of resolved.warnings) post({ type: "status", text: w });
+      if (resolved.subsets.length === 0) {
+        post({ type: "error", message: "None of the checked layers matched — the sheet would be empty." });
+        return;
+      }
+      if (route.strategy !== "occt") {
+        post({ type: "error", message: "The layers filter in drawing exports is B-rep only in this version — mesh sources draw unfiltered." });
+        return;
+      }
+      sheetLayerFilter = resolved.subsets;
+    }
     await this.promptSaveAndWrite(
       uri,
       format,
@@ -4554,6 +4685,7 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
           projection: settings.projection,
           scale: settings.scale,
           annotations,
+          ...(sheetLayerFilter ? { layerFilter: sheetLayerFilter } : {}),
           title: settings.title,
           fields: settings.fields,
           date: new Date().toISOString().slice(0, 10),
@@ -4902,7 +5034,7 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
   }
 
   /**
-   * Packages the CAD source plus whichever of its parts/planes/annotations/edits/
+   * Packages the CAD source plus whichever of its parts/layers/planes/annotations/edits/
    * mesh-options sidecars exist on disk into a single `.zip` (File ▸ Save
    * Preprocess…), with a per-entry SHA-256 checksum recorded in the manifest
    * (roadmap "Archive integrity", closed). Callers must flush pending
@@ -4932,15 +5064,16 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
           return undefined;
         }
       };
-      const [source, parts, annotations, planes, edits, meshOptions] = await Promise.all([
+      const [source, parts, layers, annotations, planes, edits, meshOptions] = await Promise.all([
         vscode.workspace.fs.readFile(uri),
         readOptional(sidecarUri(uri)),
+        readOptional(layersSidecarUri(uri)),
         readOptional(annotationsSidecarUri(uri)),
         readOptional(planesSidecarUri(uri)),
         readOptional(editsSidecarUri(uri)),
         readOptional(meshOptionsSidecarUri(uri)),
       ]);
-      const zipBytes = buildPreprocessZip({ sourceName, source, parts, annotations, planes, edits, meshOptions });
+      const zipBytes = buildPreprocessZip({ sourceName, source, parts, layers, annotations, planes, edits, meshOptions });
       await vscode.workspace.fs.writeFile(saveUri, zipBytes);
       post({ type: "status", text: `Saved preprocess archive to ${saveUri.fsPath}` });
     } catch (err) {
@@ -5003,6 +5136,10 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
       await vscode.workspace.fs.writeFile(destUri, contents.source);
       if (contents.parts !== undefined) {
         await writeParts(destUri, parsePartsJson(contents.parts));
+      }
+      if (contents.layers !== undefined) {
+        const parsedLayers = parseLayersFile(contents.layers);
+        await writeLayers(destUri, parsedLayers.layers, parsedLayers.nextId);
       }
       if (contents.planes !== undefined) {
         await writePlanes(destUri, parsePlanesJson(contents.planes));

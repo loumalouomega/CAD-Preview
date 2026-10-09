@@ -20,6 +20,9 @@ import { parseDxf } from "../dxfImport";
 import { TreePanel } from "./treePanel";
 import { PartsModel } from "./partsModel";
 import { PartsPanel } from "./partsPanel";
+import { LayersModel } from "./layersModel";
+import { LayersPanel } from "./layersPanel";
+import { lockedOperandForOp } from "../layersSidecar";
 import { AnnotationsModel } from "./annotationsModel";
 import { PlanesModel } from "./planesModel";
 import { TOOLBAR_ICONS } from "../toolbarIcons";
@@ -235,6 +238,7 @@ const partsPanel = new PartsPanel(
       partsModel.assign(index, selection.list());
       selection.clear();
       previewPartIndex = null;
+      previewLayerId = null;
       renderHighlight();
     },
     onRemovePart: (index) => partsModel.remove(index),
@@ -243,6 +247,7 @@ const partsPanel = new PartsPanel(
     onRemoveEntity: (index, type, id) => partsModel.removeEntity(index, type, id),
     onSelectPart: (index) => {
       previewPartIndex = index;
+      previewLayerId = null;
       renderHighlight();
     },
     onToggleVisible: (index) => {
@@ -270,6 +275,54 @@ const partsPanel = new PartsPanel(
   },
   visibilityState
 );
+
+// ── Presentation/drawing layers ──────────────────────────────────────────
+// Same shape as Parts above, with two deliberate differences: visibility and
+// lock are PERSISTED per layer (not session-only `VisibilityState`), so the
+// onChange post carries them to the sidecar; and selecting a layer row only
+// highlights (there is no isolate/copy surface for layers).
+let previewLayerId: string | null = null;
+
+const layersModel = new LayersModel(() => {
+  // Fired on every layer mutation: persist, re-apply visibility (a hidden
+  // layer hides its members at once), re-render. Layer colour intentionally
+  // does NOT recolour the 3D view — Parts own entity colours; a layer's
+  // colour is its panel swatch and its drawing-export identity.
+  post({ type: "layersChanged", layers: layersModel.list(), nextId: layersModel.counter() });
+  applyVisibilityState();
+  layersPanel.render(layersModel.list());
+  refreshGizmoAttachment(); // a lock change can arm/disarm the gizmo target
+});
+
+const layersPanel = new LayersPanel(document.getElementById("layers-panel")!, {
+  onCreate: () => layersModel.create(),
+  onAssign: (id) => {
+    layersModel.assign(id, selection.list());
+    selection.clear();
+    previewLayerId = null;
+    previewPartIndex = null;
+    renderHighlight();
+  },
+  onRemoveLayer: (id) => {
+    if (!layersModel.remove(id)) setStatus("The default layer cannot be deleted — its members have nowhere to return to.", true);
+  },
+  onRename: (id, name) => layersModel.rename(id, name),
+  onRecolor: (id, color) => layersModel.recolor(id, color),
+  onRemoveEntity: (id, type, entityId) => layersModel.removeEntity(id, type, entityId),
+  onSelectLayer: (id) => {
+    previewLayerId = id;
+    previewPartIndex = null;
+    renderHighlight();
+  },
+  onToggleVisible: (id) => {
+    const layer = layersModel.find(id);
+    if (layer) layersModel.setVisible(id, !layer.visible);
+  },
+  onToggleLocked: (id) => {
+    const layer = layersModel.find(id);
+    if (layer) layersModel.setLocked(id, !layer.locked);
+  },
+});
 
 // ── Persisted, topology-anchored annotations (pinned measurements) ───────
 // A small list under the Measure ▾ panel — see `Annotation`'s doc comment in
@@ -799,7 +852,20 @@ function resolveVolumeObject(id: string): THREE.Object3D | null {
 function refreshGizmoAttachment(): void {
   cancelGizmoPreview();
   if (!gizmoMode || viewer.isGizmoDragging()) return;
-  const objects = selectedVolumes().map(resolveVolumeObject).filter((o): o is THREE.Object3D => o !== null);
+  const selected = selectedVolumes();
+  // Layer lock: a locked entity refuses as a Transform Gizmo target, in the
+  // host and the webview alike (roadmap "Layers, distinct from Parts"). The
+  // op-builder gate above already refuses at Apply time; refusing the attach
+  // itself keeps a locked solid from ever showing a live-dragged preview.
+  const lockedIds = layersModel.lockedEntityIds();
+  const locked = selected.find((id) => lockedIds.has(id));
+  if (locked) {
+    viewer.detachTransformGizmo();
+    const layer = layersModel.list().find((l) => [...l.volumes, ...l.surfaces, ...l.lines, ...l.points].includes(locked));
+    setStatus(`${locked} is on locked layer "${layer?.name ?? locked}" — unlock the layer to transform it.`, true);
+    return;
+  }
+  const objects = selected.map(resolveVolumeObject).filter((o): o is THREE.Object3D => o !== null);
   if (objects.length === 0) {
     viewer.detachTransformGizmo();
     return;
@@ -2050,9 +2116,21 @@ function setupThemeReactivity(): void {
 function applyVisibilityState(): void {
   const parts = partsModel.list();
   const hidden = visibilityState.hiddenPartIndices().flatMap((i) => partsModel.entitiesOf(i));
+  // Persisted layer visibility joins the session-only Part hide set: a
+  // hidden layer's members hide whatever else claims them. Under an active
+  // isolate the hidden set is filtered out of the isolated entities instead
+  // (see below), so a hidden layer stays hidden there too.
+  const hiddenLayerEntities = layersModel
+    .list()
+    .filter((l) => !l.visible)
+    .flatMap((l) => layersModel.entitiesOf(l.id));
+  const hiddenKeys = new Set(hiddenLayerEntities.map((e) => `${e.entityType}:${e.entityId}`));
   const isolated = visibilityState.isolatedPartIndex();
   const isolatedEntities = isolated !== null && isolated < parts.length ? partsModel.entitiesOf(isolated) : null;
-  viewer.applyPartVisibility(hidden, isolatedEntities);
+  viewer.applyPartVisibility(
+    [...hidden, ...hiddenLayerEntities],
+    isolatedEntities ? isolatedEntities.filter((e) => !hiddenKeys.has(`${e.entityType}:${e.entityId}`)) : isolatedEntities
+  );
   // Assembly group rows store their group id but hide descendant leaves: expand
   // here (with a `[id]` fallback when the tree hasn't loaded yet, matching the
   // toggle handler above) so one call covers leaves and groups alike.
@@ -2065,10 +2143,14 @@ function applyVisibilityState(): void {
   if (hiddenTreeLeaves.length > 0) viewer.setGroupsVisible(hiddenTreeLeaves, false);
 }
 
-/** Draws either the previewed part's entities or the working selection. */
+/** Draws either the previewed part's/layer's entities or the working selection. */
 function renderHighlight(): void {
   const entities: SelectedEntity[] =
-    previewPartIndex !== null ? partsModel.entitiesOf(previewPartIndex) : selection.list();
+    previewPartIndex !== null
+      ? partsModel.entitiesOf(previewPartIndex)
+      : previewLayerId !== null
+        ? layersModel.entitiesOf(previewLayerId)
+        : selection.list();
   viewer.renderSelection(entities);
   refreshGizmoAttachment(); // no-op unless a translate/rotate/scale form is open
   clippingControls?.reflectSelection(); // Clip ▸ Face / 3 Pts gate on the selection
@@ -2391,6 +2473,14 @@ function buildOpForPanel(id: PanelOpId, rawDraft: Record<string, unknown>): { op
     const queries = attachPendingQueries(id, res.op);
     if (queries.attached.length > 0) res.attachedQueryFields = queries.attached;
     if (queries.notes.length > 0) res.queryNote = queries.notes.join(" ");
+    // Layer lock: a locked entity refuses as an edit operand in the host and
+    // the webview alike, with a named diagnostic (roadmap "Layers, distinct
+    // from Parts"). Checked here — the single choke point preview and Apply
+    // both flow through — so the two can never disagree.
+    const locked = lockedOperandForOp(res.op, layersModel.list());
+    if (locked) {
+      return { error: `${locked.id} is on locked layer "${locked.layerName}" (${locked.layerId}) — unlock the layer to use it as an edit operand.` };
+    }
   }
   return res;
 }
@@ -5189,6 +5279,17 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
       meshingPanel.renderParts(partsModel.list());
       clashPanel.renderParts(partsModel.list().map((p) => p.name));
       refreshBomButton(); // part count may have changed (hydration, auto-create, external edit)
+      showSidebar();
+      break;
+
+    case "layers":
+      // Silent hydration (initial load, external reconciliation, or a
+      // host-side rebind after a topology-changing edit) — does not echo
+      // back as a write, same contract as "parts"/"annotations".
+      layersModel.load(msg.layers, msg.nextId);
+      layersPanel.render(layersModel.list());
+      applyVisibilityState(); // a hidden layer hides its members at once
+      refreshGizmoAttachment(); // a lock change can arm/disarm the gizmo target
       showSidebar();
       break;
 

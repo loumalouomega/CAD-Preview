@@ -18,11 +18,12 @@
 
 import { sha256Hex } from "./hash";
 
-export type SidecarKind = "edits" | "parts" | "planes" | "annotations" | "mesh";
+export type SidecarKind = "edits" | "parts" | "layers" | "planes" | "annotations" | "mesh";
 
 export const SIDECAR_KIND_LABELS: Record<SidecarKind, string> = {
   edits: "Edits",
   parts: "Parts",
+  layers: "Layers",
   planes: "Construction planes",
   annotations: "Annotations",
   mesh: "Mesh options",
@@ -114,6 +115,7 @@ export interface ConflictSides {
 const NOUNS: Record<SidecarKind, [string, string]> = {
   edits: ["op", "ops"],
   parts: ["part", "parts"],
+  layers: ["layer", "layers"],
   planes: ["plane", "planes"],
   annotations: ["annotation", "annotations"],
   mesh: ["setting", "settings"],

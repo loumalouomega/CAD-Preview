@@ -200,6 +200,56 @@ async function runRow(row, seedPath) {
       if (!(rel < 1e-6)) return { status: "FAIL", stage, detail: `volume ${mass.volume} ≠ ${corpus.seedVolume}` };
       return { status: "PASS", stage, detail: `volume ${mass.volume.toFixed(6)}` };
     }
+    if (row.check === "layers") {
+      // Layers round trip on the seed model (block.stp: 1 solid, 6 faces):
+      // create + assign + get_state, a filtered drawing export restricted to
+      // one face, and the separation proof (parts/mass untouched).
+      const file = stageFixture({ id: row.id, fixture: corpus.seed });
+      stage = "tools";
+      const made = await call("set_layer", { path: file, name: "Dims", color: "#ff0000" });
+      if (made.layer?.id !== "layer-1") return { status: "FAIL", stage, detail: `set_layer id ${made.layer?.id} ≠ layer-1` };
+      const loaded = await call("load_model", { path: file });
+      const face0 = loaded?.solids?.[0]?.faceIds?.[0];
+      if (!face0) return { status: "FAIL", stage, detail: "no face to assign" };
+      await call("assign_layer", { path: file, id: "layer-1", surfaces: [face0] });
+      const state = await call("get_state", { path: file });
+      if (state.layers?.length !== 2 || state.layers[1]?.surfaces?.[0] !== face0)
+        return { status: "FAIL", stage, detail: "get_state layers mismatch" };
+      stage = "draw";
+      const out = path.join(dir, row.id, "one.svg");
+      const one = await call("export_svg_silhouette", { path: file, outputPath: out, view: "FRONT", layers: ["Dims"] });
+      const full = await call("export_svg_silhouette", { path: file, outputPath: path.join(dir, row.id, "full.svg"), view: "FRONT" });
+      // A single box face in FRONT draws exactly the 4-segment square outline
+      // (its boundary IS the silhouette) — equality here is correct, not a
+      // loss: the subset keeps every boundary edge via the single-triangle rule.
+      if (!(one.segmentCount <= full.segmentCount))
+        return { status: "FAIL", stage, detail: `filtered ${one.segmentCount} > full ${full.segmentCount}` };
+      const text = fs.readFileSync(out, "utf8");
+      if (!text.includes('<g id="layer-1">')) return { status: "FAIL", stage, detail: "no layer group in SVG" };
+      stage = "separate";
+      const mass = await call("get_mass_properties", { path: file });
+      const rel = Math.abs(mass.volume - corpus.seedVolume) / corpus.seedVolume;
+      if (!(rel < 1e-6)) return { status: "FAIL", stage, detail: `volume ${mass.volume} ≠ ${corpus.seedVolume}` };
+      return { status: "PASS", stage, detail: `${one.segmentCount}/${full.segmentCount} segs, volume ${mass.volume}` };
+    }
+    if (row.check === "layersDxf") {
+      // The DXF half of the drawing filter: a LAYER table plus a collision
+      // prefix for a user layer named like a reserved one.
+      const file = stageFixture({ id: row.id, fixture: corpus.seed });
+      stage = "tools";
+      await call("set_layer", { path: file, name: "HIDDEN" });
+      const loaded = await call("load_model", { path: file });
+      const face0 = loaded?.solids?.[0]?.faceIds?.[0];
+      if (!face0) return { status: "FAIL", stage, detail: "no face to assign" };
+      await call("assign_layer", { path: file, id: "layer-1", surfaces: [face0] });
+      stage = "draw";
+      const out = path.join(dir, row.id, "one.dxf");
+      await call("export_svg_silhouette", { path: file, outputPath: out, view: "FRONT", format: "dxf", layers: ["HIDDEN"] });
+      const text = fs.readFileSync(out, "utf8");
+      if (!text.includes("TABLES") || !text.includes("LAYER")) return { status: "FAIL", stage, detail: "no LAYER table" };
+      if (!text.includes("LAYER_HIDDEN")) return { status: "FAIL", stage, detail: "no collision prefix" };
+      return { status: "PASS", stage, detail: "LAYER table + LAYER_HIDDEN" };
+    }
     return { status: "FAIL", stage, detail: `unknown check ${row.check}` };
   } catch (err) {
     return { status: "FAIL", stage, detail: (err instanceof Error ? err.message : String(err)).split("\n")[0].slice(0, 200) };

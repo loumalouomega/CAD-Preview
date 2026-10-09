@@ -26,6 +26,7 @@
 
 import { getOcct, readShape, wrapOcctFault } from "./occtService";
 import { applyEditsBRep } from "./occtOperations";
+import { enumerateEdges } from "./edgeEnumeration";
 import { tessellateByGroup } from "./meshExtract";
 import { tessellationParamsFor, type TessellationQuality } from "./tessellationQuality";
 import { weldTriangleSoup, type WeldedMesh } from "./meshComponents";
@@ -34,8 +35,9 @@ import { parseObj } from "./objParser";
 import { parsePly } from "./plyParser";
 import { parseGltf } from "./gltfParser";
 import { silhouetteEdges } from "./silhouetteEdges";
-import { silhouetteSvg, scalePositions, type Vec3, type DimensionSource } from "./svgSilhouette";
-import { silhouetteDxf, polylinesDxf } from "./dxfSilhouette";
+import { silhouetteSvg, layeredSilhouetteSvg, scalePositions, type Vec3, type DimensionSource } from "./svgSilhouette";
+import { silhouetteDxf, polylinesDxf, layeredDxf } from "./dxfSilhouette";
+import type { LayerDrawSubset } from "./layersSidecar";
 import { unitScaleFactor, type DisplayUnit } from "./lengthUnits";
 import type { CompareSource } from "./modelDiffHost";
 import { hiddenLineDrawing } from "./hiddenLineRemoval";
@@ -96,6 +98,14 @@ export interface SvgSilhouetteOptions {
   hiddenLines?: boolean;
   /** Crease angle for a mesh source with no face ids; see `hiddenLineRemoval.ts`. */
   creaseAngleDeg?: number;
+  /**
+   * Restrict the drawing to these layers' members (roadmap "Layers, distinct
+   * from Parts", second increment): one output group per subset. Absent = the
+   * whole model, exactly as before. B-rep sources only — a mesh source has no
+   * host-side entity correlation for its members, so the caller refuses the
+   * combination before this is ever reached.
+   */
+  layerFilter?: LayerDrawSubset[];
 }
 
 export interface SvgSilhouetteResult {
@@ -131,7 +141,7 @@ function weldedMeshFromTessellation(
   oc: any,
   shape: any,
   quality: TessellationQuality
-): { mesh: WeldedMesh; triangleFace: Uint32Array } {
+): { mesh: WeldedMesh; triangleFace: Uint32Array; triangleFaceId: string[]; triangleGroupId: string[] } {
   const groups = tessellateByGroup(oc, shape, tessellationParamsFor(quality));
   const soup: number[] = [];
   // Which OCCT face each triangle came from. Welding maps VERTICES but
@@ -140,6 +150,13 @@ function weldedMeshFromTessellation(
   // dihedral threshold, which cannot distinguish a real edge from a tessellation
   // facet on a curved surface.
   const triangleFace: number[] = [];
+  // The same, as stable `face-N` / `solid-N` entity ids (the groups
+  // `tessellateByGroup` returns already carry them — see `FaceMesh.faceId`
+  // and the per-solid group ids). Lets a drawing export restrict itself to a
+  // layer's members (roadmap "Layers, distinct from Parts") without
+  // re-deriving any numbering.
+  const triangleFaceId: string[] = [];
+  const triangleGroupId: string[] = [];
   let faceOrdinal = 0;
   for (const group of groups) {
     for (const face of group.faces) {
@@ -149,10 +166,15 @@ function weldedMeshFromTessellation(
         soup.push(positions[v], positions[v + 1], positions[v + 2]);
         if (i % 3 === 0) triangleFace.push(faceOrdinal);
       }
+      const tris = Math.floor(indices.length / 3);
+      for (let t = 0; t < tris; t++) {
+        triangleFaceId.push(face.faceId);
+        triangleGroupId.push(group.id);
+      }
       faceOrdinal++;
     }
   }
-  return { mesh: weldTriangleSoup(new Float32Array(soup)), triangleFace: new Uint32Array(triangleFace) };
+  return { mesh: weldTriangleSoup(new Float32Array(soup)), triangleFace: new Uint32Array(triangleFace), triangleFaceId, triangleGroupId };
 }
 
 function meshFromSource(source: CompareSource): WeldedMesh {
@@ -205,9 +227,153 @@ export async function exportSvgSilhouette(
   const warnings: string[] = [];
   const factor = unitScaleFactor(options.unit ?? "mm");
 
-  const render = (mesh: WeldedMesh, triangleFace?: Uint32Array): SvgSilhouetteResult => {
+  const render = (
+    mesh: WeldedMesh,
+    triangleFace?: Uint32Array,
+    triangleFaceId?: string[],
+    triangleGroupId?: string[],
+    edgeLines?: Array<{ id: string; positions: Float32Array }>
+  ): SvgSilhouetteResult => {
     const positions = scalePositions(mesh.positions, factor);
     const triangleCount = Math.floor(mesh.indices.length / 3);
+    /**
+     * Layer-restricted drawing (roadmap "Layers, distinct from Parts", second
+     * increment): one extraction per included layer over that layer's
+     * triangle subset, plus its member edges' own projected polylines — then
+     * one grouped document. B-rep only: a mesh source has no host-side
+     * entity correlation, so the caller refuses that combination first and
+     * this throws as a backstop rather than drawing something unfiltered.
+     */
+    const renderFiltered = (
+      indices: Uint32Array,
+      faceIds: string[],
+      groupIds: string[],
+      lines: Array<{ id: string; positions: Float32Array }>
+    ): SvgSilhouetteResult => {
+      const subsets = options.layerFilter ?? [];
+      if (source.kind !== "brep") {
+        throw new Error("Layer filtering in drawing exports is B-rep only in this version — mesh sources draw unfiltered.");
+      }
+      const knownFaces = new Set(faceIds);
+      const knownGroups = new Set(groupIds);
+      const edgeById = new Map(lines.map((e) => [e.id, e.positions]));
+      const basis = viewBasis(options.direction, options.up);
+      const projectPt = (x: number, y: number, z: number): [number, number] | null => {
+        const px = x * basis.right[0] + y * basis.right[1] + z * basis.right[2];
+        const py = -(x * basis.up[0] + y * basis.up[1] + z * basis.up[2]);
+        return Number.isFinite(px) && Number.isFinite(py) ? [px, py] : null;
+      };
+      const seenWarnings = new Set<string>();
+      const groups: LayerDrawingGroup[] = subsets.map((sub) => {
+        const faces = new Set(sub.faces);
+        const volumes = new Set(sub.volumes);
+        const kept: number[] = [];
+        const keptFace: number[] = [];
+        for (let t = 0; t * 3 + 2 < indices.length; t++) {
+          if (faces.has(faceIds[t]) || volumes.has(groupIds[t])) {
+            kept.push(indices[t * 3], indices[t * 3 + 1], indices[t * 3 + 2]);
+            keptFace.push(triangleFace?.[t] ?? 0);
+          }
+        }
+        const subIndices = new Uint32Array(kept);
+        const subFace = new Uint32Array(keptFace);
+        // Members that resolve to nothing are reported, never silently
+        // dropped into an empty group without explanation.
+        for (const id of [...sub.faces, ...sub.volumes]) {
+          if (!knownFaces.has(id) && !knownGroups.has(id)) {
+            const w = `Layer "${sub.name}" names ${id}, which resolves to no face or solid in this model — skipped.`;
+            if (!seenWarnings.has(w)) {
+              seenWarnings.add(w);
+              warnings.push(w);
+            }
+          }
+        }
+        let visible: Array<[[number, number], [number, number]]> = [];
+        let hidden: Array<[[number, number], [number, number]]> = [];
+        if (options.hiddenLines) {
+          const drawing = hiddenLineDrawing({ positions, indices: subIndices, triangleFace: subFace }, basis, {
+            creaseAngleDeg: options.creaseAngleDeg,
+            tangentAngleDeg: tangentAngleForQuality(options.quality ?? "fine"),
+          });
+          for (const w of drawing.warnings) {
+            if (!seenWarnings.has(w)) {
+              seenWarnings.add(w);
+              warnings.push(w);
+            }
+          }
+          visible = drawing.visible;
+          hidden = drawing.hidden;
+        } else if (subIndices.length > 0) {
+          for (const [a, b] of silhouetteEdges(positions, subIndices, options.direction)) {
+            const pa = projectPt(positions[a * 3], positions[a * 3 + 1], positions[a * 3 + 2]);
+            const pb = projectPt(positions[b * 3], positions[b * 3 + 1], positions[b * 3 + 2]);
+            if (pa && pb) visible.push([pa, pb]);
+          }
+        }
+        // Member edges draw as their own projected polylines — triangle
+        // adjacency only yields face boundaries, never a lone edge.
+        for (const id of sub.edges) {
+          const poly = edgeById.get(id);
+          if (!poly) {
+            const w = `Layer "${sub.name}" names ${id}, which resolves to no edge in this model — skipped.`;
+            if (!seenWarnings.has(w)) {
+              seenWarnings.add(w);
+              warnings.push(w);
+            }
+            continue;
+          }
+          const scaled = scalePositions(poly, factor);
+          let prev: [number, number] | null = null;
+          for (let i = 0; i + 2 < scaled.length; i += 3) {
+            const p = projectPt(scaled[i], scaled[i + 1], scaled[i + 2]);
+            if (!p) {
+              prev = null;
+              continue;
+            }
+            if (prev) visible.push([prev, p]);
+            prev = p;
+          }
+        }
+        if (visible.length === 0 && hidden.length === 0) {
+          warnings.push(`Layer "${sub.name}" produced no drawable geometry — drawn as an empty group.`);
+        }
+        return { id: sub.id, name: sub.name, color: sub.color, visible, hidden };
+      });
+      const view = { direction: options.direction, up: options.up };
+      const dimensionScaleHint = options.annotations?.length ? diagonalOf(positions) : undefined;
+      const shared = {
+        title: options.title,
+        annotations: options.annotations,
+        dimensionScaleHint,
+      };
+      if (options.format === "dxf") {
+        const r = layeredDxf(
+          groups.map((g) => ({ name: g.name, color: g.color, segments: g.visible, hiddenSegments: g.hidden })),
+          view,
+          shared
+        );
+        return {
+          svg: r.dxf, dxf: r.dxf,
+          segmentCount: r.segmentCount, hiddenSegmentCount: groups.reduce((n, g) => n + g.hidden.length, 0),
+          triangleCount, warnings,
+          chainCount: r.chainCount, lineCount: r.lineCount,
+          ...(r.dimensionCount !== undefined ? { dimensionCount: r.dimensionCount } : {}),
+        };
+      }
+      const r = layeredSilhouetteSvg(
+        groups.map((g) => ({ id: g.id, segments: g.visible, hiddenSegments: options.hiddenLines ? g.hidden : undefined })),
+        view,
+        { ...shared, strokeWidth: options.strokeWidth }
+      );
+      return {
+        svg: r.svg, segmentCount: r.segmentCount, hiddenSegmentCount: groups.reduce((n, g) => n + g.hidden.length, 0),
+        triangleCount, warnings,
+        ...(r.dimensionCount !== undefined ? { dimensionCount: r.dimensionCount } : {}),
+      };
+    };
+    if (options.layerFilter && options.layerFilter.length > 0) {
+      return renderFiltered(mesh.indices, triangleFaceId ?? [], triangleGroupId ?? [], edgeLines ?? []);
+    }
     const dimensionScaleHintHL = options.annotations?.length ? diagonalOf(positions) : undefined;
 
     if (options.hiddenLines) {
@@ -276,8 +442,17 @@ export async function exportSvgSilhouette(
     return { svg, segmentCount, triangleCount, warnings, ...(dimensionCount !== undefined ? { dimensionCount } : {}) };
   };
 
-  const { mesh, triangleFace } = await loadDrawingMesh(extensionPath, source, options.quality ?? "fine");
-  return render(mesh, triangleFace);
+  const { mesh, triangleFace, triangleFaceId, triangleGroupId, edgeLines } = await loadDrawingMesh(extensionPath, source, options.quality ?? "fine");
+  return render(mesh, triangleFace, triangleFaceId, triangleGroupId, edgeLines);
+}
+
+/** One included layer's drawing runs, in the export's own 2D frame. */
+export interface LayerDrawingGroup {
+  id: string;
+  name: string;
+  color: string;
+  visible: Array<[[number, number], [number, number]]>;
+  hidden: Array<[[number, number], [number, number]]>;
 }
 
 /**
@@ -287,12 +462,24 @@ export async function exportSvgSilhouette(
  *
  * The returned arrays are ordinary JS typed arrays (the weld copies out of the
  * tessellation), so they stay valid after the OCCT handles are freed below.
+ *
+ * For a B-rep source this also returns the per-triangle owning `face-N` /
+ * group ids (the groups `tessellateByGroup` returns already carry them) and
+ * the discretized edge polylines in `edge-N` order (see `enumerateEdges`) —
+ * which is what lets a drawing export restrict itself to a layer's members
+ * (roadmap "Layers, distinct from Parts") without re-deriving any numbering.
  */
 async function loadDrawingMesh(
   extensionPath: string,
   source: CompareSource,
   quality: TessellationQuality
-): Promise<{ mesh: WeldedMesh; triangleFace?: Uint32Array }> {
+): Promise<{
+  mesh: WeldedMesh;
+  triangleFace?: Uint32Array;
+  triangleFaceId?: string[];
+  triangleGroupId?: string[];
+  edgeLines?: Array<{ id: string; positions: Float32Array }>;
+}> {
   if (source.kind !== "brep") return { mesh: meshFromSource(source) };
 
   const oc = await getOcct(extensionPath);
@@ -304,7 +491,12 @@ async function loadDrawingMesh(
   try {
     const baseShape = readShape(oc, tmpName, source.format, cleanup);
     const shape = applyEditsBRep(oc, baseShape, source.ops, cleanup);
-    return weldedMeshFromTessellation(oc, shape, quality);
+    const tessellated = weldedMeshFromTessellation(oc, shape, quality);
+    // Edge discretization in `edge-N` order — `enumerateEdges` is the same
+    // shared enumerator the viewer and every op-resolution path use, so index
+    // `i` IS `edge-i`.
+    const edgeLines = enumerateEdges(oc, shape, cleanup).map((e, i) => ({ id: `edge-${i}`, positions: e.positions }));
+    return { ...tessellated, edgeLines };
   } catch (err) {
     throw wrapOcctFault(err);
   } finally {
@@ -338,6 +530,12 @@ export interface DrawingSheetOptions {
   /** Technical drawing (default) or outline-only views. */
   hiddenLines?: boolean;
   creaseAngleDeg?: number;
+  /**
+   * Restrict every view to these layers' members (roadmap "Layers, distinct
+   * from Parts", second increment): one group per layer inside each view.
+   * Absent = the whole model, exactly as before. B-rep sources only.
+   */
+  layerFilter?: LayerDrawSubset[];
   paper?: PaperSize;
   projection?: ProjectionMethod;
   /** Sheet mm per model mm; overrides the standard-scale search. */
@@ -382,10 +580,14 @@ export async function exportDrawingSheet(
   const warnings: string[] = [];
   if (options.views.length === 0) throw new Error("A drawing sheet needs at least one view.");
   const quality = options.quality ?? "fine";
-  const { mesh, triangleFace } = await loadDrawingMesh(extensionPath, source, quality);
+  const { mesh, triangleFace, triangleFaceId, triangleGroupId, edgeLines } = await loadDrawingMesh(extensionPath, source, quality);
   const positions = mesh.positions;
   const triangleCount = Math.floor(mesh.indices.length / 3);
   if (triangleCount === 0) warnings.push("The source produced no triangles — the sheet is empty.");
+  const layerFilter = options.layerFilter ?? [];
+  if (layerFilter.length > 0 && source.kind !== "brep") {
+    throw new Error("Layer filtering in drawing exports is B-rep only in this version — mesh sources draw unfiltered.");
+  }
 
   const annotations = options.annotations ?? [];
   const assignment = assignDimensionsToViews(annotations, options.views);
@@ -394,12 +596,20 @@ export async function exportDrawingSheet(
 
   const inputs: SheetViewInput[] = [];
   const seen = new Set<string>();
-  options.views.forEach((view, i) => {
-    const basis = viewBasis(view.direction, view.up);
-    let visible: SheetViewInput["visible"];
-    let hidden: SheetViewInput["hidden"] = [];
+  const edgeById = new Map((edgeLines ?? []).map((e) => [e.id, e.positions]));
+  /** Visible/hidden 2D runs of one triangle subset (plus owned edge polylines)
+   * in one view — shared by the flat path and each filtered layer below. */
+  const runsFor = (
+    indices: Uint32Array,
+    face: Uint32Array | undefined,
+    basis: ReturnType<typeof viewBasis>,
+    direction: Vec3,
+    extraEdges: string[]
+  ): { visible: Array<[[number, number], [number, number]]>; hidden: Array<[[number, number], [number, number]]> } => {
+    let visible: Array<[[number, number], [number, number]]> = [];
+    let hidden: Array<[[number, number], [number, number]]> = [];
     if (hiddenLines) {
-      const drawing = hiddenLineDrawing({ positions, indices: mesh.indices, triangleFace }, basis, {
+      const drawing = hiddenLineDrawing({ positions, indices, triangleFace: face }, basis, {
         creaseAngleDeg: options.creaseAngleDeg,
         tangentAngleDeg: tangentAngleForQuality(quality),
       });
@@ -410,7 +620,6 @@ export async function exportDrawingSheet(
       visible = drawing.visible;
       hidden = drawing.hidden;
     } else {
-      visible = [];
       const p = (v: number): [number, number] => {
         const x = positions[v * 3], y = positions[v * 3 + 1], z = positions[v * 3 + 2];
         return [
@@ -418,17 +627,73 @@ export async function exportDrawingSheet(
           -(x * basis.up[0] + y * basis.up[1] + z * basis.up[2]),
         ];
       };
-      for (const [a, b] of silhouetteEdges(positions, mesh.indices, view.direction)) {
+      for (const [a, b] of silhouetteEdges(positions, indices, direction)) {
         const pa = p(a), pb = p(b);
         if ([...pa, ...pb].every(Number.isFinite)) visible.push([pa, pb]);
       }
     }
+    // Member edges draw as their own projected polylines (same rule as the
+    // single-view filtered path above).
+    for (const id of extraEdges) {
+      const poly = edgeById.get(id);
+      if (!poly) continue;
+      let prev: [number, number] | null = null;
+      for (let i = 0; i + 2 < poly.length; i += 3) {
+        const q: [number, number] = [
+          poly[i] * basis.right[0] + poly[i + 1] * basis.right[1] + poly[i + 2] * basis.right[2],
+          -(poly[i] * basis.up[0] + poly[i + 1] * basis.up[1] + poly[i + 2] * basis.up[2]),
+        ];
+        if (!Number.isFinite(q[0]) || !Number.isFinite(q[1])) {
+          prev = null;
+          continue;
+        }
+        if (prev) visible.push([prev, q]);
+        prev = q;
+      }
+    }
+    return { visible, hidden };
+  };
+  /** Triangle subset (indices + face ordinals) for one layer's members. */
+  const subsetFor = (sub: LayerDrawSubset): { indices: Uint32Array; face: Uint32Array } => {
+    const faces = new Set(sub.faces);
+    const volumes = new Set(sub.volumes);
+    const kept: number[] = [];
+    const keptFace: number[] = [];
+    const ids = triangleFaceId ?? [];
+    const groups = triangleGroupId ?? [];
+    for (let t = 0; t * 3 + 2 < mesh.indices.length; t++) {
+      if (faces.has(ids[t]) || volumes.has(groups[t])) {
+        kept.push(mesh.indices[t * 3], mesh.indices[t * 3 + 1], mesh.indices[t * 3 + 2]);
+        keptFace.push(triangleFace?.[t] ?? 0);
+      }
+    }
+    return { indices: new Uint32Array(kept), face: new Uint32Array(keptFace) };
+  };
+  options.views.forEach((view, i) => {
+    const basis = viewBasis(view.direction, view.up);
     const subset = assignment[i].map((ai) => annotations[ai]);
+    if (layerFilter.length > 0) {
+      const layerGroups = layerFilter.map((sub) => {
+        const { indices, face } = subsetFor(sub);
+        const runs = runsFor(indices, face, basis, view.direction, sub.edges);
+        return { id: sub.id, name: sub.name, color: sub.color, visible: runs.visible, hidden: runs.hidden };
+      });
+      inputs.push({
+        name: view.name,
+        direction: view.direction,
+        visible: [],
+        hidden: [],
+        layerGroups,
+        ...(subset.length > 0 ? { dimensions: dimensionDrawings(subset, view, glyphScale) } : {}),
+      });
+      return;
+    }
+    const runs = runsFor(mesh.indices, triangleFace, basis, view.direction, []);
     inputs.push({
       name: view.name,
       direction: view.direction,
-      visible,
-      hidden,
+      visible: runs.visible,
+      hidden: runs.hidden,
       ...(subset.length > 0 ? { dimensions: dimensionDrawings(subset, view, glyphScale) } : {}),
     });
   });
@@ -457,8 +722,8 @@ export async function exportDrawingSheet(
     projection: layout.projection,
     views: layout.views.map((v) => ({
       name: v.name,
-      segmentCount: v.visible.length,
-      hiddenSegmentCount: v.hidden.length,
+      segmentCount: v.visible.length + (v.layerGroups ?? []).reduce((n, g) => n + g.visible.length, 0),
+      hiddenSegmentCount: v.hidden.length + (v.layerGroups ?? []).reduce((n, g) => n + g.hidden.length, 0),
       dimensionCount: v.dimensions?.drawings.length ?? 0,
     })),
     triangleCount,

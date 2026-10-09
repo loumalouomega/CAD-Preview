@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { viewBasis, silhouetteSvg, polylinesSvg, scalePositions, technicalDrawingSvg} from "./svgSilhouette";
+import { viewBasis, silhouetteSvg, layeredSilhouetteSvg, polylinesSvg, scalePositions, technicalDrawingSvg} from "./svgSilhouette";
 import { parseSvgPaths } from "./svgImport";
 import { silhouetteEdges } from "./silhouetteEdges";
 import { weldTriangleSoup } from "./meshComponents";
@@ -332,5 +332,45 @@ describe("technicalDrawingSvg", () => {
 
   it("omits hiddenSegmentCount entirely when no hidden list was supplied", () => {
     expect(silhouetteSvg(new Float32Array([0, 0, 0, 1, 0, 0]), [[0, 1]], view).hiddenSegmentCount).toBeUndefined();
+  });
+});
+
+describe("layeredSilhouetteSvg", () => {
+  const view = { direction: [0, 0, 1] as [number, number, number] };
+  const seg = (a: [number, number], b: [number, number]): [[number, number], [number, number]] => [a, b];
+
+  it("emits one <g> group per layer instead of the flat paths", () => {
+    const r = layeredSilhouetteSvg(
+      [
+        { id: "layer-0", segments: [seg([0, 0], [10, 0])] },
+        { id: "layer-1", segments: [seg([0, 5], [10, 5])], hiddenSegments: [seg([0, 6], [10, 6])] },
+      ],
+      view
+    );
+    expect(r.svg).toMatch(/<g id="layer-0">/);
+    expect(r.svg).toMatch(/<g id="layer-1">/);
+    expect(r.svg).toMatch(/stroke-dasharray="[^"]+"/); // the hidden run rides its own group
+    expect(r.segmentCount).toBe(2);
+    expect(r.hiddenSegmentCount).toBe(1);
+  });
+
+  it("bounds union every group, and an empty group still emits its <g>", () => {
+    const r = layeredSilhouetteSvg(
+      [
+        { id: "layer-0", segments: [seg([0, 0], [1, 0])] },
+        { id: "layer-1", segments: [] },
+      ],
+      view
+    );
+    expect(r.svg).toMatch(/<g id="layer-1"><path[^>]*d=""\/><\/g>/);
+    const widthOf = (svg: string) => Number(/width="([\d.]+)mm"/.exec(svg)![1]);
+    const wide = layeredSilhouetteSvg(
+      [
+        { id: "layer-0", segments: [seg([0, 0], [1, 0])] },
+        { id: "layer-1", segments: [seg([0, 0], [50, 0])] },
+      ],
+      view
+    );
+    expect(widthOf(wide.svg)).toBeGreaterThan(widthOf(r.svg));
   });
 });

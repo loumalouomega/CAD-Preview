@@ -290,8 +290,8 @@ try {
   assert(capsText.length > 100, "resources/read cad-preview://capabilities returns JSON text");
 
   const tools = (await request("tools/list", {})).tools.map((t) => t.name);
-  assert(tools.length === 71, `tools/list exposes 71 tools (got ${tools.length}: ${tools.join(", ")})`);
-  for (const t of ["list_workspace_models", "check_interference_all", "generate_bom", "generate_hole_table", "render_ops_prefix", "check_tolerance", "inspect_meshio_fields", "pin_annotation", "import_svg", "save_mesh_preset", "list_mesh_presets", "apply_mesh_preset", "compare_mesh_refinement", "export_tessellated_stl", "estimate_mesh_budget", "analyze_passages", "measure_mesh_deviation", "save_sheet_template", "list_sheet_templates", "batch_export", "check_handoff_manifest", "generate_prep_report", "job_status", "job_cancel", "check_brep_health", "list_scad_parameters", "convert_scad"]) {
+  assert(tools.length === 74, `tools/list exposes 74 tools (got ${tools.length}: ${tools.join(", ")})`);
+  for (const t of ["list_workspace_models", "check_interference_all", "generate_bom", "generate_hole_table", "render_ops_prefix", "check_tolerance", "inspect_meshio_fields", "pin_annotation", "import_svg", "save_mesh_preset", "list_mesh_presets", "apply_mesh_preset", "compare_mesh_refinement", "export_tessellated_stl", "estimate_mesh_budget", "analyze_passages", "measure_mesh_deviation", "save_sheet_template", "list_sheet_templates", "batch_export", "check_handoff_manifest", "generate_prep_report", "job_status", "job_cancel", "check_brep_health", "list_scad_parameters", "convert_scad", "list_layers", "set_layer", "assign_layer"]) {
     assert(tools.includes(t), `tools/list exposes ${t}`);
   }
 
@@ -5316,6 +5316,186 @@ try {
   });
   assert(planeExtrude.applied === 1, `a plane-authored sketch extrudes (got ${planeExtrude.applied}/1)`);
 
+  // ── Layers, distinct from Parts (roadmap 2.8) — sidecar CRUD, lock
+  // refusal, rebind, Parts/mesh/mass separation, and the drawing filter,
+  // each against the live pipeline on throwaway copies (plus one shared-model
+  // layer so the preprocess section below covers the seventh sidecar).
+  const layerModel = path.join(dir, "bull-for-layers.stp");
+  fs.copyFileSync(path.join(ROOT, "examples", "STP", "bull.stp"), layerModel);
+  const listed0 = await call("list_layers", { path: layerModel });
+  assert(
+    listed0.layers.length === 1 && listed0.layers[0].id === "layer-0" && listed0.layers[0].name === "Default",
+    `list_layers reports the implicit default with no sidecar (got ${JSON.stringify(listed0.layers)})`
+  );
+  const madeLayer = await call("set_layer", { path: layerModel, name: "Dims", color: "#ff0000" });
+  assert(madeLayer.layer.id === "layer-1", `set_layer creates layer-1 beside the materialized default (got ${madeLayer.layer.id})`);
+  const layerAdd = await call("apply_edit_ops", {
+    path: layerModel,
+    ops: [{ op: "addBox", center: [bbox.max[0] + 3 * s, 0, 0], size: [s, s, s] }],
+  });
+  const layerBox = layerAdd.model.solids[layerAdd.model.solids.length - 1];
+  const layerTarget = layerBox.faceIds[0];
+  const layerBefore = await call("inspect", { path: layerModel, entityId: layerTarget });
+  await call("assign_layer", { path: layerModel, id: "layer-1", surfaces: [layerTarget] });
+  await call("set_layer", { path: layerModel, id: "layer-1", locked: true });
+  const layerState = await call("get_state", { path: layerModel });
+  assert(
+    layerState.layers.length === 2 && layerState.layers[1].surfaces.join() === layerTarget && layerState.layers[1].locked === true,
+    `get_state reflects the locked layer and its member (got ${JSON.stringify(layerState.layers)})`
+  );
+  // Reopen agreement: the sidecar file carries exactly what get_state reported.
+  const layerSidecar = JSON.parse(fs.readFileSync(`${layerModel}.layers.json`, "utf8"));
+  assert(
+    JSON.stringify(layerSidecar.layers) === JSON.stringify(layerState.layers) && layerSidecar.nextId === 2,
+    `the sidecar agrees with get_state and carries the allocation counter (got nextId=${layerSidecar.nextId})`
+  );
+  // A locked member refuses as an edit operand with a named diagnostic, from
+  // apply_edit_ops alike — and the refused op never persists.
+  const lockedAttempt = await callTolerant("apply_edit_ops", {
+    path: layerModel,
+    ops: [{ op: "defeature", faces: [layerTarget] }],
+  });
+  assert(
+    lockedAttempt.value?.report?.[0]?.accepted === false && /locked layer "Dims" \(layer-1\)/.test(lockedAttempt.value.report[0].reason ?? ""),
+    `a locked member is refused with a named diagnostic (got: ${JSON.stringify(lockedAttempt)})`
+  );
+  assert(
+    (await call("get_state", { path: layerModel })).edits.length === 1,
+    "the refused op never reaches the sidecar"
+  );
+  // Rebind across a topology change: the same detached-box + bull-fillet
+  // shape as the Parts rebind block above, but the tracked id lives on a
+  // layer. The lock must not block the unrelated fillet.
+  const layerTiny = bbox.diagonal / 5000;
+  const layerBullFaces = layerAdd.model.solids[0].faceIds.length;
+  let layerFillet = null;
+  for (let i = 0; i < 8 && !layerFillet; i++) {
+    const attempt = await callTolerant("apply_edit_ops", {
+      path: layerModel,
+      ops: [{ op: "fillet", edges: [`edge-${i}`], radius: layerTiny }],
+    });
+    if (attempt.error) continue;
+    if (attempt.value.model.solids[0].faceIds.length > layerBullFaces) layerFillet = attempt.value;
+  }
+  assert(layerFillet !== null, "found a bull edge whose fillet genuinely adds a face");
+  const layerAfter = await call("get_state", { path: layerModel });
+  const reboundLayer = layerAfter.layers.find((l) => l.id === "layer-1");
+  assert(reboundLayer && reboundLayer.surfaces.length === 1, "the layer member survived the fillet as exactly one id");
+  const reboundFacts = await call("inspect", { path: layerModel, entityId: reboundLayer.surfaces[0] });
+  const layerCentreDelta = Math.hypot(
+    reboundFacts.center[0] - layerBefore.center[0],
+    reboundFacts.center[1] - layerBefore.center[1],
+    reboundFacts.center[2] - layerBefore.center[2]
+  );
+  assert(
+    layerCentreDelta < 1e-6 && Math.abs(reboundFacts.area - layerBefore.area) < 1e-6,
+    `the rebound member is geometrically identical (centre delta ${layerCentreDelta.toExponential(2)})`
+  );
+  assert(
+    layerFillet.warnings.some((w) => /layer-member id\(s\)/.test(w)),
+    `the rebind surfaces a layer-member warning (got: ${JSON.stringify(layerFillet.warnings)})`
+  );
+  // Deleting a layer returns its members to Default and never recycles the id.
+  await call("set_layer", { path: layerModel, id: "layer-1", remove: true });
+  const afterDelete = await call("get_state", { path: layerModel });
+  assert(
+    afterDelete.layers.length === 1 && afterDelete.layers[0].surfaces.join() === reboundLayer.surfaces[0],
+    `a deleted layer's members return to Default (got ${JSON.stringify(afterDelete.layers)})`
+  );
+  const recycled = await call("set_layer", { path: layerModel, name: "Second" });
+  assert(recycled.layer.id === "layer-2", `a deleted id is never recycled (got ${recycled.layer.id})`);
+  const noDefaultDelete = await callTolerant("set_layer", { path: layerModel, id: "layer-0", remove: true });
+  assert(
+    noDefaultDelete.error && /default layer cannot be deleted/i.test(noDefaultDelete.error),
+    `the default layer refuses deletion (got: ${JSON.stringify(noDefaultDelete)})`
+  );
+  // Separation: creating/renaming/deleting layers leaves Parts, the mesh and
+  // the mass figures byte-identical — the test that keeps the two concepts
+  // apart. Fast block.stp copy for the mesh leg.
+  const layerPartsBefore = JSON.stringify((await call("get_state", { path: layerModel })).parts);
+  const layerMassBefore = await call("get_mass_properties", { path: layerModel });
+  await call("set_layer", { path: layerModel, id: "layer-2", name: "Renamed", visible: false });
+  assert(
+    JSON.stringify((await call("get_state", { path: layerModel })).parts) === layerPartsBefore,
+    "layer churn leaves every Part byte-identical"
+  );
+  assert(
+    (await call("get_mass_properties", { path: layerModel })).volume === layerMassBefore.volume,
+    "layer churn leaves the mass figures byte-identical"
+  );
+  const layerMeshModel = path.join(dir, "block-for-layers-mesh.stp");
+  fs.copyFileSync(path.join(ROOT, "examples", "STP", "block.stp"), layerMeshModel);
+  const meshBefore = await call("generate_mesh", { path: layerMeshModel, options: { sizeMax: 1 } });
+  await call("set_layer", { path: layerMeshModel, name: "Wall", locked: true });
+  const blockFaces = (await call("load_model", { path: layerMeshModel })).solids[0].faceIds;
+  await call("assign_layer", { path: layerMeshModel, id: "layer-1", surfaces: blockFaces });
+  const meshAfter = await call("generate_mesh", { path: layerMeshModel, options: { sizeMax: 1 } });
+  assert(
+    meshAfter.nodeCount === meshBefore.nodeCount && meshAfter.elementCount === meshBefore.elementCount,
+    `a hidden/locked layer is still meshed identically (nodes ${meshBefore.nodeCount}→${meshAfter.nodeCount}, elements ${meshBefore.elementCount}→${meshAfter.elementCount})`
+  );
+  // Drawing filter, cross-checked against the unrestricted export: one layer
+  // holding a single face draws strictly less, groups its output, and every
+  // restricted coordinate appears verbatim in the unrestricted drawing.
+  const drawModel = path.join(dir, "block-for-layers-draw.stp");
+  fs.copyFileSync(path.join(ROOT, "examples", "STP", "block.stp"), drawModel);
+  const drawFaces = (await call("load_model", { path: drawModel })).solids[0].faceIds;
+  assert(drawFaces.length === 6, `block.stp exposes 6 faces (got ${drawFaces.length})`);
+  await call("set_layer", { path: drawModel, name: "One" });
+  await call("assign_layer", { path: drawModel, id: "layer-1", surfaces: [drawFaces[0]] });
+  const fullSvg = await call("export_svg_silhouette", { path: drawModel, outputPath: path.join(dir, "layers-full.svg"), view: "FRONT" });
+  const oneSvg = await call("export_svg_silhouette", { path: drawModel, outputPath: path.join(dir, "layers-one.svg"), view: "FRONT", layers: ["One"] });
+  assert(!/<g id="/.test(fs.readFileSync(path.join(dir, "layers-full.svg"), "utf8")), "the unrestricted drawing has no layer groups");
+  const oneText = fs.readFileSync(path.join(dir, "layers-one.svg"), "utf8");
+  assert(/<g id="layer-1">/.test(oneText), "the restricted drawing groups its output per layer");
+  // A single box face in FRONT draws exactly the 4-segment square outline
+  // (its boundary IS the silhouette) — equality is the correct cross-check
+  // here; strict narrowing is covered by the technical-drawing total below.
+  assert(
+    oneSvg.segmentCount <= fullSvg.segmentCount,
+    `one face draws no more than the whole model (${oneSvg.segmentCount} <= ${fullSvg.segmentCount})`
+  );
+  // Cross-check on path data only (not viewBox/stroke/title): every restricted
+  // point appears in the unrestricted drawing, rounded past the adaptive
+  // decimal counts so the two extents' formatting cannot disagree.
+  const pathData = (svg) => [...svg.matchAll(/d="([^"]*)"/g)].map((m) => m[1]).join(" ");
+  const pts = (svg) => new Set((pathData(svg).match(/-?\d+\.?\d*(?:e-?\d+)? -?\d+\.?\d*(?:e-?\d+)?/g) ?? []).map((p) => p.split(" ").map((n) => Number(n).toFixed(3)).join(",")));
+  const fullPts = pts(fs.readFileSync(path.join(dir, "layers-full.svg"), "utf8"));
+  const onePts = [...pts(oneText)];
+  assert(onePts.length > 0, "the restricted drawing carries real path points");
+  assert(
+    onePts.every((p) => fullPts.has(p)),
+    "every restricted point appears verbatim in the unrestricted drawing"
+  );
+  // The same face drawn alone as a technical drawing, and as DXF with a LAYER table.
+  // A single box face has exactly 4 boundary edges (interior triangulation
+  // diagonals are dropped as agreeing), so visible + hidden is exactly 4
+  // whatever the face — analytic, and strictly narrower than the full 12.
+  const oneTech = await call("export_technical_drawing", { path: drawModel, outputPath: path.join(dir, "layers-one-tech.svg"), view: "FRONT", layers: ["One"] });
+  assert(
+    oneTech.segmentCount + (oneTech.hiddenSegmentCount ?? 0) === 4,
+    `the restricted technical drawing is exactly the face's 4 boundary edges (got ${oneTech.segmentCount} visible + ${oneTech.hiddenSegmentCount ?? 0} hidden)`
+  );
+  await call("set_layer", { path: drawModel, id: "layer-1", name: "HIDDEN" });
+  const oneDxf = await call("export_svg_silhouette", { path: drawModel, outputPath: path.join(dir, "layers-one.dxf"), view: "FRONT", format: "dxf", layers: ["HIDDEN"] });
+  const dxfText = fs.readFileSync(path.join(dir, "layers-one.dxf"), "utf8");
+  assert(/TABLES/.test(dxfText) && /LAYER/.test(dxfText), "the restricted DXF gains a LAYER table");
+  assert(/8\nLAYER_HIDDEN\n/.test(dxfText), "a colliding layer name is written with a prefix, never merged into HIDDEN");
+  assert(!/8\nHIDDEN\n/.test(dxfText), "no geometry lands on the reserved HIDDEN layer in an outline drawing");
+  assert(oneDxf.chainCount + oneDxf.lineCount > 0, "the restricted DXF carries real entities");
+  // A layer holding every face draws exactly the unrestricted count.
+  await call("assign_layer", { path: drawModel, id: "layer-1", surfaces: drawFaces });
+  const allSvg = await call("export_svg_silhouette", { path: drawModel, outputPath: path.join(dir, "layers-all.svg"), view: "FRONT", layers: ["HIDDEN"] });
+  assert(
+    allSvg.segmentCount === fullSvg.segmentCount,
+    `a layer holding every face draws the unrestricted count (${allSvg.segmentCount} === ${fullSvg.segmentCount})`
+  );
+  const unknownLayer = await callTolerant("export_svg_silhouette", { path: drawModel, outputPath: path.join(dir, "layers-nope.svg"), layers: ["nope"] });
+  assert(unknownLayer.error && /None of the named layers matched/.test(unknownLayer.error), `an all-unknown filter throws, never an empty drawing (got: ${JSON.stringify(unknownLayer)})`);
+  // One shared-model layer, so the preprocess section below covers the
+  // seventh sidecar's save/restore round trip on real state.
+  await call("set_layer", { path: model, name: "SharedDims" });
+
   // ── Item-10 ops live round trip (roadmap "Cheap thin-wrapper ops"): draft,
   // addEdgeSlot, guide (construction geometry + enforcement), midplaneFaces
   // mirror, midaxisOf pattern — each asserted against an analytically-known
@@ -5548,6 +5728,7 @@ try {
   );
   assert(!saved.included.meshOptions, "save_preprocess omits mesh options never explicitly set via set_mesh_options");
   assert(saved.included.planes, "save_preprocess includes the construction-planes sidecar");
+  assert(saved.included.layers, "save_preprocess includes the layers sidecar");
 
   const restoredDir = fs.mkdtempSync(path.join(os.tmpdir(), "cad-preview-mcp-smoke-restore-"));
   const restoredModel = path.join(restoredDir, "bull-restored.stp");
@@ -5574,6 +5755,12 @@ try {
   assert(
     restoredPlanes.planes.length === 1 && restoredPlanes.planes[0].name === "Top datum",
     `load_preprocess restores the planes sidecar with its contents (got ${JSON.stringify(restoredPlanes.planes)})`
+  );
+  assert(loaded2.restored.layers, "load_preprocess reports the layers sidecar as restored");
+  const restoredLayers = JSON.parse(fs.readFileSync(`${restoredModel}.layers.json`, "utf8"));
+  assert(
+    restoredLayers.layers.length === 2 && restoredLayers.layers[1].name === "SharedDims" && restoredLayers.nextId === 2,
+    `load_preprocess restores the layers sidecar with its contents and counter (got ${JSON.stringify(restoredLayers)})`
   );
   fs.rmSync(restoredDir, { recursive: true, force: true });
 

@@ -1883,6 +1883,91 @@ test("an edits conflict prompts, and 'Reload from disk' adopts the disk version 
   await closeAll();
 });
 
+
+test("an external layers write reconciles, a dirty layers buffer refuses the write, and a filtered export draws one group", async () => {
+  const api = await saveTestApi();
+  if (!api?.simulateWebviewMessage || !api.onDidPostMessage) return;
+  const staged = stage(STEP_FIXTURE);
+  assert(await openDocument(staged), "the STEP fixture opens for the layers round trip");
+  await sleep(1500); // let the open settle (initial fingerprints, ready hydration)
+  const layersFile = `${staged}.layers.json`;
+  const layer = (id: string, name: string) => ({ id, name, color: "#ff0000", visible: true, locked: false, volumes: [], surfaces: [], lines: [], points: [] });
+  const seen: string[] = [];
+  const sub = api.onDidPostMessage?.((m) => {
+    void seen.push(m.type === "status" ? (m as unknown as { text: string }).text : m.type);
+  });
+  try {
+    // An MCP agent's write lands the way edits/parts do — content-compared,
+    // then posted to the webview with a status line.
+    fs.writeFileSync(
+      layersFile,
+      JSON.stringify({ version: 1, source: path.basename(staged), nextId: 2, layers: [layer("layer-0", "Default"), layer("layer-1", "Dims")] })
+    );
+    assert(await waitFor(() => seen.includes("Layers updated externally"), 15000), "the external layers write is reconciled");
+  } finally {
+    sub?.dispose();
+  }
+
+  // A dirty layers buffer refuses the debounced write instead of clobbering
+  // hand-typed JSON — the same DirtyBufferError seam every other sidecar has.
+  const before = fs.readFileSync(layersFile);
+  const sidecar = vscode.Uri.file(layersFile);
+  const doc = await vscode.workspace.openTextDocument(sidecar);
+  const editor = await vscode.window.showTextDocument(doc);
+  await editor.edit((e) => e.insert(new vscode.Position(0, 0), " "));
+  assert(doc.isDirty, "the layers sidecar is open with unsaved changes");
+  const errors: string[] = [];
+  const sub2 = api.onDidPostMessage?.((m) => {
+    if (m.type === "error") errors.push((m as { message?: string }).message ?? "");
+  });
+  try {
+    await withModals([], async () => {
+      await api.simulateWebviewMessage!(vscode.Uri.file(staged), {
+        type: "layersChanged",
+        layers: [layer("layer-0", "Default"), layer("layer-1", "Renamed")],
+        nextId: 2,
+      });
+      await sleep(1500); // past the autosave debounce
+    });
+  } finally {
+    sub2?.dispose();
+  }
+  assert(fs.readFileSync(layersFile).equals(before), "the dirty buffer's disk bytes are untouched");
+  assert(errors.some((e) => /unsaved changes/i.test(e)), "the refusal names the dirty sidecar");
+  await vscode.commands.executeCommand("workbench.action.revertAndCloseActiveEditor");
+  await sleep(300);
+
+  // Filtered drawing export through the real provider (same session, so this
+  // adds no second open): the view/layers/unit picks, the save dialog, and
+  // the real kernel-worker export — the host half no webview harness can
+  // reach. block.stp is one 3×4×5 box (face-0..5).
+  //
+  // Positioned late on purpose: this suite's live-webview/kernel budget is
+  // order-sensitive (bisected — this same flow placed early deterministically
+  // starved the save/reopen block's kernel windows here, while late it is
+  // green), so young heavyweight flows live down here with the other
+  // kernel-touching tail tests rather than up front.
+  const out = path.join(path.dirname(staged), "layer-one.svg");
+  const sourceBefore = fs.readFileSync(staged);
+  const one = { id: "layer-1", name: "One", color: "#ff0000", visible: true, locked: false, volumes: [], surfaces: ["face-0"], lines: [], points: [] };
+  const none = { id: "layer-0", name: "Default", color: "#b8b8b8", visible: true, locked: false, volumes: [], surfaces: [], lines: [], points: [] };
+  await api.simulateWebviewMessage!(vscode.Uri.file(staged), { type: "layersChanged", layers: [none, one], nextId: 2 });
+  const record = await withModals([pick("Front"), pick("One"), pick("Native"), save(out)], async () => {
+    await api.simulateWebviewMessage!(vscode.Uri.file(staged), { type: "exportSvgRequest" });
+    await waitForFile(out, 120000); // a real OCCT tessellation + projection runs first
+  });
+  const layersPick = record.quickPicks.find((q) => q.placeHolder === "Drawing layers…");
+  assert(
+    layersPick !== undefined && layersPick.labels.includes("One") && layersPick.labels[0] === "All layers",
+    `the layers pick offers All layers first plus the named layer (got ${JSON.stringify(layersPick?.labels)})`
+  );
+  const svg = fs.readFileSync(out, "utf8");
+  assert(svg.includes('<g id="layer-1">'), "the filtered drawing groups its output per layer");
+  assert(!svg.includes('<g id="layer-0">'), "only the picked layer is drawn, not Default");
+  assert(Buffer.compare(sourceBefore, fs.readFileSync(staged)) === 0, "the CAD source is untouched");
+  await closeAll();
+});
+
 test("replacing the source while unsaved edits exist asks instead of silently reloading", async () => {
   const api = await saveTestApi();
   if (!api?.simulateWebviewMessage) return;

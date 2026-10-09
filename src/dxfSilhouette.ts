@@ -62,6 +62,56 @@ function dot(a: Vec3, b: Vec3): number {
   return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
 }
 
+/** DXF's reserved layer names in this writer's output. A user layer whose
+ * name collides with one of these is written with a prefix (roadmap
+ * "Layers, distinct from Parts") — silently merging it into `0` or `HIDDEN`
+ * would misattribute the geometry. */
+const RESERVED_DXF_LAYERS = new Set(["0", "HIDDEN", "DIMENSIONS", "BORDER", "TITLE"]);
+
+/**
+ * Sanitizes a user layer name for DXF: characters DXF forbids in symbol names
+ * become `_`, and a collision with a reserved layer name gains a prefix.
+ */
+export function dxfLayerName(name: string): string {
+  const clean = name.replace(/[<>/\\":;?*|=,`]/g, "_").trim() || "LAYER";
+  return RESERVED_DXF_LAYERS.has(clean.toUpperCase()) ? `LAYER_${clean}` : clean;
+}
+
+/**
+ * Nearest AutoCAD Colour Index (1–9) for a CSS hex colour — the `LAYER`
+ * table's group-62 value. Only the nine primary/secondary/grey ACI colours
+ * are targeted (nearest by RGB distance); anything unparseable reads as white
+ * (7), the CAD default, rather than failing the export.
+ */
+export function aciColorForCss(hex: string): number {
+  const m = /^#([0-9a-fA-F]{6})$/.exec(hex);
+  if (!m) return 7;
+  const r = parseInt(m[1].slice(0, 2), 16);
+  const g = parseInt(m[1].slice(2, 4), 16);
+  const b = parseInt(m[1].slice(4, 6), 16);
+  const table: Array<[number, [number, number, number]]> = [
+    [1, [255, 0, 0]],
+    [2, [255, 255, 0]],
+    [3, [0, 255, 0]],
+    [4, [0, 255, 255]],
+    [5, [0, 0, 255]],
+    [6, [255, 0, 255]],
+    [7, [255, 255, 255]],
+    [8, [128, 128, 128]],
+    [9, [192, 192, 192]],
+  ];
+  let best = 7;
+  let bestDist = Infinity;
+  for (const [aci, [tr, tg, tb]] of table) {
+    const d = (r - tr) * (r - tr) + (g - tg) * (g - tg) + (b - tb) * (b - tb);
+    if (d < bestDist) {
+      bestDist = d;
+      best = aci;
+    }
+  }
+  return best;
+}
+
 function project(point: Vec3, basis: ReturnType<typeof viewBasis>): [number, number] {
   // Same projection as svgSilhouette.ts: SVG Y grows downward, so screen-up is
   // negated — DXF Y is Y-up, but we keep the negated value so a DXF viewed in
@@ -87,20 +137,39 @@ function serializeDxf(
   hidden?: {
     chains: Array<{ points: Array<[number, number]>; closed: boolean }>;
     singleLines: Array<[[number, number], [number, number]]>;
-  }
+  },
+  layerGroups?: Array<{ name: string; color: string; chains: Chain[]; singleLines: Seg[]; hiddenChains?: Chain[]; hiddenLines?: Seg[] }>
 ): { dxf: string; dimensionCount?: number } {
   const w = new DxfEntityWriter();
   w.header(options.title);
-  w.chains("0", chains);
-  w.lines("0", singleLines);
-  // Occluded geometry on its own layer.
-  //
-  // A LAYER, not a dashed linetype: this writer emits no TABLES/LTYPE section
-  // at all, so a genuine DASHED linetype would mean adding that machinery. A
-  // separate layer is the honest cheap form — a CAD user toggles or restyles it
-  // — and it is the same mechanism the DIMENSIONS glyphs already use.
-  w.chains("HIDDEN", hidden?.chains ?? []);
-  w.lines("HIDDEN", hidden?.singleLines ?? []);
+  if (layerGroups && layerGroups.length > 0) {
+    // One DXF layer per included user layer (roadmap "Layers, distinct from
+    // Parts"): each group's geometry lands on its own sanitized layer name,
+    // occluded runs stay on HIDDEN and dimensions on DIMENSIONS as before.
+    w.layerTable(layerGroups.map((g) => ({ name: dxfLayerName(g.name), color: g.color })));
+  }
+  w.beginEntities();
+  if (layerGroups && layerGroups.length > 0) {
+    for (const g of layerGroups) {
+      const layer = dxfLayerName(g.name);
+      w.chains(layer, g.chains);
+      w.lines(layer, g.singleLines);
+      w.chains("HIDDEN", g.hiddenChains ?? []);
+      w.lines("HIDDEN", g.hiddenLines ?? []);
+    }
+  } else {
+    w.chains("0", chains);
+    w.lines("0", singleLines);
+    // Occluded geometry on its own layer.
+    //
+    // A LAYER, not a dashed linetype: this writer has no LTYPE machinery (the
+    // TABLES section it now emits names layers only), so a genuine DASHED
+    // linetype would mean adding that. A separate layer is the honest cheap
+    // form — a CAD user toggles or restyles it — and it is the same mechanism
+    // the DIMENSIONS glyphs already use.
+    w.chains("HIDDEN", hidden?.chains ?? []);
+    w.lines("HIDDEN", hidden?.singleLines ?? []);
+  }
   // Dimension glyphs — a separate layer so a CAD user can toggle them
   // independently of the outline geometry.
   let dimensionCount: number | undefined;
@@ -159,8 +228,36 @@ class DxfEntityWriter {
       this.push(30, "0");
     }
     this.push(0, "ENDSEC");
+  }
+
+  /** Opens the ENTITIES section — called after `header()` and any `layerTable()`. */
+  beginEntities(): void {
     this.push(0, "SECTION");
     this.push(2, "ENTITIES");
+  }
+
+  /**
+   * A TABLES section naming every layer the ENTITIES section below references
+   * (roadmap "Layers, distinct from Parts") — the writer's own comment above
+   * notes it writes no TABLES section, which is what made a genuine dashed
+   * linetype unavailable; a LAYER table needs no linetype machinery, only
+   * names + colours, so it is the honest cheap form here too.
+   */
+  layerTable(layers: ReadonlyArray<{ name: string; color: string }>): void {
+    this.push(0, "SECTION");
+    this.push(2, "TABLES");
+    this.push(0, "TABLE");
+    this.push(2, "LAYER");
+    this.push(70, String(layers.length));
+    for (const layer of layers) {
+      this.push(0, "LAYER");
+      this.push(2, layer.name);
+      this.push(70, "0");
+      this.push(62, String(aciColorForCss(layer.color)));
+      this.push(6, "Continuous");
+    }
+    this.push(0, "ENDTAB");
+    this.push(0, "ENDSEC");
   }
 
   chains(layer: string, chains: ReadonlyArray<Chain>): void {
@@ -244,7 +341,10 @@ function splitChains(segments: ReadonlyArray<Seg>): { polyChains: Chain[]; singl
 /**
  * Serializes a laid-out drawing sheet (`drawingSheet.ts`'s `layoutSheet`) as
  * DXF in sheet millimetres. Layers: `0` visible, `HIDDEN`, `DIMENSIONS`,
- * `BORDER` (frame), `TITLE` (title block + view labels).
+ * `BORDER` (frame), `TITLE` (title block + view labels) — or, when a view
+ * carries `layerGroups` (roadmap "Layers, distinct from Parts"), one layer
+ * per included user layer (TABLES section included) with hidden runs still on
+ * `HIDDEN`.
  *
  * Views are chained PER VIEW and per visibility: `segmentsToPolylines` joins by
  * exact endpoint, so one concatenated list could chain a run of one view into a
@@ -253,13 +353,38 @@ function splitChains(segments: ReadonlyArray<Seg>): { polyChains: Chain[]; singl
 export function sheetDxf(layout: SheetLayout, options: { title?: string } = {}): { dxf: string; chainCount: number; lineCount: number } {
   const w = new DxfEntityWriter();
   w.header(options.title, { width: layout.width, height: layout.height });
+  const grouped = layout.views.some((v) => v.layerGroups && v.layerGroups.length > 0);
+  if (grouped) {
+    const seen = new Map<string, string>();
+    for (const view of layout.views) {
+      for (const g of view.layerGroups ?? []) {
+        const dxfName = dxfLayerName(g.name);
+        if (!seen.has(dxfName)) seen.set(dxfName, g.color);
+      }
+    }
+    w.layerTable([...seen.entries()].map(([name, color]) => ({ name, color })));
+  }
+  w.beginEntities();
   let chainCount = 0;
   let lineCount = 0;
   for (const view of layout.views) {
-    const vis = w.segments("0", view.visible);
-    const hid = w.segments("HIDDEN", view.hidden);
-    chainCount += vis.chainCount + hid.chainCount;
-    lineCount += vis.lineCount + hid.lineCount;
+    if (view.layerGroups && view.layerGroups.length > 0) {
+      // Per-layer emission (chained per group AND per visibility, for the
+      // same exact-endpoint reason as above): each group's runs land on its
+      // own DXF layer, occluded runs on HIDDEN as before.
+      for (const g of view.layerGroups) {
+        const layer = dxfLayerName(g.name);
+        const vis = w.segments(layer, g.visible);
+        const hid = w.segments("HIDDEN", g.hidden);
+        chainCount += vis.chainCount + hid.chainCount;
+        lineCount += vis.lineCount + hid.lineCount;
+      }
+    } else {
+      const vis = w.segments("0", view.visible);
+      const hid = w.segments("HIDDEN", view.hidden);
+      chainCount += vis.chainCount + hid.chainCount;
+      lineCount += vis.lineCount + hid.lineCount;
+    }
     if (view.dimensions && view.dimensions.drawings.length > 0) w.dimensions(view.dimensions);
     w.text("TITLE", view.label.x, view.label.y, view.label.height, view.label.text, view.label.anchor);
   }
@@ -407,3 +532,37 @@ export function silhouetteDxf(
 /** Re-exported for backward compatibility — it moved to `svgSilhouette.ts` so
  * the SVG writer could chain hidden runs without an import cycle. */
 export { segmentsToPolylines };
+
+/**
+ * A drawing with one DXF layer per included user layer (roadmap "Layers,
+ * distinct from Parts"): each group's runs are chained separately (the same
+ * exact-endpoint rule as everywhere else — visible and hidden separately, per
+ * group) and land on their own sanitized layer name, with a TABLES section
+ * naming each layer and its colour. Occluded runs stay on `HIDDEN`,
+ * dimensions on `DIMENSIONS`, exactly as the flat writers do.
+ */
+export function layeredDxf(
+  groups: Array<{
+    name: string;
+    color: string;
+    segments: Array<[[number, number], [number, number]]>;
+    hiddenSegments?: Array<[[number, number], [number, number]]>;
+  }>,
+  view: ViewSpec,
+  options: DxfOptions = {}
+): DxfResult {
+  const dims = computeDimensions(options.annotations, view, options.dimensionScaleHint);
+  const layerGroups = groups.map((g) => {
+    const { polyChains, singleLines } = splitChains(g.segments as Seg[]);
+    const h = splitChains((g.hiddenSegments ?? []) as Seg[]);
+    return { name: g.name, color: g.color, chains: polyChains, singleLines, hiddenChains: h.polyChains, hiddenLines: h.singleLines };
+  });
+  const { dxf, dimensionCount } = serializeDxf([], [], options, dims, undefined, layerGroups);
+  return {
+    dxf,
+    segmentCount: groups.reduce((n, g) => n + g.segments.length, 0),
+    chainCount: layerGroups.reduce((n, g) => n + g.chains.length, 0),
+    lineCount: layerGroups.reduce((n, g) => n + g.singleLines.length, 0),
+    ...(dimensionCount !== undefined ? { dimensionCount } : {}),
+  };
+}

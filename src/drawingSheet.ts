@@ -39,6 +39,13 @@ export interface SheetViewInput {
   visible: Segment2[];
   hidden: Segment2[];
   dimensions?: DimensionsPayload;
+  /**
+   * Per-layer geometry (roadmap "Layers, distinct from Parts"): when present,
+   * `visible`/`hidden` above are empty and each entry carries that layer's
+   * own runs instead. Bounds union every group; placement transforms every
+   * group; writers nest one group per layer inside the view.
+   */
+  layerGroups?: Array<{ id: string; name: string; color: string; visible: Segment2[]; hidden: Segment2[] }>;
 }
 
 export const PAPER_SIZES = ["fit", "A4", "A3", "A2", "A1", "A0"] as const;
@@ -127,6 +134,8 @@ export interface PlacedView {
   visible: Segment2[];
   hidden: Segment2[];
   dimensions?: DimensionsPayload;
+  /** Per-layer runs, transformed into sheet space (present iff the input had them). */
+  layerGroups?: Array<{ id: string; name: string; color: string; visible: Segment2[]; hidden: Segment2[] }>;
   label: SheetText;
   /** Sheet-mm centre of the view's drawing bounds (useful for tests/callers). */
   centre: Pt2;
@@ -283,7 +292,12 @@ export function layoutSheet(inputs: ReadonlyArray<SheetViewInput>, options: Shee
   const cells = assignCells(inputs, projection);
   const measured: Measured[] = [];
   inputs.forEach((input, i) => {
-    const b = drawingBounds(input.visible, input.hidden, input.dimensions?.drawings ?? []);
+    const grouped = input.layerGroups ?? [];
+    const b = drawingBounds(
+      [...input.visible, ...grouped.flatMap((g) => g.visible)],
+      [...input.hidden, ...grouped.flatMap((g) => g.hidden)],
+      input.dimensions?.drawings ?? []
+    );
     if (!b) {
       warnings.push(`View "${input.name}" produced no geometry and was omitted from the sheet.`);
       return;
@@ -391,6 +405,17 @@ export function layoutSheet(inputs: ReadonlyArray<SheetViewInput>, options: Shee
       name: m.input.name,
       visible: m.input.visible.map(ts),
       hidden: m.input.hidden.map(ts),
+      ...(m.input.layerGroups && m.input.layerGroups.length > 0
+        ? {
+            layerGroups: m.input.layerGroups.map((g) => ({
+              id: g.id,
+              name: g.name,
+              color: g.color,
+              visible: g.visible.map(ts),
+              hidden: g.hidden.map(ts),
+            })),
+          }
+        : {}),
       ...(dims && dims.drawings.length > 0
         ? {
             dimensions: {

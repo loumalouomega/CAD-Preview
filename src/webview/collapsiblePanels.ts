@@ -33,6 +33,7 @@
 export const COLLAPSIBLE_PANELS: readonly { readonly panel: string; readonly header: string }[] = [
   { panel: "tree-panel", header: "tree-header" },
   { panel: "parts-panel", header: "parts-header" },
+  { panel: "layers-panel", header: "layers-header" },
   { panel: "edits-panel", header: "edits-header" },
   { panel: "meshing-panel", header: "meshing-header" },
   { panel: "advanced-group", header: "advanced-header" },

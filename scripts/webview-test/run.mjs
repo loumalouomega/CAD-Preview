@@ -194,6 +194,7 @@ test("panels: every documented panel id exists and is populated", async (page) =
     "menubar", "toolbar", "app", "view-controls",
     "tree-panel", "tree-body",
     "parts-panel", "parts-body",
+    "layers-panel", "layers-body",
     "edits-panel", "variables-section",
     "meshing-panel", "standard-parts-panel",
     "clash-panel", "clash-body",
@@ -3258,6 +3259,149 @@ test("primitives: the hidden attribute genuinely hides the section", async (page
   assert(height === 0, `#primitives-panel[hidden] renders nothing (got ${height}px)`);
 });
 
+test("layers: section renders beside Parts with its own glyph; New posts with the counter", async (page) => {
+  await populate(page);
+  const markup = await page.evaluate(() => ({
+    panel: !!document.getElementById("layers-panel"),
+    body: !!document.getElementById("layers-body"),
+    btn: !!document.getElementById("layers-new"),
+    tile: document.querySelector("#layers-header > .panel-icon")?.innerHTML ?? null,
+    partsTile: document.querySelector("#parts-header > .panel-icon")?.innerHTML ?? null,
+    rows: document.querySelectorAll("#layers-body .part-row").length,
+  }));
+  assert(markup.panel && markup.body && markup.btn, "the Layers section markup exists beside Parts");
+  assert(markup.tile !== null && markup.tile !== markup.partsTile, "the Layers tile carries its own glyph, not Parts'");
+  assert(markup.rows === 0, "no rows render before the layers hydration arrives");
+  // Hydration renders the stored layers silently (no layersChanged echo).
+  const sentBefore = await page.evaluate(() => (window.__sent ?? []).filter((m) => m.type === "layersChanged").length);
+  await post(page, {
+    type: "layers",
+    nextId: 2,
+    layers: [
+      { id: "layer-0", name: "Default", color: "#b8b8b8", visible: true, locked: false, volumes: [], surfaces: [], lines: [], points: [] },
+      { id: "layer-1", name: "Dims", color: "#ff0000", visible: true, locked: false, volumes: [], surfaces: ["face-1"], lines: [], points: [] },
+    ],
+  });
+  await sleep(250);
+  const after = await page.evaluate(() => ({
+    rows: document.querySelectorAll("#layers-body .part-row").length,
+    names: [...document.querySelectorAll("#layers-body .part-name")].map((i) => i.value),
+    posts: (window.__sent ?? []).filter((m) => m.type === "layersChanged").length,
+  }));
+  assert(after.rows === 2, `hydration renders both rows (got ${after.rows})`);
+  assert(eq(after.names, ["Default", "Dims"]), `row names come from the message (got ${JSON.stringify(after.names)})`);
+  assert(after.posts === sentBefore, "hydration is silent — no layersChanged echo");
+  // New allocates past the adopted counter, never recycling an id.
+  await page.click("#layers-new");
+  await sleep(250);
+  const created = await page.evaluate(() => (window.__sent ?? []).filter((m) => m.type === "layersChanged").at(-1) ?? null);
+  assert(created !== null && created.layers.length === 3, "New posts the grown list");
+  assert(created.nextId === 3 && created.layers[2].id === "layer-2", `New allocates layer-2 at counter 3 (got ${JSON.stringify(created?.layers?.[2]?.id)}/${created?.nextId})`);
+});
+
+test("layers: Assign posts the picked face; hiding it makes it unpickable", async (page) => {
+  await populate(page);
+  await enablePicking(page, "surface");
+  const box = await viewportBox(page);
+  await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+  await sleep(250);
+  await page.click("#layers-new");
+  await sleep(250);
+  // Assign the live selection into the just-created row (the last one).
+  await page.evaluate(() => {
+    const rows = document.querySelectorAll("#layers-body .part-row");
+    const row = rows[rows.length - 1];
+    [...row.querySelectorAll("button.part-btn")].find((b) => b.title?.startsWith("Assign"))?.click();
+  });
+  await sleep(250);
+  const assigned = await page.evaluate(() => (window.__sent ?? []).filter((m) => m.type === "layersChanged").at(-1) ?? null);
+  const picked = assigned?.layers?.at(-1)?.surfaces?.[0] ?? null;
+  assert(typeof picked === "string" && /^face-\d+$/.test(picked), `the picked face lands on the new layer (got ${JSON.stringify(picked)})`);
+  assert(assigned?.nextId === 2, "assigning allocates nothing — the counter is untouched");
+  // Hiding the layer hides the member: the same centre click must not
+  // re-select it (whatever it hits instead, if anything, is a different id).
+  await page.evaluate(() => {
+    const rows = document.querySelectorAll("#layers-body .part-row");
+    const row = rows[rows.length - 1];
+    [...row.querySelectorAll("button.part-btn")].find((b) => (b.title ?? "").startsWith("Hide"))?.click();
+  });
+  await sleep(250);
+  const hidden = await page.evaluate(() => (window.__sent ?? []).filter((m) => m.type === "layersChanged").at(-1) ?? null);
+  assert(hidden?.layers?.at(-1)?.visible === false, "the eye posts persisted visibility, not session state");
+  await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+  await sleep(250);
+  await page.evaluate(() => {
+    const rows = document.querySelectorAll("#layers-body .part-row");
+    [...rows[0].querySelectorAll("button.part-btn")].find((b) => b.title?.startsWith("Assign"))?.click();
+  });
+  await sleep(250);
+  const reassign = await page.evaluate(() => (window.__sent ?? []).filter((m) => m.type === "layersChanged").at(-1) ?? null);
+  const members = [...(reassign?.layers?.[0]?.surfaces ?? [])];
+  assert(!members.includes(picked), `the hidden face is unpickable — assigning the centre click did not reselect it (Default now holds ${JSON.stringify(members)})`);
+  // Re-showing restores pickability of the same face.
+  await page.evaluate(() => {
+    const rows = document.querySelectorAll("#layers-body .part-row");
+    const row = rows[rows.length - 1];
+    [...row.querySelectorAll("button.part-btn")].find((b) => (b.title ?? "").startsWith("Show"))?.click();
+  });
+  await sleep(250);
+  const shown = await page.evaluate(() => (window.__sent ?? []).filter((m) => m.type === "layersChanged").at(-1) ?? null);
+  assert(shown?.layers?.at(-1)?.visible === true, "re-showing posts visible:true again");
+});
+
+test("layers: a locked member refuses Extrude Apply, then applies once unlocked", async (page) => {
+  await populate(page);
+  await enablePicking(page, "surface");
+  const box = await viewportBox(page);
+  await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+  await sleep(250);
+  await page.click("#layers-new");
+  await sleep(250);
+  await page.evaluate(() => {
+    const rows = document.querySelectorAll("#layers-body .part-row");
+    const row = rows[rows.length - 1];
+    [...row.querySelectorAll("button.part-btn")].find((b) => b.title?.startsWith("Assign"))?.click();
+  });
+  await sleep(250);
+  // Lock the layer holding the picked face.
+  await page.evaluate(() => {
+    const rows = document.querySelectorAll("#layers-body .part-row");
+    const row = rows[rows.length - 1];
+    [...row.querySelectorAll("button.part-btn")].find((b) => (b.title ?? "").startsWith("Lock"))?.click();
+  });
+  await sleep(250);
+  // Re-pick (assign cleared the selection) and open the Extrude form.
+  await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+  await sleep(250);
+  await page.evaluate(() => {
+    [...document.querySelectorAll(".op-btn")].find((b) => b.querySelector(".op-name")?.textContent === "Extrude")?.click();
+  });
+  await sleep(250);
+  const editsBefore = await page.evaluate(() => (window.__sent ?? []).filter((m) => m.type === "editsChanged").length);
+  await page.evaluate(() => {
+    [...document.querySelectorAll("#edits-params .compose-apply")].find((b) => b.textContent === "Apply")?.click();
+  });
+  await sleep(300);
+  const status = await page.evaluate(() => document.getElementById("status")?.textContent ?? "");
+  assert(/locked layer/.test(status), `Apply on a locked member explains itself (got ${JSON.stringify(status)})`);
+  const editsAfter = await page.evaluate(() => (window.__sent ?? []).filter((m) => m.type === "editsChanged").length);
+  assert(editsAfter === editsBefore, "the refused op posts no editsChanged");
+  // Unlocking restores Apply — the control proving the form and selection
+  // were fine and only the lock refused.
+  await page.evaluate(() => {
+    const rows = document.querySelectorAll("#layers-body .part-row");
+    const row = rows[rows.length - 1];
+    [...row.querySelectorAll("button.part-btn")].find((b) => (b.title ?? "").startsWith("Unlock"))?.click();
+  });
+  await sleep(250);
+  await page.evaluate(() => {
+    [...document.querySelectorAll("#edits-params .compose-apply")].find((b) => b.textContent === "Apply")?.click();
+  });
+  await sleep(300);
+  const editsUnlocked = await page.evaluate(() => (window.__sent ?? []).filter((m) => m.type === "editsChanged").length);
+  assert(editsUnlocked === editsBefore + 1, "Apply posts exactly one editsChanged once unlocked");
+});
+
 const BREP_HEALTH_REPORT = {
   valid: false,
   counters: { solids: 1, shells: 1, faces: 36, edges: 98, looseEdges: 0, looseFaces: 0, looseWires: 0, solidsWithVoids: 0 },
@@ -6211,7 +6355,7 @@ test("sidebar: every section header carries the same rounded icon tile, between 
   await openAdvanced(page);
   const headers = await page.evaluate(() => {
     const ids = [
-      "tree-header", "parts-header", "edits-header", "meshing-header", "advanced-header", "mass-header",
+      "tree-header", "parts-header", "layers-header", "edits-header", "meshing-header", "advanced-header", "mass-header",
       "clash-header", "brep-health-header", "mesh-health-header", "region-fit-header", "primitives-header", "macros-header", "standard-parts-header",
     ];
     return ids.map((id) => {

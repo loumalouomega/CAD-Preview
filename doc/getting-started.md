@@ -435,6 +435,16 @@ Parts are saved automatically to a `<model>.parts.json` sidecar next to the CAD 
 
 > **Mesh formats** (STL/OBJ/PLY/glTF) have no stored face/edge topology. CAD Preview segments each mesh into connected, near-coplanar **facets** on load, so **Surf** picks a flat face (a cube → its 6 faces) and **Vol** picks the whole object. Highly curved meshes that would split into very many facets are kept whole; **Line** and **Point** are disabled for meshes.
 
+### Organizing Layers
+
+The **Layers** panel sits right below Parts in the left sidebar. Where a part says *which entities form a finite-element sub-model*, a layer says *which entities are shown, locked or drawn together* — the drafting meaning of "layer" (construction, hidden, dimensions, centre lines), not a second kind of part.
+
+Each layer is a compact row working exactly like a part row: a colour swatch (the panel swatch and the layer's drawing-export colour), an editable name, a `volumes · surfaces · lines` count, an **eye** (show/hide — unlike a part's eye, this persists: a hidden layer stays hidden for drawings and agents), a **lock** (members stay selectable for measurement but refuse as edit operands and Transform Gizmo targets, with a named message telling you which layer to unlock), plus hover-revealed assign and delete buttons. Click **＋ New** to create a layer, then the **＋** on its row to assign the current selection (any pick mode) to it — each entity sits on exactly one layer, so assigning moves it out of wherever it was. Unassigned entities sit on the **Default** layer, which cannot be deleted; deleting any other layer returns its members to Default.
+
+Like parts, layer membership follows topology-changing edits automatically (rebound with a report, never silently repointed). Unlike parts, layers never touch meshing or solver output: a hidden layer is still meshed, and no physical group or `SubModelPart` follows a layer. The drawing exports (`Export Silhouette SVG/DXF…`, `Export Technical Drawing…`, `Export Drawing Sheet…`) can be restricted to chosen layers — one output group per layer — or left to draw every layer, which is the default.
+
+Layers are saved automatically to a `<model>.layers.json` sidecar next to the CAD file. See [Layers Sidecar](./file-formats.md#layers-sidecar-modellayersjson) for the format.
+
 ### Inserting Standard Parts
 
 The **Standard Parts** panel (below Parts in the sidebar) searches the hosted [step.parts](https://www.step.parts) catalog — fasteners, bearings, connectors, extrusions, and more — and inserts a result as an ordinary STEP file:

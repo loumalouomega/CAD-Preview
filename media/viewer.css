@@ -4490,6 +4490,49 @@ body:has(#side.visible) #kernel-status {
   color: inherit;
 }
 
+/* ── Layers: the Parts panel's sibling — same hug-the-rows sizing, since it
+ * renders the same row shape (see layersPanel.ts reusing the part-* classes).
+ * A locked row's lock button reads active; visibility needs no extra rule
+ * beyond the eye glyph swap the panel already does. */
+#layers-panel {
+  display: flex;
+  flex-direction: column;
+  flex: 0 1 auto;
+  min-height: 0;
+}
+#layers-header-actions {
+  display: flex;
+  gap: 4px;
+}
+#layers-new {
+  font: inherit;
+  font-size: var(--ui-fs-sm);
+  padding: 2px 6px;
+  color: var(--vscode-button-foreground, #fff);
+  background: var(--vscode-button-background, #0e639c);
+  border: none;
+  border-radius: var(--ui-r-xs);
+  cursor: pointer;
+}
+#layers-new:hover { background: var(--vscode-button-hoverBackground, #1177bb); }
+#layers-body {
+  flex: 0 1 auto;
+  max-height: 100%;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+/* Every `[hidden]`-gated panel needs its own override: an author `display`
+ * rule beats the UA stylesheet's `[hidden] { display: none }` regardless of
+ * specificity — the defect class this file already documents for
+ * `#mesh-health-panel`/`#region-fit-panel`/`#clash-panel`. `#layers-panel`
+ * has a `display: flex` author rule above, so without this `hidden` would be
+ * inert (this panel is never hidden today, but a later eligibility gate must
+ * not rediscover the hazard).
+ */
+#layers-panel[hidden] {
+  display: none;
+}
+
 /* ── Edits body ────────────────────────────────────────────────────────── */
 
 #variables-add {
