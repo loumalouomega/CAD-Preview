@@ -3401,8 +3401,14 @@ function setStatus(text: string, isError = false): void {
   statusEl.classList.toggle("error", isError);
 }
 
-function showTree(root: TreeNode): void {
-  treePanel.render(root);
+function showTree(root: TreeNode, upgrade = false): void {
+  treePanel.render(root, upgrade);
+  if (upgrade) {
+    // The second tree of a STEP load swaps the flat list for the assembly
+    // hierarchy in place — keep an active filter applied to the new rows.
+    const q = (document.getElementById("tree-filter") as HTMLInputElement | null)?.value ?? "";
+    if (q.trim()) treePanel.filter(q);
+  }
   toggleBtn.style.display = "";
   showSidebar();
 }
@@ -5406,8 +5412,10 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
       break;
 
     case "tree":
-      setDisplayUnit(displayUnitFromUnitName(msg.sourceUnit) ?? "mm");
-      showTree(msg.root);
+      // An upgrade is the SAME load's second tree — don't reset a unit the user
+      // may have changed in the meantime.
+      if (msg.upgrade !== true) setDisplayUnit(displayUnitFromUnitName(msg.sourceUnit) ?? "mm");
+      showTree(msg.root, msg.upgrade === true);
       break;
 
     case "parts":

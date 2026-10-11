@@ -81,6 +81,7 @@ export const KERNELS_BY_FUNCTION: Record<keyof DocumentPipeline, readonly Kernel
   remeshMesh: ["meshio", "mmg"],
   loadBRepCachedForDocument: O,
   disposeBRepCacheForDocument: NONE,
+  resolveAssemblyTreeForDocument: O,
   readMeshioFieldValues: M,
   checkMeshHealth: O,
   checkBrepHealth: O,

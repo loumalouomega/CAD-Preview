@@ -59,6 +59,8 @@ await esbuild.build({
 // which is exactly why it is easy to misdiagnose.
 const env = { ...process.env };
 delete env.ELECTRON_RUN_AS_NODE;
+// Kernel job tracing (src/kernelClient.ts) — makes a stuck queue visible in CI logs.
+env.CAD_PREVIEW_KERNEL_TRACE = "1";
 
 const res = spawnSync(process.execPath, [path.join(OUT, "runTest.js")], { stdio: "inherit", env });
 process.exit(res.status ?? 1);

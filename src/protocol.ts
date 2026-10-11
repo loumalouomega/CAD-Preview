@@ -394,6 +394,13 @@ export type HostToWebview =
   | {
       type: "tree";
       root: TreeNode;
+      /** `true` on the second `tree` message of a STEP load, which replaces
+       * the flat per-solid list posted with the geometry by the nested
+       * assembly tree once the deferred XCAF read finishes (roadmap "Post
+       * geometry before the XCAF assembly tree"). The webview keeps its tree
+       * selection and filter across an upgrade; absent/`false` is a fresh
+       * tree that resets them. */
+      upgrade?: boolean;
       /** The source file's declared length unit (e.g. `"INCH"`, `"MILLIMETRE"`),
        * detected by a plain-text scan: `src/stepUnits.ts` for STEP's
        * `DATA` section, `src/igesUnits.ts` for IGES's fixed-position Global-

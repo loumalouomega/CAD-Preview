@@ -237,6 +237,24 @@ describe("createKernelClient", () => {
       await expect(promise).resolves.toBeUndefined();
     });
 
+    it("resolveAssemblyTreeForDocument sends the documentKey + extension path and resolves with the tree or null", async () => {
+      const client = createKernelClient("/ext");
+      const tree = { id: "root", label: "STEP", children: [{ id: "xcaf-asm-1", label: "Assembly 1", children: [{ id: "solid-0", label: "Solid 1" }] }] };
+      const promise = client.resolveAssemblyTreeForDocument("file:///a.stp", "/ext");
+      await Promise.resolve();
+      const child = fakeChildren[0];
+      const req = lastRequest(child);
+      expect(req.fn).toBe("resolveAssemblyTreeForDocument");
+      expect(req.args).toEqual(["file:///a.stp", "/ext"]);
+      reply(child, req.id, tree);
+      await expect(promise).resolves.toEqual(tree);
+
+      const none = client.resolveAssemblyTreeForDocument("file:///gone.stp", "/ext");
+      await Promise.resolve();
+      reply(child, lastRequest(child).id, null);
+      await expect(none).resolves.toBeNull();
+    });
+
     it("readMeshioFieldValues round-trips like any other Pipeline call", async () => {
       const client = createKernelClient("/ext");
       const promise = client.readMeshioFieldValues(new Uint8Array([9]), "vtk", "Temperature", "point");

@@ -64,6 +64,12 @@ export interface DocumentPipeline extends Pipeline {
    * none exist there) — call once when a document's tab closes. Fire-and-
    * forget from the caller's point of view; nothing depends on its result. */
   disposeBRepCacheForDocument(documentKey: string): Promise<void>;
+  /** Roadmap "Post geometry before the XCAF assembly tree": `loadBRepCachedForDocument`
+   * defers the STEP assembly read; this completes it (a second full-file
+   * parse inside the child) and returns the nested tree — `null` when there is
+   * no cache entry or the tree does not correlate, in which case the flat
+   * tree already posted stays. Idempotent. */
+  resolveAssemblyTreeForDocument(documentKey: string, extensionPath: string): Promise<import("./protocol").TreeNode | null>;
   readMeshioFieldValues: typeof readMeshioFieldValues;
 }
 
@@ -154,6 +160,14 @@ export const DEFAULT_TIMEOUT_MS = 5 * 60 * 1000;
 const KERNEL_FUNCTIONS = Object.keys(KERNELS_BY_FUNCTION) as (keyof DocumentPipeline)[];
 
 /** Creates one independent kernel-worker child + its own request queue. Each caller (the interactive extension host, an MCP server instance) gets its own — no cross-process sharing/daemon. */
+/** Opt-in job tracing (`CAD_PREVIEW_KERNEL_TRACE=1`, set by the integration
+ * harness) — one stderr line per queue event, so a CI log shows which job is
+ * stuck instead of a silent timeout. Off by default; zero cost when off. */
+const KERNEL_TRACE = !!process.env.CAD_PREVIEW_KERNEL_TRACE;
+function ktrace(msg: string): void {
+  if (KERNEL_TRACE) console.error(`[kernel-trace ${Date.now() % 1000000}] ${msg}`);
+}
+
 export function createKernelClient(extensionPath: string, options?: { timeoutMs?: number }): KernelClient {
   const defaultTimeoutMs = options?.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   let child: ChildProcess | null = null;
@@ -190,6 +204,7 @@ export function createKernelClient(extensionPath: string, options?: { timeoutMs?
   function settle(job: Job, outcome: { ok: true; value: unknown } | { ok: false; error: Error }): void {
     if (job.settled) return;
     job.settled = true;
+    ktrace(`settle #${job.jobId} ${job.fn} owner=${job.owner ?? "-"} ${outcome.ok ? "ok" : "ERR " + outcome.error.message} (${job.state})`);
     if (job.timer) clearTimeout(job.timer);
     job.cleanupSignal?.();
     const wasRunning = job === active;
@@ -224,6 +239,7 @@ export function createKernelClient(extensionPath: string, options?: { timeoutMs?
     // forwarded to this process's own console.error, mirroring the "stderr
     // is fine, stdout must stay pure" rule mcpServer.ts already established
     // for the WASM modules it hosts directly.
+    ktrace("spawn child");
     const spawned = fork(workerPath, [], { stdio: ["ignore", "ignore", "pipe", "ipc"] });
     spawned.stderr?.on("data", (chunk: Buffer) => {
       console.error(`[kernel-worker] ${chunk.toString().replace(/\n$/, "")}`);
@@ -239,6 +255,7 @@ export function createKernelClient(extensionPath: string, options?: { timeoutMs?
     const onGone = (err: Error) => {
       if (gone) return;
       gone = true;
+      ktrace(`child gone: ${err.message}`);
       if (child === spawned) child = null; // let the NEXT dispatch respawn
       emit({ type: "reset" }); // the kernels died with the child
       // Only the job that was actually running ON THIS CHILD fails; queued
@@ -257,6 +274,7 @@ export function createKernelClient(extensionPath: string, options?: { timeoutMs?
     active = job;
     job.state = "running";
     const requestId = nextRequestId++;
+    ktrace(`start #${job.jobId} ${job.fn} owner=${job.owner ?? "-"} queued=${queue.length}`);
     job.requestId = requestId;
     job.timer = setTimeout(() => {
       const proc = job.proc;
@@ -286,6 +304,7 @@ export function createKernelClient(extensionPath: string, options?: { timeoutMs?
   }
 
   function cancelJob(job: Job): void {
+    ktrace(`cancel #${job.jobId} ${job.fn} owner=${job.owner ?? "-"} (${job.state})`);
     const proc = job.state === "running" ? job.proc : undefined;
     if (proc && child === proc) child = null; // detach BEFORE settle pumps the next job
     settle(job, { ok: false, error: new JobCancelledError(job.fn) });
@@ -316,6 +335,7 @@ export function createKernelClient(extensionPath: string, options?: { timeoutMs?
         job.cleanupSignal = () => signal.removeEventListener("abort", onAbort);
       }
       queue.push(job);
+      ktrace(`enqueue #${job.jobId} ${fn} owner=${job.owner ?? "-"} active=${active ? "#" + active.jobId + " " + active.fn : "none"} queued=${queue.length}`);
       emitJobs();
       pump();
     });

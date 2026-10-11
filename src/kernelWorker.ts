@@ -25,7 +25,8 @@ console.warn = console.error.bind(console);
 console.debug = console.error.bind(console);
 /* eslint-enable no-console */
 
-import { loadBRep, exportBRep, loadBRepCached, disposeBRepCache, type BRepCacheEntry, type BRepResult } from "./occtService";
+import { loadBRep, exportBRep, loadBRepCached, disposeBRepCache, resolveAssemblyTree, type BRepCacheEntry, type BRepResult } from "./occtService";
+import type { TreeNode } from "./protocol";
 import { generateMesh, exportMeshFormat, exportMdpa, computeHandoffFacts, exportGeoUnrolled, repairMesh } from "./gmshService";
 import { computeMassProperties, computeBom, computeHoleTable } from "./massProperties";
 import { getEntityFacts, measureEntities, measureExact, checkInterference, checkInterferenceAll, rebindPartsAcrossOps, rebindPartsAcrossSave, resolveBucketSelector, synthesizeSelector, resolvePartSelectors } from "./entityFacts";
@@ -91,9 +92,23 @@ async function loadBRepCachedForDocument(
   quality?: Parameters<typeof loadBRepCached>[5]
 ): Promise<BRepResult> {
   const previous = brepCacheByDocument.get(documentKey);
-  const { result, cache } = await loadBRepCached(extensionPath, bytes, format, ops, previous, quality);
+  // Interactive path: defer the (second, full-file) XCAF assembly read so
+  // geometry can be posted first — `provider.ts` follows up with
+  // `resolveAssemblyTreeForDocument` (roadmap "Post geometry before the XCAF
+  // assembly tree"). The MCP `loadBRep` path stays synchronous.
+  const { result, cache } = await loadBRepCached(extensionPath, bytes, format, ops, previous, quality, { deferAssemblyTree: true });
   brepCacheByDocument.set(documentKey, cache);
   return result; // never return `cache` itself — see the map's own doc comment above
+}
+
+/** Completes a deferred assembly read for `documentKey` and returns the nested
+ * tree, or `null` (no entry — the tab closed or the child respawned — or the
+ * tree does not correlate; the caller keeps the flat tree either way). Returns
+ * plain JSON, so nothing live crosses the IPC boundary. */
+async function resolveAssemblyTreeForDocument(documentKey: string, extensionPath: string): Promise<TreeNode | null> {
+  const entry = brepCacheByDocument.get(documentKey);
+  if (!entry) return null;
+  return resolveAssemblyTree(extensionPath, entry);
 }
 
 async function disposeBRepCacheForDocument(documentKey: string): Promise<void> {
@@ -150,6 +165,7 @@ const handlers: Record<keyof DocumentPipeline, Handler> = {
   remeshMesh: remeshMesh as Handler,
   loadBRepCachedForDocument: loadBRepCachedForDocument as Handler,
   disposeBRepCacheForDocument: disposeBRepCacheForDocument as Handler,
+  resolveAssemblyTreeForDocument: resolveAssemblyTreeForDocument as Handler,
   readMeshioFieldValues: readMeshioFieldValues as Handler,
   checkMeshHealth: checkMeshHealth as Handler,
   checkBrepHealth: checkBrepHealth as Handler,
@@ -166,6 +182,10 @@ const handlers: Record<keyof DocumentPipeline, Handler> = {
   bakeMeshEdits: bakeMeshEdits as Handler,
 };
 
+function isOcctReset(err: unknown): boolean {
+  return err instanceof Error && /^OCCT crashed .*the kernel has been reset/s.test(err.message);
+}
+
 process.on("message", (msg: KernelRequest) => {
   void (async () => {
     const { id, fn, args } = msg;
@@ -173,10 +193,27 @@ process.on("message", (msg: KernelRequest) => {
       const handler = handlers[fn as keyof DocumentPipeline];
       if (!handler) throw new Error(`kernel-worker: unknown function "${fn}"`);
       const decodedArgs = args.map(unmarshal);
-      const result = await handler(...decodedArgs);
+      let result: unknown;
+      try {
+        result = await handler(...decodedArgs);
+      } catch (first) {
+        if (!isOcctReset(first)) throw first;
+        // An OCCT WASM trap already reset the singleton (`wrapOcctFault`), so a
+        // second attempt runs on a fresh module. Every handler is a pure
+        // function of its arguments, so one retry is safe; a document's cached
+        // entry belongs to the dead instance and is dropped (not disposed —
+        // the old heap is corrupt).
+        if (process.env.CAD_PREVIEW_KERNEL_TRACE) console.error(`[kernel-retry] ${fn}: ${(first as Error).message}`);
+        if (fn === "loadBRepCachedForDocument" && typeof decodedArgs[0] === "string") brepCacheByDocument.delete(decodedArgs[0]);
+        result = await handler(...decodedArgs);
+      }
       const response: KernelResponse = { id, ok: true, result: marshal(result) };
       process.send?.(response);
     } catch (err) {
+      // Opt-in diagnostics (CAD_PREVIEW_KERNEL_TRACE, set by the integration
+      // harness): the JS stack names the failing OCCT binding, which the bare
+      // message of a wasm trap does not.
+      if (process.env.CAD_PREVIEW_KERNEL_TRACE) console.error(`[kernel-error] ${fn}: ${err instanceof Error ? err.stack : String(err)}`);
       const response: KernelResponse = {
         id,
         ok: false,

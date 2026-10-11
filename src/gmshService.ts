@@ -138,7 +138,7 @@ function isWasmAbort(message: string): boolean {
   // see `occtService.ts`'s `isOcctWasmAbort` doc comment for the live-caught
   // finding) is a sixth abort signal, updated across all four kernel services
   // together like every earlier vocabulary addition.
-  return /out of bounds|abort|RuntimeError|unreachable|null function|table index|function table|wasmtable/i.test(message) || /^\d+$/.test(message);
+  return /out of bounds|abort|RuntimeError|unreachable|null function|table index|function table|wasmtable|signature mismatch/i.test(message) || /^\d+$/.test(message);
 }
 
 /**

@@ -35,6 +35,13 @@ describe("wrapOcctFault", () => {
     expect(wrapOcctFault(new Error("TypeError: WASMTABLE_GET is not a function")).message).toMatch(/^OCCT crashed/);
   });
 
+  it("recognizes the bare V8 'function signature mismatch' trap seen in VS Code's Electron", () => {
+    // Real CI message (integration suite): thrown by the first call after a
+    // save-in-place and then by every later call. Without this alternative the
+    // kernel was never reset and stayed unusable for every open document.
+    expect(wrapOcctFault(new Error("function signature mismatch")).message).toMatch(/^OCCT crashed/);
+  });
+
   it("does NOT match a plain JS 'x is not a function' bug as an abort", () => {
     const original = new Error("foo.bar is not a function");
     expect(wrapOcctFault(original)).toBe(original);

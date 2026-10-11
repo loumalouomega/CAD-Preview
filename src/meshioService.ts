@@ -109,7 +109,7 @@ function isMeshioWasmAbort(message: string): boolean {
   // See `occtService.ts`'s `isOcctWasmAbort` doc comment: a bare all-digit
   // message is a raw exception pointer with no text, updated across all four
   // kernel services together like every earlier vocabulary addition.
-  return /out of bounds|abort|RuntimeError|unreachable|null function|table index|function table|wasmtable/i.test(message) || /^\d+$/.test(message);
+  return /out of bounds|abort|RuntimeError|unreachable|null function|table index|function table|wasmtable|signature mismatch/i.test(message) || /^\d+$/.test(message);
 }
 
 /**

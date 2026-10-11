@@ -84,7 +84,18 @@ export function resetOcct(): void {
  * glue — so matching it case-insensitively cannot misclassify ordinary
  * application errors (unlike a generic `is not a function`, which is a common
  * JS bug phrase and deliberately NOT matched). All four vocabularies updated
- * together, same as the `function table` fix. */
+ * together, same as the `function table` fix.
+ *
+ * **`signature mismatch` was added after a FOURTH real miss, found in CI.**
+ * The V8 inside VS Code's own Electron reports a bad `call_indirect` as
+ * `function signature mismatch` (no `RuntimeError:` prefix, no `null function`
+ * — the older V8 wording the `null function` alternative matches). It was
+ * thrown by `loadBRepCachedForDocument` right after a save-in-place and then by
+ * EVERY later call within milliseconds: undetected, the singleton was never
+ * reset, so one trap left the kernel child permanently unusable for every open
+ * document (the integration suite saw it as dozens of 60 s "no geometry"
+ * timeouts). The phrase is wasm-specific, so it cannot match an application
+ * error. All kernel vocabularies updated together. */
 /**
  * A FIFTH signal, structurally different from the six textual ones above:
  * bare digits and nothing else.
@@ -105,7 +116,7 @@ export function resetOcct(): void {
  * exactly as safe to key on as `wasmtable` was.
  */
 function isOcctWasmAbort(message: string): boolean {
-  return /out of bounds|abort|RuntimeError|unreachable|null function|table index|function table|wasmtable/i.test(message) || /^\d+$/.test(message);
+  return /out of bounds|abort|RuntimeError|unreachable|null function|table index|function table|wasmtable|signature mismatch/i.test(message) || /^\d+$/.test(message);
 }
 
 /**
@@ -124,6 +135,9 @@ function isOcctWasmAbort(message: string): boolean {
 export function wrapOcctFault(err: unknown): Error {
   const raw = ((err as Error)?.message ?? String(err)).trim();
   if (!isOcctWasmAbort(raw)) return err instanceof Error ? err : new Error(raw);
+  // Opt-in diagnostics: the wrapped error below loses the JS stack that names
+  // the OCCT binding a trap came from.
+  if (process.env.CAD_PREVIEW_KERNEL_TRACE) console.error(`[occt-abort] ${err instanceof Error ? err.stack : String(err)}`);
   resetOcct();
   return new Error(`OCCT crashed (${raw || "WASM abort"}) — the kernel has been reset; try the operation again.`);
 }
@@ -160,7 +174,17 @@ export interface BRepResult {
    * `format === "csg"` with something to report; every other source omits
    * it, so existing consumers see no shape change. */
   warnings?: string[];
+  /** Roadmap "Post geometry before the XCAF assembly tree": true when the
+   * call deferred the STEP assembly read (`deferAssemblyTree`), so `tree` is
+   * the FLAT per-solid list and the caller should follow up with
+   * {@link resolveAssemblyTree} to upgrade it. Absent otherwise. */
+  assemblyPending?: boolean;
 }
+
+/** The three fields of a {@link SolidGroup} the Components tree needs — kept
+ * on the cache entry instead of the groups themselves, whose typed-array
+ * buffers are large and not needed once the geometry has been posted. */
+export type TreeGroupSummary = Pick<SolidGroup, "id" | "label" | "faceCount">;
 
 /**
  * A cached, still-live parse-plus-replay result for one document, held by
@@ -190,8 +214,20 @@ export interface BRepCacheEntry {
    * entirely separate, relatively expensive `STEPCAFControl_Reader` parse
    * that doesn't need repeating on every edit — only re-CORRELATING it
    * against the current (possibly edited) solid list is cheap enough to
-   * redo every call. See `src/xcafTree.ts`. */
-  assemblyTreeCache: XcafAssemblyInfo | null;
+   * redo every call. See `src/xcafTree.ts`.
+   *
+   * Three states: an `XcafAssemblyInfo` (read, usable), `null` (read, no
+   * usable structure — non-STEP, flat file, or parse failure), and
+   * `undefined` (NOT READ YET — the interactive path defers the read so
+   * geometry can be posted first; {@link resolveAssemblyTree} fills it). */
+  assemblyTreeCache: XcafAssemblyInfo | null | undefined;
+  /** Per-solid id/label/face-count of the last tessellation, so
+   * {@link resolveAssemblyTree} can rebuild the tree after the fact. */
+  treeGroups: TreeGroupSummary[];
+  /** Per-solid id/centre/volume of `shape`, computed at load time ONLY when the
+   * assembly read is deferred, so {@link resolveAssemblyTree} correlates in pure
+   * JS and never touches live shape handles from a later job. */
+  solidSigs?: SolidSig[];
   ops: EditOp[];
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   shape: any;
@@ -297,7 +333,8 @@ export async function loadBRepCached(
   format: Extract<CadFormat, "step" | "iges" | "brep" | "csg">,
   ops: EditOp[],
   previous: BRepCacheEntry | undefined,
-  quality: TessellationParams = TESSELLATION_PRESETS.standard
+  quality: TessellationParams = TESSELLATION_PRESETS.standard,
+  options: { deferAssemblyTree?: boolean } = {}
 ): Promise<{ result: BRepResult; cache: BRepCacheEntry }> {
   const oc = await getOcct(extensionPath);
 
@@ -311,7 +348,7 @@ export async function loadBRepCached(
 
   let baseShape: unknown;
   let baseCleanup: Array<{ delete(): void }>;
-  let assemblyTreeCache: XcafAssemblyInfo | null;
+  let assemblyTreeCache: XcafAssemblyInfo | null | undefined;
   let baseWarnings: string[];
   if (baseReusable && previous) {
     baseShape = previous.baseShape;
@@ -329,12 +366,17 @@ export async function loadBRepCached(
       // comment for why this can't reuse `baseShape`/the plain reader's
       // shape. Best-effort: any failure degrades to `null` (flat tree),
       // never blocks the primary read.
-      assemblyTreeCache = format === "step" ? readXcafAssembly(oc, tmpName) : null;
+      assemblyTreeCache = format !== "step" ? null : options.deferAssemblyTree ? undefined : readXcafAssembly(oc, tmpName);
     } catch (err) {
       throw wrapOcctFault(err);
     } finally {
       try { oc.FS.unlink(tmpName); } catch { /* ignore */ }
     }
+  }
+  // A reused base whose assembly read was deferred earlier, now asked for
+  // synchronously: pay the read here rather than leave the caller a flat tree.
+  if (assemblyTreeCache === undefined && format === "step" && !options.deferAssemblyTree) {
+    assemblyTreeCache = readAssemblyInfo(oc, bytes);
   }
 
   const appendReusable =
@@ -400,17 +442,19 @@ export async function loadBRepCached(
     const groups = tessellateByGroup(oc, shape, quality);
     const edges = extractEdges(oc, shape);
     const points = extractVertices(oc, shape);
-    const tree = buildTree(oc, format, groups, shape, assemblyTreeCache);
+    const tree = buildTree(oc, format, groups, shape, assemblyTreeCache ?? null);
+    const solidSigs = assemblyTreeCache === undefined ? solidSignatures(oc, shape) : undefined;
     const guideTmp: Array<{ delete(): void }> = [];
     const guideIds = collectGuideIds(oc, shape, guideCollector, guideTmp);
     for (let i = guideTmp.length - 1; i >= 0; i--) try { guideTmp[i].delete(); } catch { /* ignore */ }
     // The cache stores the FOLDED list (resolved ops for query documents) —
     // the append check above compares against it, so a query document's next
     // call (whose sidecar ops still carry queries) correctly misses.
-    const cache: BRepCacheEntry = { ocInstance: oc, bytes, format, baseShape, baseCleanup, assemblyTreeCache, ops: foldOps, shape, opsCleanup, opOutcomes, opBuckets, guideCollector, guideIds, pointRefs, warnings: baseWarnings };
+    const cache: BRepCacheEntry = { ocInstance: oc, bytes, format, baseShape, baseCleanup, assemblyTreeCache, treeGroups: summarizeGroups(groups), solidSigs, ops: foldOps, shape, opsCleanup, opOutcomes, opBuckets, guideCollector, guideIds, pointRefs, warnings: baseWarnings };
     const result: BRepResult = { groups, edges, points, tree, opOutcomes, opBuckets, guideIds, queryWarnings };
     if (pointRefs.length > 0) result.pointRefs = pointRefs;
     if (baseWarnings.length > 0) result.warnings = [...baseWarnings];
+    if (assemblyTreeCache === undefined) result.assemblyPending = true;
     return { result, cache };
   } catch (err) {
     throw wrapOcctFault(err);
@@ -491,29 +535,93 @@ export async function loadBRep(
  * highlight, no hide) — only LEAF rows, which always carry a real `solid-N`
  * id, behave identically to the flat tree's rows.
  */
+function summarizeGroups(groups: SolidGroup[]): TreeGroupSummary[] {
+  return groups.map((g) => ({ id: g.id, label: g.label, faceCount: g.faceCount }));
+}
+
+/** Runs the second, independent `STEPCAFControl_Reader` parse on `bytes` (see
+ * `xcafTree.ts`) via a short MEMFS path, always unlinked afterwards. Best-
+ * effort: `readXcafAssembly` itself returns `null` on any failure. */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function buildTree(oc: any, format: string, groups: SolidGroup[], shape: unknown, assemblyTreeCache: XcafAssemblyInfo | null): TreeNode {
-  if (assemblyTreeCache) {
-    try {
-      const cleanup: Array<{ delete(): void }> = [];
-      const currentSolids = collectSolids(oc, shape, cleanup).map(({ id, solid }) => {
-        const props = new oc.GProp_GProps_1();
-        cleanup.push(props);
-        volumePropertiesAdaptive(oc, solid, props);
-        return { id, centre: bboxCenter(oc, solid, cleanup), volume: props.Mass() };
-      });
-      const correlated = correlateAssemblyTree(assemblyTreeCache, currentSolids);
-      for (let i = cleanup.length - 1; i >= 0; i--) {
-        try { cleanup[i].delete(); } catch { /* ignore */ }
-      }
-      if (correlated?.children) {
-        const withFaceCounts = correlated.children.map(attachFaceCounts.bind(null, groups));
-        return { id: "root", label: format.toUpperCase(), children: withFaceCounts };
-      }
-    } catch {
-      /* falls through to the flat tree below */
+function readAssemblyInfo(oc: any, bytes: Uint8Array): XcafAssemblyInfo | null {
+  const tmpName = "/in.step";
+  oc.FS.writeFile(tmpName, bytes);
+  try {
+    return readXcafAssembly(oc, tmpName);
+  } finally {
+    try { oc.FS.unlink(tmpName); } catch { /* ignore */ }
+  }
+}
+
+/**
+ * Roadmap "Post geometry before the XCAF assembly tree": completes a deferred
+ * assembly read for one document's cache entry and returns the nested tree.
+ * Reads the XCAF structure from `entry.bytes` only when it has not been read
+ * (`assemblyTreeCache === undefined`), stores the result on the entry (so a
+ * later edit reuses it, exactly as before), then re-correlates against the
+ * entry's CURRENT shape. Returns `null` when the tree does not correlate —
+ * flat file, non-STEP, a topology-changing edit — or the entry belongs to a
+ * since-reset OCCT instance; the caller then simply keeps the flat tree.
+ */
+export async function resolveAssemblyTree(extensionPath: string, entry: BRepCacheEntry): Promise<TreeNode | null> {
+  const oc = await getOcct(extensionPath);
+  if (entry.ocInstance !== oc || entry.format !== "step") return null;
+  try {
+    if (entry.assemblyTreeCache === undefined) entry.assemblyTreeCache = readAssemblyInfo(oc, entry.bytes);
+    if (!entry.assemblyTreeCache) return null;
+    const sigs = entry.solidSigs ?? solidSignatures(oc, entry.shape);
+    return treeFromSignatures(entry.format, entry.treeGroups, sigs, entry.assemblyTreeCache);
+  } catch (err) {
+    throw wrapOcctFault(err);
+  }
+}
+
+interface SolidSig { id: string; centre: [number, number, number]; volume: number }
+
+/** Fingerprints every solid of `shape` (centre + volume) as plain data. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function solidSignatures(oc: any, shape: unknown): SolidSig[] {
+  const cleanup: Array<{ delete(): void }> = [];
+  try {
+    return collectSolids(oc, shape, cleanup).map(({ id, solid }) => {
+      const props = new oc.GProp_GProps_1();
+      cleanup.push(props);
+      volumePropertiesAdaptive(oc, solid, props);
+      return { id, centre: bboxCenter(oc, solid, cleanup), volume: props.Mass() };
+    });
+  } finally {
+    for (let i = cleanup.length - 1; i >= 0; i--) {
+      try { cleanup[i].delete(); } catch { /* ignore */ }
     }
   }
+}
+
+/** Pure half: the nested tree when `assemblyTreeCache` cleanly correlates against `sigs`, else `null`. */
+function treeFromSignatures(format: string, groups: TreeGroupSummary[], sigs: SolidSig[], assemblyTreeCache: XcafAssemblyInfo): TreeNode | null {
+  const correlated = correlateAssemblyTree(assemblyTreeCache, sigs);
+  if (correlated?.children) {
+    return { id: "root", label: format.toUpperCase(), children: correlated.children.map(attachFaceCounts.bind(null, groups)) };
+  }
+  return null;
+}
+
+/** The nested tree when `assemblyTreeCache` cleanly correlates against the
+ * CURRENT solid list, else `null`. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function correlatedTree(oc: any, format: string, groups: TreeGroupSummary[], shape: unknown, assemblyTreeCache: XcafAssemblyInfo | null): TreeNode | null {
+  if (!assemblyTreeCache) return null;
+  try {
+    return treeFromSignatures(format, groups, solidSignatures(oc, shape), assemblyTreeCache);
+  } catch {
+    /* falls through to the flat tree */
+  }
+  return null;
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function buildTree(oc: any, format: string, groups: TreeGroupSummary[], shape: unknown, assemblyTreeCache: XcafAssemblyInfo | null): TreeNode {
+  const nested = correlatedTree(oc, format, groups, shape, assemblyTreeCache);
+  if (nested) return nested;
   return {
     id: "root",
     label: format.toUpperCase(),
@@ -531,7 +639,7 @@ function buildTree(oc: any, format: string, groups: SolidGroup[], shape: unknown
  * this codebase has ever had, and stays more informative than a meaningless
  * renumbering) from the flat `groups` list onto an assembly-tree node,
  * recursing into group (`children`) nodes unchanged. */
-function attachFaceCounts(groups: SolidGroup[], node: TreeNode): TreeNode {
+function attachFaceCounts(groups: TreeGroupSummary[], node: TreeNode): TreeNode {
   if (node.children) {
     return { ...node, children: node.children.map(attachFaceCounts.bind(null, groups)) };
   }

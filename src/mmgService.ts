@@ -24,7 +24,7 @@ export function resetMmg(): void { singleton = null; }
 
 export function wrapMmgFault(error: unknown): Error {
   const message = error instanceof Error ? error.message : String(error);
-  if (/STRONGFAILURE|out of bounds|abort|RuntimeError|unreachable|null function|table index|function table|wasmtable/i.test(message) || /^\d+$/.test(message.trim())) {
+  if (/STRONGFAILURE|out of bounds|abort|RuntimeError|unreachable|null function|table index|function table|wasmtable|signature mismatch/i.test(message) || /^\d+$/.test(message.trim())) {
     resetMmg();
     return new Error(`MMG failed; the kernel was reset. Retry with a coarser size or a smaller mesh. ${message}`);
   }
