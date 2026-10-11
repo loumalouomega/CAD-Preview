@@ -22,21 +22,32 @@ import { STLLoader } from "three/examples/jsm/loaders/STLLoader.js";
 import { OBJLoader } from "three/examples/jsm/loaders/OBJLoader.js";
 import { PLYLoader } from "three/examples/jsm/loaders/PLYLoader.js";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
+import type { MTLLoader } from "three/examples/jsm/loaders/MTLLoader.js";
 import { defaultFaceColor } from "./geometryBuilder";
+import { markNativeColor } from "./nativeColor";
 import type { GltfExternalBuffers } from "../gltfParser";
 
-/** Builds a standard-material mesh for a raw geometry, computing normals if absent. */
+/**
+ * Builds a standard-material mesh for a raw geometry, computing normals if
+ * absent. A geometry that arrives with a `color` attribute (PLY vertex
+ * colours) gets a vertex-coloured material, white so the file's colours show
+ * unmodified, and is marked native (`nativeColor.ts`) so the Part-colour
+ * pipeline neither overwrites nor multiplies it.
+ */
 export function meshFromGeometry(geometry: THREE.BufferGeometry): THREE.Mesh {
   if (!geometry.getAttribute("normal")) {
     geometry.computeVertexNormals();
   }
+  const coloured = !!geometry.getAttribute("color");
   const material = new THREE.MeshStandardMaterial({
-    color: defaultFaceColor(),
+    color: coloured ? 0xffffff : defaultFaceColor(),
+    vertexColors: coloured,
     metalness: 0.1,
     roughness: 0.7,
     side: THREE.DoubleSide,
     flatShading: false,
   });
+  if (coloured) markNativeColor(material);
   return new THREE.Mesh(geometry, material);
 }
 
@@ -69,17 +80,68 @@ export function tagMeshEntities(obj: THREE.Object3D): void {
   });
 }
 
+/**
+ * Re-expresses the materials an `.mtl` produced (`MeshPhongMaterial`) as the
+ * viewer's standard material, marked native: the diffuse colour (`Kd`) and
+ * diffuse map (`map_Kd`) are kept; transparency (`d`/`Tr`), specular, bump and
+ * other maps are deliberately dropped — the viewer composes opacity itself
+ * (`baseOpacity`) and shades with its own lights. A material array stays an
+ * array (one entry per `usemtl`) so `geometry.groups` keeps indexing it; the
+ * facet split (`meshFacets.ts`) is what turns that into single-material meshes.
+ * Meshes whose materials carry no `.mtl` information (the bare names OBJLoader
+ * invents for each `usemtl`) are left as they are — only call this after
+ * `OBJLoader.setMaterials`.
+ */
+export function convertObjMaterials(group: THREE.Object3D): void {
+  const converted = new Map<THREE.Material, THREE.MeshStandardMaterial>();
+  const convert = (m: THREE.Material): THREE.Material => {
+    const phong = m as THREE.MeshPhongMaterial;
+    if (!phong.isMeshPhongMaterial) return m;
+    let out = converted.get(m);
+    if (!out) {
+      out = new THREE.MeshStandardMaterial({
+        color: phong.color.getHex(),
+        map: phong.map ?? null,
+        metalness: 0.1,
+        roughness: 0.7,
+        side: THREE.DoubleSide,
+      });
+      out.name = phong.name;
+      markNativeColor(out);
+      converted.set(m, out);
+    }
+    return out;
+  };
+  group.traverse((child) => {
+    if (!(child instanceof THREE.Mesh)) return;
+    child.material = Array.isArray(child.material) ? child.material.map(convert) : convert(child.material);
+  });
+}
+
+/**
+ * Parses OBJ text. With a loaded `.mtl` (`MTLLoader.parse(...)` result,
+ * preloaded) the file's materials are applied natively; without one this is
+ * exactly what the headless bake parses, so the object hierarchy — and every
+ * `node-N` id — is identical either way (OBJLoader builds the same objects
+ * whether or not it has materials).
+ */
+export function parseObjObject(text: string, materials?: MTLLoader.MaterialCreator): THREE.Object3D {
+  const loader = new OBJLoader();
+  if (materials) loader.setMaterials(materials);
+  const group = loader.parse(text);
+  if (materials) convertObjMaterials(group);
+  else applyDefaultMaterial(group);
+  return group;
+}
+
 /** Parses STL/OBJ/PLY bytes exactly as the webview's loader does. */
 export function parseMeshObject(bytes: ArrayBuffer | Uint8Array, format: "stl" | "obj" | "ply"): THREE.Object3D {
   const buf = toArrayBuffer(bytes);
   switch (format) {
     case "stl":
       return meshFromGeometry(new STLLoader().parse(buf));
-    case "obj": {
-      const group = new OBJLoader().parse(new TextDecoder().decode(buf));
-      applyDefaultMaterial(group);
-      return group;
-    }
+    case "obj":
+      return parseObjObject(new TextDecoder().decode(buf));
     case "ply": {
       const geometry = new PLYLoader().parse(buf);
       geometry.computeVertexNormals();

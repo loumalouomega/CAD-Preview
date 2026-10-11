@@ -6761,6 +6761,143 @@ test("toolbar and tree: a selected item is a quiet lifted background, not the sa
 });
 
 
+// ── Mesh display fidelity (roadmap "Mesh display fidelity": OBJ materials, PLY colours) ──
+//
+// A file's own colours must reach the screen, survive the facet split, yield to
+// a Part colour and come back when it is removed, and keep working in Flat
+// mode. Asserted as HUE CLASSES over the central region of the viewport (not
+// exact RGB: the faces are lit), which also leaves out the orientation cube's
+// coloured axis arrows in the corner and the dock along the bottom.
+
+/** Counts viewport pixels by dominant hue, in the central 60% of the canvas. */
+async function hueCounts(page) {
+  await setPanelHidden(page, true);
+  const shot = (await shotWithoutToast(page, () => page.locator("#app").screenshot())).toString("base64");
+  await setPanelHidden(page, false);
+  return page.evaluate(async (b64) => {
+    const bmp = await createImageBitmap(await (await fetch(`data:image/png;base64,${b64}`)).blob());
+    const c = document.createElement("canvas");
+    c.width = bmp.width;
+    c.height = bmp.height;
+    c.getContext("2d").drawImage(bmp, 0, 0);
+    const x0 = Math.floor(c.width * 0.2), y0 = Math.floor(c.height * 0.2);
+    const { data } = c.getContext("2d").getImageData(x0, y0, Math.floor(c.width * 0.6), Math.floor(c.height * 0.6));
+    const n = { red: 0, green: 0, blue: 0, yellow: 0, cyan: 0, magenta: 0 };
+    for (let i = 0; i < data.length; i += 4) {
+      const r = data[i], g = data[i + 1], b = data[i + 2];
+      const mx = Math.max(r, g, b);
+      if (mx < 16) continue; // pure shadow carries no hue (the background, 30,30,30, is a grey and falls out below)
+      const lo = Math.min(r, g, b);
+      if (mx - lo < 0.45 * mx) continue; // greys and edge blends
+      const hi = (v) => v > 0.75 * mx;
+      const low = (v) => v < 0.45 * mx;
+      if (hi(r) && low(g) && low(b)) n.red++;
+      else if (hi(g) && low(r) && low(b)) n.green++;
+      else if (hi(b) && low(r) && low(g)) n.blue++;
+      else if (hi(r) && hi(g) && low(b)) n.yellow++;
+      else if (hi(g) && hi(b) && low(r)) n.cyan++;
+      else if (hi(r) && hi(b) && low(g)) n.magenta++;
+    }
+    return n;
+  }, shot);
+}
+
+const ISO_FRONT = [1, 0.8, 1];
+const ISO_BACK = [-1, -0.8, -1];
+const lookFrom = async (page, viewDirection) => {
+  await post(page, { type: "viewState", view: { viewDirection, cameraUp: [0, 1, 0], orthographic: false, displayMode: "shaded", clip: null } });
+  await sleep(700);
+};
+const MIN_PX = 15000;
+const MAX_STRAY = 1500;
+
+async function openColoured(page, url, format) {
+  await populate(page);
+  // populate() leaves the B-rep fixture's edits and Parts in place; a mesh
+  // document opens with neither, and a fixture primitive would hide the model.
+  await post(page, { type: "edits", ops: [], variables: [], bakedThrough: 0 });
+  await post(page, { type: "parts", parts: [] });
+  await post(page, { type: "loadUrl", url, format });
+  await sleep(1200);
+  await hideGrid(page);
+}
+
+test("mesh colours: a vertex-coloured PLY renders its own colours (front three faces, then the back three)", async (page) => {
+  await openColoured(page, "/examples/PLY/colored-cube.ply", "ply");
+  await lookFrom(page, ISO_FRONT);
+  const front = await hueCounts(page);
+  assert(front.red > MIN_PX && front.green > MIN_PX && front.blue > MIN_PX, `the +X/+Y/+Z faces show red, green and blue (got ${JSON.stringify(front)})`);
+  assert(front.cyan < MAX_STRAY && front.magenta < MAX_STRAY && front.yellow < MAX_STRAY, `no back-face colours leak into the front view (got ${JSON.stringify(front)})`);
+  await lookFrom(page, ISO_BACK);
+  const back = await hueCounts(page);
+  assert(back.cyan > MIN_PX && back.magenta > MIN_PX && back.yellow > MIN_PX, `the opposite faces show cyan, magenta and yellow (got ${JSON.stringify(back)})`);
+  assert(back.red < MAX_STRAY && back.green < MAX_STRAY && back.blue < MAX_STRAY, `and none of the front colours (got ${JSON.stringify(back)})`);
+});
+
+test("mesh colours: a Part colour replaces the file colours and removing it brings them back", async (page) => {
+  await openColoured(page, "/examples/PLY/colored-cube.ply", "ply");
+  await lookFrom(page, ISO_FRONT);
+  await post(page, { type: "parts", parts: [{ name: "Skin", color: "#ff00ff", volumes: ["node-0"], surfaces: [], lines: [], points: [] }] });
+  await sleep(600);
+  const painted = await hueCounts(page);
+  assert(painted.magenta > 3 * MIN_PX, `the Part colour covers the visible faces (got ${JSON.stringify(painted)})`);
+  assert(painted.red < MAX_STRAY && painted.green < MAX_STRAY && painted.blue < MAX_STRAY, `and replaces the vertex colours rather than tinting them (got ${JSON.stringify(painted)})`);
+  await post(page, { type: "parts", parts: [] });
+  await sleep(600);
+  const restored = await hueCounts(page);
+  assert(restored.red > MIN_PX && restored.green > MIN_PX && restored.blue > MIN_PX, `removing the Part restores the file colours (got ${JSON.stringify(restored)})`);
+  assert(restored.magenta < MAX_STRAY, `with no Part colour left over (got ${JSON.stringify(restored)})`);
+});
+
+test("mesh colours: Flat display mode keeps the file colours", async (page) => {
+  await openColoured(page, "/examples/PLY/colored-cube.ply", "ply");
+  await lookFrom(page, ISO_FRONT);
+  await page.click('.display-mode-btn[data-mode="flat"]');
+  await sleep(600);
+  const flat = await hueCounts(page);
+  assert(flat.red > MIN_PX && flat.green > MIN_PX && flat.blue > MIN_PX, `Flat mode still shows the vertex colours (got ${JSON.stringify(flat)})`);
+  // Unlit, so the +X face must be the file's own colour EXACTLY (220,40,40) —
+  // a hue-class check alone also passes when the palette grey multiplies in.
+  const top = await dominantColors(page, 12);
+  const near = (key, want) => {
+    const [r, g, b] = key.split(",").map(Number);
+    return Math.abs(r - want[0]) <= 4 && Math.abs(g - want[1]) <= 4 && Math.abs(b - want[2]) <= 4;
+  };
+  assert(top.some(([k, n]) => near(k, [220, 40, 40]) && n > MIN_PX), `Flat shows the +X face as exactly the file's (220,40,40) (got ${JSON.stringify(top.slice(0, 6))})`);
+  await page.click('.display-mode-btn[data-mode="shaded"]');
+  await sleep(600);
+  const shaded = await hueCounts(page);
+  assert(shaded.red > MIN_PX && shaded.green > MIN_PX && shaded.blue > MIN_PX, `and switching back to Shaded still does (got ${JSON.stringify(shaded)})`);
+});
+
+test("mesh colours: an OBJ renders the colours of its .mtl, one per usemtl", async (page) => {
+  await openColoured(page, "/examples/OBJ/colored-cube.obj", "obj");
+  await lookFrom(page, ISO_FRONT);
+  const front = await hueCounts(page);
+  assert(front.red > 3 * MIN_PX, `the +X/+Y/+Z faces use the "red" material (got ${JSON.stringify(front)})`);
+  assert(front.blue < MAX_STRAY, `and none show the "blue" one (got ${JSON.stringify(front)})`);
+  await lookFrom(page, ISO_BACK);
+  const back = await hueCounts(page);
+  assert(back.blue > 3 * MIN_PX && back.red < MAX_STRAY, `the opposite faces use the "blue" material (got ${JSON.stringify(back)})`);
+  assert((await page.evaluate(() => document.getElementById("status").textContent)) === "", "a found .mtl leaves no status note");
+});
+
+test("mesh colours: an OBJ .mtl diffuse texture is applied", async (page) => {
+  await openColoured(page, "/examples/OBJ/textured-quad.obj", "obj");
+  await sleep(1500); // the texture decodes after the geometry
+  await lookFrom(page, [0, 0, 1]);
+  const t = await hueCounts(page);
+  assert(t.red > 300 && t.green > 300 && t.blue > 300 && t.yellow > 300, `all four texture quadrants appear on the quad (got ${JSON.stringify(t)})`);
+});
+
+test("mesh colours: a missing .mtl falls back to the default material and says so", async (page) => {
+  await openColoured(page, "/examples/OBJ/missing-mtl.obj", "obj");
+  const status = await page.evaluate(() => document.getElementById("status").textContent);
+  assert(/no-such-file\.mtl/.test(status) && /not found/.test(status), `the status line names the missing library (got ${JSON.stringify(status)})`);
+  const stats = await viewportModelStats(page);
+  assert(stats.fraction > 0.01, `the model still renders (non-background fraction ${stats.fraction.toFixed(3)})`);
+});
+
 async function main() {
   if (!nodeSupportsPlaywright()) {
     // Not a failure: playwright-core would `process.exit(1)` at module load, so

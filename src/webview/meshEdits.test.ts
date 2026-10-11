@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import * as THREE from "three";
-import { applyEditsMesh, transformMatrixForOp, MESH_CSG_MAX_TRIANGLES, meshTriangleCount } from "./meshEdits";
+import { applyEditsMesh, transformMatrixForOp, MESH_CSG_MAX_TRIANGLES, meshTriangleCount, csgResultMaterial } from "./meshEdits";
 import type { EditOp, OpOutcome } from "../editOps";
 import { vi } from "vitest";
 
@@ -695,5 +695,47 @@ describe("dense-mesh CSG guard (three-bvh-csg)", () => {
     );
     expect(outcomes[0].applied).toBe(false);
     expect(outcomes[0].diagnostic).toContain("midaxisOf requires a B-rep source");
+  });
+});
+
+describe("csgResultMaterial (native colours through a boolean/hole)", () => {
+  it("a vertex-coloured source falls back to the palette default when the result lost its colours", () => {
+    const src = new THREE.MeshStandardMaterial({ vertexColors: true, color: 0xffffff });
+    const out = csgResultMaterial(src, new THREE.BoxGeometry(1, 1, 1)) as THREE.MeshStandardMaterial;
+    expect(out).not.toBe(src);
+    expect(out.vertexColors).toBe(false);
+  });
+
+  it("keeps a vertex-coloured material when the result still has a colour attribute", () => {
+    const src = new THREE.MeshStandardMaterial({ vertexColors: true });
+    const geo = new THREE.BoxGeometry(1, 1, 1);
+    geo.setAttribute("color", new THREE.BufferAttribute(new Float32Array(geo.getAttribute("position").count * 3), 3));
+    expect(csgResultMaterial(src, geo)).toBe(src);
+  });
+
+  it("takes the first entry of a material array (an array draws nothing without draw groups)", () => {
+    const a = new THREE.MeshStandardMaterial({ color: 0xff0000 });
+    const b = new THREE.MeshStandardMaterial({ color: 0x0000ff });
+    expect(csgResultMaterial([a, b], new THREE.BoxGeometry(1, 1, 1))).toBe(a);
+  });
+
+  it("a boolean on a vertex-coloured PLY-like mesh yields a renderable (non-black) result", () => {
+    const root = new THREE.Group();
+    for (const x of [0, 1]) {
+      const g = new THREE.BoxGeometry(2, 2, 2).toNonIndexed();
+      g.setAttribute("color", new THREE.BufferAttribute(new Float32Array(g.getAttribute("position").count * 3).fill(0.7), 3));
+      const mesh = new THREE.Mesh(g, new THREE.MeshStandardMaterial({ vertexColors: true, color: 0xffffff }));
+      mesh.position.set(x, 0, 0);
+      root.add(mesh);
+    }
+    let i = 0;
+    root.traverse((o) => { o.userData.groupId = `node-${i++}`; });
+    applyEditsMesh(root, [{ op: "boolean", kind: "union", a: ["node-1"], b: ["node-2"] }]);
+    const meshes: THREE.Mesh[] = [];
+    root.traverse((o) => { if ((o as THREE.Mesh).isMesh) meshes.push(o as THREE.Mesh); });
+    expect(meshes).toHaveLength(1);
+    const mat = meshes[0].material as THREE.MeshStandardMaterial;
+    // either it kept a colour attribute or it dropped vertexColors — never vertexColors without data
+    expect(!mat.vertexColors || !!meshes[0].geometry.getAttribute("color")).toBe(true);
   });
 });

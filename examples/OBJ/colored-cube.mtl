@@ -1,0 +1,5 @@
+# Materials for colored-cube.obj
+newmtl red
+Kd 0.86 0.16 0.16
+newmtl blue
+Kd 0.16 0.16 0.86

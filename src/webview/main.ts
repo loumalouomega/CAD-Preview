@@ -6230,7 +6230,8 @@ async function loadMeshObjectFromUrl(
     // repopulates this via `applyAvailableColorFields` when applicable.
     resetColorFieldSelection();
     applyAvailableColorFields(undefined);
-    const object = await loadMeshFromUrl(url, loaderFormat);
+    let loadNote = ""; // e.g. an OBJ whose .mtl was not found — shown after the load clears the status line
+    const object = await loadMeshFromUrl(url, loaderFormat, (note) => { loadNote = note; });
     tagMeshEntities(object);
     // Build the Components tree from the original hierarchy (before the mesh
     // is split into facets, so the tree lists whole objects, not facets).
@@ -6252,7 +6253,7 @@ async function loadMeshObjectFromUrl(
     meshingPanel.setBudgetFacts(budgetFactsOfModel());
     syncMeshSizeSeed();
     showSidebar();
-    setStatus("");
+    setStatus(loadNote);
     if (hasMultipleNodes(root)) showTree(root);
   } catch (err) {
     setStatus(`Failed to load model: ${(err as Error).message}`, true);

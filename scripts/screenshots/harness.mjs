@@ -68,7 +68,7 @@ const CTYPE = {
   ".js": "text/javascript", ".css": "text/css", ".wasm": "application/wasm",
   ".json": "application/json", ".map": "application/json", ".html": "text/html",
   ".stl": "model/stl", ".obj": "text/plain", ".ply": "application/octet-stream",
-  ".gltf": "model/gltf+json", ".glb": "model/gltf-binary", ".svg": "image/svg+xml",
+  ".gltf": "model/gltf+json", ".glb": "model/gltf-binary", ".svg": "image/svg+xml", ".mtl": "text/plain", ".png": "image/png",
 };
 
 /**

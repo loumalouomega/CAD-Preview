@@ -517,6 +517,12 @@
       "section": "Post geometry before the XCAF assembly tree (roadmap Tier 1, closed)",
       "gap": "The live feel of the flat \u2192 nested Components upgrade in a real webview, and the host `void` follow-up in `provider.ts` against a real Extension Development Host. The webview's handling of the second `tree` message is covered over the real bundle (tree: a second `tree` message upgrades flat to nested without losing state) and the kernel half against the live WASM, so this entry stays open only for the host/feel half.",
       "status": "open"
+    },
+    {
+      "id": "mesh-display-fidelity",
+      "section": "Mesh display fidelity \u2014 OBJ materials and PLY colours (roadmap, closed)",
+      "gap": "Opening an OBJ whose .mtl and texture sit beside it, in a real VS Code webview: the sibling .mtl fetch and the texture <img> go through the real CSP (connect-src / img-src cspSource) and localResourceRoots, which test:webview's CSP-free harness cannot exercise; and how the file colours read under light and high-contrast themes.",
+      "status": "open"
     }
   ]
 }

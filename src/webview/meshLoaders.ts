@@ -1,7 +1,83 @@
 import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
+import { MTLLoader } from "three/examples/jsm/loaders/MTLLoader.js";
 import type { CadFormat } from "../fileRouter";
-import { parseMeshObject } from "./meshObject";
+import { isSafeRelativePath } from "../safeRelativePath";
+import { parseMeshObject, parseObjObject } from "./meshObject";
+
+/** How long a `.mtl` texture may take to decode before the model shows without it. */
+const TEXTURE_WAIT_MS = 10_000;
+
+/**
+ * The `.mtl` file names an OBJ's `mtllib` statements declare, in order. A
+ * statement may list several names; names with spaces are not supported by
+ * the format's common writers, so whitespace splits.
+ */
+export function objMaterialLibraries(text: string): string[] {
+  const names: string[] = [];
+  for (const line of text.split(/\r?\n/)) {
+    const m = /^\s*mtllib\s+(.+?)\s*$/.exec(line);
+    if (m) names.push(...m[1].split(/\s+/).filter(Boolean));
+  }
+  return names;
+}
+
+/**
+ * Loads an OBJ with its `.mtl` materials (roadmap "Mesh display fidelity").
+ * The `.mtl` and its textures are fetched relative to the model's own URL —
+ * the same sibling-file rule glTF external buffers follow, so the model's
+ * folder (already a webview resource root) is the only place read, and a name
+ * that is not a plain relative path is never fetched. Anything that goes
+ * wrong degrades to the default material and says why through `onNote`; it
+ * never fails the open.
+ */
+async function loadObj(url: string, onNote?: (message: string) => void): Promise<THREE.Object3D> {
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`Failed to fetch ${url}: ${res.status}`);
+  const text = new TextDecoder().decode(await res.arrayBuffer());
+  const libraries = objMaterialLibraries(text);
+  if (libraries.length === 0) return parseObjObject(text);
+
+  // `url` is absolute in a real webview; resolving against the page keeps a
+  // server-relative URL (the test harness) working too.
+  const dir = new URL(".", new URL(url, globalThis.location?.href ?? "http://localhost/")).href;
+  let lastProblem = "";
+  for (const name of libraries) {
+    if (!isSafeRelativePath(name)) {
+      lastProblem = `OBJ material library "${name}" is not a plain relative path beside the model — using the default material.`;
+      continue;
+    }
+    try {
+      const mtl = await fetch(new URL(name, dir).href);
+      if (!mtl.ok) {
+        lastProblem = `OBJ material library "${name}" not found beside the model — using the default material.`;
+        continue;
+      }
+      const manager = new THREE.LoadingManager();
+      const creator = new MTLLoader(manager).parse(await mtl.text(), dir);
+      creator.preload();
+      await waitForTextures(manager, creator);
+      return parseObjObject(text, creator);
+    } catch (err) {
+      lastProblem = `OBJ material library "${name}" could not be read (${(err as Error).message}) — using the default material.`;
+    }
+  }
+  if (lastProblem) onNote?.(lastProblem);
+  return parseObjObject(text);
+}
+
+/** Resolves when every texture a preloaded material creator requested has finished (or failed). */
+function waitForTextures(manager: THREE.LoadingManager, creator: MTLLoader.MaterialCreator): Promise<void> {
+  const hasTextures = Object.values(creator.materials).some((m) => (m as THREE.MeshPhongMaterial).map);
+  if (!hasTextures) return Promise.resolve();
+  return new Promise((resolve) => {
+    const timer = setTimeout(resolve, TEXTURE_WAIT_MS);
+    manager.onLoad = () => {
+      clearTimeout(timer);
+      resolve();
+    };
+  });
+}
 
 /**
  * Loads a mesh-format source for display. STL/OBJ/PLY fetch the bytes and go
@@ -11,10 +87,15 @@ import { parseMeshObject } from "./meshObject";
  * `loadAsync` for URL-relative resources; the scene graph is the loader's
  * either way.
  */
-export async function loadMeshFromUrl(url: string, format: CadFormat): Promise<THREE.Object3D> {
+export async function loadMeshFromUrl(
+  url: string,
+  format: CadFormat,
+  onNote?: (message: string) => void
+): Promise<THREE.Object3D> {
   switch (format) {
-    case "stl":
     case "obj":
+      return loadObj(url, onNote);
+    case "stl":
     case "ply": {
       const res = await fetch(url);
       if (!res.ok) throw new Error(`Failed to fetch ${url}: ${res.status}`);
