@@ -24,7 +24,9 @@ The webview runs in a Chromium browser context. These modules are bundled into `
 | `src/webview/entityExplain.ts` | Pure content for the hover tooltip and the geometry inspector card — which fields a classification gives meaning to (unit-tested) |
 | `src/webview/selectionGroups.ts` | Pure computed selection groups for the right-click menu, composed from `selectFilters.ts`'s predicates (unit-tested) |
 | `src/webview/macrosPanel.ts` | Macros sidebar panel — saved parameterized scripts (DOM-only, F5-verified) |
-| `src/webview/meshLoaders.ts` | Dispatch to Three.js loaders by format |
+| `src/webview/meshLoaders.ts` | Dispatch to Three.js loaders by format; for OBJ also fetches the `mtllib` `.mtl` (and its textures) from beside the model and reports a missing one through an `onNote` callback |
+| `src/webview/meshObject.ts` | The loader objects shared with the headless bake: `meshFromGeometry` (marks a vertex-coloured PLY material native), `parseObjObject`/`convertObjMaterials` (`.mtl` Phong → native standard material) |
+| `src/webview/nativeColor.ts` | "This material carries its own colour" seam: `markNativeColor`, `applyNativeColor` (Part colour replaces, none restores), `cloneNativeColor`, `nativeBaseHex` — the stash lives in a `WeakMap`, since `Material.clone()` cannot carry a `Texture` through `userData` |
 | `src/webview/meshExporters.ts` | Dispatch to Three.js exporters by format |
 | `src/webview/treePanel.ts` | Component tree panel DOM management |
 | `src/webview/picking.ts` | Resolve a raycast hit + selection mode to an entity, plus mode-unfiltered measurement picking (unit-testable). Both collectors walk with `traverseVisible`, not `traverse` — **load-bearing**: three's `Raycaster` tests only `layers` and ignores `.visible` entirely, so plain traversal would let clicks (and measurements, and `collectSnapPoints()`'s gizmo-drag snap candidates) land on geometry the user explicitly hid — a Part hidden by its eye-toggle, anything outside an active Isolate, or the model's faces under an FE-mesh/colour-field overlay. `traverseVisible` prunes such a subtree at the invisible ancestor, exactly the unit of hiding in all four cases. |
@@ -57,7 +59,7 @@ The webview runs in a Chromium browser context. These modules are bundled into `
 | `src/webview/editsPanel.ts` | Edits panel DOM — GEOMETRY (2D/3D) / EDIT tabs, op grids, param forms, op list |
 | `src/webview/commandBar.ts` | Lower command bar (`#cmdbar`) — typed `<command> [<json>]` lines, history, Tab completion, panel echo |
 | `src/webview/meshEdits.ts` | Webview edit engine for mesh formats (Three.js transforms; unit-tested) |
-| `src/webview/meshFacets.ts` | Segment a mesh into coplanar facets → per-face sub-meshes (unit-tested) |
+| `src/webview/meshFacets.ts` | Segment a mesh into coplanar facets → per-face sub-meshes (unit-tested); carries `color`/`uv` and native materials into each facet and gates multi-material meshes by material |
 | `src/webview/meshingModel.ts` | Current FE-mesh `MeshOptions` store, DOM-free (unit-tested) |
 | `src/webview/meshingPanel.ts` | FE Mesh panel DOM — size slider/presets, part sizes, Advanced settings, Generate/Export/Cancel/Clear, quality histogram |
 | `src/mmgOptions.ts` | Shared strict MMG per-call options validation (`hausd` relative by default, `hmin`, `hmax`, `hgrad`); no WASM/VS Code imports |

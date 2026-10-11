@@ -36,6 +36,7 @@ import { applyPreviewTint } from "./opPreviewBands";
 import { createRenderScheduler, type FrameTick } from "./renderScheduler";
 import { paletteColor, refreshPalette } from "./palette";
 import { shouldSkipAutoReframe, type FitSphere } from "./reframePolicy";
+import { applyNativeColor, copyNativeColor, isNativeColor, nativeBaseHex } from "./nativeColor";
 
 /** Emissive tint applied to the transiently-selected entities. Theme-reactive
  * (`palette.ts`); resolved per call so a theme change takes effect on the next
@@ -1954,9 +1955,19 @@ export class Viewer {
       const ud = obj.userData;
       if (obj instanceof THREE.Mesh && ud.entityType === "surface") {
         const hex = map.faces.get(ud.entityId) ?? map.solids.get(ud.groupId);
-        const color = hex ? new THREE.Color(hex) : new THREE.Color(defaultFaceColor());
-        ud.baseColor = color.getHex();
-        (obj.material as THREE.MeshStandardMaterial).color.copy(color);
+        const mat = obj.material as THREE.MeshStandardMaterial;
+        if (isNativeColor(mat)) {
+          // A file-supplied colour (PLY vertex colours, OBJ .mtl): a Part
+          // colour replaces it, no Part colour restores it — never the
+          // palette default over the top.
+          const partHex = hex ? new THREE.Color(hex).getHex() : undefined;
+          applyNativeColor(mat, partHex);
+          ud.baseColor = partHex ?? nativeBaseHex(mat);
+        } else {
+          const color = hex ? new THREE.Color(hex) : new THREE.Color(defaultFaceColor());
+          ud.baseColor = color.getHex();
+          mat.color.copy(color);
+        }
       } else if (obj instanceof THREE.Line && ud.entityType === "line") {
         const hex = map.edges.get(ud.entityId);
         const color = hex ? new THREE.Color(hex) : new THREE.Color(defaultEdgeColor());
@@ -2221,7 +2232,14 @@ export class Viewer {
         return;
       }
       if (!obj.userData.flatMaterial) {
-        obj.userData.flatMaterial = new THREE.MeshBasicMaterial({ color: std.color.getHex(), side: THREE.DoubleSide });
+        const flatMat = new THREE.MeshBasicMaterial({
+          color: std.color.getHex(),
+          side: THREE.DoubleSide,
+          vertexColors: std.vertexColors,
+          map: std.map ?? null,
+        });
+        copyNativeColor(std, flatMat); // a native colour keeps toggling correctly in Flat
+        obj.userData.flatMaterial = flatMat;
       }
       obj.material = obj.userData.flatMaterial as THREE.MeshBasicMaterial;
     });

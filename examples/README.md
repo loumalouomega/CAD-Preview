@@ -20,6 +20,8 @@ CAD Preview also supports IGES (`.iges`/`.igs`) and BREP (`.brep`) via the same 
 
 Each mesh directory contains a single `cube.*` fixture — a minimal triangulated cube used to smoke-test the native Three.js loader path (no OCCT/WASM involved).
 
+`PLY/colored-cube.ply` (a distinct vertex colour per face), `OBJ/colored-cube.obj` + `.mtl` (one mesh, two `usemtl` materials), `OBJ/textured-quad.obj` + `.mtl` + `.png` (a `map_Kd` diffuse texture; the 2×2 PNG is red/green over blue/yellow) and `OBJ/missing-mtl.obj` (an `mtllib` naming a file that does not exist) exercise the colour paths — `npm run test:webview` renders each and asserts the colours on screen.
+
 ## MED
 
 `two-material-tets.med` is a synthetic (not real-world) fixture: two tetrahedra sharing a face, written by meshio++'s own MED writer from a hand-built mesh with two named cell regions (`MaterialA`/`MaterialB`) and a `Temperature` point-data field — used to verify (`npm run mcp:smoke`) that `load_model`/the viewer's meshio++ import surfaces those real names via `readMeshioMetadata()`. See CLAUDE.md's "meshio++ integration" section.

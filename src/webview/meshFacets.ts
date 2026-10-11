@@ -1,6 +1,7 @@
 import * as THREE from "three";
 import { acceleratedRaycast, computeBoundsTree, disposeBoundsTree } from "three-mesh-bvh";
 import { makeFaceMaterial } from "./geometryBuilder";
+import { cloneNativeColor, isNativeColor } from "./nativeColor";
 
 // Patch THREE prototypes once so `Mesh.raycast` uses the BVH when present and
 // falls back to the original brute-force path otherwise. The patch is
@@ -136,30 +137,68 @@ export function segmentCoplanarFacets(
  */
 export function buildMeshFacetGroup(mesh: THREE.Mesh, volumeId: string, triangleRegion?: ArrayLike<number>): THREE.Object3D {
   const geometry = mesh.geometry as THREE.BufferGeometry;
+
+  // A material ARRAY is how OBJLoader expresses several `usemtl` groups.
+  // Everything below (and `Viewer`'s colour/opacity/display-mode code) works on
+  // one material per mesh, so an array is resolved here:
+  // - native (an `.mtl` was applied): each triangle keeps its material, and the
+  //   facet segmentation is gated by it so no facet straddles two materials;
+  // - otherwise (bare names invented per `usemtl`): collapse to one default
+  //   material, which is what the facet split always produced for these.
+  let mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+  let triMaterial: Int32Array | undefined;
+  if (Array.isArray(mesh.material)) {
+    if (mats.length > 1 && mats.some((m) => isNativeColor(m))) {
+      triMaterial = triangleMaterialIndex(geometry, mats.length);
+      triangleRegion = triangleRegion ?? triMaterial;
+    } else {
+      const single = isNativeColor(mats[0]) ? mats[0] : makeFaceMaterial();
+      for (const m of mats) if (m !== single) m.dispose();
+      mesh.material = single;
+      mats = [single];
+      geometry.clearGroups();
+    }
+  }
+
   const facetOf = segmentCoplanarFacets(geometry, FACET_ANGLE_TOLERANCE, triangleRegion);
   const facetCount = facetOf.length ? Math.max(...facetOf) + 1 : 0;
 
+  let buckets: number[][];
   if (facetCount <= 1 || facetCount > MAX_FACETS) {
-    // Keep the mesh whole; expose it as one surface entity.
-    mesh.userData.groupId = volumeId;
-    mesh.userData.entityType = "surface";
-    mesh.userData.entityId = `${volumeId}/face-0`;
-    // BVH-accelerate kept-whole meshes (the dense-scan case — closed as
-    // "BVH-accelerated raycasting for kept-whole meshes", see CLAUDE.md).
-    // `indirect: true` preserves the original triangle
-    // order so any index-based logic stays correct if later code keys on it.
-    // The BVH lives with the geometry for the session; it is freed when the
-    // geometry is disposed on document close — no per-rebuild disposal needed
-    // (the geometry is shared with the cached pristine clone).
-    const geo = mesh.geometry as THREE.BufferGeometry;
-    if (!geo.boundsTree) {
-      try {
-        geo.computeBoundsTree?.({ indirect: true });
-      } catch {
-        // BVH build failure is non-fatal — fall back to brute-force raycast.
+    if (triMaterial) {
+      // Too many facets to split, but the materials still have to show: one
+      // surface per material actually used.
+      const byMaterial = new Map<number, number[]>();
+      triMaterial.forEach((mi, t) => {
+        const list = byMaterial.get(mi);
+        if (list) list.push(t); else byMaterial.set(mi, [t]);
+      });
+      buckets = [...byMaterial.entries()].sort((a, b) => a[0] - b[0]).map(([, tris]) => tris);
+    } else {
+      // Keep the mesh whole; expose it as one surface entity.
+      mesh.userData.groupId = volumeId;
+      mesh.userData.entityType = "surface";
+      mesh.userData.entityId = `${volumeId}/face-0`;
+      // BVH-accelerate kept-whole meshes (the dense-scan case — closed as
+      // "BVH-accelerated raycasting for kept-whole meshes", see CLAUDE.md).
+      // `indirect: true` preserves the original triangle
+      // order so any index-based logic stays correct if later code keys on it.
+      // The BVH lives with the geometry for the session; it is freed when the
+      // geometry is disposed on document close — no per-rebuild disposal needed
+      // (the geometry is shared with the cached pristine clone).
+      const geo = mesh.geometry as THREE.BufferGeometry;
+      if (!geo.boundsTree) {
+        try {
+          geo.computeBoundsTree?.({ indirect: true });
+        } catch {
+          // BVH build failure is non-fatal — fall back to brute-force raycast.
+        }
       }
+      return mesh;
     }
-    return mesh;
+  } else {
+    buckets = Array.from({ length: facetCount }, () => []);
+    facetOf.forEach((f, t) => buckets[f].push(t));
   }
 
   const pos = geometry.getAttribute("position") as THREE.BufferAttribute;
@@ -167,15 +206,23 @@ export function buildMeshFacetGroup(mesh: THREE.Mesh, volumeId: string, triangle
   const corner = (t: number, k: number): number =>
     index ? index.getX(t * 3 + k) : t * 3 + k;
 
-  const buckets: number[][] = Array.from({ length: facetCount }, () => []);
-  facetOf.forEach((f, t) => buckets[f].push(t));
-
   const group = new THREE.Group();
   group.name = mesh.name;
   group.userData.groupId = volumeId;
   group.position.copy(mesh.position);
   group.quaternion.copy(mesh.quaternion);
   group.scale.copy(mesh.scale);
+
+  // Per-corner attributes a loader may have supplied; copied into each facet
+  // so a native colour/texture survives the split. Interleaved attributes are
+  // not produced by any loader here and are skipped.
+  const carried: { name: string; attr: THREE.BufferAttribute }[] = [];
+  for (const name of ["color", "uv"]) {
+    const attr = geometry.getAttribute(name);
+    if (attr && !(attr as { isInterleavedBufferAttribute?: boolean }).isInterleavedBufferAttribute) {
+      carried.push({ name, attr: attr as THREE.BufferAttribute });
+    }
+  }
 
   buckets.forEach((tris, fIdx) => {
     const positions = new Float32Array(tris.length * 9);
@@ -190,8 +237,24 @@ export function buildMeshFacetGroup(mesh: THREE.Mesh, volumeId: string, triangle
     }
     const g = new THREE.BufferGeometry();
     g.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+    for (const { name, attr } of carried) {
+      const Ctor = attr.array.constructor as new (n: number) => THREE.TypedArray;
+      const out = new Ctor(tris.length * 3 * attr.itemSize);
+      let w = 0;
+      for (const t of tris) {
+        for (let k = 0; k < 3; k++) {
+          const vi = corner(t, k);
+          for (let c = 0; c < attr.itemSize; c++) out[w++] = attr.array[vi * attr.itemSize + c];
+        }
+      }
+      g.setAttribute(name, new THREE.BufferAttribute(out, attr.itemSize, attr.normalized));
+    }
     g.computeVertexNormals();
-    const m = new THREE.Mesh(g, makeFaceMaterial());
+    // A facet takes the material of its triangles (one material per facet by
+    // construction when gated). A native material is cloned — each facet
+    // needs its own so a Part colour on one facet cannot repaint the rest.
+    const source = mats[triMaterial ? triMaterial[tris[0]] : 0];
+    const m = new THREE.Mesh(g, isNativeColor(source) ? cloneNativeColor(source) : makeFaceMaterial());
     // Same stash `geometryBuilder.ts`'s `buildFaceMesh()` does — required by
     // `Viewer.setDisplayMode()`'s Flat mode material swap.
     m.userData.standardMaterial = m.material;
@@ -202,6 +265,25 @@ export function buildMeshFacetGroup(mesh: THREE.Mesh, volumeId: string, triangle
   });
 
   return group;
+}
+
+/**
+ * Per-triangle material index from a geometry's draw groups (OBJLoader emits
+ * one group per `usemtl` run). Triangles outside every group, and group
+ * indices outside the material list, fall back to material 0.
+ */
+export function triangleMaterialIndex(geometry: THREE.BufferGeometry, materialCount: number): Int32Array {
+  const pos = geometry.getAttribute("position");
+  const index = geometry.getIndex();
+  const triCount = Math.floor((index ? index.count : pos.count) / 3);
+  const out = new Int32Array(triCount);
+  for (const g of geometry.groups) {
+    const mi = g.materialIndex !== undefined && g.materialIndex >= 0 && g.materialIndex < materialCount ? g.materialIndex : 0;
+    const first = Math.floor(g.start / 3);
+    const last = Math.min(triCount, Math.floor((g.start + g.count) / 3));
+    for (let t = first; t < last; t++) out[t] = mi;
+  }
+  return out;
 }
 
 function disposeMesh(mesh: THREE.Mesh): void {

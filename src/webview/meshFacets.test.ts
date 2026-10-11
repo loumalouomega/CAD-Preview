@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import * as THREE from "three";
-import { segmentCoplanarFacets, buildMeshFacetGroup, FACET_ANGLE_TOLERANCE, MAX_FACETS } from "./meshFacets";
+import { segmentCoplanarFacets, buildMeshFacetGroup, triangleMaterialIndex, FACET_ANGLE_TOLERANCE, MAX_FACETS } from "./meshFacets";
+import { applyNativeColor, isNativeColor, markNativeColor } from "./nativeColor";
 
 function facetCount(facetOf: number[]): number {
   return facetOf.length ? Math.max(...facetOf) + 1 : 0;
@@ -180,5 +181,159 @@ describe("buildMeshFacetGroup", () => {
     // Calling again (same mesh, same volumeId) must not clear or replace the tree.
     buildMeshFacetGroup(mesh, "node-0");
     expect(geo.boundsTree).toBe(first);
+  });
+});
+
+describe("native colours through the facet split", () => {
+  const native = (hex: number, vertexColors = false) => {
+    const m = new THREE.MeshStandardMaterial({ color: hex, vertexColors });
+    markNativeColor(m);
+    return m;
+  };
+
+  /** A non-indexed unit cube with a `color` attribute: one colour per face. */
+  function colouredCube(): THREE.Mesh {
+    const geo = new THREE.BoxGeometry(1, 1, 1).toNonIndexed();
+    const n = geo.getAttribute("position").count;
+    const colors = new Float32Array(n * 3);
+    for (let v = 0; v < n; v++) {
+      const face = Math.floor(v / 6); // 2 triangles x 3 corners per face
+      colors[v * 3] = face / 5;
+      colors[v * 3 + 1] = 1 - face / 5;
+      colors[v * 3 + 2] = 0.5;
+    }
+    geo.setAttribute("color", new THREE.BufferAttribute(colors, 3));
+    return new THREE.Mesh(geo, native(0xffffff, true));
+  }
+
+  it("copies the colour attribute into every facet and keeps a vertex-coloured material", () => {
+    const out = buildMeshFacetGroup(colouredCube(), "node-0");
+    expect(out.children).toHaveLength(6);
+    const seen = new Set<string>();
+    for (const c of out.children as THREE.Mesh[]) {
+      const col = c.geometry.getAttribute("color");
+      expect(col).toBeDefined();
+      expect(col.count).toBe(c.geometry.getAttribute("position").count);
+      const mat = c.material as THREE.MeshStandardMaterial;
+      expect(mat.vertexColors).toBe(true);
+      expect(isNativeColor(mat)).toBe(true);
+      seen.add([col.getX(0), col.getY(0), col.getZ(0)].map((v) => v.toFixed(2)).join(","));
+    }
+    expect(seen.size).toBe(6); // each facet kept its own colour
+  });
+
+  it("each facet owns its material: a Part colour on one does not repaint the rest", () => {
+    const out = buildMeshFacetGroup(colouredCube(), "node-0");
+    const [a, b] = out.children as THREE.Mesh[];
+    expect(a.material).not.toBe(b.material);
+    applyNativeColor(a.material as THREE.MeshStandardMaterial, 0xff0000);
+    expect((a.material as THREE.MeshStandardMaterial).vertexColors).toBe(false);
+    expect((b.material as THREE.MeshStandardMaterial).vertexColors).toBe(true);
+  });
+
+  it("copies uv into the facets", () => {
+    const mesh = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), native(0xffffff));
+    const out = buildMeshFacetGroup(mesh, "node-0");
+    for (const c of out.children as THREE.Mesh[]) {
+      expect(c.geometry.getAttribute("uv")).toBeDefined();
+    }
+  });
+
+  it("a plain mesh still gets fresh palette materials and no extra attributes", () => {
+    const out = buildMeshFacetGroup(new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1).toNonIndexed()), "node-0");
+    for (const c of out.children as THREE.Mesh[]) {
+      expect(isNativeColor(c.material as THREE.Material)).toBe(false);
+      expect(c.geometry.getAttribute("color")).toBeUndefined();
+    }
+  });
+
+  it("a kept-whole vertex-coloured mesh keeps its material and attribute", () => {
+    const geo = new THREE.PlaneGeometry(1, 1).toNonIndexed();
+    geo.setAttribute("color", new THREE.BufferAttribute(new Float32Array(geo.getAttribute("position").count * 3).fill(0.5), 3));
+    const mesh = new THREE.Mesh(geo, native(0xffffff, true));
+    expect(buildMeshFacetGroup(mesh, "node-0")).toBe(mesh);
+    expect((mesh.material as THREE.MeshStandardMaterial).vertexColors).toBe(true);
+  });
+});
+
+describe("multi-material meshes through the facet split", () => {
+  /** A cube whose +X/+Y/+Z faces use material 0 and whose others use material 1. */
+  function twoMaterialCube(nativeMats: boolean): THREE.Mesh {
+    const geo = new THREE.BoxGeometry(1, 1, 1); // groups: one per face, in +x,-x,+y,-y,+z,-z order
+    geo.clearGroups();
+    // BoxGeometry emits 2 triangles (6 indices) per face in that order.
+    [0, 1, 0, 1, 0, 1].forEach((mi, face) => geo.addGroup(face * 6, 6, mi));
+    const mats = [new THREE.MeshStandardMaterial({ color: 0xcc2222 }), new THREE.MeshStandardMaterial({ color: 0x2222cc })];
+    if (nativeMats) mats.forEach(markNativeColor);
+    return new THREE.Mesh(geo, mats);
+  }
+
+  it("derives a per-triangle material index from the draw groups", () => {
+    const idx = triangleMaterialIndex(twoMaterialCube(true).geometry, 2);
+    expect(Array.from(idx)).toEqual([0, 0, 1, 1, 0, 0, 1, 1, 0, 0, 1, 1]);
+  });
+
+  it("falls back to material 0 for triangles outside every group and out-of-range indices", () => {
+    const geo = new THREE.BoxGeometry(1, 1, 1);
+    geo.clearGroups();
+    geo.addGroup(0, 6, 7); // index 7 does not exist in a 2-material list
+    const idx = triangleMaterialIndex(geo, 2);
+    expect(Array.from(idx).every((v) => v === 0)).toBe(true);
+    expect(idx).toHaveLength(12);
+  });
+
+  it("a native array gives each facet the material of its triangles", () => {
+    const mesh = twoMaterialCube(true);
+    const out = buildMeshFacetGroup(mesh, "node-0");
+    const hexes = (out.children as THREE.Mesh[]).map((c) => (c.material as THREE.MeshStandardMaterial).color.getHex());
+    expect(out.children).toHaveLength(6);
+    expect(hexes.filter((h) => h === new THREE.Color(0xcc2222).getHex())).toHaveLength(3);
+    expect(hexes.filter((h) => h === new THREE.Color(0x2222cc).getHex())).toHaveLength(3);
+    for (const c of out.children as THREE.Mesh[]) expect(Array.isArray(c.material)).toBe(false);
+  });
+
+  it("the coplanar +X face is split in two when its triangles use different materials (gating, not fallback)", () => {
+    const geo = new THREE.BoxGeometry(1, 1, 1);
+    geo.clearGroups();
+    // face 0 (+X) = triangles 0 and 1: give them different materials; the rest material 0.
+    geo.addGroup(0, 3, 0);
+    geo.addGroup(3, 3, 1);
+    geo.addGroup(6, 30, 0);
+    const mats = [new THREE.MeshStandardMaterial({ color: 0xff0000 }), new THREE.MeshStandardMaterial({ color: 0x0000ff })];
+    mats.forEach(markNativeColor);
+    const out = buildMeshFacetGroup(new THREE.Mesh(geo, mats), "node-0");
+    expect(out.children).toHaveLength(7); // 6 faces + the split one; ungated it would be 6
+  });
+
+  it("a single flat quad with one triangle per material becomes two surfaces", () => {
+    // One flat quad = 2 coplanar triangles, one per material (kept-whole-by-material path).
+    const geo = new THREE.PlaneGeometry(1, 1);
+    geo.clearGroups();
+    geo.addGroup(0, 3, 0);
+    geo.addGroup(3, 3, 1);
+    const mats = [new THREE.MeshStandardMaterial({ color: 0xff0000 }), new THREE.MeshStandardMaterial({ color: 0x0000ff })];
+    mats.forEach(markNativeColor);
+    const out = buildMeshFacetGroup(new THREE.Mesh(geo, mats), "node-0");
+    expect(out.children).toHaveLength(2);
+  });
+
+  it("a non-native array (no .mtl) collapses to one default material, as before", () => {
+    const mesh = twoMaterialCube(false);
+    const out = buildMeshFacetGroup(mesh, "node-0");
+    expect(out.children).toHaveLength(6); // facet ids ignore the unresolved materials
+    for (const c of out.children as THREE.Mesh[]) {
+      expect(Array.isArray(c.material)).toBe(false);
+      expect(isNativeColor(c.material as THREE.Material)).toBe(false);
+    }
+  });
+
+  it("a non-native array on a kept-whole mesh no longer leaves an array material behind", () => {
+    const geo = new THREE.PlaneGeometry(1, 1);
+    geo.clearGroups();
+    geo.addGroup(0, 6, 0);
+    const mesh = new THREE.Mesh(geo, [new THREE.MeshStandardMaterial(), new THREE.MeshStandardMaterial()]);
+    const out = buildMeshFacetGroup(mesh, "node-0");
+    expect(out).toBe(mesh);
+    expect(Array.isArray((out as THREE.Mesh).material)).toBe(false);
   });
 });

@@ -23,6 +23,21 @@ function ensureUvForCsg(geo: THREE.BufferGeometry): void {
   geo.setAttribute("uv", new THREE.BufferAttribute(new Float32Array(geo.getAttribute("position").count * 2), 2));
 }
 
+/**
+ * The material for a CSG result. The Evaluator keeps only position/uv/normal,
+ * so a result built from a vertex-coloured mesh (PLY) has no `color` attribute
+ * — keeping the source's `vertexColors` material would render it black — and a
+ * multi-material OBJ's material ARRAY would draw nothing on a geometry with no
+ * draw groups. The first material is used for an array; a vertex-coloured
+ * source falls back to the palette default (its colours cannot survive the
+ * boolean).
+ */
+export function csgResultMaterial(source: THREE.Material | THREE.Material[], result: THREE.BufferGeometry): THREE.Material {
+  const first = Array.isArray(source) ? source[0] : source;
+  if ((first as THREE.MeshStandardMaterial).vertexColors && !result.getAttribute("color")) return makeFaceMaterial();
+  return first;
+}
+
 /** Above this many combined triangles, a `three-bvh-csg` boolean/hole would
  * likely freeze the webview's main thread — degrade to a status message
  * instead. Tuned empirically against THIS codebase's `Evaluator` (not a
@@ -213,7 +228,7 @@ function applyMeshBoolean(
     op.kind === "union" ? ADDITION : op.kind === "subtract" ? SUBTRACTION : INTERSECTION;
   const result = csg.evaluate(brushA, brushB, operation);
 
-  const out = new THREE.Mesh(result.geometry, aMesh.material);
+  const out = new THREE.Mesh(result.geometry, csgResultMaterial(aMesh.material, result.geometry));
   out.userData.groupId = op.a[0]; // keep a stable id for tagging/colouring
 
   // Remove both operands (and any extra resolved targets) then attach the result.
@@ -279,7 +294,7 @@ function applyMeshHole(
   let result = targetBrush;
   for (const tool of tools) result = csg.evaluate(result, tool, SUBTRACTION);
 
-  const out = new THREE.Mesh(result.geometry, targetMesh.material);
+  const out = new THREE.Mesh(result.geometry, csgResultMaterial(targetMesh.material, result.geometry));
   out.userData.groupId = op.targets[0]; // keep a stable id for tagging/colouring
   for (const o of resolveMeshTargets(root, op.targets)) o.parent?.remove(o);
   root.add(out);

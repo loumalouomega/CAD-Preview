@@ -103,13 +103,20 @@ Binary and ASCII STL are both supported via `STLLoader`. The result is a single 
 
 `OBJLoader` produces a `THREE.Group` of meshes corresponding to the `o` / `g` groups in the OBJ file.
 
-**Limitation:** `.mtl` material files are not loaded. If the OBJ file references an MTL, the material block is ignored and a default material is applied by `applyDefaultMaterial()` in `src/webview/meshLoaders.ts`.
+**Materials.** When the OBJ names a `.mtl` (`mtllib`), the viewer loads it from beside the model — the same plain-relative-path rule glTF external buffers follow (`src/safeRelativePath.ts`: no scheme, no absolute path, no `..`), so only the model's own folder is read. The diffuse colour (`Kd`) and diffuse texture (`map_Kd`) of each `usemtl` are shown; opacity (`d`/`Tr`), specular and bump/other maps are ignored, and the viewer shades with its own lights. A missing, unreadable or unsafe `.mtl` falls back to the default material and says so on the status line — it never fails the open. A **Part colour** replaces the file colour on its faces (it is not multiplied into it), and removing the Part brings the file colour back; Flat mode keeps the colours.
+
+**Limitations.**
+- Materials are display-only and webview-only. The host-side parsers and the headless mesh-edit bake read geometry only (the object hierarchy, and with it every `node-N` id, is identical either way), and saving an OBJ in place re-emits geometry — no `mtllib`/`usemtl` lines.
+- A mesh with more than one resolved material is split into facets **per material** (no facet straddles two materials), so a multi-material OBJ's `node-N/face-K` ids differ from what the same file produced before its `.mtl` was shown. Single-material and `.mtl`-less OBJs keep their ids.
+- A boolean or hole on a textured mesh keeps its material but the texture coordinates interpolate across the operands.
 
 ### PLY
 
 `PLYLoader` loads the file as a single `THREE.BufferGeometry`. If the PLY file lacks vertex normals, `computeVertexNormals()` is called automatically to generate smooth normals.
 
-**Limitation:** Vertex colors in PLY are not currently applied to the material.
+**Vertex colours.** A PLY with per-vertex `red`/`green`/`blue` (or per-face colours, which `PLYLoader` expands onto its vertices) renders in those colours, unmodified, in Shaded and Flat modes, and each facet keeps its colours through the facet split. A Part colour replaces them; removing the Part restores them.
+
+**Limitation:** a boolean or hole on a vertex-coloured mesh cannot keep the colours (the CSG engine carries only position, uv and normal), so its result falls back to the default material. Alpha is ignored. Saving a PLY in place writes whatever colours the exporter emits for the displayed model.
 
 ### glTF / GLB
 

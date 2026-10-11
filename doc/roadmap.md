@@ -171,7 +171,7 @@ CAD-Preview moved from `GPL-2.0-or-later` to `GPL-3.0-or-later` on 2026-09-24. B
 | Dependency | Licence | Use | Item |
 | --- | --- | --- | --- |
 | [`manifold-3d`](https://www.npmjs.com/package/manifold-3d) 3.5.3 | Apache-2.0 | Mesh booleans whose output is guaranteed manifold, unlike `three-bvh-csg`'s | [Manifold mesh booleans](#manifold-mesh-booleans) |
-| [`draco3d`](https://www.npmjs.com/package/draco3d) 1.5.7 | Apache-2.0 | Decoding Draco-compressed glTF host-side, which `gltfParser.ts` rejects today | [Mesh display fidelity](#mesh-display-fidelity-obj-materials-ply-colours-compressed-gltf) |
+| [`draco3d`](https://www.npmjs.com/package/draco3d) 1.5.7 | Apache-2.0 | Decoding Draco-compressed glTF host-side, which `gltfParser.ts` rejects today | [Compressed glTF](#mesh-display-fidelity-obj-materials-ply-colours-compressed-gltf) |
 
 It does **not** admit AGPL code, so TetGen stays rejected. Every new bundled dependency still gets the licence check the Definition of done asks for.
 
@@ -219,22 +219,17 @@ These are outcome groupings, not release numbers. Independent small items can sh
 
 *Admission: no kernel unknown remains. Either a probe passed and its call shapes are in `CLAUDE.md`, or the work only reuses shipped machinery. The estimate is firm.*
 
-#### 2.1 Mesh display fidelity: OBJ materials, PLY colours, compressed glTF {#mesh-display-fidelity-obj-materials-ply-colours-compressed-gltf}
+#### 2.1 Compressed glTF (Draco and meshopt) {#mesh-display-fidelity-obj-materials-ply-colours-compressed-gltf}
 
 *Area: Formats.*
 
-- **Evidence:** `doc/file-formats.md` and the Known limitations list record three gaps.
-  - **OBJ:** loads without its `.mtl` materials.
-  - **PLY:** loads without its vertex colours.
-  - **Compressed glTF:** a glTF that requires Draco or meshopt compression is refused host-side by `gltfParser.ts`. It also has no decoder in the webview.
-  - **What's already there:** three ships `MTLLoader` and `DRACOLoader`. `PLYLoader` already produces a colour attribute, which the viewer ignores. `draco3d` is Apache-2.0 and now licence-compatible (see [What the GPL-3.0 relicense unlocks](#relicense-unlocks)).
-- **First useful increment:**
-  - **OBJ materials (S):** load `.mtl` through `asWebviewUri`, with the same sibling-file rule glTF external buffers already follow.
-  - **PLY colours (S):** render the colour attribute when it is present.
-  - **Compressed glTF (M):**
-    - Serve the Draco decoder files from `dist/` under the existing CSP.
-    - Decode host-side with `draco3d`, so Compare Models, Mesh Health and Promote accept the file too. `meshopt` follows the same pattern.
-- **Done when:** each has a committed fixture that renders correctly in `test:webview`, and the compressed fixture passes `check_mesh_health`.
+- **Evidence:** a glTF that requires `KHR_draco_mesh_compression` or `EXT_meshopt_compression` is refused host-side by `gltfParser.ts` (a clear error naming the extension) and has no decoder in the webview either, so the file neither previews nor feeds Compare Models, Mesh Health or Promote. The other two gaps this item once held — OBJ `.mtl` materials and PLY vertex colours — have shipped (`CLAUDE.md`'s "Mesh display fidelity" section).
+- **What's already there:** three ships `DRACOLoader` and `MeshoptDecoder`. `draco3d` is Apache-2.0 and licence-compatible (see [What the GPL-3.0 relicense unlocks](#relicense-unlocks)).
+- **First useful increment (M):**
+  - **Webview:** serve the Draco decoder files from `dist/` and set up `DRACOLoader`/`MeshoptDecoder` in the glTF path. The CSP needs `worker-src blob:` for the loader's Blob worker and `'wasm-unsafe-eval'` for the WASM decoder — neither is allowed today (`default-src 'none'`), and `test:webview` runs without a CSP, so this needs a `test:integration` case.
+  - **Host:** decode with `draco3d` ahead of `gltfParser.ts` so Compare Models, Mesh Health and Promote accept the file too; `meshopt` follows the same pattern. The headless mesh-edit bake (`parseGltfObject`) needs the same decoder or it keeps refusing.
+  - Both halves need `copyDracoDecoder()`-style staging in `esbuild.mjs`, a matching `.vscodeignore` carve-out and a `compat:vsix` required-file entry.
+- **Done when:** a committed Draco fixture and a meshopt fixture render in the viewer under the real CSP and pass `check_mesh_health`.
 
 #### 2.2 More mesh formats through three's bundled loaders {#more-mesh-formats-through-three-s-bundled-loaders}
 

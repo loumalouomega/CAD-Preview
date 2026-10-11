@@ -31,6 +31,7 @@
  */
 
 import { weldTriangleSoup, type WeldedMesh } from "./meshComponents";
+import { isSafeRelativePath } from "./safeRelativePath";
 
 export type { WeldedMesh };
 
@@ -130,28 +131,6 @@ function parseJsonDocument(bytes: Uint8Array): GltfDocument {
   return json as GltfDocument;
 }
 
-/**
- * Rejects any buffer URI that isn't a plain relative path beside the model.
- * A `.gltf` is untrusted input and this extension is read-only by design, so
- * a URI with a scheme (`http:`/`file:`/…), an absolute path, or a `..` segment
- * that escapes the model's own directory is never fetched — it is simply left
- * out of the resolved map, which makes `parseGltf` throw a clear "buffer was
- * not provided" error rather than silently reading something it shouldn't.
- */
-function isSafeBufferUri(uri: string): boolean {
-  if (uri.length === 0) return false;
-  if (/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(uri)) return false; // any scheme, incl. data:/http:/file:
-  if (uri.startsWith("/") || uri.startsWith("\\")) return false; // POSIX absolute
-  if (/^[a-zA-Z]:[\\/]/.test(uri)) return false; // Windows drive-absolute
-  let decoded = uri;
-  try {
-    decoded = decodeURIComponent(uri);
-  } catch {
-    return false;
-  }
-  return !decoded.split(/[\\/]/).some((segment) => segment === "..");
-}
-
 function bufferUris(json: GltfDocument): string[] {
   const buffers = Array.isArray(json.buffers) ? json.buffers : [];
   const uris: string[] = [];
@@ -178,7 +157,7 @@ export function listExternalBufferUris(bytes: Uint8Array): string[] {
 /**
  * Reads every URI `listExternalBufferUris` reports via a caller-supplied
  * reader — `mcpTools.ts` passes a `node:fs` one, `modelComparePanel.ts` a
- * `vscode.workspace.fs` one. Unsafe URIs (see `isSafeBufferUri`) are skipped
+ * `vscode.workspace.fs` one. Unsafe URIs (see `isSafeRelativePath`) are skipped
  * without ever calling `read`, and a URI the reader can't resolve is simply
  * absent from the result.
  */
@@ -188,7 +167,7 @@ export async function resolveExternalBuffers(
 ): Promise<GltfExternalBuffers> {
   const resolved: GltfExternalBuffers = {};
   for (const uri of listExternalBufferUris(bytes)) {
-    if (!isSafeBufferUri(uri)) continue;
+    if (!isSafeRelativePath(uri)) continue;
     const data = await read(uri);
     if (data) resolved[uri] = data;
   }
