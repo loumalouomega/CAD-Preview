@@ -2716,7 +2716,7 @@ test("command bar: $sel expands to the selection by field type; wrong kinds expl
   await populate(page);
   const none = await sentCount(page, "editsChanged");
   await typeCommand(page, 'translate {"targets":$sel,"vec":[1,0,0]}');
-  assert(/selected solids/.test(await cmdMessage(page)), `$sel with nothing selected names what is missing (got ${JSON.stringify(await cmdMessage(page))})`);
+  assert(/needs selected volumes \(Vol mode\)/.test(await cmdMessage(page)), `$sel with nothing selected names what is missing (got ${JSON.stringify(await cmdMessage(page))})`);
   assert((await sentCount(page, "editsChanged")) === none, "…and posts nothing");
 
   await enablePicking(page, "volume");
@@ -2767,14 +2767,19 @@ test("command bar: history recalls earlier lines and Tab completes a command", a
   await populate(page);
   await typeCommand(page, "addBxo");
   await typeCommand(page, "addSphereX");
+  // A rejected line stays in the input so it can be corrected, so the draft
+  // has to be set deliberately: it is whatever the user had typed before the
+  // first ArrowUp, and that is what ArrowDown past the newest must restore.
+  await page.fill("#cmdbar-input", "addCyl");
   await page.focus("#cmdbar-input");
   await page.press("#cmdbar-input", "ArrowUp");
   assert((await page.inputValue("#cmdbar-input")) === "addSphereX", "ArrowUp recalls the most recent line");
   await page.press("#cmdbar-input", "ArrowUp");
   assert((await page.inputValue("#cmdbar-input")) === "addBxo", "a second ArrowUp goes further back");
   await page.press("#cmdbar-input", "ArrowDown");
+  assert((await page.inputValue("#cmdbar-input")) === "addSphereX", "ArrowDown walks forward again");
   await page.press("#cmdbar-input", "ArrowDown");
-  assert((await page.inputValue("#cmdbar-input")) === "", "ArrowDown past the newest restores the draft");
+  assert((await page.inputValue("#cmdbar-input")) === "addCyl", "ArrowDown past the newest restores the draft");
   await page.fill("#cmdbar-input", "addCyl");
   await page.press("#cmdbar-input", "Tab");
   assert((await page.inputValue("#cmdbar-input")).startsWith("addCylinder"), `Tab completes a unique prefix (got ${JSON.stringify(await page.inputValue("#cmdbar-input"))})`);
