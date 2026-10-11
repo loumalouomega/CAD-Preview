@@ -135,6 +135,9 @@ function isOcctWasmAbort(message: string): boolean {
 export function wrapOcctFault(err: unknown): Error {
   const raw = ((err as Error)?.message ?? String(err)).trim();
   if (!isOcctWasmAbort(raw)) return err instanceof Error ? err : new Error(raw);
+  // Opt-in diagnostics: the wrapped error below loses the JS stack that names
+  // the OCCT binding a trap came from.
+  if (process.env.CAD_PREVIEW_KERNEL_TRACE) console.error(`[occt-abort] ${err instanceof Error ? err.stack : String(err)}`);
   resetOcct();
   return new Error(`OCCT crashed (${raw || "WASM abort"}) — the kernel has been reset; try the operation again.`);
 }
@@ -221,6 +224,10 @@ export interface BRepCacheEntry {
   /** Per-solid id/label/face-count of the last tessellation, so
    * {@link resolveAssemblyTree} can rebuild the tree after the fact. */
   treeGroups: TreeGroupSummary[];
+  /** Per-solid id/centre/volume of `shape`, computed at load time ONLY when the
+   * assembly read is deferred, so {@link resolveAssemblyTree} correlates in pure
+   * JS and never touches live shape handles from a later job. */
+  solidSigs?: SolidSig[];
   ops: EditOp[];
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   shape: any;
@@ -436,13 +443,14 @@ export async function loadBRepCached(
     const edges = extractEdges(oc, shape);
     const points = extractVertices(oc, shape);
     const tree = buildTree(oc, format, groups, shape, assemblyTreeCache ?? null);
+    const solidSigs = assemblyTreeCache === undefined ? solidSignatures(oc, shape) : undefined;
     const guideTmp: Array<{ delete(): void }> = [];
     const guideIds = collectGuideIds(oc, shape, guideCollector, guideTmp);
     for (let i = guideTmp.length - 1; i >= 0; i--) try { guideTmp[i].delete(); } catch { /* ignore */ }
     // The cache stores the FOLDED list (resolved ops for query documents) —
     // the append check above compares against it, so a query document's next
     // call (whose sidecar ops still carry queries) correctly misses.
-    const cache: BRepCacheEntry = { ocInstance: oc, bytes, format, baseShape, baseCleanup, assemblyTreeCache, treeGroups: summarizeGroups(groups), ops: foldOps, shape, opsCleanup, opOutcomes, opBuckets, guideCollector, guideIds, pointRefs, warnings: baseWarnings };
+    const cache: BRepCacheEntry = { ocInstance: oc, bytes, format, baseShape, baseCleanup, assemblyTreeCache, treeGroups: summarizeGroups(groups), solidSigs, ops: foldOps, shape, opsCleanup, opOutcomes, opBuckets, guideCollector, guideIds, pointRefs, warnings: baseWarnings };
     const result: BRepResult = { groups, edges, points, tree, opOutcomes, opBuckets, guideIds, queryWarnings };
     if (pointRefs.length > 0) result.pointRefs = pointRefs;
     if (baseWarnings.length > 0) result.warnings = [...baseWarnings];
@@ -560,10 +568,41 @@ export async function resolveAssemblyTree(extensionPath: string, entry: BRepCach
   if (entry.ocInstance !== oc || entry.format !== "step") return null;
   try {
     if (entry.assemblyTreeCache === undefined) entry.assemblyTreeCache = readAssemblyInfo(oc, entry.bytes);
-    return correlatedTree(oc, entry.format, entry.treeGroups, entry.shape, entry.assemblyTreeCache);
+    if (!entry.assemblyTreeCache) return null;
+    const sigs = entry.solidSigs ?? solidSignatures(oc, entry.shape);
+    return treeFromSignatures(entry.format, entry.treeGroups, sigs, entry.assemblyTreeCache);
   } catch (err) {
     throw wrapOcctFault(err);
   }
+}
+
+interface SolidSig { id: string; centre: [number, number, number]; volume: number }
+
+/** Fingerprints every solid of `shape` (centre + volume) as plain data. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function solidSignatures(oc: any, shape: unknown): SolidSig[] {
+  const cleanup: Array<{ delete(): void }> = [];
+  try {
+    return collectSolids(oc, shape, cleanup).map(({ id, solid }) => {
+      const props = new oc.GProp_GProps_1();
+      cleanup.push(props);
+      volumePropertiesAdaptive(oc, solid, props);
+      return { id, centre: bboxCenter(oc, solid, cleanup), volume: props.Mass() };
+    });
+  } finally {
+    for (let i = cleanup.length - 1; i >= 0; i--) {
+      try { cleanup[i].delete(); } catch { /* ignore */ }
+    }
+  }
+}
+
+/** Pure half: the nested tree when `assemblyTreeCache` cleanly correlates against `sigs`, else `null`. */
+function treeFromSignatures(format: string, groups: TreeGroupSummary[], sigs: SolidSig[], assemblyTreeCache: XcafAssemblyInfo): TreeNode | null {
+  const correlated = correlateAssemblyTree(assemblyTreeCache, sigs);
+  if (correlated?.children) {
+    return { id: "root", label: format.toUpperCase(), children: correlated.children.map(attachFaceCounts.bind(null, groups)) };
+  }
+  return null;
 }
 
 /** The nested tree when `assemblyTreeCache` cleanly correlates against the
@@ -572,20 +611,7 @@ export async function resolveAssemblyTree(extensionPath: string, entry: BRepCach
 function correlatedTree(oc: any, format: string, groups: TreeGroupSummary[], shape: unknown, assemblyTreeCache: XcafAssemblyInfo | null): TreeNode | null {
   if (!assemblyTreeCache) return null;
   try {
-    const cleanup: Array<{ delete(): void }> = [];
-    const currentSolids = collectSolids(oc, shape, cleanup).map(({ id, solid }) => {
-      const props = new oc.GProp_GProps_1();
-      cleanup.push(props);
-      volumePropertiesAdaptive(oc, solid, props);
-      return { id, centre: bboxCenter(oc, solid, cleanup), volume: props.Mass() };
-    });
-    const correlated = correlateAssemblyTree(assemblyTreeCache, currentSolids);
-    for (let i = cleanup.length - 1; i >= 0; i--) {
-      try { cleanup[i].delete(); } catch { /* ignore */ }
-    }
-    if (correlated?.children) {
-      return { id: "root", label: format.toUpperCase(), children: correlated.children.map(attachFaceCounts.bind(null, groups)) };
-    }
+    return treeFromSignatures(format, groups, solidSignatures(oc, shape), assemblyTreeCache);
   } catch {
     /* falls through to the flat tree */
   }

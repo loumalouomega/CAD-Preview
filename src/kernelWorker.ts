@@ -182,6 +182,10 @@ const handlers: Record<keyof DocumentPipeline, Handler> = {
   bakeMeshEdits: bakeMeshEdits as Handler,
 };
 
+function isOcctReset(err: unknown): boolean {
+  return err instanceof Error && /^OCCT crashed .*the kernel has been reset/s.test(err.message);
+}
+
 process.on("message", (msg: KernelRequest) => {
   void (async () => {
     const { id, fn, args } = msg;
@@ -189,7 +193,20 @@ process.on("message", (msg: KernelRequest) => {
       const handler = handlers[fn as keyof DocumentPipeline];
       if (!handler) throw new Error(`kernel-worker: unknown function "${fn}"`);
       const decodedArgs = args.map(unmarshal);
-      const result = await handler(...decodedArgs);
+      let result: unknown;
+      try {
+        result = await handler(...decodedArgs);
+      } catch (first) {
+        if (!isOcctReset(first)) throw first;
+        // An OCCT WASM trap already reset the singleton (`wrapOcctFault`), so a
+        // second attempt runs on a fresh module. Every handler is a pure
+        // function of its arguments, so one retry is safe; a document's cached
+        // entry belongs to the dead instance and is dropped (not disposed —
+        // the old heap is corrupt).
+        if (process.env.CAD_PREVIEW_KERNEL_TRACE) console.error(`[kernel-retry] ${fn}: ${(first as Error).message}`);
+        if (fn === "loadBRepCachedForDocument" && typeof decodedArgs[0] === "string") brepCacheByDocument.delete(decodedArgs[0]);
+        result = await handler(...decodedArgs);
+      }
       const response: KernelResponse = { id, ok: true, result: marshal(result) };
       process.send?.(response);
     } catch (err) {
