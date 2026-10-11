@@ -166,12 +166,11 @@ The only open GitHub issue, #35 "OpenSCAD", is covered by the [OpenSCAD WASM por
 
 ### What the GPL-3.0 relicense unlocks {#relicense-unlocks}
 
-CAD-Preview moved from `GPL-2.0-or-later` to `GPL-3.0-or-later` on 2026-09-24. Besides the OpenSCAD port it was made for, this admits Apache-2.0 dependencies: under GPLv2 they were incompatible, and under GPLv3 they are compatible. Two of them serve open items directly:
+CAD-Preview moved from `GPL-2.0-or-later` to `GPL-3.0-or-later` on 2026-09-24. Besides the OpenSCAD port it was made for, this admits Apache-2.0 dependencies: under GPLv2 they were incompatible, and under GPLv3 they are compatible. One of them serves an open item directly (the other, `draco3d`, shipped with compressed glTF):
 
 | Dependency | Licence | Use | Item |
 | --- | --- | --- | --- |
 | [`manifold-3d`](https://www.npmjs.com/package/manifold-3d) 3.5.3 | Apache-2.0 | Mesh booleans whose output is guaranteed manifold, unlike `three-bvh-csg`'s | [Manifold mesh booleans](#manifold-mesh-booleans) |
-| [`draco3d`](https://www.npmjs.com/package/draco3d) 1.5.7 | Apache-2.0 | Decoding Draco-compressed glTF host-side, which `gltfParser.ts` rejects today | [Compressed glTF](#mesh-display-fidelity-obj-materials-ply-colours-compressed-gltf) |
 
 It does **not** admit AGPL code, so TetGen stays rejected. Every new bundled dependency still gets the licence check the Definition of done asks for.
 
@@ -219,19 +218,7 @@ These are outcome groupings, not release numbers. Independent small items can sh
 
 *Admission: no kernel unknown remains. Either a probe passed and its call shapes are in `CLAUDE.md`, or the work only reuses shipped machinery. The estimate is firm.*
 
-#### 2.1 Compressed glTF (Draco and meshopt) {#mesh-display-fidelity-obj-materials-ply-colours-compressed-gltf}
-
-*Area: Formats.*
-
-- **Evidence:** a glTF that requires `KHR_draco_mesh_compression` or `EXT_meshopt_compression` is refused host-side by `gltfParser.ts` (a clear error naming the extension) and has no decoder in the webview either, so the file neither previews nor feeds Compare Models, Mesh Health or Promote. The other two gaps this item once held — OBJ `.mtl` materials and PLY vertex colours — have shipped (`CLAUDE.md`'s "Mesh display fidelity" section).
-- **What's already there:** three ships `DRACOLoader` and `MeshoptDecoder`. `draco3d` is Apache-2.0 and licence-compatible (see [What the GPL-3.0 relicense unlocks](#relicense-unlocks)).
-- **First useful increment (M):**
-  - **Webview:** serve the Draco decoder files from `dist/` and set up `DRACOLoader`/`MeshoptDecoder` in the glTF path. The CSP needs `worker-src blob:` for the loader's Blob worker and `'wasm-unsafe-eval'` for the WASM decoder — neither is allowed today (`default-src 'none'`), and `test:webview` runs without a CSP, so this needs a `test:integration` case.
-  - **Host:** decode with `draco3d` ahead of `gltfParser.ts` so Compare Models, Mesh Health and Promote accept the file too; `meshopt` follows the same pattern. The headless mesh-edit bake (`parseGltfObject`) needs the same decoder or it keeps refusing.
-  - Both halves need `copyDracoDecoder()`-style staging in `esbuild.mjs`, a matching `.vscodeignore` carve-out and a `compat:vsix` required-file entry.
-- **Done when:** a committed Draco fixture and a meshopt fixture render in the viewer under the real CSP and pass `check_mesh_health`.
-
-#### 2.2 More mesh formats through three's bundled loaders {#more-mesh-formats-through-three-s-bundled-loaders}
+#### 2.1 More mesh formats through three's bundled loaders {#more-mesh-formats-through-three-s-bundled-loaders}
 
 *Area: Formats.*
 
@@ -245,7 +232,7 @@ These are outcome groupings, not release numbers. Independent small items can sh
   - Every new format states its host-side status plainly: display-only unless a host parser is added. Compare Models, Mesh Health and headless meshing refuse it by name, the way meshio-only formats are refused today.
 - **Done when:** a committed `.3mf` fixture opens, edits, exports back to `.3mf`, and reopens with the same triangle count.
 
-#### 2.3 Shared UI design system with VSCode-MDPA-Preview {#shared-ui-design-system-with-vscode-mdpa-preview}
+#### 2.2 Shared UI design system with VSCode-MDPA-Preview {#shared-ui-design-system-with-vscode-mdpa-preview}
 
 *Area: Ecosystem.*
 
@@ -261,7 +248,7 @@ These are outcome groupings, not release numbers. Independent small items can sh
 - **Done when:** the snaps work in both extensions, the renames are settled, and the drift check runs in this repository's CI.
 - **Other repository's half:** the matching change in VSCode-MDPA-Preview, and its stale licence line.
 
-#### 2.4 Canonical worked example for the simulation tutorial {#canonical-worked-example-for-the-simulation-tutorial}
+#### 2.3 Canonical worked example for the simulation tutorial {#canonical-worked-example-for-the-simulation-tutorial}
 
 *Area: Ecosystem.*
 
@@ -273,7 +260,7 @@ These are outcome groupings, not release numbers. Independent small items can sh
   - Pin it in `mcp:smoke` with analytic volume and exact Part membership, like the bracket tutorial.
 - **Done when:** the page builds, its op list compiles under `npm test`, and the exported MDPA opens in VSCode-MDPA-Preview with both SubModelParts populated.
 
-#### 2.5 Unify same-domain faces as an edit op {#unify-same-domain-faces-as-an-edit-op}
+#### 2.4 Unify same-domain faces as an edit op {#unify-same-domain-faces-as-an-edit-op}
 
 *Area: Geometry.*
 
@@ -281,7 +268,7 @@ These are outcome groupings, not release numbers. Independent small items can sh
 - **First useful increment (M):** a `unifySameDomain` edit op — B-rep only, topology-changing (every downstream `face-N`/`edge-N` renumbers, so Parts and annotations go through the existing rebind), explicit and undoable, never an automatic consequence of a failed `check_brep_health`. Needs a panel button, which means a TikZ icon through the `icons/` pipeline (`pdflatex` + `pdftocairo`), an `OP_PARAM_DOCS` entry, the generic `produced` bucket role, and a `mcp:smoke` assertion on the fused-box face count and volume.
 - **Done when:** the fused-box fixture drops 10 → 6 faces through `apply_edit_ops` at an unchanged volume, and a Part on one of the merged faces is rebound or reported dropped, never silently repointed.
 
-#### 2.6 Tessellation quality for `hit_test` {#tessellation-quality-for-hit-test}
+#### 2.5 Tessellation quality for `hit_test` {#tessellation-quality-for-hit-test}
 
 *Area: Parity.*
 
@@ -291,7 +278,7 @@ These are outcome groupings, not release numbers. Independent small items can sh
 - **Done when:** on a fixture with sub-1 %-diagonal features, a ray that misses at `standard` hits the intended edge at `fine`, and omitting the parameter is indistinguishable from passing `standard`.
 - **Related follow-up, deliberately not folded in:** `compare_models`' optional `includeSnapshots` is the fourth render call site and still has no `tessellationQuality`, so its before/after images render at the `standard` default. It is absent on purpose rather than forgotten — each render parameter widens a surface whose images cost a browser launch apiece — but it should get the same parameter eventually, and `doc/mcp-server.md` says so at that tool's own row so a reader is not left guessing why it lacks what its siblings have.
 
-#### 2.7 meshio++ `feature_edges` replaces the hand-rolled winding check {#meshio-feature-edges-winding-check}
+#### 2.6 meshio++ `feature_edges` replaces the hand-rolled winding check {#meshio-feature-edges-winding-check}
 
 *Area: Meshing. Effort: S–M.*
 
@@ -300,7 +287,7 @@ These are outcome groupings, not release numbers. Independent small items can sh
 - **First useful increment (S–M):** report `inconsistentEdgeIds` (not just a count) from `analyzeMeshioSurfaces` using `featureEdges`' `feature:kind === "inconsistent"`, and cross-check it against the existing `inconsistentPairCount` on `flipped-winding-tet.stl` and the clean fixtures. If they agree on every committed fixture, retire the hand-rolled counter and say so in the same commit — one implementation of a fact, the same rule that removed the duplicated edge enumerator. A disagreement is a finding in itself and belongs in the write-up either way.
 - **Done when:** the count has one implementation, the pure analyzer's limitation is documented as a deliberate boundary rather than an open gap, and a fixture whose two implementations disagree cannot land silently.
 
-#### 2.8 meshio++ `check_quality` as a caller-supplied quality gate {#meshio-check-quality-gate}
+#### 2.7 meshio++ `check_quality` as a caller-supplied quality gate {#meshio-check-quality-gate}
 
 *Area: Meshing. Effort: S–M.*
 
@@ -309,7 +296,7 @@ These are outcome groupings, not release numbers. Independent small items can sh
 - **First useful increment (S–M):** an `estimate_mesh_budget`-shaped sibling: an MCP tool plus a panel row that runs the gate over the generated mesh and reports per-check results. It belongs **beside** the existing Gmsh `minSICN` summary rather than replacing it — the two metrics measure different things (a Jacobian on the actual cells vs. a shape-quality index), and a user needs both. The meshing spec for the docs lives in `doc/gmsh-integration.md`, which is where the comparison belongs.
 - **Done when:** a caller can state a threshold, get per-check facts back, and a deliberately bad mesh and a deliberately good one are distinguishable on the same fixture. Interactive and MCP reach the same result, per the parity rule.
 
-#### 2.9 meshio++ `hausdorff_distance` as a cross-check on the deviation map {#meshio-hausdorff-deviation-cross-check}
+#### 2.8 meshio++ `hausdorff_distance` as a cross-check on the deviation map {#meshio-hausdorff-deviation-cross-check}
 
 *Area: Meshing. Effort: S.*
 
@@ -319,7 +306,7 @@ These are outcome groupings, not release numbers. Independent small items can sh
 - **Done when:** the deviation map's sampling caveat is either backed by an independent number or its residual error is characterized, and the sampled-vs-certified distinction in `doc/file-formats.md` and the tool description is accurate about which one a caller is reading.
 - **Recorded as available, deliberately not adopted** (meshio++ 16.23–16.27, same release window): `edit_regions` would introduce a second, parallel concept to `Part`, which is a JSON sidecar over CAD entity ids — the exact divergence `src/entityRebind.ts` exists to prevent, and mesh regions have no viewer-side representation at all. `match_periodic_nodes`, `resample_sequence` and `blend_steps` are periodic- and transient-solver workflows; this tool exports to solvers but does not run them or hold result series, so none has a user workflow here that meets this file's bar for a new item. Recorded so a future review does not re-derive the triage, not as a standing invitation.
 
-#### 2.10 OpenSCAD Customizer panel in the viewer {#openscad-customizer-panel}
+#### 2.9 OpenSCAD Customizer panel in the viewer {#openscad-customizer-panel}
 
 *Area: Formats, Parity. Effort: M.*
 
@@ -329,7 +316,7 @@ These are outcome groupings, not release numbers. Independent small items can sh
 - **Open questions to answer first:** whether a long conversion (seconds under CGAL) needs the cancellable-progress treatment `loadModel(true)` already gives a large STEP; how an override interacts with an edit-op list whose `edge-N` ids were authored against the default geometry (a changed dimension can renumber them — the same drift `entityRebind.ts` repairs for topology-changing ops, but here the *base* changes, which it does not handle); and whether the Manifold backend, which tessellates differently, should invalidate persisted ids.
 - **Done when:** changing a parameter in the panel re-evaluates the model and the same values reproduce through `convert_scad`, the source file is byte-identical, and an override survives a reopen.
 
-#### 2.11 Coincident-point prompt: collapse or keep independent {#coincident-point-collapse-or-independent}
+#### 2.10 Coincident-point prompt: collapse or keep independent {#coincident-point-collapse-or-independent}
 
 *Area: Geometry, Parity. Effort: S–M.*
 
@@ -341,7 +328,7 @@ These are outcome groupings, not release numbers. Independent small items can sh
 - **Done when:** on a fixture with a committed point, authoring the same coordinates — once via the panel, once headless — offers the choice interactively and honours the recorded field on replay; collapse leaves the `point-N` inventory unchanged, independent adds exactly one; a committed `test:webview` case covers the prompt end to end.
 - **Out of scope:** automatic sewing or healing of near-coincident geometry (the explicit repair op, 3.2); a general coincident-entity merge beyond points; snapping the new coordinates to the old ones (collapse reuses the id, it never moves either point).
 
-#### 2.12 GiD-style geometry structure view {#geometry-structure-view}
+#### 2.11 GiD-style geometry structure view {#geometry-structure-view}
 
 *Area: Geometry. Effort: M.*
 

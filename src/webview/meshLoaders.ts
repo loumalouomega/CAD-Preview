@@ -1,9 +1,31 @@
 import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
+import { DRACOLoader } from "three/examples/jsm/loaders/DRACOLoader.js";
 import { MTLLoader } from "three/examples/jsm/loaders/MTLLoader.js";
 import type { CadFormat } from "../fileRouter";
 import { isSafeRelativePath } from "../safeRelativePath";
 import { parseMeshObject, parseObjObject } from "./meshObject";
+import { gltfUsesCompression } from "./gltfSniff";
+
+/**
+ * Where the staged Draco decoder files live (`dist/draco/`, written by
+ * `esbuild.mjs`'s `copyDracoDecoders`), as an absolute webview-resource URL.
+ *
+ * Derived from this bundle's own script URL — `…/media/viewer.js`, so the
+ * decoder is `../dist/draco/` — rather than a message or a template value,
+ * because it then works unchanged in the real webview AND in the Playwright
+ * harness, which serves the repo tree at its root. `document.currentScript` is
+ * only set WHILE the script first runs, so this must be captured at module
+ * load; `null` (no document, or no script element) simply disables Draco.
+ */
+const DRACO_DECODER_BASE: string | null = (() => {
+  try {
+    const src = typeof document !== "undefined" ? (document.currentScript as HTMLScriptElement | null)?.src : undefined;
+    return src ? new URL("../dist/draco/", src).toString() : null;
+  } catch {
+    return null;
+  }
+})();
 
 /** How long a `.mtl` texture may take to decode before the model shows without it. */
 const TEXTURE_WAIT_MS = 10_000;
@@ -101,11 +123,59 @@ export async function loadMeshFromUrl(
       if (!res.ok) throw new Error(`Failed to fetch ${url}: ${res.status}`);
       return parseMeshObject(await res.arrayBuffer(), format);
     }
-    case "gltf": {
-      const gltf = await new GLTFLoader().loadAsync(url);
-      return gltf.scene;
-    }
+    case "gltf":
+      return loadGltf(url);
     default:
       throw new Error(`Mesh loader for "${format}" is not implemented.`);
+  }
+}
+
+/**
+ * Loads a glTF/GLB. Fetches the bytes itself (what `GLTFLoader.loadAsync` does)
+ * so it can tell whether the file is Draco/meshopt-compressed BEFORE choosing
+ * a loader: an uncompressed file gets the plain loader and never touches a
+ * decoder, so it cannot depend on the CSP's WebAssembly allowance or on the
+ * staged decoder files.
+ *
+ * A compressed file needs both: `worker-src blob:` (DRACOLoader runs its WASM
+ * in a Blob Worker) and `'wasm-unsafe-eval'` (both decoders compile WASM) in
+ * `provider.ts`'s `getHtml` CSP. The `test:webview` harness sets no CSP, so
+ * only the `test:integration` suite proves those two directives.
+ */
+async function loadGltf(url: string): Promise<THREE.Object3D> {
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`Failed to fetch ${url}: ${res.status}`);
+  const data = await res.arrayBuffer();
+  // Sibling .bin / image URIs resolve against the model's own directory, as
+  // `loadAsync` did.
+  const base = url.substring(0, url.lastIndexOf("/") + 1);
+  const loader = new GLTFLoader();
+  let draco: DRACOLoader | undefined;
+  if (gltfUsesCompression(data)) {
+    if (DRACO_DECODER_BASE) {
+      draco = new DRACOLoader();
+      // The object form names the two files directly; it also disables the
+      // asm.js fallback, which we do not stage (every webview runtime has WASM).
+      draco.setDecoderPath({
+        js: `${DRACO_DECODER_BASE}draco_wasm_wrapper.js`,
+        wasm: `${DRACO_DECODER_BASE}draco_decoder.wasm`,
+      });
+      draco.setWorkerLimit(1);
+      loader.setDRACOLoader(draco);
+    }
+    // Imported only now: the module instantiates its WebAssembly at import
+    // time, which an uncompressed glTF must never pay for.
+    const { MeshoptDecoder } = await import("three/examples/jsm/libs/meshopt_decoder.module.js");
+    loader.setMeshoptDecoder(MeshoptDecoder);
+  }
+  try {
+    const gltf = await new Promise<{ scene: THREE.Group }>((resolve, reject) => {
+      loader.parse(data, base, (g) => resolve(g as { scene: THREE.Group }), reject);
+    });
+    return gltf.scene;
+  } finally {
+    // Terminates the decoder worker and revokes its blob URL; a later load
+    // builds a fresh one.
+    draco?.dispose();
   }
 }

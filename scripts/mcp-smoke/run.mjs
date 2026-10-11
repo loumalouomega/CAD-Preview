@@ -2331,6 +2331,23 @@ try {
   const bullVsGltf = await call("compare_models", { pathA: model, pathB: cubeGltf });
   assert(bullVsGltf.supported === true, "compare_models diffs a B-rep source against a glTF source");
 
+  // Compressed glTF (Draco / meshopt): decoded by the kernel worker's own WASM
+  // decoders, then read by the same sync parser. cube-draco.glb and
+  // cube-meshopt.glb are generated from cube.gltf (scripts/gltf-fixtures), so
+  // each must be an EXACT geometric match for the uncompressed cube.
+  for (const compressed of ["cube-draco.glb", "cube-meshopt.glb"]) {
+    const compressedPath = path.join(ROOT, "examples", "GLTF", compressed);
+    const vsPlain = await call("compare_models", { pathA: compressedPath, pathB: cubeGlb });
+    assert(
+      vsPlain.supported === true && vsPlain.diff.matched.length === 1 && vsPlain.diff.added.length === 0 && vsPlain.diff.removed.length === 0,
+      `compare_models(${compressed} vs cube.glb): 1 matched solid (got: ${JSON.stringify(vsPlain.diff ?? vsPlain).slice(0, 240)})`
+    );
+    assert(
+      Math.abs(vsPlain.diff.matched[0].volumeDeltaPct) < 1e-4 && vsPlain.diff.matched[0].centreDistance < 1e-4,
+      `compare_models(${compressed} vs cube.glb) is an exact geometric match (got: ${JSON.stringify(vsPlain.diff.matched[0])})`
+    );
+  }
+
   // meshio-only formats are now the ONLY unsupported family — confirm that
   // path still degrades to a clear supported:false, not a tool error.
   const vtkForCompare = path.join(dir, "compare.vtk");
@@ -2535,7 +2552,12 @@ try {
 
   // glTF/GLB now have a host-side parser too — the unit cube must close at
   // the tightest ladder rung with volume 1, in BOTH containers.
-  for (const [label, gltfPath] of [["cube.gltf", cubeGltf], ["cube.glb", cubeGlb]]) {
+  for (const [label, gltfPath] of [
+    ["cube.gltf", cubeGltf],
+    ["cube.glb", cubeGlb],
+    ["cube-draco.glb", path.join(ROOT, "examples", "GLTF", "cube-draco.glb")],
+    ["cube-meshopt.glb", path.join(ROOT, "examples", "GLTF", "cube-meshopt.glb")],
+  ]) {
     const health = await call("check_mesh_health", { path: gltfPath });
     assert(health.supported === true, `check_mesh_health supports ${label} (got: ${JSON.stringify(health).slice(0, 200)})`);
     assert(health.componentCount === 1, `check_mesh_health(${label}): 1 component expected (got ${health.componentCount})`);

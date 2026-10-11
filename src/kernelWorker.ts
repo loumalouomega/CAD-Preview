@@ -56,6 +56,7 @@ import { exportTessellatedStl } from "./tessellationExport";
 import { analyzePassages } from "./passageAnalysisHost";
 import { measureMeshDeviation } from "./meshDeviationHost";
 import { bakeMeshEdits } from "./meshEditBake";
+import { decodeGltfGeometry } from "./gltfDecode";
 import { marshal, unmarshal, type KernelRequest, type KernelResponse } from "./kernelIpc";
 import type { DocumentPipeline } from "./kernelClient";
 import { hitTest } from "./hitTestService";
@@ -180,6 +181,7 @@ const handlers: Record<keyof DocumentPipeline, Handler> = {
   analyzePassages: analyzePassages as Handler,
   measureMeshDeviation: measureMeshDeviation as Handler,
   bakeMeshEdits: bakeMeshEdits as Handler,
+  decodeGltfGeometry: decodeGltfGeometry as Handler,
 };
 
 function isOcctReset(err: unknown): boolean {

@@ -143,6 +143,12 @@ const webviewConfig = {
   format: "iife",
   target: "es2020",
   outfile: "media/viewer.js",
+  // three's DRACOLoader reads `import.meta.url` at module scope to default its
+  // decoder URL. An iife build turns that into `{}` and the load dies with
+  // `Invalid URL` — taking the WHOLE webview down at startup, not just glTF.
+  // The default is never used: `meshLoaders.ts` always calls `setDecoderPath`.
+  // (Not the Node `IMPORT_META_URL_DEFINE` above, which is `require("url")`.)
+  define: { "import.meta.url": JSON.stringify("https://decoder.invalid/") },
   sourcemap: true,
   logLevel: "info",
 };
@@ -213,6 +219,36 @@ function copySheetTemplates() {
   console.log(`Copied starter-templates.json → dist/sheet-templates/starter-templates.json (${(fs.statSync(dst).size / 1e3).toFixed(1)} KB)`);
 }
 
+/**
+ * Stage the Draco decoders (roadmap "Compressed glTF"). Two different sets, for
+ * two different runtimes:
+ *  - `dist/draco/` — three's glTF-variant WEB decoder (wrapper + wasm, ~250 KB),
+ *    fetched by the webview's `DRACOLoader` through `asWebviewUri`.
+ *  - `dist/draco/node/` — the `draco3d` package's Node decoder wasm, read by
+ *    `gltfDecode.ts` in the kernel worker and handed to the emscripten loader
+ *    as `wasmBinary` (the loader cannot locate its own file once bundled).
+ * Plus the Apache-2.0 text, which the Draco sources carry no header for.
+ * Real files on disk, not bundled into the JS, for the same reason as the
+ * other WASM binaries: they are separately replaceable and `.vscodeignore`
+ * carves each one in by exact path.
+ */
+function copyDracoDecoders() {
+  const dist = path.join(__dirname, "dist", "draco");
+  fs.rmSync(dist, { recursive: true, force: true });
+  const web = path.join(__dirname, "node_modules", "three", "examples", "jsm", "libs", "draco", "gltf");
+  const files = [
+    [path.join(web, "draco_wasm_wrapper.js"), path.join(dist, "draco_wasm_wrapper.js")],
+    [path.join(web, "draco_decoder.wasm"), path.join(dist, "draco_decoder.wasm")],
+    [path.join(__dirname, "node_modules", "draco3d", "draco_decoder.wasm"), path.join(dist, "node", "draco_decoder.wasm")],
+    [path.join(__dirname, "third-party", "LICENSE-draco.txt"), path.join(dist, "LICENSE")],
+  ];
+  for (const [src, dst] of files) {
+    fs.mkdirSync(path.dirname(dst), { recursive: true });
+    fs.copyFileSync(src, dst);
+  }
+  console.log(`Copied Draco decoders → dist/draco/ (${files.length} files)`);
+}
+
 if (watch) {
   const ctxExt = await esbuild.context(extensionConfig);
   const ctxMcp = await esbuild.context(mcpConfig);
@@ -223,6 +259,7 @@ if (watch) {
   copyMacros();
   copyMeshPresets();
   copySheetTemplates();
+  copyDracoDecoders();
   console.log("esbuild: watching…");
 } else {
   await Promise.all([
@@ -235,4 +272,5 @@ if (watch) {
   copyMacros();
   copyMeshPresets();
   copySheetTemplates();
+  copyDracoDecoders();
 }

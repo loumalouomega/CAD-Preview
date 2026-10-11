@@ -442,22 +442,37 @@ describe.each(CONTAINERS)("parseGltf (%s container)", (container) => {
 });
 
 describe("parseGltf extension gating", () => {
-  it("throws for a required Draco extension, naming it", () => {
+  // Compressed geometry is decoded by the kernel worker ahead of parsing and
+  // handed over as reserved `decoded:` entries (`gltfDecodedKeys.ts`); the
+  // end-to-end decode cases live in `gltfDecode.test.ts`. What is pinned here is
+  // the refusal when a required scheme arrives WITHOUT them.
+  it("throws for a required Draco primitive whose decoded geometry was not supplied, naming it", () => {
     const { doc, bin } = triangleDoc();
     doc.extensionsRequired = ["KHR_draco_mesh_compression"];
-    expect(() => parseGltf(encode(doc, bin, "gltf"))).toThrow(/KHR_draco_mesh_compression/);
+    doc.meshes[0].primitives[0].extensions = { KHR_draco_mesh_compression: { bufferView: 0, attributes: { POSITION: 0 } } };
+    expect(() => parseGltf(encode(doc, bin, "gltf"))).toThrow(/KHR_draco_mesh_compression.*not supplied/s);
   });
 
-  it("throws for a required meshopt extension", () => {
+  it("throws for a required meshopt bufferView whose decoded bytes were not supplied, naming it", () => {
     const { doc, bin } = triangleDoc();
     doc.extensionsRequired = ["EXT_meshopt_compression"];
-    expect(() => parseGltf(encode(doc, bin, "gltf"))).toThrow(/EXT_meshopt_compression/);
+    doc.bufferViews[0].extensions = { EXT_meshopt_compression: { buffer: 0, byteLength: 4, byteStride: 12, count: 3, mode: "ATTRIBUTES" } };
+    expect(() => parseGltf(encode(doc, bin, "gltf"))).toThrow(/EXT_meshopt_compression.*not supplied/s);
   });
 
-  it("throws when a primitive itself carries a compression extension", () => {
+  it("does not throw for a compression extension that is merely declared, not required or referenced", () => {
     const { doc, bin } = triangleDoc();
-    doc.meshes[0].primitives[0].extensions = { KHR_draco_mesh_compression: { bufferView: 0, attributes: {} } };
-    expect(() => parseGltf(encode(doc, bin, "gltf"))).toThrow(/KHR_draco_mesh_compression/);
+    doc.extensionsUsed = ["KHR_draco_mesh_compression", "EXT_meshopt_compression"];
+    expect(triangleCount(parseGltf(encode(doc, bin, "gltf")))).toBe(1);
+  });
+
+  it("falls back to the plain accessors for a meshopt view that is used but not required", () => {
+    // The uncompressed fallback buffer is legal and complete here, so nothing
+    // needs decoding.
+    const { doc, bin } = triangleDoc();
+    doc.extensionsUsed = ["EXT_meshopt_compression"];
+    doc.bufferViews[0].extensions = { EXT_meshopt_compression: { buffer: 0, byteLength: 4, byteStride: 12, count: 3, mode: "ATTRIBUTES" } };
+    expect(triangleCount(parseGltf(encode(doc, bin, "gltf")))).toBe(1);
   });
 
   it("does NOT throw for geometry-irrelevant required extensions", () => {

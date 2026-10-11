@@ -467,6 +467,9 @@ function fakePipeline(overrides: Partial<Pipeline> = {}): Pipeline {
       outcomes: ops.map((op, index) => ({ index, kind: op.op, applied: true })),
       messages: [] as string[],
     })),
+    // Nothing to decode for the uncompressed fixtures most tests use; a test of
+    // a compressed file overrides this.
+    decodeGltfGeometry: vi.fn(async () => ({})),
     measureMeshDeviation: vi.fn(async () => ({
       report: {
         tolerance: 0.1,
@@ -1564,6 +1567,24 @@ describe("check_mesh_health", () => {
     const result = await checkMeshHealthTool(c, { path: gltfModel });
     expect(c.pipeline.checkMeshHealth).toHaveBeenCalledWith(dir, expect.any(Uint8Array), "gltf", {});
     expect(result.supported).toBe(true);
+  });
+
+  it("decodes a Draco/meshopt-compressed glTF in the pipeline and hands the decoded entries to the health check", async () => {
+    // The decoders are WASM in the kernel worker, so the tool layer only asks
+    // the pipeline to decode and forwards the reserved entries; an uncompressed
+    // file never triggers it (the case above passes `{}` with no decode call).
+    const compressed = path.join(dir, "compressed.glb");
+    await fs.copyFile(path.join(__dirname, "..", "examples", "GLTF", "cube-draco.glb"), compressed);
+    const decoded = { "decoded:draco:0/0:positions": new Uint8Array([1]), "decoded:draco:0/0:indices": new Uint8Array([2]) };
+    const c = ctx(fakePipeline({ decodeGltfGeometry: vi.fn(async () => decoded) }));
+    await checkMeshHealthTool(c, { path: compressed });
+    // (the spy holds the map the helper then merged into, so match its shape only)
+    expect(c.pipeline.decodeGltfGeometry).toHaveBeenCalledWith(dir, expect.any(Uint8Array), expect.any(Object));
+    expect(c.pipeline.checkMeshHealth).toHaveBeenCalledWith(dir, expect.any(Uint8Array), "gltf", decoded);
+
+    const plain = ctx();
+    await checkMeshHealthTool(plain, { path: gltfModel });
+    expect(plain.pipeline.decodeGltfGeometry).not.toHaveBeenCalled();
   });
 
   it("returns supported: false with a warning for a meshio-only format (.vtk)", async () => {
