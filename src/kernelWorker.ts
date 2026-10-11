@@ -193,6 +193,10 @@ process.on("message", (msg: KernelRequest) => {
       const response: KernelResponse = { id, ok: true, result: marshal(result) };
       process.send?.(response);
     } catch (err) {
+      // Opt-in diagnostics (CAD_PREVIEW_KERNEL_TRACE, set by the integration
+      // harness): the JS stack names the failing OCCT binding, which the bare
+      // message of a wasm trap does not.
+      if (process.env.CAD_PREVIEW_KERNEL_TRACE) console.error(`[kernel-error] ${fn}: ${err instanceof Error ? err.stack : String(err)}`);
       const response: KernelResponse = {
         id,
         ok: false,

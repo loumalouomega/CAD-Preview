@@ -84,7 +84,18 @@ export function resetOcct(): void {
  * glue — so matching it case-insensitively cannot misclassify ordinary
  * application errors (unlike a generic `is not a function`, which is a common
  * JS bug phrase and deliberately NOT matched). All four vocabularies updated
- * together, same as the `function table` fix. */
+ * together, same as the `function table` fix.
+ *
+ * **`signature mismatch` was added after a FOURTH real miss, found in CI.**
+ * The V8 inside VS Code's own Electron reports a bad `call_indirect` as
+ * `function signature mismatch` (no `RuntimeError:` prefix, no `null function`
+ * — the older V8 wording the `null function` alternative matches). It was
+ * thrown by `loadBRepCachedForDocument` right after a save-in-place and then by
+ * EVERY later call within milliseconds: undetected, the singleton was never
+ * reset, so one trap left the kernel child permanently unusable for every open
+ * document (the integration suite saw it as dozens of 60 s "no geometry"
+ * timeouts). The phrase is wasm-specific, so it cannot match an application
+ * error. All kernel vocabularies updated together. */
 /**
  * A FIFTH signal, structurally different from the six textual ones above:
  * bare digits and nothing else.
@@ -105,7 +116,7 @@ export function resetOcct(): void {
  * exactly as safe to key on as `wasmtable` was.
  */
 function isOcctWasmAbort(message: string): boolean {
-  return /out of bounds|abort|RuntimeError|unreachable|null function|table index|function table|wasmtable/i.test(message) || /^\d+$/.test(message);
+  return /out of bounds|abort|RuntimeError|unreachable|null function|table index|function table|wasmtable|signature mismatch/i.test(message) || /^\d+$/.test(message);
 }
 
 /**
