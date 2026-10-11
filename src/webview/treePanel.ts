@@ -26,8 +26,8 @@ export class TreePanel {
   }
 
   /** Populate the panel with tree data and make it visible. */
-  render(root: TreeNode): void {
-    this.selectedId = null;
+  render(root: TreeNode, preserveSelection = false): void {
+    if (!preserveSelection) this.selectedId = null;
     this.root = root;
     // The section title stays "Components" (a fixed label in the markup). The root's
     // own label — the source format — is on the document chip already, so it moves
@@ -41,6 +41,12 @@ export class TreePanel {
     }
 
     this.rebuild(children, null);
+    if (preserveSelection) {
+      // A leaf id survives the flat → nested upgrade; a vanished id must not
+      // leave a phantom selection behind.
+      if (this.selectedId !== null && descendantLeafIds(children, this.selectedId).length === 0) this.selectedId = null;
+      this.updateSelection();
+    }
     this.panel.classList.add("visible");
   }
 

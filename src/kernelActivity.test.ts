@@ -13,6 +13,7 @@ const step = (s: ReturnType<typeof initialKernelState>, type: "start" | "success
 describe("kernelsFor", () => {
   it("maps a function to the kernels it definitely touches", () => {
     expect(kernelsFor("loadBRepCachedForDocument")).toEqual(["occt"]);
+    expect(kernelsFor("resolveAssemblyTreeForDocument")).toEqual(["occt"]);
     expect(kernelsFor("generateMesh")).toEqual(["gmsh"]);
     expect(kernelsFor("repairMesh")).toEqual(["ftetwild", "gmsh"]);
     expect(kernelsFor("remeshMesh")).toEqual(["meshio", "mmg"]);

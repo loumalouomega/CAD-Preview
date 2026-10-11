@@ -64,6 +64,12 @@ export interface DocumentPipeline extends Pipeline {
    * none exist there) — call once when a document's tab closes. Fire-and-
    * forget from the caller's point of view; nothing depends on its result. */
   disposeBRepCacheForDocument(documentKey: string): Promise<void>;
+  /** Roadmap "Post geometry before the XCAF assembly tree": `loadBRepCachedForDocument`
+   * defers the STEP assembly read; this completes it (a second full-file
+   * parse inside the child) and returns the nested tree — `null` when there is
+   * no cache entry or the tree does not correlate, in which case the flat
+   * tree already posted stays. Idempotent. */
+  resolveAssemblyTreeForDocument(documentKey: string, extensionPath: string): Promise<import("./protocol").TreeNode | null>;
   readMeshioFieldValues: typeof readMeshioFieldValues;
 }
 

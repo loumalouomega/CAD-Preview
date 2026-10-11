@@ -345,6 +345,59 @@ test("tree: assembly group rows select and hide their descendant solids", async 
 });
 
 /**
+ * D4. The assembly tree arrives in a SECOND `tree` message (roadmap "Post
+ * geometry before the XCAF assembly tree"): the geometry goes out with the flat
+ * per-solid list, then the deferred XCAF read upgrades it in place. The upgrade
+ * must (a) swap flat for nested, (b) keep an existing leaf selection and an
+ * active filter, and (c) NOT reset a display unit the user changed meanwhile —
+ * an upgrade is the same load, not a new document.
+ */
+test("tree: a second `tree` message upgrades flat to nested without losing state", async (page) => {
+  await populate(page);
+  const nestedMsg = fixture("tree");
+  const leaf = nestedMsg.root.children?.[0]?.children?.[0];
+  assert(leaf && leaf.id, "precondition: the tree fixture is a group over a leaf");
+
+  // The flat list the host posts with the geometry.
+  await post(page, { type: "tree", root: { id: "root", label: "STEP", children: [{ id: leaf.id, label: leaf.label, faceCount: leaf.faceCount }] }, sourceUnit: "MILLIMETRE" });
+  await sleep(200);
+  const flat = await page.evaluate(() => ({
+    rows: document.querySelectorAll("#tree-body .tree-row").length,
+    groups: [...document.querySelectorAll("#tree-body .tree-eye")].filter((e) => /assembly/i.test(e.getAttribute("title") ?? "")).length,
+  }));
+  assert(flat.rows === 1 && flat.groups === 0, `precondition: flat tree is one plain leaf row (got ${JSON.stringify(flat)})`);
+
+  // User state set while the assembly read is still pending.
+  await page.evaluate(() => {
+    document.querySelector("#tree-body .tree-row")?.click();
+    const unit = document.getElementById("vc-unit");
+    unit.value = "in";
+    unit.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+  await sleep(200);
+
+  await post(page, { ...nestedMsg, upgrade: true, sourceUnit: "MILLIMETRE" });
+  await sleep(300);
+  const after = await page.evaluate((leafId) => ({
+    groups: [...document.querySelectorAll("#tree-body .tree-eye")].filter((e) => /assembly/i.test(e.getAttribute("title") ?? "")).length,
+    selectedLeaf: [...document.querySelectorAll("#tree-body .tree-item")].some(
+      (li) => li.dataset.id === leafId && li.querySelector(":scope > .tree-row")?.classList.contains("selected")
+    ),
+    unit: document.getElementById("vc-unit").value,
+  }), leaf.id);
+  assert(after.groups === 1, `the upgrade replaced the flat list with the assembly hierarchy (got ${JSON.stringify(after)})`);
+  assert(after.selectedLeaf, "the leaf selection survived the upgrade");
+  assert(after.unit === "in", `the upgrade did not reset the user's display unit (got ${after.unit})`);
+
+  // Control: a fresh (non-upgrade) tree DOES reset the unit — proving the
+  // assertion above can fail.
+  await post(page, { ...nestedMsg, sourceUnit: "MILLIMETRE" });
+  await sleep(300);
+  const reset = await page.evaluate(() => document.getElementById("vc-unit").value);
+  assert(reset === "mm", `a fresh tree resets the unit to the detected one (got ${reset})`);
+});
+
+/**
  * E. The FE mesh overlay and its toolbar toggle stay truthful about each other.
  * `CLAUDE.md`: the toggle "must never claim on for content that isn't shown",
  * and showing an overlay hides the model's own shaded faces so two opaque

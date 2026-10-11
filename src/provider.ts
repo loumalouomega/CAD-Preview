@@ -3548,6 +3548,19 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
       const text = effectiveFormat === "step" || effectiveFormat === "iges" ? Buffer.from(bytes).toString("latin1") : undefined;
       const sourceUnit = effectiveFormat === "step" ? detectStepLengthUnit(text!) : effectiveFormat === "iges" ? detectIgesLengthUnit(text!) : undefined;
       post({ type: "tree", root: tree, sourceUnit });
+      // Roadmap "Post geometry before the XCAF assembly tree": the kernel
+      // deferred the STEP assembly read so the geometry above could go out
+      // first. Upgrade the flat tree in a second message once it finishes.
+      // Non-fatal by design — any failure, cancellation or non-correlation
+      // leaves the flat tree (exactly what a failed correlation shows today).
+      if (result.assemblyPending) {
+        void this.docPipeline(uri)
+          .resolveAssemblyTreeForDocument(documentKey, this.context.extensionPath)
+          .then((nested) => {
+            if (nested && generation === genHolder.current) post({ type: "tree", root: nested, sourceUnit, upgrade: true });
+          })
+          .catch(() => { /* flat tree stays */ });
+      }
     } catch (err) {
       if (generation !== genHolder.current) return; // superseded or cancelled — see doc comment above
       if (err instanceof JobCancelledError) return; // this document's kernel work was cancelled (Cancel, or the tab closed)

@@ -25,7 +25,8 @@ console.warn = console.error.bind(console);
 console.debug = console.error.bind(console);
 /* eslint-enable no-console */
 
-import { loadBRep, exportBRep, loadBRepCached, disposeBRepCache, type BRepCacheEntry, type BRepResult } from "./occtService";
+import { loadBRep, exportBRep, loadBRepCached, disposeBRepCache, resolveAssemblyTree, type BRepCacheEntry, type BRepResult } from "./occtService";
+import type { TreeNode } from "./protocol";
 import { generateMesh, exportMeshFormat, exportMdpa, computeHandoffFacts, exportGeoUnrolled, repairMesh } from "./gmshService";
 import { computeMassProperties, computeBom, computeHoleTable } from "./massProperties";
 import { getEntityFacts, measureEntities, measureExact, checkInterference, checkInterferenceAll, rebindPartsAcrossOps, rebindPartsAcrossSave, resolveBucketSelector, synthesizeSelector, resolvePartSelectors } from "./entityFacts";
@@ -91,9 +92,23 @@ async function loadBRepCachedForDocument(
   quality?: Parameters<typeof loadBRepCached>[5]
 ): Promise<BRepResult> {
   const previous = brepCacheByDocument.get(documentKey);
-  const { result, cache } = await loadBRepCached(extensionPath, bytes, format, ops, previous, quality);
+  // Interactive path: defer the (second, full-file) XCAF assembly read so
+  // geometry can be posted first — `provider.ts` follows up with
+  // `resolveAssemblyTreeForDocument` (roadmap "Post geometry before the XCAF
+  // assembly tree"). The MCP `loadBRep` path stays synchronous.
+  const { result, cache } = await loadBRepCached(extensionPath, bytes, format, ops, previous, quality, { deferAssemblyTree: true });
   brepCacheByDocument.set(documentKey, cache);
   return result; // never return `cache` itself — see the map's own doc comment above
+}
+
+/** Completes a deferred assembly read for `documentKey` and returns the nested
+ * tree, or `null` (no entry — the tab closed or the child respawned — or the
+ * tree does not correlate; the caller keeps the flat tree either way). Returns
+ * plain JSON, so nothing live crosses the IPC boundary. */
+async function resolveAssemblyTreeForDocument(documentKey: string, extensionPath: string): Promise<TreeNode | null> {
+  const entry = brepCacheByDocument.get(documentKey);
+  if (!entry) return null;
+  return resolveAssemblyTree(extensionPath, entry);
 }
 
 async function disposeBRepCacheForDocument(documentKey: string): Promise<void> {
@@ -150,6 +165,7 @@ const handlers: Record<keyof DocumentPipeline, Handler> = {
   remeshMesh: remeshMesh as Handler,
   loadBRepCachedForDocument: loadBRepCachedForDocument as Handler,
   disposeBRepCacheForDocument: disposeBRepCacheForDocument as Handler,
+  resolveAssemblyTreeForDocument: resolveAssemblyTreeForDocument as Handler,
   readMeshioFieldValues: readMeshioFieldValues as Handler,
   checkMeshHealth: checkMeshHealth as Handler,
   checkBrepHealth: checkBrepHealth as Handler,
