@@ -489,6 +489,7 @@ Opening **Move**, **Rotate**, or **Scale** with a selection active also attaches
 | Op | Action |
 | --- | --- |
 | **Point / Line / Arc** | Appends a standalone point / straight line / circular arc you can select later (**Point**/**Line** mode). Assign a point or straight line to a Part and it is meshed on exactly, so a load or sensor location lands on a real node (curved free edges are reported instead, since a line has only two endpoints) |
+| **Use picked points** (every curve form below) | Pick points in **Point** mode, open Line / Arc / Polyline / 3-Pt Arc / Spline / Bezier / Ell. Arc / Helix, and click **Use picked points** — the slots (or, for the list forms, exactly one row per point) bind to the picked `point-N` ids in pick order, lock behind an id chip (click **×** to type coordinates instead), and the curve follows those points. If ids are later renumbered the curve re-anchors by the position it was authored at (with a status warning), and is skipped with a diagnostic when no point is there any more |
 | **Polyline** | Appends straight edges through an editable list of points (**+ Add point** / **−** rows); **Closed** adds the last→first edge |
 | **3-Pt Arc** | Appends the circular arc through three typed points (a collinear triple is skipped) |
 | **Spline** | Appends a smooth curve through the point list (endpoint-exact fit) |
@@ -542,6 +543,24 @@ Transforms, booleans, explode, primitives, and the hole family work on both B-re
 The operation buttons' icons are placeholder glyphs — they live in one file, `src/webview/opIcons.ts`, made to be swapped for real icons.
 
 When you **Export** an edited model, the edits are baked into the output file. See [Edits Sidecar](./file-formats.md#edits-sidecar-modeleditsjson) for the format.
+
+### The Command Bar
+
+A one-line **command bar** sits just above the status bar for typing edit operations instead of clicking through a form. A line is `<command> [<json-body>]`: the command is the operation's name (case-insensitive) and the body is the same JSON object an agent passes to `apply_edit_ops`. `$sel` stands for the live selection wherever an id or list of ids goes, expanded by the type of the field — a `targets` field takes the selected solids, `edges` the selected edges, `profile` exactly one selected face, a curve's `points` the selected points.
+
+```
+addBox {"center":[0,0,0],"size":[10,5,3]}
+translate {"targets":$sel,"vec":[5,0,0]}
+addLine {"start":"point-3","end":"point-7"}
+```
+
+- **Enter** runs the line through the same validation and the same history as the panel's Apply buttons, so a typed op and a panel-built op are identical once pushed (and undo, redo, jump, save and export treat them alike). A rejected line shows the expected parameter shape and posts nothing.
+- **A bare command** (`addCylinder`, no body) opens that operation's form, like clicking its button. A line that is valid JSON but rejected opens the form prefilled with the numbers and vectors it could use.
+- **Tab** completes a command name, or an entity id (`face-1` → `face-12`) from what the model currently contains; **Up/Down** walk the history; **Esc** clears the line.
+- **Panel → bar**: every op you build with a panel button writes its equivalent command into the bar, so the typed form can be learned from the clicks.
+- B-rep-only commands (fillet, chamfer, features, sketches, …) are refused on a mesh source with the same reason the greyed panel buttons give. If the kernel later skips a typed op (for example its ids no longer exist), the bar reports the skip's diagnostic rather than leaving a silent no-op.
+
+Commands: `addPoint`, `addLine`, `addArc`, `addPolyline`, `addThreePointArc`, `addSpline`, `addBezier`, `addEllipseArc`, `addHelix`; the seven sketch profiles (`addCircleProfile`, `addRectangleProfile`, `addPolygonProfile`, `addEllipseProfile`, `addRoundedRectangleProfile`, `addSlotProfile`, `addTrapezoidProfile`); `buildSurface` (`surface`), `edgeSlot` (`slot`), `buildVolume` (`volume`); the primitives `addBox`, `addSphere`, `addCylinder`, `addCone`, `addTorus`, `addPrism`, `addWedge`; `addHole`, `addCounterboreHole`, `addCountersinkHole`; `translate`, `rotate`, `scale`, `mirror`; `union`, `subtract`, `intersect`; `fillet`, `chamfer`; `extrude`, `revolve`, `sweep`, `loft`, `rib`, `wrap`; `shell`, `draft`, `defeature`, `splitByPlane`, `section`, `drill`; `explode`, `mate`, `align`, `patternLinear`, `patternCircular`. Run **Describe capabilities** (MCP) or see the Edits panel forms for each body's fields. The bar is webview-only: it needs no extra setup and writes nothing the panel does not.
 
 ### Parametric Variables
 

@@ -311,9 +311,81 @@ export type EditOp = (
    * at resolve time or the field freezes instead of repointing.
    */
   targetQueryKinds?: Record<string, string>;
+  /**
+   * Optional `point-N` references standing in for coordinate slots of the
+   * curve-creation ops (roadmap "Define lines, arcs and curves from
+   * preexisting points"): keys are slot paths (`start`, `p2`, `points[1]`),
+   * each `{id, at?}`. The slot's own `Vec3` holds the authored position `at`
+   * (or `[0,0,0]` when none is known yet) and is only a CACHE — replay resolves
+   * `id` against the shape the op sees ({@link PointRef}). Only the kinds in
+   * {@link POINT_REF_KINDS} may carry it.
+   */
+  pointRefs?: PointRefs;
 };
 
 export type EditOpKind = EditOp["op"];
+
+/** One `point-N` reference standing in for a coordinate slot. `at` is the position the author saw — the rebind anchor (strict policy: replay re-anchors by position or skips, it never silently repoints). Absent until a bare headless id has been resolved once. */
+export interface PointRef { id: string; at?: Vec3; }
+export type PointRefs = Record<string, PointRef>;
+
+const POINT_ID_RE = /^point-\d+$/;
+
+/** Which `Vec3` slots of each curve kind accept a point reference: named scalar slots, or one Vec3 list. Directions (`normal`/`up`/`axis`) are never point-addressable. */
+const POINT_REF_SLOTS: Partial<Record<EditOpKind, { scalars?: readonly string[]; list?: string }>> = {
+  addLine: { scalars: ["start", "end"] },
+  addArc: { scalars: ["center"] },
+  addThreePointArc: { scalars: ["p1", "p2", "p3"] },
+  addEllipseArc: { scalars: ["center"] },
+  addHelix: { scalars: ["center"] },
+  addPolyline: { list: "points" },
+  addSpline: { list: "points" },
+  addBezier: { list: "controlPoints" },
+};
+
+/** The point-addressable `Vec3` slots of a curve kind: its named scalar slots in order, or the name of its Vec3 list. `null` for kinds that take no point references. */
+export function pointRefSpec(kind: EditOpKind): { scalars: readonly string[]; list?: string } | null {
+  const spec = POINT_REF_SLOTS[kind];
+  return spec ? { scalars: spec.scalars ?? [], list: spec.list } : null;
+}
+
+/** The curve kinds that accept {@link PointRefs}. */
+export const POINT_REF_KINDS: ReadonlySet<EditOpKind> = new Set(Object.keys(POINT_REF_SLOTS) as EditOpKind[]);
+
+/** Every slot path of `op` that could hold a point reference (`start`, `end` / `points[0]`, `points[1]`, …). Empty for other kinds. */
+export function pointRefSlotsOf(op: EditOp): string[] {
+  const spec = POINT_REF_SLOTS[op.op];
+  if (!spec) return [];
+  const out: string[] = [...(spec.scalars ?? [])];
+  if (spec.list) {
+    const arr = (op as unknown as Record<string, unknown>)[spec.list];
+    if (Array.isArray(arr)) for (let i = 0; i < arr.length; i++) out.push(`${spec.list}[${i}]`);
+  }
+  return out;
+}
+
+function parseSlotPath(slot: string): { name: string; index?: number } | null {
+  const m = /^([A-Za-z0-9]+)(?:\[(\d+)\])?$/.exec(slot);
+  return m ? { name: m[1], index: m[2] === undefined ? undefined : Number(m[2]) } : null;
+}
+
+/** Reads the `Vec3` currently held in `slot` of `op` (the cache), or `null`. */
+export function getVec3Slot(op: EditOp, slot: string): Vec3 | null {
+  const p = parseSlotPath(slot);
+  if (!p) return null;
+  const v = (op as unknown as Record<string, unknown>)[p.name];
+  return asVec3(p.index === undefined ? v : Array.isArray(v) ? v[p.index] : null);
+}
+
+/** Writes `value` into `slot` of `op` in place (used by the cache write-back and the kernel's resolve step on a CLONE). A slot that does not exist is ignored. */
+export function setVec3Slot(op: EditOp, slot: string, value: Vec3): void {
+  const p = parseSlotPath(slot);
+  if (!p) return;
+  const rec = op as unknown as Record<string, unknown>;
+  if (p.index === undefined) { rec[p.name] = [value[0], value[1], value[2]]; return; }
+  const arr = rec[p.name];
+  if (Array.isArray(arr) && p.index < arr.length) arr[p.index] = [value[0], value[1], value[2]];
+}
 
 /**
  * Operand fields addressable by a stored query, per op kind — the same field
@@ -673,6 +745,9 @@ function sanitizeExprs(raw: unknown, clean: EditOp): ExprMap | null {
     if (count >= MAX_EXPRS_PER_OP) break;
     const path = parseFieldPath(key);
     if (!path || getNumericField(clean, path) === null) continue;
+    // A point-referenced slot's coordinates are resolved from the shape at
+    // replay — an expression on them could never win, so it is not carried.
+    if (clean.pointRefs && clean.pointRefs[exprKeySlot(key)]) continue;
     if (typeof value !== "string" || value.length > MAX_EXPR_LENGTH || !parseExprSyntax(value)) continue;
     out[key] = value;
     count++;
@@ -731,9 +806,99 @@ function sanitizeTargetQueries(
   return Object.keys(queries).length > 0 ? { queries, kinds } : null;
 }
 
+/**
+ * Parses a point-reference value: a bare `"point-N"` string or `{id, at?}`.
+ * Returns `undefined` when `v` is not reference-shaped at all (a plain Vec3
+ * array, a number, …), `null` when it is reference-shaped but malformed.
+ */
+function parsePointRef(v: unknown): PointRef | null | undefined {
+  if (typeof v === "string") return POINT_ID_RE.test(v) ? { id: v } : null;
+  if (v && typeof v === "object" && !Array.isArray(v)) {
+    const o = v as Record<string, unknown>;
+    if (typeof o.id !== "string" || !POINT_ID_RE.test(o.id)) return null;
+    if (o.at === undefined) return { id: o.id };
+    const at = asVec3(o.at);
+    return at ? { id: o.id, at } : null;
+  }
+  return undefined;
+}
+
+/**
+ * Lifts point references out of a raw curve op so the per-kind core cases can
+ * validate it as an ordinary all-coordinates op. Every referenced slot is
+ * replaced in a shallow clone by a DISTINCT sentinel Vec3 (so the degeneracy
+ * checks — coincident endpoints, repeated consecutive points — neither fire
+ * spuriously nor hide a real one between typed slots; whether two referenced
+ * points coincide is unknowable until replay). References arrive two ways: inline
+ * (`{start: "point-3"}` / `{points: [[…], "point-7"]}`) or as an already-clean
+ * op's `pointRefs` annotation; inline wins on a conflict.
+ *
+ * `undefined` = nothing to lift; `null` = malformed (reject the whole op, like a
+ * malformed `planeId`).
+ */
+function liftPointRefs(raw: unknown): { raw: Record<string, unknown>; refs: PointRefs } | null | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const o = raw as Record<string, unknown>;
+  const spec = POINT_REF_SLOTS[o.op as EditOpKind];
+  if (!spec) return o.pointRefs === undefined ? undefined : null;
+  const clone: Record<string, unknown> = { ...o };
+  const refs: PointRefs = {};
+  let n = 0;
+  const sentinel = (): Vec3 => [-1e12 - n++, 0, 0];
+  for (const name of spec.scalars ?? []) {
+    const ref = parsePointRef(o[name]);
+    if (ref === null) return null;
+    if (ref) { refs[name] = ref; clone[name] = sentinel(); }
+  }
+  let list: unknown[] | null = null;
+  if (spec.list) {
+    const arr = o[spec.list];
+    if (Array.isArray(arr)) {
+      list = arr.slice();
+      for (let i = 0; i < list.length; i++) {
+        const ref = parsePointRef(list[i]);
+        if (ref === null) return null;
+        if (ref) { refs[`${spec.list}[${i}]`] = ref; list[i] = sentinel(); }
+      }
+      clone[spec.list] = list;
+    }
+  }
+  const declared = o.pointRefs;
+  if (declared !== undefined) {
+    if (!declared || typeof declared !== "object" || Array.isArray(declared)) return null;
+    for (const [slot, entry] of Object.entries(declared as Record<string, unknown>)) {
+      const p = parseSlotPath(slot);
+      if (!p) return null;
+      if (p.index === undefined) {
+        if (!(spec.scalars ?? []).includes(p.name)) return null;
+      } else if (!spec.list || p.name !== spec.list || !list || p.index >= list.length) return null;
+      const ref = parsePointRef(entry);
+      if (!ref) return null;
+      if (refs[slot]) continue; // an inline reference wins
+      refs[slot] = ref;
+      if (p.index === undefined) clone[p.name] = sentinel();
+      else list![p.index] = sentinel();
+    }
+  }
+  return Object.keys(refs).length > 0 ? { raw: clone, refs } : undefined;
+}
+
+/** `start[0]` → `start`, `points[1][2]` → `points[1]`: the Vec3 slot an `exprs` key addresses a component of. */
+function exprKeySlot(key: string): string {
+  return key.replace(/\[\d+\]$/, "");
+}
+
 export function validateEditOp(raw: unknown): EditOp | null {
-  const clean = validateEditOpCore(raw);
+  const lifted = liftPointRefs(raw);
+  if (lifted === null) return null;
+  const clean = validateEditOpCore(lifted ? lifted.raw : raw);
   if (!clean) return null;
+  if (lifted) {
+    // The slot holds the authored position as a cache (`[0,0,0]` until a bare
+    // headless id has been resolved once); replay resolves the id itself.
+    for (const [slot, ref] of Object.entries(lifted.refs)) setVec3Slot(clean, slot, ref.at ?? [0, 0, 0]);
+    clean.pointRefs = lifted.refs;
+  }
   const rawGuide = (raw as Record<string, unknown>).guide;
   if (rawGuide !== undefined) {
     if (typeof rawGuide !== "boolean") return null;

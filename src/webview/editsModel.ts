@@ -24,6 +24,9 @@ export class EditsModel {
   private redoBuffer: EditOp[] = [];
   private bakedThrough = 0;
 
+  /** Called after every successful {@link push} (the command bar echoes panel-built ops through it). */
+  onPush: ((op: EditOp) => void) | null = null;
+
   constructor(private readonly onChange: () => void) {}
 
   /** Replaces the op-list from a freshly-loaded sidecar (does not fire onChange). */
@@ -71,6 +74,7 @@ export class EditsModel {
     this.ops.push(clone(op));
     this.redoBuffer = [];
     this.onChange();
+    this.onPush?.(clone(op));
     return true;
   }
 

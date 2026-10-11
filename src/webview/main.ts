@@ -23,6 +23,8 @@ import { PartsPanel } from "./partsPanel";
 import { LayersModel } from "./layersModel";
 import { LayersPanel } from "./layersPanel";
 import { lockedOperandForOp } from "../layersSidecar";
+import { CommandBar } from "./commandBar";
+import type { CommandRow, SelectionIds } from "../opCommands";
 import { AnnotationsModel } from "./annotationsModel";
 import { PlanesModel } from "./planesModel";
 import { TOOLBAR_ICONS } from "../toolbarIcons";
@@ -115,7 +117,7 @@ import { MarkupModel, type MarkupStroke, type MarkupTool, type Point } from "./m
 import { redrawAll } from "./markupCanvas";
 import { setupDropdown } from "./dropdownMenu";
 import type { HostToWebview, WebviewToHost, TreeNode, EntityType, EditOp, ViewState, ViewBookmark, Annotation } from "../protocol";
-import type { OpOutcome, RegionPick } from "../editOps";
+import type { OpOutcome, RegionPick, PointRefs } from "../editOps";
 
 declare function acquireVsCodeApi(): { postMessage(msg: WebviewToHost): void };
 
@@ -827,6 +829,34 @@ function collectPointEntities(): Map<string, THREE.Vector3> {
   return points;
 }
 
+/**
+ * Positions of the given `point-N` entities in MODEL coordinates — the frame
+ * an edit op's `Vec3`s live in. `worldToLocal` on the model root, not the raw
+ * world position: a Z-up source rotates the model root, and an op carrying
+ * the rotated world coordinates would build the curve in the wrong place.
+ * Plain `traverse` (not `traverseVisible`): a picked point stays usable even if
+ * its Part was hidden after picking.
+ */
+function pointPositionsInModelSpace(ids: string[]): Map<string, Vec3> {
+  const want = new Set(ids);
+  const out = new Map<string, Vec3>();
+  const model = viewer.getModel();
+  if (!model) return out;
+  model.updateMatrixWorld(true);
+  model.traverse((o) => {
+    if (o instanceof THREE.Sprite && o.userData.entityType === "point" && want.has(String(o.userData.entityId))) {
+      const local = model.worldToLocal(o.getWorldPosition(new THREE.Vector3()));
+      out.set(String(o.userData.entityId), [local.x, local.y, local.z]);
+    }
+  });
+  return out;
+}
+
+/** The `pointRefs` a curve draft carries, as an object to spread onto the op (nothing when the draft follows no point). */
+function pointRefsOf(d: { pointRefs?: PointRefs } | Record<string, any>): { pointRefs?: PointRefs } {
+  return d.pointRefs && Object.keys(d.pointRefs).length > 0 ? { pointRefs: d.pointRefs } : {};
+}
+
 function gizmoModeForForm(id: PanelOpId | null): GizmoMode | null {
   return id === "translate" || id === "rotate" || id === "scale" ? id : null;
 }
@@ -1025,6 +1055,15 @@ const editsPanel = new EditsPanel(document.getElementById("edits-panel")!, {
     cancelOpPreview();
     editsModel.push(resolved.op);
     setStatus("");
+  },
+  onUsePickedPoints: () => {
+    const ids = selection.list().filter((e) => e.entityType === "point").map((e) => e.entityId);
+    if (ids.length === 0) { setStatus("Pick points first (Select ▾ → Point), then click Use picked points.", true); return []; }
+    const positions = pointPositionsInModelSpace(ids);
+    const out = ids.filter((id) => positions.has(id)).map((id) => ({ id, position: positions.get(id) as Vec3 }));
+    if (out.length < ids.length) setStatus(`${ids.length - out.length} picked point(s) are not in the displayed model and were skipped.`, true);
+    else setStatus(`Using ${out.length} picked point(s): ${out.map((p) => p.id).join(", ")}.`);
+    return out;
   },
   onCaptureBooleanA: () => {
     booleanA = selectedVolumes();
@@ -2426,6 +2465,104 @@ function attachPendingQueries(id: PanelOpId, op: EditOp): { attached: string[]; 
   return { attached, notes };
 }
 
+// ── Lower command bar (roadmap "Lower command bar") ──────────────────────────
+// Typed edit commands share the panel's commit tail: the same validateEditOp
+// gate (inside CommandBar), the same layer-lock refusal, the same preview
+// cancellation, and the same editsModel.push — so a typed op and a
+// panel-built op are indistinguishable once pushed. Panel-built ops echo back
+// into the bar through EditsModel.onPush (everything that pushes, including
+// macros, lands there), except while the bar itself is committing.
+let commandBarCommitting = false;
+/** Index of the op the bar just pushed, so a graceful skip on the next replay can be reported on the bar. */
+let commandBarWatchIndex: number | null = null;
+
+function commandBarSelection(): SelectionIds {
+  const out: SelectionIds = { solid: [], face: [], edge: [], point: [] };
+  for (const e of selection.list()) {
+    if (e.entityType === "volume") out.solid.push(e.entityId);
+    else if (e.entityType === "surface") out.face.push(e.entityId);
+    else if (e.entityType === "line") out.edge.push(e.entityId);
+    else if (e.entityType === "point") out.point.push(e.entityId);
+  }
+  return out;
+}
+
+/** Entity ids in the displayed model, read fresh off the scene's tags (so there is no stale cache to reset). */
+function commandBarInventory(): SelectionIds {
+  const inv: SelectionIds = { solid: [], face: [], edge: [], point: [] };
+  const model = viewer.getModel();
+  if (!model) return inv;
+  const seen = new Set<string>();
+  model.traverse((o) => {
+    const ud = o.userData as { groupId?: string; entityType?: string; entityId?: string };
+    if (typeof ud.groupId === "string" && !seen.has("g" + ud.groupId)) { seen.add("g" + ud.groupId); inv.solid.push(ud.groupId); }
+    if (typeof ud.entityId !== "string" || seen.has(ud.entityId)) return;
+    seen.add(ud.entityId);
+    if (ud.entityType === "surface") inv.face.push(ud.entityId);
+    else if (ud.entityType === "line") inv.edge.push(ud.entityId);
+    else if (ud.entityType === "point") inv.point.push(ud.entityId);
+  });
+  const num = (id: string) => Number(id.replace(/\D+/g, "")) || 0;
+  for (const k of ["solid", "face", "edge", "point"] as const) inv[k].sort((a, b) => num(a) - num(b));
+  return inv;
+}
+
+function commandBarCommit(op: EditOp, row: CommandRow): string | null {
+  const locked = lockedOperandForOp(op, layersModel.list());
+  if (locked) return `${locked.id} is on locked layer "${locked.layerName}" (${locked.layerId}) — unlock the layer to use it as an edit operand.`;
+  if (row.panelId === "translate" || row.panelId === "rotate" || row.panelId === "scale") cancelGizmoPreview();
+  cancelOpPreview();
+  commandBarCommitting = true;
+  try { editsModel.push(op); } finally { commandBarCommitting = false; }
+  commandBarWatchIndex = editsModel.size - 1;
+  setStatus("");
+  return null;
+}
+
+/** Applies a body's ids to the live selection where the displayed model confirms them (so the opened form's operands light up). */
+function selectBodyIds(body: Record<string, unknown>): void {
+  const ids: string[] = [];
+  const collect = (v: unknown): void => {
+    if (typeof v === "string") ids.push(v);
+    else if (Array.isArray(v)) v.forEach(collect);
+  };
+  Object.values(body).forEach(collect);
+  let changed = false;
+  for (const id of ids) {
+    const type = /^solid-\d+$|^node-\d+$/.test(id) ? "volume" : /^face-\d+$|\/face-\d+$/.test(id) ? "surface" : /^edge-\d+$/.test(id) ? "line" : /^point-\d+$/.test(id) ? "point" : null;
+    if (type && viewer.hasEntity(type, id)) { selection.add({ entityType: type, entityId: id }); changed = true; }
+  }
+  if (changed) renderHighlight();
+}
+
+const commandBar = new CommandBar(document.getElementById("cmdbar")!, {
+  getSelection: commandBarSelection,
+  getInventory: commandBarInventory,
+  sourceKind: () => sourceKind ?? "",
+  commit: commandBarCommit,
+  openForm: (row, body) => {
+    const chevron = document.querySelector<HTMLElement>("#edits-panel.collapsed #edits-header .panel-chevron");
+    chevron?.click(); // an open form inside a collapsed section would be invisible
+    if (!editsPanel.openOp(row.panelId)) return false;
+    if (body) {
+      selectBodyIds(body);
+      const { skipped } = editsPanel.prefillFromBody(body);
+      if (skipped.length > 0) setStatus(`Form opened; these body fields were not prefilled: ${skipped.join(", ")}.`);
+    }
+    return true;
+  },
+});
+editsModel.onPush = (op) => { if (!commandBarCommitting) commandBar.echo(op); };
+
+/** After a replay: report a graceful skip of the op the bar just pushed (a typed op must never fail silently). */
+function reportCommandBarOutcome(): void {
+  if (commandBarWatchIndex === null || !lastOpOutcomes) return;
+  const outcome = lastOpOutcomes[commandBarWatchIndex];
+  if (!outcome) return;
+  commandBarWatchIndex = null;
+  if (!outcome.applied) commandBar.showMessage(`${outcome.kind} was skipped: ${outcome.diagnostic ?? "it changed nothing"}${outcome.hint ? ` — ${outcome.hint}` : ""}`, true);
+}
+
 /**
  * The single op-stack commit every Apply shell uses instead of touching
  * `editsModel` directly: pushes, consumes attached staged queries (only the
@@ -2780,37 +2917,37 @@ function buildOpForPanelCore(id: PanelOpId, rawDraft: Record<string, unknown>): 
       return { op: withExprs({ op: id, position: d.position }) };
     case "addLine":
       if (d.start.every((v: number, i: number) => v === d.end[i])) return { error: "Start and end must differ." };
-      return { op: withExprs({ op: id, start: d.start, end: d.end }) };
+      return { op: withExprs({ op: id, start: d.start, end: d.end, ...pointRefsOf(d) }) };
     case "addArc":
       if (d.radius <= 0) return { error: "Arc radius must be positive." };
       if (d.startAngleDeg === d.endAngleDeg) return { error: "Start and end angle must differ." };
-      return { op: withExprs({ op: id, center: d.center, normal: d.normal, radius: d.radius, startAngleDeg: d.startAngleDeg, endAngleDeg: d.endAngleDeg }) };
+      return { op: withExprs({ op: id, center: d.center, normal: d.normal, radius: d.radius, startAngleDeg: d.startAngleDeg, endAngleDeg: d.endAngleDeg, ...pointRefsOf(d) }) };
     case "addPolyline": {
       const min = d.closed ? 3 : 2;
       if (d.points.length < min) return { error: `A ${d.closed ? "closed " : ""}polyline needs ${min}+ points.` };
       if (hasRepeatedConsecutive(d.points)) return { error: "Consecutive points must differ." };
-      return { op: withExprs({ op: id, points: d.points, closed: d.closed }) };
+      return { op: withExprs({ op: id, points: d.points, closed: d.closed, ...pointRefsOf(d) }) };
     }
     case "addThreePointArc": {
       const same = (a: number[], b: number[]) => a.every((v, i) => v === b[i]);
       if (same(d.p1, d.p2) || same(d.p2, d.p3) || same(d.p1, d.p3)) return { error: "The three points must be distinct." };
-      return { op: withExprs({ op: id, p1: d.p1, p2: d.p2, p3: d.p3 }) };
+      return { op: withExprs({ op: id, p1: d.p1, p2: d.p2, p3: d.p3, ...pointRefsOf(d) }) };
     }
     case "addSpline":
       if (d.points.length < 2) return { error: "A spline needs 2+ points." };
       if (hasRepeatedConsecutive(d.points)) return { error: "Consecutive points must differ." };
-      return { op: withExprs({ op: id, points: d.points }) };
+      return { op: withExprs({ op: id, points: d.points, ...pointRefsOf(d) }) };
     case "addBezier":
       if (d.controlPoints.length < 2) return { error: "A Bézier needs 2+ control points." };
-      return { op: withExprs({ op: id, controlPoints: d.controlPoints }) };
+      return { op: withExprs({ op: id, controlPoints: d.controlPoints, ...pointRefsOf(d) }) };
     case "addEllipseArc":
       if (d.radiusX <= 0 || d.radiusY <= 0) return { error: "Both radii must be positive." };
       if (!nonParallel(d.normal, d.up)) return { error: "Up must not be parallel to Normal." };
       if (d.startAngleDeg === d.endAngleDeg) return { error: "Start and end angle must differ." };
-      return { op: withExprs({ op: id, center: d.center, normal: d.normal, up: d.up, radiusX: d.radiusX, radiusY: d.radiusY, startAngleDeg: d.startAngleDeg, endAngleDeg: d.endAngleDeg }) };
+      return { op: withExprs({ op: id, center: d.center, normal: d.normal, up: d.up, radiusX: d.radiusX, radiusY: d.radiusY, startAngleDeg: d.startAngleDeg, endAngleDeg: d.endAngleDeg, ...pointRefsOf(d) }) };
     case "addHelix":
       if (d.radius <= 0 || d.pitch <= 0 || d.turns <= 0) return { error: "Helix radius, pitch, and turns must all be positive." };
-      return { op: withExprs({ op: id, center: d.center, axis: d.axis, radius: d.radius, pitch: d.pitch, turns: d.turns }) };
+      return { op: withExprs({ op: id, center: d.center, axis: d.axis, radius: d.radius, pitch: d.pitch, turns: d.turns, ...pointRefsOf(d) }) };
 
     // ── primitives (guards transcribed from onApplyPrimitive's cases) ──
     case "addBox": {
@@ -3026,6 +3163,7 @@ function rebuildMeshModel(opts?: { autoFit?: boolean }): void {
   const outcomes: OpOutcome[] = [];
   const edited = applyEditsMesh(pristineMesh.clone(), ops, outcomes, setStatus);
   lastOpOutcomes = outcomes; // mesh sources report their own replay outcomes (no host round trip)
+  reportCommandBarOutcome();
   lastOpBuckets = null; // produced-face classification is B-rep only (no host replay for meshes)
   const model = splitMeshesIntoFacets(edited, ops.length === 0 ? importedRegionInfo?.triangleRegion : undefined);
   viewer.setModel(model, opts);
@@ -5224,6 +5362,7 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
         hideInspectorCard(); // ditto — its facts describe the just-replaced shape
         hideHoverTip();
         lastOpOutcomes = msg.opOutcomes ?? null; // fresh replay outcomes for the Edits history markers
+        reportCommandBarOutcome();
         lastOpBuckets = msg.opBuckets ?? null; // fresh produced-face classification for the Edits history chips
         editsPanel.setQueryBuckets(msg.opBuckets ?? []); // and for the pin-as-query row's bucket picker
         pendingOpQueries = []; // every id was renumbered — staged queries name the old shape

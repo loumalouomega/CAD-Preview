@@ -1,5 +1,5 @@
 import type { EditOp, Vec3, OpOutcome, OutcomeFail, RegionPick } from "./editOps";
-import { TOPOLOGY_CHANGING_OPS } from "./editOps";
+import { TOPOLOGY_CHANGING_OPS, setVec3Slot } from "./editOps";
 import type { OpBucket } from "./opBuckets";
 import { PRODUCED_ROLE } from "./opBuckets";
 // TYPE-ONLY, and that is load-bearing: `entityFacts.ts` imports this module
@@ -15,6 +15,73 @@ import { signedArea2d, nestLoops } from "./loopNesting";
 const HASH_UPPER = 1 << 30;
 
 export interface GuideCollector { faces: any[]; edges: any[]; vertices: any[]; }
+
+/**
+ * One resolved `point-N` reference of a curve op (see `PointRef` in
+ * `editOps.ts`): which op/slot, the id the op now resolves to, and the
+ * position it was resolved at. `rebound` marks a stored id that no longer sat
+ * at its authored position and was re-anchored by position to `id`.
+ */
+export interface PointRefResolution { opIndex: number; slot: string; id: string; position: Vec3; rebound?: { from: string }; }
+
+/**
+ * Resolves a curve op's `pointRefs` against the shape the op SEES (the state
+ * after every earlier op), returning a clone with the referenced coordinate
+ * slots overwritten by the live vertex positions — or `null` after calling
+ * `fail`. Strict policy: when the op carries the authored position `at`, the
+ * stored id is trusted only if that vertex is still within tolerance of `at`;
+ * otherwise the nearest vertex within tolerance is used (reported as a rebind)
+ * and, with none there, the op is skipped — a renumbered or moved point is
+ * never silently repointed. A bare reference (no `at` yet) is trusted by id.
+ */
+function resolvePointRefs(
+  oc: any, shape: any, op: EditOp, cleanup: Array<{ delete(): void }>, fail: OutcomeFail,
+  sink?: Array<Omit<PointRefResolution, "opIndex">>
+): EditOp | null {
+  const refs = op.pointRefs;
+  if (!refs || Object.keys(refs).length === 0) return op;
+  const verts = collectVertices(oc, shape, cleanup);
+  const positions: Vec3[] = verts.map((v) => {
+    const p = oc.BRep_Tool.Pnt(v);
+    const out: Vec3 = [p.X(), p.Y(), p.Z()];
+    p.delete();
+    return out;
+  });
+  let tol = 1e-6;
+  try { tol = Math.max(1e-3 * bboxDiagonal(oc, shape, cleanup), 1e-6); } catch { /* empty shape: keep the floor */ }
+  const dist = (a: Vec3, b: Vec3): number => Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
+  const clone = JSON.parse(JSON.stringify(op)) as EditOp;
+  for (const [slot, ref] of Object.entries(refs)) {
+    const idx = Number(ref.id.slice("point-".length));
+    let chosen = -1;
+    let rebound = false;
+    if (ref.at) {
+      if (idx < positions.length && dist(positions[idx], ref.at) <= tol) chosen = idx;
+      else {
+        let best = Infinity;
+        positions.forEach((p, i) => { const d = dist(p, ref.at as Vec3); if (d < best) { best = d; chosen = i; } });
+        if (best > tol) chosen = -1;
+        else rebound = true;
+      }
+      if (chosen < 0) {
+        fail(
+          `${ref.id} is no longer at its authored position [${ref.at.map((c) => +c.toFixed(6)).join(", ")}] (${slot}) and no point is there now`,
+          "the point moved or was removed by an earlier op — re-pick the point, or use raw coordinates"
+        );
+        return null;
+      }
+    } else {
+      if (idx >= positions.length) {
+        fail(`${ref.id} (${slot}) does not exist — the model has ${positions.length} point(s) at this step`, "point ids are positional; check the inventory with load_model / inspect");
+        return null;
+      }
+      chosen = idx;
+    }
+    setVec3Slot(clone, slot, positions[chosen]);
+    sink?.push({ slot, id: `point-${chosen}`, position: positions[chosen], ...(rebound ? { rebound: { from: ref.id } } : {}) });
+  }
+  return clone;
+}
 
 function isGuideHandle(handle: any, collector: GuideCollector | undefined): boolean {
   if (!collector) return false;
@@ -144,7 +211,7 @@ export function collectGuideIds(oc: any, shape: any, collector: GuideCollector, 
  * applied via `BRepBuilderAPI_Transform_2(shape, trsf, true).Shape()`.
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-export function applyEditsBRep(oc: any, baseShape: any, ops: EditOp[], cleanup: Array<{ delete(): void }>, outcomes?: OpOutcome[], guideCollector?: GuideCollector, opBuckets?: OpBucket[]): any {
+export function applyEditsBRep(oc: any, baseShape: any, ops: EditOp[], cleanup: Array<{ delete(): void }>, outcomes?: OpOutcome[], guideCollector?: GuideCollector, opBuckets?: OpBucket[], pointRefCollector?: PointRefResolution[]): any {
   let shape = baseShape;
   for (let index = 0; index < ops.length; index++) {
     const op = ops[index];
@@ -158,8 +225,10 @@ export function applyEditsBRep(oc: any, baseShape: any, ops: EditOp[], cleanup: 
       outcome.diagnostic = diagnostic;
       if (hint) outcome.hint = hint;
     };
+    const refSink: Array<Omit<PointRefResolution, "opIndex">> | undefined = pointRefCollector && op.pointRefs ? [] : undefined;
     try {
-      shape = applyOneOp(oc, shape, op, cleanup, fail, guideCollector);
+      shape = applyOneOp(oc, shape, op, cleanup, fail, guideCollector, refSink);
+      if (refSink) for (const r of refSink) pointRefCollector!.push({ opIndex: index, ...r });
     } catch (err) {
       // A helper's own builder throws are caught internally; reaching here is
       // an unexpected fault. Record it, then re-throw to preserve the existing
@@ -340,7 +409,7 @@ type Transformer = (s: any) => any;
  * external consumer; the main replay path stays inside this file.
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-export function applyOneOp(oc: any, shape: any, op: EditOp, cleanup: Array<{ delete(): void }>, fail: OutcomeFail, guideCollector?: GuideCollector): any {
+export function applyOneOp(oc: any, shape: any, op: EditOp, cleanup: Array<{ delete(): void }>, fail: OutcomeFail, guideCollector?: GuideCollector, pointRefSink?: Array<Omit<PointRefResolution, "opIndex">>): any {
   switch (op.op) {
     case "translate":
     case "rotate":
@@ -408,7 +477,7 @@ export function applyOneOp(oc: any, shape: any, op: EditOp, cleanup: Array<{ del
     case "addBezier":
     case "addEllipseArc":
     case "addHelix":
-      return addWireframePrimitive(oc, shape, op, cleanup, fail, guideCollector);
+      return addWireframePrimitive(oc, shape, op, cleanup, fail, guideCollector, pointRefSink);
     case "addSurfaceFromLines":
       return addSurfaceFromLines(oc, shape, op, cleanup, fail, guideCollector);
     case "addVolumeFromSurfaces":
@@ -3382,8 +3451,12 @@ function addEdgeSlot(oc: any, shape: any, op: Extract<EditOp, { op: "addEdgeSlot
  *           confirmed against the live WASM, not assumed.
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function addWireframePrimitive(oc: any, shape: any, op: EditOp, cleanup: Array<{ delete(): void }>, fail?: OutcomeFail, guideCollector?: GuideCollector): any {
-  const entity = buildWireframePrimitive(oc, op, cleanup);
+function addWireframePrimitive(oc: any, shape: any, op: EditOp, cleanup: Array<{ delete(): void }>, fail?: OutcomeFail, guideCollector?: GuideCollector, pointRefSink?: Array<Omit<PointRefResolution, "opIndex">>): any {
+  // Resolve `point-N` coordinate references against the shape this op sees
+  // (everything before it in the fold) — see resolvePointRefs.
+  const resolved = resolvePointRefs(oc, shape, op, cleanup, fail ?? (() => undefined), pointRefSink);
+  if (!resolved) return shape;
+  const entity = buildWireframePrimitive(oc, resolved, cleanup);
   if (!entity) {
     fail?.(`could not build the ${op.op} entity`, "check the coordinates (a collinear 3-point arc, for example, cannot build an edge)");
     return shape;
@@ -4768,10 +4841,10 @@ export function collectSolids(oc: any, shape: any, cleanup: Array<{ delete(): vo
  * Enumerates unique vertices in the SAME order `extractVertices`
  * (`src/meshExtract.ts`) assigns `point-N` ids: `HashCode`+`IsSame` de-dup,
  * unconditional over the whole shape (no solid-ownership split, unlike faces).
- * Unlike `collectFaces`/`collectEdges`, this has no other caller today — points
- * are never resolved as edit-op operands — but the Gmsh parts-correlation
- * pipeline (`src/gmshPartsMap.ts`) needs it to resolve a part's `point-N` ids
- * back to live vertices for physical-group/sizing-field creation.
+ * Callers: the curve-creation ops' `point-N` references
+ * ({@link resolvePointRefs}), entity facts, and the Gmsh parts-correlation
+ * pipeline (`src/gmshPartsMap.ts`), which resolves a part's `point-N` ids back
+ * to live vertices for physical-group/sizing-field creation.
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function collectVertices(oc: any, shape: any, cleanup: Array<{ delete(): void }>): any[] {

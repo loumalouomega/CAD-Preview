@@ -55,7 +55,7 @@ interface EncodedPoint {
 }
 ```
 
-One per **unique vertex** (B-rep) — every vertex in the shape, including the model's own corners as well as any user-added standalone points. Unlike faces and edges, points are never resolved as operands by another op (`addLine`/`addArc` take typed coordinates, not point-id references), so extraction is purely for display/picking.
+One per **unique vertex** (B-rep) — every vertex in the shape, including the model's own corners as well as any user-added standalone points. Points are resolved as operands only by the eight curve-creation ops, whose coordinate slots may name a `point-N` (see `pointRefs` under `EditOp`); no other op takes a point id.
 
 ### `EntityType` and `Part`
 
@@ -228,7 +228,7 @@ type EditOp =
   | { op: 'addSlotProfile'; center: Vec3; normal: Vec3; up: Vec3; length: number; width: number; guide?: boolean }
   | { op: 'addTrapezoidProfile'; center: Vec3; normal: Vec3; up: Vec3; bottomWidth: number; topWidth: number; height: number; guide?: boolean }
   | { op: 'addPoint'; position: Vec3; guide?: boolean }
-  | { op: 'addLine'; start: Vec3; end: Vec3; guide?: boolean }
+  | { op: 'addLine'; start: Vec3; end: Vec3; guide?: boolean }                          // any Vec3 slot of the curve ops may be a `point-N` — see pointRefs below
   | { op: 'addArc'; center: Vec3; normal: Vec3; radius: number; startAngleDeg: number; endAngleDeg: number; guide?: boolean }
   | { op: 'addPolyline'; points: Vec3[]; closed: boolean; guide?: boolean }            // >= 2 points (>= 3 when closed)
   | { op: 'addThreePointArc'; p1: Vec3; p2: Vec3; p3: Vec3; guide?: boolean }
@@ -250,6 +250,8 @@ An `EditOp` is one entry in the ordered, replayable edit op-list. Operands are t
 **Midplane/midaxis references**: `mirror`/`splitByPlane`/`section` accept `midplaneFaces: [faceId, faceId]` (two planar, parallel faces — the op acts on the plane halfway between them) and `patternCircular` accepts `midaxisOf: [faceId|edgeId, faceId|edgeId]` (two cylindrical faces or two parallel straight edges). Exactly one of the reference or the inline vectors must be present; unresolvable/non-parallel references fail that op gracefully with a diagnostic. B-rep sources only — the mesh engine refuses the reference fields (it has no analytic faces; pass inline vectors instead).
 
 Every op may additionally carry an optional **parametric annotation** `exprs?: Record<string, string>` mapping a numeric field path (`length`, `size[1]`, `points[2][0]`) to an expression over the document's named variables (`ParamVariable`, below). The addressed numeric fields always hold the last-good evaluated numbers — a cache — so every consumer that ignores `exprs` still sees a fully-resolved op; only `resolveEditOps` (`src/editVariables.ts`) reads it. `validateEditOp` sanitizes `exprs` (bad paths / non-numeric slots / syntax errors dropped per entry).
+
+The eight curve-creation ops (`addLine`, `addArc`, `addPolyline`, `addThreePointArc`, `addSpline`, `addBezier`, `addEllipseArc`, `addHelix`) may additionally carry **point references** — `pointRefs?: Record<slot, { id: 'point-N'; at?: Vec3 }>`, slot keys like `start`, `p2`, `points[1]`, `controlPoints[0]`, `center`. A referenced slot's own `Vec3` holds the authored position as a cache; replay resolves `id` against the shape the op sees (everything before it). Authoring also accepts a bare id in the slot (`"start": "point-3"`) or `{id, at}`. Strict policy: a ref whose point is no longer within tolerance of `at` is re-anchored to the point now there (a warning) or, with none, the op is skipped with a diagnostic — never silently repointed. A bare ref (no `at` yet) is trusted by id and its resolved position is written back as `at` by the headless tools. Directions (`normal`/`up`/`axis`) are never point-addressable; mesh sources never carry these ops.
 
 Every op may also carry **stored operand queries** — `targetQueries?: Record<field, SelectorQuery>` plus per-bucket `targetQueryKinds?: Record<field, string>` — naming id-bearing operand fields (`targets`, `a`/`b`, `edges`, `profile`, …; plane references excluded by design). The id arrays remain the last-good cache: resolution is **host-side and replay-only** (`src/opQueryResolve.ts`, fused into a sequential fold so op N resolves against `shape(ops[0..N-1])` with earlier queries already resolved) — a bucket query re-derives its producing op's recorded faces and re-matches them geometrically; a scene query filters/ranks the whole current model. Scalar slots (`profile`, `faceA`, …) need exactly one resolved id. Every freeze (forward reference, kind-tag mismatch, pattern producer, unresolved/empty resolution) keeps the cached ids and surfaces a named warning via `load_model`'s `warnings` / the viewer's status line; the sidecar keeps queries + caches untouched. Mesh sources never resolve queries — they replay on cached ids. Queries are refused inside `repeat` bodies (indices are baked).
 

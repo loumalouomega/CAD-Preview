@@ -484,6 +484,33 @@
       "section": "Layers, distinct from Parts (roadmap 2.8, closed \u2014 both increments)",
       "gap": "The Export Drawing Sheet form's Layers checkboxes (rendering, check/uncheck, template round trip) in a live session \u2014 the form has a Test seam the integration suite cannot drive through a webview panel.",
       "status": "open"
+    },
+    {
+      "id": "point-ref-curve-forms",
+      "section": "`point-N` references on curve ops (roadmap \"Define lines, arcs and curves from preexisting points\", closed)",
+      "gap": "The curve forms' Use picked points flow: binding slots to picked point ids in pick order, locking behind id chips, posting pointRefs with `at`, chip clearing, and the polyline resize.",
+      "status": "closed",
+      "closedBy": [
+        "curve forms: Use picked points binds slots to point ids and posts pointRefs",
+        "curve forms: a polyline takes exactly the picked points; nothing picked explains itself"
+      ],
+      "note": "Every behaviour is harness-covered; only how the chip row looks across themes and a narrow sidebar is a human judgement."
+    },
+    {
+      "id": "command-bar",
+      "section": "Lower command bar (roadmap \"Lower command bar\", closed)",
+      "gap": "Typing an edit command into the lower command bar: the typed op equals the panel-built op, panel Applies echo into the bar, $sel expands by field type, rejections explain themselves, bare commands open their form, mesh sources refuse B-rep-only commands, history/Tab, skipped-op reporting, and the row's layout against the dock and toast.",
+      "status": "closed",
+      "closedBy": [
+        "command bar: a typed addBox equals the panel-built op, and a panel Apply echoes into the bar",
+        "command bar: $sel expands to the selection by field type; wrong kinds explain themselves",
+        "command bar: rejection shows the expected shape and posts nothing; a bare command opens its form",
+        "command bar: a B-rep-only command is refused on a mesh source",
+        "command bar: history recalls earlier lines and Tab completes a command",
+        "command bar: a typed op the kernel skips reports it on the bar",
+        "command bar: the row sits above the status bar, the canvas ends above it, and the dock and toast clear it"
+      ],
+      "note": "Every behaviour is harness-covered; the feel of typing JSON in a narrow editor and the bar's look across themes are human judgements."
     }
   ]
 }

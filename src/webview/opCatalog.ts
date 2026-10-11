@@ -193,6 +193,14 @@ export const OP_CATALOG: {
 };
 
 /** Every catalog entry across all tabs, in display order. */
+/** Which Edits-panel tab/subtab a button lives on — what a command-bar "open this form" needs. */
+export function catalogLocation(id: PanelOpId): "2d" | "3d" | "edit" | null {
+  for (const [where, cats] of [["2d", OP_CATALOG.geometry2d], ["3d", OP_CATALOG.geometry3d], ["edit", OP_CATALOG.edit]] as const) {
+    if (cats.some((c) => c.ops.some((o) => o.id === id))) return where;
+  }
+  return null;
+}
+
 export function allCatalogEntries(): CatalogEntry[] {
   return [...OP_CATALOG.geometry2d, ...OP_CATALOG.geometry3d, ...OP_CATALOG.edit]
     .flatMap((cat) => cat.ops);
@@ -284,7 +292,7 @@ function describeOpBase(op: EditOp): string {
     case "addSlotProfile": return `⌗ Slot sketch ${op.length}×${op.width}`;
     case "addTrapezoidProfile": return `⌗ Trapezoid sketch ${op.bottomWidth}/${op.topWidth}×${op.height}`;
     case "addPoint": return `• Point`;
-    case "addLine": return `— Line`;
+    case "addLine": return `— Line${op.pointRefs ? " (" + Object.values(op.pointRefs).map((r) => r.id).join("→") + ")" : ""}`;
     case "addArc": return `⌒ Arc r=${op.radius} ${op.startAngleDeg}°→${op.endAngleDeg}°`;
     case "addPolyline": return `— Polyline ×${op.points.length}${op.closed ? " closed" : ""}`;
     case "addThreePointArc": return `⌒ 3-point arc`;
@@ -398,6 +406,9 @@ export function referencedEntities(op: EditOp): string[] {
     case "addSlotProfile":
     case "addTrapezoidProfile":
     case "addPoint":
+      return [];
+    // The curve ops take coordinates — or `point-N` references standing in for
+    // them (roadmap "Define lines, arcs and curves from preexisting points").
     case "addLine":
     case "addArc":
     case "addPolyline":
@@ -406,7 +417,7 @@ export function referencedEntities(op: EditOp): string[] {
     case "addBezier":
     case "addEllipseArc":
     case "addHelix":
-      return [];
+      return op.pointRefs ? [...new Set(Object.values(op.pointRefs).map((r) => r.id))] : [];
     case "addEdgeSlot":
       return [op.edge];
   }

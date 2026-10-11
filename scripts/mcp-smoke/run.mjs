@@ -7452,6 +7452,103 @@ try {
     assert(s2.mesh.status === "skipped", "sections left out of `include` are listed as skipped");
   }
 
+  // ── Point references on curve ops (roadmap "Define lines, arcs and curves from preexisting points") ──
+  {
+    const dist3 = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
+    const fixture = path.join(ROOT, "examples", "STP", "block.stp");
+    const PA = [-1, -1, 3.5], PB = [1, -1, 3.5], PC = [1, 1, 3.5];
+    const pointOps = [PA, PB, PC].map((position) => ({ op: "addPoint", position }));
+    const findPoint = async (modelPath, want) => {
+      const { pointCount } = await call("load_model", { path: modelPath });
+      for (let i = 0; i < pointCount; i++) {
+        const f = await call("inspect", { path: modelPath, entityId: `point-${i}` });
+        if (f.center && dist3(f.center, want) < 1e-6) return `point-${i}`;
+      }
+      return null;
+    };
+    const freshWithPoints = async (name) => {
+      const p = path.join(dir, name);
+      fs.copyFileSync(fixture, p);
+      await call("apply_edit_ops", { path: p, ops: pointOps });
+      return p;
+    };
+    const newEdges = async (p, before) => {
+      const { edgeCount } = await call("load_model", { path: p });
+      const out = [];
+      for (let i = before; i < edgeCount; i++) out.push(await call("inspect", { path: p, entityId: `edge-${i}` }));
+      return out;
+    };
+
+    // Twin A: curves built from point ids. Twin B: the same curves from raw coordinates.
+    const refModel = await freshWithPoints("pr-ref.stp");
+    const rawModel = await freshWithPoints("pr-raw.stp");
+    const idA = await findPoint(refModel, PA), idB = await findPoint(refModel, PB), idC = await findPoint(refModel, PC);
+    assert(idA && idB && idC, `the three committed points have point-N ids (${idA}, ${idB}, ${idC})`);
+    const baseEdges = (await call("load_model", { path: refModel })).edgeCount;
+    const refRes = await call("apply_edit_ops", { path: refModel, ops: [
+      { op: "addLine", start: idA, end: idB },
+      { op: "addThreePointArc", p1: idA, p2: idB, p3: idC },
+      { op: "addPolyline", points: [idA, idB, idC], closed: false },
+    ] });
+    assert(refRes.applied === 3 && refRes.notApplied === 0, `point-ref line, 3-pt arc and polyline all apply (applied ${refRes.applied}, notApplied ${refRes.notApplied})`);
+    await call("apply_edit_ops", { path: rawModel, ops: [
+      { op: "addLine", start: PA, end: PB },
+      { op: "addThreePointArc", p1: PA, p2: PB, p3: PC },
+      { op: "addPolyline", points: [PA, PB, PC], closed: false },
+    ] });
+    const refEdges = await newEdges(refModel, baseEdges);
+    const rawEdges = await newEdges(rawModel, baseEdges);
+    assert(refEdges.length === rawEdges.length && refEdges.length > 0, `point-ref and raw twins add the same number of edges (${refEdges.length} vs ${rawEdges.length})`);
+    for (let i = 0; i < refEdges.length; i++) {
+      assert(Math.abs(refEdges[i].length - rawEdges[i].length) < 1e-9 && dist3(refEdges[i].center, rawEdges[i].center) < 1e-9,
+        `edge ${i}: point-ref geometry equals raw-coordinate geometry (length ${refEdges[i].length})`);
+    }
+    // Headless write-back: the persisted ops now carry each reference's authored position.
+    const persisted = JSON.parse(fs.readFileSync(`${refModel}.edits.json`, "utf8")).ops;
+    const persistedLine = persisted.find((o) => o.op === "addLine");
+    assert(persistedLine.pointRefs.start.id === idA && dist3(persistedLine.pointRefs.start.at, PA) < 1e-9, `apply_edit_ops writes the resolved position back as the ref's \`at\` (${JSON.stringify(persistedLine.pointRefs.start)})`);
+    // a reopen is stable: no warnings, same inventory
+    const reopened = await call("load_model", { path: refModel });
+    assert(!reopened.warnings.some((w) => /point-\d+/.test(w)), `reopening a point-ref model reports nothing (warnings: ${JSON.stringify(reopened.warnings)})`);
+
+    // Rebind: removing the FIRST committed point renumbers the rest; the stored `at`
+    // anchors re-anchor (or skip) — they never silently repoint.
+    const rbModel = await freshWithPoints("pr-rebind.stp");
+    const rbA = await findPoint(rbModel, PA), rbB = await findPoint(rbModel, PB);
+    await call("apply_edit_ops", { path: rbModel, ops: [{ op: "addLine", start: rbA, end: rbB }] });
+    const lineOpIndex = 3; // three addPoint ops precede it
+    const removed = await call("remove_edit_op", { path: rbModel, index: 0 });
+    assert(removed, "remove_edit_op accepted");
+    const afterRemove = await call("load_model", { path: rbModel });
+    // PA no longer exists, PB moved from point-i to point-(i-1): the line's `start` has no point
+    // at its authored position any more -> the op is skipped with a diagnostic, not repointed.
+    assert(afterRemove.warnings.some((w) => /did NOT apply/.test(w) && /no longer at its authored position/.test(w)),
+      `a ref whose point is gone is skipped with a diagnostic, never repointed (warnings: ${JSON.stringify(afterRemove.warnings)})`);
+    // Renumbering WITHOUT moving the referenced points: drop the unreferenced first point, so
+    // B and C shift down one id. Both refs re-anchor by position (a warning), the geometry is intact.
+    const rb2Model = await freshWithPoints("pr-rebind2.stp");
+    const rb2B = await findPoint(rb2Model, PB), rb2C = await findPoint(rb2Model, PC);
+    const rb2Base = (await call("load_model", { path: rb2Model })).edgeCount;
+    await call("apply_edit_ops", { path: rb2Model, ops: [{ op: "addLine", start: rb2B, end: rb2C }] });
+    const rb2Before = (await newEdges(rb2Model, rb2Base))[0];
+    await call("remove_edit_op", { path: rb2Model, index: 0 });
+    const rb2After = await call("load_model", { path: rb2Model });
+    assert(rb2After.warnings.some((w) => /re-anchored to point-\d+ by position/.test(w)) && !rb2After.warnings.some((w) => /did NOT apply/.test(w)),
+      `renumbered refs re-anchor by position with a warning and the op still applies (warnings: ${JSON.stringify(rb2After.warnings)})`);
+    const rb2Edges = await newEdges(rb2Model, rb2Base - 0);
+    assert(rb2Edges.some((e) => dist3(e.center, rb2Before.center) < 1e-9 && Math.abs(e.length - rb2Before.length) < 1e-9),
+      "…and the rebound line is geometrically the same line");
+
+    // A bare id that does not exist at that step is skipped with a diagnostic (not a throw, not a fallback).
+    const oobModel = await freshWithPoints("pr-oob.stp");
+    const oobRes = await call("apply_edit_ops", { path: oobModel, ops: [{ op: "addLine", start: "point-999", end: "point-0" }] });
+    assert(oobRes.applied === 0 && oobRes.notApplied === 1 && /point-999/.test(oobRes.report[0].diagnostic ?? ""),
+      `an out-of-range point id skips with a diagnostic (${oobRes.report[0].diagnostic})`);
+    // Malformed references are rejected up front with the op's expected shape.
+    const badRes = await call("apply_edit_ops", { path: oobModel, ops: [{ op: "addLine", start: "face-3", end: [0, 0, 0] }] });
+    assert(badRes.rejected === 1 && /addLine/.test(badRes.report[0].reason), "a non-point id in a coordinate slot is rejected with the op's shape");
+  }
+
   assert(Buffer.compare(fs.readFileSync(model), originalBytes) === 0, "CAD source file is byte-identical");
 
   console.log("\nMCP smoke test passed.");

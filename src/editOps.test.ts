@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { validateEditOp, BREP_ONLY_OPS, TOPOLOGY_CHANGING_OPS, GUIDE_KINDS, QUERYABLE_OPERAND_FIELDS } from "./editOps";
+import { validateEditOp, BREP_ONLY_OPS, TOPOLOGY_CHANGING_OPS, GUIDE_KINDS, QUERYABLE_OPERAND_FIELDS, POINT_REF_KINDS, pointRefSlotsOf, getVec3Slot, setVec3Slot } from "./editOps";
 
 describe("validateEditOp", () => {
   it("accepts well-formed transform ops", () => {
@@ -999,5 +999,81 @@ describe("pick (region selector) + drill", () => {
   it("accepts drill's edge profile form and validates length like extrude", () => {
     expect(validateEditOp({ op: "drill", targets: ["solid-0"], profileEdges: ["edge-1", "edge-2"], dir: [0, 0, -1], length: 10 }))
       .toMatchObject({ op: "drill" });
+  });
+});
+
+describe("point references on curve ops", () => {
+  it("accepts a bare point-N id in a coordinate slot and keeps it as a pointRefs annotation", () => {
+    const op = validateEditOp({ op: "addLine", start: "point-3", end: "point-7" });
+    expect(op).toEqual({
+      op: "addLine", start: [0, 0, 0], end: [0, 0, 0],
+      pointRefs: { start: { id: "point-3" }, end: { id: "point-7" } },
+    });
+  });
+
+  it("accepts {id, at} and stores the authored position as the slot cache", () => {
+    const op = validateEditOp({ op: "addLine", start: { id: "point-1", at: [1, 2, 3] }, end: [10, 0, 0] });
+    expect(op).toEqual({
+      op: "addLine", start: [1, 2, 3], end: [10, 0, 0],
+      pointRefs: { start: { id: "point-1", at: [1, 2, 3] } },
+    });
+  });
+
+  it("mixes references and raw coordinates in lists and every curve kind", () => {
+    expect(validateEditOp({ op: "addPolyline", points: ["point-0", [5, 0, 0], "point-2"], closed: false }))
+      .toMatchObject({ pointRefs: { "points[0]": { id: "point-0" }, "points[2]": { id: "point-2" } }, points: [[0, 0, 0], [5, 0, 0], [0, 0, 0]] });
+    expect(validateEditOp({ op: "addThreePointArc", p1: "point-0", p2: "point-1", p3: "point-2" })).not.toBeNull();
+    expect(validateEditOp({ op: "addSpline", points: ["point-0", "point-1"] })).not.toBeNull();
+    expect(validateEditOp({ op: "addBezier", controlPoints: ["point-0", [1, 1, 0], "point-1"] })).not.toBeNull();
+    expect(validateEditOp({ op: "addArc", center: "point-4", normal: [0, 0, 1], radius: 5, startAngleDeg: 0, endAngleDeg: 90 })).not.toBeNull();
+    expect(validateEditOp({ op: "addEllipseArc", center: "point-4", normal: [0, 0, 1], up: [1, 0, 0], radiusX: 8, radiusY: 5, startAngleDeg: 0, endAngleDeg: 90 })).not.toBeNull();
+    expect(validateEditOp({ op: "addHelix", center: "point-4", axis: [0, 0, 1], radius: 5, pitch: 3, turns: 2 })).not.toBeNull();
+  });
+
+  it("is idempotent: re-validating a clean op with pointRefs returns the same op", () => {
+    const once = validateEditOp({ op: "addPolyline", points: [{ id: "point-0", at: [1, 1, 1] }, [5, 0, 0], "point-2"], closed: true });
+    expect(once).not.toBeNull();
+    expect(validateEditOp(JSON.parse(JSON.stringify(once)))).toEqual(once);
+  });
+
+  it("rejects malformed references and references outside the curve kinds", () => {
+    expect(validateEditOp({ op: "addLine", start: "face-3", end: [1, 0, 0] })).toBeNull();
+    expect(validateEditOp({ op: "addLine", start: "point-x", end: [1, 0, 0] })).toBeNull();
+    expect(validateEditOp({ op: "addLine", start: { id: "point-1", at: [1, 2] }, end: [1, 0, 0] })).toBeNull();
+    expect(validateEditOp({ op: "addLine", start: { at: [1, 2, 3] }, end: [1, 0, 0] })).toBeNull();
+    // a slot that does not exist on the kind / is out of range
+    expect(validateEditOp({ op: "addLine", start: [0, 0, 0], end: [1, 0, 0], pointRefs: { middle: { id: "point-1" } } })).toBeNull();
+    expect(validateEditOp({ op: "addPolyline", points: [[0, 0, 0], [1, 0, 0]], closed: false, pointRefs: { "points[5]": { id: "point-1" } } })).toBeNull();
+    // other kinds may not carry the annotation at all
+    expect(validateEditOp({ op: "addBox", center: [0, 0, 0], size: [1, 1, 1], pointRefs: { center: { id: "point-1" } } })).toBeNull();
+    expect(validateEditOp({ op: "addPoint", position: "point-1" })).toBeNull();
+    // direction slots are never point-addressable
+    expect(validateEditOp({ op: "addArc", center: [0, 0, 0], normal: "point-1", radius: 5, startAngleDeg: 0, endAngleDeg: 90 })).toBeNull();
+  });
+
+  it("still enforces count and non-reference degeneracy rules", () => {
+    expect(validateEditOp({ op: "addPolyline", points: ["point-0"], closed: false })).toBeNull();
+    expect(validateEditOp({ op: "addPolyline", points: [[1, 1, 1], [1, 1, 1], "point-2"], closed: false })).toBeNull();
+    // two distinct references never trip the coincident-point check (unknowable until replay)
+    expect(validateEditOp({ op: "addLine", start: "point-1", end: "point-2" })).not.toBeNull();
+  });
+
+  it("keeps guide and drops exprs on a referenced slot", () => {
+    const op = validateEditOp({
+      op: "addLine", start: { id: "point-1", at: [1, 2, 3] }, end: [10, 0, 0], guide: true,
+      exprs: { "start[0]": "L", "end[0]": "L*2" },
+    });
+    expect(op).toMatchObject({ guide: true, exprs: { "end[0]": "L*2" } });
+    expect((op as { exprs: Record<string, string> }).exprs["start[0]"]).toBeUndefined();
+  });
+
+  it("exposes slot helpers", () => {
+    expect(POINT_REF_KINDS.size).toBe(8);
+    expect(POINT_REF_KINDS.has("addPoint")).toBe(false);
+    const op = validateEditOp({ op: "addPolyline", points: [[0, 0, 0], [1, 0, 0], [2, 0, 0]], closed: false })!;
+    expect(pointRefSlotsOf(op)).toEqual(["points[0]", "points[1]", "points[2]"]);
+    setVec3Slot(op, "points[1]", [9, 8, 7]);
+    expect(getVec3Slot(op, "points[1]")).toEqual([9, 8, 7]);
+    expect(getVec3Slot(op, "points[9]")).toBeNull();
   });
 });
