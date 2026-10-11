@@ -144,6 +144,7 @@ import type { TitleBlockFields } from "./drawingSheet";
 import type { analyzePassages } from "./passageAnalysisHost";
 import type { measureMeshDeviation } from "./meshDeviationHost";
 import type { bakeMeshEdits } from "./meshEditBake";
+import type { decodeGltfGeometry } from "./gltfDecode";
 import { estimateMeshBudget, budgetWarning, type MeshBudget } from "./meshBudget";
 import { deviationPly } from "./meshDeviation";
 import { triangleMassProperties } from "./triangleMassProperties";
@@ -289,6 +290,7 @@ export interface Pipeline {
   analyzePassages: typeof analyzePassages;
   measureMeshDeviation: typeof measureMeshDeviation;
   bakeMeshEdits: typeof bakeMeshEdits;
+  decodeGltfGeometry: typeof decodeGltfGeometry;
 }
 
 export interface ToolContext {
@@ -720,7 +722,7 @@ export async function loadModel(ctx: ToolContext, params: { path: string }) {
     // Recover an interrupted save-in-place BEFORE reading the source, so the
     // facts below describe a consistent source/history pair.
     const recovered = await recoverInterruptedMeshSaveHeadless(modelPath, route.format);
-    const { inspection, warnings } = await readMeshInspection(modelPath, route.format as MeshParseFormat);
+    const { inspection, warnings } = await readMeshInspection(ctx, modelPath, route.format as MeshParseFormat);
     if (recovered.message) warnings.unshift(recovered.message);
     return {format: route.format, strategy: route.strategy, meshEntities: inspection.inventory,
       tree: null, solids: null, edgeCount: null, edgeIds: null, pointCount: null,
@@ -856,9 +858,9 @@ export async function loadModel(ctx: ToolContext, params: { path: string }) {
 // ---------------------------------------------------------------------------
 // get_mass_properties
 
-async function readMeshInspection(modelPath: string, format: MeshParseFormat) {
+async function readMeshInspection(ctx: ToolContext, modelPath: string, format: MeshParseFormat) {
   const bytes = await readModelBytes(modelPath);
-  const external = format === "gltf" ? await resolveGltfBuffers(modelPath, bytes) : undefined;
+  const external = format === "gltf" ? await resolveGltfBuffers(ctx, modelPath, bytes) : undefined;
   const inspection = meshInspection(parseToWeldedMesh(bytes, format, external));
   const {ops} = await readEditsResolved(modelPath);
   const warnings = ["Triangle-based facts in raw file coordinates; mesh-component-N / mesh-triangle-N / mesh-vertex-N are headless ids, not webview node-N or edit operands. No analytic surface parameters or inertia are computed."];
@@ -875,7 +877,7 @@ export async function getMassProperties(
   const entityId = params.entityId ?? null;
 
   if (COMPARABLE_MESH_FORMATS.has(route.format)) {
-    const {inspection, warnings} = await readMeshInspection(modelPath, route.format as MeshParseFormat);
+    const {inspection, warnings} = await readMeshInspection(ctx, modelPath, route.format as MeshParseFormat);
     const properties = inspection.mass(entityId ?? "whole-model");
     if (properties.volume !== null && !properties.watertight) warnings.push("Not watertight — volume may not be meaningful; centerOfMass is the area centroid.");
     return {format: route.format, entityId: entityId ?? "whole-model", supported: true, ...properties, warnings};
@@ -1067,7 +1069,7 @@ export async function inspectEntity(
   const route = requireRoute(modelPath);
 
   if (COMPARABLE_MESH_FORMATS.has(route.format)) {
-    const {inspection, warnings} = await readMeshInspection(modelPath, route.format as MeshParseFormat);
+    const {inspection, warnings} = await readMeshInspection(ctx, modelPath, route.format as MeshParseFormat);
     return {format: route.format, supported: true, ...inspection.inspect(params.entityId), warnings};
   }
 
@@ -1104,7 +1106,7 @@ export async function measureTool(
   const route = requireRoute(modelPath);
 
   if (COMPARABLE_MESH_FORMATS.has(route.format)) {
-    const {inspection, warnings} = await readMeshInspection(modelPath, route.format as MeshParseFormat);
+    const {inspection, warnings} = await readMeshInspection(ctx, modelPath, route.format as MeshParseFormat);
     return {format: route.format, supported: true, ...inspection.measure(params.from, params.to, params.axis), warnings};
   }
 
@@ -1952,17 +1954,24 @@ export async function renderOpsPrefixTool(
  * unit-tests and runs in either process), so whichever caller DOES have I/O
  * resolves the buffers first and passes them in. `resolveExternalBuffers`
  * itself refuses anything that isn't a plain relative path beside the model.
- * A `.glb`, or a `.gltf` with embedded `data:` buffers, resolves to `{}`.
+ * A `.glb`, or a `.gltf` with embedded `data:` buffers, resolves to `{}`
+ * (plus the decoded geometry of a Draco/meshopt-compressed file).
  */
-async function resolveGltfBuffers(modelPath: string, bytes: Uint8Array): Promise<GltfExternalBuffers> {
+async function resolveGltfBuffers(ctx: ToolContext, modelPath: string, bytes: Uint8Array): Promise<GltfExternalBuffers> {
   const dir = path.dirname(path.resolve(modelPath));
-  return resolveExternalBuffers(bytes, async (uri) => {
-    try {
-      return new Uint8Array(await fs.readFile(path.resolve(dir, uri)));
-    } catch {
-      return undefined;
-    }
-  });
+  return resolveExternalBuffers(
+    bytes,
+    async (uri) => {
+      try {
+        return new Uint8Array(await fs.readFile(path.resolve(dir, uri)));
+      } catch {
+        return undefined;
+      }
+    },
+    // A Draco/meshopt file is decoded by the kernel worker (its WASM lives
+    // there) into reserved `decoded:` entries the synchronous parser consumes.
+    (b, e) => ctx.pipeline.decodeGltfGeometry(ctx.extensionPath, b, e)
+  );
 }
 
 /**
@@ -2292,7 +2301,7 @@ export async function checkMeshHealthTool(
 
   const bytes = await readModelBytes(modelPath);
   const format = route.format as MeshParseFormat;
-  const external = format === "gltf" ? await resolveGltfBuffers(modelPath, bytes) : undefined;
+  const external = format === "gltf" ? await resolveGltfBuffers(ctx, modelPath, bytes) : undefined;
   try {
     const report = await ctx.pipeline.checkMeshHealth(ctx.extensionPath, bytes, format, external);
     return { format: route.format, supported: true, warnings: [], ...report };
@@ -2370,7 +2379,7 @@ export async function fitMeshRegionTool(
 
   const bytes = await readModelBytes(modelPath);
   const format = route.format as MeshParseFormat;
-  const external = format === "gltf" ? await resolveGltfBuffers(modelPath, bytes) : undefined;
+  const external = format === "gltf" ? await resolveGltfBuffers(ctx, modelPath, bytes) : undefined;
   const report = await ctx.pipeline.fitMeshRegion(
     bytes,
     format,
@@ -2685,7 +2694,7 @@ export async function promoteMeshToBrepTool(
 
   const bytes = await readModelBytes(modelPath);
   const sourceFormat = route.format as MeshParseFormat;
-  const external = sourceFormat === "gltf" ? await resolveGltfBuffers(modelPath, bytes) : undefined;
+  const external = sourceFormat === "gltf" ? await resolveGltfBuffers(ctx, modelPath, bytes) : undefined;
   try {
     const result = await ctx.pipeline.promoteMeshToBrep(ctx.extensionPath, bytes, sourceFormat, targetFormat, unit, external);
     await fs.writeFile(outputPath, result.bytes);
@@ -2758,7 +2767,7 @@ export async function repairMeshTool(
 
   const bytes = await readModelBytes(modelPath);
   const sourceFormat = route.format as MeshParseFormat;
-  const external = sourceFormat === "gltf" ? await resolveGltfBuffers(modelPath, bytes) : undefined;
+  const external = sourceFormat === "gltf" ? await resolveGltfBuffers(ctx, modelPath, bytes) : undefined;
   const meshOptions = await readMeshOptions(modelPath);
   const result = await ctx.pipeline.repairMesh(ctx.extensionPath, bytes, sourceFormat, external, meshOptions);
   await fs.writeFile(outputPath, result.stlBytes);
@@ -4689,7 +4698,7 @@ async function resolveMeshInputHeadless(
       ops,
       {
         readBytes: () => readModelBytes(modelPath),
-        resolveGltfBuffers: (bytes) => resolveGltfBuffers(modelPath, bytes),
+        resolveGltfBuffers: (bytes) => resolveGltfBuffers(ctx, modelPath, bytes),
         resolveMeshioCompanions: (bytes) => resolveMeshioCompanions(modelPath, route.format, bytes),
         convertToStlBoundary: (bytes, format, name, companions) => ctx.pipeline.convertToStlBoundary(bytes, format, name, companions),
         convertFoamCaseToStlBoundary: (markerPath) => ctx.pipeline.convertFoamCaseToStlBoundary(markerPath),
@@ -6006,7 +6015,7 @@ async function meshCompareSource(
   rawLabel: string
 ): Promise<CompareSource> {
   const format = route.format as "stl" | "obj" | "ply" | "gltf";
-  const externalBuffers = format === "gltf" ? await resolveGltfBuffers(modelPath, bytes) : undefined;
+  const externalBuffers = format === "gltf" ? await resolveGltfBuffers(ctx, modelPath, bytes) : undefined;
   const local: string[] = [];
   const baked = await bakeMeshSourceEdits(
     bytes,

@@ -26,6 +26,7 @@ import type { MTLLoader } from "three/examples/jsm/loaders/MTLLoader.js";
 import { defaultFaceColor } from "./geometryBuilder";
 import { markNativeColor } from "./nativeColor";
 import type { GltfExternalBuffers } from "../gltfParser";
+import { inflateGltfDocument } from "../gltfInflate";
 
 /**
  * Builds a standard-material mesh for a raw geometry, computing normals if
@@ -157,9 +158,10 @@ const CHUNK_BIN = 0x004e4942;
 /**
  * Parses a `.gltf`/`.glb` into its scene with materials stripped and every
  * buffer inlined as a `data:` URI (the GLB's BIN chunk and any resolved
- * external `.bin`), so no network or DOM access is needed. Rejects when the
- * loader does (e.g. a required Draco/meshopt extension, or an external buffer
- * that was not supplied).
+ * external `.bin`), so no network or DOM access is needed. A Draco/meshopt
+ * file is first inflated to plain glTF from the decoded entries in `external`.
+ * Rejects when the loader does (e.g. a compression extension whose decoded
+ * entries were not supplied, or an external buffer that was not supplied).
  */
 export async function parseGltfObject(bytes: Uint8Array, external?: GltfExternalBuffers): Promise<THREE.Object3D> {
   // GLTFLoader constructs a ProgressEvent (a DOM API). A no-op in the
@@ -173,6 +175,10 @@ export async function parseGltfObject(bytes: Uint8Array, external?: GltfExternal
   delete doc.textures;
   delete doc.images;
   delete doc.samplers;
+  // A Draco/meshopt file is rewritten into plain glTF from the entries the
+  // kernel worker's decode step added to `external` (see `gltfInflate.ts`), so
+  // GLTFLoader never meets a compression extension it has no decoder for.
+  if (external) inflateGltfDocument(doc, external);
   for (const mesh of (doc.meshes as { primitives?: Record<string, unknown>[] }[] | undefined) ?? []) {
     for (const prim of mesh.primitives ?? []) delete prim.material;
   }

@@ -142,18 +142,34 @@ const THUMB_FETCH_CONCURRENCY = 4;
  * has one resolves the buffers and passes them in; `resolveExternalBuffers`
  * itself refuses anything that isn't a plain relative path beside the model.
  * Returns `undefined` for every other format, and for a `.glb` or a `.gltf`
- * with embedded `data:` buffers there is simply nothing to read.
+ * with embedded `data:` buffers there is simply nothing to read (a Draco/meshopt
+ * file additionally gets its decoded geometry — see `GltfDecoder`).
  */
-async function resolveGltfBuffersFor(uri: vscode.Uri, format: CadFormat, bytes: Uint8Array): Promise<GltfExternalBuffers | undefined> {
+async function resolveGltfBuffersFor(
+  uri: vscode.Uri,
+  format: CadFormat,
+  bytes: Uint8Array,
+  decode: GltfDecoder
+): Promise<GltfExternalBuffers | undefined> {
   if (format !== "gltf") return undefined;
-  return resolveExternalBuffers(bytes, async (relative) => {
-    try {
-      return await vscode.workspace.fs.readFile(vscode.Uri.joinPath(uri, "..", relative));
-    } catch {
-      return undefined;
-    }
-  });
+  return resolveExternalBuffers(
+    bytes,
+    async (relative) => {
+      try {
+        return await vscode.workspace.fs.readFile(vscode.Uri.joinPath(uri, "..", relative));
+      } catch {
+        return undefined;
+      }
+    },
+    decode
+  );
 }
+
+/** Expands a Draco/meshopt-compressed glTF's geometry in the kernel worker (the
+ * decoders are WASM and never run in this process) into the reserved
+ * `decoded:` entries the synchronous parser consumes. Called only for a file
+ * that actually uses compression. */
+type GltfDecoder = (bytes: Uint8Array, external: GltfExternalBuffers) => Promise<GltfExternalBuffers>;
 
 /**
  * Reads whatever sibling files a meshio++ multi-file/companion format needs
@@ -391,6 +407,10 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
    * of importing `occtService.ts`/`gmshService.ts`/etc. directly.
    */
   private readonly pipeline: KernelClient;
+  /** See `GltfDecoder`. An arrow property so call sites can pass it bare; it
+   * reads `this.pipeline` only when called, long after the constructor. */
+  private readonly decodeGltf = (bytes: Uint8Array, external: GltfExternalBuffers): Promise<GltfExternalBuffers> =>
+    this.pipeline.decodeGltfGeometry(this.context.extensionPath, bytes, external);
 
   /** The last drawing-sheet settings used this session (pre-fills the form). */
   private lastSheetSettings: SheetSettingsInput | undefined;
@@ -3176,7 +3196,7 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
           }
           const bytes = await vscode.workspace.fs.readFile(document.uri);
           const sourceFormat = route.format as MeshParseFormat;
-          const external = await resolveGltfBuffersFor(document.uri, route.format, bytes);
+          const external = await resolveGltfBuffersFor(document.uri, route.format, bytes, this.decodeGltf);
           try {
             const report = await docPipeline.checkMeshHealth(
               this.context.extensionPath,
@@ -3306,7 +3326,7 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
             route.format as MeshParseFormat,
             msg.point,
             {},
-            await resolveGltfBuffersFor(document.uri, route.format, bytes)
+            await resolveGltfBuffersFor(document.uri, route.format, bytes, this.decodeGltf)
           );
           post({ type: "fitRegionResult", requestId: msg.requestId, fit });
         } catch (err) {
@@ -4262,7 +4282,7 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
           meshFormat,
           picked.format,
           unit,
-          await resolveGltfBuffersFor(uri, meshFormat, sourceBytes)
+          await resolveGltfBuffersFor(uri, meshFormat, sourceBytes, this.decodeGltf)
         );
         return result.bytes;
       },
@@ -4301,7 +4321,7 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
           this.context.extensionPath,
           sourceBytes,
           meshFormat,
-          await resolveGltfBuffersFor(uri, meshFormat, sourceBytes),
+          await resolveGltfBuffersFor(uri, meshFormat, sourceBytes, this.decodeGltf),
           await readMeshOptions(uri)
         );
         return result.stlBytes;
@@ -4579,7 +4599,7 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
           route.strategy === "occt"
             ? { kind: "brep", bytes, format: src.format as Extract<CadFormat, "step" | "iges" | "brep" | "csg">, ops: replayTail(ops, bakedThrough) }
             : route.format === "gltf"
-              ? { kind: "gltf", bytes, externalBuffers: await resolveGltfBuffersFor(uri, route.format, bytes) }
+              ? { kind: "gltf", bytes, externalBuffers: await resolveGltfBuffersFor(uri, route.format, bytes, this.decodeGltf) }
               : { kind: route.format as "stl" | "obj" | "ply", bytes };
         const result = await this.docPipeline(uri).exportSvgSilhouette(this.context.extensionPath, source, {
           direction: picked.direction,
@@ -4689,7 +4709,7 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
           route.strategy === "occt"
             ? { kind: "brep", bytes, format: src.format as Extract<CadFormat, "step" | "iges" | "brep" | "csg">, ops: replayTail(ops, bakedThrough) }
             : route.format === "gltf"
-              ? { kind: "gltf", bytes, externalBuffers: await resolveGltfBuffersFor(uri, route.format, bytes) }
+              ? { kind: "gltf", bytes, externalBuffers: await resolveGltfBuffersFor(uri, route.format, bytes, this.decodeGltf) }
               : { kind: route.format as "stl" | "obj" | "ply", bytes };
         const result = await this.docPipeline(uri).exportDrawingSheet(this.context.extensionPath, source, {
           views: settings.views,
@@ -4980,7 +5000,7 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
           replayTail(ops, bakedThrough),
           {
             readBytes: async () => vscode.workspace.fs.readFile(uri),
-            resolveGltfBuffers: (bytes) => resolveGltfBuffersFor(uri, route.format, bytes),
+            resolveGltfBuffers: (bytes) => resolveGltfBuffersFor(uri, route.format, bytes, this.decodeGltf),
             resolveMeshioCompanions: (bytes) => resolveMeshioCompanionsFor(uri, basename, route.format, bytes),
             convertToStlBoundary: (bytes, format, name, companions) => pipeline.convertToStlBoundary(bytes, format, name, companions),
             convertFoamCaseToStlBoundary: (markerPath) => pipeline.convertFoamCaseToStlBoundary(markerPath),
@@ -5188,7 +5208,13 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
       `default-src 'none'`,
       `img-src ${webview.cspSource} blob: data:`,
       `style-src ${webview.cspSource} 'unsafe-inline'`,
-      `script-src 'nonce-${nonce}'`,
+      // 'wasm-unsafe-eval' lets the Draco / meshopt glTF decoders compile their
+      // WebAssembly; `worker-src blob:` is for DRACOLoader's Blob Worker (the
+      // `worker-src` fallback chain would otherwise land on the nonce-only
+      // script-src). Neither opens code execution from a string: no eval(), no
+      // 'unsafe-eval'. Only an actually-compressed glTF reaches either.
+      `script-src 'nonce-${nonce}' 'wasm-unsafe-eval'`,
+      `worker-src blob:`,
       `connect-src ${webview.cspSource} blob: data:`,
     ].join("; ");
 

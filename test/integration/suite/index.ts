@@ -747,6 +747,32 @@ test("Export… writes a glTF Binary (.glb) serialized by the real webview", asy
   await closeAll();
 });
 
+// Compressed glTF under the REAL webview CSP (roadmap "Compressed glTF").
+// `test:webview` serves the viewer with no Content-Security-Policy, so it
+// proves the decoder logic and staged paths but cannot prove the two
+// directives a real webview needs — `script-src 'wasm-unsafe-eval'` (both
+// decoders compile WebAssembly) and `worker-src blob:` (DRACOLoader's Blob
+// Worker). Observed the way the mesh-export cases above are: export what the
+// webview DISPLAYS. A load blocked by the CSP leaves an empty scene, so an STL
+// with exactly the cube's 12 triangles proves the decode ran inside the CSP.
+test("Compressed glTF (Draco and meshopt) loads under the real webview CSP", async () => {
+  await closeAll();
+  for (const name of ["cube-draco.glb", "cube-meshopt.glb"]) {
+    const staged = stage(path.join(ROOT, "examples", "GLTF", name));
+    const out = path.join(path.dirname(staged), "from-compressed.stl");
+    assert(await openDocument(staged), `${name} opens`);
+    await withModals([pick("STL"), pick("Native"), save(out)], async () => {
+      await vscode.commands.executeCommand("cad-preview.export");
+      await waitForFile(out);
+    });
+    const buf = fs.readFileSync(out);
+    const count = buf.length >= 84 ? buf.readUInt32LE(80) : 0;
+    assert(count === 12, `${name}: the displayed model carries the cube's 12 triangles (got ${count}) — a decoder blocked by the CSP leaves an empty scene`);
+    assert(buf.length === 84 + count * 50, `${name}: a well-formed binary STL (${buf.length} bytes)`);
+    await closeAll();
+  }
+});
+
 test("Save in place bakes ops into the source with .bak + watermark", async () => {
   // Tier 0 Phase 1: picking the source's own B-rep format writes back to the
   // open document instead of exporting. Pre-write a one-op sidecar so there

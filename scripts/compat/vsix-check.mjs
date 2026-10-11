@@ -68,6 +68,11 @@ const required = [...new Set([
   "dist/macros/starter-library.json",
   "dist/mesh-presets/starter-presets.json",
   "dist/sheet-templates/starter-templates.json",
+  // Draco decoders for compressed glTF: web pair + Node wasm + licence text.
+  "dist/draco/draco_wasm_wrapper.js",
+  "dist/draco/draco_decoder.wasm",
+  "dist/draco/node/draco_decoder.wasm",
+  "dist/draco/LICENSE",
   "media/viewer.js",
   "media/viewer.css",
   ...carveOuts,

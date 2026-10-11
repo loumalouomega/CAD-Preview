@@ -136,16 +136,19 @@ The webview HTML sets a strict CSP:
 
 ```
 default-src 'none';
-script-src 'nonce-{nonce}';
-style-src 'nonce-{nonce}';
-img-src {webview-csp-source} data:;
+img-src {webview-csp-source} blob: data:;
+style-src {webview-csp-source} 'unsafe-inline';
+script-src 'nonce-{nonce}' 'wasm-unsafe-eval';
+worker-src blob:;
+connect-src {webview-csp-source} blob: data:;
 ```
 
-This means:
+(`getHtml` in `src/provider.ts` is the source of truth.) This means:
 
 - No inline scripts without the nonce.
-- No `eval` / `unsafe-eval` (so no dynamic code).
-- Images are allowed only from `vscode-webview://` URIs or `data:` (used by `CanvasTexture`).
+- No `eval` / `unsafe-eval` (so no dynamic code). `'wasm-unsafe-eval'` is narrower: it allows compiling WebAssembly only, which the Draco and meshopt glTF decoders need. `worker-src blob:` is for `DRACOLoader`'s Blob Worker. Both are used only when a compressed glTF is opened.
+- Images are allowed only from `vscode-webview://` URIs, `blob:` or `data:` (used by `CanvasTexture`).
+- `fetch` (`connect-src`) is limited to the webview's own resource origin, `blob:` and `data:` — which is how the viewer reads model files and the staged `dist/draco/` decoder.
 - Fonts and external resources are blocked.
 
 The orientation cube's face labels are drawn via `CanvasTexture` (HTML5 `<canvas>` → `drawText`) — this approach requires no external image assets and is fully CSP-safe.

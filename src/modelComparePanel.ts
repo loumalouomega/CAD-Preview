@@ -1,6 +1,6 @@
 import * as vscode from "vscode";
 import { routeFile, COMPARABLE_MESH_FORMATS, type CadFormat, type MeshParseFormat } from "./fileRouter";
-import { resolveExternalBuffers } from "./gltfParser";
+import { resolveExternalBuffers, type GltfExternalBuffers } from "./gltfParser";
 import { resolveEffectiveSource, ScadUnavailableError } from "./scadService";
 import { readScadSettings } from "./scadSettings";
 import { readEdits } from "./editsStore";
@@ -33,7 +33,7 @@ async function pickCompareFile(title: string): Promise<vscode.Uri | undefined> {
  * converts via the user-installed openscad binary first, and a missing
  * binary degrades to the same `{source: undefined}` shape with the install
  * hint as its warning). */
-async function resolveCompareSource(uri: vscode.Uri): Promise<{ source: CompareSource; warning?: string } | { source: undefined; warning: string }> {
+async function resolveCompareSource(uri: vscode.Uri, decodeGltf: (bytes: Uint8Array, external: GltfExternalBuffers) => Promise<GltfExternalBuffers>): Promise<{ source: CompareSource; warning?: string } | { source: undefined; warning: string }> {
   const route = routeFile(uri.fsPath);
   const name = vscode.workspace.asRelativePath(uri);
   const meshFormat = route?.strategy === "three" && COMPARABLE_MESH_FORMATS.has(route.format) ? (route.format as MeshParseFormat) : null;
@@ -76,13 +76,17 @@ async function resolveCompareSource(uri: vscode.Uri): Promise<{ source: CompareS
     // A .gltf may reference sibling .bin buffers; `gltfParser.ts` deliberately
     // can't read them itself, so resolve them here (it refuses anything that
     // isn't a plain relative path beside the model).
-    const externalBuffers = await resolveExternalBuffers(bytes, async (relative) => {
-      try {
-        return await vscode.workspace.fs.readFile(vscode.Uri.joinPath(uri, "..", relative));
-      } catch {
-        return undefined;
-      }
-    });
+    const externalBuffers = await resolveExternalBuffers(
+      bytes,
+      async (relative) => {
+        try {
+          return await vscode.workspace.fs.readFile(vscode.Uri.joinPath(uri, "..", relative));
+        } catch {
+          return undefined;
+        }
+      },
+      decodeGltf
+    );
     return { source: { kind: "gltf", bytes, externalBuffers }, warning };
   }
   return { source: { kind: meshFormat as "stl" | "obj" | "ply", bytes }, warning };
@@ -107,12 +111,14 @@ export async function runCompareModelsCommand(
   defaultUri?: vscode.Uri
 ): Promise<void> {
   try {
+    // Compressed (Draco/meshopt) glTF is expanded by the kernel worker.
+    const decodeGltf = (bytes: Uint8Array, external: GltfExternalBuffers) => pipeline.decodeGltfGeometry(context.extensionPath, bytes, external);
     const uriA = defaultUri ?? (await pickCompareFile("Select model A"));
     if (!uriA) return;
     const uriB = await pickCompareFile("Select model B");
     if (!uriB) return;
 
-    const [resolvedA, resolvedB] = await Promise.all([resolveCompareSource(uriA), resolveCompareSource(uriB)]);
+    const [resolvedA, resolvedB] = await Promise.all([resolveCompareSource(uriA, decodeGltf), resolveCompareSource(uriB, decodeGltf)]);
     if (!resolvedA.source || !resolvedB.source) {
       const message = [resolvedA.warning, resolvedB.warning].filter(Boolean).join(" ");
       void vscode.window.showErrorMessage(`Compare Models: ${message}`);

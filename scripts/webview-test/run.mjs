@@ -6870,6 +6870,27 @@ test("mesh colours: Flat display mode keeps the file colours", async (page) => {
   assert(shaded.red > MIN_PX && shaded.green > MIN_PX && shaded.blue > MIN_PX, `and switching back to Shaded still does (got ${JSON.stringify(shaded)})`);
 });
 
+// Compressed glTF (roadmap "Compressed glTF"). This harness serves the repo
+// tree with NO Content-Security-Policy, so it proves the decoder logic and the
+// staged file paths (dist/draco/…, derived from the viewer.js script URL) but
+// NOT the two CSP directives a real webview needs — `test:integration`'s
+// "Compressed glTF … under the real CSP" case covers those.
+for (const [file, label] of [
+  ["cube-draco.glb", "Draco"],
+  ["cube-meshopt.glb", "meshopt"],
+  ["cube.glb", "uncompressed"],
+]) {
+  test(`compressed glTF: a ${label} GLB loads and renders the unit cube`, async (page) => {
+    await openColoured(page, `/examples/GLTF/${file}`, "gltf");
+    await sleep(800); // the decoder worker / wasm instantiate after the fetch
+    const status = await page.evaluate(() => document.getElementById("status").textContent);
+    assert(!/fail|error|DRACO|meshopt/i.test(status), `no load error is reported (status ${JSON.stringify(status)})`);
+    const stats = await viewportModelStats(page);
+    assert(stats.fraction > 0.01, `the model renders (non-background fraction ${stats.fraction.toFixed(3)})`);
+    assert(stats.centre > 0, "and sits at the centre of the viewport");
+  });
+}
+
 test("mesh colours: an OBJ renders the colours of its .mtl, one per usemtl", async (page) => {
   await openColoured(page, "/examples/OBJ/colored-cube.obj", "obj");
   await lookFrom(page, ISO_FRONT);

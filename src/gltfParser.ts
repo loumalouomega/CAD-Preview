@@ -32,23 +32,70 @@
 
 import { weldTriangleSoup, type WeldedMesh } from "./meshComponents";
 import { isSafeRelativePath } from "./safeRelativePath";
+import { DRACO_EXTENSION, MESHOPT_EXTENSION, dracoKey, meshoptKey, unpackFloat32, unpackUint32 } from "./gltfDecodedKeys";
 
 export type { WeldedMesh };
 
 /** Sibling buffer files (`buffers[i].uri` pointing at a relative path) keyed
  * by their raw URI as it appears in the glTF, supplied by a caller that has
- * filesystem access. */
+ * filesystem access. Also carries the reserved `decoded:` entries the decode
+ * step adds for a Draco/meshopt-compressed file (see `gltfDecodedKeys.ts`). */
 export type GltfExternalBuffers = Record<string, Uint8Array>;
 
-/** Geometry-affecting extensions this parser cannot decode. Deliberately a
- * DENY-list checked against `extensionsRequired`, never an allow-list against
- * `extensionsUsed`: almost every real-world file declares geometry-irrelevant
- * extensions (`KHR_materials_*`, `KHR_texture_transform`, `KHR_lights_punctual`,
- * …) that this parser handles perfectly by ignoring them, so an allow-list
- * would reject the large majority of valid input. `KHR_mesh_quantization` is
- * genuinely supported (see `normalized` handling below) and must not appear
- * here. */
-const DENIED_GEOMETRY_EXTENSIONS = ["KHR_draco_mesh_compression", "EXT_meshopt_compression"];
+/**
+ * Which compression schemes a glTF uses, from its bytes alone: true for any
+ * scheme that is declared OR actually referenced from a primitive / bufferView,
+ * so a file that forgot to list it in `extensionsUsed` is still caught.
+ *
+ * This parser cannot decode these extensions itself — the
+ * decoders are WebAssembly that live in the kernel worker — so it consumes the
+ * pre-decoded `decoded:` entries a caller's `resolveExternalBuffers(…, decode)`
+ * added to the external-buffer map (see `gltfDecodedKeys.ts`). A file that
+ * REQUIRES one of these and arrives without its decoded entries is refused
+ * with an error naming the cause: a silently-empty mesh would feed Compare
+ * Models a confidently-wrong centroid and volume.
+ *
+ * The check is deliberately keyed on `extensionsRequired`, never an allow-list
+ * against `extensionsUsed`: almost every real-world file declares
+ * geometry-irrelevant extensions (`KHR_materials_*`, `KHR_texture_transform`,
+ * `KHR_lights_punctual`, …) that this parser handles perfectly by ignoring
+ * them. `KHR_mesh_quantization` is genuinely supported (see `normalized`
+ * handling below).
+ */
+export interface GltfCompression {
+  draco: boolean;
+  meshopt: boolean;
+}
+
+export function gltfCompression(bytes: Uint8Array): GltfCompression {
+  const { json } = parseContainer(bytes);
+  const declared = new Set<string>([
+    ...(Array.isArray(json.extensionsUsed) ? json.extensionsUsed : []),
+    ...(Array.isArray(json.extensionsRequired) ? json.extensionsRequired : []),
+  ]);
+  let draco = declared.has(DRACO_EXTENSION);
+  let meshopt = declared.has(MESHOPT_EXTENSION);
+  if (!draco && Array.isArray(json.meshes)) {
+    draco = json.meshes.some((mesh: GltfDocument) =>
+      Array.isArray(mesh?.primitives) && mesh.primitives.some((p: GltfDocument) => p?.extensions?.[DRACO_EXTENSION])
+    );
+  }
+  if (!meshopt && Array.isArray(json.bufferViews)) {
+    meshopt = json.bufferViews.some((v: GltfDocument) => v?.extensions?.[MESHOPT_EXTENSION]);
+  }
+  return { draco, meshopt };
+}
+
+/** The parsed document plus every `buffers[i]` resolved to bytes — the input
+ * `gltfDecode.ts` needs to find compressed sources, shared so it cannot parse
+ * the container differently from `parseGltf`. */
+export function loadGltfDocument(
+  bytes: Uint8Array,
+  external: GltfExternalBuffers = {}
+): { json: GltfDocument; buffers: Array<Uint8Array | undefined> } {
+  const { json, bin } = parseContainer(bytes);
+  return { json, buffers: resolveBuffers(json, bin, external) };
+}
 
 const COMPONENT_SIZES: Record<number, number> = {
   5120: 1, // BYTE
@@ -160,16 +207,29 @@ export function listExternalBufferUris(bytes: Uint8Array): string[] {
  * `vscode.workspace.fs` one. Unsafe URIs (see `isSafeRelativePath`) are skipped
  * without ever calling `read`, and a URI the reader can't resolve is simply
  * absent from the result.
+ *
+ * `decode`, when supplied and the file uses Draco or meshopt compression, is
+ * called with the bytes and the files read so far; the entries it returns (the
+ * reserved `decoded:` keys) are merged into the map. This is how the WASM
+ * decoders in the kernel worker reach the synchronous `parseGltf` without
+ * changing any caller: every caller already resolves buffers first. A decode
+ * failure is NOT swallowed — a compressed file whose geometry cannot be decoded
+ * must say so rather than parse as empty.
  */
 export async function resolveExternalBuffers(
   bytes: Uint8Array,
-  read: (uri: string) => Promise<Uint8Array | undefined>
+  read: (uri: string) => Promise<Uint8Array | undefined>,
+  decode?: (bytes: Uint8Array, external: GltfExternalBuffers) => Promise<GltfExternalBuffers>
 ): Promise<GltfExternalBuffers> {
   const resolved: GltfExternalBuffers = {};
   for (const uri of listExternalBufferUris(bytes)) {
     if (!isSafeRelativePath(uri)) continue;
     const data = await read(uri);
     if (data) resolved[uri] = data;
+  }
+  if (decode) {
+    const compression = gltfCompression(bytes);
+    if (compression.draco || compression.meshopt) Object.assign(resolved, await decode(bytes, resolved));
   }
   return resolved;
 }
@@ -223,6 +283,17 @@ function normalizeComponent(value: number, componentType: number): number {
   }
 }
 
+/** What `readAccessor` needs to honour pre-decoded compressed geometry. */
+interface DecodingContext {
+  /** The caller's external-buffer map, which carries the `decoded:` entries. */
+  external: GltfExternalBuffers;
+  /** `EXT_meshopt_compression` is in `extensionsRequired`: a compressed view
+   * with no decoded entry has no usable fallback and must be reported. */
+  meshoptRequired: boolean;
+  /** Compression extensions a primitive/view needed that were not decoded. */
+  undecoded: Set<string>;
+}
+
 /**
  * Decodes one accessor into a flat `Float64Array` of `count * componentCount`
  * values, handling `byteStride` interleaving, `normalized`, and sparse
@@ -240,7 +311,8 @@ function readAccessor(
   json: GltfDocument,
   buffers: Array<Uint8Array | undefined>,
   accessorIndex: number,
-  missingBufferUris: Set<string>
+  missingBufferUris: Set<string>,
+  decoding: DecodingContext
 ): Float64Array | undefined {
   const accessors = Array.isArray(json.accessors) ? json.accessors : [];
   const accessor = accessors[accessorIndex];
@@ -267,8 +339,19 @@ function readAccessor(
     const bufferViews = Array.isArray(json.bufferViews) ? json.bufferViews : [];
     const bufferView = bufferViews[bufferViewIndex];
     if (!bufferView) return false;
+    // A meshopt-compressed view reads from its pre-decoded bytes instead of the
+    // (compressed) source buffer. The decoded bytes are the logical view, so
+    // the view's own `byteOffset` — which addresses the compressed source — is
+    // dropped; only the accessor's offset applies. Without them the view falls
+    // back to its uncompressed fallback buffer when the file provides one, or
+    // is reported as undecoded when meshopt is REQUIRED.
+    const meshoptDecoded = bufferView.extensions?.[MESHOPT_EXTENSION] ? decoding.external[meshoptKey(bufferViewIndex)] : undefined;
+    if (bufferView.extensions?.[MESHOPT_EXTENSION] && !meshoptDecoded && decoding.meshoptRequired) {
+      decoding.undecoded.add(MESHOPT_EXTENSION);
+      return false;
+    }
     const bufferIndex = Number(bufferView.buffer) || 0;
-    const data = buffers[bufferIndex];
+    const data = meshoptDecoded ?? buffers[bufferIndex];
     if (!data) {
       const uri = json.buffers?.[bufferIndex]?.uri;
       if (typeof uri === "string" && !uri.startsWith("data:")) missingBufferUris.add(uri);
@@ -277,7 +360,7 @@ function readAccessor(
     const size = COMPONENT_SIZES[componentType];
     if (!size) return false;
     const stride = Number(bufferView.byteStride) || size * components;
-    const base = (Number(bufferView.byteOffset) || 0) + byteOffset;
+    const base = (meshoptDecoded ? 0 : Number(bufferView.byteOffset) || 0) + byteOffset;
     const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
     for (let e = 0; e < elements; e++) {
       const elementStart = base + e * stride;
@@ -412,7 +495,8 @@ function rootNodeIndices(json: GltfDocument): number[] {
  *
  * Throws — rather than degrading — when the content isn't glTF at all (bad
  * magic/version, unparseable JSON, no `asset`), when a geometry-compressing
- * extension this parser can't decode is *required*, or when an external
+ * extension (Draco, meshopt) is *required* but its pre-decoded entries are not
+ * in `external` (see `gltfDecodedKeys.ts`), or when an external
  * buffer an accessor actually needs wasn't supplied. Those last two are a
  * deliberate, documented break with the sibling parsers' "malformed content
  * degrades silently" rule: returning a silently-empty or half-empty mesh
@@ -426,12 +510,6 @@ export function parseGltf(bytes: Uint8Array, external: GltfExternalBuffers = {})
   const { json, bin } = parseContainer(bytes);
 
   const required: string[] = Array.isArray(json.extensionsRequired) ? json.extensionsRequired : [];
-  const deniedRequired = required.filter((name) => DENIED_GEOMETRY_EXTENSIONS.includes(name));
-  if (deniedRequired.length > 0) {
-    throw new Error(
-      `glTF requires the ${deniedRequired.join(", ")} extension, which compresses the geometry into a form this parser cannot decode. Re-export the file without mesh compression.`
-    );
-  }
   if (required.includes("EXT_mesh_gpu_instancing")) {
     throw new Error("glTF requires the EXT_mesh_gpu_instancing extension, which this parser cannot decode. Re-export the file without GPU instancing.");
   }
@@ -440,6 +518,11 @@ export function parseGltf(bytes: Uint8Array, external: GltfExternalBuffers = {})
   const meshes = Array.isArray(json.meshes) ? json.meshes : [];
   const nodes = Array.isArray(json.nodes) ? json.nodes : [];
   const missingBufferUris = new Set<string>();
+  const decoding: DecodingContext = {
+    external,
+    meshoptRequired: required.includes(MESHOPT_EXTENSION),
+    undecoded: new Set<string>(),
+  };
 
   const soup: number[] = [];
 
@@ -448,37 +531,58 @@ export function parseGltf(bytes: Uint8Array, external: GltfExternalBuffers = {})
     if (!mesh || !Array.isArray(mesh.primitives)) return;
     const flipWinding = upper3x3Determinant(world) < 0;
 
-    for (const primitive of mesh.primitives) {
-      if (primitive?.extensions) {
-        for (const name of DENIED_GEOMETRY_EXTENSIONS) {
-          if (primitive.extensions[name]) {
-            throw new Error(
-              `glTF uses the ${name} extension on a mesh primitive, which compresses the geometry into a form this parser cannot decode. Re-export the file without mesh compression.`
-            );
-          }
-        }
-      }
-
+    for (let primitiveIndex = 0; primitiveIndex < mesh.primitives.length; primitiveIndex++) {
+      const primitive = mesh.primitives[primitiveIndex];
       const mode = primitive?.mode ?? 4;
       if (mode !== 4 && mode !== 5 && mode !== 6) continue; // points/lines contribute no triangles
-      const positionAccessor = primitive?.attributes?.POSITION;
-      if (positionAccessor === undefined) continue;
 
-      const positions = readAccessor(json, buffers, positionAccessor, missingBufferUris);
-      if (!positions) continue;
+      let positions: Float64Array | undefined;
+      let sequence: ArrayLike<number> | undefined;
+
+      // A Draco primitive carries its geometry in the extension's compressed
+      // bufferView; the accessors only describe counts. The decode step has
+      // already expanded it into float positions and a triangle list.
+      // Decoded faces are always a triangle LIST, so the primitive is walked as
+      // mode 4 whatever its declared mode.
+      let decodedMode: number | undefined;
+      if (primitive?.extensions?.[DRACO_EXTENSION]) {
+        const decodedPositions = external[dracoKey(meshIndex, primitiveIndex, "positions")];
+        const decodedIndices = external[dracoKey(meshIndex, primitiveIndex, "indices")];
+        if (decodedPositions && decodedIndices) {
+          positions = unpackFloat32(decodedPositions);
+          sequence = unpackUint32(decodedIndices);
+          decodedMode = 4;
+        } else if (required.includes(DRACO_EXTENSION)) {
+          decoding.undecoded.add(DRACO_EXTENSION);
+          continue;
+        }
+        // Not required and not decoded: an uncompressed fallback is legal, so
+        // fall through to the ordinary accessors below.
+      }
+
+      if (!positions) {
+        const positionAccessor = primitive?.attributes?.POSITION;
+        if (positionAccessor === undefined) continue;
+        positions = readAccessor(json, buffers, positionAccessor, missingBufferUris, decoding);
+        if (!positions) continue;
+      }
       const vertexCount = Math.floor(positions.length / 3);
       if (vertexCount === 0) continue;
 
-      let sequence: ArrayLike<number>;
-      if (primitive.indices === undefined) {
-        const generated = new Uint32Array(vertexCount);
-        for (let i = 0; i < vertexCount; i++) generated[i] = i;
-        sequence = generated;
-      } else {
-        const read = readAccessor(json, buffers, primitive.indices, missingBufferUris);
-        if (!read) continue;
-        sequence = read;
+      if (!sequence) {
+        if (primitive.indices === undefined) {
+          const generated = new Uint32Array(vertexCount);
+          for (let i = 0; i < vertexCount; i++) generated[i] = i;
+          sequence = generated;
+        } else {
+          const read = readAccessor(json, buffers, primitive.indices, missingBufferUris, decoding);
+          if (!read) continue;
+          sequence = read;
+        }
       }
+      const seq = sequence;
+      const pos = positions;
+      const effectiveMode = decodedMode ?? mode;
 
       const pushTriangle = (a: number, b: number, c: number): void => {
         if (!Number.isInteger(a) || !Number.isInteger(b) || !Number.isInteger(c)) return;
@@ -486,7 +590,7 @@ export function parseGltf(bytes: Uint8Array, external: GltfExternalBuffers = {})
         const order = flipWinding ? [a, c, b] : [a, b, c];
         for (const vertex of order) {
           const p = vertex * 3;
-          const x = positions[p], y = positions[p + 1], z = positions[p + 2];
+          const x = pos[p], y = pos[p + 1], z = pos[p + 2];
           soup.push(
             world[0] * x + world[4] * y + world[8] * z + world[12],
             world[1] * x + world[5] * y + world[9] * z + world[13],
@@ -495,17 +599,17 @@ export function parseGltf(bytes: Uint8Array, external: GltfExternalBuffers = {})
         }
       };
 
-      if (mode === 4) {
-        for (let i = 0; i + 2 < sequence.length; i += 3) pushTriangle(sequence[i], sequence[i + 1], sequence[i + 2]);
-      } else if (mode === 5) {
+      if (effectiveMode === 4) {
+        for (let i = 0; i + 2 < seq.length; i += 3) pushTriangle(seq[i], seq[i + 1], seq[i + 2]);
+      } else if (effectiveMode === 5) {
         // TRIANGLE_STRIP — every other triangle has reversed winding.
-        for (let i = 2; i < sequence.length; i++) {
-          if (i % 2 === 0) pushTriangle(sequence[i - 2], sequence[i - 1], sequence[i]);
-          else pushTriangle(sequence[i - 1], sequence[i - 2], sequence[i]);
+        for (let i = 2; i < seq.length; i++) {
+          if (i % 2 === 0) pushTriangle(seq[i - 2], seq[i - 1], seq[i]);
+          else pushTriangle(seq[i - 1], seq[i - 2], seq[i]);
         }
       } else {
         // TRIANGLE_FAN
-        for (let i = 2; i < sequence.length; i++) pushTriangle(sequence[0], sequence[i - 1], sequence[i]);
+        for (let i = 2; i < seq.length; i++) pushTriangle(seq[0], seq[i - 1], seq[i]);
       }
     }
   };
@@ -535,6 +639,11 @@ export function parseGltf(bytes: Uint8Array, external: GltfExternalBuffers = {})
   // Deliberately unconditional, not gated on `soup.length === 0`: a file whose
   // OTHER primitives read fine would otherwise return a partial mesh, which is
   // the same confidently-wrong result as an empty one.
+  if (decoding.undecoded.size > 0) {
+    throw new Error(
+      `glTF requires the ${[...decoding.undecoded].join(", ")} extension, which compresses the geometry. Its decoded geometry was not supplied — resolve the file's buffers with a decoder (resolveExternalBuffers(bytes, read, decode)) before parsing, or re-export the file without mesh compression.`
+    );
+  }
   if (missingBufferUris.size > 0) {
     throw new Error(
       `glTF references external buffer file(s) ${[...missingBufferUris].map((u) => `"${u}"`).join(", ")}, which were not provided — read them from beside the .gltf file and pass them via the external-buffers map.`

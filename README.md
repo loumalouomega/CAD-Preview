@@ -42,7 +42,7 @@ B-rep (boundary-representation) formats are parsed and tessellated with [OpenCas
 <details>
 <summary>Format details and limitations</summary>
 
-> The **Pipeline** column is how each format is *rendered*. STL, OBJ, PLY, and glTF/GLB additionally have pure host-side triangle parsers (no webview, no OCCT), which is what lets **Compare Models**, **Mesh Health / Promote to B-rep**, and **Silhouette SVG export** work on them headlessly as well as interactively. The glTF parser is geometry-only and cross-validated against three.js's own `GLTFLoader`; it rejects Draco/meshopt-compressed files with a clear error rather than guessing.
+> The **Pipeline** column is how each format is *rendered*. STL, OBJ, PLY, and glTF/GLB additionally have pure host-side triangle parsers (no webview, no OCCT), which is what lets **Compare Models**, **Mesh Health / Promote to B-rep**, and **Silhouette SVG export** work on them headlessly as well as interactively. The glTF parser is geometry-only and cross-validated against three.js's own `GLTFLoader`; it also decodes Draco- and meshopt-compressed files (geometry only).
 >
 > The last thirteen formats are imported as a triangulated **boundary surface** (meshio++, host-side) — same capabilities as an STL open (Parts, Edits, Export, Mass Properties, Measurement all work identically). Named cell regions in the source file now auto-become real, selectable/colourable Parts on first import (for a tetrahedral/triangular boundary); scalar-field and multi-material data beyond that still isn't preserved. OpenFOAM (`.foam`) is a case marker, not a mesh file — its real mesh lives in sibling files under `<parent>/constant/polyMesh/`, and import is geometry-only (no patch names or field data preserved). Gmsh Mesh / Abaqus / I-DEAS Universal / SU2 / INRIA Medit close a real export/import asymmetry — CAD-Preview's own FE Meshing panel already wrote these formats but couldn't re-open them. Nastran is detected as a bulk-data deck and works for `.bdf` files this extension's own Gmsh export writes (they open, preview, mesh and round-trip); decks from other Nastran tools are not yet verified, as no such fixture exists to test against (tracked in the roadmap). `.msh`/`.inp`/`.bdf` are ambiguous extensions (also used by ANSYS/FreeFem, and `.bdf` by X11 bitmap fonts) and are assumed to be this extension's own Gmsh/Abaqus/Nastran output, with a one-line status caveat on open. GiD Postprocess (`.post.msh`) is a sibling pair — geometry in the `.post.msh`, results in a `.post.res` found by stem convention — and is both importable and exportable; only the `.post.msh` is opened directly. This is separate from the FE Meshing feature's own export path below, which writes a newly generated mesh, not the source file.
 
@@ -249,6 +249,8 @@ files and debug modifications; no restriction on reverse engineering for that
 purpose is imposed. Redistribution must retain the notices and satisfy the
 applicable source/relinking obligations, not merely copy the WASM binary.
 
+[`draco3d`](https://github.com/google/draco) (Google Draco, **Apache-2.0**; decodes `KHR_draco_mesh_compression` glTF) and [`meshoptimizer`](https://github.com/zeux/meshoptimizer) (**MIT**; decodes `EXT_meshopt_compression` glTF) are bundled for compressed glTF/GLB support. Apache-2.0 is compatible with the combined work's GPL-3.0-or-later (not with GPLv2, which is why this arrived with the relicense). The Draco decoder WebAssembly and its loader glue ship under `dist/draco/` beside the Apache-2.0 text (`dist/draco/LICENSE`); no modifications are made. Both decoders run only when a compressed file is opened.
+
 [`node-hid`](https://github.com/node-hid/node-hid) (SpaceMouse 6DOF input — only the extension-host bundle, loaded lazily) is **MIT OR X11**-licensed, including the per-platform `.node` prebuilds as shipped in its npm package — GPL-compatible, so bundling the linux-x64 / darwin-arm64 / darwin-x64 / win32-x64 prebuilds is fine. Only those four prebuilds ship (other platforms get a clear message, not a crash); the package is never imported by the MCP/kernel bundles.
 
 ### Attribution
@@ -257,6 +259,7 @@ applicable source/relinking obligations, not merely copy the WASM binary.
 - **OpenCASCADE Technology (OCCT)** — <https://dev.opencascade.org>
 - **meshio++** — V. Mataix Ferrándiz. <https://github.com/loumalouomega/meshioplusplus>
 - **fTetWild** — Y. Hu, T. Schneider, B. Wang, D. Zorin, D. Panozzo. <https://github.com/wildmeshing/fTetWild>
+- **Draco** — Google. <https://github.com/google/draco>; **meshoptimizer** — A. Kapoulkine. <https://github.com/zeux/meshoptimizer>
 - **MMG** — MMG Consortium / MmgTools. <https://www.mmgtools.org>; WASM bindings: V. Mataix Ferrándiz. <https://github.com/loumalouomega/MMG-WASM>
 
 </details>

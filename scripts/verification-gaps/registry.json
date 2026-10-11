@@ -523,6 +523,15 @@
       "section": "Mesh display fidelity \u2014 OBJ materials and PLY colours (roadmap, closed)",
       "gap": "Opening an OBJ whose .mtl and texture sit beside it, in a real VS Code webview: the sibling .mtl fetch and the texture <img> go through the real CSP (connect-src / img-src cspSource) and localResourceRoots, which test:webview's CSP-free harness cannot exercise; and how the file colours read under light and high-contrast themes.",
       "status": "open"
+    },
+    {
+      "id": "compressed-gltf",
+      "section": "Compressed glTF \u2014 Draco and meshopt (roadmap Tier 1, closed)",
+      "gap": "The two new CSP directives (script-src 'wasm-unsafe-eval' and worker-src blob:) that let the Draco and meshopt glTF decoders run in a real VS Code webview. test:webview's harness sets no CSP, so only the integration case can prove them; it is written but has not been run (this environment cannot download VS Code). Real-world compressed files beyond the two generated cubes are also unexercised.",
+      "status": "test-written",
+      "closedBy": [
+        "Compressed glTF (Draco and meshopt) loads under the real webview CSP"
+      ]
     }
   ]
 }

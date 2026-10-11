@@ -1036,7 +1036,7 @@ async function loadMeshFromUrl(
 | `"stl"`  | `STLLoader`  | Wraps `BufferGeometry` in a `THREE.Mesh` |
 | `"obj"`  | `OBJLoader`  | Calls `applyDefaultMaterial(group)`      |
 | `"ply"`  | `PLYLoader`  | Calls `geometry.computeVertexNormals()`  |
-| `"gltf"` | `GLTFLoader` | Returns `gltf.scene`                     |
+| `"gltf"` | `GLTFLoader` | Returns `gltf.scene`; fetches the bytes itself, and only for a Draco/meshopt-compressed file attaches `DRACOLoader` (decoder files from `dist/draco/`, found relative to the `viewer.js` script URL) and the lazily-imported `MeshoptDecoder` |
 
 Every other `CadFormat` member (the meshio++-only formats — VTK/VTU/MED/CGNS/Exodus/XDMF/MDPA/OpenFOAM) throws via the `default` case — this function is never called with one of those. A meshio-imported document is converted to STL **host-side** first (`src/meshioService.ts`), so `loadMeshFromUrl` only ever sees `"stl"` for it (see `main.ts`'s `loadMeshObjectFromUrl` below).
 

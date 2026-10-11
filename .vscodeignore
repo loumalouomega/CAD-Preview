@@ -5,6 +5,7 @@
 .vscode-test/**
 src/**
 test/**
+third-party/**
 # `.gitignore` excludes the build tree. Re-include only generated runtime
 # assets; a broad `dist/**` carve-out also ships source maps and makes the
 # packaged-runtime check fail.
@@ -17,6 +18,13 @@ test/**
 !dist/macros/starter-library.json
 !dist/mesh-presets/starter-presets.json
 !dist/sheet-templates/starter-templates.json
+# Draco decoders (roadmap "Compressed glTF"): the web pair three's DRACOLoader
+# fetches in the webview, the Node wasm the kernel worker hands to draco3d, and
+# the Apache-2.0 text. Staged by esbuild.mjs's copyDracoDecoders().
+!dist/draco/draco_wasm_wrapper.js
+!dist/draco/draco_decoder.wasm
+!dist/draco/node/draco_decoder.wasm
+!dist/draco/LICENSE
 node_modules/**
 # @loumalouomega/gmsh-wasm must ship as real files, NOT bundled into
 # dist/extension.js — see the comment in gmshService.ts/esbuild.mjs (its

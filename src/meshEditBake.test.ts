@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { bakeMeshEdits } from "./meshEditBake";
+import { decodeGltfGeometry } from "./gltfDecode";
 import { parseMeshObject, parseGltfObject, tagMeshEntities } from "./webview/meshObject";
 import { parseToWeldedMesh } from "./meshParse";
 import { boundsOfTriangles } from "./meshComponents";
@@ -75,6 +76,28 @@ describe("bakeMeshEdits", () => {
     const b1 = bounds(moved.bytes, "stl");
     expect(b1.max[2]).toBeCloseTo(b0.max[2] + 50, 4); // one box rose
     expect(b1.min[2]).toBeCloseTo(b0.min[2], 4); // the other stayed put
+  });
+
+  it.each(["cube-draco.glb", "cube-meshopt.glb"])("bakes edits on the Draco/meshopt-compressed %s once its geometry is decoded", async (name) => {
+    const raw = read(`GLTF/${name}`);
+    const decoded = await decodeGltfGeometry(path.resolve(__dirname, ".."), raw);
+    // Without the decoded entries the loader has no decoder and refuses.
+    await expect(bakeMeshEdits(raw, "gltf", [], "stl")).rejects.toThrow();
+    const root = await parseGltfObject(raw, decoded);
+    tagMeshEntities(root);
+    const meshId = ids(root).find((id) => {
+      let isMesh = false;
+      root.traverse((o) => {
+        if (o.userData.groupId === id && (o as { isMesh?: boolean }).isMesh) isMesh = true;
+      });
+      return isMesh;
+    })!;
+    const plain = await bakeMeshEdits(raw, "gltf", [], "stl", decoded);
+    const moved = await bakeMeshEdits(raw, "gltf", [translate(meshId, [0, 0, 7])], "stl", decoded);
+    const b0 = bounds(plain.bytes, "stl");
+    const b1 = bounds(moved.bytes, "stl");
+    expect(b0.max[2] - b0.min[2]).toBeCloseTo(1, 4); // the decoded unit cube
+    expect(b1.min[2]).toBeCloseTo(b0.min[2] + 7, 4);
   });
 
   it("records a skipped op instead of throwing", async () => {
