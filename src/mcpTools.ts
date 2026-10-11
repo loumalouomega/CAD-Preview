@@ -29,6 +29,7 @@ import {
 } from "./editOps";
 import { evaluateVariables, resolveEditOps, validateVariables, type ParamVariable } from "./editVariables";
 import { resolvePlaneRefs } from "./planeRefs";
+import { applyPointRefWriteback, pointRefRebindWarnings, type PointRefHit } from "./pointRefCache";
 import { parseSvgDocument, svgSubpathsToPolylineOps } from "./svgImport";
 import { nestLoops } from "./loopNesting";
 import {
@@ -84,7 +85,10 @@ import { validateSelectorQuery } from "./selectorQuery";
 import { clean, envelope } from "./untrustedText";
 import { MESH_EXPORT_FORMATS, meshExportFormat, companionSaveName, type MeshExportFormat } from "./meshExportFormats";
 import { sweepTsv, sweepOutputName, runMeshSweep, validateSweepSizes, SWEEP_NOTE } from "./meshSweep";
-import { allCatalogEntries, describeOp } from "./webview/opCatalog";
+import { describeOp } from "./webview/opCatalog";
+import { OP_PARAM_DOCS, explainEditOpRejection, allOpKinds } from "./opCommands";
+// Re-exported: these moved to the pure `opCommands.ts` so the webview command bar can share them.
+export { OP_PARAM_DOCS, explainEditOpRejection, allOpKinds };
 import type { Part, Annotation, AnnotationTool, ConstructionPlane, Layer } from "./protocol";
 import type { loadBRep, exportBRep, BRepResult } from "./occtService";
 import type { computeMassProperties, computeBom, computeHoleTable, MassProperties } from "./massProperties";
@@ -331,78 +335,7 @@ export interface ExecutionReceiptV1 {
   message?: string;
 }
 
-/**
- * One-line JSON-shape documentation per op kind, surfaced by
- * `describe_capabilities` so an agent can author raw `EditOp` objects without
- * reading `editOps.ts`. Keys are locked against the op catalog by
- * `mcpTools.test.ts` — a new op kind fails the test until documented here.
- */
-export const OP_PARAM_DOCS: Record<EditOpKind, string> = {
-  translate: '{targets: id[], vec: [x,y,z]}',
-  rotate: '{targets: id[], axisPoint: [x,y,z], axisDir: [x,y,z], angleDeg: n}',
-  scale: '{targets: id[], center: [x,y,z], factors: [sx,sy,sz]}',
-  mirror: '{targets: id[], planePoint?: [x,y,z], planeNormal?: [x,y,z], planeId?: string (plane-N from planes sidecar — XOR with planePoint/planeNormal and midplaneFaces; planePoint/planeNormal may ride alongside as cache), midplaneFaces?: [faceId, faceId] (planar, parallel — XOR with planePoint/planeNormal)}',
-  boolean: '{kind: "union"|"subtract"|"intersect", a: solidId[], b: solidId[]}',
-  fillet: '{edges: edgeId[], radius: n>0}',
-  chamfer: '{edges: edgeId[], distance: n>0, distance2?: n>0 (asymmetric, needs face), angleDeg?: 0<n<90 (distance-angle, needs face), face?: faceId}',
 
-  extrude: '{profile: faceId | profileEdges: edgeId[] (exactly one), dir: [x,y,z], length: n>0 | upToFace: faceId (exactly one of length/upToFace; planar terminator — extrusion runs to its plane, miss/parallel skips), thin?: n>0, thinOuter?: 0<=n<=thin}',
-  revolve: '{profile: faceId | profileEdges: edgeId[] (exactly one), axisPoint: [x,y,z], axisDir: [x,y,z], angleDeg: n, thin?: n>0, thinOuter?: 0<=n<=thin}',
-  sweep: '{profile: faceId | profileEdges: edgeId[] (exactly one), path: edgeId, thin?: n>0, thinOuter?: 0<=n<=thin}',
-  loft: '{profiles: faceId[] (>=2) | profileEdgeSets: edgeId[][] (>=2, exactly one form), guides?: edgeId[] (one guide-rail wire steering the loft — resampled intermediates through plain ThruSections, NOT kernel rail wiring; exactly 2 closed sections, no thin), thin?: n>0, thinOuter?: 0<=n<=thin, smoothing?: boolean (surface smoothing across sections — the only loft quality knob with a measured effect; continuity/par-type/max-degree settings are accepted by the kernel but change nothing, so they are not exposed)}',
-  explode: '{factor: n}',
-  mate: '{faceA: faceId, faceB: faceId (both planar)}',
-  shell: '{thickness: n!=0 (negative hollows inward), openingFaces: faceId[] (>=1), join?: "arc"|"intersection"|"tangent" (default arc)}',
-  draft: '{faces: faceId[], angleDeg: 0<n<90, planePoint?: [x,y,z], planeNormal?: [x,y,z], planeId?: string (plane-N from planes sidecar; planePoint/planeNormal may ride alongside as cache) (neutral plane + pull direction; omitted = each face\'s own plane). NOTE: this WASM build\'s draft engine (BRepOffsetAPI_DraftAngle.Build) is kernel-broken — the op validates but reports applied:false with a diagnostic}',
-  defeature: '{faces: faceId[] (>=1): faces to remove as recognized features (fillets, chamfers) via BRepAlgoAPI_Defeaturing; the solid heals behind them}',
-  splitByPlane: '{targets: solidId[], planePoint?: [x,y,z], planeNormal?: [x,y,z], planeId?: string (plane-N — XOR with planePoint/planeNormal and midplaneFaces; cache may ride alongside), midplaneFaces?: [faceId, faceId] (XOR with planePoint/planeNormal), keep: "both"|"positive"|"negative"}',
-  rib: '{spineEdges: edgeId[] (open wire, assembled in any order), dir: [x,y,z], thin: n>0 (required; symmetric — thinOuter must be absent or exactly thin/2), upTo: faceId (planar terminator — wall runs to its plane plus one thin of embed, then fuses), blendRadius?: n>=0 (junction blend; default thin/4; 0 = fuse only)}',
-  wrap: '{profile: faceId (flat sketch face — face-only, no profileEdges form; holed profiles supported, e.g. a letter with a counter — each hole is cut out of the developed shell), target: "cylinder"|"cone", axisPoint: [x,y,z], axisDir: [x,y,z], radius: n>0, halfAngleDeg?: 0<n<90 (cone only, required; refused on cylinder), thickness: n>0 (total, symmetric about the developed surface), variant: "emboss"|"engrave"|"standalone", targets?: solidId[] (required for emboss/engrave, refused for standalone)}',
-  section: '{targets: solidId[], planePoint?: [x,y,z], planeNormal?: [x,y,z], planeId?: string (plane-N — XOR; cache may ride alongside), midplaneFaces?: [faceId, faceId] (XOR)}',
-  addBox: '{center: [x,y,z], size: [dx,dy,dz] (full extents)}',
-  addSphere: '{center: [x,y,z], radius: n>0}',
-  addCylinder: '{center: [x,y,z] (base), axis: [x,y,z], radius: n>0, height: n>0}',
-  addCone: '{center: [x,y,z] (base), axis: [x,y,z], radius1: n>0, radius2: n>=0 (0 = apex), height: n>0}',
-  addTorus: '{center: [x,y,z], axis: [x,y,z], majorRadius: n>0, minorRadius: n>0 (< majorRadius)}',
-  addPrism: '{center: [x,y,z] (base), axis: [x,y,z], radius: n>0 (circumradius, or apothem when circumscribed), sides: int>=3, height: n>0, circumscribed?: boolean}',
-
-  addWedge: '{center: [x,y,z], axis: [x,y,z], up: [x,y,z], dx: n>0, dy: n>0, dz: n>0, ltx: n>=0}',
-  addHole: '{targets: solidId[], position: [x,y,z] (mouth), axis: [x,y,z] (into material), radius: n>0, depth: n>0}',
-  addCounterboreHole:
-    '{targets: solidId[], position: [x,y,z], axis: [x,y,z], radius: n>0, depth: n>0, cbRadius: n>radius, cbDepth: n<depth}',
-  addCountersinkHole:
-    '{targets: solidId[], position: [x,y,z], axis: [x,y,z], radius: n>0, depth: n>0, csRadius: n>radius, csAngleDeg: 0<n<180}',
-  addCircleProfile: '{center: [x,y,z], normal: [x,y,z], radius: n>0, planeId?: "plane-N" (with optional offsetU/offsetV in-plane offsets; center/normal then ride as resolved cache and may be omitted when authoring)}',
-  addRectangleProfile: '{center: [x,y,z], normal: [x,y,z], up: [x,y,z], width: n>0, height: n>0, planeId?: "plane-N" (with optional offsetU/offsetV and rotationDeg about the plane normal; center/normal/up then ride as resolved cache and may be omitted when authoring)}',
-  addPolygonProfile: '{center: [x,y,z], normal: [x,y,z], up: [x,y,z], radius: n>0 (circumradius, or apothem when circumscribed), sides: int>=3, circumscribed?: boolean, planeId?: "plane-N" (with optional offsetU/offsetV and rotationDeg; center/normal/up then ride as resolved cache and may be omitted when authoring)}',
-
-  addEllipseProfile: '{center: [x,y,z], normal: [x,y,z], up: [x,y,z], radiusX: n>0, radiusY: n>0}',
-  addRoundedRectangleProfile:
-    '{center: [x,y,z], normal: [x,y,z], up: [x,y,z], width: n>0, height: n>0, cornerRadius: 0<2r<min(w,h)}',
-  addSlotProfile: '{center: [x,y,z], normal: [x,y,z], up: [x,y,z], length: n (> width), width: n>0}',
-  addTrapezoidProfile:
-    '{center: [x,y,z], normal: [x,y,z], up: [x,y,z], bottomWidth: n>0, topWidth: n>0, height: n>0}',
-  addPoint: '{position: [x,y,z]}',
-  addLine: '{start: [x,y,z], end: [x,y,z]}',
-  addArc: '{center: [x,y,z], normal: [x,y,z], radius: n>0, startAngleDeg: n, endAngleDeg: n (CCW about normal)}',
-  addPolyline: '{points: [x,y,z][] (>=2; >=3 when closed), closed: boolean}',
-  addThreePointArc: '{p1: [x,y,z], p2: [x,y,z], p3: [x,y,z] (non-collinear)}',
-  addSpline: '{points: [x,y,z][] (>=2; approximating fit, endpoint-exact)}',
-  addBezier: '{controlPoints: [x,y,z][] (>=2)}',
-  addEllipseArc:
-    '{center: [x,y,z], normal: [x,y,z], up: [x,y,z], radiusX: n>0, radiusY: n>0, startAngleDeg: n, endAngleDeg: n}',
-  addHelix: '{center: [x,y,z] (base), axis: [x,y,z], radius: n>0, pitch: n>0, turns: n>0}',
-  addSurfaceFromLines: '{edges: edgeId[] (a single connected loop, or several disjoint closed loops forming exactly ONE outer boundary plus its holes — e.g. a letter "O"\'s outer ring + inner ring build one holed face; a set spanning more than one outer loop is refused)}',
-  addVolumeFromSurfaces: '{faces: faceId[] (must sew into a closed shell)}',
-  addEdgeSlot: '{edge: edgeId, width: n>0}',
-  align: '{targets: solidId[], axis: "x"|"y"|"z", extent: "min"|"center"|"max", to: n}',
-  patternLinear: '{targets: solidId[], direction: [x,y,z], spacing: n!=0, count: int>=2 (total instances, incl. original)}',
-  patternCircular: '{targets: solidId[], axisPoint?: [x,y,z], axisDir?: [x,y,z], midaxisOf?: [faceId|edgeId, faceId|edgeId] (parallel cylinder axes or straight edges — XOR with axisPoint/axisDir), angleDeg: n, count: int>=2 (total instances, incl. original)}',
-  drill: '{targets: solidId[], profile: faceId | profileEdges: edgeId[] (exactly one), pick?: "outer"|"all"|region indices (0 = outer boundary, 1..N = inner loops in order — omitted = face as modeled, holes preserved), dir: [x,y,z], length: n (explicit only, no up-to-face variant)}',
-};
-
-/** All op kinds, derived from the panel catalog (which `opCatalog.test.ts`
- * already locks to cover every `EditOpKind`). */
 /**
  * Replaces `compileParametricScript`'s generic `"invalid op"` reason with the
  * specific one {@link explainEditOpRejection} can give.
@@ -427,89 +360,6 @@ function enrichScriptRejections(
   }
 }
 
-/**
- * Why an op was rejected, and — where it can be determined — the corrected
- * value, not just a diagnosis.
- *
- * Runs **only on the already-failed path**: `validateEditOp` returns
- * `EditOp | null` with no reason channel, and widening that would churn eight
- * call sites including the hot sidecar-parse path (hundreds of ops on every
- * document open). A separate explainer costs nothing when validation succeeds,
- * which is the overwhelmingly common case.
- *
- * Lives here rather than in `editOps.ts` so it can quote {@link OP_PARAM_DOCS}'s
- * exact expected shape for the kind — the most paste-ready fix available.
- */
-export function explainEditOpRejection(raw: unknown): string {
-  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
-    return `Expected an op object, got ${Array.isArray(raw) ? "an array" : typeof raw}. Each op is a JSON object with an "op" field, e.g. {"op": "translate", "targets": ["solid-0"], "vec": [1,0,0]}.`;
-  }
-
-  const kindRaw = (raw as { op?: unknown }).op;
-  if (typeof kindRaw !== "string" || kindRaw === "") {
-    return 'Missing the "op" field, which names the kind. Call describe_capabilities for the full catalog.';
-  }
-
-  const kinds = allOpKinds();
-  if (!(kinds as string[]).includes(kindRaw)) {
-    const near = nearestOpKind(kindRaw, kinds);
-    return (
-      `Unknown op kind "${kindRaw}".` +
-      (near ? ` Did you mean "${near}"? Expected shape: ${OP_PARAM_DOCS[near]}` : " Call describe_capabilities for the full catalog.")
-    );
-  }
-
-  // A known kind that still failed: the fields are wrong. Quoting the exact
-  // expected shape is the most actionable thing available without duplicating
-  // validateEditOpCore's per-kind checks (which would drift against it).
-  const kind = kindRaw as EditOpKind;
-  return `"${kind}" is a valid op kind, but its fields did not validate. Expected: ${OP_PARAM_DOCS[kind]}${
-    BREP_ONLY_OPS.has(kind) ? " (B-rep sources only)" : ""
-  }. Every numeric field must be a finite number, and every id an existing entity id.`;
-}
-
-/**
- * The closest op kind by edit distance, or `null` when nothing is near enough
- * to suggest — a wrong guess is worse than none, so this only fires for a
- * genuine near-miss (a third of the name's length).
- */
-function nearestOpKind(input: string, kinds: EditOpKind[]): EditOpKind | null {
-  const needle = input.toLowerCase();
-  let best: EditOpKind | null = null;
-  let bestDistance = Infinity;
-  for (const kind of kinds) {
-    const d = editDistance(needle, kind.toLowerCase());
-    if (d < bestDistance) {
-      bestDistance = d;
-      best = kind;
-    }
-  }
-  const limit = Math.max(2, Math.floor(input.length / 3));
-  return best !== null && bestDistance <= limit ? best : null;
-}
-
-function editDistance(a: string, b: string): number {
-  const prev = Array.from({ length: b.length + 1 }, (_, i) => i);
-  const row = new Array<number>(b.length + 1);
-  for (let i = 1; i <= a.length; i++) {
-    row[0] = i;
-    for (let j = 1; j <= b.length; j++) {
-      row[j] = Math.min(
-        prev[j] + 1,
-        row[j - 1] + 1,
-        prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1)
-      );
-    }
-    prev.splice(0, prev.length, ...row);
-  }
-  return prev[b.length];
-}
-
-export function allOpKinds(): EditOpKind[] {
-  const kinds = new Set<EditOpKind>();
-  for (const entry of allCatalogEntries()) for (const k of entry.kinds) kinds.add(k);
-  return [...kinds];
-}
 
 // ---------------------------------------------------------------------------
 // describe_capabilities
@@ -743,6 +593,25 @@ function opOutcomeWarnings(outcomes: OpOutcome[]): string[] {
   return [
     `${skipped.length} of ${outcomes.length} edit op(s) did NOT apply during replay: ${details}.` + (hint ? ` Hint: ${hint}` : ""),
   ];
+}
+
+/**
+ * After a replay that resolved `point-N` references (roadmap "Define lines,
+ * arcs and curves from preexisting points"): writes each reference's resolved
+ * position back as its `at` anchor (and a rebound id's new id) into the
+ * persisted op list, and returns the rebind warnings. `ops` is the FULL list
+ * as persisted; `bakedThrough` maps the tail-relative resolutions onto it.
+ */
+async function writebackPointRefs(
+  modelPath: string, ops: EditOp[], variables: Awaited<ReturnType<typeof readEditsResolved>>["variables"],
+  bakedThrough: number, result: { pointRefs?: PointRefHit[] }, warnings: string[]
+): Promise<EditOp[]> {
+  const hits = result.pointRefs;
+  if (!hits || hits.length === 0) return ops;
+  const wb = applyPointRefWriteback(ops, hits, bakedThrough);
+  if (wb.changed) await writeEdits(modelPath, wb.ops, variables, bakedThrough);
+  warnings.push(...pointRefRebindWarnings(hits, wb.ops, bakedThrough));
+  return wb.ops;
 }
 
 async function sidecarSummary(modelPath: string) {
@@ -980,7 +849,7 @@ export async function loadModel(ctx: ToolContext, params: { path: string }) {
     // ids; the agent needs to know the query was not honored). `.csg`
     // parse/build warnings (skipped hull/minkowski/2D, faceting
     // approximations) ride it too — same "never silent" rule.
-    warnings: [...opOutcomeWarnings(result.opOutcomes), ...(result.queryWarnings ?? []), ...(result.warnings ?? []), ...warnings],
+    warnings: [...opOutcomeWarnings(result.opOutcomes), ...(result.queryWarnings ?? []), ...pointRefRebindWarnings(result.pointRefs ?? [], ops), ...(result.warnings ?? []), ...warnings],
   };
 }
 
@@ -3275,6 +3144,7 @@ export async function applyEditOps(
       // `current.ops` IS the tail; outcome offsets below stay tail-relative.
       const result = await ctx.pipeline.loadBRep(ctx.extensionPath, bytes, format as BRepFormat, replayTail(resolvedNewOps, current.bakedThrough));
       model = entitySummary(result);
+      await writebackPointRefs(modelPath, resolvedNewOps, current.variables, current.bakedThrough, result, warnings);
       // "Accepted" meant it passed validation — the replay outcome is what
       // actually happened. Merge each not-applied op's diagnostic/hint into its
       // report entry (outcomes are indexed over `newOps`; the newly-accepted
@@ -3589,6 +3459,7 @@ async function compileAndApplyScript(
       // offset below stays tail-relative.
       const result = await ctx.pipeline.loadBRep(ctx.extensionPath, bytes, format as BRepFormat, replayTail(newOps, current.bakedThrough));
       model = entitySummary(result);
+      await writebackPointRefs(modelPath, newOps, current.variables, current.bakedThrough, result, warnings);
       // Same this-call-only notApplied rule as apply_edit_ops above — the
       // accepted ops sit at current.ops.length.. in the outcome list, and a
       // previously-persisted op that skips on every replay must not decrement

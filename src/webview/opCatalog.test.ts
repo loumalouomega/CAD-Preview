@@ -141,6 +141,17 @@ describe("describeOp", () => {
   });
 });
 
+describe("referencedEntities — point references", () => {
+  it("curve ops mention the point ids they reference (and nothing for raw coordinates)", () => {
+    expect(referencedEntities({ op: "addLine", start: [0, 0, 0], end: [1, 0, 0], pointRefs: { start: { id: "point-3" }, end: { id: "point-7" } } }))
+      .toEqual(["point-3", "point-7"]);
+    expect(referencedEntities({ op: "addPolyline", points: [[0, 0, 0], [1, 0, 0]], closed: false, pointRefs: { "points[0]": { id: "point-2" }, "points[1]": { id: "point-2" } } }))
+      .toEqual(["point-2"]);
+    expect(referencedEntities({ op: "addLine", start: [0, 0, 0], end: [1, 0, 0] })).toEqual([]);
+    expect(describeOp({ op: "addLine", start: [0, 0, 0], end: [1, 0, 0], pointRefs: { start: { id: "point-3" }, end: { id: "point-7" } } })).toContain("point-3→point-7");
+  });
+});
+
 describe("referencedEntities", () => {
   it("covers every op kind without throwing or returning undefined", () => {
     // The exhaustive switch makes a missing kind a compile error (verified: a
@@ -276,5 +287,20 @@ describe("buildEntityReferenceIndex", () => {
 
   it("is empty for an empty op list", () => {
     expect(buildEntityReferenceIndex([]).size).toBe(0);
+  });
+});
+
+describe("catalogLocation", () => {
+  it("places every catalog button on exactly one tab, in the section the catalog declares", async () => {
+    const { catalogLocation, allCatalogEntries, OP_CATALOG } = await import("./opCatalog");
+    for (const e of allCatalogEntries()) {
+      const where = catalogLocation(e.id);
+      expect(where, e.id).not.toBeNull();
+      const home = { "2d": OP_CATALOG.geometry2d, "3d": OP_CATALOG.geometry3d, edit: OP_CATALOG.edit }[where as "2d" | "3d" | "edit"];
+      expect(home.some((c) => c.ops.some((o) => o.id === e.id)), e.id).toBe(true);
+    }
+    expect(catalogLocation("addPoint")).toBe("2d");
+    expect(catalogLocation("addBox")).toBe("3d");
+    expect(catalogLocation("translate")).toBe("edit");
   });
 });

@@ -55,6 +55,7 @@ The webview runs in a Chromium browser context. These modules are bundled into `
 | `src/planeFrame.ts` | Deterministic 2D frame for plane-authored profiles: `planeBasis` + `profilePlacementFromPlane` (vscode/OCCT/THREE-free, unit-tested; `occtOperations.ts` delegates its own copy here) |
 | `src/webview/opIcons.ts` | Generated per-op SVG icons (`icons/build-op-icons.mjs`) |
 | `src/webview/editsPanel.ts` | Edits panel DOM — GEOMETRY (2D/3D) / EDIT tabs, op grids, param forms, op list |
+| `src/webview/commandBar.ts` | Lower command bar (`#cmdbar`) — typed `<command> [<json>]` lines, history, Tab completion, panel echo |
 | `src/webview/meshEdits.ts` | Webview edit engine for mesh formats (Three.js transforms; unit-tested) |
 | `src/webview/meshFacets.ts` | Segment a mesh into coplanar facets → per-face sub-meshes (unit-tested) |
 | `src/webview/meshingModel.ts` | Current FE-mesh `MeshOptions` store, DOM-free (unit-tested) |
@@ -1112,6 +1113,7 @@ class EditsModel {
   list(): EditOp[]            // deep copies, in order
   redoList(): EditOp[]        // the redo buffer in CHRONOLOGICAL order (deep copies) — the order pending ops re-apply
   push(op: EditOp): boolean   // append; clears the redo buffer (always legal — tail only)
+  onPush: ((op: EditOp) => void) | null   // fired after each successful push (the command bar echoes panel-built ops through it)
   undo(): boolean             // pop last → redo buffer (refused at/inside the save point)
   redo(): boolean             // re-apply most recently undone (always legal)
   clear(): boolean            // empty both stacks (refused past a save point)
@@ -1169,6 +1171,16 @@ A `PanelOpId` is one op **button** — usually 1:1 with an `EditOpKind`, but the
 
 **GENERATED — never hand-edit.** `OP_ICONS: Record<PanelOpId, string>`, one inline-SVG value per Edits-panel op button, produced by `icons/build-op-icons.mjs` from `icons/tikz/*.tex` (`cd icons && make ops-ts`) — the same `currentColor`-based pipeline `src/toolbarIcons.ts` uses (see `icons/README.md`). `editsPanel.ts`'s `buildTabContent()` sets each value via `innerHTML` on the button's `<span class="op-icon">`, not `textContent`.
 
+## `src/webview/commandBar.ts`
+
+### `CommandBar`
+
+The lower command bar (`#cmdbar`, a body-level row above `#statusbar`, outside `#app`). Plain DOM, no unit test (the panel convention); everything testable lives in the pure `src/opCommands.ts` (`COMMAND_TABLE`, `parseCommandLine`, `buildCommandOp`, `completeCommands`, `completeEntityId`, `echoCommandText`).
+
+`new CommandBar(root, callbacks)` takes `getSelection()` / `getInventory()` (ids by type, for `$sel` and Tab), `sourceKind()`, `commit(op, row)` and `openForm(row, body)`. `main.ts` supplies them: `commit` is the shared tail (layer-lock refusal, gizmo/op-preview cancellation, one `editsModel.push`), so a typed op and a panel Apply persist identical ops; `openForm` expands a collapsed Edits section, calls `EditsPanel.openOp(id)` and, with a body, `prefillFromBody` (numbers and 3-vectors only; it reports what it skipped) after selecting body ids the model confirms. `run()` is the whole execution path: parse, B-rep-only gate against `sourceKind()`, `buildCommandOp` (with `$sel` typing), `validateEditOp`, and on a null result `explainEditOpRejection` (the expected shape). `echo(op)` writes a panel-built op's command text; `main.ts` calls it from `EditsModel.onPush`, except while the bar itself is committing. `showMessage(text, error?)` drives the message line, and `main.ts` uses it to report a typed op that the next replay's `OpOutcome` shows as skipped.
+
+Typing in the bar stops key propagation so shortcuts and open dropdowns never see it. The row's height is `--ui-cmdbar-h`; the dock and the status toast both lift by it.
+
 ## `src/webview/editsPanel.ts`
 
 ### `EditsPanel`
@@ -1181,6 +1193,8 @@ class EditsPanel {
   render(ops: EditOp[], canUndo: boolean, canRedo: boolean, opOutcomes?: OpOutcome[] | null, redoOps?: EditOp[], opBuckets?: OpBucket[] | null): void
   setBRepOnly(enabled: boolean): void
   setVariables(values: Record<string, number>): void  // evaluated values for expression fields
+  openOp(id: PanelOpId): boolean   // open a form like clicking its button (tab + subtab from the catalog); false when disabled
+  prefillFromBody(body: Record<string, unknown>): { filled: string[]; skipped: string[] }  // numbers / 3-vectors into the open form
 }
 ```
 
@@ -1205,7 +1219,7 @@ class EditsPanel {
 - `onApplyPrimitive(PrimitiveDraft)` — Box/Sphere/Cylinder/Cone/Torus/Prism/Wedge; self-contained placement, **no selection needed**. All-formats except Wedge (B-rep only).
 - `onApplyHole(HoleDraft)` — Hole/Counterbore/Countersink; subtractive, cut into the selected volumes (all formats — the mesh engine cuts via CSG).
 - `onApplyProfile(ProfileDraft)` — Circle/Rectangle/Polygon/Ellipse/Rounded rect/Slot/Trapezoid sketches; no selection needed, B-rep only. The rectangle-family drafts carry an explicit `up: Vec3` so in-plane orientation is user-controlled. A sketch is created to be picked afterward (Surf mode) and fed into a feature op's `profile`. Every 2D profile/curve form ends with a generic **Construction (guide)** checkbox (`boolField`), read by `applyButtonDraft`'s wrapped reader on BOTH the Apply and preview paths — one seam, 16 forms.
-- `onApplyWireframe(WireframeDraft)` — Point/Line/Arc plus the curve family (Polyline/3-Pt Arc/Spline/Bezier/Ellipse Arc/Helix); typed coordinates, B-rep only. Polyline/Spline/Bezier use the panel's **dynamic point-list widget** (`pointListField`): `.point-row`s of vec triples with per-row `−` remove buttons (disabled at the minimum count) and a trailing `+ Add point`; `readPoints()` walks rows in DOM order at emit time.
+- `onApplyWireframe(WireframeDraft)` — Point/Line/Arc plus the curve family (Polyline/3-Pt Arc/Spline/Bezier/Ellipse Arc/Helix); typed coordinates or bound `point-N` references (`pointRefs` on the draft; the **Use picked points** button fills slots from the Point-mode selection via `onUsePickedPoints`), B-rep only. Polyline/Spline/Bezier use the panel's **dynamic point-list widget** (`pointListField`): `.point-row`s of vec triples with per-row `−` remove buttons (disabled at the minimum count) and a trailing `+ Add point`; `readPoints()` walks rows in DOM order at emit time.
 - `onBuildSurfaceFromLines()` / `onBuildVolumeFromSurfaces()` — the Build buttons; no capture step — `main.ts` reads the live Line/Surf selection at click time and guards the minimum count (≥3 lines, ≥4 faces).
 - `onBuildEdgeSlot(width)` — the Edge Slot Build button: exactly one selected edge (Line mode) + the form's `width`; appends the stadium slot face under "Sketches". B-rep only.
 - `onRemoveOp(index)` — a small ✕ button on each history row (revealed on row hover), wired straight to `EditsModel.remove(index)`. Unlike **↶ Undo**, which only pops the last op, this splices a single op out of anywhere in the list — the only way to drop one specific op without discarding everything applied after it. Clears the redo buffer, same as `push`; topology-changing ops after the removed one carry the same accepted "entity-id drift" risk as undo/redo (see [File Formats](./file-formats.md#edits-sidecar-modeleditsjson)).

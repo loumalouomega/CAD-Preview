@@ -2576,6 +2576,260 @@ async function enablePicking(page, mode) {
 }
 
 /**
+ * Point references on curve ops (the "Define lines, arcs and curves from
+ * preexisting points" feature). Kernel resolution is live-verified in
+ * `mcp:smoke`; what needs the real bundle is the form: picked points fill the
+ * slots in pick order, lock the inputs behind a `point-N` chip, travel on the
+ * posted op as `pointRefs` (with `at` = the position shown), and clearing the
+ * chip hands the slot back to raw typing.
+ */
+test("curve forms: Use picked points binds slots to point ids and posts pointRefs", async (page) => {
+  await populate(page);
+  await enablePicking(page, "point");
+  const status = await runModeFilter(page, "point", "nearXY", "5");
+  const m = status.match(/matched (\d+) of (\d+) points\./);
+  assert(m !== null && Number(m[1]) >= 2, `precondition: the point filter picked at least two points (got ${JSON.stringify(status)})`);
+  await page.click("#select-menu"); // close the menu
+  await sleep(150);
+
+  // A second click on an op button COLLAPSES its form, so open only when the
+  // wanted form is not already showing.
+  const openForm = async (name) => {
+    await page.evaluate((n) => {
+      if (document.querySelector("#edits-params .point-ref-bar")) return;
+      [...document.querySelectorAll(".op-btn")].find((b) => b.querySelector(".op-name")?.textContent === n)?.click();
+    }, name);
+    await sleep(200);
+  };
+  await openForm("Line");
+  const before = await sentCount(page, "editsChanged");
+  await page.evaluate(() => document.querySelector("#edits-params .point-ref-use")?.click());
+  await sleep(250);
+  const bound = await page.evaluate(() => ({
+    chips: [...document.querySelectorAll("#edits-params .point-ref-chip")].map((c) => c.firstChild?.textContent),
+    startDisabled: [...document.querySelectorAll('#edits-params input[data-name="start"]')].every((i) => i.disabled),
+    endDisabled: [...document.querySelectorAll('#edits-params input[data-name="end"]')].every((i) => i.disabled),
+    start: [...document.querySelectorAll('#edits-params input[data-name="start"]')].map((i) => Number(i.value)),
+    end: [...document.querySelectorAll('#edits-params input[data-name="end"]')].map((i) => Number(i.value)),
+  }));
+  assert(bound.chips.length === 2 && bound.chips.every((c) => /^point-\d+$/.test(c ?? "")), `both slots show a point-N chip (got ${JSON.stringify(bound.chips)})`);
+  assert(bound.startDisabled && bound.endDisabled, "bound slots lock their coordinate inputs");
+  assert(!eq(bound.start, bound.end), "the two slots hold different points' positions");
+
+  await page.evaluate(() => {
+    [...document.querySelectorAll("#edits-params .compose-apply")].find((b) => b.textContent === "Add")?.click();
+  });
+  await sleep(300);
+  assert((await sentCount(page, "editsChanged")) === before + 1, "Add posts exactly one editsChanged");
+  const op = await page.evaluate(() => (window.__sent ?? []).findLast((x) => x.type === "editsChanged")?.ops.at(-1));
+  assert(op?.op === "addLine" && op.pointRefs?.start && op.pointRefs?.end, `the posted addLine carries pointRefs (got ${JSON.stringify(op)})`);
+  assert(op.pointRefs.start.id === bound.chips[0] && op.pointRefs.end.id === bound.chips[1], "refs follow pick order");
+  assert(eq(op.start, bound.start) && eq(op.pointRefs.start.at, bound.start) && eq(op.end, bound.end), "the op's coordinate cache and each ref's `at` equal the positions the form showed");
+
+  // Clearing a chip hands the slot back to raw typing and drops its ref.
+  await openForm("Line");
+  await page.evaluate(() => document.querySelector("#edits-params .point-ref-use")?.click());
+  await sleep(250);
+  await page.evaluate(() => document.querySelector("#edits-params .point-ref-clear")?.click());
+  await sleep(200);
+  const cleared = await page.evaluate(() => ({
+    chips: document.querySelectorAll("#edits-params .point-ref-chip").length,
+    startEnabled: [...document.querySelectorAll('#edits-params input[data-name="start"]')].every((i) => !i.disabled),
+  }));
+  assert(cleared.chips === 1 && cleared.startEnabled, "clearing a chip re-enables that slot and leaves the other bound");
+});
+
+test("curve forms: a polyline takes exactly the picked points; nothing picked explains itself", async (page) => {
+  await populate(page);
+  const openForm = async (name) => {
+    await page.evaluate((n) => {
+      if (document.querySelector("#edits-params .point-ref-bar")) return;
+      [...document.querySelectorAll(".op-btn")].find((b) => b.querySelector(".op-name")?.textContent === n)?.click();
+    }, name);
+    await sleep(200);
+  };
+  await openForm("Polyline");
+  const sentBefore = await sentCount(page, "editsChanged");
+  await page.evaluate(() => document.querySelector("#edits-params .point-ref-use")?.click());
+  await sleep(250);
+  const hint = await page.evaluate(() => document.getElementById("status")?.textContent ?? "");
+  assert(/Pick points first/.test(hint), `with nothing picked the button explains itself (got ${JSON.stringify(hint)})`);
+  assert((await sentCount(page, "editsChanged")) === sentBefore, "…and adds no edit");
+
+  await enablePicking(page, "point");
+  const status = await runModeFilter(page, "point", "nearXY", "5");
+  const picked = Number(status.match(/matched (\d+) of/)?.[1] ?? 0);
+  assert(picked >= 2, `precondition: ${picked} points picked`);
+  await page.click("#select-menu");
+  await sleep(150);
+  await openForm("Polyline");
+  await page.evaluate(() => document.querySelector("#edits-params .point-ref-use")?.click());
+  await sleep(300);
+  const rows = await page.evaluate(() => ({
+    rows: document.querySelectorAll("#edits-params .point-row").length,
+    chips: document.querySelectorAll("#edits-params .point-row .point-ref-chip").length,
+  }));
+  assert(rows.rows === Math.max(2, picked) && rows.chips === picked, `the list holds one bound row per picked point (rows ${rows.rows}, chips ${rows.chips}, picked ${picked})`);
+});
+
+/**
+ * Lower command bar (roadmap "Lower command bar"). The parser, table, `$sel`
+ * typing and echo are unit-tested in `opCommands.test.ts`; what needs the real
+ * bundle is that a typed line reaches the SAME op stack as a panel Apply, that
+ * the selection feeds `$sel`, that a rejected line says why and posts nothing,
+ * and that the row takes space off the viewport without covering the dock.
+ */
+const typeCommand = async (page, text) => {
+  await page.fill("#cmdbar-input", text);
+  await page.press("#cmdbar-input", "Enter");
+  await sleep(300);
+};
+const cmdMessage = (page) => page.evaluate(() => document.getElementById("cmdbar-message")?.textContent ?? "");
+const lastOp = (page) => page.evaluate(() => (window.__sent ?? []).findLast((x) => x.type === "editsChanged")?.ops.at(-1));
+
+test("command bar: a typed addBox equals the panel-built op, and a panel Apply echoes into the bar", async (page) => {
+  await populate(page);
+  const before = await sentCount(page, "editsChanged");
+  // Panel twin first: open Box, Apply the defaults.
+  await page.evaluate(() => {
+    [...document.querySelectorAll(".op-btn")].find((b) => b.querySelector(".op-name")?.textContent === "Box")?.click();
+  });
+  await sleep(200);
+  await page.evaluate(() => {
+    [...document.querySelectorAll("#edits-params .compose-apply")].find((b) => b.textContent === "Add")?.click();
+  });
+  await sleep(300);
+  assert((await sentCount(page, "editsChanged")) === before + 1, "the panel Add posts one editsChanged");
+  const panelOp = await lastOp(page);
+  const echoed = await page.inputValue("#cmdbar-input");
+  assert(echoed.startsWith("addBox "), `a panel-built op echoes its command line into the bar (got ${JSON.stringify(echoed)})`);
+
+  // Typing that echo back must reproduce the op exactly.
+  await typeCommand(page, echoed);
+  assert((await sentCount(page, "editsChanged")) === before + 2, `the typed line posts exactly one more editsChanged (message: ${JSON.stringify(await cmdMessage(page))})`);
+  const typedOp = await lastOp(page);
+  assert(JSON.stringify(typedOp) === JSON.stringify(panelOp), `typed op equals panel op (typed ${JSON.stringify(typedOp)} vs panel ${JSON.stringify(panelOp)})`);
+  assert((await page.inputValue("#cmdbar-input")) === "", "a successful command clears the input");
+});
+
+test("command bar: $sel expands to the selection by field type; wrong kinds explain themselves", async (page) => {
+  await populate(page);
+  const none = await sentCount(page, "editsChanged");
+  await typeCommand(page, 'translate {"targets":$sel,"vec":[1,0,0]}');
+  assert(/needs selected volumes \(Vol mode\)/.test(await cmdMessage(page)), `$sel with nothing selected names what is missing (got ${JSON.stringify(await cmdMessage(page))})`);
+  assert((await sentCount(page, "editsChanged")) === none, "…and posts nothing");
+
+  await enablePicking(page, "volume");
+  const status = await runModeFilter(page, "volume", "smallestN", "1");
+  assert(/matched 1 of \d+ solids\./.test(status), `precondition: one solid selected (got ${JSON.stringify(status)})`);
+  await page.click("#select-menu");
+  await sleep(150);
+  await typeCommand(page, 'translate {"targets":$sel,"vec":[1,2,3]}');
+  assert((await sentCount(page, "editsChanged")) === none + 1, `translate with $sel posts one editsChanged (message ${JSON.stringify(await cmdMessage(page))})`);
+  const op = await lastOp(page);
+  assert(op?.op === "translate" && Array.isArray(op.targets) && op.targets.length === 1 && /^solid-\d+$/.test(op.targets[0]) && eq(op.vec, [1, 2, 3]), `the op carries the selected solid (got ${JSON.stringify(op)})`);
+
+  // A face field must NOT take the solid selection.
+  await typeCommand(page, 'extrude {"profile":$sel,"dir":[0,0,1],"length":2}');
+  assert(/selected faces/.test(await cmdMessage(page)), `a face field refuses a solids-only selection (got ${JSON.stringify(await cmdMessage(page))})`);
+  assert((await sentCount(page, "editsChanged")) === none + 1, "…and posts nothing");
+});
+
+test("command bar: rejection shows the expected shape and posts nothing; a bare command opens its form", async (page) => {
+  await populate(page);
+  const before = await sentCount(page, "editsChanged");
+  await typeCommand(page, 'addBox {"center":[0,0,0],"size":[1,1]}');
+  const msg = await cmdMessage(page);
+  assert(/addBox|size/i.test(msg) && msg.length > 20, `a malformed body explains the expected shape (got ${JSON.stringify(msg)})`);
+  assert((await sentCount(page, "editsChanged")) === before, "a rejected line posts no editsChanged");
+  await typeCommand(page, "addBxo");
+  assert(/Did you mean "addBox"/.test(await cmdMessage(page)), `an unknown command suggests the nearest (got ${JSON.stringify(await cmdMessage(page))})`);
+
+  await typeCommand(page, "addCylinder");
+  const open = await page.evaluate(() => ({
+    form: document.querySelector("#edits-params")?.children.length ?? 0,
+    active: document.querySelector(".op-btn.active .op-name")?.textContent ?? null,
+  }));
+  assert(open.active === "Cylinder" && open.form > 0, `a bare command opens that op's form (got ${JSON.stringify(open)})`);
+  assert((await sentCount(page, "editsChanged")) === before, "…without pushing an op");
+});
+
+test("command bar: a B-rep-only command is refused on a mesh source", async (page) => {
+  await openStl(page);
+  const before = await sentCount(page, "editsChanged");
+  await typeCommand(page, 'fillet {"edges":["edge-0"],"radius":1}');
+  const msg = await cmdMessage(page);
+  assert(/B-rep only/.test(msg), `the refusal names the reason (got ${JSON.stringify(msg)})`);
+  assert((await sentCount(page, "editsChanged")) === before, "…and posts nothing");
+});
+
+test("command bar: history recalls earlier lines and Tab completes a command", async (page) => {
+  await populate(page);
+  await typeCommand(page, "addBxo");
+  await typeCommand(page, "addSphereX");
+  // A rejected line stays in the input so it can be corrected, so the draft
+  // has to be set deliberately: it is whatever the user had typed before the
+  // first ArrowUp, and that is what ArrowDown past the newest must restore.
+  await page.fill("#cmdbar-input", "addCyl");
+  await page.focus("#cmdbar-input");
+  await page.press("#cmdbar-input", "ArrowUp");
+  assert((await page.inputValue("#cmdbar-input")) === "addSphereX", "ArrowUp recalls the most recent line");
+  await page.press("#cmdbar-input", "ArrowUp");
+  assert((await page.inputValue("#cmdbar-input")) === "addBxo", "a second ArrowUp goes further back");
+  await page.press("#cmdbar-input", "ArrowDown");
+  assert((await page.inputValue("#cmdbar-input")) === "addSphereX", "ArrowDown walks forward again");
+  await page.press("#cmdbar-input", "ArrowDown");
+  assert((await page.inputValue("#cmdbar-input")) === "addCyl", "ArrowDown past the newest restores the draft");
+  await page.fill("#cmdbar-input", "addCyl");
+  await page.press("#cmdbar-input", "Tab");
+  assert((await page.inputValue("#cmdbar-input")).startsWith("addCylinder"), `Tab completes a unique prefix (got ${JSON.stringify(await page.inputValue("#cmdbar-input"))})`);
+  await page.press("#cmdbar-input", "Escape");
+  assert((await page.inputValue("#cmdbar-input")) === "", "Escape clears the line");
+});
+
+test("command bar: a typed op the kernel skips reports it on the bar", async (page) => {
+  await page.evaluate(() => {
+    window.__lastGeometry = null;
+    window.addEventListener("message", (e) => {
+      if (e.data?.type === "geometry") window.__lastGeometry = e.data;
+    });
+  });
+  await populate(page);
+  const before = await sentCount(page, "editsChanged");
+  await typeCommand(page, 'translate {"targets":["solid-0"],"vec":[1,0,0]}');
+  assert((await sentCount(page, "editsChanged")) === before + 1, "precondition: the op was pushed");
+  const count = await page.evaluate(() => (window.__sent ?? []).findLast((x) => x.type === "editsChanged").ops.length);
+  // The host's replay reports a graceful skip for exactly that op.
+  const outcomes = Array.from({ length: count }, (_, i) =>
+    i === count - 1
+      ? { index: i, kind: "translate", applied: false, diagnostic: "none of the target ids resolve to a solid" }
+      : { index: i, kind: "x", applied: true }
+  );
+  await page.evaluate((o) => window.postMessage({ ...window.__lastGeometry, opOutcomes: o }, "*"), outcomes);
+  await sleep(500);
+  const msg = await cmdMessage(page);
+  assert(/translate was skipped: none of the target ids/.test(msg), `a skipped typed op is reported on the bar (got ${JSON.stringify(msg)})`);
+});
+
+test("command bar: the row sits above the status bar, the canvas ends above it, and the dock and toast clear it", async (page) => {
+  await populate(page);
+  const geo = () =>
+    page.evaluate(() => {
+      const r = (id) => { const b = document.getElementById(id)?.getBoundingClientRect(); return b ? { top: b.top, bottom: b.bottom, height: b.height } : null; };
+      return { cmd: r("cmdbar"), status: r("statusbar"), app: r("app"), dock: r("view-controls"), vh: window.innerHeight, rendered: document.getElementById("cmdbar")?.offsetParent !== null };
+    });
+  for (const width of [1360, 820]) {
+    await page.setViewportSize({ width, height: 900 });
+    await sleep(250);
+    const g = await geo();
+    assert(g.rendered, "the command bar is genuinely rendered");
+    assert(Math.abs(g.cmd.bottom - g.status.top) < 1.5, `at ${width}px the bar sits directly above the status bar (cmd bottom ${g.cmd.bottom.toFixed(1)}, status top ${g.status.top.toFixed(1)})`);
+    assert(g.app.bottom <= g.cmd.top + 1, `at ${width}px the canvas ends where the command bar begins (app bottom ${g.app.bottom.toFixed(1)}, cmd top ${g.cmd.top.toFixed(1)})`);
+    assert(g.dock.bottom <= g.cmd.top, `at ${width}px the dock clears the command bar (dock bottom ${g.dock.bottom.toFixed(1)}, cmd top ${g.cmd.top.toFixed(1)})`);
+  }
+});
+
+/**
  * N. Selection-groups context menu — the query-filter predicates reached by
  * right-click instead of by composing a query.
  */

@@ -1908,6 +1908,55 @@ describe("explainEditOpRejection", () => {
   });
 });
 
+describe("apply_edit_ops — point references", () => {
+  it("persists a bare point id, then writes the kernel-resolved position back as the ref's `at`", async () => {
+    const c = ctx(
+      fakePipeline({
+        loadBRep: vi.fn(async () => ({
+          ...FAKE_BREP_RESULT,
+          opOutcomes: [{ index: 0, kind: "addLine" as const, applied: true }],
+          pointRefs: [
+            { opIndex: 0, slot: "start", id: "point-3", position: [1, 2, 3] as [number, number, number] },
+            { opIndex: 0, slot: "end", id: "point-7", position: [4, 5, 6] as [number, number, number] },
+          ],
+        })),
+      })
+    );
+    const result = await applyEditOps(c, { path: stpModel, ops: [{ op: "addLine", start: "point-3", end: "point-7" }] });
+    expect(result.applied).toBe(1);
+    const persisted = (await readEdits(stpModel)).ops[0] as { pointRefs: Record<string, { id: string; at: number[] }>; start: number[] };
+    expect(persisted.pointRefs.start).toEqual({ id: "point-3", at: [1, 2, 3] });
+    expect(persisted.pointRefs.end).toEqual({ id: "point-7", at: [4, 5, 6] });
+    expect(persisted.start).toEqual([1, 2, 3]);
+  });
+
+  it("surfaces a rebind as a warning and persists the new id", async () => {
+    const c = ctx(
+      fakePipeline({
+        loadBRep: vi.fn(async () => ({
+          ...FAKE_BREP_RESULT,
+          opOutcomes: [{ index: 0, kind: "addLine" as const, applied: true }],
+          pointRefs: [{ opIndex: 0, slot: "start", id: "point-2", position: [1, 2, 3] as [number, number, number], rebound: { from: "point-3" } }],
+        })),
+      })
+    );
+    const result = await applyEditOps(c, { path: stpModel, ops: [{ op: "addLine", start: { id: "point-3", at: [1, 2, 3] }, end: [9, 0, 0] }] });
+    expect(result.warnings.some((w) => /point-3 \(start\) was no longer at its authored position — re-anchored to point-2/.test(w))).toBe(true);
+    const persisted = (await readEdits(stpModel)).ops[0] as { pointRefs: Record<string, { id: string }> };
+    expect(persisted.pointRefs.start.id).toBe("point-2");
+  });
+
+  it("rejects a malformed reference with the op's shape, and documents point-N in OP_PARAM_DOCS", async () => {
+    const result = await applyEditOps(ctx(), { path: stpModel, ops: [{ op: "addLine", start: "face-3", end: [0, 0, 0] }] });
+    expect(result.rejected).toBe(1);
+    expect(result.report[0].reason).toContain("addLine");
+    expect(result.report[0].reason).toContain("point-N");
+    for (const kind of ["addLine", "addArc", "addPolyline", "addThreePointArc", "addSpline", "addBezier", "addEllipseArc", "addHelix"] as const) {
+      expect(OP_PARAM_DOCS[kind], kind).toContain("point-N");
+    }
+  });
+});
+
 describe("apply_edit_ops", () => {
   it("appends valid ops and reports rejects with reasons", async () => {
     const result = await applyEditOps(ctx(), {

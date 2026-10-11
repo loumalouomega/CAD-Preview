@@ -5,7 +5,7 @@ import * as path from "path";
 // bypasses Node 18's built-in fetch(), which fails to parse filesystem paths.
 import openCascadeFactory from "opencascade.js/dist/opencascade.wasm.js";
 import { tessellateByGroup, extractEdges, extractVertices, type SolidGroup, type EdgeLine, type PointEntity } from "./meshExtract";
-import { applyEditsBRep, scaleShapeForExport, collectSolids, bboxCenter, collectGuideIds, type GuideCollector } from "./occtOperations";
+import { applyEditsBRep, scaleShapeForExport, collectSolids, bboxCenter, collectGuideIds, type GuideCollector, type PointRefResolution } from "./occtOperations";
 import type { OpBucket } from "./opBuckets";
 import { volumePropertiesAdaptive } from "./brepGProp";
 import { readXcafAssembly, correlateAssemblyTree, type XcafAssemblyInfo } from "./xcafTree";
@@ -149,6 +149,12 @@ export interface BRepResult {
    * the op list carries `targetQueries` and something froze. Absent for mesh
    * sources (their replay is client-side and never resolves queries). */
   queryWarnings?: string[];
+  /** Resolved `point-N` references of curve ops (roadmap "Define lines, arcs
+   * and curves from preexisting points"): per op/slot, the id it resolved to
+   * and where — `rebound` marks a stored id re-anchored by position. Indices
+   * are into the op list passed to THIS call. Omitted when no op carries
+   * references. Headless callers write the positions back as each ref's `at`. */
+  pointRefs?: PointRefResolution[];
   /** `.csg` parse/build warnings (skipped hull/minkowski/2D constructs,
    * faceting approximations — see `csgImport.ts`). Present only for
    * `format === "csg"` with something to report; every other source omits
@@ -198,6 +204,8 @@ export interface BRepCacheEntry {
   guideCollector: GuideCollector;
   guideIds: string[];
   opBuckets: OpBucket[];
+  /** Point-reference resolutions of the replayed ops (carried like `opBuckets` so an incremental append keeps the prefix's). */
+  pointRefs: PointRefResolution[];
   /** `.csg` parse/build warnings for the BASE shape (see
    * {@link BRepResult.warnings}) — carried so the append-reuse path still
    * reports them without rebuilding. Empty for every other format. */
@@ -348,6 +356,7 @@ export async function loadBRepCached(
     let opOutcomes: OpOutcome[];
     let opBuckets: OpBucket[];
     let guideCollector: GuideCollector;
+    let pointRefs: PointRefResolution[];
     let queryWarnings: string[] | undefined;
     let foldOps = ops;
     if (appendReusable && previous) {
@@ -356,7 +365,9 @@ export async function loadBRepCached(
       const suffixOutcomes: OpOutcome[] = [];
       const suffixBuckets: OpBucket[] = [];
       const suffixGuides: GuideCollector = { faces: [], edges: [], vertices: [] };
-      shape = applyEditsBRep(oc, previous.shape, suffix, opsCleanup, suffixOutcomes, suffixGuides, suffixBuckets);
+      const suffixRefs: PointRefResolution[] = [];
+      shape = applyEditsBRep(oc, previous.shape, suffix, opsCleanup, suffixOutcomes, suffixGuides, suffixBuckets, suffixRefs);
+      pointRefs = [...previous.pointRefs, ...suffixRefs.map((r) => ({ ...r, opIndex: r.opIndex + previous.ops.length }))];
       opOutcomes = [...previous.opOutcomes, ...suffixOutcomes];
       // Prefix buckets carry forward unchanged (the reused prefix ops are not
       // re-run, and their recorded ids describe their own prefix states —
@@ -373,6 +384,7 @@ export async function loadBRepCached(
       opOutcomes = [];
       opBuckets = [];
       guideCollector = { faces: [], edges: [], vertices: [] };
+      pointRefs = [];
       // Stored operand queries resolve sequentially against the original
       // base BEFORE the real fold (which re-folds the resolved list for
       // outcomes/buckets/tessellation). The resolution cleanup joins the
@@ -382,7 +394,7 @@ export async function loadBRepCached(
         foldOps = resolution.ops;
         if (resolution.warnings.length > 0) queryWarnings = resolution.warnings;
       }
-      shape = applyEditsBRep(oc, baseShape, foldOps, opsCleanup, opOutcomes, guideCollector, opBuckets);
+      shape = applyEditsBRep(oc, baseShape, foldOps, opsCleanup, opOutcomes, guideCollector, opBuckets, pointRefs);
     }
 
     const groups = tessellateByGroup(oc, shape, quality);
@@ -395,8 +407,9 @@ export async function loadBRepCached(
     // The cache stores the FOLDED list (resolved ops for query documents) —
     // the append check above compares against it, so a query document's next
     // call (whose sidecar ops still carry queries) correctly misses.
-    const cache: BRepCacheEntry = { ocInstance: oc, bytes, format, baseShape, baseCleanup, assemblyTreeCache, ops: foldOps, shape, opsCleanup, opOutcomes, opBuckets, guideCollector, guideIds, warnings: baseWarnings };
+    const cache: BRepCacheEntry = { ocInstance: oc, bytes, format, baseShape, baseCleanup, assemblyTreeCache, ops: foldOps, shape, opsCleanup, opOutcomes, opBuckets, guideCollector, guideIds, pointRefs, warnings: baseWarnings };
     const result: BRepResult = { groups, edges, points, tree, opOutcomes, opBuckets, guideIds, queryWarnings };
+    if (pointRefs.length > 0) result.pointRefs = pointRefs;
     if (baseWarnings.length > 0) result.warnings = [...baseWarnings];
     return { result, cache };
   } catch (err) {
@@ -430,6 +443,7 @@ export async function loadBRep(
     const opOutcomes: OpOutcome[] = [];
     const opBuckets: OpBucket[] = [];
     const guideCollector: GuideCollector = { faces: [], edges: [], vertices: [] };
+    const pointRefs: PointRefResolution[] = [];
     // Stored operand queries resolve sequentially against the original base
     // BEFORE the real fold (see loadBRepCached's longer comment).
     let foldOps = ops;
@@ -439,7 +453,7 @@ export async function loadBRep(
       foldOps = resolution.ops;
       if (resolution.warnings.length > 0) queryWarnings = resolution.warnings;
     }
-    const shape = applyEditsBRep(oc, baseShape, foldOps, cleanup, opOutcomes, guideCollector, opBuckets);
+    const shape = applyEditsBRep(oc, baseShape, foldOps, cleanup, opOutcomes, guideCollector, opBuckets, pointRefs);
     const groups = tessellateByGroup(oc, shape, quality);
     const edges = extractEdges(oc, shape);
     const points = extractVertices(oc, shape);
@@ -448,6 +462,7 @@ export async function loadBRep(
     const guideIds = collectGuideIds(oc, shape, guideCollector, guideTmp);
     for (let i = guideTmp.length - 1; i >= 0; i--) try { guideTmp[i].delete(); } catch { /* ignore */ }
     const result: BRepResult = { groups, edges, points, tree, opOutcomes, opBuckets, guideIds, queryWarnings };
+    if (pointRefs.length > 0) result.pointRefs = pointRefs;
     if (baseWarnings.length > 0) result.warnings = [...baseWarnings];
     return result;
   } catch (err) {

@@ -1,12 +1,12 @@
-import type { EditOp, ExprMap, Vec3, OpOutcome } from "../editOps";
-import { GUIDE_KINDS } from "../editOps";
+import type { EditOp, EditOpKind, ExprMap, Vec3, OpOutcome, PointRef, PointRefs } from "../editOps";
+import { GUIDE_KINDS, pointRefSpec } from "../editOps";
 import type { ConstructionPlane } from "../protocol";
 import type { OpBucket } from "../opBuckets";
 import { bucketSummary } from "../opBuckets";
 import { evalExpr } from "../paramExpr";
 import { profilePlacementFromPlane } from "../planeFrame";
 import { OP_CATALOG, describeOp, type CatalogCategory, type PanelOpId } from "./opCatalog";
-import { QUERYABLE_PANEL_FORMS } from "./opCatalog";
+import { QUERYABLE_PANEL_FORMS, catalogLocation } from "./opCatalog";
 import { OP_ICONS } from "./opIcons";
 import { allHoleSizes, depthPresetsFor, findHoleSize } from "../holeStandards";
 import { TOOLBAR_ICONS } from "../toolbarIcons";
@@ -91,7 +91,7 @@ export type WireframeDraft = (
   | { kind: "addBezier"; controlPoints: Vec3[] }
   | { kind: "addEllipseArc"; center: Vec3; normal: Vec3; up: Vec3; radiusX: number; radiusY: number; startAngleDeg: number; endAngleDeg: number }
   | { kind: "addHelix"; center: Vec3; axis: Vec3; radius: number; pitch: number; turns: number }
-) & { exprs?: ExprMap; guide?: boolean };
+) & { exprs?: ExprMap; guide?: boolean; /** `point-N` references standing in for coordinate slots (their `at` already fills the slot's Vec3). */ pointRefs?: PointRefs };
 
 /** A modify-op draft minus its selection operands: shell's `openingFaces` and
  * defeature's `faces` come from the selected surfaces, split/section
@@ -129,6 +129,8 @@ export interface EditsPanelCallbacks {
   onJumpTo: (index: number) => void;
   /** Apply a transform to the current selection (the wiring supplies targets). */
   onApplyTransform: (draft: TransformDraft) => void;
+  /** The currently picked `point-N` entities in pick order, each with its position in model coordinates — feeds the curve forms' "Use picked points" (roadmap "Define lines, arcs and curves from preexisting points"). Empty (with a status hint from the wiring) when no point is picked. */
+  onUsePickedPoints: () => Array<{ id: string; position: Vec3 }>;
   /** Capture the current selection as boolean operand A; returns its size. */
   onCaptureBooleanA: () => number;
   /** Apply a boolean of captured-A against the current selection (operand B). */
@@ -1224,7 +1226,8 @@ export class EditsPanel {
       case "addLine":
         f.appendChild(this.vecField("start", "Start", [0, 0, 0]));
         f.appendChild(this.vecField("end", "End", [10, 0, 0]));
-        this.applyButtonDraft("Add", "Add a new standalone line (no selection needed)", (): WireframeDraft => ({ kind: "addLine", start: this.readVec("start"), end: this.readVec("end") }), (d) => this.cb.onApplyWireframe(d));
+        f.appendChild(this.pointRefBar("addLine"));
+        this.applyButtonDraft("Add", "Add a new standalone line (no selection needed)", (): WireframeDraft => ({ kind: "addLine", start: this.readVec("start"), end: this.readVec("end"), ...this.readPointRefs("addLine") }), (d) => this.cb.onApplyWireframe(d));
         break;
       case "addArc":
         f.appendChild(this.vecField("center", "Center", [0, 0, 0]));
@@ -1232,10 +1235,11 @@ export class EditsPanel {
         f.appendChild(this.numField("radius", "Radius", 5));
         f.appendChild(this.numField("startAngleDeg", "Start°", 0));
         f.appendChild(this.numField("endAngleDeg", "End°", 180));
+        f.appendChild(this.pointRefBar("addArc"));
         this.applyButtonDraft("Add", "Add a new standalone arc (no selection needed)", (): WireframeDraft => ({
             kind: "addArc", center: this.readVec("center"), normal: this.readVec("normal"),
             radius: this.readNum("radius"), startAngleDeg: this.readNum("startAngleDeg"),
-            endAngleDeg: this.readNum("endAngleDeg"),
+            endAngleDeg: this.readNum("endAngleDeg"), ...this.readPointRefs("addArc"),
           }), (d) => this.cb.onApplyWireframe(d));
         break;
 
@@ -1243,27 +1247,33 @@ export class EditsPanel {
       case "addPolyline":
         f.appendChild(this.pointListField("points", "Points", [[0, 0, 0], [10, 0, 0], [10, 10, 0]], 2));
         f.appendChild(this.boolField("closed", "Closed", false));
+        f.appendChild(this.pointRefBar("addPolyline"));
         this.applyButtonDraft("Add", "Add a new standalone polyline (no selection needed)", (): WireframeDraft => ({
             kind: "addPolyline", points: this.readPoints("points"), closed: this.readBool("closed"),
+            ...this.readPointRefs("addPolyline"),
           }), (d) => this.cb.onApplyWireframe(d));
         break;
       case "addThreePointArc":
         f.appendChild(this.vecField("p1", "Start", [0, 0, 0]));
         f.appendChild(this.vecField("p2", "Through", [5, 5, 0]));
         f.appendChild(this.vecField("p3", "End", [10, 0, 0]));
+        f.appendChild(this.pointRefBar("addThreePointArc"));
         this.applyButtonDraft("Add", "Add a circular arc through the three points (no selection needed)", (): WireframeDraft => ({
             kind: "addThreePointArc", p1: this.readVec("p1"), p2: this.readVec("p2"), p3: this.readVec("p3"),
+            ...this.readPointRefs("addThreePointArc"),
           }), (d) => this.cb.onApplyWireframe(d));
         break;
       case "addSpline":
         f.appendChild(this.hint("Smooth curve through the points (endpoint-exact fit)"));
         f.appendChild(this.pointListField("points", "Points", [[0, 0, 0], [5, 5, 0], [10, 0, 0]], 2));
-        this.applyButtonDraft("Add", "Add a new standalone spline (no selection needed)", (): WireframeDraft => ({ kind: "addSpline", points: this.readPoints("points") }), (d) => this.cb.onApplyWireframe(d));
+        f.appendChild(this.pointRefBar("addSpline"));
+        this.applyButtonDraft("Add", "Add a new standalone spline (no selection needed)", (): WireframeDraft => ({ kind: "addSpline", points: this.readPoints("points"), ...this.readPointRefs("addSpline") }), (d) => this.cb.onApplyWireframe(d));
         break;
       case "addBezier":
         f.appendChild(this.hint("Passes through the first and last control point only"));
         f.appendChild(this.pointListField("controlPoints", "Ctrl pts", [[0, 0, 0], [5, 10, 0], [10, 0, 0]], 2));
-        this.applyButtonDraft("Add", "Add a new standalone Bézier curve (no selection needed)", (): WireframeDraft => ({ kind: "addBezier", controlPoints: this.readPoints("controlPoints") }), (d) => this.cb.onApplyWireframe(d));
+        f.appendChild(this.pointRefBar("addBezier"));
+        this.applyButtonDraft("Add", "Add a new standalone Bézier curve (no selection needed)", (): WireframeDraft => ({ kind: "addBezier", controlPoints: this.readPoints("controlPoints"), ...this.readPointRefs("addBezier") }), (d) => this.cb.onApplyWireframe(d));
         break;
       case "addEllipseArc":
         f.appendChild(this.vecField("center", "Center", [0, 0, 0]));
@@ -1273,10 +1283,12 @@ export class EditsPanel {
         f.appendChild(this.numField("radiusY", "Radius Y", 5));
         f.appendChild(this.numField("startAngleDeg", "Start°", 0));
         f.appendChild(this.numField("endAngleDeg", "End°", 180));
+        f.appendChild(this.pointRefBar("addEllipseArc"));
         this.applyButtonDraft("Add", "Add a new standalone elliptical arc (no selection needed)", (): WireframeDraft => ({
             kind: "addEllipseArc", center: this.readVec("center"), normal: this.readVec("normal"),
             up: this.readVec("up"), radiusX: this.readNum("radiusX"), radiusY: this.readNum("radiusY"),
             startAngleDeg: this.readNum("startAngleDeg"), endAngleDeg: this.readNum("endAngleDeg"),
+            ...this.readPointRefs("addEllipseArc"),
           }), (d) => this.cb.onApplyWireframe(d));
         break;
       case "addHelix":
@@ -1285,9 +1297,11 @@ export class EditsPanel {
         f.appendChild(this.numField("radius", "Radius", 5));
         f.appendChild(this.numField("pitch", "Pitch", 3));
         f.appendChild(this.numField("turns", "Turns", 3));
+        f.appendChild(this.pointRefBar("addHelix"));
         this.applyButtonDraft("Add", "Add a new standalone helix (no selection needed)", (): WireframeDraft => ({
             kind: "addHelix", center: this.readVec("center"), axis: this.readVec("axis"),
             radius: this.readNum("radius"), pitch: this.readNum("pitch"), turns: this.readNum("turns"),
+            ...this.readPointRefs("addHelix"),
           }), (d) => this.cb.onApplyWireframe(d));
         break;
 
@@ -1578,6 +1592,43 @@ export class EditsPanel {
    * slider preview and deliberately registers nothing).
    */
   private draftReader: (() => unknown) | null = null;
+
+  /**
+   * Opens `id`'s form exactly as clicking its button would (tab + subtab chosen
+   * from the catalog), for the command bar. Returns false when the id is not in
+   * the catalog or the button is disabled (B-rep-only form on a mesh source).
+   */
+  openOp(id: PanelOpId): boolean {
+    const where = catalogLocation(id);
+    const btn = this.opButtons.get(id);
+    if (!where || !btn || btn.disabled) return false;
+    if (where === "edit") this.activeTab = "edit";
+    else { this.activeTab = "geometry"; this.activeSubtab = where; }
+    this.updateTabVisibility();
+    if (this.activeOp !== id) this.selectOp(id);
+    return true;
+  }
+
+  /**
+   * Best-effort prefill of the open form from a command body: numbers and
+   * 3-vectors land in the matching `data-name` inputs; everything else (enums,
+   * flags, id lists) is left alone and is reported back so the caller can say
+   * what it did not fill. Never throws on an unknown field.
+   */
+  prefillFromBody(body: Record<string, unknown>): { filled: string[]; skipped: string[] } {
+    const filled: string[] = [];
+    const skipped: string[] = [];
+    for (const [key, value] of Object.entries(body)) {
+      if (key === "op") continue;
+      const exists = this.paramsEl.querySelector(`input[data-name="${key}"]`);
+      if (exists && typeof value === "number" && Number.isFinite(value)) { this.setNumField(key, value); filled.push(key); continue; }
+      if (exists && Array.isArray(value) && value.length === 3 && value.every((n) => typeof n === "number" && Number.isFinite(n))) {
+        this.setVecField(key, value as unknown as Vec3); filled.push(key); continue;
+      }
+      skipped.push(key);
+    }
+    return { filled, skipped };
+  }
 
   /** The currently-open op button's id, or `null` when no form is open — the
    * preview engine's eligibility check and tint lookup read this. */
@@ -1926,6 +1977,7 @@ export class EditsPanel {
   private vecField(name: string, label: string, def: Vec3): HTMLElement {
     const row = document.createElement("label");
     row.className = "compose-field";
+    row.dataset.slot = name;
     const span = document.createElement("span");
     span.className = "compose-label";
     span.textContent = label;
@@ -2074,6 +2126,102 @@ export class EditsPanel {
     });
     row.appendChild(slider);
     return row;
+  }
+
+  // ── point references (roadmap "Define lines, arcs and curves from preexisting points") ──
+  //
+  // A coordinate slot (a `vecField` label or a `pointListField` row) can be
+  // bound to a picked `point-N`: its inputs show the point's position and are
+  // locked, a chip names the id, and clearing the chip hands the slot back to
+  // raw typing. State lives on the container's dataset, so it dies with the
+  // form on every re-render and needs no separate bookkeeping.
+
+  /** The "Use picked points" row of a curve form. */
+  private pointRefBar(kind: EditOpKind): HTMLElement {
+    const row = document.createElement("div");
+    row.className = "compose-row point-ref-bar";
+    const btn = document.createElement("button");
+    btn.className = "point-ref-use";
+    btn.textContent = "Use picked points";
+    btn.title = "Fill the point slots from the points currently picked in Point mode, in pick order. Each slot then follows its point.";
+    btn.addEventListener("click", () => this.applyPickedPoints(kind));
+    row.appendChild(btn);
+    return row;
+  }
+
+  private bindPointRef(container: HTMLElement, ref: PointRef & { at: Vec3 }): void {
+    container.dataset.refId = ref.id;
+    container.dataset.refAt = JSON.stringify(ref.at);
+    container.querySelectorAll<HTMLInputElement>("input").forEach((inp) => {
+      const i = Number(inp.dataset.i);
+      if (Number.isInteger(i) && i >= 0 && i < 3) { inp.value = String(round6(ref.at[i])); inp.disabled = true; }
+    });
+    container.querySelector(".point-ref-chip")?.remove();
+    const chip = document.createElement("span");
+    chip.className = "point-ref-chip";
+    chip.title = `Follows ${ref.id} (authored at ${ref.at.map((c) => round6(c)).join(", ")}). Click × to type coordinates instead.`;
+    chip.appendChild(document.createTextNode(ref.id));
+    const clear = document.createElement("button");
+    clear.className = "point-ref-clear";
+    clear.textContent = "×";
+    clear.title = "Stop following this point";
+    clear.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      delete container.dataset.refId;
+      delete container.dataset.refAt;
+      container.querySelectorAll<HTMLInputElement>("input").forEach((inp) => { inp.disabled = false; });
+      chip.remove();
+      this.cb.onPreviewDraftChanged();
+    });
+    chip.appendChild(clear);
+    const removeBtn = container.querySelector(".point-remove");
+    if (removeBtn) container.insertBefore(chip, removeBtn); else container.appendChild(chip);
+  }
+
+  private applyPickedPoints(kind: EditOpKind): void {
+    const spec = pointRefSpec(kind);
+    if (!spec) return;
+    const picked = this.cb.onUsePickedPoints();
+    if (picked.length === 0) return;
+    if (spec.list) {
+      const wrap = this.paramsEl.querySelector<HTMLElement>(`.point-list[data-name="${spec.list}"]`);
+      if (!wrap) return;
+      const add = wrap.querySelector<HTMLButtonElement>(".point-add");
+      const rowsOf = () => Array.from(wrap.querySelectorAll<HTMLElement>(".point-row"));
+      while (rowsOf().length < picked.length && add) add.click();
+      // Trim unused default rows so the curve is exactly the picked points (the list's own minimum still holds).
+      while (rowsOf().length > picked.length) {
+        const rows = rowsOf();
+        const btn = rows[rows.length - 1]?.querySelector<HTMLButtonElement>(".point-remove");
+        if (!btn || btn.disabled) break;
+        btn.click();
+      }
+      rowsOf().forEach((row, i) => { if (picked[i]) this.bindPointRef(row, { id: picked[i].id, at: picked[i].position }); });
+    } else {
+      spec.scalars.slice(0, picked.length).forEach((slot, i) => {
+        const container = this.paramsEl.querySelector<HTMLElement>(`label.compose-field[data-slot="${slot}"]`);
+        if (container) this.bindPointRef(container, { id: picked[i].id, at: picked[i].position });
+      });
+    }
+    this.cb.onPreviewDraftChanged();
+  }
+
+  /** The `pointRefs` annotation of the open curve form (`{}` when no slot follows a point), ready to spread into a draft. */
+  private readPointRefs(kind: EditOpKind): { pointRefs?: PointRefs } {
+    const spec = pointRefSpec(kind);
+    if (!spec) return {};
+    const refs: PointRefs = {};
+    const take = (slot: string, el: Element | null) => {
+      const h = el as HTMLElement | null;
+      if (!h?.dataset.refId || !h.dataset.refAt) return;
+      try { refs[slot] = { id: h.dataset.refId, at: JSON.parse(h.dataset.refAt) as Vec3 }; } catch { /* a corrupt marker is just not a ref */ }
+    };
+    for (const slot of spec.scalars) take(slot, this.paramsEl.querySelector(`label.compose-field[data-slot="${slot}"]`));
+    if (spec.list) {
+      const wrap = this.paramsEl.querySelector(`.point-list[data-name="${spec.list}"]`);
+      wrap?.querySelectorAll(".point-row").forEach((row, r) => take(`${spec.list}[${r}]`, row));
+    }
+    return Object.keys(refs).length > 0 ? { pointRefs: refs } : {};
   }
 
   /**

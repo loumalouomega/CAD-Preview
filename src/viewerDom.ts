@@ -326,6 +326,16 @@ export function viewerBodyHtml(): string {
        (setPanelHidden), because the cursor readout is live, pointer-driven text.
        Each fact span collapses when empty. Kernel state is INFERRED from calls, not
        read from a flag: a mesh-only document legitimately reads "Kernels idle". -->
+  <!-- Lower command bar: type an edit command (name + optional JSON body, with
+       $sel for the current selection). A body-level sibling above the status
+       bar, outside #app, so the canvas shrinks by its height and element-scoped
+       pixel comparisons never see it. Its message line is the only text it adds
+       at rest. -->
+  <div id="cmdbar" role="search">
+    <span class="cmdbar-prompt" aria-hidden="true">&gt;</span>
+    <input id="cmdbar-input" type="text" spellcheck="false" autocomplete="off" aria-label="Command line" placeholder="Command, e.g. addBox {&quot;center&quot;:[0,0,0],&quot;size&quot;:[10,10,10]}   (Tab completes, Enter runs)" />
+    <span id="cmdbar-message" class="ui-num" role="status" aria-live="polite"></span>
+  </div>
   <div id="statusbar">
     <span id="kernel-status" data-tone="idle" title="Which WebAssembly kernels this session has used. They load lazily on first use, so a document that never needs one shows it as idle.">
       <span id="kernel-status-dot" class="ui-dot" aria-hidden="true"></span>

@@ -143,6 +143,7 @@ body.vscode-high-contrast-light {
   /* Control metrics */
   --ui-h-ctl: 24px;
   --ui-statusbar-h: 24px;
+  --ui-cmdbar-h: 28px;
 }
 
 /* Elevation is the one metric that must react to theme: a near-black drop shadow
@@ -3118,6 +3119,40 @@ input[type="range"].meshing-slider:focus {
   cursor: pointer;
 }
 .point-remove:disabled { opacity: 0.35; cursor: default; }
+
+/* A coordinate slot bound to a picked point-N: the inputs are locked and a
+   chip names the id (click x to type coordinates again). */
+.point-ref-bar { margin: var(--ui-s-1, 4px) 0; }
+.point-ref-use {
+  background: var(--vscode-button-secondaryBackground, #3a3d41);
+  color: var(--vscode-button-secondaryForeground, #ccc);
+  border: 1px solid var(--vscode-button-border, transparent);
+  border-radius: var(--ui-r-sm, 3px);
+  padding: 2px 8px;
+  cursor: pointer;
+}
+.point-ref-use:hover { background: var(--vscode-button-secondaryHoverBackground, #45494e); }
+.point-ref-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  margin-left: 4px;
+  padding: 0 4px;
+  border-radius: 8px;
+  font-size: var(--ui-fs-sm, 11px);
+  background: var(--vscode-badge-background, #4d4d4d);
+  color: var(--vscode-badge-foreground, #fff);
+  white-space: nowrap;
+}
+.point-ref-clear {
+  background: transparent;
+  color: inherit;
+  border: 0;
+  padding: 0 2px;
+  cursor: pointer;
+  line-height: 1;
+}
+.compose-num:disabled { opacity: 0.6; }
 .point-add {
   align-self: flex-start;
   margin-top: 2px;
@@ -4417,11 +4452,61 @@ body:has(#side.visible) #kernel-status {
 /* The status bar takes a row off the bottom of the viewport, and the dock and the
  * toast are anchored to that bottom edge — so both lift by its height. */
 #view-controls {
-  bottom: calc(var(--ui-s-3) + var(--ui-statusbar-h));
+  bottom: calc(var(--ui-s-3) + var(--ui-statusbar-h) + var(--ui-cmdbar-h));
 }
 #status {
-  bottom: calc(var(--ui-s-5) + 132px + var(--ui-statusbar-h));
+  bottom: calc(var(--ui-s-5) + 132px + var(--ui-statusbar-h) + var(--ui-cmdbar-h));
 }
+
+/* ── Command bar ───────────────────────────────────────────────────────── */
+
+#cmdbar {
+  flex-shrink: 0;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  gap: var(--ui-s-3);
+  height: var(--ui-cmdbar-h);
+  padding: 0 var(--ui-s-3);
+  font-family: var(--ui-font);
+  font-size: var(--ui-fs-label);
+  background: var(--vscode-editor-background, #1e1e1e);
+  border-top: 1px solid var(--vscode-editorWidget-border, #454545);
+}
+#cmdbar[hidden] { display: none; }
+#cmdbar .cmdbar-prompt {
+  color: var(--vscode-descriptionForeground, #858585);
+  font-family: var(--vscode-editor-font-family, monospace);
+}
+#cmdbar-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  box-sizing: border-box;
+  height: calc(var(--ui-cmdbar-h) - 8px);
+  padding: 0 var(--ui-s-3);
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: var(--ui-fs-md);
+  color: var(--vscode-input-foreground, #ccc);
+  background: var(--vscode-input-background, #3c3c3c);
+  border: 1px solid var(--vscode-input-border, transparent);
+  border-radius: var(--ui-r-sm);
+}
+#cmdbar-input:focus {
+  outline: 1px solid var(--vscode-focusBorder, #007fd4);
+  outline-offset: -1px;
+}
+#cmdbar-message {
+  flex: 0 1 auto;
+  max-width: 55%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--vscode-descriptionForeground, #ccc);
+}
+#cmdbar-message[data-tone="error"] {
+  color: var(--vscode-errorForeground, #f48771);
+}
+#cmdbar-message:empty { display: none; }
 
 /* ══════════════════════════════════════════════════════════════════════════
  * Chrome redesign, pass 4 — the remaining gaps to the mockup
