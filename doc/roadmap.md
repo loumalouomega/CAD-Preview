@@ -29,7 +29,7 @@ Existing implementation references were checked against the repository where not
 
 **Extended 2026-10-09.** Extension, not a planning review. [Coincident-point prompt: collapse or keep independent](#coincident-point-collapse-or-independent) was added as 2.13 and [GiD-style geometry structure view](#geometry-structure-view) as 2.14, at the end of Ready product work; nothing was re-ranked.
 
-**Extended 2026-10-12.** Extension, not a planning review: nothing was re-ranked, and every new item is appended at the end of its section so existing IDs and anchors are unchanged. Two outside projects were compared — [ReOpenSCAD](https://github.com/Matvey-Kuk/reopenscad) and [text-to-cad](https://github.com/earthtojake/text-to-cad) — and the [agent-CAD comparison](#agent-cad-comparison) below records what each feature became here. Added: 1.3 (OpenSCAD diagnostics), 2.12–2.25 (OpenSCAD include tracking, `color()` Parts, snapshot sections, clearance checks, material density, quotable references, MCP registration, coded MCP errors, MCP revision guard, agent-edit marking, printability facts, draft analysis, hole callouts, reproducible exports), 3.12 (planar-facet promotion), 5.3 (MCP App inline preview) and 6.3 (kinematic mates). Evidence addenda went to 2.1 and 3.3, and four rejections to Non-goals.
+**Extended 2026-10-12.** Extension, not a planning review: nothing was re-ranked, and every new item is appended at the end of its section so existing IDs and anchors are unchanged. Two outside projects were compared — [ReOpenSCAD](https://github.com/Matvey-Kuk/reopenscad) and [text-to-cad](https://github.com/earthtojake/text-to-cad) — and the [agent-CAD comparison](#agent-cad-comparison) below records what each feature became here. Added: 1.3 (OpenSCAD diagnostics), 2.12–2.24 (OpenSCAD include tracking, `color()` Parts, snapshot sections, clearance checks, material density, quotable references, MCP registration, MCP revision guard, agent-edit marking, printability facts, draft analysis, hole callouts, reproducible exports), 3.12 (planar-facet promotion), 5.3 (MCP App inline preview) and 6.3 (kinematic mates). Evidence addenda went to 2.1 and 3.3, and four rejections to Non-goals.
 
 Everything previously shipped is tracked in `CHANGELOG.md`, and `CLAUDE.md` has a per-feature section with the verified implementation details for anything currently in the codebase — this page is for what's **not** built yet, plus the Non-goals that record why a direction was rejected so it isn't re-proposed.
 
@@ -184,7 +184,7 @@ Two projects built for AI agents were read for this extension:
 | `check_intersections` with clearance tolerance; `closest_points` | Both | Overlap already ships (`check_interference(_all)`); [clearance reporting](#interference-clearance) is new |
 | `expectedRevision` edits, HTTP 409 on conflict | ReOpenSCAD | [MCP revision guard](#mcp-revision-guard) |
 | Highlighting AI-made edits | ReOpenSCAD | [Mark agent-made edits](#mark-agent-made-edits) |
-| Agent-readable busy errors ("retry, do not edit"); closed vocabularies | Both | [Coded MCP errors](#coded-mcp-errors) |
+| Agent-readable busy errors ("retry, do not edit"); closed vocabularies | Both | Shipped as coded MCP errors: `isError` results carry `structuredContent {code, message, hint?, retryable}`, and an undeclared parameter produces a warning naming the nearest real key (warn-only; strict mode deferred) |
 | "Connect AI" setup snippets; one-install plugin | Both | [Register the MCP server with VS Code](#register-mcp-server-with-vscode) |
 | `ui://` MCP-App inline viewer | Both | [MCP App inline preview](#mcp-app-inline-preview) (probe) |
 | `cad_view` returns the user's selection as quotable refs | text-to-cad | [Quotable entity references](#quotable-entity-references) |
@@ -223,7 +223,7 @@ It does **not** admit AGPL code, so TetGen stays rejected. Every new bundled dep
 | Parity | Everything an agent can do, a user can do, and the reverse | Done: headless mesh-edit replay closed the last listed gap (as did the hole-table, refinement-sweep, free-text-note and mesh-source FE-export gaps). Justified remainders: mesh `inspect`/mass facts, `promote_mesh_to_brep` and `repair_mesh` read the raw file (their ids and outputs are defined over it; `save_model` bakes first), and glTF has no own-format save (its exporter emits only `.glb`) | Headless tools see the same edited mesh the viewer shows, or each remaining difference is justified |
 | Meshing probes | Decide on remeshing and on conformal assemblies | MMG core probe is closed with a partial outcome: volume/surface/transport work, unconditional optimisation failed. MMG remeshing has shipped: shared service, MCP tool and panel with real-pipeline screenshots and packaged-runtime verification. Conformal multi-body meshing and Gmsh mesh optimisation have shipped, each with probe-measured results and a decision. Manifold mesh booleans (4.2) probed passing (migration pending). Structured meshing per Part has shipped as `Part.meshStructured` with exact-count smoke coverage. Metric-driven adaptive remeshing (4.4), then pre-mesh healing (4.5), can proceed independently | Each probe filed with measured results and a decision |
 | Geometry probes | Decide which never-called OCCT capabilities become ops | Imprint and split faces (3.1), then B-rep repair (3.2) | Each probe filed with measured results and a decision |
-| Agent ergonomics | An agent can tell a retryable failure from a model error, and two writers cannot silently clobber each other | Done: OpenSCAD diagnostics (document-derived OpenSCAD text now reaches an agent only inside untrusted-text markers). Start with coded MCP errors (2.19), then the MCP revision guard (2.20) | A stale write is refused with a code |
+| Agent ergonomics | An agent can tell a retryable failure from a model error, and two writers cannot silently clobber each other | Done: OpenSCAD diagnostics (document-derived OpenSCAD text now reaches an agent only inside untrusted-text markers) and coded MCP errors (a failure carries a code and `retryable`; an undeclared parameter is warned about). Next: the MCP revision guard (2.19) | A stale write is refused with a code |
 | Strategic | Remove the kernel ceiling | The self-built OCCT WASM probe (6.1) | The existing test suites pass unchanged against the new build |
 
 These are outcome groupings, not release numbers. Independent small items can ship between waves; a failed probe must not block unrelated work.
@@ -449,25 +449,16 @@ These are outcome groupings, not release numbers. Independent small items can sh
 - **Done when:** in a real VS Code, the server appears in the MCP server list and `describe_capabilities` answers through it; and each snippet, pasted into its client, starts the server (checked at least for Claude Code).
 - **Out of scope:** an HTTP transport (see [Rejected scope](#rejected-scope)); publishing the server as a separate npm package.
 
-#### 2.19 Coded MCP errors and closed parameter vocabularies {#coded-mcp-errors}
-
-*Area: Platform. Effort: S–M.*
-
-- **Evidence:** an MCP tool failure is a thrown `Error`, so an agent sees prose and must guess whether to retry, change its input, or change the model. The kernel watchdog, a cancelled job and a kernel reset are retryable; a bad op is not. Only one input schema in `mcpServer.ts` is `.strict()`, so a misspelled parameter is silently ignored and the call "succeeds" doing something else. ReOpenSCAD answers a full queue with a result whose next step says "wait and retry, do not change the SCAD"; text-to-cad's law is that unknown keys are errors.
-- **First useful increment (S–M):** errors carry `{code, message, hint?, retryable}` in the result's structured content (`kernel-timeout`, `job-cancelled`, `kernel-reset`, `unsupported-source`, `invalid-op`, `stale-revision`, …), mapped once in `mcpServer.ts`'s `wrap()`. Unknown input keys produce a warning naming the nearest real key (`nearestOpKind`'s edit-distance helper generalised).
-- **Open question to settle first:** whether strict mode should become an error. Some clients add keys of their own; ship warn-only, measure, then decide.
-- **Done when:** a forced watchdog timeout returns `retryable: true` with the retry hint, a malformed op returns `invalid-op` with its expected shape, and a misspelled parameter produces a named warning.
-
-#### 2.20 Optimistic revision guard for MCP sidecar writes {#mcp-revision-guard}
+#### 2.19 Optimistic revision guard for MCP sidecar writes {#mcp-revision-guard}
 
 *Area: Parity, Platform. Effort: S.*
 
 - **Evidence:** the interactive editor already detects a disk change racing a pending local edit (`src/sidecarRevision.ts`). The MCP server does not: two agents, or an agent and a script, both appending edit ops read the same list, and the second write silently drops the first's op. ReOpenSCAD requires an `expectedRevision` on every edit and answers a stale one with a conflict.
-- **First useful increment (S):** `get_state` returns a `revision` per sidecar — the same sha256 fingerprint `sidecarRevision.ts` computes through `src/hash.ts`. `apply_edit_ops`, `run_parametric_script`, `remove_edit_op`, `set_part`, `set_variables`, `set_mesh_options`, `set_plane`, `set_layer` and `pin_annotation` accept an optional `expectedRevision`; a mismatch refuses the write with code `stale-revision` (see [coded MCP errors](#coded-mcp-errors)) and returns the current revision. Omitting it keeps today's behaviour.
+- **First useful increment (S):** `get_state` returns a `revision` per sidecar — the same sha256 fingerprint `sidecarRevision.ts` computes through `src/hash.ts`. `apply_edit_ops`, `run_parametric_script`, `remove_edit_op`, `set_part`, `set_variables`, `set_mesh_options`, `set_plane`, `set_layer` and `pin_annotation` accept an optional `expectedRevision`; a mismatch refuses the write with code `stale-revision` (the coded-error mechanism already in `mcpServer.ts`'s `wrap()`; add the code to `McpErrorCode` in `src/mcpErrors.ts`) and returns the current revision. Omitting it keeps today's behaviour.
 - **Done when:** two `apply_edit_ops` calls made from the same `get_state` revision result in one applied op and one `stale-revision` refusal, with the sidecar holding exactly one new op.
 - **Out of scope:** merging concurrent op lists.
 
-#### 2.21 Mark agent-made edits in the viewer {#mark-agent-made-edits}
+#### 2.20 Mark agent-made edits in the viewer {#mark-agent-made-edits}
 
 *Area: Parity. Effort: S.*
 
@@ -476,7 +467,7 @@ These are outcome groupings, not release numbers. Independent small items can sh
 - **Done when:** a `test:webview` case posts an external append and asserts the badge on exactly the new rows, and a local push clears it.
 - **Out of scope:** attributing an op to a particular agent.
 
-#### 2.22 Printability facts report {#printability-facts-report}
+#### 2.21 Printability facts report {#printability-facts-report}
 
 *Area: Geometry. Effort: M.*
 
@@ -492,7 +483,7 @@ These are outcome groupings, not release numbers. Independent small items can sh
 - **Done when:** a fixture with a known 1 mm wall reports 1 mm within the sampling resolution; a box rotated onto its edge reports more overhang than one on its face; and an unmeasured rule is reported as not checked rather than passed.
 - **Out of scope:** slicing and support generation (see [Rejected scope](#rejected-scope)); choosing an orientation for the user.
 
-#### 2.23 Draft and undercut analysis for a pull direction {#draft-and-undercut-analysis}
+#### 2.22 Draft and undercut analysis for a pull direction {#draft-and-undercut-analysis}
 
 *Area: Geometry. Effort: M.*
 
@@ -501,7 +492,7 @@ These are outcome groupings, not release numbers. Independent small items can sh
 - **Done when:** a box reports its four side walls at exactly 0°, a tapered extrusion reports its taper angle, and a pocket under an overhang is reported as an undercut.
 - **Out of scope:** suggesting a parting line; adding draft (the `draft` op is the tool for that, and its kernel limitation is recorded in `CLAUDE.md`).
 
-#### 2.24 Hole callouts and centre lines on drawing sheets {#hole-callouts-on-drawing-sheets}
+#### 2.23 Hole callouts and centre lines on drawing sheets {#hole-callouts-on-drawing-sheets}
 
 *Area: Drawings. Effort: M.*
 
@@ -510,7 +501,7 @@ These are outcome groupings, not release numbers. Independent small items can sh
 - **Done when:** a plate with four M6 tap-drill holes shows one callout and four centre marks in its top view and none in its side view, in both formats.
 - **Out of scope:** thread annotation beyond the designation; GD&T frames.
 
-#### 2.25 Reproducible exports {#reproducible-exports}
+#### 2.24 Reproducible exports {#reproducible-exports}
 
 *Area: Formats. Effort: S.*
 

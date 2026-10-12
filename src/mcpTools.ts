@@ -3107,13 +3107,13 @@ export async function applyEditOps(
   const route = requireRoute(modelPath);
   const warnings: string[] = [];
 
-  const report: Array<{ accepted: boolean; op?: EditOpKind; description?: string; reason?: string; applied?: boolean; diagnostic?: string; hint?: string }> = [];
+  const report: Array<{ accepted: boolean; op?: EditOpKind; description?: string; reason?: string; code?: "invalid-op"; applied?: boolean; diagnostic?: string; hint?: string }> = [];
   const accepted: EditOp[] = [];
   const { layers } = await readLayers(modelPath).catch(() => ({ layers: [], nextId: 0 }));
   for (const raw of params.ops) {
     const op = validateEditOp(raw);
     if (!op) {
-      report.push({ accepted: false, reason: explainEditOpRejection(raw) });
+      report.push({ accepted: false, code: "invalid-op", reason: explainEditOpRejection(raw) });
       continue;
     }
     if (route.strategy === "three" && BREP_ONLY_OPS.has(op.op)) {

@@ -538,6 +538,12 @@
       "section": "OpenSCAD diagnostics: envelope untrusted text, stop blind truncation (roadmap Tier 0, closed)",
       "gap": "no real openscad binary exists in this environment, so the stderr line grammar the parser assumes (ECHO:/WARNING:/DEPRECATED: prefixes and ' in file X, line N') is OpenSCAD 2021.01's as remembered and as the stubs emit it, not re-captured from a live run on the current snapshot. File/line extraction is the part most likely to differ; anything unparsed degrades to a plain warning.",
       "status": "open"
+    },
+    {
+      "id": "coded-mcp-errors-client",
+      "section": "Coded MCP errors and unknown-parameter warnings (roadmap Tier 2 item, closed)",
+      "gap": "no third-party MCP client was run against structuredContent on an isError result, nor against the now-open additionalProperties in tools/list; the SDK accepts both and the in-repo smoke client reads them, but another client's handling is unverified.",
+      "status": "open"
     }
   ]
 }

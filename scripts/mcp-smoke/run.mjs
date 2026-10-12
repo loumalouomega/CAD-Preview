@@ -302,6 +302,24 @@ try {
     "resources/read cad-preview://capabilities equals describe_capabilities (same source, no drift)"
   );
   {
+    // Coded errors + unknown-parameter warnings, over the real JSON-RPC wire.
+    const missing = await request("tools/call", { name: "load_model", arguments: { path: path.join(os.tmpdir(), "no-such-dir", "x.step") } });
+    assert(missing.isError === true, "a failing tool call is isError");
+    assert(
+      missing.structuredContent?.code === "tool-error" && missing.structuredContent?.retryable === false && typeof missing.structuredContent?.message === "string",
+      `isError result carries structuredContent {code, message, retryable} (got ${JSON.stringify(missing.structuredContent)})`
+    );
+    assert(missing.content?.[0]?.text === missing.structuredContent.message, "the text block still leads with the original message");
+    const typo = await request("tools/call", { name: "list_parametric_scripts", arguments: { libraryPth: "/x" } });
+    const typoJson = JSON.parse(typo.content?.[0]?.text ?? "{}");
+    assert(
+      !typo.isError && (typoJson.warnings ?? []).some((w) => /Unknown parameter "libraryPth".*did you mean "libraryPath"/.test(w)),
+      "a misspelled parameter produces a warning naming the nearest real key"
+    );
+    const fine = await request("tools/call", { name: "list_parametric_scripts", arguments: {} });
+    assert(!(JSON.parse(fine.content?.[0]?.text ?? "{}").warnings ?? []).some((w) => /Unknown parameter/.test(w)), "no unknown-parameter warning when every key is declared");
+  }
+  {
     const oneOp = caps.ops[0]?.op ?? "addBox";
     const opRead = await request("resources/read", { uri: `cad-preview://op/${oneOp}` });
     const opText = opRead.contents?.[0]?.text ?? "";

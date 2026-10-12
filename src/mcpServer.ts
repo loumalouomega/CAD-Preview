@@ -24,6 +24,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import type { RequestHandlerExtra } from "@modelcontextprotocol/sdk/shared/protocol.js";
 import type { ServerRequest, ServerNotification } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
+import { errorToolResult, mergeWarningsIntoResult, splitUnknownKeys, unknownKeyWarnings } from "./mcpErrors";
 import { AsyncLocalStorage } from "async_hooks";
 import { createKernelClient, JobCancelledError, type JobOptions, type ScopedPipeline } from "./kernelClient";
 import { KERNELS_BY_FUNCTION } from "./kernelActivity";
@@ -226,6 +227,30 @@ const INSTRUCTIONS = [
 
 const server = new McpServer({ name: "cad-preview", version: "1.0.0" }, { instructions: INSTRUCTIONS });
 
+// Unknown-parameter warnings, applied once for every tool instead of at ~70
+// registration sites. The SDK builds a stripping z.object from a plain shape,
+// so a misspelled key vanishes before any handler runs and the call "succeeds"
+// doing something else. Re-register such tools with a loose object (extras
+// survive parsing), hand the handler exactly the declared keys it always got,
+// and report the rest as a warning with the nearest declared key. Warn-only on
+// purpose: some clients add keys of their own (see src/mcpErrors.ts).
+{
+  const baseRegisterTool = server.registerTool.bind(server) as (name: string, config: any, cb: any) => unknown;
+  (server as unknown as { registerTool: typeof baseRegisterTool }).registerTool = (name, config, cb) => {
+    const shape = config?.inputSchema;
+    // No schema (describe_capabilities) or an already-built zod schema: untouched.
+    if (!shape || typeof shape !== "object" || typeof shape.safeParse === "function" || "_zod" in shape) {
+      return baseRegisterTool(name, config, cb);
+    }
+    const known = Object.keys(shape);
+    return baseRegisterTool(name, { ...config, inputSchema: z.looseObject(shape) }, async (args: unknown, extra: unknown) => {
+      const { kept, unknown } = splitUnknownKeys(args, known);
+      const result = await cb(kept, extra);
+      return mergeWarningsIntoResult(result, unknownKeyWarnings(unknown, known));
+    });
+  };
+}
+
 server.registerResource(
   "capabilities",
   "cad-preview://capabilities",
@@ -316,8 +341,9 @@ function wrap<A>(
       }
       return { content };
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      return { isError: true, content: [{ type: "text", text: message }] };
+      // Coded failure: original message first, `structuredContent` carries
+      // {code, message, hint?, retryable} (src/mcpErrors.ts).
+      return errorToolResult(err);
     }
   };
 }

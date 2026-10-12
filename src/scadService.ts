@@ -185,6 +185,18 @@ export class ScadUnavailableError extends Error {
   }
 }
 
+/** A conversion that ran (or tried to) and failed — distinct from
+ * {@link ScadUnavailableError}, which means there was nothing to run. `kind`
+ * lets the MCP layer code the failure (`source-timeout` vs
+ * `source-conversion-failed`) without matching message text. The message is
+ * unchanged from before this class existed. */
+export class ScadConvertError extends Error {
+  constructor(message: string, readonly kind: "timeout" | "failed") {
+    super(message);
+    this.name = "ScadConvertError";
+  }
+}
+
 /** Binary resolution order: explicit (the `cadPreview.openscadBinary`
  * setting, threaded by the caller) → env (headless escape hatch) → PATH
  * lookup of the default name. Empty strings count as unset at every level. */
@@ -331,9 +343,10 @@ export async function convertScadToCsg(sourcePath: string, opts: ScadConvertOpti
       }
       const e = err as NodeJS.ErrnoException & { stdout?: string; stderr?: string; signal?: string; killed?: boolean };
       if (e.code === "ETIMEDOUT" || e.killed || e.signal === "SIGTERM") {
-        throw new Error(
+        throw new ScadConvertError(
           `OpenSCAD conversion timed out after ${Math.round(timeoutMs / 1000)}s (child killed) — ` +
-            `the model may be too complex, import too large a mesh, or loop; simplify and retry.`
+            `the model may be too complex, import too large a mesh, or loop; simplify and retry.`,
+          "timeout"
         );
       }
       const rawExcerpt = String(e.stderr ?? (err as Error).message ?? err).slice(-MAX_STDERR_EXCERPT);
@@ -345,7 +358,7 @@ export async function convertScadToCsg(sourcePath: string, opts: ScadConvertOpti
         backend && /backend|unrecogni[sz]ed option|unknown option/i.test(rawExcerpt)
           ? ` — this OpenSCAD build may not support --backend=${backend} (needs a 2025+ snapshot); set cadPreview.openscadBackend to "auto" to omit it.`
           : "";
-      throw new Error(`openscad failed on ${path.basename(sourcePath)} (exit ${e.code ?? "?"}): ${excerpt}${backendHint}`);
+      throw new ScadConvertError(`openscad failed on ${path.basename(sourcePath)} (exit ${e.code ?? "?"}): ${excerpt}${backendHint}`, "failed");
     }
     const { diagnostics, droppedCount } = parseScadStderr(stderr);
     const warnings = scadWarningLines(diagnostics, droppedCount);
@@ -353,10 +366,10 @@ export async function convertScadToCsg(sourcePath: string, opts: ScadConvertOpti
     try {
       csgBytes = new Uint8Array(await fs.readFile(outPath));
     } catch {
-      throw new Error(`openscad exited 0 but wrote no .csg output for ${path.basename(sourcePath)} — treating as a failed conversion.`);
+      throw new ScadConvertError(`openscad exited 0 but wrote no .csg output for ${path.basename(sourcePath)} — treating as a failed conversion.`, "failed");
     }
     if (csgBytes.length === 0) {
-      throw new Error(`openscad wrote an empty .csg for ${path.basename(sourcePath)} — treating as a failed conversion.`);
+      throw new ScadConvertError(`openscad wrote an empty .csg for ${path.basename(sourcePath)} — treating as a failed conversion.`, "failed");
     }
     return { csgBytes, warnings, diagnostics, droppedCount };
   } finally {
