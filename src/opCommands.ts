@@ -131,14 +131,24 @@ export function explainEditOpRejection(raw: unknown): string {
  * genuine near-miss (a third of the name's length).
  */
 export function nearestOpKind(input: string, kinds: EditOpKind[]): EditOpKind | null {
+  return nearestName(input, kinds);
+}
+
+/**
+ * Generic form of {@link nearestOpKind}: the closest candidate by
+ * case-insensitive edit distance, or `null` when nothing is a genuine
+ * near-miss (a third of the input's length, at least 2). Shared with the MCP
+ * unknown-parameter warning so both suggest by one rule.
+ */
+export function nearestName<T extends string>(input: string, candidates: readonly T[]): T | null {
   const needle = input.toLowerCase();
-  let best: EditOpKind | null = null;
+  let best: T | null = null;
   let bestDistance = Infinity;
-  for (const kind of kinds) {
-    const d = editDistance(needle, kind.toLowerCase());
+  for (const candidate of candidates) {
+    const d = editDistance(needle, candidate.toLowerCase());
     if (d < bestDistance) {
       bestDistance = d;
-      best = kind;
+      best = candidate;
     }
   }
   const limit = Math.max(2, Math.floor(input.length / 3));

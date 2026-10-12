@@ -16,6 +16,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import {
+  ScadConvertError,
   resolveOpenscadBinary,
   isOpenscadAvailable,
   convertScadToCsg,
@@ -161,6 +162,9 @@ describe("convertScadToCsg", () => {
     await expect(convertScadToCsg(path.join(dir, "model.scad"), { binary: FAIL })).rejects.toThrow(
       /openscad failed.*Can't open input file/
     );
+    const err = await convertScadToCsg(path.join(dir, "model.scad"), { binary: FAIL }).catch((e) => e);
+    expect(err).toBeInstanceOf(ScadConvertError);
+    expect((err as ScadConvertError).kind).toBe("failed");
   });
 
   it("kills a hung binary at the timeout and throws a timeout error", async () => {
@@ -168,7 +172,9 @@ describe("convertScadToCsg", () => {
     await expect(convertScadToCsg(path.join(dir, "model.scad"), { binary: SLOW, timeoutMs: 200 })).rejects.toThrow(
       /timed out after .* \(child killed\)/
     );
-  }, 10000);
+    const err = await convertScadToCsg(path.join(dir, "model.scad"), { binary: SLOW, timeoutMs: 200 }).catch((e) => e);
+    expect((err as ScadConvertError).kind).toBe("timeout");
+  }, 15000);
 
   it("maps a vanishing binary to ScadUnavailableError (graceful path survives TOCTOU)", async () => {
     const dir = makeModelDir();

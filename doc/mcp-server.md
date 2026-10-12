@@ -37,6 +37,26 @@ Every WASM-touching tool call routes through a child process (`dist/kernel-worke
 - **Nothing about the tool surface changed.** Every tool, its schema, and its response shape are identical to before this existed.
 - If you ever need to diagnose kernel-worker behavior directly, its stderr output is forwarded through the MCP server's own stderr, prefixed `[kernel-worker]`.
 
+## Coded errors and unknown-parameter warnings
+
+A failed tool call is an `isError` result whose **text block still leads with the original message** (followed by a `Hint:` line when there is one) and whose `structuredContent` is `{code, message, hint?, retryable}` — so an agent can decide between repeating the call, changing its input, or changing the model without parsing prose. `retryable: true` means repeating the **same** call unchanged can reasonably succeed.
+
+| `code` | Meaning | `retryable` |
+| --- | --- | --- |
+| `kernel-timeout` | The kernel watchdog killed a call that never responded. | yes (a second timeout means the input is too heavy) |
+| `job-cancelled` | The call was cancelled (`notifications/cancelled`) before it finished. | yes |
+| `kernel-reset` | A WASM abort was detected and the kernel already reset itself. | yes |
+| `kernel-crashed` | The kernel-worker process exited mid-call; the next call respawns it. | yes |
+| `unsupported-source` | No usable `openscad` binary for a `.scad` source. | no |
+| `source-timeout` | An OpenSCAD evaluation exceeded its time budget (deterministic — simplify the model). | no |
+| `source-conversion-failed` | OpenSCAD rejected the source (the quoted output says why). | no |
+| `dirty-buffer` | A file is open with unsaved changes in an editor. | no |
+| `tool-error` | Anything else. | no |
+
+`apply_edit_ops` does not throw for a malformed op: its per-op report entry carries `code: "invalid-op"` beside the `reason` (which quotes the kind's expected shape).
+
+A parameter a tool does not declare is **ignored with a warning**, not rejected: the result's `warnings` gains `Unknown parameter "pathh" was ignored — did you mean "path"?` (the nearest declared key, only for a genuine near-miss). It is warn-only because some clients add keys of their own; whether to become strict is deferred until the warnings have been measured. For this reason `tools/list` advertises `additionalProperties` as open.
+
 ## Registering with an MCP client
 
 With Claude Code:
