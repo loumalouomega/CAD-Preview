@@ -29,6 +29,7 @@ export type McpErrorCode =
   | "source-conversion-failed"
   | "unsupported-source"
   | "dirty-buffer"
+  | "stale-revision"
   | "invalid-op"
   | "tool-error";
 
@@ -38,6 +39,8 @@ export interface McpErrorInfo {
   hint?: string;
   /** True when repeating the SAME call, unchanged, can reasonably succeed. */
   retryable: boolean;
+  /** `stale-revision` only: the sidecar's revision right now, to re-apply against. */
+  currentRevision?: string;
 }
 
 const RETRY_HINT = "Transient kernel condition — repeat the same call unchanged; do not change the model or its inputs.";
@@ -60,6 +63,16 @@ export function classifyToolError(err: unknown): McpErrorInfo {
   }
   if (name === "DirtyBufferError") {
     return { code: "dirty-buffer", message, hint: "Save or revert the open editor tab for that file, then repeat the call.", retryable: false };
+  }
+  if (name === "StaleRevisionError") {
+    const currentRevision = (err as { currentRevision?: unknown } | null)?.currentRevision;
+    return {
+      code: "stale-revision",
+      message,
+      hint: "Another writer changed this sidecar. Re-read it with get_state, re-apply your change to the current state, then repeat the call with the new revision (or omit expectedRevision to overwrite).",
+      retryable: false,
+      ...(typeof currentRevision === "string" ? { currentRevision } : {}),
+    };
   }
   if (/did not respond within/i.test(message)) {
     return { code: "kernel-timeout", message, hint: `${RETRY_HINT} If it times out again the input is too heavy — use a coarser size or a smaller model.`, retryable: true };
@@ -115,6 +128,24 @@ export function splitUnknownKeys(
     }
   }
   return { kept, unknown };
+}
+
+/** Merges top-level fields into a tool result's first text block when that
+ * block is a JSON object; a result that is not (an error message, an image
+ * block first) is returned unchanged. */
+export function mergeFieldsIntoResult<R extends { content: Array<{ type: string; text?: string }> }>(
+  result: R,
+  fields: Record<string, unknown>
+): R {
+  const first = result.content[0];
+  if (first?.type !== "text" || typeof first.text !== "string") return result;
+  try {
+    const parsed = JSON.parse(first.text);
+    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return result;
+    return { ...result, content: [{ ...first, text: JSON.stringify({ ...parsed, ...fields }, null, 2) }, ...result.content.slice(1)] };
+  } catch {
+    return result;
+  }
 }
 
 /** Merges warnings into a tool result's first text block when that block is a

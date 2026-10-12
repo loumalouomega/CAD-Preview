@@ -797,6 +797,17 @@ describe("load_model", () => {
     expect(state.parts.every((p) => p.surfaces.every((s) => /^node-0\/face-\d+$/.test(s)))).toBe(true);
   });
 
+  it("get_state reports a content revision per sidecar that moves only with the one written", async () => {
+    const m = path.join(dir, "rev.vtk");
+    await fs.writeFile(m, "x", "utf8");
+    const before = (await getState({ path: m })).revisions;
+    expect(before).toEqual({ edits: "absent", parts: "absent", layers: "absent", planes: "absent", annotations: "absent", mesh: "absent" });
+    await setPart({ path: m, name: "P", volumes: ["node-0"] });
+    const after = (await getState({ path: m })).revisions;
+    expect(after.parts).not.toBe("absent");
+    expect({ ...after, parts: "" }).toEqual({ ...before, parts: "" });
+  });
+
   it("never overwrites an existing non-empty parts sidecar with auto-created ones", async () => {
     const vtkModel = path.join(dir, "model.vtk");
     await fs.writeFile(vtkModel, "not real vtk content", "utf8");

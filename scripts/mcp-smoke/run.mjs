@@ -320,6 +320,40 @@ try {
     assert(!(JSON.parse(fine.content?.[0]?.text ?? "{}").warnings ?? []).some((w) => /Unknown parameter/.test(w)), "no unknown-parameter warning when every key is declared");
   }
   {
+    // Optimistic revision guard (roadmap "Optimistic revision guard for MCP
+    // sidecar writes"): two writers reading the same revision must not both win.
+    const revModel = path.join(dir, "revision-guard.stp");
+    fs.copyFileSync(path.join(ROOT, "examples", "STP", "block.stp"), revModel);
+    const box = (x) => ({ op: "addBox", center: [x, 0, 0], size: [1, 1, 1] });
+    const s0 = await call("get_state", { path: revModel });
+    assert(s0.revisions?.edits === "absent", `get_state reports an absent edits sidecar as "absent" (got ${JSON.stringify(s0.revisions)})`);
+    const w1 = await call("apply_edit_ops", { path: revModel, ops: [box(10)], expectedRevision: s0.revisions.edits });
+    assert(w1.applied === 1 && typeof w1.revision === "string" && w1.revision !== "absent", "a guarded write at the current revision applies and returns its new revision");
+    const stale = await request("tools/call", { name: "apply_edit_ops", arguments: { path: revModel, ops: [box(20)], expectedRevision: s0.revisions.edits } });
+    assert(
+      stale.isError === true && stale.structuredContent?.code === "stale-revision" && stale.structuredContent?.retryable === false && stale.structuredContent?.currentRevision === w1.revision,
+      `a stale write is refused with code stale-revision carrying the current revision (got ${JSON.stringify(stale.structuredContent)})`
+    );
+    const s1 = await call("get_state", { path: revModel });
+    assert(s1.edits.length === 1 && s1.revisions.edits === w1.revision, "the refused write left the sidecar with exactly one op at the returned revision");
+    const w2 = await call("apply_edit_ops", { path: revModel, ops: [box(30)] });
+    assert(w2.applied === 1, "omitting expectedRevision keeps the unguarded last-writer behaviour");
+    const dry = await call("apply_edit_ops", { path: revModel, ops: [box(40)], dryRun: true, expectedRevision: s0.revisions.edits });
+    assert(dry.revision === undefined, "a dryRun is neither refused by nor reports a revision");
+    // Concurrent pair from the SAME revision: exactly one may win.
+    const cur = (await call("get_state", { path: revModel })).revisions.edits;
+    const pair = await Promise.all(
+      [50, 60].map((x) => request("tools/call", { name: "apply_edit_ops", arguments: { path: revModel, ops: [box(x)], expectedRevision: cur } }))
+    );
+    assert(pair.filter((r) => r.isError !== true).length === 1 && pair.filter((r) => r.structuredContent?.code === "stale-revision").length === 1, "of two concurrent writes from one revision exactly one applies and one is stale-revision");
+    assert((await call("get_state", { path: revModel })).edits.length === 3, "the sidecar gained exactly one op from the concurrent pair");
+    const pRev = (await call("get_state", { path: revModel })).revisions.parts;
+    const sp = await call("set_part", { path: revModel, name: "G", volumes: ["solid-0"], expectedRevision: pRev });
+    assert(typeof sp.revision === "string" && sp.revision !== pRev, "set_part returns the parts sidecar's new revision");
+    const spStale = await request("tools/call", { name: "set_part", arguments: { path: revModel, name: "H", volumes: ["solid-0"], expectedRevision: pRev } });
+    assert(spStale.structuredContent?.code === "stale-revision", "a stale set_part is refused too");
+  }
+  {
     const oneOp = caps.ops[0]?.op ?? "addBox";
     const opRead = await request("resources/read", { uri: `cad-preview://op/${oneOp}` });
     const opText = opRead.contents?.[0]?.text ?? "";
