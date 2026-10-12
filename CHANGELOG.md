@@ -4,6 +4,17 @@ All notable changes to the "CAD Preview" extension are documented in this file.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/); this project does not yet strictly follow Semantic Versioning (pre-1.0 releases moved fast and bundled multiple features per bump).
 
+## [3.15.0] - 2026-10-12
+
+### Added
+
+- **Structured OpenSCAD diagnostics (roadmap 1.3).** `openscad` stderr is parsed into structured diagnostics (`echo` / `warning` / `deprecated` / `error` with file and line), capped by severity so a warning is never pushed out by `echo()` chatter, with the overflow counted. Document-derived text reaches prose only inside untrusted-text markers. `convert_scad` and `load_model` return the structured list; the `.csg` importer's notes (skipped nodes, faceting) join it as warnings. Responses for non-`.scad` sources and quiet conversions are unchanged.
+- **Coded MCP tool errors and unknown-parameter warnings (roadmap 2.19).** `isError` tool results now carry `structuredContent` (`code`, `message`, plus `hint`/`retryable` where applicable); the text block still leads with the original message. OpenSCAD failures get a `ScadConvertError` kind so a timeout is distinguishable from a rejection. An undeclared tool parameter warns (never throws) naming the nearest declared key, applied through a single `registerTool` wrapper instead of per-tool edits.
+
+### Documentation
+
+- **Roadmap extension pass (no re-ranking).** New agent-CAD comparison review plus ~25 appended items (OpenSCAD include tracking/conversion cache, `color()` as Parts, render section/display presets, interference clearance, per-Part density, quotable entity references, VS Code MCP registration, MCP revision guard, agent-edit marking, printability facts, draft/undercut analysis, hole callouts, reproducible exports; probes for planar-facet merging and MCP App inline preview; strategic kinematic mates), evidence addenda to 2.1/3.3, and four rejected-scope entries. Existing IDs and anchors unchanged.
+
 ## [3.14.0] - 2026-10-12
 
 ### Added
@@ -770,6 +781,7 @@ This release republishes v1.9.0's full changelog (below) unchanged; v1.9.0 itsel
 
 - Initial release: read-only 3D preview for CAD and mesh files (STEP, IGES, BREP, STL, OBJ, PLY, glTF) inside a VS Code custom editor, using OpenCascade.js (OCCT WASM) in the extension host for B-rep formats and Three.js in the webview for rendering.
 
+[3.15.0]: https://github.com/loumalouomega/CAD-Preview/compare/v3.14.0...v3.15.0
 [3.14.0]: https://github.com/loumalouomega/CAD-Preview/compare/v3.13.0...v3.14.0
 [3.13.0]: https://github.com/loumalouomega/CAD-Preview/compare/v3.12.0...v3.13.0
 [3.12.0]: https://github.com/loumalouomega/CAD-Preview/compare/v3.11.0...v3.12.0
