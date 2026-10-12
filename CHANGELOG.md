@@ -4,6 +4,25 @@ All notable changes to the "CAD Preview" extension are documented in this file.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/); this project does not yet strictly follow Semantic Versioning (pre-1.0 releases moved fast and bundled multiple features per bump).
 
+## [3.14.0] - 2026-10-12
+
+### Added
+
+- **Point-N references on curve ops.** The eight curve ops accept point-N ids (bare or `{id, at}`), resolved in the replay fold with a strict policy (re-anchor by position with a warning, else skip with a diagnostic), written back headlessly, and bound in the curve forms via Use picked points.
+- **Typed command bar.** `<command> [<json>]` input with `$sel` by field type, history, Tab completion, panel echo through `EditsModel.onPush`, and skipped-op reporting. `OP_PARAM_DOCS` and the rejection explainer moved to the pure `src/opCommands.ts` (`mcpTools.ts` re-exports it).
+- **OBJ `.mtl` materials and PLY vertex colours (roadmap 2.1).** An OBJ's `.mtl` (`Kd` and `map_Kd`) and a PLY's vertex colours now render, survive the facet split, yield to a Part colour and return when it is removed, and keep working in Flat mode. MTL loading is webview-only so the headless bake's `node-N` ids are unchanged; the `isSafeRelativePath` rule is shared with glTF buffers.
+- **Draco and meshopt compressed glTF (roadmap 2.1).** `KHR_draco_mesh_compression` and `EXT_meshopt_compression` are decoded in the kernel worker into reserved `decoded:` entries consumed by the synchronous glTF parser; the webview attaches `DRACOLoader`/`MeshoptDecoder` under an updated CSP. Adds Draco/meshopt fixtures, packaging, tests and docs.
+
+### Changed
+
+- **Post geometry before the XCAF assembly tree.** The interactive STEP path posts geometry with the flat tree first; a second `tree` message (`upgrade: true`) swaps in the nested hierarchy once `resolveAssemblyTreeForDocument` finishes. MCP `loadBRep` is unchanged.
+- **Handle-free deferred XCAF resolve with one retry after an OCCT reset.** `solidSigs` fingerprints solids at load time so the deferred resolve job never touches live shape handles; the kernel worker retries a handler once after an OCCT abort reset.
+
+### Fixed
+
+- **Treat `function signature mismatch` as a WASM abort.** The kernel child could stay poisoned after a save-in-place because the bare V8 phrase matched none of the abort vocabulary, so no reset ever happened. All kernel services now match it, and kernel error stacks are logged when tracing is on.
+- **Opt-in kernel job queue tracing.** `CAD_PREVIEW_KERNEL_TRACE=1` (set by the integration harness) logs enqueue/start/settle/cancel/spawn/exit to stderr so a stuck queue shows up in CI logs instead of as a silent timeout.
+
 ## [3.13.0] - 2026-10-09
 
 ### Added
@@ -751,6 +770,7 @@ This release republishes v1.9.0's full changelog (below) unchanged; v1.9.0 itsel
 
 - Initial release: read-only 3D preview for CAD and mesh files (STEP, IGES, BREP, STL, OBJ, PLY, glTF) inside a VS Code custom editor, using OpenCascade.js (OCCT WASM) in the extension host for B-rep formats and Three.js in the webview for rendering.
 
+[3.14.0]: https://github.com/loumalouomega/CAD-Preview/compare/v3.13.0...v3.14.0
 [3.13.0]: https://github.com/loumalouomega/CAD-Preview/compare/v3.12.0...v3.13.0
 [3.12.0]: https://github.com/loumalouomega/CAD-Preview/compare/v3.11.0...v3.12.0
 [3.11.0]: https://github.com/loumalouomega/CAD-Preview/compare/v3.10.1...v3.11.0
