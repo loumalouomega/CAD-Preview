@@ -528,10 +528,11 @@
       "id": "compressed-gltf",
       "section": "Compressed glTF \u2014 Draco and meshopt (roadmap Tier 1, closed)",
       "gap": "The two new CSP directives (script-src 'wasm-unsafe-eval' and worker-src blob:) that let the Draco and meshopt glTF decoders run in a real VS Code webview. test:webview's harness sets no CSP, so only the integration case can prove them; it is written but has not been run (this environment cannot download VS Code). Real-world compressed files beyond the two generated cubes are also unexercised.",
-      "status": "test-written",
+      "status": "closed",
       "closedBy": [
         "Compressed glTF (Draco and meshopt) loads under the real webview CSP"
-      ]
+      ],
+      "note": "Seen green in CI (xvfb-run test:integration on a real VS Code, PR #108 head cef56f7)."
     },
     {
       "id": "openscad-diagnostics-grammar",
@@ -555,10 +556,11 @@
       "id": "3mf-real-webview",
       "section": "3MF \u2014 a display-only mesh format, read and written (roadmap Tier 2, geometry increment closed)",
       "gap": "3MFLoader (DOMParser) and fflate under a real VS Code webview's CSP, and how a 3MF reads in light and high-contrast themes. test:webview sets no CSP; the integration case (the 3MF half of the compressed-glTF case) is written but has not been run because this environment cannot download VS Code.",
-      "status": "test-written",
+      "status": "closed",
       "closedBy": [
         "Compressed glTF (Draco and meshopt) loads under the real webview CSP"
-      ]
+      ],
+      "note": "Seen green in CI (xvfb-run test:integration on a real VS Code, PR #108 head cef56f7). How a 3MF reads in light/high-contrast themes remains a human judgement, not a tested claim."
     }
   ]
 }
