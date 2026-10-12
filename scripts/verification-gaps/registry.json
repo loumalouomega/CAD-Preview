@@ -532,6 +532,12 @@
       "closedBy": [
         "Compressed glTF (Draco and meshopt) loads under the real webview CSP"
       ]
+    },
+    {
+      "id": "openscad-diagnostics-grammar",
+      "section": "OpenSCAD diagnostics: envelope untrusted text, stop blind truncation (roadmap Tier 0, closed)",
+      "gap": "no real openscad binary exists in this environment, so the stderr line grammar the parser assumes (ECHO:/WARNING:/DEPRECATED: prefixes and ' in file X, line N') is OpenSCAD 2021.01's as remembered and as the stubs emit it, not re-captured from a live run on the current snapshot. File/line extraction is the part most likely to differ; anything unparsed degrades to a plain warning.",
+      "status": "open"
     }
   ]
 }

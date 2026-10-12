@@ -51,6 +51,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import type { CadFormat } from "./fileRouter";
 import { formatScadValue, isValidScadName, type ScadValue } from "./scadParams";
+import { envelope } from "./untrustedText";
 
 const execFileAsync = promisify(execFileCb);
 
@@ -83,8 +84,94 @@ const SCAD_PROBE_TIMEOUT_MS = 10_000;
 /** Cap on surfaced openscad stderr lines — conversion chatter must not flood
  * a tool response. */
 const MAX_STDERR_LINES = 5;
+/** Longest single diagnostic message kept — a pathological `echo()` must not flood a response. */
+const MAX_DIAGNOSTIC_LENGTH = 400;
 /** Cap on the failure-message stderr excerpt. */
 const MAX_STDERR_EXCERPT = 2048;
+
+export type ScadDiagnosticSeverity = "echo" | "warning" | "deprecated" | "error";
+
+/**
+ * One parsed line of openscad's stderr. `message` is document-derived text
+ * (an `echo()` is written by whoever wrote the `.scad`), so it is carried RAW
+ * here — structured fields hold document text unwrapped by convention — and
+ * enveloped when rendered into prose by {@link scadDiagnosticLine}.
+ */
+export interface ScadDiagnostic {
+  severity: ScadDiagnosticSeverity;
+  message: string;
+  file?: string;
+  line?: number;
+}
+
+/** Out-param for callers that want the structured form beside the `warnings` strings. */
+export interface ScadDiagnosticCollector {
+  diagnostics: ScadDiagnostic[];
+  droppedCount: number;
+}
+
+const SEVERITY_RANK: Record<ScadDiagnosticSeverity, number> = { error: 0, warning: 1, deprecated: 2, echo: 3 };
+
+/** Parses ONE stderr line; blank → undefined. */
+function parseScadLine(raw: string): ScadDiagnostic | undefined {
+  let text = raw.trim();
+  if (text === "") return undefined;
+  let severity: ScadDiagnosticSeverity = "warning";
+  const m = /^(ECHO|WARNING|DEPRECATED|ERROR):\s*/i.exec(text);
+  if (m) {
+    severity = m[1].toLowerCase() as ScadDiagnosticSeverity;
+    text = text.slice(m[0].length);
+  }
+  // openscad appends ` in file X, line N` to many messages.
+  let file: string | undefined;
+  let line: number | undefined;
+  const loc = /\s+in file (.+?), line (\d+)\s*$/.exec(text);
+  if (loc) {
+    file = loc[1];
+    line = Number(loc[2]);
+    text = text.slice(0, loc.index);
+  }
+  const message = text.length > MAX_DIAGNOSTIC_LENGTH ? text.slice(0, MAX_DIAGNOSTIC_LENGTH) : text;
+  return { severity, message, ...(file !== undefined ? { file, line } : {}) };
+}
+
+/**
+ * Splits openscad's stderr into structured diagnostics and applies the cap
+ * BY SEVERITY: errors first, then warnings, deprecations, then echoes (stable
+ * within a class), so five `echo()` lines can never push a real `WARNING:`
+ * out. Survivors keep file order; whatever did not fit is counted, never
+ * silently cut.
+ */
+export function parseScadStderr(stderr: string, cap: number = MAX_STDERR_LINES): { diagnostics: ScadDiagnostic[]; droppedCount: number } {
+  const all = stderr.split(/\r?\n/).map(parseScadLine).filter((d): d is ScadDiagnostic => d !== undefined);
+  if (all.length <= cap) return { diagnostics: all, droppedCount: 0 };
+  const keep = new Set(
+    all
+      .map((d, i) => ({ i, r: SEVERITY_RANK[d.severity] }))
+      .sort((a, b) => a.r - b.r || a.i - b.i)
+      .slice(0, Math.max(0, cap))
+      .map((x) => x.i)
+  );
+  return { diagnostics: all.filter((_, i) => keep.has(i)), droppedCount: all.length - keep.size };
+}
+
+/** Prose rendering of a diagnostic: the document-derived message is enveloped. */
+export function scadDiagnosticLine(d: ScadDiagnostic): string {
+  const where = d.file !== undefined ? ` (${d.file}:${d.line})` : "";
+  return `openscad ${d.severity}: ${envelope(d.message, "openscad", MAX_DIAGNOSTIC_LENGTH)}${where}`;
+}
+
+/** The `warnings` strings for a parsed stderr: one line per diagnostic plus a dropped-count line. */
+export function scadWarningLines(diagnostics: readonly ScadDiagnostic[], droppedCount: number): string[] {
+  const lines = diagnostics.map(scadDiagnosticLine);
+  if (droppedCount > 0) lines.push(`openscad: ${droppedCount} more diagnostic(s) not shown (lower-severity lines are dropped first)`);
+  return lines;
+}
+
+/** `.csg` importer notes (skipped nodes, tokenizer complaints) as diagnostics, so one list covers both stages. */
+export function csgWarningDiagnostic(message: string): ScadDiagnostic {
+  return { severity: "warning", message };
+}
 
 /** Thrown (and ONLY thrown) when no usable binary exists — even at convert
  * time (TOCTOU: the probe passed but the binary vanished). Callers map this
@@ -195,8 +282,12 @@ export interface ScadConvertOptions {
 export interface ScadConvertResult {
   /** Converted `.csg` file bytes, ready to feed the shipped `.csg` pipeline as `format: "csg"`. */
   csgBytes: Uint8Array;
-  /** openscad's own stderr chatter (capped) — never silent, never flooding. */
+  /** openscad's own stderr chatter as prose (capped by severity, enveloped) — never silent, never flooding. */
   warnings: string[];
+  /** The same chatter, structured. */
+  diagnostics: ScadDiagnostic[];
+  /** Diagnostics that did not fit the cap. */
+  droppedCount: number;
 }
 
 /**
@@ -245,21 +336,19 @@ export async function convertScadToCsg(sourcePath: string, opts: ScadConvertOpti
             `the model may be too complex, import too large a mesh, or loop; simplify and retry.`
         );
       }
-      const excerpt = String(e.stderr ?? (err as Error).message ?? err).slice(-MAX_STDERR_EXCERPT);
+      const rawExcerpt = String(e.stderr ?? (err as Error).message ?? err).slice(-MAX_STDERR_EXCERPT);
+      // stderr is document-influenced (echo(), file names): enveloped in the message.
+      const excerpt = envelope(rawExcerpt, "openscad", MAX_STDERR_EXCERPT);
       // A stock build that predates the backend switch rejects the flag by
       // name; say so rather than leaving the user to decode a getopt message.
       const backendHint =
-        backend && /backend|unrecogni[sz]ed option|unknown option/i.test(excerpt)
+        backend && /backend|unrecogni[sz]ed option|unknown option/i.test(rawExcerpt)
           ? ` — this OpenSCAD build may not support --backend=${backend} (needs a 2025+ snapshot); set cadPreview.openscadBackend to "auto" to omit it.`
           : "";
       throw new Error(`openscad failed on ${path.basename(sourcePath)} (exit ${e.code ?? "?"}): ${excerpt}${backendHint}`);
     }
-    const warnings = stderr
-      .split(/\r?\n/)
-      .map((l) => l.trim())
-      .filter((l) => l !== "")
-      .slice(0, MAX_STDERR_LINES)
-      .map((l) => `openscad: ${l}`);
+    const { diagnostics, droppedCount } = parseScadStderr(stderr);
+    const warnings = scadWarningLines(diagnostics, droppedCount);
     let csgBytes: Uint8Array;
     try {
       csgBytes = new Uint8Array(await fs.readFile(outPath));
@@ -269,7 +358,7 @@ export async function convertScadToCsg(sourcePath: string, opts: ScadConvertOpti
     if (csgBytes.length === 0) {
       throw new Error(`openscad wrote an empty .csg for ${path.basename(sourcePath)} — treating as a failed conversion.`);
     }
-    return { csgBytes, warnings };
+    return { csgBytes, warnings, diagnostics, droppedCount };
   } finally {
     await fs.rm(tmpDir, { recursive: true, force: true });
   }
@@ -298,6 +387,8 @@ export async function resolveEffectiveSource(opts: {
   format: CadFormat;
   readBytes: () => Promise<Uint8Array>;
   warnings: string[];
+  /** Optional collector: receives the structured diagnostics (and the dropped count) alongside the `warnings` prose. */
+  diagnostics?: ScadDiagnosticCollector;
   binary?: string;
   timeoutMs?: number;
   backend?: string;
@@ -306,12 +397,16 @@ export async function resolveEffectiveSource(opts: {
   if (opts.format !== "scad") {
     return { bytes: await opts.readBytes(), format: opts.format };
   }
-  const { csgBytes, warnings } = await convertScadToCsg(opts.modelPath, {
+  const { csgBytes, warnings, diagnostics, droppedCount } = await convertScadToCsg(opts.modelPath, {
     binary: opts.binary,
     timeoutMs: opts.timeoutMs,
     backend: opts.backend,
     libraryPaths: opts.libraryPaths,
   });
   opts.warnings.push(...warnings);
+  if (opts.diagnostics) {
+    opts.diagnostics.diagnostics.push(...diagnostics);
+    opts.diagnostics.droppedCount += droppedCount;
+  }
   return { bytes: csgBytes, format: "csg" };
 }

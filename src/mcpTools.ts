@@ -79,7 +79,7 @@ import {
   type MeshStructured,
 } from "./meshOptions";
 import { scaleStlBytes } from "./stlParser";
-import { convertScadToCsg, resolveEffectiveSource, ScadUnavailableError } from "./scadService";
+import { convertScadToCsg, csgWarningDiagnostic, resolveEffectiveSource, ScadUnavailableError, type ScadDiagnostic, type ScadDiagnosticCollector } from "./scadService";
 import { parseScadParameters, validateScadOverrides, type ScadParameter } from "./scadParams";
 import { validateSelectorQuery } from "./selectorQuery";
 import { clean, envelope } from "./untrustedText";
@@ -489,7 +489,8 @@ async function readModelBytes(modelPath: string): Promise<Uint8Array> {
 async function readOcctSource(
   modelPath: string,
   route: FileRoute,
-  warnings: string[]
+  warnings: string[],
+  diagnostics?: ScadDiagnosticCollector
 ): Promise<{ ok: true; bytes: Uint8Array; format: CadFormat } | { ok: false; reason: string }> {
   try {
     const src = await resolveEffectiveSource({
@@ -497,6 +498,7 @@ async function readOcctSource(
       format: route.format,
       readBytes: () => readModelBytes(modelPath),
       warnings,
+      diagnostics,
     });
     return { ok: true, bytes: src.bytes, format: src.format };
   } catch (err) {
@@ -822,7 +824,8 @@ export async function loadModel(ctx: ToolContext, params: { path: string }) {
   const sidecars = await sidecarSummary(modelPath);
   const { ops } = await readEditsResolved(modelPath);
   const warnings: string[] = [];
-  const src = await readOcctSource(modelPath, route, warnings);
+  const scadDiag: ScadDiagnosticCollector = { diagnostics: [], droppedCount: 0 };
+  const src = await readOcctSource(modelPath, route, warnings, scadDiag);
   if (!src.ok) {
     return {
       format: route.format,
@@ -839,10 +842,22 @@ export async function loadModel(ctx: ToolContext, params: { path: string }) {
   }
   const { bytes, format } = src;
   const result = await ctx.pipeline.loadBRep(ctx.extensionPath, bytes, format as BRepFormat, ops);
+  // One structured list for a `.scad` source: openscad's own diagnostics, then
+  // the `.csg` importer's notes (skipped nodes, faceting) as severity warning.
+  // Absent for every other source and for a quiet conversion, so those
+  // responses are byte-identical to before.
+  const scadDiagnostics =
+    route.format === "scad" && (scadDiag.diagnostics.length > 0 || scadDiag.droppedCount > 0 || (result.warnings ?? []).length > 0)
+      ? {
+          scadDiagnostics: [...scadDiag.diagnostics, ...(result.warnings ?? []).map(csgWarningDiagnostic)],
+          ...(scadDiag.droppedCount > 0 ? { scadDiagnosticsDropped: scadDiag.droppedCount } : {}),
+        }
+      : {};
   return {
     format: route.format,
     strategy: route.strategy,
     ...entitySummary(result),
+    ...scadDiagnostics,
     sidecars,
     // A persisted op that silently skipped on a PREVIOUS session is reported
     // here the moment the model is loaded — the agent learns immediately
@@ -6974,6 +6989,10 @@ export async function convertScadTool(params: {
   bytes?: number;
   applied: Record<string, unknown>;
   warnings: string[];
+  /** openscad's stderr, structured (message is document-derived text, carried raw). */
+  diagnostics?: ScadDiagnostic[];
+  /** Diagnostics beyond the severity-ordered cap. */
+  droppedCount?: number;
 }> {
   const text = await readScadSource(params.path);
   assertNotSourcePath(params.path, params.outputPath);
@@ -6988,14 +7007,14 @@ export async function convertScadTool(params: {
     if (exists) throw new Error(`${params.outputPath} already exists — pass overwrite: true to replace it.`);
   }
   try {
-    const { csgBytes, warnings: convWarnings } = await convertScadToCsg(params.path, {
+    const { csgBytes, warnings: convWarnings, diagnostics, droppedCount } = await convertScadToCsg(params.path, {
       backend: params.backend,
       libraryPaths: params.libraryPaths,
       defines: checked.defines,
     });
     warnings.push(...convWarnings);
     await fs.writeFile(params.outputPath, csgBytes);
-    return { supported: true, written: params.outputPath, bytes: csgBytes.length, applied: checked.defines, warnings };
+    return { supported: true, written: params.outputPath, bytes: csgBytes.length, applied: checked.defines, warnings, diagnostics, droppedCount };
   } catch (err) {
     if (err instanceof ScadUnavailableError) return { supported: false, applied: {}, warnings: [...warnings, err.reason] };
     throw err;

@@ -177,10 +177,10 @@ Two projects built for AI agents were read for this extension:
 | --- | --- | --- |
 | OpenSCAD evaluation | ReOpenSCAD (own interpreter) | The real binary ships (`.scad` via `openscad`); the [WASM port](#build-and-bundle-an-openscad-wasm-port) is planned; [reimplementing the language](#rejected-scope) is rejected |
 | Customizer parameters | ReOpenSCAD (sliders that rewrite the source) | Headless `list_scad_parameters` / `convert_scad` with `-D` overrides already ship and are stronger; the [interactive panel](#openscad-customizer-panel) is open |
-| Problems tab with line numbers | ReOpenSCAD | [OpenSCAD diagnostics](#openscad-diagnostics) |
+| Problems tab with line numbers | ReOpenSCAD | Shipped as OpenSCAD diagnostics: stderr is parsed into `{severity, message, file?, line?}` and capped by severity |
 | Compile memo keyed on source + quality | ReOpenSCAD | [OpenSCAD include tracking and conversion cache](#openscad-include-tracking-and-cache) |
 | Per-object listing with colour | ReOpenSCAD | [OpenSCAD `color()` becomes Parts](#openscad-color-parts) |
-| `get_supported_scad` coverage dictionary | ReOpenSCAD | Folded into [OpenSCAD diagnostics](#openscad-diagnostics) (skipped `.csg` nodes are named) |
+| `get_supported_scad` coverage dictionary | ReOpenSCAD | Shipped inside OpenSCAD diagnostics (skipped `.csg` importer notes join the structured list as severity `warning`; the node name is in the message text, not a separate field) |
 | `check_intersections` with clearance tolerance; `closest_points` | Both | Overlap already ships (`check_interference(_all)`); [clearance reporting](#interference-clearance) is new |
 | `expectedRevision` edits, HTTP 409 on conflict | ReOpenSCAD | [MCP revision guard](#mcp-revision-guard) |
 | Highlighting AI-made edits | ReOpenSCAD | [Mark agent-made edits](#mark-agent-made-edits) |
@@ -223,7 +223,7 @@ It does **not** admit AGPL code, so TetGen stays rejected. Every new bundled dep
 | Parity | Everything an agent can do, a user can do, and the reverse | Done: headless mesh-edit replay closed the last listed gap (as did the hole-table, refinement-sweep, free-text-note and mesh-source FE-export gaps). Justified remainders: mesh `inspect`/mass facts, `promote_mesh_to_brep` and `repair_mesh` read the raw file (their ids and outputs are defined over it; `save_model` bakes first), and glTF has no own-format save (its exporter emits only `.glb`) | Headless tools see the same edited mesh the viewer shows, or each remaining difference is justified |
 | Meshing probes | Decide on remeshing and on conformal assemblies | MMG core probe is closed with a partial outcome: volume/surface/transport work, unconditional optimisation failed. MMG remeshing has shipped: shared service, MCP tool and panel with real-pipeline screenshots and packaged-runtime verification. Conformal multi-body meshing and Gmsh mesh optimisation have shipped, each with probe-measured results and a decision. Manifold mesh booleans (4.2) probed passing (migration pending). Structured meshing per Part has shipped as `Part.meshStructured` with exact-count smoke coverage. Metric-driven adaptive remeshing (4.4), then pre-mesh healing (4.5), can proceed independently | Each probe filed with measured results and a decision |
 | Geometry probes | Decide which never-called OCCT capabilities become ops | Imprint and split faces (3.1), then B-rep repair (3.2) | Each probe filed with measured results and a decision |
-| Agent ergonomics | An agent can tell a retryable failure from a model error, and two writers cannot silently clobber each other | OpenSCAD diagnostics (1.3), then coded MCP errors (2.19) and the MCP revision guard (2.20) | A stale write is refused with a code, and document-derived OpenSCAD text reaches an agent only inside untrusted-text markers |
+| Agent ergonomics | An agent can tell a retryable failure from a model error, and two writers cannot silently clobber each other | Done: OpenSCAD diagnostics (document-derived OpenSCAD text now reaches an agent only inside untrusted-text markers). Start with coded MCP errors (2.19), then the MCP revision guard (2.20) | A stale write is refused with a code |
 | Strategic | Remove the kernel ceiling | The self-built OCCT WASM probe (6.1) | The existing test suites pass unchanged against the new build |
 
 These are outcome groupings, not release numbers. Independent small items can ship between waves; a failed probe must not block unrelated work.
@@ -253,18 +253,6 @@ These are outcome groupings, not release numbers. Independent small items can sh
 - **First useful increment (S–M):** commit one representative standard fixed-field deck (a small `GRID` + `CTETRA` model from a Nastran-family tool, ideally with a mid-line continuation) and run the existing corpus rows against it. If meshio++ reads it, this item closes with no product code at all — a fixture plus the assertions. If it does not, the gap is a genuine reader limitation and belongs in the probe-gated section, scoped to what meshio++'s Nastran card coverage actually is.
 - **Verification:** the existing corpus rows already give the full chain for the Gmsh deck — open to a boundary surface, mesh it, round-trip the generated `.bdf`, reload. Extend them to the new fixture rather than adding a new harness, and pin its volume against an independently known value (as `block-tets.bdf`'s is now pinned at 60) so a count-only pass cannot hide wrong geometry.
 - **Done when:** a standard fixed-field deck loads, meshes, and reports a verified volume; `generate_mesh` and `export_mesh` handle both fixture classes; and the ambiguity caveat and geometry-only scope stay explicit. Do not infer solver cards or follow `INCLUDE` files.
-
-#### 1.3 OpenSCAD diagnostics: envelope untrusted text and stop blind truncation {#openscad-diagnostics}
-
-*Area: Formats, Platform. Effort: S.*
-
-- **Evidence:** `src/scadService.ts` keeps the **first five** raw `openscad` stderr lines of a successful conversion and returns them prefixed `openscad: `. Two defects follow.
-  - **Untrusted text reaches agents unwrapped.** `echo()` output is written by whoever wrote the `.scad`, so it is document-derived text. Every other document-derived string an agent sees (meshio++ region names, Part names derived from them, the provenance block) goes through `src/untrustedText.ts`'s `envelope()`, per the `verdictConventions` policy. These lines do not.
-  - **Truncation is blind.** Five `echo()` lines push a real `WARNING:` out of the response with no count of what was dropped, and nothing distinguishes an `ECHO:` from a `DEPRECATED:` or a `WARNING: Ignoring unknown module`.
-  - Precedents: ReOpenSCAD's Problems tab (`Line N:` messages, separate from the console) and text-to-cad's `{severity, code, message, hint}` issue records. ReOpenSCAD's `get_supported_scad` coverage dictionary is the same idea one layer down: `csgImport.ts` already skips unsupported `.csg` nodes (`hull`, `minkowski`, …) with a warning, which belongs in the same structured list.
-- **First useful increment (S):** parse stderr into `{severity: "echo" | "warning" | "deprecated" | "error", message, file?, line?}`, reading `in file X, line N` where openscad prints it. Every `message` goes through `envelope(…, "openscad")`. Keep warnings and errors before echoes when capping, and report `droppedCount` instead of silently cutting. `load_model`, `convert_scad` and the viewer status line all consume the same list; the `.csg` importer's skipped-node warnings join it with severity `warning` and the node name.
-- **Done when:** a stub-binary unit test (the `scadService.test.ts` recording-stub pattern) pins the parse, ordering and `droppedCount`; a fixture whose `echo()` contains a fake instruction reaches an agent only inside ⟦markers⟧; and a warning after ten echoes is still reported.
-- **Out of scope:** changing openscad's own verbosity flags; surfacing echoes as viewer annotations.
 
 ### 2. Ready product work {#tier-1-—-ready-product-work}
 
