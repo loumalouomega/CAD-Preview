@@ -23,11 +23,13 @@ This page is aspirational, not a release commitment — items may be re-ordered,
 
 Existing implementation references were checked against the repository where noted. New candidates remain proposals, not promises of kernel support. The previous review was 2026-09-16.
 
-**Extended 2026-10-08.** This is an extension, not a planning review, so nothing was re-ranked. [Layers](#layers-distinct-from-parts) was added as 2.8 and [multilingual user interface](#multilingual-user-interface) as 5.2. Task IDs in sections 2 and 4 were made continuous, so each section counts from 1 with no gaps. The former IDs of closed Meshing items (4.2, 4.4, 4.7 and 4.9) are no longer used, because the same numbers now belong to open items; those items are cited by name.
+**Extended 2026-10-08.** This is an extension, not a planning review, so nothing was re-ranked. Layers (since shipped; see `CLAUDE.md`'s "Layers, distinct from Parts") was added as 2.8 and [multilingual user interface](#multilingual-user-interface) as 5.2. Task IDs in sections 2 and 4 were made continuous, so each section counts from 1 with no gaps. The former IDs of closed Meshing items (4.2, 4.4, 4.7 and 4.9) are no longer used, because the same numbers now belong to open items; those items are cited by name.
 
 **Extended 2026-10-09.** Extension, not a planning review. The lower command bar for manual geometry ops was added as 2.1, top of Ready product work; the eleven existing section-2 items shifted to 2.2–2.12 with anchors unchanged, so name-based links survive. Its command table and examples were then extended in place for approval. "Define lines, arcs and curves from preexisting points" was added as 2.0, above 2.1, as the section's top priority — deliberately out of the gapless 1..N sequence; it has since shipped and left this list (`CLAUDE.md`'s `point-N` references section), so section 2 again started at 2.1. The lower command bar has since shipped too (`CLAUDE.md`'s "Lower command bar" section), leaving the list; section 2 was renumbered from 2.1.
 
 **Extended 2026-10-09.** Extension, not a planning review. [Coincident-point prompt: collapse or keep independent](#coincident-point-collapse-or-independent) was added as 2.13 and [GiD-style geometry structure view](#geometry-structure-view) as 2.14, at the end of Ready product work; nothing was re-ranked.
+
+**Extended 2026-10-12.** Extension, not a planning review: nothing was re-ranked, and every new item is appended at the end of its section so existing IDs and anchors are unchanged. Two outside projects were compared — [ReOpenSCAD](https://github.com/Matvey-Kuk/reopenscad) and [text-to-cad](https://github.com/earthtojake/text-to-cad) — and the [agent-CAD comparison](#agent-cad-comparison) below records what each feature became here. Added: 1.3 (OpenSCAD diagnostics), 2.12–2.25 (OpenSCAD include tracking, `color()` Parts, snapshot sections, clearance checks, material density, quotable references, MCP registration, coded MCP errors, MCP revision guard, agent-edit marking, printability facts, draft analysis, hole callouts, reproducible exports), 3.12 (planar-facet promotion), 5.3 (MCP App inline preview) and 6.3 (kinematic mates). Evidence addenda went to 2.1 and 3.3, and four rejections to Non-goals.
 
 Everything previously shipped is tracked in `CHANGELOG.md`, and `CLAUDE.md` has a per-feature section with the verified implementation details for anything currently in the codebase — this page is for what's **not** built yet, plus the Non-goals that record why a direction was rejected so it isn't re-proposed.
 
@@ -47,7 +49,7 @@ Everything previously shipped is tracked in `CHANGELOG.md`, and `CLAUDE.md` has 
 - **Shared capabilities must reach both consumers.** A new headless-capable operation includes MCP schemas/capabilities and sidecar compatibility; a purely visual interaction can remain webview-only. Reuse the existing pipeline and registries rather than adding parallel implementations.
 - **Cross-repo items say which repository owns each half.** Several items below exist because KKSS (which embeds this repository as its `cad/` submodule) or VSCode-MDPA-Preview asked for them. Only this repository's half is scoped here; the other half is named so that it is not forgotten.
 
-Several past items were identified by comparing against [SketchForge-3D](https://github.com/Formsmith746/SketchForge-3D), a browser-based direct-manipulation CAD editor over the same OCCT kernel, and [FluidCAD](https://github.com/nkarasiak/fluidcad). Their *capability* gaps transferred well; most of their *interaction* model deliberately did not — see Non-goals.
+Several past items were identified by comparing against [SketchForge-3D](https://github.com/Formsmith746/SketchForge-3D), a browser-based direct-manipulation CAD editor over the same OCCT kernel, and [FluidCAD](https://github.com/nkarasiak/fluidcad). Their *capability* gaps transferred well; most of their *interaction* model deliberately did not — see Non-goals. The same holds for the two agent-oriented projects in the [agent-CAD comparison](#agent-cad-comparison): their agent contracts and analysis facts transfer; their manufacturing hand-offs and their language reimplementation do not.
 
 ## Reviews
 
@@ -164,6 +166,43 @@ Two stale lines found in the sibling repositories are theirs to fix, not ours:
 
 The only open GitHub issue, #35 "OpenSCAD", is covered by the [OpenSCAD WASM port](#build-and-bundle-an-openscad-wasm-port).
 
+### Agent-CAD comparison — 2026-10-12 {#agent-cad-comparison}
+
+Two projects built for AI agents were read for this extension:
+
+- **[ReOpenSCAD](https://github.com/Matvey-Kuk/reopenscad)** (GPL-3.0-or-later). A from-scratch Rust reimplementation of the OpenSCAD language with its own exact polyhedral CSG kernel — no OpenSCAD binary, no OpenSCAD WASM — behind a browser workbench and an HTTP MCP server. Its eight tools include `update_workspace_code` (revision-guarded, byte-range edits), `check_intersections` (clearance tolerance, depth, location), `list_workspace_objects` and `get_supported_scad`. It also serves a `ui://` MCP-App inline viewer.
+- **[text-to-cad](https://github.com/earthtojake/text-to-cad)** (MIT, read at v0.7.21). build123d over OCP, packaged as twelve agent skills plus a viewer-bridge MCP server (`cad_show`, `cad_view`, `cad_screenshot`). Its fact-only, three-valued-verdict conventions were mined earlier and are already house rules here (`describe_capabilities`' `verdictConventions`). One correction to that earlier mining: text-to-cad has since **removed** its `inspect` CLI in favour of a geometry library (`closest_points`, `overlap_volume`, `mass_properties`, `is_sound`); the conventions survive, the tool shape does not.
+
+| Source feature | From | Status here |
+| --- | --- | --- |
+| OpenSCAD evaluation | ReOpenSCAD (own interpreter) | The real binary ships (`.scad` via `openscad`); the [WASM port](#build-and-bundle-an-openscad-wasm-port) is planned; [reimplementing the language](#rejected-scope) is rejected |
+| Customizer parameters | ReOpenSCAD (sliders that rewrite the source) | Headless `list_scad_parameters` / `convert_scad` with `-D` overrides already ship and are stronger; the [interactive panel](#openscad-customizer-panel) is open |
+| Problems tab with line numbers | ReOpenSCAD | [OpenSCAD diagnostics](#openscad-diagnostics) |
+| Compile memo keyed on source + quality | ReOpenSCAD | [OpenSCAD include tracking and conversion cache](#openscad-include-tracking-and-cache) |
+| Per-object listing with colour | ReOpenSCAD | [OpenSCAD `color()` becomes Parts](#openscad-color-parts) |
+| `get_supported_scad` coverage dictionary | ReOpenSCAD | Folded into [OpenSCAD diagnostics](#openscad-diagnostics) (skipped `.csg` nodes are named) |
+| `check_intersections` with clearance tolerance; `closest_points` | Both | Overlap already ships (`check_interference(_all)`); [clearance reporting](#interference-clearance) is new |
+| `expectedRevision` edits, HTTP 409 on conflict | ReOpenSCAD | [MCP revision guard](#mcp-revision-guard) |
+| Highlighting AI-made edits | ReOpenSCAD | [Mark agent-made edits](#mark-agent-made-edits) |
+| Agent-readable busy errors ("retry, do not edit"); closed vocabularies | Both | [Coded MCP errors](#coded-mcp-errors) |
+| "Connect AI" setup snippets; one-install plugin | Both | [Register the MCP server with VS Code](#register-mcp-server-with-vscode) |
+| `ui://` MCP-App inline viewer | Both | [MCP App inline preview](#mcp-app-inline-preview) (probe) |
+| `cad_view` returns the user's selection as quotable refs | text-to-cad | [Quotable entity references](#quotable-entity-references) |
+| Snapshot presets (xray, hidden-line) and section mode | text-to-cad | [Section plane and display presets for `render_snapshot`](#render-snapshot-section-and-display) |
+| `mass_properties` with density | text-to-cad | [Per-Part material density](#per-part-material-density) |
+| dfam-check (overhangs, wall thickness, support, orientations, plate fit) | text-to-cad, ReOpenSCAD (plates) | [Printability facts report](#printability-facts-report) |
+| dfm draft and undercuts | text-to-cad | [Draft and undercut analysis](#draft-and-undercut-analysis) |
+| Engineering-drawing hole callouts, CENTER layer | text-to-cad | [Hole callouts on drawing sheets](#hole-callouts-on-drawing-sheets); the sheet itself ships |
+| Byte-deterministic writers | text-to-cad | [Reproducible exports](#reproducible-exports) |
+| Per-solid signed-volume check | text-to-cad | Addendum to [More facts in the B-rep validity report](#more-facts-in-the-b-rep-validity-report) |
+| 3MF export with colour | Both | Addendum to [More mesh formats](#more-mesh-formats-through-three-s-bundled-loaders) |
+| STEP from a mesh with merged coplanar faces | ReOpenSCAD | [Planar-facet merging before promotion](#planar-facet-merging-promotion) (probe) |
+| Kinematic mates, poses, animation | text-to-cad | [Kinematic mates and pose-swept clearance](#kinematic-mates-and-pose-sweeps) (strategic) |
+| step.parts sourcing with checksum | text-to-cad | Already shipped (`search_standard_parts` / `download_standard_part`) |
+| DXF output, sheet templates, three-view sheets | text-to-cad | Already shipped (`export_drawing_sheet`, DXF layers) |
+| Slicing, printer hand-off, supplier ordering, URDF/SDF | text-to-cad | [Rejected](#rejected-scope) |
+| Hosted shared workspaces, HTTP transport, in-browser editor | ReOpenSCAD | [Rejected](#rejected-scope) |
+
 ### What the GPL-3.0 relicense unlocks {#relicense-unlocks}
 
 CAD-Preview moved from `GPL-2.0-or-later` to `GPL-3.0-or-later` on 2026-09-24. Besides the OpenSCAD port it was made for, this admits Apache-2.0 dependencies: under GPLv2 they were incompatible, and under GPLv3 they are compatible. One of them serves an open item directly (the other, `draco3d`, shipped with compressed glTF):
@@ -184,6 +223,7 @@ It does **not** admit AGPL code, so TetGen stays rejected. Every new bundled dep
 | Parity | Everything an agent can do, a user can do, and the reverse | Done: headless mesh-edit replay closed the last listed gap (as did the hole-table, refinement-sweep, free-text-note and mesh-source FE-export gaps). Justified remainders: mesh `inspect`/mass facts, `promote_mesh_to_brep` and `repair_mesh` read the raw file (their ids and outputs are defined over it; `save_model` bakes first), and glTF has no own-format save (its exporter emits only `.glb`) | Headless tools see the same edited mesh the viewer shows, or each remaining difference is justified |
 | Meshing probes | Decide on remeshing and on conformal assemblies | MMG core probe is closed with a partial outcome: volume/surface/transport work, unconditional optimisation failed. MMG remeshing has shipped: shared service, MCP tool and panel with real-pipeline screenshots and packaged-runtime verification. Conformal multi-body meshing and Gmsh mesh optimisation have shipped, each with probe-measured results and a decision. Manifold mesh booleans (4.2) probed passing (migration pending). Structured meshing per Part has shipped as `Part.meshStructured` with exact-count smoke coverage. Metric-driven adaptive remeshing (4.4), then pre-mesh healing (4.5), can proceed independently | Each probe filed with measured results and a decision |
 | Geometry probes | Decide which never-called OCCT capabilities become ops | Imprint and split faces (3.1), then B-rep repair (3.2) | Each probe filed with measured results and a decision |
+| Agent ergonomics | An agent can tell a retryable failure from a model error, and two writers cannot silently clobber each other | OpenSCAD diagnostics (1.3), then coded MCP errors (2.19) and the MCP revision guard (2.20) | A stale write is refused with a code, and document-derived OpenSCAD text reaches an agent only inside untrusted-text markers |
 | Strategic | Remove the kernel ceiling | The self-built OCCT WASM probe (6.1) | The existing test suites pass unchanged against the new build |
 
 These are outcome groupings, not release numbers. Independent small items can ship between waves; a failed probe must not block unrelated work.
@@ -214,6 +254,18 @@ These are outcome groupings, not release numbers. Independent small items can sh
 - **Verification:** the existing corpus rows already give the full chain for the Gmsh deck — open to a boundary surface, mesh it, round-trip the generated `.bdf`, reload. Extend them to the new fixture rather than adding a new harness, and pin its volume against an independently known value (as `block-tets.bdf`'s is now pinned at 60) so a count-only pass cannot hide wrong geometry.
 - **Done when:** a standard fixed-field deck loads, meshes, and reports a verified volume; `generate_mesh` and `export_mesh` handle both fixture classes; and the ambiguity caveat and geometry-only scope stay explicit. Do not infer solver cards or follow `INCLUDE` files.
 
+#### 1.3 OpenSCAD diagnostics: envelope untrusted text and stop blind truncation {#openscad-diagnostics}
+
+*Area: Formats, Platform. Effort: S.*
+
+- **Evidence:** `src/scadService.ts` keeps the **first five** raw `openscad` stderr lines of a successful conversion and returns them prefixed `openscad: `. Two defects follow.
+  - **Untrusted text reaches agents unwrapped.** `echo()` output is written by whoever wrote the `.scad`, so it is document-derived text. Every other document-derived string an agent sees (meshio++ region names, Part names derived from them, the provenance block) goes through `src/untrustedText.ts`'s `envelope()`, per the `verdictConventions` policy. These lines do not.
+  - **Truncation is blind.** Five `echo()` lines push a real `WARNING:` out of the response with no count of what was dropped, and nothing distinguishes an `ECHO:` from a `DEPRECATED:` or a `WARNING: Ignoring unknown module`.
+  - Precedents: ReOpenSCAD's Problems tab (`Line N:` messages, separate from the console) and text-to-cad's `{severity, code, message, hint}` issue records. ReOpenSCAD's `get_supported_scad` coverage dictionary is the same idea one layer down: `csgImport.ts` already skips unsupported `.csg` nodes (`hull`, `minkowski`, …) with a warning, which belongs in the same structured list.
+- **First useful increment (S):** parse stderr into `{severity: "echo" | "warning" | "deprecated" | "error", message, file?, line?}`, reading `in file X, line N` where openscad prints it. Every `message` goes through `envelope(…, "openscad")`. Keep warnings and errors before echoes when capping, and report `droppedCount` instead of silently cutting. `load_model`, `convert_scad` and the viewer status line all consume the same list; the `.csg` importer's skipped-node warnings join it with severity `warning` and the node name.
+- **Done when:** a stub-binary unit test (the `scadService.test.ts` recording-stub pattern) pins the parse, ordering and `droppedCount`; a fixture whose `echo()` contains a fake instruction reaches an agent only inside ⟦markers⟧; and a warning after ten echoes is still reported.
+- **Out of scope:** changing openscad's own verbosity flags; surfacing echoes as viewer annotations.
+
 ### 2. Ready product work {#tier-1-—-ready-product-work}
 
 *Admission: no kernel unknown remains. Either a probe passed and its call shapes are in `CLAUDE.md`, or the work only reuses shipped machinery. The estimate is firm.*
@@ -226,6 +278,7 @@ These are outcome groupings, not release numbers. Independent small items can sh
   - three already ships loaders the viewer never uses: `3MFLoader`, `AMFLoader`, `VRMLLoader`, `ColladaLoader`, `FBXLoader` and `USDZLoader`.
   - 3MF is the standard 3D-printing format and is the most asked-for of these. Its loader's one dependency, `fflate`, is already bundled.
   - `three-3mf-exporter` (MIT) writes it.
+  - Both projects in the [agent-CAD comparison](#agent-cad-comparison) export 3MF, and ReOpenSCAD's writer carries per-object colour. That puts 3MF first among these loaders, and argues for writing colour (from Part colours) rather than geometry alone.
 - **First useful increment (S–M):**
   - Route `.3mf` as a mesh source (router, `customEditors` selector, open-dialog filter). Add it as an Export target through `three-3mf-exporter`.
   - The other five loaders follow one at a time, each with a fixture.
@@ -337,6 +390,147 @@ These are outcome groupings, not release numbers. Independent small items can sh
 - **Done when:** on a committed multi-solid fixture, the Geometry mode shows every `point-N` / `edge-N` / `face-N` / `solid-N` recognisable by kind and selectable as today; a committed `test:webview` case toggles into the mode and screenshots it beside the shaded render for comparison.
 - **Out of scope:** mesh views — shaded/wireframe already cover GiD panels (b)–(d); dimension annotations in the structure view (the annotations feature owns those); per-Part colouring, which stays as it is.
 
+#### 2.12 OpenSCAD include tracking and conversion cache {#openscad-include-tracking-and-cache}
+
+*Area: Formats. Effort: M.*
+
+- **Evidence:**
+  - Every `.scad` consumer — opening the file, every edit's re-tessellation, `load_model`, `get_mass_properties`, `export_brep`, `generate_mesh` — calls `resolveEffectiveSource`, which spawns `openscad` afresh with a 120 s budget. Under CGAL a real model takes seconds, and an agent asking three questions pays three conversions.
+  - The source watcher covers the `.scad` file only. A model that `use <lib.scad>`s or `include`s another file does not reload when that file changes, so the viewer silently shows stale geometry.
+  - ReOpenSCAD memoises its last two compiles per quality, keyed on the full source text, so a preview, a clearance check and an export of the same source compile once. Its key can ignore dependencies because it has no filesystem; ours cannot.
+- **First useful increment (M):**
+  1. Confirm on the 2021.01 binary that `openscad -d <deps> -o out.csg in.scad` writes a Make-style dependency list, and record its exact format.
+  2. Parse the list into absolute paths. Key a small in-memory LRU on sha256 of the source plus every dependency, the backend, the sorted `-D` set and the binary's `--version` string. A miss converts; a hit returns the cached `.csg` bytes and warnings.
+  3. Watch each dependency with the existing `watchForExternalChange` helper, so editing a library reloads the document exactly as editing the source does.
+- **Done when:** a second `load_model` on an unchanged model does not spawn `openscad` (a recording stub binary counts spawns); editing an included file reloads an open document; and changing any key input — a dependency's bytes, the backend, a `-D` value — misses the cache.
+- **Out of scope:** a disk cache shared across sessions; caching `.scad` evaluation inside the kernel worker (the [WASM port](#build-and-bundle-an-openscad-wasm-port) owns that path).
+
+#### 2.13 OpenSCAD `color()` and top-level objects become Parts {#openscad-color-parts}
+
+*Area: Formats, Parity. Effort: S–M.*
+
+- **Evidence:** `src/csgModel.ts` treats `color()` as a transparent container — it unwraps it and discards the colour — so a multi-colour `.scad`/`.csg` opens as anonymous `solid-N`s, and Clash, BOM and per-Part meshing all start from nothing. ReOpenSCAD lists every top-level object with its colour and makes each one hideable and exportable on its own. This repository already has the right precedent: a meshio++ import's `kind: "cell"` regions auto-create Parts on first open (`src/meshioRegionParts.ts`).
+- **First useful increment (S–M):** `csgModel.ts` records, for each top-level solid, the colour of its nearest enclosing `color()` (if any). On first open with an empty parts sidecar, `.csg` and `.scad` sources auto-create one Part per distinct colour, named from it (`"Part red"`, or the hex value), coloured with it, and listing its `solid-N` ids. The rules are the meshio ones: never overwrite an existing sidecar, persist once, and say so in `load_model`'s warnings. `.csg` carries no module names, so names cannot come from the source — state that rather than invent one.
+- **Done when:** a committed two-colour fixture opens with two Parts whose volumes match the analytic values, `check_interference_all` and `generate_bom` work on them with no manual assignment, and a reopen does not duplicate them.
+- **Out of scope:** reading colour for the mesh-export path (that is 2.1's colour question); alpha as transparency in the viewer.
+
+#### 2.14 Section plane and display presets for `render_snapshot` {#render-snapshot-section-and-display}
+
+*Area: Parity. Effort: S.*
+
+- **Evidence:** the viewer has five display modes and arbitrary clip planes with a solid cap, but `render_snapshot`'s `displayMode` accepts only `shaded` and `wireframe` and there is no section option at all. An agent checking a wall thickness or an internal passage has to infer it from outside views. text-to-cad's snapshot presets include `xray` and `hidden-line`, and its `--mode section --section XZ:12.5` writes a cut view.
+- **First useful increment (S):** widen `displayMode` to every `DisplayMode` the viewer has (`xray`, `hiddenLines`, `flat` added), and add an optional `clip` taking the existing `ClipPlaneState` shape (`axis` or a `normal`, plus `offsetFrac`). Both ride `renderViewRequest` into the harness page, which applies them through the same `applyDisplayMode` and `planeForClip` the interactive viewer uses — no second implementation. `render_ops_prefix` and `screenshot_shape` inherit them.
+- **Done when:** a `clip` snapshot of a hollow fixture shows the cap colour inside the wall (the `test:webview` magenta-cap technique, applied to the headless page), and each display mode renders distinguishably.
+- **Out of scope:** SVG section drawings (the `section` op plus `export_technical_drawing` already cover a 2D cut).
+
+#### 2.15 Clearance (near-miss) reporting in interference checks {#interference-clearance}
+
+*Area: Geometry. Effort: S–M.*
+
+- **Evidence:** `check_interference` and `check_interference_all` report overlap volume, so a pair separated by 0.05 mm reads exactly like a pair separated by 50 mm: `hasOverlap: false`. Both outside projects report clearance as well — ReOpenSCAD's `check_intersections` takes a tolerance (default 0.2 mm) and returns clearance, depth and a location; text-to-cad's `closest_points` returns a distance and witness points. The minimum-distance machinery already exists here: `measureExact`'s `BRepExtrema_DistShapeShape` (0-arg constructor, `LoadS1`/`LoadS2`/`Perform`) with `PointOnShape1`/`PointOnShape2`.
+- **First useful increment (S–M):** an optional `minClearance` (mm) on both tools. For every pair with no overlap, report `clearance` (the minimum distance), the two witness points and `withinClearance` as a fact. In `check_interference_all`, inflate each group's AABB by `minClearance` before screening, so a near-miss is never screened out as "far apart". The Clash panel gets a clearance field and renders near-misses as their own row state. Budgets (`maxPairs`, `maxBooleans`) count distance queries too.
+- **Done when:** two boxes 0.1 mm apart report `clearance` 0.1 and `withinClearance: true` at 0.2 and `false` at 0.05; an AABB-separated pair beyond the clearance is still screened; and the shipped overlap fixture's numbers are unchanged.
+- **Out of scope:** clearance across poses (see [kinematic mates](#kinematic-mates-and-pose-sweeps)).
+
+#### 2.16 Per-Part material density: mass in mass properties and BOM {#per-part-material-density}
+
+*Area: Geometry, Parity. Effort: S–M.*
+
+- **Evidence:** `get_mass_properties`, the Mass Properties panel, `generate_bom` and Copy BOM all report volume only; there is no density anywhere. text-to-cad's `mass_properties([(solid, density)])` returns mass, a mass-weighted centre and the inertia tensor, which is what a procurement BOM or a shipping estimate actually needs.
+- **First useful increment (S–M):** an optional `Part.density` (g/cm³) — tolerant parse in `partsSidecar.ts`, and copied in `PartsModel.clone()` (the documented trap where a field missing from a field-by-field clone silently stops persisting). `set_part` takes it; the Parts panel shows it beside the colour. Mass properties report `mass` and a mass-weighted centre when every selected solid has a density, and say which solids lack one otherwise. The BOM gains a mass column. A short bundled material table (steel, aluminium, ABS, PLA, …) can fill the field by name, but stores the number.
+- **Done when:** a 10 mm steel cube at 7.85 g/cm³ reports 7.85 g, a two-material assembly reports the sum, and a part with no density is reported as missing rather than as zero.
+- **Out of scope:** reading materials from STEP (the [PMI, layers and materials probe](#read-pmi-layers-and-materials-from-step) could seed this field later); density-weighted inertia.
+
+#### 2.17 Quotable entity references for agent chats {#quotable-entity-references}
+
+*Area: Parity. Effort: S.*
+
+- **Evidence:** the MCP server runs in a separate process from VS Code, so an agent cannot see what the user selected. Telling it means reading an id off the hover tooltip and typing it. text-to-cad's `cad_view` returns the user's selection as quotable refs (`/abs/path.step#o1.2.f7`), tied to one saved revision with no fuzzy matching.
+- **First useful increment (S):** a **Copy reference** row in the right-click context menu, writing one line per selected entity: the workspace-relative path and id (`examples/STP/bull.stp#face-12`), the `summaryLine` facts the selection pill already computes, and the op-list length the id is valid against. When the selection was made through a stored query, or one can be synthesised (`synthesizeSelector`), the query JSON is appended so the reference survives renumbering. The text says plainly that a bare id is valid only for that op-list length.
+- **Done when:** the copied text, pasted to an agent, resolves through `inspect` to the same face, and copying after a topology-changing edit yields the new id.
+- **Out of scope:** a live channel from the viewer to the MCP server.
+
+#### 2.18 Register the MCP server with VS Code and offer client setup snippets {#register-mcp-server-with-vscode}
+
+*Area: Platform, Ecosystem. Effort: S–M.*
+
+- **Evidence:** using the bundled MCP server means finding the installed extension's path and writing `claude mcp add cad-preview -- node <path>/dist/mcp-server.js` by hand, with a Node on `PATH`. VS Code's own agent mode cannot see the server at all, although the extension targets `vscode ^1.140.0`, which has the MCP server-definition-provider API. ReOpenSCAD's "Connect AI" dialog shows a ready snippet per client (Claude Code, Claude Desktop, Cursor, VS Code, Windsurf, Codex), and text-to-cad installs its server with one command.
+- **First useful increment (S–M):**
+  - `contributes.mcpServerDefinitionProviders` plus a provider that launches `dist/mcp-server.js` with `process.execPath` and `ELECTRON_RUN_AS_NODE=1`, so no separate Node is needed (the Flatpak recipe in `doc/development.md` already relies on this).
+  - A **CAD Preview: Connect an agent…** command that shows copyable snippets for the common clients, filled with the installed extension's absolute path and the same environment.
+- **Done when:** in a real VS Code, the server appears in the MCP server list and `describe_capabilities` answers through it; and each snippet, pasted into its client, starts the server (checked at least for Claude Code).
+- **Out of scope:** an HTTP transport (see [Rejected scope](#rejected-scope)); publishing the server as a separate npm package.
+
+#### 2.19 Coded MCP errors and closed parameter vocabularies {#coded-mcp-errors}
+
+*Area: Platform. Effort: S–M.*
+
+- **Evidence:** an MCP tool failure is a thrown `Error`, so an agent sees prose and must guess whether to retry, change its input, or change the model. The kernel watchdog, a cancelled job and a kernel reset are retryable; a bad op is not. Only one input schema in `mcpServer.ts` is `.strict()`, so a misspelled parameter is silently ignored and the call "succeeds" doing something else. ReOpenSCAD answers a full queue with a result whose next step says "wait and retry, do not change the SCAD"; text-to-cad's law is that unknown keys are errors.
+- **First useful increment (S–M):** errors carry `{code, message, hint?, retryable}` in the result's structured content (`kernel-timeout`, `job-cancelled`, `kernel-reset`, `unsupported-source`, `invalid-op`, `stale-revision`, …), mapped once in `mcpServer.ts`'s `wrap()`. Unknown input keys produce a warning naming the nearest real key (`nearestOpKind`'s edit-distance helper generalised).
+- **Open question to settle first:** whether strict mode should become an error. Some clients add keys of their own; ship warn-only, measure, then decide.
+- **Done when:** a forced watchdog timeout returns `retryable: true` with the retry hint, a malformed op returns `invalid-op` with its expected shape, and a misspelled parameter produces a named warning.
+
+#### 2.20 Optimistic revision guard for MCP sidecar writes {#mcp-revision-guard}
+
+*Area: Parity, Platform. Effort: S.*
+
+- **Evidence:** the interactive editor already detects a disk change racing a pending local edit (`src/sidecarRevision.ts`). The MCP server does not: two agents, or an agent and a script, both appending edit ops read the same list, and the second write silently drops the first's op. ReOpenSCAD requires an `expectedRevision` on every edit and answers a stale one with a conflict.
+- **First useful increment (S):** `get_state` returns a `revision` per sidecar — the same sha256 fingerprint `sidecarRevision.ts` computes through `src/hash.ts`. `apply_edit_ops`, `run_parametric_script`, `remove_edit_op`, `set_part`, `set_variables`, `set_mesh_options`, `set_plane`, `set_layer` and `pin_annotation` accept an optional `expectedRevision`; a mismatch refuses the write with code `stale-revision` (see [coded MCP errors](#coded-mcp-errors)) and returns the current revision. Omitting it keeps today's behaviour.
+- **Done when:** two `apply_edit_ops` calls made from the same `get_state` revision result in one applied op and one `stale-revision` refusal, with the sidecar holding exactly one new op.
+- **Out of scope:** merging concurrent op lists.
+
+#### 2.21 Mark agent-made edits in the viewer {#mark-agent-made-edits}
+
+*Area: Parity. Effort: S.*
+
+- **Evidence:** when an agent appends ops to an open document, the edits watcher reconciles them and the status line says "Edits updated externally" — and nothing else. The user cannot see which rows of the history the agent added. ReOpenSCAD marks every edit with `source: "ai" | "browser"` and highlights the agent's changes in the editor.
+- **First useful increment (S):** when the edits watcher reconciles a pure append from outside, the appended history rows get a transient **external** badge, and their op buckets flash once through the existing chip highlight. The marking lives in webview memory only — no sidecar field — and clears on the next local edit or reload.
+- **Done when:** a `test:webview` case posts an external append and asserts the badge on exactly the new rows, and a local push clears it.
+- **Out of scope:** attributing an op to a particular agent.
+
+#### 2.22 Printability facts report {#printability-facts-report}
+
+*Area: Geometry. Effort: M.*
+
+- **Evidence:** nothing here answers "will this print". Mesh Health checks closure and B-rep Health checks validity, but neither measures overhangs or walls. text-to-cad's `dfam-check` reports, from a mesh: watertightness and body count; a units-suspect flag from the bounding box; down-facing area below a limit angle; ray-cast wall thickness (minimum, 5th percentile, median, per body); a support-volume upper bound; and the six axis orientations compared by support and build height. It compares these against a process-limits table (FDM, SLA, SLS, MJF, with sources) and reports what it cannot check as need-more-info. ReOpenSCAD adds a build-plate fit check per printer.
+- **First useful increment (M):** a `check_printability` MCP tool plus a section under Advanced ▸ Analysis, over the welded triangles every source already reduces to (fine tessellation for a B-rep, the baked edits for a mesh). All numbers are facts in the `verdictConventions` sense:
+  - closure and bodies from `meshTopology.ts`;
+  - overhang area below a caller-supplied angle (default 45°), for six orientations;
+  - wall thickness by casting rays inward from sampled surface points, using the `three-mesh-bvh` already bundled in the kernel worker;
+  - a support-volume upper bound per orientation;
+  - fit against a named or explicit build plate.
+
+  A bundled process-limits table, each row carrying its source, lets the report state where a measured value falls; rules it cannot measure (minimum hole, bridges, trapped powder) are listed as not checked. Overhang faces get a colour overlay through the colour-field path.
+- **Done when:** a fixture with a known 1 mm wall reports 1 mm within the sampling resolution; a box rotated onto its edge reports more overhang than one on its face; and an unmeasured rule is reported as not checked rather than passed.
+- **Out of scope:** slicing and support generation (see [Rejected scope](#rejected-scope)); choosing an orientation for the user.
+
+#### 2.23 Draft and undercut analysis for a pull direction {#draft-and-undercut-analysis}
+
+*Area: Geometry. Effort: M.*
+
+- **Evidence:** a moulded or cast part needs draft on every wall and no undercuts along the pull. Nothing here measures either. text-to-cad's `dfm` skill reports per-face draft relative to a pull direction (zero-draft faces, minimum wall draft), undercuts, and projected area.
+- **First useful increment (M):** a `check_draft` MCP tool plus a section under Advanced ▸ Analysis taking a `pull` direction. For a B-rep source, planar faces get an exact draft angle from `faceSurfaceInfo`'s normal; curved faces report the minimum and maximum over their tessellated normals. Faces with zero or negative draft, faces shadowed along the pull (an undercut, found by ray casting), and the projected area are reported as facts with face ids. The faces are coloured by draft through the colour-field path.
+- **Done when:** a box reports its four side walls at exactly 0°, a tapered extrusion reports its taper angle, and a pocket under an overhang is reported as an undercut.
+- **Out of scope:** suggesting a parting line; adding draft (the `draft` op is the tool for that, and its kernel limitation is recorded in `CLAUDE.md`).
+
+#### 2.24 Hole callouts and centre lines on drawing sheets {#hole-callouts-on-drawing-sheets}
+
+*Area: Drawings. Effort: M.*
+
+- **Evidence:** `export_drawing_sheet` places views, pinned dimensions and a title block, and `generate_hole_table` already groups cylindrical faces by diameter and axis with the nearest standard designation — but a drawing sheet shows neither hole callouts nor centre lines. text-to-cad's engineering drawings call out holes (through, depth, counterbore, countersink, thread) and draw a `CENTER` layer.
+- **First useful increment (M):** for each hole group whose axis is parallel to a view's direction, draw centre marks on its circular edges, and one leader callout per group in the view where the holes appear as circles (`4× Ø6.8 THRU` with the nearest designation, from `holeTable.ts` and `holeStandards.ts`). SVG gets the marks in their own group; DXF gets a new `CENTER` layer beside `0`, `HIDDEN`, `DIMENSIONS`, `BORDER` and `TITLE`. Callouts are facts, never a tolerance class the geometry does not carry.
+- **Done when:** a plate with four M6 tap-drill holes shows one callout and four centre marks in its top view and none in its side view, in both formats.
+- **Out of scope:** thread annotation beyond the designation; GD&T frames.
+
+#### 2.25 Reproducible exports {#reproducible-exports}
+
+*Area: Formats. Effort: S.*
+
+- **Evidence:** the simulation handoff manifest records a sha256 per output, and `check_handoff_manifest` re-hashes them — but exporting the same model twice probably does not produce identical bytes. A STEP header carries a timestamp in `FILE_NAME`, IGES writes dates in its global section, and a drawing sheet's title block prints today's date. text-to-cad makes every writer byte-deterministic and stamps no creation date.
+- **First useful increment (S):** first export each format twice from the same model and diff, to find exactly which fields move. Then, behind an opt-in `deterministic` flag on the export tools and the handoff manifest, normalise those fields — the STEP timestamp by a text patch beside `stepUnitPatch.ts`, the IGES dates likewise, and the sheet date from the flag's value or omitted.
+- **Done when:** two deterministic exports of the same model are byte-identical in every format the diff found unstable, and a manifest written with the flag verifies against a re-export.
+- **Out of scope:** making Gmsh or meshio++ output deterministic beyond what they already are (measured in the first step, not assumed).
+
 ### Probe-gated — establish feasibility before estimating
 
 *Admission: a specific hypothesis with a discriminating experiment. Each probe below is a small, self-contained piece of work with a firm **S** estimate of its own; the phases under "If admitted" are what ships if the probe passes, tagged provisionally. A method that accepts arguments but changes nothing is a failed probe.*
@@ -375,6 +569,7 @@ Probes are grouped by area. Each group has its own order table. The order is the
 | 3.9 | Project a curve onto a face | — | Useful mostly as an input to other features |
 | 3.10 | Loft takeoff by resampled intermediates | — | The measurement design is the hard part |
 | 3.11 | VRML export | — | Cheap but low value; last on purpose |
+| 3.12 | Planar-facet merging before mesh → B-rep promotion | — | Added 2026-10-12; may lift the heal ceiling for faceted, CAD-like meshes |
 
 None of these depends on another's result.
 
@@ -428,6 +623,7 @@ None of these depends on another's result.
 
 - **Hypothesis:** `BRepExtrema_SelfIntersection` detects self-intersecting faces, and `ShapeAnalysis_FreeBounds` returns open boundaries as closed or open wires. Both are green and never called, and both can join `check_brep_health`'s report as facts.
 - **Evidence today:** the report detects open-boundary edges (through `ShapeAnalysis_Shell`), but not their grouping into holes, and it cannot see self-intersection at all.
+- **Addendum (2026-10-12):** text-to-cad also checks each solid's signed volume, because a reversed solid can pass topology checks while reporting a negative volume. That fact needs no new binding — the adaptive `BRepGProp` wrappers in `src/brepGProp.ts` already compute it — so it can join the report alongside the two above, as a per-solid `signedVolume` fact.
 - **Probe (S):**
   1. Build a deliberately self-intersecting solid by translating one face of a box through the opposite face. Confirm `BRepExtrema_SelfIntersection` reports the overlapping face pair, and that a clean box reports none.
   2. On `piston.stp`, confirm `ShapeAnalysis_FreeBounds` groups the 48 open edges into closed wires (holes), and report their count and lengths.
@@ -569,6 +765,27 @@ None of these depends on another's result.
   - **Pass:** a readable file.
   - **Fail:** recorded.
 - **If admitted (S):** a VRML export target for B-rep sources. Low value, and ranked last for that reason: VRML is legacy, and glTF already covers display exchange.
+
+##### 3.12 Planar-facet merging before mesh → B-rep promotion {#planar-facet-merging-promotion}
+
+*Area: Geometry.*
+
+- **Hypothesis:** building one B-rep face per coplanar facet — rather than one per triangle — before sewing gives a promoted STEP with real faces, at a fraction of the cost. ReOpenSCAD's STEP writer does exactly this (coplanar triangles merged into faces, shared edges and vertices), so CAD packages see a box as six faces, not twelve triangles.
+- **Evidence today:**
+  - `promote_mesh_to_brep` and `check_mesh_health` build one `BRepBuilderAPI_MakeFace` per triangle and sew them. The cost scales with triangle count, which is why `MAX_HEALABLE_TRIANGLES` refuses meshes above 50 000 and auto-decimation targets about 1 000.
+  - The pieces exist: `src/webview/meshFacets.ts`'s `segmentCoplanarFacets` (pure, already used host-side by `meshioRegionParts.ts`) groups near-coplanar triangles, and `addSurfaceFromLines`' multi-loop path builds a planar face with holes from closed loops, choosing hole orientation by winding sign.
+  - The alternative is to sew per triangle and then merge with `ShapeUpgrade_UnifySameDomain`, which was probed under [Unify same-domain faces](#unify-same-domain-faces-as-an-edit-op) — but that keeps the per-triangle cost it is meant to remove.
+- **Probe (S):**
+  1. For `cube.stl`, a faceted cylinder STL and one large polyhedral mesh, extract each facet's boundary loops (outer plus holes) in the facet's plane, and build one face per facet through the multi-loop construction.
+  2. Sew the faces and build the solid as `promoteMeshToBrep` does.
+  3. Compare against the current path: face count, healed volume, sewing tolerance reached, and wall-clock time.
+  4. Measure where the 15° coplanarity tolerance starts to distort volume on the faceted cylinder, since merged facets are flattened onto one plane.
+- **Decision gate:**
+  - **Pass:** identical volume within the sewing tolerance, a much lower face count, and a clear time win on the large mesh.
+  - **Partial:** correct only for exactly planar facets → merge with a tight tolerance only, and record the limit.
+  - **Fail:** recorded; promotion stays per triangle.
+- **If admitted (M):** a `mergeFacets` option on `promote_mesh_to_brep` and the Promote button, plus a raised ceiling for meshes whose facet count is small.
+- **Out of scope:** fitting curved surfaces to facets (`fit_mesh_region` reports a fitted primitive, but nothing rebuilds a face from it).
 
 #### 4. Meshing probes {#meshing-probes}
 
@@ -811,6 +1028,26 @@ The MMG core probe is complete; its working volume/surface paths and negative op
   - Locale-dependent sidecar or export formats. Every file this extension writes keeps `.` decimals.
 - **Done when:** a second locale passes `test:webview` and `test:integration` with its own catalogue; the gate reports zero missing keys for that locale; English screenshots are unchanged apart from intentional text edits; and each of the five pinned `en-US` files has a recorded decision.
 
+##### 5.3 Inline 3D preview as an MCP App resource {#mcp-app-inline-preview}
+
+*Area: Platform, Ecosystem.*
+
+- **Hypothesis:** an MCP App resource — a `ui://cad-preview/…` resource of type `text/html` carrying a quantised mesh and a minimal viewer — renders an interactive 3D preview inline in hosts that support MCP Apps (Claude Desktop, VS Code), instead of the four static PNGs `render_snapshot` returns today.
+- **Evidence today:**
+  - Both projects in the [agent-CAD comparison](#agent-cad-comparison) ship one. ReOpenSCAD's `ui://reopenscad/workspace/{id}` page embeds the mesh inline in a compact quantised form, because the page cannot fetch; text-to-cad's `cad_show` mounts a viewer card and its `cad_view`/`cad_screenshot` take the returned view token.
+  - Here, an agent sees geometry only as PNGs (`render_snapshot`, which also needs Playwright and Chromium and reports `supported: false` without them) or as numbers.
+  - Unknowns: whether the pinned `@modelcontextprotocol/sdk` can declare the resource and the tool-result link; which hosts actually render it; and how large a page `bull.stp` produces.
+- **Probe (S):**
+  1. Serve a resource with `bull.stp`'s welded triangles quantised to uint16 against its bounding box, plus a hand-written WebGL viewer (no three.js — the page must be self-contained), and link it from a tool result.
+  2. Open it in two hosts and record which render it, and what CSP each applies.
+  3. Record the page size for `bull.stp` and `turbine.stp`, against a starting ceiling of 2 MB to be confirmed with the maintainer.
+  4. Confirm stdout stays pure JSON-RPC (`mcp:smoke`).
+- **Decision gate:**
+  - **Pass:** at least one host renders it within the ceiling → admitted.
+  - **Fail:** no host renders it, or the SDK cannot declare it → recorded; PNGs remain the answer.
+- **If admitted (M):** a `preview` resource offered beside `render_snapshot` (not replacing it — the PNGs are what an agent can *look at*), with a size cap that falls back to the images.
+- **Out of scope:** reporting the user's camera or selection back to the agent through the page (see [quotable references](#quotable-entity-references) for the cheap version).
+
 ### 6. Strategic — multi-phase bets {#strategic-—-multi-phase-bets}
 
 *Admission: an L-sized, multi-phase effort that gates other items or reopens Non-goals. Each starts with its own probe, and nothing below it is estimated until that probe reports.*
@@ -871,6 +1108,25 @@ The MMG core probe is complete; its working volume/surface paths and negative op
   - **Phase 1 (M):** publish the artifact under the maintainer's own scope (`@loumalouomega/openscad-wasm`, following the gmsh-wasm / mmg-wasm precedent), add a lazy-singleton `scadWasmService.ts` to `kernelWorker.ts` through the standard four-touch-point `Pipeline` pattern, and have `resolveEffectiveSource` prefer it, falling back to the binary when the WASM path cannot handle a construct.
   - **Phase 2 (S):** README "Licensing" attribution, the `WASM_EXTERNALS` / `.vscodeignore` / `compat:vsix` packaging entries, and `doc/file-formats.md`, `doc/mcp-server.md` and `doc/getting-started.md` updates (the "install OpenSCAD" hint becomes the fallback message).
 - **Out of scope:** retiring the binary path; a live OpenSCAD editor or customizer UI; anything that makes `.scad` evaluation asynchronous outside the kernel worker.
+
+#### 6.3 Kinematic mates, named poses and pose-swept clearance {#kinematic-mates-and-pose-sweeps}
+
+*Area: Geometry.*
+
+- **Hypothesis:** revolute and slider joints between Parts, with limits and named poses, let the existing interference and clearance checks run across a motion range instead of at the one pose a file happens to be saved in.
+- **Evidence today:**
+  - Assembly support stops at static placement: `mate` aligns two faces once, and `explode` previews a spread. Nothing records that a lid rotates about a hinge axis between 0° and 110°.
+  - text-to-cad models this directly — `revolute`, `slider`, `cylindrical` and `fastened` mates with required limits on anything that moves, couplings, and named poses — and its own validation guide says a static clearance check "proves only that pose".
+  - The checking half is already here: `check_interference_all` and, once it ships, [clearance reporting](#interference-clearance) run on whatever geometry they are given. What is missing is a way to put a Part at a pose without rewriting the op list.
+- **Probe (M — a design question as much as a kernel one):**
+  1. **Scope.** Decide with the maintainer whether this is assembly *checking* (in scope: preparing a model for analysis) or assembly *authoring* (a modelling application, which the Non-goals reject). The answer bounds everything below.
+  2. **Storage.** Joints and poses are neither geometry nor display state. Decide whether they are an eighth sidecar or ride the parts sidecar, and how they survive `entityRebind.ts` when the axis references a face.
+  3. **Evaluation.** Prototype a pose as a rigid transform applied to one Part's solids after the op-list replay (`BRepBuilderAPI_Transform_2`, the verified call shape), and sample a hinge at N angles through `checkInterferenceAll`. Record the cost per sample on a real assembly.
+- **Decision gate:**
+  - **Pass:** a checking-only scope is agreed, the storage fits the sidecar rules, and a sweep of 20 poses costs less than the kernel watchdog on the largest assembly fixture.
+  - **Fail:** recorded under Rejected scope with the scope answer.
+- **If admitted (L, provisional):** joints and poses in the chosen sidecar, a `pose` parameter on the analysis tools, a sweep option reporting the first colliding pose, and a pose picker in the viewer.
+- **Out of scope:** URDF/SDF export; animation authoring or video export; joint couplings and solvers.
 
 ## Definition of done
 
@@ -954,3 +1210,11 @@ Three groups, three different revival rules. Each says what would change our min
   - For CGAL: a concrete capability MMG and meshio++ demonstrably cannot supply, plus a WASM build to consume — its licence no longer blocks it.
   - For ParMmg: a real mesh that sequential MMG cannot handle within the kernel watchdog.
   - For Netgen: a capability the shipped in-Gmsh Netgen demonstrably lacks that a standalone build supplies (the bundled copy passed its probe: repeatable min/mean gain on `bull.stp`).
+
+- **Reimplementing the OpenSCAD language** — rejected, recorded from the [agent-CAD comparison](#agent-cad-comparison). ReOpenSCAD rewrote the lexer, parser, evaluator and CSG kernel from scratch to avoid OpenSCAD's code entirely. The cost is fidelity: no `import()`, `surface()` or `roof()`, no user library paths (so no BOSL2), one built-in stroke font, and a sampled fallback mesher with its own "will not match OpenSCAD" warning. This extension evaluates `.scad` through the real `openscad` binary, and the [OpenSCAD WASM port](#build-and-bundle-an-openscad-wasm-port) keeps the same engine without the install. **Revive only** if both the binary path and the WASM port are ruled out.
+
+- **Hosted, shared workspaces and an HTTP MCP transport** — rejected. ReOpenSCAD serves its MCP over HTTP, with the workspace URL itself granting edit access. This extension's MCP server is a local stdio process that reads and writes files the user already owns; a network listener would be a new attack surface with nothing local to gain. What survives: [registering the server with VS Code](#register-mcp-server-with-vscode) and copyable client snippets. **Revive only** for a concrete embedding request that cannot spawn a process (for example, a KKSS deployment that runs the server remotely), with authentication designed in from the start.
+
+- **Slicing, printer hand-off, supplier ordering and robot-description export** — rejected. text-to-cad ships skills that slice with OrcaSlicer, open Bambu Studio, preflight a SendCutSend order and write URDF/SDF. These are manufacturing and robotics execution, outside a tool for previewing, inspecting and preparing models. What survives is the fact-only analysis these skills start from: the [printability facts report](#printability-facts-report) and [draft and undercut analysis](#draft-and-undercut-analysis). **Revive only** if a downstream tool needs a file format this extension cannot already export (3MF is tracked separately).
+
+- **An in-viewer OpenSCAD editor with live re-evaluation** — rejected. ReOpenSCAD's workbench is a text area with syntax highlighting and live preview; here, VS Code is the editor and the viewer opens beside it. What survives: the [Customizer panel](#openscad-customizer-panel), [include tracking](#openscad-include-tracking-and-cache) so a saved edit reloads promptly, and [structured diagnostics](#openscad-diagnostics). **Revive only** if the side-by-side workflow turns out to be unworkable in practice.
