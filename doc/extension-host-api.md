@@ -107,6 +107,7 @@ The extension host is a Node.js process. These modules run there — never in th
 | `src/objSolidSignatures.ts` | Wires `objParser.ts` + `meshComponents.ts` into `SolidSignature[]` for Compare Models' OBJ side (pure, unit-tested) |
 | `src/plyParser.ts` | Pure host-side PLY parser (ASCII + both binary endiannesses, one shared header parser) into a flat indexed mesh (vscode/OCCT/THREE-free, unit-tested) |
 | `src/plySolidSignatures.ts` | Wires `plyParser.ts` + `meshComponents.ts` into `SolidSignature[]` for Compare Models' PLY side (pure, unit-tested) |
+| `src/threeMf.ts` | 3MF writer (`build3mf`, hand-rolled on `fflate`, geometry only, byte-stable) and unit reader (`threeMfMmPerUnit`) — pure; the loader itself is three's `3MFLoader` in the webview only |
 | `src/gltfParser.ts` | Pure host-side glTF 2.0 / GLB parser (geometry only — node world matrices applied, then welded) into a flat indexed mesh (vscode/OCCT/THREE-free, unit-tested **and cross-validated against three.js's own `GLTFLoader`**) |
 | `src/gltfSolidSignatures.ts` | Wires `gltfParser.ts` + `meshComponents.ts` into `SolidSignature[]` for Compare Models' glTF side (pure, unit-tested) |
 | `src/silhouetteEdges.ts` | Pure silhouette-edge extraction from a welded indexed mesh, given a view direction (vscode/OCCT/THREE-free, unit-tested) |
@@ -727,7 +728,7 @@ Maps file extensions to a render strategy and canonical format identifier.
 ```typescript
 type RenderStrategy = 'occt' | 'three' | 'meshio'
 type CadFormat =
-  | 'step' | 'iges' | 'brep' | 'stl' | 'obj' | 'ply' | 'gltf'
+  | 'step' | 'iges' | 'brep' | 'stl' | 'obj' | 'ply' | 'gltf' | '3mf'
   | 'vtk' | 'vtu' | 'med' | 'cgns' | 'exodus' | 'xdmf' | 'mdpa'
   | 'openfoam'
   | 'gmsh' | 'abaqus' | 'unv' | 'su2' | 'medit'
@@ -736,6 +737,8 @@ const MESHIO_FORMATS: readonly CadFormat[]  // the 13 meshio-routed CadFormat me
 const AMBIGUOUS_MESHIO_EXTENSIONS: ReadonlyMap<string, string>  // extension -> caveat message; "msh" (also ANSYS/FreeFem) and "inp" (also ANSYS APDL) default to this codebase's own Gmsh/Abaqus output, surfaced as a status/warning on open
 type MeshParseFormat = 'stl' | 'obj' | 'ply' | 'gltf'
 const COMPARABLE_MESH_FORMATS: ReadonlySet<CadFormat>  // = {stl, obj, ply, gltf}
+const DISPLAY_ONLY_MESH_FORMATS: ReadonlySet<CadFormat> // = {3mf}: loaded by the webview only; every other `three` format is in the set above (pinned by a drift-guard test)
+function displayOnlyMeshMessage(format: CadFormat, what: string): string  // the one refusal wording every host-side gate uses
 ```
 
 `MeshParseFormat`/`COMPARABLE_MESH_FORMATS` name the mesh formats with a **pure host-side triangle parser** (`stlParser.ts`, `objParser.ts`, `plyParser.ts`, `gltfParser.ts`) — i.e. the ones whose geometry the host can derive on its own, with no webview and no OCCT. Every host-side geometry consumer gates on this one set: `compare_models`, `check_mesh_health`, `promote_mesh_to_brep`, and silhouette SVG export, plus the interactive Compare Models / Mesh Health / Export Silhouette SVG flows.
@@ -763,6 +766,7 @@ Returns `undefined` for unrecognized extensions (the extension never opens those
 | `.obj`          | `three`  | `obj`    |
 | `.ply`          | `three`  | `ply`    |
 | `.gltf`, `.glb` | `three`  | `gltf`   |
+| `.3mf`          | `three`  | `3mf` (display-only on the host) |
 | `.vtk`          | `meshio` | `vtk`    |
 | `.vtu`          | `meshio` | `vtu`    |
 | `.med`          | `meshio` | `med`    |
@@ -928,7 +932,7 @@ const EXPORT_LABEL: Record<CadFormat, string>       // e.g. gltf → "glTF Binar
 Used by `provider.ts`'s `handleExport()` to build the quick-pick items and the save dialog's default filename/filter.
 
 ```typescript
-const UNIT_CONVERTIBLE_FORMATS: ReadonlySet<CadFormat>  // {"step", "iges", "brep", "stl", "obj", "ply", "gltf"}
+const UNIT_CONVERTIBLE_FORMATS: ReadonlySet<CadFormat>  // {"step", "iges", "brep", "stl", "obj", "ply", "gltf", "3mf"}
 ```
 
 The gate for unit-conversion-on-export — now every B-rep/mesh export target. `"step"`/`"iges"` were originally excluded (both declare a length unit in their own header that must match the geometry's actual scale, and this OCCT WASM build has no writer-level API to set it directly), but each now has a verified, working fix: STEP via a text patch of the writer's output (`src/stepUnitPatch.ts`), IGES via its alternate unit-aware writer constructor (`IGESControl_Writer_2`, which turned out to genuinely work — the original "couldn't be read back to verify" finding was a false negative caused by an over-long MEMFS path, not a real limitation). `"brep"` has no unit metadata to mismatch; the mesh formats enforce none either. `provider.ts`'s `handleExport` and `mcpTools.ts`'s `exportBRepTool` both gate on this set — see `exportBRep`'s `unit` param below for the full write-up.

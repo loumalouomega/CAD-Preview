@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   classifyToolError,
   errorToolResult,
+  mergeFieldsIntoResult,
   mergeWarningsIntoResult,
   splitUnknownKeys,
   unknownKeyWarnings,
@@ -35,6 +36,13 @@ describe("classifyToolError", () => {
     const other = classifyToolError(new Error("Unknown op kind foo"));
     expect(other).toEqual({ code: "tool-error", message: "Unknown op kind foo", retryable: false });
     expect(classifyToolError("plain string").message).toBe("plain string");
+  });
+
+  it("codes a stale revision as non-retryable and carries the current revision", () => {
+    const info = classifyToolError(named("StaleRevisionError", "edits changed", { currentRevision: "abc123" }));
+    expect(info).toMatchObject({ code: "stale-revision", retryable: false, currentRevision: "abc123" });
+    expect(info.hint).toMatch(/get_state/);
+    expect(classifyToolError(named("StaleRevisionError", "x"))).not.toHaveProperty("currentRevision");
   });
 
   it("does not mistake a digit-bearing application message for a kernel condition", () => {
@@ -86,5 +94,16 @@ describe("unknown parameters", () => {
   it("nearestName applies the same near-miss rule as nearestOpKind", () => {
     expect(nearestName("fillt", ["fillet", "chamfer"])).toBe("fillet");
     expect(nearestName("qqqqqq", ["fillet", "chamfer"])).toBeNull();
+  });
+});
+
+describe("mergeFieldsIntoResult", () => {
+  it("adds fields to a JSON-object first block and leaves other results untouched", () => {
+    const ok = mergeFieldsIntoResult({ content: [{ type: "text", text: JSON.stringify({ a: 1 }) }] }, { revision: "r" });
+    expect(JSON.parse(ok.content[0].text!)).toEqual({ a: 1, revision: "r" });
+    const err = { content: [{ type: "text", text: "plain message" }] };
+    expect(mergeFieldsIntoResult(err, { revision: "r" })).toBe(err);
+    const arr = { content: [{ type: "text", text: "[1]" }] };
+    expect(mergeFieldsIntoResult(arr, { revision: "r" })).toBe(arr);
   });
 });

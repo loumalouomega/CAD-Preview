@@ -1036,6 +1036,7 @@ async function loadMeshFromUrl(
 | `"stl"`  | `STLLoader`  | Wraps `BufferGeometry` in a `THREE.Mesh` |
 | `"obj"`  | `OBJLoader`  | Calls `applyDefaultMaterial(group)`      |
 | `"ply"`  | `PLYLoader`  | Calls `geometry.computeVertexNormals()`  |
+| `"3mf"`  | `ThreeMFLoader` | Display-only on the host. `3MFLoader` (DOMParser) lives only in this module; the file's materials are replaced by the default material and the model is scaled by `threeMfMmPerUnit` (the loader reads but never applies the `unit` attribute) |
 | `"gltf"` | `GLTFLoader` | Returns `gltf.scene`; fetches the bytes itself, and only for a Draco/meshopt-compressed file attaches `DRACOLoader` (decoder files from `dist/draco/`, found relative to the `viewer.js` script URL) and the lazily-imported `MeshoptDecoder` |
 
 Every other `CadFormat` member (the meshio++-only formats — VTK/VTU/MED/CGNS/Exodus/XDMF/MDPA/OpenFOAM) throws via the `default` case — this function is never called with one of those. A meshio-imported document is converted to STL **host-side** first (`src/meshioService.ts`), so `loadMeshFromUrl` only ever sees `"stl"` for it (see `main.ts`'s `loadMeshObjectFromUrl` below).
@@ -1072,6 +1073,8 @@ function arrayBufferToBase64(buf: ArrayBufferLike): string
 ```
 
 Browser-side `btoa` counterpart to the `atob`-based decode in `geometryBuilder.ts`.
+
+**3MF:** `case "3mf"` collects the displayed meshes in world space (meshes sharing a `userData.groupId` become one object) and hands them to `src/threeMf.ts`'s `build3mf`, which applies no scale of its own — `applyExportScale` has already scaled the model — and writes the matching `unit` label. Pure `fflate`, so it is Node-safe at import (the kernel worker imports this file).
 
 **Browser-only dependencies:** `GLTFExporter`'s binary path uses `FileReader`/`Blob`, and `PLYExporter.parse()` uses `requestAnimationFrame` — neither exists in plain Node, so they only run for real inside the webview. `meshExporters.test.ts` polyfills `requestAnimationFrame` to unit-test the PLY path and skips the glTF binary path entirely (covered by the manual F5 verification instead).
 

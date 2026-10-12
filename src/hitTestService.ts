@@ -16,7 +16,12 @@ import { loadBRep } from "./occtService";
 import type { BRepFormat } from "./entityFacts";
 import type { EditOp } from "./editOps";
 import { rayPick, type PickEntityType, type RayHit, type Vec3 } from "./rayPick";
-import { TESSELLATION_PRESETS, type TessellationParams } from "./tessellationQuality";
+import {
+  DEFAULT_TESSELLATION_QUALITY,
+  tessellationParamsFor,
+  type TessellationQuality,
+} from "./tessellationQuality";
+import type { RenderTessellation } from "./renderService";
 
 export interface HitTestRay {
   origin: Vec3;
@@ -34,7 +39,13 @@ export interface HitTestOptions {
    * same on a 5 mm screw and a 3 m frame.
    */
   tolerance?: number;
-  quality?: TessellationParams;
+  /**
+   * Tessellation the rays are cast against, by NAME (the vocabulary every
+   * public boundary uses). Faces need no pick tolerance, so on a curved face
+   * the triangles themselves decide whether a ray lands or slips through a
+   * facet gap — a finer mesh narrows that gap. Default `standard`.
+   */
+  quality?: TessellationQuality;
 }
 
 export interface HitTestResult {
@@ -42,6 +53,9 @@ export interface HitTestResult {
   hits: (RayHit | null)[];
   /** The tolerance actually used, so a caller can see what "near" meant. */
   tolerance: number;
+  /** The mesh the rays were cast against, so a miss can be told apart from a
+   * coarse tessellation. Same shape the render tools report. */
+  tessellation: RenderTessellation;
 }
 
 /**
@@ -59,7 +73,16 @@ export async function hitTest(
   rays: HitTestRay[],
   options: HitTestOptions = {}
 ): Promise<HitTestResult> {
-  const loaded = await loadBRep(extensionPath, bytes, format, ops, options.quality ?? TESSELLATION_PRESETS.standard);
+  const quality = options.quality ?? DEFAULT_TESSELLATION_QUALITY;
+  const params = tessellationParamsFor(quality);
+  const loaded = await loadBRep(extensionPath, bytes, format, ops, params);
+  // Facts about the mesh actually picked against, from the buffers in hand.
+  const tessellation: RenderTessellation = {
+    quality,
+    linearDeflection: params.linearDeflection,
+    angularDeflectionRad: params.angularDeflectionRad,
+    triangleCount: loaded.groups.reduce((n, g) => n + g.faces.reduce((m, f) => m + f.buffers.indices.length / 3, 0), 0),
+  };
 
   const geometry = {
     groups: loaded.groups.map((g) => ({
@@ -79,7 +102,7 @@ export async function hitTest(
       tolerance,
     })
   );
-  return { hits, tolerance };
+  return { hits, tolerance, tessellation };
 }
 
 /** 1% of the model's bbox diagonal; `0` for an empty model (nothing to hit). */

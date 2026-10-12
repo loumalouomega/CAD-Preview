@@ -30,6 +30,7 @@ import {
   renderSnapshotTool,
   renderOpsPrefixTool,
   screenshotShapeTool,
+  hitTestTool,
   searchStandardPartsTool,
   downloadStandardPartTool,
   generateMeshTool,
@@ -128,6 +129,7 @@ let plyModel: string;
 let gltfModel: string;
 let vtkModel: string;
 let scadModel: string;
+let threeMfModel: string;
 
 /** A real, closed unit-cube OBJ (quad faces) — matches `objSolidSignatures.test.ts`'s fixture, used wherever a test needs actual resolvable geometry rather than just a recognized extension. */
 const UNIT_CUBE_OBJ = `
@@ -277,6 +279,7 @@ const FAKE_EXACT_MEASURE_RESULT: ExactMeasureResult = {
   toPoint: [3, 4, 0],
 };
 
+const FAKE_HIT_TESSELLATION = { quality: "standard", linearDeflection: 0.1, angularDeflectionRad: 0.5, triangleCount: 12 } as const;
 const FAKE_RENDER_RESULT: RenderResult = {
   supported: true,
   images: [
@@ -420,7 +423,7 @@ function fakePipeline(overrides: Partial<Pipeline> = {}): Pipeline {
       warnings: [],
     })),
     getEntityFacts: vi.fn(async () => FAKE_ENTITY_FACTS),
-    hitTest: vi.fn(async () => ({ hits: [], tolerance: 0 })),
+    hitTest: vi.fn(async () => ({ hits: [], tolerance: 0, tessellation: FAKE_HIT_TESSELLATION })),
     measureEntities: vi.fn(async () => FAKE_MEASURE_RESULT),
     measureExact: vi.fn(async () => FAKE_EXACT_MEASURE_RESULT),
     checkInterference: vi.fn(async () => FAKE_INTERFERENCE_RESULT),
@@ -552,6 +555,8 @@ beforeEach(async () => {
   gltfModel = path.join(dir, "model.gltf");
   vtkModel = path.join(dir, "model.vtk");
   scadModel = path.join(dir, "model.scad");
+  threeMfModel = path.join(dir, "model.3mf");
+  await fs.writeFile(threeMfModel, new Uint8Array([0x50, 0x4b, 3, 4]));
   await fs.writeFile(stpModel, "ISO-10303-21;", "utf8");
   await fs.writeFile(stpModel2, "ISO-10303-21;", "utf8");
   await fs.writeFile(stlModel, "solid x\nendsolid x\n", "utf8");
@@ -795,6 +800,17 @@ describe("load_model", () => {
     const state = await getState({ path: vtkModel });
     expect(state.parts.map((p) => p.name)).toEqual(["MaterialA", "MaterialB"]);
     expect(state.parts.every((p) => p.surfaces.every((s) => /^node-0\/face-\d+$/.test(s)))).toBe(true);
+  });
+
+  it("get_state reports a content revision per sidecar that moves only with the one written", async () => {
+    const m = path.join(dir, "rev.vtk");
+    await fs.writeFile(m, "x", "utf8");
+    const before = (await getState({ path: m })).revisions;
+    expect(before).toEqual({ edits: "absent", parts: "absent", layers: "absent", planes: "absent", annotations: "absent", mesh: "absent" });
+    await setPart({ path: m, name: "P", volumes: ["node-0"] });
+    const after = (await getState({ path: m })).revisions;
+    expect(after.parts).not.toBe("absent");
+    expect({ ...after, parts: "" }).toEqual({ ...before, parts: "" });
   });
 
   it("never overwrites an existing non-empty parts sidecar with auto-created ones", async () => {
@@ -4536,7 +4552,7 @@ describe("list_workspace_models", () => {
 
     const result = await listWorkspaceModels({ root: dir });
     expect(result.truncated).toBe(false);
-    const expected = ["model.gltf", "model.obj", "model.ply", "model.scad", "model.stl", "model.stp", "model.vtk", "model2.stp", "nested/b.step"];
+    const expected = ["model.3mf", "model.gltf", "model.obj", "model.ply", "model.scad", "model.stl", "model.stp", "model.vtk", "model2.stp", "nested/b.step"];
     expect(result.models.map((m) => path.relative(dir, m.path))).toEqual(expected);
     expect(result.models.some((m) => m.path.includes("ignored"))).toBe(false);
     expect(result.models.some((m) => m.path.endsWith("notes.txt"))).toBe(false);
@@ -5019,6 +5035,36 @@ describe("screenshot_shape", () => {
   });
 });
 
+describe("hit_test tessellationQuality", () => {
+  const ray = { origin: [0, 0, 10] as [number, number, number], direction: [0, 0, -1] as [number, number, number] };
+
+  it("forwards the quality, leaves it undefined when omitted, and echoes the tessellation block", async () => {
+    const fine = ctx();
+    const withFine = await hitTestTool(fine, { path: stpModel, rays: [ray], tessellationQuality: "fine" });
+    expect(vi.mocked(fine.pipeline.hitTest).mock.lastCall![5]!.quality).toBe("fine");
+    expect((withFine as { tessellation?: unknown }).tessellation).toEqual(FAKE_HIT_TESSELLATION);
+
+    const omitted = ctx();
+    await hitTestTool(omitted, { path: stpModel, rays: [ray] });
+    expect(vi.mocked(omitted.pipeline.hitTest).mock.lastCall![5]!.quality).toBeUndefined();
+  });
+
+  it("warns on an unrecognized value and falls back to standard", async () => {
+    const c = ctx();
+    const result = await hitTestTool(c, { path: stpModel, rays: [ray], tessellationQuality: "coarse" });
+    expect(vi.mocked(c.pipeline.hitTest).mock.lastCall![5]!.quality).toBe("standard");
+    expect(result.warnings.some((w) => /tessellationQuality "coarse" is not one of/.test(w))).toBe(true);
+  });
+
+  it("does not warn about a quality when the source is refused before any pick", async () => {
+    const c = ctx();
+    const result = await hitTestTool(c, { path: stlModel, rays: [ray], tessellationQuality: "ultra" });
+    expect(c.pipeline.hitTest).not.toHaveBeenCalled();
+    expect(result.supported).toBe(false);
+    expect(result.warnings.join("\n")).not.toMatch(/tessellationQuality/);
+  });
+});
+
 describe("sheet templates (save/list) and export_drawing_sheet with a template", () => {
   it("saves, lists and applies a template; explicit params still win; fields reach the title block", async () => {
     const lib = path.join(dir, "sheets.json");
@@ -5213,5 +5259,55 @@ describe("OpenSCAD Customizer tools", () => {
     await fs.writeFile(out, "old");
     await expect(convertScadTool({ path: scadPath, outputPath: out })).rejects.toThrow(/already exists/);
     expect((await convertScadTool({ path: scadPath, outputPath: out, overwrite: true })).supported).toBe(true);
+  });
+});
+
+describe("3MF is display-only on the host", () => {
+  // Every case also asserts the pipeline was never touched: a 3MF must be
+  // refused BY NAME before any host-side parser (built for another format) sees it.
+  it("check_mesh_health returns supported:false", async () => {
+    const c = ctx();
+    const r = await checkMeshHealthTool(c, { path: threeMfModel });
+    expect(r.supported).toBe(false);
+    expect(r.warnings.join(" ")).toMatch(/3mf has no host-side triangle-soup parser/i);
+    expect(c.pipeline.checkMeshHealth).not.toHaveBeenCalled();
+  });
+
+  it("promote_mesh_to_brep and repair_mesh throw", async () => {
+    const c = ctx();
+    await expect(promoteMeshToBrepTool(c, { path: threeMfModel, outputPath: path.join(dir, "x.step") })).rejects.toThrow(/3mf has no host-side triangle-soup parser/i);
+    await expect(repairMeshTool(c, { path: threeMfModel, outputPath: path.join(dir, "x.stl") })).rejects.toThrow(/3mf has no host-side triangle-soup parser/i);
+    expect(c.pipeline.promoteMeshToBrep).not.toHaveBeenCalled();
+    expect(c.pipeline.repairMesh).not.toHaveBeenCalled();
+  });
+
+  it("compare_models returns supported:false and names display-only formats", async () => {
+    const c = ctx();
+    const r = await compareModelsTool(c, { pathA: threeMfModel, pathB: stlModel });
+    expect(r.supported).toBe(false);
+    expect(r.warnings.join(" ")).toMatch(/display-only/i);
+    expect(r.warnings.join(" ")).toMatch(/3mf/);
+    expect(c.pipeline.compareModels).not.toHaveBeenCalled();
+  });
+
+  it("get_mass_properties is unsupported without touching WASM", async () => {
+    const c = ctx();
+    const r = await getMassProperties(c, { path: threeMfModel });
+    expect(r.supported).toBe(false);
+    expect(c.pipeline.computeMassProperties).not.toHaveBeenCalled();
+  });
+
+  it("load_model opens it with a display-only warning and no inventory", async () => {
+    const r = await loadModel(ctx(), { path: threeMfModel });
+    expect(r.format).toBe("3mf");
+    expect(r.warnings.join(" ")).toMatch(/3MF is display-only/);
+  });
+
+  it("save_model, the drawing tools and headless meshing refuse it by name", async () => {
+    const c = ctx();
+    await expect(saveModelTool(c, { path: threeMfModel })).rejects.toThrow(/3MF is display-only/);
+    await expect(exportSvgSilhouetteTool(c, { path: threeMfModel, outputPath: path.join(dir, "o.svg") })).rejects.toThrow(/display-only formats/);
+    await expect(generateMeshTool(c, { path: threeMfModel })).rejects.toThrow(/display-only mesh format/);
+    expect(c.pipeline.generateMesh).not.toHaveBeenCalled();
   });
 });

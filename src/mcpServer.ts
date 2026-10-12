@@ -24,7 +24,8 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import type { RequestHandlerExtra } from "@modelcontextprotocol/sdk/shared/protocol.js";
 import type { ServerRequest, ServerNotification } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
-import { errorToolResult, mergeWarningsIntoResult, splitUnknownKeys, unknownKeyWarnings } from "./mcpErrors";
+import { errorToolResult, mergeFieldsIntoResult, mergeWarningsIntoResult, splitUnknownKeys, unknownKeyWarnings } from "./mcpErrors";
+import { REVISION_GUARDED_TOOLS, assertRevision, currentRevision, lockKey, withSidecarLock } from "./mcpRevision";
 import { AsyncLocalStorage } from "async_hooks";
 import { createKernelClient, JobCancelledError, type JobOptions, type ScopedPipeline } from "./kernelClient";
 import { KERNELS_BY_FUNCTION } from "./kernelActivity";
@@ -242,11 +243,51 @@ const server = new McpServer({ name: "cad-preview", version: "1.0.0" }, { instru
     if (!shape || typeof shape !== "object" || typeof shape.safeParse === "function" || "_zod" in shape) {
       return baseRegisterTool(name, config, cb);
     }
-    const known = Object.keys(shape);
-    return baseRegisterTool(name, { ...config, inputSchema: z.looseObject(shape) }, async (args: unknown, extra: unknown) => {
+    // Revision guard (src/mcpRevision.ts): a tool that writes a sidecar gains
+    // an optional `expectedRevision`, injected here once rather than into 11
+    // registrations. The check, the handler and its write run under one lock
+    // per (model, sidecar), so two concurrent callers cannot both pass.
+    const guardKind = REVISION_GUARDED_TOOLS[name];
+    const fullShape = guardKind
+      ? {
+          ...shape,
+          expectedRevision: z
+            .string()
+            .optional()
+            .describe(
+              `Optimistic guard: the ${guardKind} revision from get_state (or a previous write's \`revision\`). If the ${guardKind} sidecar has changed since, the call is refused with code stale-revision and nothing is written. Omit to overwrite regardless.`
+            ),
+        }
+      : shape;
+    const known = Object.keys(fullShape);
+    return baseRegisterTool(name, { ...config, inputSchema: z.looseObject(fullShape) }, async (args: unknown, extra: unknown) => {
       const { kept, unknown } = splitUnknownKeys(args, known);
-      const result = await cb(kept, extra);
-      return mergeWarningsIntoResult(result, unknownKeyWarnings(unknown, known));
+      if (!guardKind) {
+        const result = await cb(kept, extra);
+        return mergeWarningsIntoResult(result, unknownKeyWarnings(unknown, known));
+      }
+      const { expectedRevision, ...handlerArgs } = kept as Record<string, unknown> & { expectedRevision?: unknown };
+      const modelFile = typeof handlerArgs.path === "string" ? handlerArgs.path : null;
+      if (modelFile === null) {
+        const result = await cb(handlerArgs, extra);
+        return mergeWarningsIntoResult(result, unknownKeyWarnings(unknown, known));
+      }
+      const dryRun = handlerArgs.dryRun === true;
+      let result = await withSidecarLock(lockKey(modelFile, guardKind), async () => {
+        try {
+          if (typeof expectedRevision === "string" && !dryRun) await assertRevision(modelFile, guardKind, expectedRevision);
+        } catch (err) {
+          return errorToolResult(err);
+        }
+        const res = await cb(handlerArgs, extra);
+        // Report the post-write revision so a caller can chain writes without
+        // another get_state. Read inside the lock, so it is this call's write.
+        return !dryRun && !(res as { isError?: boolean }).isError
+          ? mergeFieldsIntoResult(res, { revision: await currentRevision(modelFile, guardKind) })
+          : res;
+      });
+      result = mergeWarningsIntoResult(result, unknownKeyWarnings(unknown, known));
+      return result;
     });
   };
 }
@@ -1077,7 +1118,7 @@ server.registerTool(
   "get_state",
   {
     description:
-      "Read the model's sidecar state without loading geometry: the edit-op stack (indexed, with descriptions), parametric variables (with evaluated values), parts, and mesh options.",
+      "Read the model's sidecar state without loading geometry: the edit-op stack (indexed, with descriptions), parametric variables (with evaluated values), parts, and mesh options. `revisions` holds a content fingerprint per sidecar (edits, parts, layers, planes, annotations, mesh): pass one as `expectedRevision` to a write tool (apply_edit_ops, run_parametric_script, remove_edit_op, set_variables, set_part, set_plane, set_layer, assign_layer, pin_annotation, set_mesh_options, apply_mesh_preset) and the write is refused with code stale-revision if that sidecar changed in the meantime. Every such write returns its new `revision`.",
     inputSchema: { path: modelPath },
   },
   wrap((args: { path: string }) => getState(args))
@@ -1250,6 +1291,10 @@ server.registerTool(
         .number()
         .optional()
         .describe("How near a ray must pass an edge/point to hit it, in model units. Default: 1% of the model's bbox diagonal (faces need no tolerance)."),
+      tessellationQuality: z
+        .string()
+        .optional()
+        .describe("Mesh the rays are cast against: draft | standard | fine (default standard). Faces need no tolerance, so on a curved face the triangles decide whether a ray lands or slips through a facet gap — use fine when a miss near a silhouette or a thin wall looks wrong. The response's `tessellation` block reports the mesh actually used."),
     },
   },
   wrap(
@@ -1260,6 +1305,7 @@ server.registerTool(
       focus?: string[];
       hide?: string[];
       tolerance?: number;
+      tessellationQuality?: string;
     }) => hitTestTool(ctx, args)
   )
 );

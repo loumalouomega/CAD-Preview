@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { exportTargetsFor, EXPORT_EXTENSION, UNIT_CONVERTIBLE_FORMATS } from "./exportTargets";
+import { exportTargetsFor, EXPORT_EXTENSION, EXPORT_LABEL, MESH_SAVE_IN_PLACE_FORMATS, UNIT_CONVERTIBLE_FORMATS } from "./exportTargets";
 
 describe("exportTargetsFor", () => {
   it("offers the other B-rep formats plus all mesh formats for a STEP source", () => {
@@ -10,6 +10,7 @@ describe("exportTargetsFor", () => {
       "obj",
       "ply",
       "gltf",
+      "3mf",
     ]);
   });
 
@@ -21,6 +22,7 @@ describe("exportTargetsFor", () => {
       "obj",
       "ply",
       "gltf",
+      "3mf",
     ]);
   });
 
@@ -32,6 +34,7 @@ describe("exportTargetsFor", () => {
       "obj",
       "ply",
       "gltf",
+      "3mf",
     ]);
   });
 
@@ -44,14 +47,15 @@ describe("exportTargetsFor", () => {
       "obj",
       "ply",
       "gltf",
+      "3mf",
     ]);
   });
 
   it("offers only the other mesh formats for a mesh source", () => {
-    expect(exportTargetsFor({ strategy: "three", format: "stl" })).toEqual(["obj", "ply", "gltf"]);
-    expect(exportTargetsFor({ strategy: "three", format: "obj" })).toEqual(["stl", "ply", "gltf"]);
-    expect(exportTargetsFor({ strategy: "three", format: "ply" })).toEqual(["stl", "obj", "gltf"]);
-    expect(exportTargetsFor({ strategy: "three", format: "gltf" })).toEqual(["stl", "obj", "ply"]);
+    expect(exportTargetsFor({ strategy: "three", format: "stl" })).toEqual(["obj", "ply", "gltf", "3mf"]);
+    expect(exportTargetsFor({ strategy: "three", format: "obj" })).toEqual(["stl", "ply", "gltf", "3mf"]);
+    expect(exportTargetsFor({ strategy: "three", format: "ply" })).toEqual(["stl", "obj", "gltf", "3mf"]);
+    expect(exportTargetsFor({ strategy: "three", format: "gltf" })).toEqual(["stl", "obj", "ply", "3mf"]);
   });
 
   it("offers the source's own B-rep format first when allowSameFormat is set (Tier 0 Phase 1)", () => {
@@ -63,18 +67,32 @@ describe("exportTargetsFor", () => {
       "obj",
       "ply",
       "gltf",
+      "3mf",
     ]);
     expect(exportTargetsFor({ strategy: "occt", format: "brep" }, true)[0]).toBe("brep");
   });
 
   it("offers the source's own mesh format first for STL/OBJ/PLY when allowSameFormat is set (Tier 0 Phase 3)", () => {
-    expect(exportTargetsFor({ strategy: "three", format: "stl" }, true)).toEqual(["stl", "obj", "ply", "gltf"]);
-    expect(exportTargetsFor({ strategy: "three", format: "obj" }, true)).toEqual(["obj", "stl", "ply", "gltf"]);
-    expect(exportTargetsFor({ strategy: "three", format: "ply" }, true)).toEqual(["ply", "stl", "obj", "gltf"]);
+    expect(exportTargetsFor({ strategy: "three", format: "stl" }, true)).toEqual(["stl", "obj", "ply", "gltf", "3mf"]);
+    expect(exportTargetsFor({ strategy: "three", format: "obj" }, true)).toEqual(["obj", "stl", "ply", "gltf", "3mf"]);
+    expect(exportTargetsFor({ strategy: "three", format: "ply" }, true)).toEqual(["ply", "stl", "obj", "gltf", "3mf"]);
   });
 
   it("keeps the glTF exclusion even with allowSameFormat (exporter only emits binary .glb)", () => {
-    expect(exportTargetsFor({ strategy: "three", format: "gltf" }, true)).toEqual(["stl", "obj", "ply"]);
+    expect(exportTargetsFor({ strategy: "three", format: "gltf" }, true)).toEqual(["stl", "obj", "ply", "3mf"]);
+  });
+});
+
+describe("3MF as a display-only mesh format", () => {
+  it("offers the other mesh formats (not itself) for a 3MF source, with no save-in-place", () => {
+    expect(exportTargetsFor({ strategy: "three", format: "3mf" })).toEqual(["stl", "obj", "ply", "gltf"]);
+    expect(exportTargetsFor({ strategy: "three", format: "3mf" }, true)).toEqual(["stl", "obj", "ply", "gltf"]);
+    expect(MESH_SAVE_IN_PLACE_FORMATS.has("3mf")).toBe(false);
+  });
+
+  it("is an export target for every B-rep and other mesh source, with its own extension and label", () => {
+    expect(EXPORT_EXTENSION["3mf"]).toBe("3mf");
+    expect(EXPORT_LABEL["3mf"]).toBe("3MF");
   });
 });
 
@@ -90,6 +108,7 @@ describe("UNIT_CONVERTIBLE_FORMATS", () => {
     expect(UNIT_CONVERTIBLE_FORMATS.has("obj")).toBe(true);
     expect(UNIT_CONVERTIBLE_FORMATS.has("ply")).toBe(true);
     expect(UNIT_CONVERTIBLE_FORMATS.has("gltf")).toBe(true);
+    expect(UNIT_CONVERTIBLE_FORMATS.has("3mf")).toBe(true);
   });
 });
 

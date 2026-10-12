@@ -320,6 +320,40 @@ try {
     assert(!(JSON.parse(fine.content?.[0]?.text ?? "{}").warnings ?? []).some((w) => /Unknown parameter/.test(w)), "no unknown-parameter warning when every key is declared");
   }
   {
+    // Optimistic revision guard (roadmap "Optimistic revision guard for MCP
+    // sidecar writes"): two writers reading the same revision must not both win.
+    const revModel = path.join(dir, "revision-guard.stp");
+    fs.copyFileSync(path.join(ROOT, "examples", "STP", "block.stp"), revModel);
+    const box = (x) => ({ op: "addBox", center: [x, 0, 0], size: [1, 1, 1] });
+    const s0 = await call("get_state", { path: revModel });
+    assert(s0.revisions?.edits === "absent", `get_state reports an absent edits sidecar as "absent" (got ${JSON.stringify(s0.revisions)})`);
+    const w1 = await call("apply_edit_ops", { path: revModel, ops: [box(10)], expectedRevision: s0.revisions.edits });
+    assert(w1.applied === 1 && typeof w1.revision === "string" && w1.revision !== "absent", "a guarded write at the current revision applies and returns its new revision");
+    const stale = await request("tools/call", { name: "apply_edit_ops", arguments: { path: revModel, ops: [box(20)], expectedRevision: s0.revisions.edits } });
+    assert(
+      stale.isError === true && stale.structuredContent?.code === "stale-revision" && stale.structuredContent?.retryable === false && stale.structuredContent?.currentRevision === w1.revision,
+      `a stale write is refused with code stale-revision carrying the current revision (got ${JSON.stringify(stale.structuredContent)})`
+    );
+    const s1 = await call("get_state", { path: revModel });
+    assert(s1.edits.length === 1 && s1.revisions.edits === w1.revision, "the refused write left the sidecar with exactly one op at the returned revision");
+    const w2 = await call("apply_edit_ops", { path: revModel, ops: [box(30)] });
+    assert(w2.applied === 1, "omitting expectedRevision keeps the unguarded last-writer behaviour");
+    const dry = await call("apply_edit_ops", { path: revModel, ops: [box(40)], dryRun: true, expectedRevision: s0.revisions.edits });
+    assert(dry.revision === undefined, "a dryRun is neither refused by nor reports a revision");
+    // Concurrent pair from the SAME revision: exactly one may win.
+    const cur = (await call("get_state", { path: revModel })).revisions.edits;
+    const pair = await Promise.all(
+      [50, 60].map((x) => request("tools/call", { name: "apply_edit_ops", arguments: { path: revModel, ops: [box(x)], expectedRevision: cur } }))
+    );
+    assert(pair.filter((r) => r.isError !== true).length === 1 && pair.filter((r) => r.structuredContent?.code === "stale-revision").length === 1, "of two concurrent writes from one revision exactly one applies and one is stale-revision");
+    assert((await call("get_state", { path: revModel })).edits.length === 3, "the sidecar gained exactly one op from the concurrent pair");
+    const pRev = (await call("get_state", { path: revModel })).revisions.parts;
+    const sp = await call("set_part", { path: revModel, name: "G", volumes: ["solid-0"], expectedRevision: pRev });
+    assert(typeof sp.revision === "string" && sp.revision !== pRev, "set_part returns the parts sidecar's new revision");
+    const spStale = await request("tools/call", { name: "set_part", arguments: { path: revModel, name: "H", volumes: ["solid-0"], expectedRevision: pRev } });
+    assert(spStale.structuredContent?.code === "stale-revision", "a stale set_part is refused too");
+  }
+  {
     const oneOp = caps.ops[0]?.op ?? "addBox";
     const opRead = await request("resources/read", { uri: `cad-preview://op/${oneOp}` });
     const opText = opRead.contents?.[0]?.text ?? "";
@@ -2601,6 +2635,26 @@ try {
     vtkHealthRejected.supported === false && /no host-side triangle-soup parser/i.test(vtkHealthRejected.warnings?.[0] ?? ""),
     `check_mesh_health rejects a meshio-only source with a clear message, not a crash (got: ${JSON.stringify(vtkHealthRejected)})`
   );
+
+  // 3MF is DISPLAY-ONLY on the host: it opens in the viewer but has no host
+  // triangle parser, so every host-side consumer refuses it by name instead of
+  // falling into a parser built for another format.
+  {
+    const threeMf = path.join(ROOT, "examples", "3MF", "cube.3mf");
+    const health3mf = await call("check_mesh_health", { path: threeMf });
+    assert(
+      health3mf.supported === false && /3mf has no host-side triangle-soup parser/i.test(health3mf.warnings?.[0] ?? ""),
+      `check_mesh_health refuses a 3MF by name (got: ${JSON.stringify(health3mf)})`
+    );
+    const promote3mf = await callTolerant("promote_mesh_to_brep", { path: threeMf, outputPath: path.join(dir, "from-3mf.step") });
+    assert(/3mf has no host-side triangle-soup parser/i.test(promote3mf.error ?? ""), `promote_mesh_to_brep refuses a 3MF by name (got: ${JSON.stringify(promote3mf)})`);
+    const compare3mf = await call("compare_models", { pathA: threeMf, pathB: path.join(ROOT, "examples", "STL", "cube.stl") });
+    assert(compare3mf.supported === false && /display-only/i.test((compare3mf.warnings ?? []).join(" ")), `compare_models refuses a 3MF and says display-only (got: ${JSON.stringify(compare3mf).slice(0, 240)})`);
+    const load3mf = await call("load_model", { path: threeMf });
+    assert(load3mf.format === "3mf" && /3MF is display-only/.test((load3mf.warnings ?? []).join(" ")), `load_model opens a 3MF with a display-only warning (got: ${JSON.stringify(load3mf).slice(0, 240)})`);
+    const mesh3mf = await callTolerant("generate_mesh", { path: threeMf });
+    assert(/display-only mesh format/i.test(mesh3mf.error ?? ""), `generate_mesh refuses a 3MF by name (got: ${JSON.stringify(mesh3mf).slice(0, 240)})`);
+  }
 
   // Tier 1 "Auto-decimate under MAX_HEALABLE_TRIANGLES" —
   // examples/STL/large-sphere-100k.stl is a real 99904-triangle mesh, over
@@ -4950,6 +5004,50 @@ try {
     assert(
       meshHit.supported === false && /B-rep sources only/.test(meshHit.warnings[0]),
       "hit_test degrades cleanly for a mesh-format source"
+    );
+
+    // tessellationQuality (roadmap "Tessellation quality for hit_test"): faces
+    // have no pick tolerance, so on a curved face the triangles decide whether
+    // a ray lands. A radius-10 cylinder's top cap is a polygon whose edges sag
+    // inside the circle by up to the deflection; 120 vertical rays at r = 9.96
+    // therefore slip past the cap at coarse settings and land at fine (whose
+    // 0.03 deflection keeps every edge outside r = 9.97). Probed live:
+    // draft 29, standard 72, fine 120 of 120.
+    const tessModel = path.join(dir, "hit-tessellation.brep");
+    fs.copyFileSync(path.join(ROOT, "examples", "BREP", "blank.brep"), tessModel);
+    const cyl = await call("apply_edit_ops", {
+      path: tessModel,
+      ops: [{ op: "addCylinder", center: [0, 0, 0], axis: [0, 0, 1], radius: 10, height: 10 }],
+    });
+    assert(cyl.applied === 1, "the tessellation fixture cylinder applied");
+    const ringRays = [];
+    for (let a = 0; a < 360; a += 3) {
+      const t = (a * Math.PI) / 180;
+      ringRays.push({ origin: [9.96 * Math.cos(t), 9.96 * Math.sin(t), 30], direction: [0, 0, -1] });
+    }
+    const hitsAt = async (q) => {
+      const r = await call("hit_test", { path: tessModel, rays: ringRays, mode: "surface", ...(q ? { tessellationQuality: q } : {}) });
+      return { n: r.hits.filter(Boolean).length, r };
+    };
+    const hOmit = await hitsAt(undefined);
+    const hStd = await hitsAt("standard");
+    const hFine = await hitsAt("fine");
+    const hDraft = await hitsAt("draft");
+    assert(
+      hDraft.n < hStd.n && hStd.n < hFine.n && hFine.n === ringRays.length,
+      `a finer mesh lands more rays near the silhouette: draft ${hDraft.n} < standard ${hStd.n} < fine ${hFine.n} of ${ringRays.length}`
+    );
+    assert(hOmit.n === hStd.n && hOmit.r.tessellation.quality === "standard", "omitting tessellationQuality is indistinguishable from standard");
+    assert(
+      hFine.r.tessellation.quality === "fine" &&
+        hFine.r.tessellation.linearDeflection < hStd.r.tessellation.linearDeflection &&
+        hFine.r.tessellation.triangleCount > hStd.r.tessellation.triangleCount,
+      `hit_test reports the mesh it picked against (got ${JSON.stringify(hFine.r.tessellation)})`
+    );
+    const hBad = await call("hit_test", { path: tessModel, rays: ringRays.slice(0, 1), tessellationQuality: "coarse" });
+    assert(
+      hBad.tessellation.quality === "standard" && hBad.warnings.some((w) => /tessellationQuality "coarse" is not one of/.test(w)),
+      "an unrecognized quality warns and uses standard"
     );
   }
 

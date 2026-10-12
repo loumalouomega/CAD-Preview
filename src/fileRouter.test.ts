@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { routeFile, MESHIO_FORMATS, AMBIGUOUS_MESHIO_EXTENSIONS, ambiguityCaveatFor, matchExtension } from "./fileRouter";
+import { routeFile, COMPARABLE_MESH_FORMATS, DISPLAY_ONLY_MESH_FORMATS, displayOnlyMeshMessage, ROUTED_EXTENSIONS, MESHIO_FORMATS, AMBIGUOUS_MESHIO_EXTENSIONS, ambiguityCaveatFor, matchExtension } from "./fileRouter";
 
 describe("routeFile", () => {
   it("routes STEP files to the OCCT strategy", () => {
@@ -22,6 +22,8 @@ describe("routeFile", () => {
     expect(routeFile("m.ply")).toEqual({ strategy: "three", format: "ply" });
     expect(routeFile("m.gltf")).toEqual({ strategy: "three", format: "gltf" });
     expect(routeFile("m.glb")).toEqual({ strategy: "three", format: "gltf" });
+    expect(routeFile("m.3mf")).toEqual({ strategy: "three", format: "3mf" });
+    expect(routeFile("M.3MF")).toEqual({ strategy: "three", format: "3mf" });
   });
 
   it("is case-insensitive", () => {
@@ -155,5 +157,30 @@ describe("routeFile", () => {
     for (const message of AMBIGUOUS_MESHIO_EXTENSIONS.values()) {
       expect(message.length).toBeGreaterThan(0);
     }
+  });
+});
+
+describe("display-only mesh formats", () => {
+  it("every strategy:\"three\" format is either host-parseable or declared display-only (drift guard)", () => {
+    const threeFormats = new Set(
+      ROUTED_EXTENSIONS.map((ext) => routeFile(`x.${ext}`)).filter((r) => r?.strategy === "three").map((r) => r!.format)
+    );
+    expect(threeFormats.size).toBeGreaterThan(0);
+    for (const f of threeFormats) {
+      expect(COMPARABLE_MESH_FORMATS.has(f) || DISPLAY_ONLY_MESH_FORMATS.has(f), `${f} is neither comparable nor display-only`).toBe(true);
+      expect(COMPARABLE_MESH_FORMATS.has(f) && DISPLAY_ONLY_MESH_FORMATS.has(f), `${f} is both`).toBe(false);
+    }
+  });
+
+  it("3MF is display-only and never host-comparable", () => {
+    expect(DISPLAY_ONLY_MESH_FORMATS.has("3mf")).toBe(true);
+    expect(COMPARABLE_MESH_FORMATS.has("3mf")).toBe(false);
+  });
+
+  it("the refusal names the format and the action", () => {
+    const msg = displayOnlyMeshMessage("3mf", "a mesh healability check");
+    expect(msg).toContain("3MF");
+    expect(msg).toContain("display-only");
+    expect(msg).toContain("a mesh healability check");
   });
 });

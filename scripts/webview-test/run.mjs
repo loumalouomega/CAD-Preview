@@ -23,6 +23,7 @@
  */
 import * as fs from "fs";
 import * as path from "path";
+import { unzipSync, strFromU8 } from "fflate";
 import {
   ROOT,
   FIX,
@@ -487,6 +488,16 @@ test("mesh export: every target serializes real geometry from the live scene", a
     { format: "obj", binary: false, check: (b) => ({ ok: b.toString("latin1").includes("\nf "), detail: "has f-lines" }) },
     { format: "ply", binary: false, check: (b) => ({ ok: b.toString("latin1").startsWith("ply"), detail: "ply header" }) },
     { format: "gltf", binary: true, check: (b) => ({ ok: b.toString("latin1", 0, 4) === "glTF", detail: "GLB magic" }) },
+    {
+      format: "3mf",
+      binary: true,
+      check: (b) => {
+        // A zip (PK) whose model part really holds triangles, not just a well-formed shell.
+        const model = b.toString("latin1", 0, 2) === "PK" ? strFromU8(unzipSync(new Uint8Array(b))["3D/3dmodel.model"] ?? new Uint8Array()) : "";
+        const tris = (model.match(/<triangle /g) ?? []).length;
+        return { ok: tris > 0 && model.includes("<model unit="), detail: `${tris} triangles` };
+      },
+    },
   ];
 
   for (const { format, binary, check } of targets) {
@@ -3828,6 +3839,45 @@ test("save point: undo is disabled when only baked ops remain", async (page) => 
   assert(disabled === true, "the Undo button disables when the stack is at the save point");
 });
 
+// ── Mark agent-made edits (roadmap "Mark agent-made edits in the viewer") ────
+//
+// The host's edits watcher posts `externalFrom` only for a pure append by
+// another writer. Rows from that index on carry a transient "external" badge
+// (webview memory only); the next local edit clears it.
+
+test("external edits: appended rows are badged, earlier rows are not, a local edit clears it", async (page) => {
+  await populate(page);
+  await post(page, { type: "edits", ops: SAVE_POINT_OPS, variables: [], bakedThrough: 0 });
+  await sleep(300);
+  const badgeRows = () =>
+    page.evaluate(() =>
+      Array.from(document.querySelectorAll("#edits-panel .edit-row")).map((li) => !!li.querySelector(".edit-external-badge"))
+    );
+  let rows = await badgeRows();
+  assert(rows.length === 2 && rows.every((b) => !b), `a plain edits post marks nothing (got ${JSON.stringify(rows)})`);
+
+  const appended = [...SAVE_POINT_OPS, { op: "translate", targets: ["solid-0"], vec: [0, 0, 1] }];
+  await post(page, { type: "edits", ops: appended, variables: [], bakedThrough: 0, externalFrom: 2 });
+  await sleep(300);
+  rows = await badgeRows();
+  assert(
+    rows.length === 3 && !rows[0] && !rows[1] && rows[2],
+    `only the externally appended row is badged (got ${JSON.stringify(rows)})`
+  );
+
+  // A local edit (Undo here) ends the marking.
+  await page.click("#edits-undo");
+  await sleep(300);
+  rows = await badgeRows();
+  assert(rows.every((b) => !b), `a local edit clears the badges (got ${JSON.stringify(rows)})`);
+
+  // A later plain edits post (no externalFrom) also leaves nothing marked.
+  await post(page, { type: "edits", ops: appended, variables: [], bakedThrough: 0 });
+  await sleep(300);
+  rows = await badgeRows();
+  assert(rows.every((b) => !b), "an edits post without externalFrom clears the badges");
+});
+
 // ── Saved view bookmarks (roadmap Tier 1 "Saved view bookmarks") ─────────────
 //
 // A named collection of inspection viewpoints persisted as a top-level
@@ -6868,6 +6918,61 @@ test("mesh colours: Flat display mode keeps the file colours", async (page) => {
   await sleep(600);
   const shaded = await hueCounts(page);
   assert(shaded.red > MIN_PX && shaded.green > MIN_PX && shaded.blue > MIN_PX, `and switching back to Shaded still does (got ${JSON.stringify(shaded)})`);
+});
+
+/** Posts the host's own `exportMesh` message and returns the decoded payload. */
+async function exportBytes(page, format, unit) {
+  const requestId = `x-${format}-${Math.random().toString(36).slice(2)}`;
+  await post(page, { type: "exportMesh", requestId, format, ...(unit ? { unit } : {}) });
+  const result = await page
+    .waitForFunction((rid) => window.__sent?.find((m) => m.requestId === rid && (m.type === "exportResult" || m.type === "exportError")) ?? null, requestId, { timeout: 30000 })
+    .then((h) => h.jsonValue());
+  assert(result?.type === "exportResult", `${format} export answers with exportResult (got ${result?.type})`);
+  return Buffer.from(result.data, result.binary ? "base64" : "utf8");
+}
+const stlExtent = (buf) => {
+  const tris = buf.readUInt32LE(80);
+  let lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
+  for (let t = 0; t < tris; t++) for (let v = 0; v < 3; v++) for (let a = 0; a < 3; a++) {
+    const x = buf.readFloatLE(84 + t * 50 + 12 + v * 12 + a * 4);
+    lo[a] = Math.min(lo[a], x); hi[a] = Math.max(hi[a], x);
+  }
+  return { tris, size: hi.map((h, i) => h - lo[i]) };
+};
+const threeMfTriangles = (buf) => (strFromU8(unzipSync(new Uint8Array(buf))["3D/3dmodel.model"]).match(/<triangle /g) ?? []).length;
+
+test("3MF: a committed cube opens, renders and exports back to 3MF with the same triangle count", async (page) => {
+  await openColoured(page, "/examples/3MF/cube.3mf", "3mf");
+  const status = await page.evaluate(() => document.getElementById("status").textContent);
+  assert(!/fail|error/i.test(status), `no load error is reported (status ${JSON.stringify(status)})`);
+  const stats = await viewportModelStats(page);
+  assert(stats.fraction > 0.01 && stats.centre > 0, `the model renders and is centred (fraction ${stats.fraction.toFixed(3)})`);
+
+  const first = await exportBytes(page, "3mf");
+  const n = threeMfTriangles(first);
+  assert(n === 12, `exporting the loaded cube writes its 12 triangles (got ${n})`);
+
+  // Reopen the EXPORTED bytes (a data: URL through the same loader) and export again.
+  await post(page, { type: "loadUrl", url: `data:application/octet-stream;base64,${first.toString("base64")}`, format: "3mf" });
+  await sleep(1200);
+  const again = await exportBytes(page, "3mf");
+  assert(threeMfTriangles(again) === 12, `reopening the exported 3MF and exporting again keeps the triangle count (got ${threeMfTriangles(again)})`);
+});
+
+test("3MF: the declared unit is applied on load and written on export", async (page) => {
+  // A 1 inch cube declared unit="inch": three's 3MFLoader ignores the unit, so
+  // the viewer (millimetres) must scale it to 25.4.
+  await openColoured(page, "/examples/3MF/cube-inch.3mf", "3mf");
+  const stl = stlExtent(await exportBytes(page, "stl"));
+  assert(stl.tris === 12, `12 triangles (got ${stl.tris})`);
+  assert(stl.size.every((s) => Math.abs(s - 25.4) < 1e-3), `the inch cube measures 25.4 mm per side (got ${JSON.stringify(stl.size)})`);
+
+  // Exporting at a non-mm unit scales AND labels, so the file keeps its size.
+  const inch = await exportBytes(page, "3mf", "in");
+  const model = strFromU8(unzipSync(new Uint8Array(inch))["3D/3dmodel.model"]);
+  assert(model.includes('unit="inch"'), "an inch export is labelled unit=\"inch\"");
+  const xs = [...model.matchAll(/<vertex x="([^"]+)"/g)].map((m) => Number(m[1]));
+  assert(Math.max(...xs) - Math.min(...xs) > 0.99 && Math.max(...xs) - Math.min(...xs) < 1.01, `with coordinates in inches (span ${Math.max(...xs) - Math.min(...xs)})`);
 });
 
 // Compressed glTF (roadmap "Compressed glTF"). This harness serves the repo

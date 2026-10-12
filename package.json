@@ -40,6 +40,9 @@
             "filenamePattern": "*.glb"
           },
           {
+            "filenamePattern": "*.3mf"
+          },
+          {
             "filenamePattern": "*.step"
           },
           {

@@ -2,9 +2,11 @@ import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { DRACOLoader } from "three/examples/jsm/loaders/DRACOLoader.js";
 import { MTLLoader } from "three/examples/jsm/loaders/MTLLoader.js";
+import { ThreeMFLoader } from "three/examples/jsm/loaders/3MFLoader.js";
 import type { CadFormat } from "../fileRouter";
 import { isSafeRelativePath } from "../safeRelativePath";
-import { parseMeshObject, parseObjObject } from "./meshObject";
+import { applyDefaultMaterial, parseMeshObject, parseObjObject } from "./meshObject";
+import { threeMfMmPerUnit } from "../threeMf";
 import { gltfUsesCompression } from "./gltfSniff";
 
 /**
@@ -125,6 +127,8 @@ export async function loadMeshFromUrl(
     }
     case "gltf":
       return loadGltf(url);
+    case "3mf":
+      return load3mf(url);
     default:
       throw new Error(`Mesh loader for "${format}" is not implemented.`);
   }
@@ -178,4 +182,26 @@ async function loadGltf(url: string): Promise<THREE.Object3D> {
     // builds a fresh one.
     draco?.dispose();
   }
+}
+
+/**
+ * Loads a 3MF. `3MFLoader` uses `DOMParser`, so it lives here and nowhere the
+ * kernel worker imports. It reads the model's `unit` attribute but never
+ * applies it, so the declared unit is read separately and applied as a root
+ * scale (the viewer works in millimetres). Geometry only: the file's
+ * colours/materials are replaced by the default material.
+ */
+async function load3mf(url: string): Promise<THREE.Object3D> {
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`Failed to fetch ${url}: ${res.status}`);
+  const data = await res.arrayBuffer();
+  const group = new ThreeMFLoader().parse(data);
+  // The loader attaches the file's own materials; geometry-only means ours.
+  group.traverse((child) => {
+    if (child instanceof THREE.Mesh) child.material = undefined as unknown as THREE.Material;
+  });
+  applyDefaultMaterial(group);
+  const mm = threeMfMmPerUnit(new Uint8Array(data));
+  if (mm !== 1) group.scale.multiplyScalar(mm);
+  return group;
 }

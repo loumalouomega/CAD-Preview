@@ -771,6 +771,35 @@ test("Compressed glTF (Draco and meshopt) loads under the real webview CSP", asy
     assert(buf.length === 84 + count * 50, `${name}: a well-formed binary STL (${buf.length} bytes)`);
     await closeAll();
   }
+
+  // 3MF rides this case rather than getting its own: the suite holds a limited
+  // number of live webviews (see `sharedExportDoc`), and what it proves is the
+  // same shape — three's `3MFLoader` (DOMParser) and `fflate` run under the
+  // real CSP, and the displayed scene is non-empty. The inch file also pins the
+  // unit scaling (`3MFLoader` reads `unit` but never applies it).
+  for (const [name, edge] of [["cube.3mf", 10], ["cube-inch.3mf", 25.4]] as const) {
+    const staged = stage(path.join(ROOT, "examples", "3MF", name));
+    const out = path.join(path.dirname(staged), "from-3mf.stl");
+    assert(await openDocument(staged), `${name} opens`);
+    await withModals([pick("STL"), pick("Native"), save(out)], async () => {
+      await vscode.commands.executeCommand("cad-preview.export");
+      await waitForFile(out);
+    });
+    const buf = fs.readFileSync(out);
+    const count = buf.length >= 84 ? buf.readUInt32LE(80) : 0;
+    assert(count === 12, `${name}: the displayed model carries the cube's 12 triangles (got ${count})`);
+    let max = -Infinity;
+    let min = Infinity;
+    for (let i = 0; i < count; i++) {
+      for (let v = 0; v < 3; v++) {
+        const x = buf.readFloatLE(84 + i * 50 + 12 + v * 12);
+        max = Math.max(max, x);
+        min = Math.min(min, x);
+      }
+    }
+    assert(Math.abs(max - min - edge) < 1e-3, `${name}: the cube measures ${edge} mm along x (got ${max - min})`);
+    await closeAll();
+  }
 });
 
 test("Save in place bakes ops into the source with .bak + watermark", async () => {
@@ -985,9 +1014,11 @@ test("A second save advances the watermark without rotating .bak or re-asking", 
   // A new op arrives the way an MCP agent's would — an external sidecar write
   // the watcher reconciles (the suite cannot push ops through the webview).
   seen.length = 0;
-  const sub = api.onDidPostMessage?.((m) =>
-    void seen.push(m.type === "status" ? (m as unknown as { text: string }).text : m.type)
-  );
+  const externalFroms: Array<number | undefined> = [];
+  const sub = api.onDidPostMessage?.((m) => {
+    if (m.type === "edits") externalFroms.push((m as unknown as { externalFrom?: number }).externalFrom);
+    seen.push(m.type === "status" ? (m as unknown as { text: string }).text : m.type);
+  });
   try {
     const op2 = { op: "translate", targets: ["solid-0"], vec: [0, 5, 0] };
     fs.writeFileSync(
@@ -998,6 +1029,9 @@ test("A second save advances the watermark without rotating .bak or re-asking", 
       await waitFor(() => seen.includes("Edits updated externally"), 15000),
       "the external op is reconciled before the second save"
     );
+    // Mark agent-made edits: a pure append by another writer reaches the
+    // webview with the index of the first appended op (1 = after op1).
+    assert(externalFroms.includes(1), `the reconciled append is posted with externalFrom=1 (saw ${JSON.stringify(externalFroms)})`);
   } finally {
     sub?.dispose();
   }

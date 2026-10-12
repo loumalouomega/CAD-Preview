@@ -1,7 +1,7 @@
 import type { CadFormat, FileRoute } from "./fileRouter";
 
 const BREP_FORMATS: CadFormat[] = ["step", "iges", "brep"];
-const MESH_FORMATS: CadFormat[] = ["stl", "obj", "ply", "gltf"];
+const MESH_FORMATS: CadFormat[] = ["stl", "obj", "ply", "gltf", "3mf"];
 /**
  * Mesh formats that can be saved back to their own file in place (Tier 0
  * Phase 3). STL/OBJ/PLY serialize through the webview's Three.js exporters
@@ -70,8 +70,13 @@ export function exportTargetsFor(route: FileRoute, allowSameFormat = false): Cad
  * BREP has no unit metadata at all (nothing to mismatch); the mesh formats
  * (STL/OBJ/PLY/glTF) enforce no unit metadata either, so scaling their raw
  * numbers is complete and correct on its own.
+ *
+ * 3MF DOES declare a unit (`<model unit="…">`): its writer scales the
+ * geometry AND writes the matching label, so the file keeps the same
+ * real-world size under a correct label (the STEP/IGES rule) rather than
+ * being a mislabelled-mm file.
  */
-export const UNIT_CONVERTIBLE_FORMATS: ReadonlySet<CadFormat> = new Set(["step", "iges", "brep", "stl", "obj", "ply", "gltf"]);
+export const UNIT_CONVERTIBLE_FORMATS: ReadonlySet<CadFormat> = new Set(["step", "iges", "brep", "stl", "obj", "ply", "gltf", "3mf"]);
 
 /** File extension to use when saving an export of the given format. */
 export const EXPORT_EXTENSION: Record<CadFormat, string> = {
@@ -90,6 +95,8 @@ export const EXPORT_EXTENSION: Record<CadFormat, string> = {
   // Export always produces a single-file binary glTF (.glb), not a text .gltf with
   // embedded base64 buffers — simpler and more portable for a one-shot Save As.
   gltf: "glb",
+  // 3MF: hand-rolled zip+XML writer in `meshExporters.ts` (geometry only).
+  "3mf": "3mf",
   // meshio++-only formats (below) are never reachable via `exportTargetsFor` —
   // they're import-only document formats, not export targets — but every
   // `CadFormat` member needs an entry here for `Record<CadFormat, string>` to
@@ -127,6 +134,7 @@ export const EXPORT_LABEL: Record<CadFormat, string> = {
   obj: "OBJ",
   ply: "PLY",
   gltf: "glTF Binary",
+  "3mf": "3MF",
   // Never offered by exportTargetsFor (see EXPORT_EXTENSION's comment) — present only for Record exhaustiveness.
   vtk: "VTK",
   vtu: "VTU",

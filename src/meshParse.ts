@@ -27,5 +27,9 @@ export function parseToWeldedMesh(bytes: Uint8Array, format: MeshParseFormat, ex
   if (format === "stl") return weldTriangleSoup(parseStl(bytes));
   if (format === "obj") return parseObj(bytes);
   if (format === "gltf") return parseGltf(bytes, external); // already welded internally
-  return parsePly(bytes);
+  if (format === "ply") return parsePly(bytes);
+  // Defense in depth: callers gate on COMPARABLE_MESH_FORMATS, but a format
+  // added to the router without a parser must fail loudly here rather than
+  // fall into the PLY parser.
+  throw new Error(`${String(format)} has no host-side triangle parser`);
 }

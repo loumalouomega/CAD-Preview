@@ -4,7 +4,7 @@ layout: home
 hero:
   name: CAD Preview
   text: Interactive 3D CAD and mesh previews in VS Code
-  tagline: Open a STEP, IGES, BREP, STL, OBJ, PLY, or glTF file — CAD Preview renders it instantly inside the editor with full orbit, pan, and zoom.
+  tagline: Open a STEP, IGES, BREP, STL, OBJ, PLY, glTF, or 3MF file — CAD Preview renders it instantly inside the editor with full orbit, pan, and zoom.
   actions:
     - theme: brand
       text: Get Started
@@ -114,6 +114,7 @@ features:
 | OBJ    | `.obj`          | Three.js `OBJLoader`                   |
 | PLY    | `.ply`          | Three.js `PLYLoader`                   |
 | glTF   | `.gltf`, `.glb` | Three.js `GLTFLoader`                  |
+| 3MF    | `.3mf`          | Three.js `3MFLoader` (display-only on the host) |
 
 Plus [VTK/VTU, MED, CGNS, Exodus, XDMF, Kratos MDPA, OpenFOAM, Gmsh Mesh, Abaqus, I-DEAS Universal, SU2, INRIA Medit, GiD Postprocess, and Nastran Bulk Data](/file-formats#meshio-bridge-formats-vtk-med-cgns-exodus-xdmf-kratos-mdpa-openfoam-and-more) via the host-side meshio++ bridge — Gmsh Mesh, Abaqus, I-DEAS Universal, SU2, INRIA Medit and Nastran close a real export/import asymmetry (this codebase's own FE Meshing panel wrote them but couldn't reopen them). SVG and DXF are not rendering formats but appear at both ends of the pipeline: **Import SVG…**/**Import DXF…** trace a 2D drawing's geometry into sketch polylines/profile ops, and **Export Silhouette SVG…/…DXF…** write a 2D outline of the model back out.
 

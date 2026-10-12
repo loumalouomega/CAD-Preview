@@ -23,7 +23,7 @@
  * raw-file mesh.
  */
 
-import type { FileRoute, MeshParseFormat } from "./fileRouter";
+import { DISPLAY_ONLY_MESH_FORMATS, displayOnlyMeshMessage, type FileRoute, type MeshParseFormat } from "./fileRouter";
 import type { MeshGenerationInput } from "./gmshService";
 import type { MeshioCompanion } from "./meshioService";
 import type { GltfExternalBuffers } from "./gltfParser";
@@ -122,7 +122,11 @@ export async function resolveMeshSourceInput(
   unit: DisplayUnit = "mm"
 ): Promise<MeshGenerationInput> {
   if (!isMeshSourceRoute(route)) {
-    throw new Error(`${route.format} is not a mesh-format source — resolve it through the B-rep STEP re-export.`);
+    throw new Error(
+      DISPLAY_ONLY_MESH_FORMATS.has(route.format)
+        ? displayOnlyMeshMessage(route.format, "meshing or export")
+        : `${route.format} is not a mesh-format source — resolve it through the B-rep STEP re-export.`
+    );
   }
   const notBaked =
     route.strategy === "meshio"

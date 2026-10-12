@@ -513,7 +513,7 @@ Sent alongside (or shortly after) `geometry` for B-rep files. Also sent for Thre
 
 ### `loadUrl`
 
-Sent for mesh-format files (STL/OBJ/PLY/glTF). The `url` is a `vscode-webview://` URI produced by `webview.asWebviewUri(uri)`. The webview calls `loadMeshFromUrl(url, format)`.
+Sent for mesh-format files (STL/OBJ/PLY/glTF/3MF). The `url` is a `vscode-webview://` URI produced by `webview.asWebviewUri(uri)`. The webview calls `loadMeshFromUrl(url, format)`.
 
 ```json
 {
@@ -606,6 +606,8 @@ An op may carry an optional `exprs` annotation (field path → expression string
 }
 ```
 
+`bakedThrough` (optional) is the save-point watermark. `externalFrom` (optional) is sent only when the host's edits watcher reconciled a **pure append** made by another writer — an agent, a script: the index of the first appended op. The history marks rows from that index as external (a transient badge, webview memory only) until the next local edit; any other external change (a removal, a reorder, an edited prefix) is adopted without it.
+
 ### `editError`
 
 Shown in the status overlay when applying an op fails (e.g. an OCCT operation throws). Distinct from `error` only by intent; both render the same way.
@@ -635,7 +637,7 @@ Shown in the error overlay (`#error-overlay`). Sent if tessellation throws or if
 
 ### `exportMesh`
 
-Sent when the user picks a mesh-format export target (STL/OBJ/PLY/glTF) in the host's quick-pick. Only mesh targets round-trip through the webview — B-rep targets (STEP/IGES/BREP) are written entirely in the host via OCCT, with no webview involvement. The webview serializes the currently displayed `THREE.Object3D` with the matching exporter from `three/examples/jsm/exporters/` and replies with `exportResult`/`exportError`. `unit` (optional, `DisplayUnit = 'mm'|'cm'|'m'|'in'|'ft'` from `src/lengthUnits.ts`, `undefined`/`'mm'` = no-op) is the export-unit quick-pick's answer — a REAL geometric scale (`meshExporters.ts`'s `exportModel` clones the model root, scales it, and force-updates its world matrix before serializing), distinct from the display-unit selector (`src/webview/units.ts`), which only ever rescales what a number looks like and never reaches this message at all.
+Sent when the user picks a mesh-format export target (STL/OBJ/PLY/glTF/3MF) in the host's quick-pick. Only mesh targets round-trip through the webview — B-rep targets (STEP/IGES/BREP) are written entirely in the host via OCCT, with no webview involvement. The webview serializes the currently displayed `THREE.Object3D` with the matching exporter from `three/examples/jsm/exporters/` and replies with `exportResult`/`exportError`. `unit` (optional, `DisplayUnit = 'mm'|'cm'|'m'|'in'|'ft'` from `src/lengthUnits.ts`, `undefined`/`'mm'` = no-op) is the export-unit quick-pick's answer — a REAL geometric scale (`meshExporters.ts`'s `exportModel` clones the model root, scales it, and force-updates its world matrix before serializing), distinct from the display-unit selector (`src/webview/units.ts`), which only ever rescales what a number looks like and never reaches this message at all.
 
 ```json
 { "type": "exportMesh", "requestId": "1234-0.56", "format": "stl", "unit": "in" }
