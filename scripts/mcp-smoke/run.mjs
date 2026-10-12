@@ -456,6 +456,11 @@ try {
     if (base.supported) {
       const wide = await call("convert_scad", { path: paramScad, outputPath: csgWide, parameters: { width: 60, bogus: 1 } });
       assert(wide.applied.width === 60 && wide.warnings.join(" ").match(/bogus/), "convert_scad applies width and reports the unknown name");
+      assert(
+        Array.isArray(wide.diagnostics) && typeof wide.droppedCount === "number" &&
+          wide.diagnostics.every((d) => ["echo", "warning", "deprecated", "error"].includes(d.severity)),
+        `convert_scad reports openscad's stderr as structured diagnostics + droppedCount (got ${JSON.stringify(wide.diagnostics)})`
+      );
       const volOf = async (p) => (await call("get_mass_properties", { path: p })).volume;
       const delta = (await volOf(csgWide)) - (await volOf(csgDefault));
       assert(

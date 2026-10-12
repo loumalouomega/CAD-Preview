@@ -675,7 +675,9 @@ describe("load_model", () => {
       );
       // The source file is still reported truthfully; conversion chatter rides warnings.
       expect(result.format).toBe("scad");
-      expect(result.warnings.join(" ")).toMatch(/openscad: /);
+      expect(result.warnings.join(" ")).toMatch(/openscad warning: /);
+      // The stub's one line is also reported structurally; a quiet source would add no such key.
+      expect((result as { scadDiagnostics?: unknown[] }).scadDiagnostics).toEqual([expect.objectContaining({ severity: "warning" })]);
     } finally {
       if (saved === undefined) delete process.env.OPENSCAD_BINARY;
       else process.env.OPENSCAD_BINARY = saved;
@@ -5186,6 +5188,21 @@ describe("OpenSCAD Customizer tools", () => {
     expect(r.supported).toBe(false);
     expect(r.warnings.join(" ")).toMatch(/not found/);
     await expect(fs.stat(out)).rejects.toThrow();
+  });
+
+  it("convert_scad returns openscad's stderr as structured diagnostics with the dropped count", async () => {
+    process.env.OPENSCAD_BINARY = path.join(__dirname, "test-fixtures", "openscad-chatty-stub.sh");
+    process.env.STUB_STDERR = [...Array.from({ length: 9 }, (_, i) => `ECHO: e${i}`), "WARNING: real in file m.scad, line 2"].join("\n");
+    try {
+      const out = path.join(dir, "chatty.csg");
+      const r = await convertScadTool({ path: scadPath, outputPath: out });
+      expect(r.diagnostics).toHaveLength(5);
+      expect(r.diagnostics?.some((d) => d.severity === "warning" && d.line === 2)).toBe(true);
+      expect(r.droppedCount).toBe(5);
+      expect(r.warnings.some((w) => /^openscad warning: \u27E6openscad: real/.test(w))).toBe(true);
+    } finally {
+      delete process.env.STUB_STDERR;
+    }
   });
 
   it("convert_scad refuses a bad output path, the source itself, and an unforced overwrite", async () => {
