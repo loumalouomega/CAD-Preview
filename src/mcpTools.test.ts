@@ -30,6 +30,7 @@ import {
   renderSnapshotTool,
   renderOpsPrefixTool,
   screenshotShapeTool,
+  hitTestTool,
   searchStandardPartsTool,
   downloadStandardPartTool,
   generateMeshTool,
@@ -277,6 +278,7 @@ const FAKE_EXACT_MEASURE_RESULT: ExactMeasureResult = {
   toPoint: [3, 4, 0],
 };
 
+const FAKE_HIT_TESSELLATION = { quality: "standard", linearDeflection: 0.1, angularDeflectionRad: 0.5, triangleCount: 12 } as const;
 const FAKE_RENDER_RESULT: RenderResult = {
   supported: true,
   images: [
@@ -420,7 +422,7 @@ function fakePipeline(overrides: Partial<Pipeline> = {}): Pipeline {
       warnings: [],
     })),
     getEntityFacts: vi.fn(async () => FAKE_ENTITY_FACTS),
-    hitTest: vi.fn(async () => ({ hits: [], tolerance: 0 })),
+    hitTest: vi.fn(async () => ({ hits: [], tolerance: 0, tessellation: FAKE_HIT_TESSELLATION })),
     measureEntities: vi.fn(async () => FAKE_MEASURE_RESULT),
     measureExact: vi.fn(async () => FAKE_EXACT_MEASURE_RESULT),
     checkInterference: vi.fn(async () => FAKE_INTERFERENCE_RESULT),
@@ -5027,6 +5029,36 @@ describe("screenshot_shape", () => {
     const result = await screenshotShapeTool(c, { path: stlModel, entityId: "node-0" });
     expect(c.pipeline.renderSnapshot).not.toHaveBeenCalled();
     expect(result.supported).toBe(false);
+  });
+});
+
+describe("hit_test tessellationQuality", () => {
+  const ray = { origin: [0, 0, 10] as [number, number, number], direction: [0, 0, -1] as [number, number, number] };
+
+  it("forwards the quality, leaves it undefined when omitted, and echoes the tessellation block", async () => {
+    const fine = ctx();
+    const withFine = await hitTestTool(fine, { path: stpModel, rays: [ray], tessellationQuality: "fine" });
+    expect(vi.mocked(fine.pipeline.hitTest).mock.lastCall![5]!.quality).toBe("fine");
+    expect((withFine as { tessellation?: unknown }).tessellation).toEqual(FAKE_HIT_TESSELLATION);
+
+    const omitted = ctx();
+    await hitTestTool(omitted, { path: stpModel, rays: [ray] });
+    expect(vi.mocked(omitted.pipeline.hitTest).mock.lastCall![5]!.quality).toBeUndefined();
+  });
+
+  it("warns on an unrecognized value and falls back to standard", async () => {
+    const c = ctx();
+    const result = await hitTestTool(c, { path: stpModel, rays: [ray], tessellationQuality: "coarse" });
+    expect(vi.mocked(c.pipeline.hitTest).mock.lastCall![5]!.quality).toBe("standard");
+    expect(result.warnings.some((w) => /tessellationQuality "coarse" is not one of/.test(w))).toBe(true);
+  });
+
+  it("does not warn about a quality when the source is refused before any pick", async () => {
+    const c = ctx();
+    const result = await hitTestTool(c, { path: stlModel, rays: [ray], tessellationQuality: "ultra" });
+    expect(c.pipeline.hitTest).not.toHaveBeenCalled();
+    expect(result.supported).toBe(false);
+    expect(result.warnings.join("\n")).not.toMatch(/tessellationQuality/);
   });
 });
 

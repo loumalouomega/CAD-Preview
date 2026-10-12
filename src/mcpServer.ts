@@ -1291,6 +1291,10 @@ server.registerTool(
         .number()
         .optional()
         .describe("How near a ray must pass an edge/point to hit it, in model units. Default: 1% of the model's bbox diagonal (faces need no tolerance)."),
+      tessellationQuality: z
+        .string()
+        .optional()
+        .describe("Mesh the rays are cast against: draft | standard | fine (default standard). Faces need no tolerance, so on a curved face the triangles decide whether a ray lands or slips through a facet gap — use fine when a miss near a silhouette or a thin wall looks wrong. The response's `tessellation` block reports the mesh actually used."),
     },
   },
   wrap(
@@ -1301,6 +1305,7 @@ server.registerTool(
       focus?: string[];
       hide?: string[];
       tolerance?: number;
+      tessellationQuality?: string;
     }) => hitTestTool(ctx, args)
   )
 );

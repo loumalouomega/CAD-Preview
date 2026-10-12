@@ -309,17 +309,7 @@ These are outcome groupings, not release numbers. Independent small items can sh
 - **First useful increment (M):** a `unifySameDomain` edit op — B-rep only, topology-changing (every downstream `face-N`/`edge-N` renumbers, so Parts and annotations go through the existing rebind), explicit and undoable, never an automatic consequence of a failed `check_brep_health`. Needs a panel button, which means a TikZ icon through the `icons/` pipeline (`pdflatex` + `pdftocairo`), an `OP_PARAM_DOCS` entry, the generic `produced` bucket role, and a `mcp:smoke` assertion on the fused-box face count and volume.
 - **Done when:** the fused-box fixture drops 10 → 6 faces through `apply_edit_ops` at an unchanged volume, and a Part on one of the merged faces is rebound or reported dropped, never silently repointed.
 
-#### 2.5 Tessellation quality for `hit_test` {#tessellation-quality-for-hit-test}
-
-*Area: Parity.*
-
-- **Evidence:** `src/hitTestService.ts`'s `HitTestOptions` already carries a `quality?: TessellationParams` and `hitTest` passes it to `loadBRep` — but **no caller has ever set it**, so `hit_test` picks at the `standard` default like every other headless path did. `hitTestTool` forwards `mode`/`focus`/`hide`/`tolerance` and nothing else.
-- **Why it matters more here than for a render:** the pick's default edge/point tolerance is 1 % of the bbox diagonal, so on a model whose thin walls, fillet bands or holes are finer than that, the tessellation decides whether a ray lands on the intended entity or misses it. A caller has no way to ask for a finer mesh, and no way to see which one it got — so a miss is indistinguishable from a coarse mesh. The three render tools now return a `tessellation` block for exactly this reason; `hit_test` reports a `tolerance` and nothing about the mesh behind it.
-- **First useful increment (S):** add `tessellationQuality` (`draft` / `standard` / `fine`) to `hit_test`, defaulting to today's behaviour, and return the same `tessellation` block the render tools report next to `tolerance`. `HitTestOptions.quality` is typed `TessellationParams` — a deflection pair — so narrow it to a **name** and map down with `tessellationParamsFor`, matching `renderService`. This is the one place a raw params object was already exposed, and leaving the two shapes different is precisely the drift that naming at the boundary prevents. Warn on an unrecognized value, as the render tools now do, rather than degrading quietly.
-- **Done when:** on a fixture with sub-1 %-diagonal features, a ray that misses at `standard` hits the intended edge at `fine`, and omitting the parameter is indistinguishable from passing `standard`.
-- **Related follow-up, deliberately not folded in:** `compare_models`' optional `includeSnapshots` is the fourth render call site and still has no `tessellationQuality`, so its before/after images render at the `standard` default. It is absent on purpose rather than forgotten — each render parameter widens a surface whose images cost a browser launch apiece — but it should get the same parameter eventually, and `doc/mcp-server.md` says so at that tool's own row so a reader is not left guessing why it lacks what its siblings have.
-
-#### 2.6 meshio++ `feature_edges` replaces the hand-rolled winding check {#meshio-feature-edges-winding-check}
+#### 2.5 meshio++ `feature_edges` replaces the hand-rolled winding check {#meshio-feature-edges-winding-check}
 
 *Area: Meshing. Effort: S–M.*
 
@@ -328,7 +318,7 @@ These are outcome groupings, not release numbers. Independent small items can sh
 - **First useful increment (S–M):** report `inconsistentEdgeIds` (not just a count) from `analyzeMeshioSurfaces` using `featureEdges`' `feature:kind === "inconsistent"`, and cross-check it against the existing `inconsistentPairCount` on `flipped-winding-tet.stl` and the clean fixtures. If they agree on every committed fixture, retire the hand-rolled counter and say so in the same commit — one implementation of a fact, the same rule that removed the duplicated edge enumerator. A disagreement is a finding in itself and belongs in the write-up either way.
 - **Done when:** the count has one implementation, the pure analyzer's limitation is documented as a deliberate boundary rather than an open gap, and a fixture whose two implementations disagree cannot land silently.
 
-#### 2.7 meshio++ `check_quality` as a caller-supplied quality gate {#meshio-check-quality-gate}
+#### 2.6 meshio++ `check_quality` as a caller-supplied quality gate {#meshio-check-quality-gate}
 
 *Area: Meshing. Effort: S–M.*
 
@@ -337,7 +327,7 @@ These are outcome groupings, not release numbers. Independent small items can sh
 - **First useful increment (S–M):** an `estimate_mesh_budget`-shaped sibling: an MCP tool plus a panel row that runs the gate over the generated mesh and reports per-check results. It belongs **beside** the existing Gmsh `minSICN` summary rather than replacing it — the two metrics measure different things (a Jacobian on the actual cells vs. a shape-quality index), and a user needs both. The meshing spec for the docs lives in `doc/gmsh-integration.md`, which is where the comparison belongs.
 - **Done when:** a caller can state a threshold, get per-check facts back, and a deliberately bad mesh and a deliberately good one are distinguishable on the same fixture. Interactive and MCP reach the same result, per the parity rule.
 
-#### 2.8 meshio++ `hausdorff_distance` as a cross-check on the deviation map {#meshio-hausdorff-deviation-cross-check}
+#### 2.7 meshio++ `hausdorff_distance` as a cross-check on the deviation map {#meshio-hausdorff-deviation-cross-check}
 
 *Area: Meshing. Effort: S.*
 
@@ -347,7 +337,7 @@ These are outcome groupings, not release numbers. Independent small items can sh
 - **Done when:** the deviation map's sampling caveat is either backed by an independent number or its residual error is characterized, and the sampled-vs-certified distinction in `doc/file-formats.md` and the tool description is accurate about which one a caller is reading.
 - **Recorded as available, deliberately not adopted** (meshio++ 16.23–16.27, same release window): `edit_regions` would introduce a second, parallel concept to `Part`, which is a JSON sidecar over CAD entity ids — the exact divergence `src/entityRebind.ts` exists to prevent, and mesh regions have no viewer-side representation at all. `match_periodic_nodes`, `resample_sequence` and `blend_steps` are periodic- and transient-solver workflows; this tool exports to solvers but does not run them or hold result series, so none has a user workflow here that meets this file's bar for a new item. Recorded so a future review does not re-derive the triage, not as a standing invitation.
 
-#### 2.9 OpenSCAD Customizer panel in the viewer {#openscad-customizer-panel}
+#### 2.8 OpenSCAD Customizer panel in the viewer {#openscad-customizer-panel}
 
 *Area: Formats, Parity. Effort: M.*
 
@@ -357,7 +347,7 @@ These are outcome groupings, not release numbers. Independent small items can sh
 - **Open questions to answer first:** whether a long conversion (seconds under CGAL) needs the cancellable-progress treatment `loadModel(true)` already gives a large STEP; how an override interacts with an edit-op list whose `edge-N` ids were authored against the default geometry (a changed dimension can renumber them — the same drift `entityRebind.ts` repairs for topology-changing ops, but here the *base* changes, which it does not handle); and whether the Manifold backend, which tessellates differently, should invalidate persisted ids.
 - **Done when:** changing a parameter in the panel re-evaluates the model and the same values reproduce through `convert_scad`, the source file is byte-identical, and an override survives a reopen.
 
-#### 2.10 Coincident-point prompt: collapse or keep independent {#coincident-point-collapse-or-independent}
+#### 2.9 Coincident-point prompt: collapse or keep independent {#coincident-point-collapse-or-independent}
 
 *Area: Geometry, Parity. Effort: S–M.*
 
@@ -369,7 +359,7 @@ These are outcome groupings, not release numbers. Independent small items can sh
 - **Done when:** on a fixture with a committed point, authoring the same coordinates — once via the panel, once headless — offers the choice interactively and honours the recorded field on replay; collapse leaves the `point-N` inventory unchanged, independent adds exactly one; a committed `test:webview` case covers the prompt end to end.
 - **Out of scope:** automatic sewing or healing of near-coincident geometry (the explicit repair op, 3.2); a general coincident-entity merge beyond points; snapping the new coordinates to the old ones (collapse reuses the id, it never moves either point).
 
-#### 2.11 GiD-style geometry structure view {#geometry-structure-view}
+#### 2.10 GiD-style geometry structure view {#geometry-structure-view}
 
 *Area: Geometry. Effort: M.*
 
@@ -378,7 +368,7 @@ These are outcome groupings, not release numbers. Independent small items can sh
 - **Done when:** on a committed multi-solid fixture, the Geometry mode shows every `point-N` / `edge-N` / `face-N` / `solid-N` recognisable by kind and selectable as today; a committed `test:webview` case toggles into the mode and screenshots it beside the shaded render for comparison.
 - **Out of scope:** mesh views — shaded/wireframe already cover GiD panels (b)–(d); dimension annotations in the structure view (the annotations feature owns those); per-Part colouring, which stays as it is.
 
-#### 2.12 OpenSCAD include tracking and conversion cache {#openscad-include-tracking-and-cache}
+#### 2.11 OpenSCAD include tracking and conversion cache {#openscad-include-tracking-and-cache}
 
 *Area: Formats. Effort: M.*
 
@@ -393,7 +383,7 @@ These are outcome groupings, not release numbers. Independent small items can sh
 - **Done when:** a second `load_model` on an unchanged model does not spawn `openscad` (a recording stub binary counts spawns); editing an included file reloads an open document; and changing any key input — a dependency's bytes, the backend, a `-D` value — misses the cache.
 - **Out of scope:** a disk cache shared across sessions; caching `.scad` evaluation inside the kernel worker (the [WASM port](#build-and-bundle-an-openscad-wasm-port) owns that path).
 
-#### 2.13 OpenSCAD `color()` and top-level objects become Parts {#openscad-color-parts}
+#### 2.12 OpenSCAD `color()` and top-level objects become Parts {#openscad-color-parts}
 
 *Area: Formats, Parity. Effort: S–M.*
 
@@ -402,7 +392,7 @@ These are outcome groupings, not release numbers. Independent small items can sh
 - **Done when:** a committed two-colour fixture opens with two Parts whose volumes match the analytic values, `check_interference_all` and `generate_bom` work on them with no manual assignment, and a reopen does not duplicate them.
 - **Out of scope:** reading colour for the mesh-export path (that is 2.1's colour question); alpha as transparency in the viewer.
 
-#### 2.14 Section plane and display presets for `render_snapshot` {#render-snapshot-section-and-display}
+#### 2.13 Section plane and display presets for `render_snapshot` {#render-snapshot-section-and-display}
 
 *Area: Parity. Effort: S.*
 
@@ -411,7 +401,7 @@ These are outcome groupings, not release numbers. Independent small items can sh
 - **Done when:** a `clip` snapshot of a hollow fixture shows the cap colour inside the wall (the `test:webview` magenta-cap technique, applied to the headless page), and each display mode renders distinguishably.
 - **Out of scope:** SVG section drawings (the `section` op plus `export_technical_drawing` already cover a 2D cut).
 
-#### 2.15 Clearance (near-miss) reporting in interference checks {#interference-clearance}
+#### 2.14 Clearance (near-miss) reporting in interference checks {#interference-clearance}
 
 *Area: Geometry. Effort: S–M.*
 
@@ -420,7 +410,7 @@ These are outcome groupings, not release numbers. Independent small items can sh
 - **Done when:** two boxes 0.1 mm apart report `clearance` 0.1 and `withinClearance: true` at 0.2 and `false` at 0.05; an AABB-separated pair beyond the clearance is still screened; and the shipped overlap fixture's numbers are unchanged.
 - **Out of scope:** clearance across poses (see [kinematic mates](#kinematic-mates-and-pose-sweeps)).
 
-#### 2.16 Per-Part material density: mass in mass properties and BOM {#per-part-material-density}
+#### 2.15 Per-Part material density: mass in mass properties and BOM {#per-part-material-density}
 
 *Area: Geometry, Parity. Effort: S–M.*
 
@@ -429,7 +419,7 @@ These are outcome groupings, not release numbers. Independent small items can sh
 - **Done when:** a 10 mm steel cube at 7.85 g/cm³ reports 7.85 g, a two-material assembly reports the sum, and a part with no density is reported as missing rather than as zero.
 - **Out of scope:** reading materials from STEP (the [PMI, layers and materials probe](#read-pmi-layers-and-materials-from-step) could seed this field later); density-weighted inertia.
 
-#### 2.17 Quotable entity references for agent chats {#quotable-entity-references}
+#### 2.16 Quotable entity references for agent chats {#quotable-entity-references}
 
 *Area: Parity. Effort: S.*
 
@@ -438,7 +428,7 @@ These are outcome groupings, not release numbers. Independent small items can sh
 - **Done when:** the copied text, pasted to an agent, resolves through `inspect` to the same face, and copying after a topology-changing edit yields the new id.
 - **Out of scope:** a live channel from the viewer to the MCP server.
 
-#### 2.18 Register the MCP server with VS Code and offer client setup snippets {#register-mcp-server-with-vscode}
+#### 2.17 Register the MCP server with VS Code and offer client setup snippets {#register-mcp-server-with-vscode}
 
 *Area: Platform, Ecosystem. Effort: S–M.*
 
@@ -449,7 +439,7 @@ These are outcome groupings, not release numbers. Independent small items can sh
 - **Done when:** in a real VS Code, the server appears in the MCP server list and `describe_capabilities` answers through it; and each snippet, pasted into its client, starts the server (checked at least for Claude Code).
 - **Out of scope:** an HTTP transport (see [Rejected scope](#rejected-scope)); publishing the server as a separate npm package.
 
-#### 2.19 Printability facts report {#printability-facts-report}
+#### 2.18 Printability facts report {#printability-facts-report}
 
 *Area: Geometry. Effort: M.*
 
@@ -465,7 +455,7 @@ These are outcome groupings, not release numbers. Independent small items can sh
 - **Done when:** a fixture with a known 1 mm wall reports 1 mm within the sampling resolution; a box rotated onto its edge reports more overhang than one on its face; and an unmeasured rule is reported as not checked rather than passed.
 - **Out of scope:** slicing and support generation (see [Rejected scope](#rejected-scope)); choosing an orientation for the user.
 
-#### 2.20 Draft and undercut analysis for a pull direction {#draft-and-undercut-analysis}
+#### 2.19 Draft and undercut analysis for a pull direction {#draft-and-undercut-analysis}
 
 *Area: Geometry. Effort: M.*
 
@@ -474,7 +464,7 @@ These are outcome groupings, not release numbers. Independent small items can sh
 - **Done when:** a box reports its four side walls at exactly 0°, a tapered extrusion reports its taper angle, and a pocket under an overhang is reported as an undercut.
 - **Out of scope:** suggesting a parting line; adding draft (the `draft` op is the tool for that, and its kernel limitation is recorded in `CLAUDE.md`).
 
-#### 2.21 Hole callouts and centre lines on drawing sheets {#hole-callouts-on-drawing-sheets}
+#### 2.20 Hole callouts and centre lines on drawing sheets {#hole-callouts-on-drawing-sheets}
 
 *Area: Drawings. Effort: M.*
 
@@ -483,7 +473,7 @@ These are outcome groupings, not release numbers. Independent small items can sh
 - **Done when:** a plate with four M6 tap-drill holes shows one callout and four centre marks in its top view and none in its side view, in both formats.
 - **Out of scope:** thread annotation beyond the designation; GD&T frames.
 
-#### 2.22 Reproducible exports {#reproducible-exports}
+#### 2.21 Reproducible exports {#reproducible-exports}
 
 *Area: Formats. Effort: S.*
 
@@ -491,6 +481,14 @@ These are outcome groupings, not release numbers. Independent small items can sh
 - **First useful increment (S):** first export each format twice from the same model and diff, to find exactly which fields move. Then, behind an opt-in `deterministic` flag on the export tools and the handoff manifest, normalise those fields — the STEP timestamp by a text patch beside `stepUnitPatch.ts`, the IGES dates likewise, and the sheet date from the flag's value or omitted.
 - **Done when:** two deterministic exports of the same model are byte-identical in every format the diff found unstable, and a manifest written with the flag verifies against a re-export.
 - **Out of scope:** making Gmsh or meshio++ output deterministic beyond what they already are (measured in the first step, not assumed).
+
+#### 2.22 Tessellation quality for `compare_models` snapshots {#tessellation-quality-for-compare-models-snapshots}
+
+*Area: Parity. Effort: S.*
+
+- **Evidence:** `render_snapshot`, `render_ops_prefix`, `screenshot_shape` and now `hit_test` take `tessellationQuality` and report a `tessellation` block; `compare_models`' optional `includeSnapshots` is the one render call site left without it, so its before/after images render at the `standard` default with no way to ask for more or see what was used. It was left out deliberately, not forgotten: each render parameter widens a surface whose images cost a browser launch apiece, and `doc/mcp-server.md` says so at that tool's own row.
+- **First useful increment (S):** add `tessellationQuality` to `compare_models`, resolved with the same `resolveSnapshotQuality` (warn on an unrecognized value, `undefined` when omitted so the default stays `renderSnapshot`'s to state), forwarded to both sides' `renderSnapshot` calls, and echo each side's `tessellation` block next to its images. Update that tool's row in `doc/mcp-server.md`, which currently says it is a follow-up.
+- **Done when:** a `fine` comparison reports a larger `triangleCount` than the default on a curved fixture for both sides, and omitting the parameter leaves the `renderSnapshot` options unchanged (the exact-opts assertion in `mcpTools.test.ts` stays untouched).
 
 ### Probe-gated — establish feasibility before estimating
 

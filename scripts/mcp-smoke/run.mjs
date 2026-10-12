@@ -4985,6 +4985,50 @@ try {
       meshHit.supported === false && /B-rep sources only/.test(meshHit.warnings[0]),
       "hit_test degrades cleanly for a mesh-format source"
     );
+
+    // tessellationQuality (roadmap "Tessellation quality for hit_test"): faces
+    // have no pick tolerance, so on a curved face the triangles decide whether
+    // a ray lands. A radius-10 cylinder's top cap is a polygon whose edges sag
+    // inside the circle by up to the deflection; 120 vertical rays at r = 9.96
+    // therefore slip past the cap at coarse settings and land at fine (whose
+    // 0.03 deflection keeps every edge outside r = 9.97). Probed live:
+    // draft 29, standard 72, fine 120 of 120.
+    const tessModel = path.join(dir, "hit-tessellation.brep");
+    fs.copyFileSync(path.join(ROOT, "examples", "BREP", "blank.brep"), tessModel);
+    const cyl = await call("apply_edit_ops", {
+      path: tessModel,
+      ops: [{ op: "addCylinder", center: [0, 0, 0], axis: [0, 0, 1], radius: 10, height: 10 }],
+    });
+    assert(cyl.applied === 1, "the tessellation fixture cylinder applied");
+    const ringRays = [];
+    for (let a = 0; a < 360; a += 3) {
+      const t = (a * Math.PI) / 180;
+      ringRays.push({ origin: [9.96 * Math.cos(t), 9.96 * Math.sin(t), 30], direction: [0, 0, -1] });
+    }
+    const hitsAt = async (q) => {
+      const r = await call("hit_test", { path: tessModel, rays: ringRays, mode: "surface", ...(q ? { tessellationQuality: q } : {}) });
+      return { n: r.hits.filter(Boolean).length, r };
+    };
+    const hOmit = await hitsAt(undefined);
+    const hStd = await hitsAt("standard");
+    const hFine = await hitsAt("fine");
+    const hDraft = await hitsAt("draft");
+    assert(
+      hDraft.n < hStd.n && hStd.n < hFine.n && hFine.n === ringRays.length,
+      `a finer mesh lands more rays near the silhouette: draft ${hDraft.n} < standard ${hStd.n} < fine ${hFine.n} of ${ringRays.length}`
+    );
+    assert(hOmit.n === hStd.n && hOmit.r.tessellation.quality === "standard", "omitting tessellationQuality is indistinguishable from standard");
+    assert(
+      hFine.r.tessellation.quality === "fine" &&
+        hFine.r.tessellation.linearDeflection < hStd.r.tessellation.linearDeflection &&
+        hFine.r.tessellation.triangleCount > hStd.r.tessellation.triangleCount,
+      `hit_test reports the mesh it picked against (got ${JSON.stringify(hFine.r.tessellation)})`
+    );
+    const hBad = await call("hit_test", { path: tessModel, rays: ringRays.slice(0, 1), tessellationQuality: "coarse" });
+    assert(
+      hBad.tessellation.quality === "standard" && hBad.warnings.some((w) => /tessellationQuality "coarse" is not one of/.test(w)),
+      "an unrecognized quality warns and uses standard"
+    );
   }
 
   // list_standard_hole_sizes (roadmap "Hole Wizard"): a pure table lookup — no

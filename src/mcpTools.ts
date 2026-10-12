@@ -3667,6 +3667,7 @@ export async function hitTestTool(
     focus?: string[];
     hide?: string[];
     tolerance?: number;
+    tessellationQuality?: string;
   }
 ) {
   const modelPath = params.path;
@@ -3690,20 +3691,28 @@ export async function hitTestTool(
     return { supported: false, hits: [], warnings: [...warnings, src.reason] };
   }
   const { bytes, format } = src;
+  // Undefined when omitted, so the default stays hitTest's own to state and report.
+  const quality = resolveSnapshotQuality(params.tessellationQuality, warnings);
   const result = await ctx.pipeline.hitTest(
     ctx.extensionPath,
     bytes,
     format as BRepFormat,
     ops,
     params.rays,
-    { mode: params.mode, focus: params.focus, hide: params.hide, tolerance: params.tolerance }
+    { mode: params.mode, focus: params.focus, hide: params.hide, tolerance: params.tolerance, quality }
   );
 
   const missed = result.hits.filter((h) => h === null).length;
   if (missed > 0) {
     warnings.push(`${missed} of ${result.hits.length} ray(s) struck nothing.`);
   }
-  return { supported: true, hits: result.hits, tolerance: result.tolerance, warnings };
+  return {
+    supported: true,
+    hits: result.hits,
+    tolerance: result.tolerance,
+    ...(result.tessellation ? { tessellation: result.tessellation } : {}),
+    warnings,
+  };
 }
 
 // ---------------------------------------------------------------------------
