@@ -87,3 +87,15 @@ export function replayTail(ops: EditOp[], bakedThrough = 0): EditOp[] {
   if (bakedThrough >= ops.length) return [];
   return ops.slice(bakedThrough);
 }
+
+/** True when `next` is `prev` with one or more ops appended and nothing else
+ * changed — what the edits watcher sees when another writer (an agent calling
+ * `apply_edit_ops`) adds to the stack. Compared by JSON so a reordered or
+ * edited prefix is not mistaken for an append. */
+export function isExternalAppend(prev: readonly EditOp[], next: readonly EditOp[]): boolean {
+  if (next.length <= prev.length) return false;
+  for (let i = 0; i < prev.length; i++) {
+    if (JSON.stringify(prev[i]) !== JSON.stringify(next[i])) return false;
+  }
+  return true;
+}

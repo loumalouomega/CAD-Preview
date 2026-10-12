@@ -85,7 +85,7 @@ import { parsePartsJson } from "./partsSidecar";
 import { parseLayersFile, layersWithDefault, resolveLayerDrawFilter, type LayerDrawSubset } from "./layersSidecar";
 import { parseAnnotationsJson } from "./annotationsSidecar";
 import { parsePlanesJson } from "./planesSidecar";
-import { parseEditsJson, replayTail } from "./editsSidecar";
+import { isExternalAppend, parseEditsJson, replayTail } from "./editsSidecar";
 import { parseMeshJson } from "./meshOptionsSidecar";
 import { DISPLAY_UNITS, UNIT_LABELS, displayUnitFromUnitName, unitScaleFactor, type DisplayUnit } from "./lengthUnits";
 import { scaleStlBytes } from "./stlParser";
@@ -920,8 +920,14 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
     // Every place the host tells the webview about the op list ALSO settles the
     // watermark, i.e. can flip `dirty`. Routing them through one helper is what
     // makes "post edits, forget to resync the chip" unrepresentable.
-    const postEdits = (): void => {
-      post({ type: "edits", ops: currentEdits, variables: currentVariables, bakedThrough: currentBakedThrough });
+    const postEdits = (externalFrom?: number): void => {
+      post({
+        type: "edits",
+        ops: currentEdits,
+        variables: currentVariables,
+        bakedThrough: currentBakedThrough,
+        ...(externalFrom !== undefined ? { externalFrom } : {}),
+      });
       syncDocumentInfo();
     };
     // Set around our own in-place source write so the source-file watcher
@@ -1884,7 +1890,9 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
             loadModel();
             void rebindPartsOnChange(previousOps, currentEdits);
           }
-          postEdits();
+          // A pure append by another writer (typically an agent) is marked in
+          // the history; any other change (removal, reorder) is just adopted.
+          postEdits(isExternalAppend(previousOps, currentEdits) ? previousOps.length : undefined);
           post({ type: "status", text: "Edits updated externally" });
         },
       };

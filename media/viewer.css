@@ -2864,6 +2864,18 @@ input[type="range"].meshing-slider:focus {
  * Clicking still selects/jumps only within the unbaked tail; the model
  * refuses targets at or inside the save point with guidance. */
 .edit-row-baked .edit-label { opacity: 0.55; }
+.edit-external-badge {
+  flex: none;
+  margin-left: 6px;
+  padding: 0 5px;
+  border-radius: var(--ui-r-xs, 3px);
+  border: 1px solid var(--vscode-focusBorder, #007fd4);
+  color: var(--vscode-foreground, #ccc);
+  font-size: 10px;
+  line-height: 14px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
 .edit-row-baked .edit-index { opacity: 0.5; }
 .edit-baked-mark {
   flex-shrink: 0;

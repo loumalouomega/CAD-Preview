@@ -544,6 +544,12 @@
       "section": "Coded MCP errors and unknown-parameter warnings (roadmap Tier 2 item, closed)",
       "gap": "no third-party MCP client was run against structuredContent on an isError result, nor against the now-open additionalProperties in tools/list; the SDK accepts both and the in-repo smoke client reads them, but another client's handling is unverified.",
       "status": "open"
+    },
+    {
+      "id": "mark-agent-made-edits-flash",
+      "section": "Mark agent-made edits in the viewer (roadmap Tier 2 item, closed)",
+      "gap": "the one-shot face flash after an external append and the badge's look beside a real theme are F5-only; nothing in the harness asserts the highlight.",
+      "status": "open"
     }
   ]
 }

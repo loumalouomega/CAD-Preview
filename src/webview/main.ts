@@ -653,6 +653,7 @@ function renderEditsUi(): void {
   const { ops } = resolvePlaneRefs(variableResolved, planesModel.list());
   editsPanel.setVariables(values);
   editsPanel.setPlanes(planesModel.list());
+  editsPanel.setExternalFrom(externalEditsFrom);
   // Pending (redo-buffer) ops ride along in chronological order so the history
   // renders as a full clickable timeline (op-history scrubbing, roadmap Tier
   // 2 item 1). They are NOT resolved here: they aren't applied yet, and the
@@ -683,8 +684,29 @@ let lastOpBuckets: import("../opBuckets").OpBucket[] | null = null;
  * buildVolume) refuse as operands, mirrored host-side by the same rule. */
 const guideEntityIds: Set<string> = new Set();
 
+/** First history index appended by another writer (host `edits` post with
+ * `externalFrom`), or null. Webview memory only. */
+let externalEditsFrom: number | null = null;
+/** One-shot: flash the appended ops' produced faces when the next replay's
+ * buckets arrive (B-rep sources only — meshes have no buckets). */
+let externalFlashPending = false;
+
 /** Fired on every op-stack or variable mutation: resolve, persist, re-display. */
+/** Briefly highlights the faces the externally appended ops produced, through
+ * `renderSelection` only (the bucket chips' mechanism — never the SelectionSet),
+ * then restores the real selection. Once per external append. */
+function flashExternalEdits(): void {
+  if (!externalFlashPending || externalEditsFrom === null || !lastOpBuckets) return;
+  externalFlashPending = false;
+  const from = externalEditsFrom;
+  const ids = lastOpBuckets.filter((b) => b.op >= from).flatMap((b) => Object.values(b.roles).flat());
+  if (ids.length === 0) return;
+  viewer.renderSelection(ids.map((entityId) => ({ entityType: "surface" as const, entityId })));
+  setTimeout(() => renderHighlight(), 1500);
+}
+
 function syncEdits(): void {
+  externalEditsFrom = null; // a local change ends the "added externally" marking
   const { ops, issues } = currentResolvedOps();
   post({ type: "editsChanged", ops, variables: variablesModel.list() });
   renderEditsUi();
@@ -5393,6 +5415,7 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
         refreshColors();
         renderAnnotationsList(); // detached status may have changed for the new model
         renderEditsUi(); // re-render the history with the fresh per-op outcome markers
+        flashExternalEdits();
         setSelectableModes(["volume", "surface", "line", "point"]);
         editsPanel.setBRepOnly(true); // fillet/chamfer available for B-rep
         sourceKind = "brep";
@@ -5465,6 +5488,8 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
       // file itself (Tier 0 Phase 2 — undo/remove/jump refuse to cross it).
       variablesModel.load(msg.variables);
       editsModel.load(msg.ops, msg.bakedThrough ?? 0);
+      externalEditsFrom = msg.externalFrom ?? null;
+      externalFlashPending = externalEditsFrom !== null;
       renderEditsUi();
       // B-rep arrives already-tessellated with these ops; mesh replays locally.
       if (pristineMesh) rebuildMeshModel();

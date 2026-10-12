@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { parseEditsJson, serializeEditsJson, EDITS_SIDECAR_VERSION } from "./editsSidecar";
+import { parseEditsJson, serializeEditsJson, isExternalAppend, EDITS_SIDECAR_VERSION } from "./editsSidecar";
 import type { EditOp } from "./editOps";
 import type { ParamVariable } from "./editVariables";
 
@@ -147,5 +147,22 @@ describe("serializeEditsJson", () => {
     expect(parseEditsJson(JSON.stringify({ version: 1, source: "m", ops, bakedThrough: 99 })).bakedThrough).toBe(1);
     expect(parseEditsJson(JSON.stringify({ version: 1, source: "m", ops, bakedThrough: -3 })).bakedThrough).toBe(0);
     expect(parseEditsJson(JSON.stringify({ version: 1, source: "m", ops, bakedThrough: "x" })).bakedThrough).toBe(0);
+  });
+});
+
+describe("isExternalAppend", () => {
+  const a = { op: "addBox", center: [0, 0, 0], size: [1, 1, 1] } as never;
+  const b = { op: "addBox", center: [5, 0, 0], size: [1, 1, 1] } as never;
+  const c = { op: "addBox", center: [9, 0, 0], size: [1, 1, 1] } as never;
+  it("is true only when ops were appended to an unchanged prefix", () => {
+    expect(isExternalAppend([a], [a, b])).toBe(true);
+    expect(isExternalAppend([], [a])).toBe(true);
+    expect(isExternalAppend([a], [a, b, c])).toBe(true);
+  });
+  it("is false for no change, removal, an edited prefix or a reorder", () => {
+    expect(isExternalAppend([a], [a])).toBe(false);
+    expect(isExternalAppend([a, b], [a])).toBe(false);
+    expect(isExternalAppend([a], [b, c])).toBe(false);
+    expect(isExternalAppend([a, b], [b, a, c])).toBe(false);
   });
 });

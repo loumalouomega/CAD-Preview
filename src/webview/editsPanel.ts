@@ -691,6 +691,15 @@ export class EditsPanel {
    * valid against the model state at their own op's step — later ops may
    * have renumbered them — so the chip tooltip says so.
    */
+  /** Index of the first op appended by another writer (an agent), or null.
+   * Rows from here on carry an "external" badge until the next local edit
+   * clears it — webview memory only, never persisted. */
+  private externalFrom: number | null = null;
+
+  setExternalFrom(index: number | null): void {
+    this.externalFrom = index;
+  }
+
   render(ops: EditOp[], canUndo: boolean, canRedo: boolean, opOutcomes?: OpOutcome[] | null, redoOps?: EditOp[], opBuckets?: OpBucket[] | null, bakedThrough = 0): void {
     this.undoBtn.disabled = !canUndo;
     this.redoBtn.disabled = !canRedo;
@@ -745,6 +754,14 @@ export class EditsPanel {
       label.textContent = describeOp(op);
       li.appendChild(idx);
       li.appendChild(label);
+      if (!opts.pending && this.externalFrom !== null && i >= this.externalFrom) {
+        li.classList.add("edit-row-external");
+        const badge = document.createElement("span");
+        badge.className = "edit-external-badge";
+        badge.textContent = "external";
+        badge.title = "Added by another writer (for example an agent) while this document was open. Cleared by your next edit.";
+        li.appendChild(badge);
+      }
       if (opts.baked) {
         const lock = document.createElement("span");
         lock.className = "edit-baked-mark";

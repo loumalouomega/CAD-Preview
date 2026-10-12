@@ -3828,6 +3828,45 @@ test("save point: undo is disabled when only baked ops remain", async (page) => 
   assert(disabled === true, "the Undo button disables when the stack is at the save point");
 });
 
+// ── Mark agent-made edits (roadmap "Mark agent-made edits in the viewer") ────
+//
+// The host's edits watcher posts `externalFrom` only for a pure append by
+// another writer. Rows from that index on carry a transient "external" badge
+// (webview memory only); the next local edit clears it.
+
+test("external edits: appended rows are badged, earlier rows are not, a local edit clears it", async (page) => {
+  await populate(page);
+  await post(page, { type: "edits", ops: SAVE_POINT_OPS, variables: [], bakedThrough: 0 });
+  await sleep(300);
+  const badgeRows = () =>
+    page.evaluate(() =>
+      Array.from(document.querySelectorAll("#edits-panel .edit-row")).map((li) => !!li.querySelector(".edit-external-badge"))
+    );
+  let rows = await badgeRows();
+  assert(rows.length === 2 && rows.every((b) => !b), `a plain edits post marks nothing (got ${JSON.stringify(rows)})`);
+
+  const appended = [...SAVE_POINT_OPS, { op: "translate", targets: ["solid-0"], vec: [0, 0, 1] }];
+  await post(page, { type: "edits", ops: appended, variables: [], bakedThrough: 0, externalFrom: 2 });
+  await sleep(300);
+  rows = await badgeRows();
+  assert(
+    rows.length === 3 && !rows[0] && !rows[1] && rows[2],
+    `only the externally appended row is badged (got ${JSON.stringify(rows)})`
+  );
+
+  // A local edit (Undo here) ends the marking.
+  await page.click("#edits-undo");
+  await sleep(300);
+  rows = await badgeRows();
+  assert(rows.every((b) => !b), `a local edit clears the badges (got ${JSON.stringify(rows)})`);
+
+  // A later plain edits post (no externalFrom) also leaves nothing marked.
+  await post(page, { type: "edits", ops: appended, variables: [], bakedThrough: 0 });
+  await sleep(300);
+  rows = await badgeRows();
+  assert(rows.every((b) => !b), "an edits post without externalFrom clears the badges");
+});
+
 // ── Saved view bookmarks (roadmap Tier 1 "Saved view bookmarks") ─────────────
 //
 // A named collection of inspection viewpoints persisted as a top-level

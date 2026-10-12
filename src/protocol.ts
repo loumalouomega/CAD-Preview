@@ -487,7 +487,16 @@ export type HostToWebview =
    * Applied silently by `PlanesModel.load()` (no `onChange` echo), the same
    * contract `"parts"`/`"annotations"` rely on to avoid a write loop. */
   | { type: "planes"; planes: ConstructionPlane[] }
-  | { type: "edits"; ops: EditOp[]; variables: ParamVariable[]; bakedThrough?: number }
+  | {
+      type: "edits";
+      ops: EditOp[];
+      variables: ParamVariable[];
+      bakedThrough?: number;
+      /** Set only when the edits watcher reconciled a pure APPEND made by another
+       * writer (an agent, a script): the index of the first appended op. The
+       * history marks rows from here as external until the next local edit. */
+      externalFrom?: number;
+    }
   | { type: "status"; text: string }
   | { type: "error"; message: string }
   | { type: "editError"; message: string }

@@ -985,9 +985,11 @@ test("A second save advances the watermark without rotating .bak or re-asking", 
   // A new op arrives the way an MCP agent's would — an external sidecar write
   // the watcher reconciles (the suite cannot push ops through the webview).
   seen.length = 0;
-  const sub = api.onDidPostMessage?.((m) =>
-    void seen.push(m.type === "status" ? (m as unknown as { text: string }).text : m.type)
-  );
+  const externalFroms: Array<number | undefined> = [];
+  const sub = api.onDidPostMessage?.((m) => {
+    if (m.type === "edits") externalFroms.push((m as unknown as { externalFrom?: number }).externalFrom);
+    seen.push(m.type === "status" ? (m as unknown as { text: string }).text : m.type);
+  });
   try {
     const op2 = { op: "translate", targets: ["solid-0"], vec: [0, 5, 0] };
     fs.writeFileSync(
@@ -998,6 +1000,9 @@ test("A second save advances the watermark without rotating .bak or re-asking", 
       await waitFor(() => seen.includes("Edits updated externally"), 15000),
       "the external op is reconciled before the second save"
     );
+    // Mark agent-made edits: a pure append by another writer reaches the
+    // webview with the index of the first appended op (1 = after op1).
+    assert(externalFroms.includes(1), `the reconciled append is posted with externalFrom=1 (saw ${JSON.stringify(externalFroms)})`);
   } finally {
     sub?.dispose();
   }

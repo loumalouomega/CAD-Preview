@@ -606,6 +606,8 @@ An op may carry an optional `exprs` annotation (field path → expression string
 }
 ```
 
+`bakedThrough` (optional) is the save-point watermark. `externalFrom` (optional) is sent only when the host's edits watcher reconciled a **pure append** made by another writer — an agent, a script: the index of the first appended op. The history marks rows from that index as external (a transient badge, webview memory only) until the next local edit; any other external change (a removal, a reorder, an edited prefix) is adopted without it.
+
 ### `editError`
 
 Shown in the status overlay when applying an op fails (e.g. an OCCT operation throws). Distinct from `error` only by intent; both render the same way.
