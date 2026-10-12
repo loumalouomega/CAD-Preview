@@ -23,6 +23,7 @@
     { "id": "load-gltf-two-boxes", "check": "load", "fixture": "GLTF/two-boxes.gltf", "expect": { "format": "gltf", "components": 2 } },
     { "id": "load-glb-draco-cube", "check": "load", "fixture": "GLTF/cube-draco.glb", "expect": { "format": "gltf", "triangles": 12 } },
     { "id": "load-glb-meshopt-cube", "check": "load", "fixture": "GLTF/cube-meshopt.glb", "expect": { "format": "gltf", "triangles": 12 } },
+    { "id": "load-3mf-display-only", "check": "load", "fixture": "3MF/cube.3mf", "expect": { "format": "3mf", "warningIncludes": "display-only" } },
     { "id": "load-med-two-material", "check": "load", "fixture": "MED/two-material-tets.med", "expect": { "format": "med", "warningIncludes": "MaterialA" } },
     { "id": "load-med-two-region-hexes", "check": "load", "fixture": "MED/two-region-hexes.med", "expect": { "format": "med", "warningIncludes": "cell_tags" } },
     { "id": "load-med-single-hex-remesh", "check": "load", "fixture": "MED/single-hex.med", "expect": { "format": "med", "remesh": true } },

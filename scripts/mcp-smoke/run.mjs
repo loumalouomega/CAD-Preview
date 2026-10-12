@@ -2636,6 +2636,26 @@ try {
     `check_mesh_health rejects a meshio-only source with a clear message, not a crash (got: ${JSON.stringify(vtkHealthRejected)})`
   );
 
+  // 3MF is DISPLAY-ONLY on the host: it opens in the viewer but has no host
+  // triangle parser, so every host-side consumer refuses it by name instead of
+  // falling into a parser built for another format.
+  {
+    const threeMf = path.join(ROOT, "examples", "3MF", "cube.3mf");
+    const health3mf = await call("check_mesh_health", { path: threeMf });
+    assert(
+      health3mf.supported === false && /3mf has no host-side triangle-soup parser/i.test(health3mf.warnings?.[0] ?? ""),
+      `check_mesh_health refuses a 3MF by name (got: ${JSON.stringify(health3mf)})`
+    );
+    const promote3mf = await callTolerant("promote_mesh_to_brep", { path: threeMf, outputPath: path.join(dir, "from-3mf.step") });
+    assert(/3mf has no host-side triangle-soup parser/i.test(promote3mf.error ?? ""), `promote_mesh_to_brep refuses a 3MF by name (got: ${JSON.stringify(promote3mf)})`);
+    const compare3mf = await call("compare_models", { pathA: threeMf, pathB: path.join(ROOT, "examples", "STL", "cube.stl") });
+    assert(compare3mf.supported === false && /display-only/i.test((compare3mf.warnings ?? []).join(" ")), `compare_models refuses a 3MF and says display-only (got: ${JSON.stringify(compare3mf).slice(0, 240)})`);
+    const load3mf = await call("load_model", { path: threeMf });
+    assert(load3mf.format === "3mf" && /3MF is display-only/.test((load3mf.warnings ?? []).join(" ")), `load_model opens a 3MF with a display-only warning (got: ${JSON.stringify(load3mf).slice(0, 240)})`);
+    const mesh3mf = await callTolerant("generate_mesh", { path: threeMf });
+    assert(/display-only mesh format/i.test(mesh3mf.error ?? ""), `generate_mesh refuses a 3MF by name (got: ${JSON.stringify(mesh3mf).slice(0, 240)})`);
+  }
+
   // Tier 1 "Auto-decimate under MAX_HEALABLE_TRIANGLES" —
   // examples/STL/large-sphere-100k.stl is a real 99904-triangle mesh, over
   // the 50000-triangle ceiling the per-triangle sewing pipeline refuses.

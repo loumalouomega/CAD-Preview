@@ -686,7 +686,16 @@ export function stlBytesForHeal(
   // Same dispatch as `meshHeal.ts`'s `parseToWeldedMesh` (duplicated, not
   // shared: that function lives in the OCCT-touching module this file must
   // not import — see `AUTO_DECIMATE_TARGET_TRIANGLES` above).
-  const mesh = format === "obj" ? parseObj(bytes) : format === "ply" ? parsePly(bytes) : parseGltf(bytes, external);
+  const mesh =
+    format === "obj"
+      ? parseObj(bytes)
+      : format === "ply"
+        ? parsePly(bytes)
+        : format === "gltf"
+          ? parseGltf(bytes, external)
+          : (() => {
+              throw new Error(`${String(format)} has no host-side triangle parser`);
+            })();
   return { stlBytes: weldedMeshToStlBytes(mesh), fromTriangles: Math.floor(mesh.indices.length / 3) };
 }
 

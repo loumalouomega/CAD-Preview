@@ -91,3 +91,9 @@ describe("OBJ materials", () => {
     expect(withMtl).toEqual(ids(parseMeshObject(bytes("OBJ/colored-cube.obj"), "obj")));
   });
 });
+
+describe("parseMeshObject", () => {
+  it("throws for a format it has no loader for rather than returning undefined", () => {
+    expect(() => parseMeshObject(new Uint8Array(4), "3mf" as unknown as "stl")).toThrow(/no loader for "3mf"/);
+  });
+});

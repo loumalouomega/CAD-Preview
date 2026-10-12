@@ -11,7 +11,7 @@
 export type RenderStrategy = "occt" | "three" | "meshio";
 
 export type CadFormat =
-  | "step" | "iges" | "brep" | "csg" | "scad" | "stl" | "obj" | "ply" | "gltf"
+  | "step" | "iges" | "brep" | "csg" | "scad" | "stl" | "obj" | "ply" | "gltf" | "3mf"
   | "vtk" | "vtu" | "med" | "cgns" | "exodus" | "xdmf" | "mdpa"
   | "openfoam"
   | "gmsh" | "abaqus" | "unv" | "su2" | "medit"
@@ -96,6 +96,24 @@ export type MeshParseFormat = "stl" | "obj" | "ply" | "gltf";
  */
 export const COMPARABLE_MESH_FORMATS: ReadonlySet<CadFormat> = new Set<CadFormat>(["stl", "obj", "ply", "gltf"]);
 
+/**
+ * `strategy: "three"` formats that only the WEBVIEW can read (three's own
+ * loader, DOM-dependent) and the exporters can write — no host-side triangle
+ * parser exists, so every host-side geometry consumer (Compare Models, Mesh
+ * Health, Promote, Repair, silhouette/drawings, headless meshing and edit
+ * baking) refuses them by name instead of falling through to a parser built
+ * for a different format. Together with {@link COMPARABLE_MESH_FORMATS} this
+ * must cover every `strategy: "three"` entry in `EXTENSION_MAP` (pinned by a
+ * drift-guard test).
+ */
+export const DISPLAY_ONLY_MESH_FORMATS: ReadonlySet<CadFormat> = new Set<CadFormat>(["3mf"]);
+
+/** Plain-language refusal naming a display-only format, for `what` the caller
+ * cannot do with it. One builder so the host-side gates cannot drift. */
+export function displayOnlyMeshMessage(format: CadFormat, what: string): string {
+  return `${format.toUpperCase()} is a display-only mesh format (it opens and exports in the viewer, but the host has no triangle parser for it), so it cannot be used for ${what}. Export it to STL, OBJ, PLY or glTF first.`;
+}
+
 export interface FileRoute {
   strategy: RenderStrategy;
   format: CadFormat;
@@ -123,6 +141,9 @@ const EXTENSION_MAP: Record<string, FileRoute> = {
   ply: { strategy: "three", format: "ply" },
   gltf: { strategy: "three", format: "gltf" },
   glb: { strategy: "three", format: "gltf" },
+  // 3MF: loaded by three's `3MFLoader` in the webview only; display-only on
+  // the host (see DISPLAY_ONLY_MESH_FORMATS).
+  "3mf": { strategy: "three", format: "3mf" },
   vtk: { strategy: "meshio", format: "vtk" },
   vtu: { strategy: "meshio", format: "vtu" },
   med: { strategy: "meshio", format: "med" },

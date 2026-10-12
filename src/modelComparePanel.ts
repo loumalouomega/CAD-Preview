@@ -1,5 +1,5 @@
 import * as vscode from "vscode";
-import { routeFile, COMPARABLE_MESH_FORMATS, type CadFormat, type MeshParseFormat } from "./fileRouter";
+import { routeFile, COMPARABLE_MESH_FORMATS, DISPLAY_ONLY_MESH_FORMATS, displayOnlyMeshMessage, type CadFormat, type MeshParseFormat } from "./fileRouter";
 import { resolveExternalBuffers, type GltfExternalBuffers } from "./gltfParser";
 import { resolveEffectiveSource, ScadUnavailableError } from "./scadService";
 import { readScadSettings } from "./scadSettings";
@@ -38,7 +38,12 @@ async function resolveCompareSource(uri: vscode.Uri, decodeGltf: (bytes: Uint8Ar
   const name = vscode.workspace.asRelativePath(uri);
   const meshFormat = route?.strategy === "three" && COMPARABLE_MESH_FORMATS.has(route.format) ? (route.format as MeshParseFormat) : null;
   if (!route || (route.strategy !== "occt" && !meshFormat)) {
-    return { source: undefined, warning: `${name}: unsupported format for Compare Models (STEP/IGES/BREP/CSG/SCAD/STL/OBJ/PLY/glTF only).` };
+    return {
+      source: undefined,
+      warning: DISPLAY_ONLY_MESH_FORMATS.has(route?.format as CadFormat)
+        ? `${name}: ${displayOnlyMeshMessage(route!.format, "Compare Models")}`
+        : `${name}: unsupported format for Compare Models (STEP/IGES/BREP/CSG/SCAD/STL/OBJ/PLY/glTF only).`,
+    };
   }
   const rawBytes = await vscode.workspace.fs.readFile(uri);
   if (route.strategy === "occt") {

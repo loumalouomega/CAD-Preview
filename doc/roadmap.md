@@ -195,7 +195,7 @@ Two projects built for AI agents were read for this extension:
 | Engineering-drawing hole callouts, CENTER layer | text-to-cad | [Hole callouts on drawing sheets](#hole-callouts-on-drawing-sheets); the sheet itself ships |
 | Byte-deterministic writers | text-to-cad | [Reproducible exports](#reproducible-exports) |
 | Per-solid signed-volume check | text-to-cad | Addendum to [More facts in the B-rep validity report](#more-facts-in-the-b-rep-validity-report) |
-| 3MF export with colour | Both | Addendum to [More mesh formats](#more-mesh-formats-through-three-s-bundled-loaders) |
+| 3MF export with colour | Both | 3MF geometry shipped; colour remains in [More mesh formats](#more-mesh-formats-through-three-s-bundled-loaders) |
 | STEP from a mesh with merged coplanar faces | ReOpenSCAD | [Planar-facet merging before promotion](#planar-facet-merging-promotion) (probe) |
 | Kinematic mates, poses, animation | text-to-cad | [Kinematic mates and pose-swept clearance](#kinematic-mates-and-pose-sweeps) (strategic) |
 | step.parts sourcing with checksum | text-to-cad | Already shipped (`search_standard_parts` / `download_standard_part`) |
@@ -263,15 +263,14 @@ These are outcome groupings, not release numbers. Independent small items can sh
 *Area: Formats.*
 
 - **Evidence:**
-  - three already ships loaders the viewer never uses: `3MFLoader`, `AMFLoader`, `VRMLLoader`, `ColladaLoader`, `FBXLoader` and `USDZLoader`.
-  - 3MF is the standard 3D-printing format and is the most asked-for of these. Its loader's one dependency, `fflate`, is already bundled.
-  - `three-3mf-exporter` (MIT) writes it.
-  - Both projects in the [agent-CAD comparison](#agent-cad-comparison) export 3MF, and ReOpenSCAD's writer carries per-object colour. That puts 3MF first among these loaders, and argues for writing colour (from Part colours) rather than geometry alone.
-- **First useful increment (S–M):**
-  - Route `.3mf` as a mesh source (router, `customEditors` selector, open-dialog filter). Add it as an Export target through `three-3mf-exporter`.
-  - The other five loaders follow one at a time, each with a fixture.
-  - Every new format states its host-side status plainly: display-only unless a host parser is added. Compare Models, Mesh Health and headless meshing refuse it by name, the way meshio-only formats are refused today.
-- **Done when:** a committed `.3mf` fixture opens, edits, exports back to `.3mf`, and reopens with the same triangle count.
+  - three ships loaders the viewer does not use: `AMFLoader`, `VRMLLoader`, `ColladaLoader`, `FBXLoader` and `USDZLoader`. (`3MFLoader` is now used — see below.)
+  - **3MF shipped (geometry only).** `.3mf` opens through `3MFLoader` and exports from every source through a small hand-rolled zip+XML writer on `fflate` (`src/threeMf.ts`) — not `three-3mf-exporter`, which would have added `jszip` and `fast-xml-parser` for a few dozen lines. It is **display-only on the host**: Compare Models, Mesh Health, Promote, Repair, drawings, headless meshing/baking and `save_model` refuse it by name. three's loader reads the `unit` attribute but never applies it, so the loader path scales to millimetres and the writer labels the unit it scaled to. See `CLAUDE.md`'s 3MF section.
+  - Both projects in the [agent-CAD comparison](#agent-cad-comparison) export 3MF, and ReOpenSCAD's writer carries per-object colour. The shipped writer has none yet.
+- **Remaining increments (S each):**
+  - **3MF colour:** write Part colours as per-object `basematerials`/`displaycolor`, and show the file's own colours on load (the way OBJ `.mtl` and PLY vertex colours already are, via `nativeColor.ts`).
+  - The other five loaders follow one at a time, each with a fixture, each stating its host-side status plainly (display-only unless a host parser is added).
+  - Auto-select the Units dropdown from a 3MF's declared unit (the geometry is already scaled correctly on load; only the display selector is left alone).
+- **Done when:** each remaining format has a committed fixture that opens, edits, exports back and reopens with the same triangle count; 3MF colour round-trips a Part colour.
 
 #### 2.2 Shared UI design system with VSCode-MDPA-Preview {#shared-ui-design-system-with-vscode-mdpa-preview}
 

@@ -550,6 +550,15 @@
       "section": "Mark agent-made edits in the viewer (roadmap Tier 2 item, closed)",
       "gap": "the one-shot face flash after an external append and the badge's look beside a real theme are F5-only; nothing in the harness asserts the highlight.",
       "status": "open"
+    },
+    {
+      "id": "3mf-real-webview",
+      "section": "3MF \u2014 a display-only mesh format, read and written (roadmap Tier 2, geometry increment closed)",
+      "gap": "3MFLoader (DOMParser) and fflate under a real VS Code webview's CSP, and how a 3MF reads in light and high-contrast themes. test:webview sets no CSP; the integration case (the 3MF half of the compressed-glTF case) is written but has not been run because this environment cannot download VS Code.",
+      "status": "test-written",
+      "closedBy": [
+        "Compressed glTF (Draco and meshopt) loads under the real webview CSP"
+      ]
     }
   ]
 }

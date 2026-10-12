@@ -148,6 +148,8 @@ export function parseMeshObject(bytes: ArrayBuffer | Uint8Array, format: "stl" |
       geometry.computeVertexNormals();
       return meshFromGeometry(geometry);
     }
+    default:
+      throw new Error(`parseMeshObject: no loader for "${String(format)}"`);
   }
 }
 

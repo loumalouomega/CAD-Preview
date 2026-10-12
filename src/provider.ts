@@ -42,7 +42,7 @@ import {
   type SelectorSynthesizeResultEntry,
 } from "./protocol";
 import type { CadFormat, FileRoute, MeshParseFormat } from "./fileRouter";
-import { COMPARABLE_MESH_FORMATS, ambiguityCaveatFor, matchExtension } from "./fileRouter";
+import { COMPARABLE_MESH_FORMATS, ambiguityCaveatFor, displayOnlyMeshMessage, matchExtension } from "./fileRouter";
 import { resolveEffectiveSource } from "./scadService";
 import { readScadSettings } from "./scadSettings";
 import { connectSpaceMouse, disconnectSpaceMouse } from "./spaceMouse";
@@ -596,7 +596,7 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
         // the final dot-segment only, so GiD's compound `post.msh` is covered by
         // the plain `msh` entry — a separate "post.msh" entry would never match.
         "CAD / Mesh": [
-          "stl", "obj", "ply", "gltf", "glb", "step", "stp", "iges", "igs", "brep", "csg", "scad",
+          "stl", "obj", "ply", "gltf", "glb", "3mf", "step", "stp", "iges", "igs", "brep", "csg", "scad",
           "vtk", "vtu", "med", "cgns", "exo", "e", "xdmf", "mdpa", "foam",
           "msh", "msh2", "inp", "unv", "su2", "mesh", "bdf",
         ],
@@ -3199,8 +3199,12 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
 
       if (msg.type === "meshHealRequest") {
         try {
-          if (!route || route.strategy !== "three") {
-            throw new Error("Mesh healability check requires an STL/OBJ/PLY/glTF source.");
+          if (!route || !COMPARABLE_MESH_FORMATS.has(route.format)) {
+            throw new Error(
+              route && route.strategy === "three"
+                ? displayOnlyMeshMessage(route.format, "a mesh healability check")
+                : "Mesh healability check requires an STL/OBJ/PLY/glTF source."
+            );
           }
           const bytes = await vscode.workspace.fs.readFile(document.uri);
           const sourceFormat = route.format as MeshParseFormat;
@@ -3325,8 +3329,12 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
 
       if (msg.type === "fitRegionRequest") {
         try {
-          if (!route || route.strategy !== "three") {
-            throw new Error("Region fitting requires an STL/OBJ/PLY/glTF source.");
+          if (!route || !COMPARABLE_MESH_FORMATS.has(route.format)) {
+            throw new Error(
+              route && route.strategy === "three"
+                ? displayOnlyMeshMessage(route.format, "region fitting")
+                : "Region fitting requires an STL/OBJ/PLY/glTF source."
+            );
           }
           const bytes = await vscode.workspace.fs.readFile(document.uri);
           const fit = await docPipeline.fitMeshRegion(
@@ -4260,8 +4268,14 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
    * callers.
    */
   private async handlePromoteToBrep(uri: vscode.Uri, route: FileRoute, post: (msg: HostToWebview) => void): Promise<void> {
-    if (route.strategy !== "three") {
-      post({ type: "error", message: "Promote to B-rep requires an STL/OBJ/PLY/glTF source." });
+    if (!COMPARABLE_MESH_FORMATS.has(route.format)) {
+      post({
+        type: "error",
+        message:
+          route.strategy === "three"
+            ? displayOnlyMeshMessage(route.format, "Promote to B-rep")
+            : "Promote to B-rep requires an STL/OBJ/PLY/glTF source.",
+      });
       return;
     }
     const meshFormat = route.format as MeshParseFormat;
@@ -4313,8 +4327,14 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
    * it" precedent every other Mesh Health action follows).
    */
   private async handleRepairMesh(uri: vscode.Uri, route: FileRoute, post: (msg: HostToWebview) => void): Promise<void> {
-    if (route.strategy !== "three") {
-      post({ type: "error", message: "Repair (robust) requires an STL/OBJ/PLY/glTF source." });
+    if (!COMPARABLE_MESH_FORMATS.has(route.format)) {
+      post({
+        type: "error",
+        message:
+          route.strategy === "three"
+            ? displayOnlyMeshMessage(route.format, "Repair (robust)")
+            : "Repair (robust) requires an STL/OBJ/PLY/glTF source.",
+      });
       return;
     }
     const meshFormat = route.format as MeshParseFormat;
@@ -4567,7 +4587,13 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
   ): Promise<void> {
     if (route.strategy !== "occt" && !COMPARABLE_MESH_FORMATS.has(route.format)) {
       const label = format.toUpperCase();
-      post({ type: "error", message: `Silhouette ${label} export requires a STEP/IGES/BREP/CSG/SCAD or STL/OBJ/PLY/glTF source.` });
+      post({
+        type: "error",
+        message:
+          route.strategy === "three"
+            ? displayOnlyMeshMessage(route.format, `a ${label} silhouette export`)
+            : `Silhouette ${label} export requires a STEP/IGES/BREP/CSG/SCAD or STL/OBJ/PLY/glTF source.`,
+      });
       return;
     }
 
@@ -4647,7 +4673,13 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
     bakedThrough: number
   ): Promise<void> {
     if (route.strategy !== "occt" && !COMPARABLE_MESH_FORMATS.has(route.format)) {
-      post({ type: "error", message: "Drawing sheet export requires a STEP/IGES/BREP/CSG/SCAD or STL/OBJ/PLY/glTF source." });
+      post({
+        type: "error",
+        message:
+          route.strategy === "three"
+            ? displayOnlyMeshMessage(route.format, "a drawing sheet export")
+            : "Drawing sheet export requires a STEP/IGES/BREP/CSG/SCAD or STL/OBJ/PLY/glTF source.",
+      });
       return;
     }
 

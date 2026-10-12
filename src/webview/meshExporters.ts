@@ -5,6 +5,7 @@ import { PLYExporter } from "three/examples/jsm/exporters/PLYExporter.js";
 import { GLTFExporter } from "three/examples/jsm/exporters/GLTFExporter.js";
 import type { CadFormat } from "../fileRouter";
 import { unitScaleFactor, type DisplayUnit } from "../lengthUnits";
+import { build3mf, type ThreeMfObject } from "../threeMf";
 
 export interface ExportedMesh {
   data: string;
@@ -49,6 +50,43 @@ function applyExportScale(model: THREE.Object3D, unit: DisplayUnit | undefined):
 }
 
 /**
+ * Collects the displayed triangles as 3MF objects in world space (so
+ * `applyExportScale`'s root scale is baked in). Meshes sharing a
+ * `userData.groupId` (every face of one B-rep solid, every facet of one mesh
+ * node) become ONE object; a mesh without one is its own object. Lines and
+ * sprites are ignored.
+ */
+function threeMfObjects(root: THREE.Object3D): ThreeMfObject[] {
+  root.updateMatrixWorld(true);
+  const byGroup = new Map<string, { positions: number[]; indices: number[] }>();
+  const order: string[] = [];
+  let anon = 0;
+  const v = new THREE.Vector3();
+  root.traverse((o) => {
+    if (!(o instanceof THREE.Mesh)) return;
+    const pos = o.geometry?.getAttribute("position") as THREE.BufferAttribute | undefined;
+    if (!pos) return;
+    const gid = (o.userData as { groupId?: string }).groupId;
+    const key = gid ?? `mesh-${anon++}`;
+    let bucket = byGroup.get(key);
+    if (!bucket) {
+      bucket = { positions: [], indices: [] };
+      byGroup.set(key, bucket);
+      order.push(key);
+    }
+    const base = bucket.positions.length / 3;
+    for (let i = 0; i < pos.count; i++) {
+      v.fromBufferAttribute(pos, i).applyMatrix4(o.matrixWorld);
+      bucket.positions.push(v.x, v.y, v.z);
+    }
+    const index = o.geometry.getIndex();
+    if (index) for (let i = 0; i < index.count; i++) bucket.indices.push(base + index.getX(i));
+    else for (let i = 0; i < pos.count; i++) bucket.indices.push(base + i);
+  });
+  return order.map((name) => ({ name, positions: byGroup.get(name)!.positions, indices: byGroup.get(name)!.indices }));
+}
+
+/**
  * Serializes the currently displayed Three.js model to one of the supported mesh
  * formats, reusing Three.js's bundled exporters. Works for any source format — the
  * webview always ends up with a triangulated `THREE.Object3D`, whether it came from a
@@ -72,6 +110,12 @@ export async function exportModel(model: THREE.Object3D, format: CadFormat, unit
     case "gltf": {
       const result = await new GLTFExporter().parseAsync(target, { binary: true });
       return { data: arrayBufferToBase64(result as ArrayBuffer), binary: true };
+    }
+    case "3mf": {
+      // Geometry is already scaled by `applyExportScale`; the unit label must
+      // match so the file keeps its real-world size under a correct label.
+      const bytes = build3mf(threeMfObjects(target), unit ?? "mm");
+      return { data: arrayBufferToBase64(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength)), binary: true };
     }
     default:
       throw new Error(`Export to "${format}" is not supported.`);

@@ -129,6 +129,7 @@ let plyModel: string;
 let gltfModel: string;
 let vtkModel: string;
 let scadModel: string;
+let threeMfModel: string;
 
 /** A real, closed unit-cube OBJ (quad faces) — matches `objSolidSignatures.test.ts`'s fixture, used wherever a test needs actual resolvable geometry rather than just a recognized extension. */
 const UNIT_CUBE_OBJ = `
@@ -554,6 +555,8 @@ beforeEach(async () => {
   gltfModel = path.join(dir, "model.gltf");
   vtkModel = path.join(dir, "model.vtk");
   scadModel = path.join(dir, "model.scad");
+  threeMfModel = path.join(dir, "model.3mf");
+  await fs.writeFile(threeMfModel, new Uint8Array([0x50, 0x4b, 3, 4]));
   await fs.writeFile(stpModel, "ISO-10303-21;", "utf8");
   await fs.writeFile(stpModel2, "ISO-10303-21;", "utf8");
   await fs.writeFile(stlModel, "solid x\nendsolid x\n", "utf8");
@@ -4549,7 +4552,7 @@ describe("list_workspace_models", () => {
 
     const result = await listWorkspaceModels({ root: dir });
     expect(result.truncated).toBe(false);
-    const expected = ["model.gltf", "model.obj", "model.ply", "model.scad", "model.stl", "model.stp", "model.vtk", "model2.stp", "nested/b.step"];
+    const expected = ["model.3mf", "model.gltf", "model.obj", "model.ply", "model.scad", "model.stl", "model.stp", "model.vtk", "model2.stp", "nested/b.step"];
     expect(result.models.map((m) => path.relative(dir, m.path))).toEqual(expected);
     expect(result.models.some((m) => m.path.includes("ignored"))).toBe(false);
     expect(result.models.some((m) => m.path.endsWith("notes.txt"))).toBe(false);
@@ -5256,5 +5259,55 @@ describe("OpenSCAD Customizer tools", () => {
     await fs.writeFile(out, "old");
     await expect(convertScadTool({ path: scadPath, outputPath: out })).rejects.toThrow(/already exists/);
     expect((await convertScadTool({ path: scadPath, outputPath: out, overwrite: true })).supported).toBe(true);
+  });
+});
+
+describe("3MF is display-only on the host", () => {
+  // Every case also asserts the pipeline was never touched: a 3MF must be
+  // refused BY NAME before any host-side parser (built for another format) sees it.
+  it("check_mesh_health returns supported:false", async () => {
+    const c = ctx();
+    const r = await checkMeshHealthTool(c, { path: threeMfModel });
+    expect(r.supported).toBe(false);
+    expect(r.warnings.join(" ")).toMatch(/3mf has no host-side triangle-soup parser/i);
+    expect(c.pipeline.checkMeshHealth).not.toHaveBeenCalled();
+  });
+
+  it("promote_mesh_to_brep and repair_mesh throw", async () => {
+    const c = ctx();
+    await expect(promoteMeshToBrepTool(c, { path: threeMfModel, outputPath: path.join(dir, "x.step") })).rejects.toThrow(/3mf has no host-side triangle-soup parser/i);
+    await expect(repairMeshTool(c, { path: threeMfModel, outputPath: path.join(dir, "x.stl") })).rejects.toThrow(/3mf has no host-side triangle-soup parser/i);
+    expect(c.pipeline.promoteMeshToBrep).not.toHaveBeenCalled();
+    expect(c.pipeline.repairMesh).not.toHaveBeenCalled();
+  });
+
+  it("compare_models returns supported:false and names display-only formats", async () => {
+    const c = ctx();
+    const r = await compareModelsTool(c, { pathA: threeMfModel, pathB: stlModel });
+    expect(r.supported).toBe(false);
+    expect(r.warnings.join(" ")).toMatch(/display-only/i);
+    expect(r.warnings.join(" ")).toMatch(/3mf/);
+    expect(c.pipeline.compareModels).not.toHaveBeenCalled();
+  });
+
+  it("get_mass_properties is unsupported without touching WASM", async () => {
+    const c = ctx();
+    const r = await getMassProperties(c, { path: threeMfModel });
+    expect(r.supported).toBe(false);
+    expect(c.pipeline.computeMassProperties).not.toHaveBeenCalled();
+  });
+
+  it("load_model opens it with a display-only warning and no inventory", async () => {
+    const r = await loadModel(ctx(), { path: threeMfModel });
+    expect(r.format).toBe("3mf");
+    expect(r.warnings.join(" ")).toMatch(/3MF is display-only/);
+  });
+
+  it("save_model, the drawing tools and headless meshing refuse it by name", async () => {
+    const c = ctx();
+    await expect(saveModelTool(c, { path: threeMfModel })).rejects.toThrow(/3MF is display-only/);
+    await expect(exportSvgSilhouetteTool(c, { path: threeMfModel, outputPath: path.join(dir, "o.svg") })).rejects.toThrow(/display-only formats/);
+    await expect(generateMeshTool(c, { path: threeMfModel })).rejects.toThrow(/display-only mesh format/);
+    expect(c.pipeline.generateMesh).not.toHaveBeenCalled();
   });
 });
