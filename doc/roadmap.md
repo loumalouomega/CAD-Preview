@@ -195,7 +195,7 @@ Two projects built for AI agents were read for this extension:
 | dfam-check (overhangs, wall thickness, support, orientations, plate fit) | text-to-cad, ReOpenSCAD (plates) | [Printability facts report](#printability-facts-report) |
 | dfm draft and undercuts | text-to-cad | [Draft and undercut analysis](#draft-and-undercut-analysis) |
 | Engineering-drawing hole callouts, CENTER layer | text-to-cad | [Hole callouts on drawing sheets](#hole-callouts-on-drawing-sheets); the sheet itself ships |
-| Byte-deterministic writers | text-to-cad | [Reproducible exports](#reproducible-exports) |
+| Byte-deterministic writers (mesh formats, manifest) | text-to-cad | [Reproducible mesh exports](#reproducible-exports) |
 | Per-solid signed-volume check | text-to-cad | Addendum to [More facts in the B-rep validity report](#more-facts-in-the-b-rep-validity-report) |
 | 3MF export with colour | Both | 3MF geometry shipped; colour remains in [More mesh formats](#more-mesh-formats-through-three-s-bundled-loaders) |
 | STEP from a mesh with merged coplanar faces | ReOpenSCAD | [Planar-facet merging before promotion](#planar-facet-merging-promotion) (probe) |
@@ -411,14 +411,14 @@ These are outcome groupings, not release numbers. Independent small items can sh
 - **Done when:** a plate with four M6 tap-drill holes shows one callout and four centre marks in its top view and none in its side view, in both formats.
 - **Out of scope:** thread annotation beyond the designation; GD&T frames.
 
-#### 2.20 Reproducible exports {#reproducible-exports}
+#### 2.20 Reproducible mesh exports and handoff manifest {#reproducible-exports}
 
 *Area: Formats. Effort: S.*
 
-- **Evidence:** the simulation handoff manifest records a sha256 per output, and `check_handoff_manifest` re-hashes them — but exporting the same model twice probably does not produce identical bytes. A STEP header carries a timestamp in `FILE_NAME`, IGES writes dates in its global section, and a drawing sheet's title block prints today's date. text-to-cad makes every writer byte-deterministic and stamps no creation date.
-- **First useful increment (S):** first export each format twice from the same model and diff, to find exactly which fields move. Then, behind an opt-in `deterministic` flag on the export tools and the handoff manifest, normalise those fields — the STEP timestamp by a text patch beside `stepUnitPatch.ts`, the IGES dates likewise, and the sheet date from the flag's value or omitted.
-- **Done when:** two deterministic exports of the same model are byte-identical in every format the diff found unstable, and a manifest written with the flag verifies against a re-export.
-- **Out of scope:** making Gmsh or meshio++ output deterministic beyond what they already are (measured in the first step, not assumed).
+- **Evidence:** STEP and drawing-sheet exports are now reproducible behind an opt-in `deterministic` flag (IGES and BREP already were) — see `CLAUDE.md`'s "Reproducible exports". What it did **not** cover: `export_mesh` outputs (Gmsh and meshio++ formats were never diffed for moving fields), and the handoff manifest, which still stamps `createdAt` and a random `exportId`, so a manifest written twice is never byte-identical even when its outputs are.
+- **First useful increment (S):** diff each registered mesh export format twice (the probe `scripts/probe/examples/export-determinism.ts` already does the double-export; extend it to `export_mesh`), normalise only fields it finds moving, and give the manifest the flag: omit `createdAt`, derive `exportId` from the output hashes, record `deterministic: true` (optional field, tolerant parse, version unchanged).
+- **Done when:** a manifest written with the flag verifies against a re-export and two deterministic exports are byte-identical in every mesh format the diff found unstable.
+- **Out of scope:** the named-Part STEP path's occasional pcurve-value variation (an OCCT build issue, not a header field).
 
 ### Probe-gated — establish feasibility before estimating
 

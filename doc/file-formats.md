@@ -576,6 +576,12 @@ Picking the source's own format above is a confirmed save-in-place (modal data-l
 
 glTF export always produces a binary `.glb` file (not a text `.gltf` with embedded base64 buffers) — a single portable file, no separate buffer references to manage.
 
+### Reproducible exports
+
+By default two exports of one model differ. Measured with `scripts/probe/examples/export-determinism.ts`: a STEP file carries the export time in `FILE_NAME` and a process-global counter OCCT bakes into product names (`Open CASCADE STEP translator 7.4 <n>.…`) and `NEXT_ASSEMBLY_USAGE_OCCURRENCE` ids, while **IGES and BREP are already byte-identical** and a 3MF uses a fixed zip timestamp. A drawing sheet's title block prints the export date (supplied by the caller, not the renderer).
+
+The MCP tools `export_brep`, `export_drawing_sheet` and `batch_export` take an opt-in `deterministic` flag: STEP gets the timestamp fixed to `1970-01-01T00:00:00`, the translator counter reset to its per-export position, and occurrence ids renumbered in file order (statements that carry one are also unwrapped, since OCCT's line wrapping depends on the counter's digit count); a sheet omits its date, or prints an explicit `date`. Geometry records are untouched. The interactive File menu keeps today's behaviour. A **named-Part** STEP (XCAF path) is normalised the same way but is not promised byte-identical beyond that, and Gmsh/meshio++ mesh exports are outside this flag — see `CLAUDE.md`'s "Reproducible exports".
+
 ### Silhouette SVG/DXF Export
 
 **File ▸ Export Silhouette SVG…** / **File ▸ Export Silhouette DXF…** (or the matching `CAD Preview: Export Silhouette …` commands) are a **third** export case, deliberately outside the Export… quick-pick above: they write a 2D **outline drawing** rather than a 3D model, so this is neither a B-rep target nor a mesh target and never appears in `exportTargetsFor()`'s list. The two menu items share one flow — a view quick-pick (**Current view** — the angle you are currently looking at — then Front/Back/Top/Bottom/Left/Right/Iso), then the same export-unit quick-pick every other export shows, then a save dialog — differing only in the serializer used (`src/svgSilhouette.ts` vs `src/dxfSilhouette.ts`, over the *same* segment list, so an SVG and a DXF of one view are geometrically consistent). Pressing Escape on the *view* pick cancels the export (it is the primary choice); Escape on the *unit* pick still exports at native mm, matching the existing convention.

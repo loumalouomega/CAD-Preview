@@ -3828,6 +3828,77 @@ try {
     "an export with no parts assigned stays on the plain writer (no XCAF document-management entities)"
   );
 
+  // Reproducible exports (`deterministic`). Measured first
+  // (scripts/probe/examples/export-determinism.ts): STEP moves in three ways —
+  // the FILE_NAME timestamp plus a process-global translator counter in product
+  // names and occurrence ids — while IGES and BREP are already byte-identical.
+  // Each flag assertion is paired with a CONTROL showing the same export
+  // differs without it, since an identical pair proves nothing on its own.
+  const detSource = path.join(dir, "bull-for-determinism.brep");
+  await call("export_brep", { path: model, targetFormat: "brep", outputPath: detSource });
+  const exportStep = async (name, extra = {}) => {
+    const out = path.join(dir, name);
+    await call("export_brep", { path: detSource, targetFormat: "step", outputPath: out, ...extra });
+    return fs.readFileSync(out);
+  };
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const plainA = await exportStep("det-plain-a.step");
+  await sleep(1100); // the FILE_NAME timestamp has one-second resolution
+  const plainB = await exportStep("det-plain-b.step");
+  assert(Buffer.compare(plainA, plainB) !== 0, "CONTROL: two ordinary STEP exports of one model differ (timestamp + translator counter)");
+  const detA = await exportStep("det-a.step", { deterministic: true });
+  await sleep(1100);
+  const detB = await exportStep("det-b.step", { deterministic: true });
+  assert(Buffer.compare(detA, detB) === 0, "two deterministic STEP exports of one model, a second apart, are byte-identical");
+  assert(
+    (detA.toString("latin1").match(/MANIFOLD_SOLID_BREP/g) ?? []).length >= 1 && detA.length > 100_000,
+    "the deterministic STEP still carries the full geometry"
+  );
+  // The named-Part (XCAF) path has the same header fields, normalised the same
+  // way. It is NOT promised byte-identical beyond that: measured, this OCCT
+  // build occasionally recomputes one pcurve value differently from one call to
+  // the next (a 2-D CARTESIAN_POINT moving at the 6th decimal; and, rarely, a
+  // knot written as -NAN, which exportBRep now detects and redoes), so what is
+  // asserted is that nothing but isolated numeric values can differ.
+  const xcafDetOut = path.join(dir, "det-xcaf-a.step");
+  await call("export_brep", { path: xcafBrepOut, targetFormat: "step", outputPath: xcafDetOut, deterministic: true });
+  await sleep(1100);
+  const xcafDetOut2 = path.join(dir, "det-xcaf-b.step");
+  await call("export_brep", { path: xcafBrepOut, targetFormat: "step", outputPath: xcafDetOut2, deterministic: true });
+  {
+    const a = fs.readFileSync(xcafDetOut, "latin1");
+    const b = fs.readFileSync(xcafDetOut2, "latin1");
+    const maskNumbers = (t) => t.replace(/-?\d+\.\d*(?:E[-+]?\d+)?/gi, "#");
+    assert(maskNumbers(a) === maskNumbers(b), "two deterministic named-Part STEP exports differ in numeric values at most (no timestamp, counter, id or structure drift)");
+    const la = a.split("\n");
+    const lb = b.split("\n");
+    let differing = 0;
+    for (let k = 0; k < Math.max(la.length, lb.length); k++) if (la[k] !== lb[k]) differing++;
+    assert(differing <= 10, `the named-Part pair differs on at most a handful of lines (got ${differing})`);
+    assert(!/[,(\s]-?NAN[,)\s]/i.test(a) && !/[,(\s]-?NAN[,)\s]/i.test(b), "no named-Part STEP carries a non-finite number");
+  }
+  // IGES and BREP needed no normalisation: confirm that stays true.
+  const exportOther = async (fmt, name) => {
+    const out = path.join(dir, name);
+    await call("export_brep", { path: detSource, targetFormat: fmt, outputPath: out });
+    return fs.readFileSync(out);
+  };
+  const igesA = await exportOther("iges", "det-a.iges");
+  await sleep(1100);
+  const igesB = await exportOther("iges", "det-b.iges");
+  assert(Buffer.compare(igesA, igesB) === 0, "IGES exports are already byte-identical (no normalisation needed)");
+  // Drawing sheet: the title-block date is the only moving field.
+  const sheetPlain = path.join(dir, "det-sheet-plain.svg");
+  const sheetDet = path.join(dir, "det-sheet.svg");
+  const sheetDated = path.join(dir, "det-sheet-dated.svg");
+  await call("export_drawing_sheet", { path: model, outputPath: sheetPlain });
+  await call("export_drawing_sheet", { path: model, outputPath: sheetDet, deterministic: true });
+  await call("export_drawing_sheet", { path: model, outputPath: sheetDated, deterministic: true, date: "2026-01-02" });
+  const today = new Date().toISOString().slice(0, 10);
+  assert(fs.readFileSync(sheetPlain, "utf8").includes(`Date ${today}`), "an ordinary sheet prints today's date in the title block");
+  assert(!/Date \d{4}-/.test(fs.readFileSync(sheetDet, "utf8")), "a deterministic sheet prints no export date");
+  assert(fs.readFileSync(sheetDated, "utf8").includes("Date 2026-01-02"), "an explicit date is honoured, deterministic or not");
+
   // Tier 0 Phase 1 — the `bakedThrough` watermark end to end through the real
   // kernel: export a file with an edit baked in (exactly what save-in-place
   // writes), attach the sidecar WITH the watermark (exactly what save-in-place

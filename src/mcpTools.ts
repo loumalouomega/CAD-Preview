@@ -5756,7 +5756,7 @@ export async function compareMeshRefinementTool(
 
 export async function exportBRepTool(
   ctx: ToolContext,
-  params: { path: string; targetFormat: string; outputPath: string; unit?: string }
+  params: { path: string; targetFormat: string; outputPath: string; unit?: string; deterministic?: boolean }
 ) {
   const modelPath = params.path;
   const route = requireRoute(modelPath);
@@ -5802,7 +5802,10 @@ export async function exportBRepTool(
     ops,
     unit,
     true,
-    parts
+    parts,
+    // Appended only when asked for, so an ordinary call's pipeline arguments
+    // are exactly what they were before the flag existed.
+    ...(params.deterministic === true ? [true] : [])
   );
   await fs.writeFile(outputPath, bytes);
   return {
@@ -5811,6 +5814,7 @@ export async function exportBRepTool(
     extension: EXPORT_EXTENSION[target],
     editsBaked: fullOps.length,
     unit,
+    ...(params.deterministic === true ? { deterministic: true } : {}),
     warnings,
   };
 }
@@ -6258,6 +6262,10 @@ export async function exportDrawingSheetTool(
     libraryPath?: string;
     /** Layer names/ids to restrict every view to (one group per layer in each view). Absent = every layer. B-rep sources only. */
     layers?: string[];
+    /** Title-block date, `YYYY-MM-DD`. Default: today, or none when `deterministic`. */
+    date?: string;
+    /** Omit the export-day date from the title block (unless `date` is given) so repeat exports are byte-identical across days. */
+    deterministic?: boolean;
   }
 ) {
   const modelPath = params.path;
@@ -6299,7 +6307,7 @@ export async function exportDrawingSheetTool(
     scale,
     title: settings.title,
     fields: settings.fields,
-    date: new Date().toISOString().slice(0, 10),
+    date: params.date ?? (params.deterministic === true ? undefined : new Date().toISOString().slice(0, 10)),
   });
   await fs.writeFile(outputPath, result.content, "utf8");
 
@@ -6717,6 +6725,8 @@ export async function batchExportTool(
     template?: string;
     libraryPath?: string;
     reportPath?: string;
+    /** Forwarded to the step and sheet targets (see export_brep / export_drawing_sheet). */
+    deterministic?: boolean;
   },
   onProgress: ProgressCallback = () => {},
   signal?: AbortSignal
@@ -6754,7 +6764,7 @@ export async function batchExportTool(
     const { fullOps, bakedThrough } = await readEditsResolved(input);
     let result: { written: string; warnings: string[] };
     if (target === "step" || target === "iges" || target === "brep") {
-      result = await exportBRepTool(ctx, { path: input, targetFormat: target, outputPath: outPath, unit: params.unit });
+      result = await exportBRepTool(ctx, { path: input, targetFormat: target, outputPath: outPath, unit: params.unit, deterministic: params.deterministic });
     } else if (target === "svg" || target === "dxf") {
       result = await exportTechnicalDrawingTool(ctx, { path: input, outputPath: outPath, format: target, view: params.view, unit: params.unit });
     } else {
@@ -6764,6 +6774,7 @@ export async function batchExportTool(
         format: target === "sheet-dxf" ? "dxf" : "svg",
         template: params.template,
         libraryPath: params.libraryPath,
+        deterministic: params.deterministic,
       });
     }
     const tailBaked = result.warnings.some((w) => /: Baked \d+ of \d+/.test(w));

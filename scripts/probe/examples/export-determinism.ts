@@ -35,29 +35,42 @@ function diff(a: Uint8Array, b: Uint8Array): { identical: boolean; changed: Arra
   return { identical: false, changed: changed.slice(0, 12) };
 }
 
-async function once(bytes: Uint8Array, target: BRepFormat, parts: Part[]): Promise<Uint8Array> {
+const BOX = { op: "addBox", center: [50, 0, 0], size: [2, 2, 2] };
+
+async function once(bytes: Uint8Array, target: BRepFormat, parts: Part[], ops: unknown[] = []): Promise<Uint8Array> {
   // The trailing argument is the `deterministic` flag once it exists.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const fn = exportBRep as any;
-  return fn(EXT, bytes, "step", target, [], "mm", true, parts, deterministic);
+  const run = () => fn(EXT, bytes, "step", target, ops, "mm", true, parts, deterministic);
+  try {
+    return await run();
+  } catch (err) {
+    // A long run of large exports in one process can abort the OCCT heap; the
+    // service has already reset itself, so one clean retry is the documented recovery.
+    if (/kernel has been reset/.test(String((err as Error).message))) return run();
+    throw err;
+  }
 }
 
 async function main(): Promise<void> {
   const bytes = new Uint8Array(fs.readFileSync("examples/STP/bull.stp"));
   const part: Part = { name: "Body", color: "#ff8800", volumes: ["solid-0"], surfaces: [], lines: [], points: [] };
-  const cases: Array<[string, BRepFormat, Part[]]> = [
-    ["step", "step", []],
-    ["step+parts(xcaf)", "step", [part]],
-    ["iges", "iges", []],
-    ["brep", "brep", []],
+  const tiny: Part = { name: "TinyBox", color: "#00ff88", volumes: ["solid-1"], surfaces: [], lines: [], points: [] };
+  const cases: Array<[string, BRepFormat, Part[], unknown[]]> = [
+    ["step", "step", [], []],
+    ["step+parts(xcaf)", "step", [part], []],
+    ["step 2 solids", "step", [], [BOX]],
+    ["step 2 solids+parts(xcaf)", "step", [part, tiny], [BOX]],
+    ["iges", "iges", [], []],
+    ["brep", "brep", [], []],
   ];
   const report: unknown[] = [];
   let failed = false;
-  for (const [name, fmt, parts] of cases) {
-    const a = await once(bytes, fmt, parts);
+  for (const [name, fmt, parts, ops] of cases) {
+    const a = await once(bytes, fmt, parts, ops);
     // The timestamps have one-second resolution: wait so a real timestamp moves.
     await new Promise((r) => setTimeout(r, 1100));
-    const b = await once(bytes, fmt, parts);
+    const b = await once(bytes, fmt, parts, ops);
     const d = diff(a, b);
     report.push({ case: name, bytes: a.length, identical: d.identical, changed: d.changed });
     if (deterministic && !d.identical) failed = true;
