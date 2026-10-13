@@ -83,6 +83,7 @@ export const PRODUCED_ROLE: Record<string, string> = {
   addTrapezoidProfile: "body",
   boolean: "produced",
   defeature: "produced",
+  unifySameDomain: "produced",
   revolve: "produced",
   sweep: "produced",
   loft: "produced",

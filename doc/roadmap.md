@@ -301,14 +301,6 @@ These are outcome groupings, not release numbers. Independent small items can sh
   - Pin it in `mcp:smoke` with analytic volume and exact Part membership, like the bracket tutorial.
 - **Done when:** the page builds, its op list compiles under `npm test`, and the exported MDPA opens in VSCode-MDPA-Preview with both SubModelParts populated.
 
-#### 2.4 Unify same-domain faces as an edit op {#unify-same-domain-faces-as-an-edit-op}
-
-*Area: Geometry.*
-
-- **Evidence (probed with the B-rep validity report, opencascade.js 1.1.1):** `new oc.ShapeUpgrade_UnifySameDomain_2(shape, true, true, false)` → `Build()` → `Shape()` merged two fused 10 mm boxes from 10 faces / 20 edges to 6 / 12 with the volume unchanged (2000.0000000000005 both sides); on a box with one fillet it correctly changed nothing (7 faces before and after, volume 997.853981147513 both sides). `_1()` + `Initialize(shape, true, true, false)` is the fallback form.
-- **First useful increment (M):** a `unifySameDomain` edit op — B-rep only, topology-changing (every downstream `face-N`/`edge-N` renumbers, so Parts and annotations go through the existing rebind), explicit and undoable, never an automatic consequence of a failed `check_brep_health`. Needs a panel button, which means a TikZ icon through the `icons/` pipeline (`pdflatex` + `pdftocairo`), an `OP_PARAM_DOCS` entry, the generic `produced` bucket role, and a `mcp:smoke` assertion on the fused-box face count and volume.
-- **Done when:** the fused-box fixture drops 10 → 6 faces through `apply_edit_ops` at an unchanged volume, and a Part on one of the merged faces is rebound or reported dropped, never silently repointed.
-
 #### 2.5 meshio++ `feature_edges` replaces the hand-rolled winding check {#meshio-feature-edges-winding-check}
 
 *Area: Meshing. Effort: S–M.*
@@ -655,7 +647,7 @@ None of these depends on another's result.
 - **Evidence today:**
   - `promote_mesh_to_brep` and `check_mesh_health` build one `BRepBuilderAPI_MakeFace` per triangle and sew them. The cost scales with triangle count, which is why `MAX_HEALABLE_TRIANGLES` refuses meshes above 50 000 and auto-decimation targets about 1 000.
   - The pieces exist: `src/webview/meshFacets.ts`'s `segmentCoplanarFacets` (pure, already used host-side by `meshioRegionParts.ts`) groups near-coplanar triangles, and `addSurfaceFromLines`' multi-loop path builds a planar face with holes from closed loops, choosing hole orientation by winding sign.
-  - The alternative is to sew per triangle and then merge with `ShapeUpgrade_UnifySameDomain`, which was probed under [Unify same-domain faces](#unify-same-domain-faces-as-an-edit-op) — but that keeps the per-triangle cost it is meant to remove.
+  - The alternative is to sew per triangle and then merge with `ShapeUpgrade_UnifySameDomain`, which now ships as the `unifySameDomain` edit op (`CLAUDE.md`'s "Unify same-domain faces" section) — but that keeps the per-triangle cost it is meant to remove.
 - **Probe (S):**
   1. For `cube.stl`, a faceted cylinder STL and one large polyhedral mesh, extract each facet's boundary loops (outer plus holes) in the facet's plane, and build one face per facet through the multi-loop construction.
   2. Sew the faces and build the solid as `promoteMeshToBrep` does.

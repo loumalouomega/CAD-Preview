@@ -2906,6 +2906,8 @@ function buildOpForPanelCore(id: PanelOpId, rawDraft: Record<string, unknown>): 
       if (selFaces.length === 0) return { error: "Select the face(s) to defeature (Surf mode)." };
       return { op: withExprs({ op: "defeature", faces: selFaces }) };
     }
+    case "unifySameDomain":
+      return { op: { op: "unifySameDomain" } };
     case "splitByPlane": {
       if (selVolumes.length === 0) return { error: "Select one or more volumes (Vol mode) to split." };
       if (!d.planeId && !d.planeNormal.some((v: number) => v !== 0)) return { error: "Plane normal must be non-zero." };

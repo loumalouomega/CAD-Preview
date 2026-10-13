@@ -2776,6 +2776,35 @@ test("command bar: a typed addBox equals the panel-built op, and a panel Apply e
   assert((await page.inputValue("#cmdbar-input")) === "", "a successful command clears the input");
 });
 
+test("Unify faces: the Modify button applies a parameter-free unifySameDomain op, and the typed command posts the same op", async (page) => {
+  await populate(page);
+  const before = await sentCount(page, "editsChanged");
+  await page.evaluate(() => [...document.querySelectorAll(".edits-tab")].find((b) => b.textContent === "Edit")?.click());
+  await sleep(150);
+  const opened = await page.evaluate(() => {
+    const b = [...document.querySelectorAll(".op-btn")].find((x) => x.querySelector(".op-name")?.textContent === "Unify faces");
+    if (!b) return false;
+    b.click();
+    return true;
+  });
+  assert(opened, "the EDIT tab lists a Unify faces button");
+  await sleep(200);
+  const applied = await page.evaluate(() => {
+    const a = [...document.querySelectorAll("#edits-params .compose-apply")].find((x) => x.textContent === "Apply");
+    if (!a) return false;
+    a.click();
+    return true;
+  });
+  assert(applied, "the Unify faces form renders an Apply button (no operands needed)");
+  await sleep(300);
+  assert((await sentCount(page, "editsChanged")) === before + 1, "Apply posts exactly one editsChanged");
+  const panelOp = await lastOp(page);
+  assert(JSON.stringify(panelOp) === JSON.stringify({ op: "unifySameDomain" }), `the panel op is {op:"unifySameDomain"} (got ${JSON.stringify(panelOp)})`);
+  await typeCommand(page, "unifySameDomain");
+  assert((await sentCount(page, "editsChanged")) === before + 2, `the typed command posts one more editsChanged (message: ${JSON.stringify(await cmdMessage(page))})`);
+  assert(JSON.stringify(await lastOp(page)) === JSON.stringify(panelOp), "the typed op equals the panel op");
+});
+
 test("command bar: $sel expands to the selection by field type; wrong kinds explain themselves", async (page) => {
   await populate(page);
   const none = await sentCount(page, "editsChanged");

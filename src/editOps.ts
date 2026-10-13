@@ -250,6 +250,8 @@ export interface ShellOp { op: "shell"; thickness: number; openingFaces: string[
 export interface DraftOp { op: "draft"; faces: string[]; angleDeg: number; planePoint?: Vec3; planeNormal?: Vec3; planeId?: string; }
 /** Remove the selected faces as recognized features (fillets, chamfers, small protrusions) via `BRepAlgoAPI_Defeaturing`, healing the solid behind them. Faces that bound no removable feature are left in place by the kernel. */
 export interface DefeatureOp { op: "defeature"; faces: string[]; }
+/** Merge adjacent faces and edges that lie on the same underlying surface/curve (the seam a boolean union leaves between coplanar faces), via `ShapeUpgrade_UnifySameDomain`. Acts on the whole model; a model with nothing to merge is left unchanged. Explicit only — never run automatically. */
+export interface UnifySameDomainOp { op: "unifySameDomain"; }
 /** Stadium slot around an existing edge: width across, length = edge length + width. */
 export interface AddEdgeSlotOp { op: "addEdgeSlot"; edge: string; width: number; }
 /** Split the target solids by the plane (`planePoint`, `planeNormal`), the saved construction plane `planeId` (`plane-N`), or the midplane of two planar `midplaneFaces`, keeping the half on the normal side ("positive"), the other half ("negative"), or both pieces. `planePoint`/`planeNormal` may ride alongside `planeId` as the resolved cache. */
@@ -282,7 +284,7 @@ export type EditOp = (
   | BooleanOp | FilletOp | ChamferOp
   | ExtrudeOp | RevolveOp | SweepOp | LoftOp
   | ExplodeOp | MateOp
-   | ShellOp | DraftOp | DefeatureOp | SplitByPlaneOp | SectionOp | RibOp | WrapOp
+   | ShellOp | DraftOp | DefeatureOp | UnifySameDomainOp | SplitByPlaneOp | SectionOp | RibOp | WrapOp
   | AddBoxOp | AddSphereOp | AddCylinderOp | AddConeOp | AddTorusOp | AddPrismOp
   | AddWedgeOp | AddHoleOp | AddCounterboreHoleOp | AddCountersinkHoleOp
   | AddCircleProfileOp | AddRectangleProfileOp | AddPolygonProfileOp
@@ -400,7 +402,7 @@ export const QUERYABLE_OPERAND_FIELDS: Record<EditOpKind, readonly string[]> = {
   extrude: ["profile", "profileEdges", "upToFace"], revolve: ["profile", "profileEdges"],
   sweep: ["profile", "profileEdges", "path"], loft: ["profiles", "profileEdgeSets", "guides"],
   explode: [], mate: ["faceA", "faceB"],
-  shell: ["openingFaces"], draft: ["faces"], defeature: ["faces"], splitByPlane: ["targets"], section: ["targets"],
+  shell: ["openingFaces"], draft: ["faces"], defeature: ["faces"], unifySameDomain: [], splitByPlane: ["targets"], section: ["targets"],
   rib: ["spineEdges", "upTo"],
   wrap: ["profile", "targets"],
   addBox: [], addSphere: [], addCylinder: [], addCone: [], addTorus: [], addPrism: [],
@@ -461,7 +463,7 @@ export type OutcomeFail = (diagnostic: string, hint?: string) => void;
 /** Ops that change topology and therefore reassign `face-N`/`edge-N` ids on reload. */
 export const TOPOLOGY_CHANGING_OPS: ReadonlySet<EditOpKind> = new Set([
   "boolean", "fillet", "chamfer", "extrude", "revolve", "sweep", "loft",
-  "shell", "draft", "defeature", "splitByPlane", "section", "rib", "wrap",
+  "shell", "draft", "defeature", "unifySameDomain", "splitByPlane", "section", "rib", "wrap",
   "addBox", "addSphere", "addCylinder", "addCone", "addTorus", "addPrism",
   "addWedge", "addHole", "addCounterboreHole", "addCountersinkHole",
   "addCircleProfile", "addRectangleProfile", "addPolygonProfile",
@@ -476,7 +478,7 @@ export const TOPOLOGY_CHANGING_OPS: ReadonlySet<EditOpKind> = new Set([
  * The hole family is deliberately NOT here — the mesh engine cuts holes via CSG. */
 export const BREP_ONLY_OPS: ReadonlySet<EditOpKind> = new Set([
   "fillet", "chamfer", "extrude", "revolve", "sweep", "loft", "mate",
-  "shell", "draft", "defeature", "splitByPlane", "section", "rib", "wrap",
+  "shell", "draft", "defeature", "unifySameDomain", "splitByPlane", "section", "rib", "wrap",
   "addWedge",
   "addCircleProfile", "addRectangleProfile", "addPolygonProfile",
   "addEllipseProfile", "addRoundedRectangleProfile", "addSlotProfile", "addTrapezoidProfile",
@@ -1118,6 +1120,8 @@ function validateEditOpCore(raw: unknown): EditOp | null {
       if (!faces) return null;
       return { op: "defeature", faces };
     }
+    case "unifySameDomain":
+      return { op: "unifySameDomain" };
     case "addEdgeSlot": {
       if (typeof o.edge !== "string" || !o.edge || !isPositive(o.width)) return null;
       return { op: "addEdgeSlot", edge: o.edge, width: o.width as number };
