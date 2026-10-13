@@ -3787,12 +3787,21 @@ try {
     xcafStepText.includes("BullBody") && xcafStepText.includes("TinyBox"),
     "the exported STEP file's own PRODUCT entities carry the part names, not generic placeholders"
   );
-  // This build's STEPCAFControl_Writer unconditionally wraps document-
-  // structured output in AP242 "document management" bookkeeping that the
-  // PLAIN STEPControl_Reader can't unwrap (see xcafWrite.ts's doc comment)
-  // — occtService.ts's readShape falls back to a document-aware read
-  // automatically. Confirm THIS codebase's own pipeline can still reopen
-  // its own named-parts export and recover the exact original geometry.
+  // The file must actually CONTAIN the geometry. An earlier version of this
+  // writer drove OCCT's multi-file mode (`Transfer_1(..., "")`), which wrote a
+  // bare product tree with empty shape representations plus one `<Part>.stp` per
+  // part into the MEMFS root — and THIS suite still passed, because the reload
+  // below runs in the same long-lived kernel process that still held those
+  // siblings. So the assertions that cannot be fooled that way are on the file's
+  // own text: B-rep solids present, no external-document references.
+  const xcafSolidCount = (xcafStepText.match(/MANIFOLD_SOLID_BREP/g) ?? []).length;
+  assert(xcafSolidCount >= 2, `the named-parts STEP contains the geometry itself, not just a product tree (${xcafSolidCount} MANIFOLD_SOLID_BREP)`);
+  assert(
+    !xcafStepText.includes("DOCUMENT_FILE") && !xcafStepText.includes("APPLIED_EXTERNAL_IDENTIFICATION"),
+    "the named-parts STEP is one self-contained file, with no external-document (multi-file) references"
+  );
+  // And it reopens through THIS codebase's own pipeline with the exact
+  // original geometry.
   const xcafReloaded = await call("load_model", { path: xcafStepOut });
   assert(xcafReloaded.solids.length === 2, `reopening the named-parts export recovers both solids (got ${xcafReloaded.solids.length})`);
   const xcafOriginalVolume =

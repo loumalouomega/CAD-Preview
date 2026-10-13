@@ -10,28 +10,21 @@ import { collectSolids } from "./occtOperations";
  * conventions: pure-effort enhancement over the plain `STEPControl_Writer`
  * path, `null` on anything it can't confidently do, never a hard failure.
  *
- * **Per-part COLOR export is genuinely non-functional in this OCCT WASM
- * build — verified, not merely unattempted.** `XCAFDoc_ColorTool.SetColor`
- * (both the `(TDF_Label, Quantity_Color, XCAFDoc_ColorType)` and
- * `(TopoDS_Shape, Quantity_Color, XCAFDoc_ColorType)` overloads, plus the
- * `Quantity_ColorRGBA` variants) all succeed and the color IS correctly
- * stored — `colorTool.GetColor_4(label, type, out)` reads it straight back
- * in the same in-memory document. But `STEPCAFControl_Writer` with
- * `SetColorMode(true)` never emits a single `COLOUR_RGB`/`STYLED_ITEM`/
- * `PRESENTATION_STYLE_ASSIGNMENT` entity into the written file, regardless
- * of: label-based vs. shape-based `SetColor`, plain RGB vs. RGBA, calling
- * `Transfer_1`+`Write` separately vs. the combined `Perform_1`, or adding an
- * explicit `STEPCAFControl_Controller.Init()` before constructing the
- * writer (the fix that unblocked a different, superficially similar
- * unbound-static-parameter issue elsewhere in this codebase — tried here on
- * the chance the same root cause applied; it doesn't). This is the
- * write-side sibling of `xcafTree.ts`'s own "colors remain genuinely
- * unresolved" finding on the READ side — color support appears to be
- * fully non-functional through this embind surface in both directions,
- * not merely asymmetric. `SetColorMode(true)` is still set on the writer
- * (harmless, and picks up a future OCCT/binding fix for free if the
- * underlying gap ever closes), but no color-specific write logic exists
- * here — only names.
+ * **Per-part COLOR export was declared "genuinely non-functional in this
+ * build" here, and that conclusion was WRONG — it was an artefact of a
+ * different bug.** Every attempt (label- and shape-based `SetColor`, RGB and
+ * RGBA, `Transfer_1`+`Write` vs `Perform_1`, `STEPCAFControl_Controller.Init()`)
+ * emitted no `COLOUR_RGB`/`STYLED_ITEM` because the writer was being driven in
+ * OCCT's MULTI-FILE mode (see {@link writeXcafStep}), which writes the main
+ * file as a bare product tree with no geometry at all — a style has nothing to
+ * attach to. Re-probed with the single-file `Perform_2` (2026-10-13):
+ * `XCAFDoc_ColorTool.SetColor_2(label, Quantity_Color_3(r, g, b,
+ * Quantity_TOC_RGB), XCAFDoc_ColorSurf)` and the shape-based `SetColor_5`
+ * both produce one `COLOUR_RGB` and one `STYLED_ITEM` beside the solid.
+ * Adopting it (and then re-checking the READ side, whose "colours dead"
+ * finding in `xcafTree.ts` may share the cause) is a separate, roadmap-tracked
+ * step; this module still writes names only, and still sets
+ * `SetColorMode(true)` so colours flow the moment a caller sets them.
  *
  * **Assembly structure + names DO work and are what this module ships.**
  * `shapeTool.AddShape(shape, makeAssembly, makePrepare)` (no `_N` suffix —
@@ -150,7 +143,6 @@ export function buildXcafDocumentForExport(oc: any, shape: any, parts: Part[], c
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function writeXcafStep(oc: any, docHandle: unknown, filePath: string, cleanup: Array<{ delete(): void }>): void {
-  const retDone = oc.IFSelect_ReturnStatus.IFSelect_RetDone.value;
   const writer = new oc.STEPCAFControl_Writer_1();
   cleanup.push(writer);
   writer.SetNameMode(true);
@@ -158,21 +150,39 @@ export function writeXcafStep(oc: any, docHandle: unknown, filePath: string, cle
   // module doc comment) — harmless, and free if a future fix lands.
   writer.SetColorMode(true);
   writer.SetLayerMode(false);
-  const transferOk = writer.Transfer_1(docHandle, oc.STEPControl_StepModelType.STEPControl_AsIs, "");
-  if (!transferOk) throw new Error("STEP (XCAF) Transfer failed");
-  const writeStatus = writer.Write(filePath);
-  if (writeStatus.value !== retDone) throw new Error(`STEP (XCAF) Write failed (code ${writeStatus.value})`);
+  // `Perform_2(doc, path)` (a C string) transfers the whole document and
+  // writes ONE self-contained file. The two-step `Transfer_1(doc, mode, multi)`
+  // + `Write` form cannot be used here: its third argument is a `std::string`
+  // in this binding (null/undefined/0 are all rejected — "Cannot pass
+  // non-string to std::string"), and the only value it accepts, `""`, selects
+  // OCCT's MULTI-FILE mode. That mode writes the main file as a bare product
+  // tree with NO geometry (every shape representation empty) and puts each
+  // part into a separate `<PartName>.stp` beside it — here, in the MEMFS root,
+  // where the files leaked and where a reload in the same long-lived process
+  // quietly found them again. A fresh process saw 0 solids. This was the
+  // "AP242 document management quirk" the read-side fallback below was written
+  // for; it was the multi-file output, not an inherent property of the writer.
+  const ok = writer.Perform_2(docHandle, filePath);
+  if (!ok) throw new Error("STEP (XCAF) Write failed");
 }
 
 /**
- * Read-side counterpart, required because writing THIS build's
- * `STEPCAFControl_Writer` output unconditionally embeds AP242 "document
- * management" bookkeeping entities (`DOCUMENT_FILE`/`APPLIED_EXTERNAL_
- * IDENTIFICATION_ASSIGNMENT`, one per named part, e.g. `SOLID.stp`/
- * `Bracket.stp`) — present even with every `Set*Mode` flag false, so it's
- * an unconditional default of this build's writer, not something this
- * module's own calls trigger. **Verified this is genuinely a document-vs-
- * plain-shape distinction, not a broken file**: the SAME bytes that make
+ * Read-side counterpart. HISTORY, corrected 2026-10-13: this was written
+ * because this module's own STEP output unconditionally carried AP242
+ * "document management" entities (`DOCUMENT_FILE`/`APPLIED_EXTERNAL_
+ * IDENTIFICATION_ASSIGNMENT`, one per named part, e.g. `SOLID.stp`) that the
+ * plain `STEPControl_Reader` could not turn into shapes, and it was attributed
+ * to "an unconditional default of this build's writer". It was not: those
+ * entities, and the empty shape representations, were the MULTI-FILE output of
+ * `Transfer_1(..., "")` (see {@link writeXcafStep}). The writer now produces a
+ * single self-contained file the plain reader reads directly, so this fallback
+ * is no longer reached for this module's own output; it stays, harmless and
+ * unreachable for ordinary files, for any other document-wrapped STEP. The
+ * original description follows; its claim that the CAF reader "recovers every
+ * solid's exact volume" was observed in a long-lived process where the
+ * multi-file siblings were still sitting in MEMFS, so treat it as UNVERIFIED
+ * for a genuinely geometry-less file (a fresh process read 0 solids):
+ * the SAME bytes that make
  * `STEPControl_Reader`'s `TransferRoots()`/`NbShapes()` come back `0`
  * (confirmed correlated: `NbRootsForTransfer()` still finds `1` — the
  * "document" root — but transferring it yields no shape) parse CLEANLY
