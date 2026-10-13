@@ -225,6 +225,34 @@ function parseMshNodeCoords(mshText) {
   return coords;
 }
 
+/** Axis-aligned extent and total volume of the linear tetrahedra (Gmsh element
+ * type 4) in an MSH 4.1 file. This is what lets the smoke suite pin the
+ * GEOMETRY a meshio-only source produced, not just that meshing returned a
+ * non-empty mesh: no headless tool reports a bounding box or mass for such a
+ * source, but the generated mesh's own nodes and tets say it exactly. */
+function mshExtentAndTetVolume(mshText) {
+  const { coords } = mshVolumeNodes(mshText);
+  const lo = [Infinity, Infinity, Infinity];
+  const hi = [-Infinity, -Infinity, -Infinity];
+  for (const xyz of coords.values()) {
+    for (let k = 0; k < 3; k++) { lo[k] = Math.min(lo[k], xyz[k]); hi[k] = Math.max(hi[k], xyz[k]); }
+  }
+  const elementLines = (mshText.split("$Elements\n")[1]?.split("$EndElements")[0] ?? "").trim().split("\n");
+  let volume = 0, tets = 0, cursor = 1;
+  for (let b = 0, blocks = Number(elementLines[0]?.split(/\s+/)[0]); b < blocks; b++) {
+    const [dim, , elType, n] = elementLines[cursor++].trim().split(/\s+/).map(Number);
+    for (let i = 0; i < n; i++, cursor++) {
+      if (dim !== 3 || elType !== 4) continue;
+      const nodes = elementLines[cursor].trim().split(/\s+/).map(Number).slice(1);
+      const [a, bb, c, d] = nodes.map((t) => coords.get(t));
+      const u = bb.map((x, k) => x - a[k]), v = c.map((x, k) => x - a[k]), w = d.map((x, k) => x - a[k]);
+      volume += Math.abs(u[0] * (v[1] * w[2] - v[2] * w[1]) - u[1] * (v[0] * w[2] - v[2] * w[0]) + u[2] * (v[0] * w[1] - v[1] * w[0])) / 6;
+      tets++;
+    }
+  }
+  return { extent: hi.map((h, k) => h - lo[k]), volume, tets };
+}
+
 /** Top-dimensional node-tag sets keyed by Gmsh volume tag, plus node positions.
  * Unlike comparing coincident coordinates, intersecting tags proves two
  * volumes actually share the SAME mesh nodes at their interface. */
@@ -4815,18 +4843,17 @@ try {
   // mesh, and the export direction is covered separately by the compat corpus's
   // `export-bdf` row (which also reloads and re-meshes).
   //
-  // Two things are deliberately NOT asserted here, both because claiming them
-  // would be claiming something this codebase cannot deliver:
+  // One thing is deliberately NOT asserted from the headless tools directly:
   //
-  // 1. An analytic volume. 3x4x5 = 60 is known exactly, and pinning it would
-  //    beat any count — but `get_mass_properties` is B-rep + STL/OBJ/PLY/glTF
-  //    only, and no headless tool reports a bounding box for a meshio-only
-  //    source. That gap is why the "Nastran bulk-deck import" roadmap item is
-  //    narrowed, not closed, and it is why a count-only pass must not be read as
-  //    geometric proof (see examples/EnSight/README.md). The extent IS verified —
-  //    60 facets spanning 3x4x5 through the real `convertToStlBoundary` — but in
-  //    a probe, until a tool can express it.
-  // 2. Re-meshing a deck this extension re-exported FROM this script's own
+  // 1. An analytic volume via `get_mass_properties` / a bbox via `load_model`.
+  //    Neither exists for a meshio-only source, so a count-only pass must not be
+  //    read as geometric proof (see examples/EnSight/README.md). The geometry IS
+  //    pinned, though — by the block below, which exports a .msh and reads the
+  //    extent and summed tetrahedron volume back off the generated mesh; and the
+  //    reader-level extent is pinned in scripts/probe/examples/nastran-deck.ts.
+  //    (An earlier version of this comment, and doc/roadmap.md, claimed the
+  //    smoke suite already asserted volume 60; it did not.)
+  // And one thing cannot be claimed: re-meshing a deck this extension re-exported FROM this script's own
   //    `bull.stp`. That fails with Gmsh's `classifySurfaces: Wrong topology of
   //    boundary mesh for parametrization`, for a reason unrelated to Nastran:
   //    a second meshing pass over the re-extracted boundary of an
@@ -4835,6 +4862,36 @@ try {
   //    the compat corpus re-meshes from block.stp — a clean box — which is why
   //    it passes there. The claim this fixture supports is "a generated .bdf
   //    re-opens and meshes", not "any .bdf re-meshes".
+
+  // The geometry itself, pinned from the generated mesh: export_mesh to .msh and
+  // read the extent and the summed tetrahedron volume back off the file. This
+  // is the stronger claim the comments above say no headless tool can express
+  // directly — the mesh Gmsh built from the converted boundary IS the evidence.
+  // A unit box (the failure class examples/EnSight/README.md documents) has
+  // the right counts and the wrong extent, so every number here is derived
+  // from the fixture's own geometry, never from the reader's output.
+  const bdfChecks = [
+    { name: "block-tets.bdf (Gmsh-written, no BEGIN BULK)", file: "block-tets.bdf", extent: [3, 4, 5], volume: 60 },
+    { name: "box-fixed-field.bdf (hand-authored, 10-node CTETRA + continuation)", file: "box-fixed-field.bdf", extent: [2, 3, 4], volume: 24 },
+    { name: "box-free-field.bdf (hand-authored, comma-separated)", file: "box-free-field.bdf", extent: [2, 3, 4], volume: 24 },
+    { name: "box-large-field.bdf (hand-authored, GRID* 16-column fields)", file: "box-large-field.bdf", extent: [2, 3, 4], volume: 24 },
+  ];
+  for (const chk of bdfChecks) {
+    const src = path.join(dir, `geom-${chk.file}`);
+    fs.copyFileSync(path.join(ROOT, "examples", "Nastran", chk.file), src);
+    const out = path.join(dir, `geom-${chk.file}.msh`);
+    await call("export_mesh", { path: src, format: "msh", outputPath: out, options: { sizeMax: 1.5 } });
+    const g = mshExtentAndTetVolume(fs.readFileSync(out, "utf8"));
+    assert(g.tets > 0, `${chk.name}: meshed into tetrahedra (got ${g.tets})`);
+    assert(
+      g.extent.every((e, k) => Math.abs(e - chk.extent[k]) < 1e-6),
+      `${chk.name}: mesh extent ${JSON.stringify(g.extent)} equals the deck's ${JSON.stringify(chk.extent)}`
+    );
+    assert(
+      Math.abs(g.volume - chk.volume) < 1e-4 * chk.volume,
+      `${chk.name}: summed tetrahedron volume ${g.volume} equals the deck's ${chk.volume}`
+    );
+  }
 
   // OpenFOAM polyMesh import (examples/OpenFOAM/hex-case — see its README).
   // A `.foam` marker is NOT a mesh; its sibling constant/polyMesh/ holds the
