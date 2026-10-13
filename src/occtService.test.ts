@@ -42,6 +42,15 @@ describe("wrapOcctFault", () => {
     expect(wrapOcctFault(new Error("function signature mismatch")).message).toMatch(/^OCCT crashed/);
   });
 
+  it("recognizes the newer 'funcref table' wording of the Table.get() trap", () => {
+    // Real message from `npm run mcp:smoke`: `load_model` returned
+    // `WebAssembly.Table.get(): invalid index 52951944 into funcref table of
+    // size 246782` about 860 checks into one kernel child. The `function table`
+    // alternative misses it (the words are `funcref table`), so the kernel was
+    // never reset and the worker's one retry never fired.
+    expect(wrapOcctFault(new Error("WebAssembly.Table.get(): invalid index 52951944 into funcref table of size 246782")).message).toMatch(/^OCCT crashed/);
+  });
+
   it("does NOT match a plain JS 'x is not a function' bug as an abort", () => {
     const original = new Error("foo.bar is not a function");
     expect(wrapOcctFault(original)).toBe(original);

@@ -96,7 +96,14 @@ export function resetOcct(): void {
  * reset, so one trap left the kernel child permanently unusable for every open
  * document (the integration suite saw it as dozens of 60 s "no geometry"
  * timeouts). The phrase is wasm-specific, so it cannot match an application
- * error. All kernel vocabularies updated together. */
+ * error. All kernel vocabularies updated together.
+ *
+ * **`funcref table` was added after another real miss.** The newer V8 wording of
+ * the same trap is `WebAssembly.Table.get(): invalid index N into funcref table of
+ * size M`. The `function table` alternative does not match it, because the words
+ * are `funcref table`. It surfaced about 860 checks into one kernel child, in a
+ * `load_model` call, and the abort went undetected: no reset, so the singleton
+ * stayed corrupt. All kernel vocabularies updated together. */
 /**
  * A FIFTH signal, structurally different from the six textual ones above:
  * bare digits and nothing else.
@@ -117,7 +124,7 @@ export function resetOcct(): void {
  * exactly as safe to key on as `wasmtable` was.
  */
 function isOcctWasmAbort(message: string): boolean {
-  return /out of bounds|abort|RuntimeError|unreachable|null function|table index|function table|wasmtable|signature mismatch/i.test(message) || /^\d+$/.test(message);
+  return /out of bounds|abort|RuntimeError|unreachable|null function|table index|function table|funcref table|wasmtable|signature mismatch/i.test(message) || /^\d+$/.test(message);
 }
 
 /**

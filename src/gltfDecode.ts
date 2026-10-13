@@ -56,7 +56,7 @@ export function resetDraco(): void {
 }
 
 function isWasmAbort(message: string): boolean {
-  return /out of bounds|abort|RuntimeError|unreachable|null function|table index|function table|wasmtable|signature mismatch/i.test(message) || /^\d+$/.test(message);
+  return /out of bounds|abort|RuntimeError|unreachable|null function|table index|function table|funcref table|wasmtable|signature mismatch/i.test(message) || /^\d+$/.test(message);
 }
 
 function wrapDecodeFault(err: unknown): Error {
