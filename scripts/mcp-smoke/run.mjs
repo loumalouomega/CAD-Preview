@@ -3909,8 +3909,14 @@ try {
     const detMesh = path.join(dir, "det-mesh-block.stp");
     fs.copyFileSync(path.join(ROOT, "examples", "STP", "block.stp"), detMesh);
     const meshOpts = { sizeMin: 0, sizeMax: 1.5, dimension: 3 };
+    // Each run gets its own folder but the SAME file name: the .geo_unrolled stub and
+    // XDMF's primary embed their companion's name, so differing names would differ for
+    // a reason that has nothing to do with reproducibility.
+    let detRun = 0;
     const exportMeshFiles = async (format, stem, extra = {}) => {
-      const out = path.join(dir, stem);
+      const runDir = path.join(dir, `detm-run-${++detRun}`);
+      fs.mkdirSync(runDir, { recursive: true });
+      const out = path.join(runDir, `model.${stem.slice(stem.indexOf(".") + 1)}`);
       const r = await call("export_mesh", { path: detMesh, format, outputPath: out, options: meshOpts, ...extra });
       return Object.fromEntries(r.written.map((w, i) => [i === 0 ? "primary" : path.extname(w.path).replace(".", "") || `file${i}`, fs.readFileSync(w.path)]));
     };
@@ -3922,8 +3928,7 @@ try {
       const det1 = await exportMeshFiles(fmt, `detm-a.${ext}`, { deterministic: true });
       await sleep(1100);
       const det2 = await exportMeshFiles(fmt, `detm-b.${ext}`, { deterministic: true });
-      // xdmf names its .h5 inside the primary, which embeds the output stem; compare like-named outputs only.
-      const comparable = fmt === "xdmf" ? (f) => ({ h5: f.h5 }) : (f) => f;
+      const comparable = (f) => f;
       assert(sameFiles(comparable(det1), comparable(det2)), `two deterministic ${fmt} exports are byte-identical (${Object.keys(det1).join("+")})`);
       if (["vtk", "geoUnrolled", "vtu", "med", "hmf", "gid", "cgns", "xdmf"].includes(fmt)) {
         // CONTROL: this format really does move without the flag (otherwise the pair above proves nothing).

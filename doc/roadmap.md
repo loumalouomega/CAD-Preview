@@ -189,7 +189,7 @@ Two projects built for AI agents were read for this extension:
 | Agent-readable busy errors ("retry, do not edit"); closed vocabularies | Both | Shipped as coded MCP errors: `isError` results carry `structuredContent {code, message, hint?, retryable}`, and an undeclared parameter produces a warning naming the nearest real key (warn-only; strict mode deferred) |
 | "Connect AI" setup snippets; one-install plugin | Both | [Register the MCP server with VS Code](#register-mcp-server-with-vscode) |
 | `ui://` MCP-App inline viewer | Both | [MCP App inline preview](#mcp-app-inline-preview) (probe) |
-| `cad_view` returns the user's selection as quotable refs | text-to-cad | [Quotable entity references](#quotable-entity-references) |
+| `cad_view` returns the user's selection as quotable refs | text-to-cad | [Quotable entity references](#quotable-entity-references) (Copy reference shipped; stored queries remain) |
 | Snapshot presets (xray, hidden-line) and section mode | text-to-cad | Shipped: `render_snapshot` / `screenshot_shape` take all five display modes and an optional section `clip` (the viewer's own clip plane, solid cap included) |
 | `mass_properties` with density | text-to-cad | [Per-Part material density](#per-part-material-density) |
 | dfam-check (overhangs, wall thickness, support, orientations, plate fit) | text-to-cad, ReOpenSCAD (plates) | [Printability facts report](#printability-facts-report) |
@@ -362,8 +362,9 @@ These are outcome groupings, not release numbers. Independent small items can sh
 *Area: Parity. Effort: S.*
 
 - **Evidence:** the MCP server runs in a separate process from VS Code, so an agent cannot see what the user selected. Telling it means reading an id off the hover tooltip and typing it. text-to-cad's `cad_view` returns the user's selection as quotable refs (`/abs/path.step#o1.2.f7`), tied to one saved revision with no fuzzy matching.
-- **First useful increment (S):** a **Copy reference** row in the right-click context menu, writing one line per selected entity: the workspace-relative path and id (`examples/STP/bull.stp#face-12`), the `summaryLine` facts the selection pill already computes, and the op-list length the id is valid against. When the selection was made through a stored query, or one can be synthesised (`synthesizeSelector`), the query JSON is appended so the reference survives renumbering. The text says plainly that a bare id is valid only for that op-list length.
-- **Done when:** the copied text, pasted to an agent, resolves through `inspect` to the same face, and copying after a topology-changing edit yields the new id.
+- **Done so far:** a **Copy reference** row in the right-click context menu writes one line per entity — workspace-relative path and id, the pill's facts when already fetched, and the op-list length the id is valid against (`examples/STP/bull.stp#face-12 — planar, 8,119.27 mm² (valid for 3 ops)`). See `CLAUDE.md`'s "Quotable entity references".
+- **What is left (S):** append the stored-query JSON (via `synthesizeSelector`, one `selectorSynthesizeRequest` per copied face that has a producing-op bucket) so the reference survives renumbering.
+- **Done when:** a pasted reference resolves through `inspect` to the same face, and a reference copied for a face with a producing op carries a query that still resolves after an unrelated topology-changing edit.
 - **Out of scope:** a live channel from the viewer to the MCP server.
 
 #### 2.16 Register the MCP server with VS Code and offer client setup snippets {#register-mcp-server-with-vscode}

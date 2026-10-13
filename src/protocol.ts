@@ -597,6 +597,11 @@ export type HostToWebview =
       name: string;
       /** Full filesystem path — the chip's hover title only. */
       path: string;
+      /** The path relative to the workspace folder containing the file, or the full
+       * path when it is outside every folder — what a copied entity reference
+       * quotes (`examples/STP/bull.stp#face-12`). Optional so an older host's
+       * payload still renders. */
+      relativePath?: string;
       /** The routed format, or null for a file this build does not route. */
       format: CadFormat | null;
       dirty: boolean;

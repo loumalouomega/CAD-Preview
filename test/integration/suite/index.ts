@@ -882,13 +882,18 @@ test("Ctrl+S bakes through the same join as Export save-in-place", async () => {
   // cumulative cost. A standalone case that opened two extra documents pushed a
   // LATER case past whatever resource ceiling the suite sits under (its webview
   // never posted `ready`), a regression untouched HEAD does not have.
-  type DocInfo = { type: string; name?: string; path?: string; format?: string | null; dirty?: boolean; unsavedEdits?: number };
+  type DocInfo = { type: string; name?: string; path?: string; relativePath?: string; format?: string | null; dirty?: boolean; unsavedEdits?: number };
   const infosOf = (posts: Array<{ type: string }>) => (posts as DocInfo[]).filter((m) => m.type === "documentInfo");
   const openInfos = infosOf(seen);
   assert(openInfos.length >= 1, "a documentInfo is posted on open");
   assert(
     openInfos[0]?.name === path.basename(staged) && openInfos[0]?.path === staged && openInfos[0]?.format === "step",
     `it names the file and its routed format (got ${JSON.stringify(openInfos[0])})`
+  );
+  // Copy reference quotes this (roadmap "Quotable entity references for agent chats").
+  assert(
+    typeof openInfos[0]?.relativePath === "string" && openInfos[0].relativePath.endsWith(path.basename(staged)),
+    `it carries the workspace-relative path a copied entity reference quotes (got ${JSON.stringify(openInfos[0]?.relativePath)})`
   );
   // Deliberate: the sidecar holds an unbaked op, so the SOURCE FILE does not
   // contain what is on screen — even though VS Code shows the tab clean until

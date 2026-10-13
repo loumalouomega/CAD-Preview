@@ -2912,7 +2912,7 @@ test("context menu: right-clicking geometry offers groups with member counts", a
   assert((await menuShown()) === true, "right-clicking a face opens the context menu");
 
   const rows = await page.evaluate(() =>
-    [...document.querySelectorAll("#context-menu button:not(#ctx-pin-note)")].map((b) => b.textContent)
+    [...document.querySelectorAll("#context-menu button:not(#ctx-pin-note):not(#ctx-copy-reference)")].map((b) => b.textContent)
   );
   assert(rows.length > 0, `the menu offers at least one group (got ${JSON.stringify(rows)})`);
   assert(
@@ -2941,12 +2941,12 @@ test("context menu: choosing a group selects exactly the members it advertised",
   await sleep(250);
 
   const advertised = await page.evaluate(() => {
-    const b = document.querySelector("#context-menu button:not(#ctx-pin-note)");
+    const b = document.querySelector("#context-menu button:not(#ctx-pin-note):not(#ctx-copy-reference)");
     return b ? Number(b.textContent.match(/(\d+)$/)?.[1] ?? "0") : null;
   });
   assert(advertised !== null && advertised > 1, `the first group advertises a count (got ${advertised})`);
 
-  await page.evaluate(() => document.querySelector("#context-menu button:not(#ctx-pin-note)")?.click());
+  await page.evaluate(() => document.querySelector("#context-menu button:not(#ctx-pin-note):not(#ctx-copy-reference)")?.click());
   await sleep(300);
 
   // The status line reports what was actually selected — it must agree with
@@ -3040,6 +3040,40 @@ test("context menu: Pin note writes a note annotation and the Saved list shows i
   await sleep(200);
   const listed2 = await page.evaluate(() => [...document.querySelectorAll("#annotations-list .annotation-row-text")].map((e) => e.textContent));
   assert(listed2.includes("Note: From the agent"), `an MCP-pinned note renders in the Saved list (got ${JSON.stringify(listed2)})`);
+});
+
+/**
+ * N3. Copy reference (roadmap "Quotable entity references for agent chats"). The
+ * MCP server cannot see the selection, so the context menu puts a paste-ready
+ * line on the clipboard: workspace-relative file, the entity id, and the length
+ * of the op list the id is valid against. Facts ride along only when the
+ * inspector already fetched them for THIS entity at THIS op count.
+ */
+test("context menu: Copy reference quotes file#id and the op count it is valid for", async (page) => {
+  await populate(page);
+  await enablePicking(page, "surface");
+  await page.evaluate(() => {
+    window.__clip = null;
+    navigator.clipboard.writeText = async (t) => { window.__clip = t; };
+  });
+  await post(page, { type: "documentInfo", name: "bull.stp", path: "/abs/work/examples/STP/bull.stp", relativePath: "examples/STP/bull.stp", format: "step", dirty: false, unsavedEdits: 0 });
+  const box = await viewportBox(page);
+  await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2, { button: "right" });
+  await sleep(250);
+  const label = await page.evaluate(() => document.getElementById("ctx-copy-reference")?.textContent ?? null);
+  assert(label === "Copy reference", `the menu offers Copy reference (got ${JSON.stringify(label)})`);
+  await page.evaluate(() => document.getElementById("ctx-copy-reference")?.click());
+  await sleep(250);
+  const clip = await page.evaluate(() => window.__clip);
+  assert(
+    typeof clip === "string" && /^examples\/STP\/bull\.stp#face-\d+ \(valid for \d+ ops?\)$/.test(clip),
+    `the copied line is file#id plus the op count (got ${JSON.stringify(clip)})`
+  );
+  assert(!clip.includes("/abs/work"), "the reference quotes the workspace-relative path, not the absolute one");
+  const closed = await page.evaluate(() => document.getElementById("context-menu")?.offsetParent === null);
+  assert(closed, "copying closes the menu");
+  const status = await page.evaluate(() => document.getElementById("status")?.textContent ?? "");
+  assert(/Copied reference/.test(status), `the status line confirms the copy (got ${JSON.stringify(status)})`);
 });
 
 // ── Collapsible sidebar sections ──────────────────────────────────────────
@@ -7270,7 +7304,7 @@ async function main() {
   const base = `http://127.0.0.1:${server.address().port}`;
   console.log(`Harness server: ${base}`);
 
-  const browser = await chromium.launch({ headless: true, args: LAUNCH_ARGS });
+  const browser = await chromium.launch({ headless: true, args: LAUNCH_ARGS, ...(process.env.PLAYWRIGHT_CHROMIUM_PATH ? { executablePath: process.env.PLAYWRIGHT_CHROMIUM_PATH } : {}) });
   const context = await browser.newContext({ viewport: { width: 1360, height: 900 } });
   // Count every frame the render scheduler asks for. Installed before any page
   // script runs, so `viewer.ts`'s injected frame source picks up the wrapper.

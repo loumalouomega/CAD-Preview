@@ -1,0 +1,46 @@
+import { describe, expect, it } from "vitest";
+import { formatEntityReference, formatEntityReferences } from "./entityReference";
+import type { EntityFacts } from "../entityFacts";
+
+const planar = {
+  entityId: "face-12",
+  kind: "face",
+  bbox: { min: [0, 0, 0], max: [1, 1, 0], diagonal: 1.4 },
+  center: [0, 0, 0],
+  area: 8119.27,
+  length: null,
+  normal: [0, 0, 1],
+  planeOrigin: [0, 0, 0],
+  surfaceType: "plane",
+  surfaceParams: null,
+  curveType: null,
+} as unknown as EntityFacts;
+
+describe("formatEntityReference", () => {
+  it("names the file, the id and the op list the id is valid against", () => {
+    expect(formatEntityReference({ path: "examples/STP/bull.stp", entityId: "face-12", opCount: 3 })).toBe(
+      "examples/STP/bull.stp#face-12 (valid for 3 ops)"
+    );
+  });
+  it("uses the singular for one op and says zero plainly", () => {
+    expect(formatEntityReference({ path: "a.stp", entityId: "edge-0", opCount: 1 })).toContain("(valid for 1 op)");
+    expect(formatEntityReference({ path: "a.stp", entityId: "edge-0", opCount: 0 })).toContain("(valid for 0 ops)");
+  });
+  it("appends the inspector's facts only when they describe this entity", () => {
+    const withFacts = formatEntityReference({ path: "a.stp", entityId: "face-12", opCount: 2, facts: planar });
+    expect(withFacts).toBe("a.stp#face-12 — planar, 8,119.27 mm² (valid for 2 ops)");
+    // facts for a different entity must never be attributed to this one
+    expect(formatEntityReference({ path: "a.stp", entityId: "face-3", opCount: 2, facts: planar })).toBe("a.stp#face-3 (valid for 2 ops)");
+  });
+});
+
+describe("formatEntityReferences", () => {
+  it("emits one line per entity, de-duplicated, in order", () => {
+    const text = formatEntityReferences([
+      { path: "a.stp", entityId: "face-2", opCount: 1 },
+      { path: "a.stp", entityId: "face-1", opCount: 1 },
+      { path: "a.stp", entityId: "face-2", opCount: 1 },
+    ]);
+    expect(text.split("\n")).toEqual(["a.stp#face-2 (valid for 1 op)", "a.stp#face-1 (valid for 1 op)"]);
+  });
+});
