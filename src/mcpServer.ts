@@ -1023,6 +1023,11 @@ server.registerTool(
       template: z.string().optional().describe("Sheet template name (bundled starters ∪ libraryPath) supplying any setting not given explicitly"),
       libraryPath: z.string().optional().describe("User sheet-template library JSON"),
       layers: z.array(z.string()).optional().describe("Layer names/ids to restrict every view to (one group per layer in each view). Absent = every layer. B-rep sources only."),
+      date: z.string().optional().describe("Title-block date (YYYY-MM-DD). Default: today's date, or none when `deterministic`."),
+      deterministic: z
+        .boolean()
+        .optional()
+        .describe("Leave the export-day date out of the title block (unless `date` is given), so exporting the same model on different days gives identical bytes."),
     },
   },
   wrap(
@@ -1042,6 +1047,8 @@ server.registerTool(
       template?: string;
       libraryPath?: string;
       layers?: string[];
+      date?: string;
+      deterministic?: boolean;
     }) => exportDrawingSheetTool(ctx, args)
   )
 );
@@ -1063,6 +1070,7 @@ server.registerTool(
       template: z.string().optional().describe("sheet targets: sheet template name"),
       libraryPath: z.string().optional().describe("sheet targets: user sheet-template library"),
       reportPath: z.string().optional().describe("Also write the TSV table here"),
+      deterministic: z.boolean().optional().describe("step and sheet targets: byte-reproducible output (see export_brep / export_drawing_sheet)"),
     },
   },
   wrap(
@@ -1079,6 +1087,7 @@ server.registerTool(
         template?: string;
         libraryPath?: string;
         reportPath?: string;
+        deterministic?: boolean;
       },
       onProgress
     ) => batchExportTool(ctx, args, onProgress, jobScope.getStore()?.signal)
@@ -1867,9 +1876,15 @@ server.registerTool(
       targetFormat: z.string().describe("step | iges | brep"),
       outputPath: z.string().describe("Destination file path (must not be the CAD source)"),
       unit: z.string().optional().describe("Export unit: mm | cm | m | in | ft (default mm, no conversion)"),
+      deterministic: z
+        .boolean()
+        .optional()
+        .describe(
+          "Make the output byte-reproducible: for a STEP target, fix the FILE_NAME timestamp and neutralise OCCT's process-global translator counter (in product names and occurrence ids), so two exports of one model are identical regardless of when or how many exports the server has done. IGES and BREP are already byte-identical, so this does nothing for them."
+        ),
     },
   },
-  wrap((args: { path: string; targetFormat: string; outputPath: string; unit?: string }) => exportBRepTool(ctx, args))
+  wrap((args: { path: string; targetFormat: string; outputPath: string; unit?: string; deterministic?: boolean }) => exportBRepTool(ctx, args))
 );
 
 server.registerTool(

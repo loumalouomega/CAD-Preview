@@ -225,6 +225,34 @@ function parseMshNodeCoords(mshText) {
   return coords;
 }
 
+/** Axis-aligned extent and total volume of the linear tetrahedra (Gmsh element
+ * type 4) in an MSH 4.1 file. This is what lets the smoke suite pin the
+ * GEOMETRY a meshio-only source produced, not just that meshing returned a
+ * non-empty mesh: no headless tool reports a bounding box or mass for such a
+ * source, but the generated mesh's own nodes and tets say it exactly. */
+function mshExtentAndTetVolume(mshText) {
+  const { coords } = mshVolumeNodes(mshText);
+  const lo = [Infinity, Infinity, Infinity];
+  const hi = [-Infinity, -Infinity, -Infinity];
+  for (const xyz of coords.values()) {
+    for (let k = 0; k < 3; k++) { lo[k] = Math.min(lo[k], xyz[k]); hi[k] = Math.max(hi[k], xyz[k]); }
+  }
+  const elementLines = (mshText.split("$Elements\n")[1]?.split("$EndElements")[0] ?? "").trim().split("\n");
+  let volume = 0, tets = 0, cursor = 1;
+  for (let b = 0, blocks = Number(elementLines[0]?.split(/\s+/)[0]); b < blocks; b++) {
+    const [dim, , elType, n] = elementLines[cursor++].trim().split(/\s+/).map(Number);
+    for (let i = 0; i < n; i++, cursor++) {
+      if (dim !== 3 || elType !== 4) continue;
+      const nodes = elementLines[cursor].trim().split(/\s+/).map(Number).slice(1);
+      const [a, bb, c, d] = nodes.map((t) => coords.get(t));
+      const u = bb.map((x, k) => x - a[k]), v = c.map((x, k) => x - a[k]), w = d.map((x, k) => x - a[k]);
+      volume += Math.abs(u[0] * (v[1] * w[2] - v[2] * w[1]) - u[1] * (v[0] * w[2] - v[2] * w[0]) + u[2] * (v[0] * w[1] - v[1] * w[0])) / 6;
+      tets++;
+    }
+  }
+  return { extent: hi.map((h, k) => h - lo[k]), volume, tets };
+}
+
 /** Top-dimensional node-tag sets keyed by Gmsh volume tag, plus node positions.
  * Unlike comparing coincident coordinates, intersecting tags proves two
  * volumes actually share the SAME mesh nodes at their interface. */
@@ -3759,12 +3787,21 @@ try {
     xcafStepText.includes("BullBody") && xcafStepText.includes("TinyBox"),
     "the exported STEP file's own PRODUCT entities carry the part names, not generic placeholders"
   );
-  // This build's STEPCAFControl_Writer unconditionally wraps document-
-  // structured output in AP242 "document management" bookkeeping that the
-  // PLAIN STEPControl_Reader can't unwrap (see xcafWrite.ts's doc comment)
-  // — occtService.ts's readShape falls back to a document-aware read
-  // automatically. Confirm THIS codebase's own pipeline can still reopen
-  // its own named-parts export and recover the exact original geometry.
+  // The file must actually CONTAIN the geometry. An earlier version of this
+  // writer drove OCCT's multi-file mode (`Transfer_1(..., "")`), which wrote a
+  // bare product tree with empty shape representations plus one `<Part>.stp` per
+  // part into the MEMFS root — and THIS suite still passed, because the reload
+  // below runs in the same long-lived kernel process that still held those
+  // siblings. So the assertions that cannot be fooled that way are on the file's
+  // own text: B-rep solids present, no external-document references.
+  const xcafSolidCount = (xcafStepText.match(/MANIFOLD_SOLID_BREP/g) ?? []).length;
+  assert(xcafSolidCount >= 2, `the named-parts STEP contains the geometry itself, not just a product tree (${xcafSolidCount} MANIFOLD_SOLID_BREP)`);
+  assert(
+    !xcafStepText.includes("DOCUMENT_FILE") && !xcafStepText.includes("APPLIED_EXTERNAL_IDENTIFICATION"),
+    "the named-parts STEP is one self-contained file, with no external-document (multi-file) references"
+  );
+  // And it reopens through THIS codebase's own pipeline with the exact
+  // original geometry.
   const xcafReloaded = await call("load_model", { path: xcafStepOut });
   assert(xcafReloaded.solids.length === 2, `reopening the named-parts export recovers both solids (got ${xcafReloaded.solids.length})`);
   const xcafOriginalVolume =
@@ -3790,6 +3827,77 @@ try {
     !stepOutMmText.includes("DOCUMENT_FILE") && !stepOutMmText.includes("APPLIED_EXTERNAL_IDENTIFICATION"),
     "an export with no parts assigned stays on the plain writer (no XCAF document-management entities)"
   );
+
+  // Reproducible exports (`deterministic`). Measured first
+  // (scripts/probe/examples/export-determinism.ts): STEP moves in three ways —
+  // the FILE_NAME timestamp plus a process-global translator counter in product
+  // names and occurrence ids — while IGES and BREP are already byte-identical.
+  // Each flag assertion is paired with a CONTROL showing the same export
+  // differs without it, since an identical pair proves nothing on its own.
+  const detSource = path.join(dir, "bull-for-determinism.brep");
+  await call("export_brep", { path: model, targetFormat: "brep", outputPath: detSource });
+  const exportStep = async (name, extra = {}) => {
+    const out = path.join(dir, name);
+    await call("export_brep", { path: detSource, targetFormat: "step", outputPath: out, ...extra });
+    return fs.readFileSync(out);
+  };
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const plainA = await exportStep("det-plain-a.step");
+  await sleep(1100); // the FILE_NAME timestamp has one-second resolution
+  const plainB = await exportStep("det-plain-b.step");
+  assert(Buffer.compare(plainA, plainB) !== 0, "CONTROL: two ordinary STEP exports of one model differ (timestamp + translator counter)");
+  const detA = await exportStep("det-a.step", { deterministic: true });
+  await sleep(1100);
+  const detB = await exportStep("det-b.step", { deterministic: true });
+  assert(Buffer.compare(detA, detB) === 0, "two deterministic STEP exports of one model, a second apart, are byte-identical");
+  assert(
+    (detA.toString("latin1").match(/MANIFOLD_SOLID_BREP/g) ?? []).length >= 1 && detA.length > 100_000,
+    "the deterministic STEP still carries the full geometry"
+  );
+  // The named-Part (XCAF) path has the same header fields, normalised the same
+  // way. It is NOT promised byte-identical beyond that: measured, this OCCT
+  // build occasionally recomputes one pcurve value differently from one call to
+  // the next (a 2-D CARTESIAN_POINT moving at the 6th decimal; and, rarely, a
+  // knot written as -NAN, which exportBRep now detects and redoes), so what is
+  // asserted is that nothing but isolated numeric values can differ.
+  const xcafDetOut = path.join(dir, "det-xcaf-a.step");
+  await call("export_brep", { path: xcafBrepOut, targetFormat: "step", outputPath: xcafDetOut, deterministic: true });
+  await sleep(1100);
+  const xcafDetOut2 = path.join(dir, "det-xcaf-b.step");
+  await call("export_brep", { path: xcafBrepOut, targetFormat: "step", outputPath: xcafDetOut2, deterministic: true });
+  {
+    const a = fs.readFileSync(xcafDetOut, "latin1");
+    const b = fs.readFileSync(xcafDetOut2, "latin1");
+    const maskNumbers = (t) => t.replace(/-?\d+\.\d*(?:E[-+]?\d+)?/gi, "#");
+    assert(maskNumbers(a) === maskNumbers(b), "two deterministic named-Part STEP exports differ in numeric values at most (no timestamp, counter, id or structure drift)");
+    const la = a.split("\n");
+    const lb = b.split("\n");
+    let differing = 0;
+    for (let k = 0; k < Math.max(la.length, lb.length); k++) if (la[k] !== lb[k]) differing++;
+    assert(differing <= 10, `the named-Part pair differs on at most a handful of lines (got ${differing})`);
+    assert(!/[,(\s]-?NAN[,)\s]/i.test(a) && !/[,(\s]-?NAN[,)\s]/i.test(b), "no named-Part STEP carries a non-finite number");
+  }
+  // IGES and BREP needed no normalisation: confirm that stays true.
+  const exportOther = async (fmt, name) => {
+    const out = path.join(dir, name);
+    await call("export_brep", { path: detSource, targetFormat: fmt, outputPath: out });
+    return fs.readFileSync(out);
+  };
+  const igesA = await exportOther("iges", "det-a.iges");
+  await sleep(1100);
+  const igesB = await exportOther("iges", "det-b.iges");
+  assert(Buffer.compare(igesA, igesB) === 0, "IGES exports are already byte-identical (no normalisation needed)");
+  // Drawing sheet: the title-block date is the only moving field.
+  const sheetPlain = path.join(dir, "det-sheet-plain.svg");
+  const sheetDet = path.join(dir, "det-sheet.svg");
+  const sheetDated = path.join(dir, "det-sheet-dated.svg");
+  await call("export_drawing_sheet", { path: model, outputPath: sheetPlain });
+  await call("export_drawing_sheet", { path: model, outputPath: sheetDet, deterministic: true });
+  await call("export_drawing_sheet", { path: model, outputPath: sheetDated, deterministic: true, date: "2026-01-02" });
+  const today = new Date().toISOString().slice(0, 10);
+  assert(fs.readFileSync(sheetPlain, "utf8").includes(`Date ${today}`), "an ordinary sheet prints today's date in the title block");
+  assert(!/Date \d{4}-/.test(fs.readFileSync(sheetDet, "utf8")), "a deterministic sheet prints no export date");
+  assert(fs.readFileSync(sheetDated, "utf8").includes("Date 2026-01-02"), "an explicit date is honoured, deterministic or not");
 
   // Tier 0 Phase 1 — the `bakedThrough` watermark end to end through the real
   // kernel: export a file with an edit baked in (exactly what save-in-place
@@ -4815,18 +4923,17 @@ try {
   // mesh, and the export direction is covered separately by the compat corpus's
   // `export-bdf` row (which also reloads and re-meshes).
   //
-  // Two things are deliberately NOT asserted here, both because claiming them
-  // would be claiming something this codebase cannot deliver:
+  // One thing is deliberately NOT asserted from the headless tools directly:
   //
-  // 1. An analytic volume. 3x4x5 = 60 is known exactly, and pinning it would
-  //    beat any count — but `get_mass_properties` is B-rep + STL/OBJ/PLY/glTF
-  //    only, and no headless tool reports a bounding box for a meshio-only
-  //    source. That gap is why the "Nastran bulk-deck import" roadmap item is
-  //    narrowed, not closed, and it is why a count-only pass must not be read as
-  //    geometric proof (see examples/EnSight/README.md). The extent IS verified —
-  //    60 facets spanning 3x4x5 through the real `convertToStlBoundary` — but in
-  //    a probe, until a tool can express it.
-  // 2. Re-meshing a deck this extension re-exported FROM this script's own
+  // 1. An analytic volume via `get_mass_properties` / a bbox via `load_model`.
+  //    Neither exists for a meshio-only source, so a count-only pass must not be
+  //    read as geometric proof (see examples/EnSight/README.md). The geometry IS
+  //    pinned, though — by the block below, which exports a .msh and reads the
+  //    extent and summed tetrahedron volume back off the generated mesh; and the
+  //    reader-level extent is pinned in scripts/probe/examples/nastran-deck.ts.
+  //    (An earlier version of this comment, and doc/roadmap.md, claimed the
+  //    smoke suite already asserted volume 60; it did not.)
+  // And one thing cannot be claimed: re-meshing a deck this extension re-exported FROM this script's own
   //    `bull.stp`. That fails with Gmsh's `classifySurfaces: Wrong topology of
   //    boundary mesh for parametrization`, for a reason unrelated to Nastran:
   //    a second meshing pass over the re-extracted boundary of an
@@ -4835,6 +4942,36 @@ try {
   //    the compat corpus re-meshes from block.stp — a clean box — which is why
   //    it passes there. The claim this fixture supports is "a generated .bdf
   //    re-opens and meshes", not "any .bdf re-meshes".
+
+  // The geometry itself, pinned from the generated mesh: export_mesh to .msh and
+  // read the extent and the summed tetrahedron volume back off the file. This
+  // is the stronger claim the comments above say no headless tool can express
+  // directly — the mesh Gmsh built from the converted boundary IS the evidence.
+  // A unit box (the failure class examples/EnSight/README.md documents) has
+  // the right counts and the wrong extent, so every number here is derived
+  // from the fixture's own geometry, never from the reader's output.
+  const bdfChecks = [
+    { name: "block-tets.bdf (Gmsh-written, no BEGIN BULK)", file: "block-tets.bdf", extent: [3, 4, 5], volume: 60 },
+    { name: "box-fixed-field.bdf (hand-authored, 10-node CTETRA + continuation)", file: "box-fixed-field.bdf", extent: [2, 3, 4], volume: 24 },
+    { name: "box-free-field.bdf (hand-authored, comma-separated)", file: "box-free-field.bdf", extent: [2, 3, 4], volume: 24 },
+    { name: "box-large-field.bdf (hand-authored, GRID* 16-column fields)", file: "box-large-field.bdf", extent: [2, 3, 4], volume: 24 },
+  ];
+  for (const chk of bdfChecks) {
+    const src = path.join(dir, `geom-${chk.file}`);
+    fs.copyFileSync(path.join(ROOT, "examples", "Nastran", chk.file), src);
+    const out = path.join(dir, `geom-${chk.file}.msh`);
+    await call("export_mesh", { path: src, format: "msh", outputPath: out, options: { sizeMax: 1.5 } });
+    const g = mshExtentAndTetVolume(fs.readFileSync(out, "utf8"));
+    assert(g.tets > 0, `${chk.name}: meshed into tetrahedra (got ${g.tets})`);
+    assert(
+      g.extent.every((e, k) => Math.abs(e - chk.extent[k]) < 1e-6),
+      `${chk.name}: mesh extent ${JSON.stringify(g.extent)} equals the deck's ${JSON.stringify(chk.extent)}`
+    );
+    assert(
+      Math.abs(g.volume - chk.volume) < 1e-4 * chk.volume,
+      `${chk.name}: summed tetrahedron volume ${g.volume} equals the deck's ${chk.volume}`
+    );
+  }
 
   // OpenFOAM polyMesh import (examples/OpenFOAM/hex-case — see its README).
   // A `.foam` marker is NOT a mesh; its sibling constant/polyMesh/ holds the

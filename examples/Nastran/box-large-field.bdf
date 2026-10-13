@@ -1,0 +1,82 @@
+$ Hand-authored to the MSC Nastran QRG; LARGE-FIELD GRID* (16-column fields) variant of box-fixed-field.bdf.
+$ NOT emitted by a Nastran tool. Geometry: a 2 x 3 x 4 box (volume 24) as six 10-node CTETRA.
+ID EXAMPLE,BOXDECK
+SOL 101
+CEND
+TITLE = TWO BY THREE BY FOUR BOX
+SUBCASE 1
+  LOAD = 1
+BEGIN BULK
+PARAM   POST    -1
+MAT1    1       2.1+5           0.3     7.8-9
+PSOLID  1       1
+GRID*   101             0               0.0             0.0             
+*       0.0             
+GRID*   102             0               2.0             0.0             
+*       0.0             
+GRID*   103             0               2.0             3.0             
+*       0.0             
+GRID*   104             0               2.0             3.0             
+*       4.0             
+GRID*   105             0               1.0             0.0             
+*       0.0             
+GRID*   106             0               2.0             1.5             
+*       0.0             
+GRID*   107             0               1.0             1.5             
+*       0.0             
+GRID*   108             0               1.0             1.5             
+*       2.0             
+GRID*   109             0               2.0             1.5             
+*       2.0             
+GRID*   110             0               2.0             3.0             
+*       2.0             
+GRID*   111             0               2.0             0.0             
+*       4.0             
+GRID*   112             0               1.0             0.0             
+*       2.0             
+GRID*   113             0               2.0             0.0             
+*       2.0             
+GRID*   114             0               2.0             1.5             
+*       4.0             
+GRID*   115             0               0.0             3.0             
+*       0.0             
+GRID*   116             0               1.0             3.0             
+*       0.0             
+GRID*   117             0               0.0             1.5             
+*       0.0             
+GRID*   118             0               1.0             3.0             
+*       2.0             
+GRID*   119             0               0.0             3.0             
+*       4.0             
+GRID*   120             0               0.0             3.0             
+*       2.0             
+GRID*   121             0               0.0             1.5             
+*       2.0             
+GRID*   122             0               1.0             3.0             
+*       4.0             
+GRID*   123             0               0.0             0.0             
+*       4.0             
+GRID*   124             0               0.0             0.0             
+*       2.0             
+GRID*   125             0               1.0             0.0             
+*       4.0             
+GRID*   126             0               1.0             1.5             
+*       4.0             
+GRID*   127             0               0.0             1.5             
+*       4.0             
+CTETRA  1       1       101     102     103     104     105     106     +T1
++T1     107     108     109     110
+CTETRA  2       1       101     111     102     104     112     113     +T2
++T2     105     108     114     109
+CTETRA  3       1       101     103     115     104     107     116     +T3
++T3     117     108     110     118
+CTETRA  4       1       101     115     119     104     117     120     +T4
++T4     121     108     118     122
+CTETRA  5       1       101     123     111     104     124     125     +T5
++T5     112     108     126     114
+CTETRA  6       1       101     119     123     104     121     127     +T6
++T6     124     108     122     126
+FORCE   1       110             1.0     0.0     0.0     -1.0
+SPC1    1       123     101     102
+ENDDATA
+

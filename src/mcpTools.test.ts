@@ -4493,6 +4493,16 @@ describe("export_brep", () => {
     expect(result.warnings).toEqual([]);
   });
 
+  it("passes `deterministic` to the pipeline only when asked, and echoes it", async () => {
+    const c = ctx();
+    const plain = await exportBRepTool(c, { path: stpModel, targetFormat: "brep", outputPath: path.join(dir, "d0.brep") });
+    expect(vi.mocked(c.pipeline.exportBRep).mock.lastCall).toHaveLength(8);
+    expect(plain).not.toHaveProperty("deterministic");
+    const det = await exportBRepTool(c, { path: stpModel, targetFormat: "brep", outputPath: path.join(dir, "d1.brep"), deterministic: true });
+    expect(vi.mocked(c.pipeline.exportBRep).mock.lastCall![8]).toBe(true);
+    expect(det.deterministic).toBe(true);
+  });
+
   it("passes the requested unit straight through for a brep target", async () => {
     const c = ctx();
     const out = path.join(dir, "out-in.brep");
@@ -5290,6 +5300,19 @@ describe("export_drawing_sheet", () => {
     expect(r.views).toHaveLength(4);
     expect(await fs.readFile(out, "utf8")).toBe("<svg/>\n");
     expect(r.dimensionCount).toBeUndefined();
+  });
+
+  it("puts today's date in the title block, none when deterministic, and the caller's when given", async () => {
+    const c = ctx();
+    const dateOf = () => vi.mocked(c.pipeline.exportDrawingSheet).mock.lastCall![2].date;
+    await exportDrawingSheetTool(c, { path: stpModel, outputPath: path.join(dir, "dt0.svg") });
+    expect(dateOf()).toBe(new Date().toISOString().slice(0, 10));
+    await exportDrawingSheetTool(c, { path: stpModel, outputPath: path.join(dir, "dt1.svg"), deterministic: true });
+    expect(dateOf()).toBeUndefined();
+    await exportDrawingSheetTool(c, { path: stpModel, outputPath: path.join(dir, "dt2.svg"), deterministic: true, date: "2026-01-02" });
+    expect(dateOf()).toBe("2026-01-02");
+    await exportDrawingSheetTool(c, { path: stpModel, outputPath: path.join(dir, "dt3.svg"), date: "2026-03-04" });
+    expect(dateOf()).toBe("2026-03-04");
   });
 
   it("skips unknown and repeated views with a warning, and refuses a sheet with no usable view", async () => {

@@ -15,6 +15,7 @@ import type { CadFormat } from "./fileRouter";
 import type { EditOp, OpOutcome } from "./editOps";
 import { type DisplayUnit, unitScaleFactor, igesUnitName } from "./lengthUnits";
 import { patchStepUnitDeclaration } from "./stepUnitPatch";
+import { normalizeStepForDeterminism, stepHasNonFiniteNumber } from "./deterministicHeader";
 import { TESSELLATION_PRESETS, type TessellationParams } from "./tessellationQuality";
 import { hasTargetQueries } from "./editOps";
 import { resolveOpOperandQueries } from "./opQueryResolve";
@@ -796,6 +797,13 @@ type BRepFormat = Extract<CadFormat, "step" | "iges" | "brep" | "csg">;
  * comment). Every OTHER caller (meshing input, mass properties, `compare_
  * models`, …) passes no `parts` and gets byte-for-byte the same plain
  * writer output as before this feature existed.
+ *
+ * `deterministic` (default `false`) makes a STEP target byte-reproducible by
+ * normalising the three fields that move between two exports of the same model
+ * — the `FILE_NAME` timestamp and a process-global translator counter that
+ * OCCT bakes into product names and occurrence ids (see
+ * `deterministicHeader.ts`). IGES and BREP are already byte-identical, so the
+ * flag does nothing for them.
  */
 export async function exportBRep(
   extensionPath: string,
@@ -805,7 +813,8 @@ export async function exportBRep(
   ops: EditOp[] = [],
   unit: DisplayUnit = "mm",
   labelStepUnit = true,
-  parts: Part[] = []
+  parts: Part[] = [],
+  deterministic = false
 ): Promise<Uint8Array> {
   const oc = await getOcct(extensionPath);
 
@@ -822,29 +831,51 @@ export async function exportBRep(
   const outPath = `/o.${targetFormat}`;
   oc.FS.writeFile(inPath, bytes);
 
-  const cleanup: Array<{ delete(): void }> = [];
+  // A STEP number is occasionally written as `-NAN` by this OCCT build (seen
+  // as a B-spline knot in the named-Part path; it depends on heap state, not on
+  // the model). A file carrying it is corrupt, so redo the whole export from a
+  // fresh read of the source and refuse rather than hand back a document no
+  // reader can use.
+  const attemptExport = (): Uint8Array => {
+    const cleanup: Array<{ delete(): void }> = [];
+    try {
+      const baseShape = readShape(oc, inPath, sourceFormat, cleanup);
+      let shape = applyEditsBRep(oc, baseShape, ops, cleanup);
+      const factor = unitScaleFactor(unit);
+      if (factor !== 1 && targetFormat !== "iges") shape = scaleShapeForExport(oc, shape, factor, cleanup);
+      writeShape(oc, shape, outPath, targetFormat, cleanup, unit, parts);
+      return oc.FS.readFile(outPath);
+    } finally {
+      for (let i = cleanup.length - 1; i >= 0; i--) {
+        try { cleanup[i].delete(); } catch { /* ignore */ }
+      }
+    }
+  };
   try {
-    const baseShape = readShape(oc, inPath, sourceFormat, cleanup);
-    let shape = applyEditsBRep(oc, baseShape, ops, cleanup);
-    const factor = unitScaleFactor(unit);
-    if (factor !== 1 && targetFormat !== "iges") shape = scaleShapeForExport(oc, shape, factor, cleanup);
-    writeShape(oc, shape, outPath, targetFormat, cleanup, unit, parts);
-    const outBytes: Uint8Array = oc.FS.readFile(outPath);
-    if (targetFormat === "step" && unit !== "mm" && labelStepUnit) {
-      const text = Buffer.from(outBytes).toString("utf8");
-      return new TextEncoder().encode(patchStepUnitDeclaration(text, unit));
+    let outBytes = attemptExport();
+    for (let retry = 0; targetFormat === "step" && stepHasNonFiniteNumber(Buffer.from(outBytes).toString("latin1")); retry++) {
+      if (retry === NON_FINITE_STEP_RETRIES) throw new Error("STEP export wrote a non-finite number (NAN) on every attempt; the OCCT writer produced an unusable file. Export as BREP or try again");
+      outBytes = attemptExport();
+    }
+    const relabel = targetFormat === "step" && unit !== "mm" && labelStepUnit;
+    const normalize = targetFormat === "step" && deterministic;
+    if (relabel || normalize) {
+      let text = Buffer.from(outBytes).toString("utf8");
+      if (relabel) text = patchStepUnitDeclaration(text, unit);
+      if (normalize) text = normalizeStepForDeterminism(text);
+      return new TextEncoder().encode(text);
     }
     return outBytes;
   } catch (err) {
     throw wrapOcctFault(err);
   } finally {
-    for (let i = cleanup.length - 1; i >= 0; i--) {
-      try { cleanup[i].delete(); } catch { /* ignore */ }
-    }
     try { oc.FS.unlink(inPath); } catch { /* ignore */ }
     try { oc.FS.unlink(outPath); } catch { /* ignore */ }
   }
 }
+
+/** Fresh re-exports tried when a STEP file comes back containing a non-finite number. */
+const NON_FINITE_STEP_RETRIES = 3;
 
 /**
  * `unit` only matters for `"iges"` — picks between the plain `_1` writer
