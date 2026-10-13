@@ -432,7 +432,7 @@ async function main() {
   const base = `http://127.0.0.1:${server.address().port}`;
   console.log(`Harness server: ${base}`);
 
-  const browser = await chromium.launch({ headless: true, args: LAUNCH_ARGS });
+  const browser = await chromium.launch({ headless: true, args: LAUNCH_ARGS, ...(process.env.PLAYWRIGHT_CHROMIUM_PATH ? { executablePath: process.env.PLAYWRIGHT_CHROMIUM_PATH } : {}) });
   const context = await browser.newContext({ viewport: { width: 1360, height: 900 }, deviceScaleFactor: 2 });
 
   let failures = 0;
