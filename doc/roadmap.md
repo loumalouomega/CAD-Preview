@@ -181,14 +181,14 @@ Two projects built for AI agents were read for this extension:
 | Compile memo keyed on source + quality | ReOpenSCAD | Shipped, keyed on the source **and every file openscad's `-d` dependency list names** (plus binary, backend, `-D` set, library paths); an edited `use`/`include`/`import()` target also reloads an open document |
 | Per-object listing with colour | ReOpenSCAD | Shipped: `color()` becomes one Part per distinct colour on first open of a `.csg`/`.scad` (innermost `color()` wins; a boolean keeps a colour only if its operands shared it) |
 | `get_supported_scad` coverage dictionary | ReOpenSCAD | Shipped inside OpenSCAD diagnostics (skipped `.csg` importer notes join the structured list as severity `warning`; the node name is in the message text, not a separate field) |
-| `check_intersections` with clearance tolerance; `closest_points` | Both | Overlap already ships (`check_interference(_all)`); [clearance reporting](#interference-clearance) is new |
+| `check_intersections` with clearance tolerance; `closest_points` | Both | Shipped: `check_interference(_all)` take an optional `minClearance` and report the exact gap, the two nearest points and `withinClearance` for every non-overlapping pair (the Clash panel has a Clearance field) |
 | `expectedRevision` edits, HTTP 409 on conflict | ReOpenSCAD | Shipped as the MCP revision guard: `get_state` returns a `revisions` fingerprint per sidecar, eleven write tools accept an optional `expectedRevision` and return their new `revision`, and a stale one is refused with code `stale-revision` carrying `currentRevision` (serialised per model and sidecar in-process; not a cross-process lock) |
 | Highlighting AI-made edits | ReOpenSCAD | Shipped: appended rows carry a transient `external` badge and their faces flash once (webview memory only; pure appends only) |
 | Agent-readable busy errors ("retry, do not edit"); closed vocabularies | Both | Shipped as coded MCP errors: `isError` results carry `structuredContent {code, message, hint?, retryable}`, and an undeclared parameter produces a warning naming the nearest real key (warn-only; strict mode deferred) |
 | "Connect AI" setup snippets; one-install plugin | Both | [Register the MCP server with VS Code](#register-mcp-server-with-vscode) |
 | `ui://` MCP-App inline viewer | Both | [MCP App inline preview](#mcp-app-inline-preview) (probe) |
 | `cad_view` returns the user's selection as quotable refs | text-to-cad | [Quotable entity references](#quotable-entity-references) |
-| Snapshot presets (xray, hidden-line) and section mode | text-to-cad | [Section plane and display presets for `render_snapshot`](#render-snapshot-section-and-display) |
+| Snapshot presets (xray, hidden-line) and section mode | text-to-cad | Shipped: `render_snapshot` / `screenshot_shape` take all five display modes and an optional section `clip` (the viewer's own clip plane, solid cap included) |
 | `mass_properties` with density | text-to-cad | [Per-Part material density](#per-part-material-density) |
 | dfam-check (overhangs, wall thickness, support, orientations, plate fit) | text-to-cad, ReOpenSCAD (plates) | [Printability facts report](#printability-facts-report) |
 | dfm draft and undercuts | text-to-cad | [Draft and undercut analysis](#draft-and-undercut-analysis) |
@@ -357,24 +357,6 @@ These are outcome groupings, not release numbers. Independent small items can sh
 - **Done when:** on a committed multi-solid fixture, the Geometry mode shows every `point-N` / `edge-N` / `face-N` / `solid-N` recognisable by kind and selectable as today; a committed `test:webview` case toggles into the mode and screenshots it beside the shaded render for comparison.
 - **Out of scope:** mesh views — shaded/wireframe already cover GiD panels (b)–(d); dimension annotations in the structure view (the annotations feature owns those); per-Part colouring, which stays as it is.
 
-#### 2.12 Section plane and display presets for `render_snapshot` {#render-snapshot-section-and-display}
-
-*Area: Parity. Effort: S.*
-
-- **Evidence:** the viewer has five display modes and arbitrary clip planes with a solid cap, but `render_snapshot`'s `displayMode` accepts only `shaded` and `wireframe` and there is no section option at all. An agent checking a wall thickness or an internal passage has to infer it from outside views. text-to-cad's snapshot presets include `xray` and `hidden-line`, and its `--mode section --section XZ:12.5` writes a cut view.
-- **First useful increment (S):** widen `displayMode` to every `DisplayMode` the viewer has (`xray`, `hiddenLines`, `flat` added), and add an optional `clip` taking the existing `ClipPlaneState` shape (`axis` or a `normal`, plus `offsetFrac`). Both ride `renderViewRequest` into the harness page, which applies them through the same `applyDisplayMode` and `planeForClip` the interactive viewer uses — no second implementation. `render_ops_prefix` and `screenshot_shape` inherit them.
-- **Done when:** a `clip` snapshot of a hollow fixture shows the cap colour inside the wall (the `test:webview` magenta-cap technique, applied to the headless page), and each display mode renders distinguishably.
-- **Out of scope:** SVG section drawings (the `section` op plus `export_technical_drawing` already cover a 2D cut).
-
-#### 2.13 Clearance (near-miss) reporting in interference checks {#interference-clearance}
-
-*Area: Geometry. Effort: S–M.*
-
-- **Evidence:** `check_interference` and `check_interference_all` report overlap volume, so a pair separated by 0.05 mm reads exactly like a pair separated by 50 mm: `hasOverlap: false`. Both outside projects report clearance as well — ReOpenSCAD's `check_intersections` takes a tolerance (default 0.2 mm) and returns clearance, depth and a location; text-to-cad's `closest_points` returns a distance and witness points. The minimum-distance machinery already exists here: `measureExact`'s `BRepExtrema_DistShapeShape` (0-arg constructor, `LoadS1`/`LoadS2`/`Perform`) with `PointOnShape1`/`PointOnShape2`.
-- **First useful increment (S–M):** an optional `minClearance` (mm) on both tools. For every pair with no overlap, report `clearance` (the minimum distance), the two witness points and `withinClearance` as a fact. In `check_interference_all`, inflate each group's AABB by `minClearance` before screening, so a near-miss is never screened out as "far apart". The Clash panel gets a clearance field and renders near-misses as their own row state. Budgets (`maxPairs`, `maxBooleans`) count distance queries too.
-- **Done when:** two boxes 0.1 mm apart report `clearance` 0.1 and `withinClearance: true` at 0.2 and `false` at 0.05; an AABB-separated pair beyond the clearance is still screened; and the shipped overlap fixture's numbers are unchanged.
-- **Out of scope:** clearance across poses (see [kinematic mates](#kinematic-mates-and-pose-sweeps)).
-
 #### 2.14 Per-Part material density: mass in mass properties and BOM {#per-part-material-density}
 
 *Area: Geometry, Parity. Effort: S–M.*
@@ -446,14 +428,6 @@ These are outcome groupings, not release numbers. Independent small items can sh
 - **First useful increment (S):** first export each format twice from the same model and diff, to find exactly which fields move. Then, behind an opt-in `deterministic` flag on the export tools and the handoff manifest, normalise those fields — the STEP timestamp by a text patch beside `stepUnitPatch.ts`, the IGES dates likewise, and the sheet date from the flag's value or omitted.
 - **Done when:** two deterministic exports of the same model are byte-identical in every format the diff found unstable, and a manifest written with the flag verifies against a re-export.
 - **Out of scope:** making Gmsh or meshio++ output deterministic beyond what they already are (measured in the first step, not assumed).
-
-#### 2.21 Tessellation quality for `compare_models` snapshots {#tessellation-quality-for-compare-models-snapshots}
-
-*Area: Parity. Effort: S.*
-
-- **Evidence:** `render_snapshot`, `render_ops_prefix`, `screenshot_shape` and now `hit_test` take `tessellationQuality` and report a `tessellation` block; `compare_models`' optional `includeSnapshots` is the one render call site left without it, so its before/after images render at the `standard` default with no way to ask for more or see what was used. It was left out deliberately, not forgotten: each render parameter widens a surface whose images cost a browser launch apiece, and `doc/mcp-server.md` says so at that tool's own row.
-- **First useful increment (S):** add `tessellationQuality` to `compare_models`, resolved with the same `resolveSnapshotQuality` (warn on an unrecognized value, `undefined` when omitted so the default stays `renderSnapshot`'s to state), forwarded to both sides' `renderSnapshot` calls, and echo each side's `tessellation` block next to its images. Update that tool's row in `doc/mcp-server.md`, which currently says it is a follow-up.
-- **Done when:** a `fine` comparison reports a larger `triangleCount` than the default on a curved fixture for both sides, and omitting the parameter leaves the `renderSnapshot` options unchanged (the exact-opts assertion in `mcpTools.test.ts` stays untouched).
 
 ### Probe-gated — establish feasibility before estimating
 
@@ -1041,7 +1015,7 @@ The MMG core probe is complete; its working volume/surface paths and negative op
 - **Evidence today:**
   - Assembly support stops at static placement: `mate` aligns two faces once, and `explode` previews a spread. Nothing records that a lid rotates about a hinge axis between 0° and 110°.
   - text-to-cad models this directly — `revolute`, `slider`, `cylindrical` and `fastened` mates with required limits on anything that moves, couplings, and named poses — and its own validation guide says a static clearance check "proves only that pose".
-  - The checking half is already here: `check_interference_all` and, once it ships, [clearance reporting](#interference-clearance) run on whatever geometry they are given. What is missing is a way to put a Part at a pose without rewriting the op list.
+  - The checking half is already here: `check_interference_all` and its `minClearance` near-miss reporting run on whatever geometry they are given. What is missing is a way to put a Part at a pose without rewriting the op list.
 - **Probe (M — a design question as much as a kernel one):**
   1. **Scope.** Decide with the maintainer whether this is assembly *checking* (in scope: preparing a model for analysis) or assembly *authoring* (a modelling application, which the Non-goals reject). The answer bounds everything below.
   2. **Storage.** Joints and poses are neither geometry nor display state. Decide whether they are an eighth sidecar or ride the parts sidecar, and how they survive `entityRebind.ts` when the axis references a face.

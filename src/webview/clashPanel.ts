@@ -1,6 +1,18 @@
 export interface ClashPanelCallbacks {
-  onCheck: (partA: string, partB: string) => void;
-  onCheckAll: () => void;
+  /** `minClearance` is in mm (the panel's field is labelled so) or `undefined`
+   * when the field is empty. */
+  onCheck: (partA: string, partB: string, minClearance: number | undefined) => void;
+  onCheckAll: (minClearance: number | undefined) => void;
+}
+
+/** Parses the clearance field. Empty ⇒ `undefined` (overlap-only, exactly the
+ * pre-clearance behaviour); anything that is not a finite number ≥ 0 ⇒ `null`
+ * so the caller can refuse with guidance instead of silently dropping it. */
+export function parseClearanceInput(text: string): number | undefined | null {
+  const t = text.trim().replace(",", ".");
+  if (t === "") return undefined;
+  const n = Number(t);
+  return Number.isFinite(n) && n >= 0 ? n : null;
 }
 
 /** One pair result with volumes already converted to the display unit (main.ts
@@ -17,6 +29,12 @@ export interface ClashPairDisplay {
   /** True when the pair was left unevaluated by a work budget — explicitly
    * NOT clash-free. Rendered as "not checked", never as "no overlap". */
   unchecked?: boolean;
+  /** Near-miss facts (converted to the display unit), present only when a
+   * clearance threshold was asked for and the pair does not overlap. */
+  clearance?: number;
+  /** `clearance <= the threshold`; `false` without a `clearance` means the
+   * pre-filter proved the pair is farther apart than the threshold. */
+  withinClearance?: boolean;
   unresolvedA: string[];
   unresolvedB: string[];
 }
@@ -47,6 +65,7 @@ export class ClashPanel {
   private readonly selectB: HTMLSelectElement;
   private readonly checkBtn: HTMLButtonElement;
   private readonly checkAllBtn: HTMLButtonElement;
+  private readonly clearanceInput: HTMLInputElement;
 
   constructor(panel: HTMLElement, cb: ClashPanelCallbacks) {
     this.panel = panel;
@@ -55,10 +74,23 @@ export class ClashPanel {
     this.selectB = panel.querySelector("#clash-b")!;
     this.checkBtn = panel.querySelector("#clash-check")!;
     this.checkAllBtn = panel.querySelector("#clash-check-all")!;
+    this.clearanceInput = panel.querySelector("#clash-clearance")!;
+    // A bad clearance is refused with guidance, never sent and never ignored
+    // (ignoring it would silently turn a near-miss check into an overlap-only one).
+    const clearance = (): number | undefined | null => {
+      const parsed = parseClearanceInput(this.clearanceInput.value);
+      if (parsed === null) this.renderMessage("Clearance must be a number ≥ 0 (mm), or empty for overlap only.", true);
+      return parsed;
+    };
     this.checkBtn.addEventListener("click", () => {
-      if (this.selectA.value && this.selectB.value) cb.onCheck(this.selectA.value, this.selectB.value);
+      if (!this.selectA.value || !this.selectB.value) return;
+      const c = clearance();
+      if (c !== null) cb.onCheck(this.selectA.value, this.selectB.value, c);
     });
-    this.checkAllBtn.addEventListener("click", () => cb.onCheckAll());
+    this.checkAllBtn.addEventListener("click", () => {
+      const c = clearance();
+      if (c !== null) cb.onCheckAll(c);
+    });
     for (const sel of [this.selectA, this.selectB]) {
       sel.addEventListener("change", () => this.reflectCheckEnabled());
     }
@@ -149,9 +181,19 @@ export class ClashPanel {
     value.className = "mass-value";
     const volume = pair.overlapVolume;
     const suffix = unitLabel ? ` ${unitLabel}³` : "";
+    const lengthSuffix = unitLabel ? ` ${unitLabel}` : "";
+    // A near-miss is its own row state: "no overlap" alone would read the same
+    // for a 0.05 mm gap and a 50 mm one, which is exactly what clearance fixes.
+    const noOverlapText =
+      pair.clearance != null
+        ? `no overlap · clearance ${formatNum(pair.clearance)}${lengthSuffix}${pair.withinClearance ? " · within limit" : ""}`
+        : pair.withinClearance === false
+          ? "no overlap · beyond clearance limit"
+          : "no overlap";
     value.textContent = pair.unchecked === true
       ? "not checked — not clash-free"
-      : pair.hasOverlap ? `overlap${volume != null ? ` ${formatNum(volume)}${suffix}` : ""}` : "no overlap";
+      : pair.hasOverlap ? `overlap${volume != null ? ` ${formatNum(volume)}${suffix}` : ""}` : noOverlapText;
+    if (!pair.hasOverlap && pair.clearance != null && pair.withinClearance) row.classList.add("clash-near");
     row.appendChild(label);
     row.appendChild(value);
     const notes: string[] = [];

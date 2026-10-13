@@ -2351,6 +2351,27 @@ input[type="range"].meshing-slider:focus {
   opacity: 0.75;
 }
 
+/* Optional near-miss threshold (roadmap "Clearance (near-miss) reporting in
+   interference checks"): own row so the Part dropdowns keep their width. */
+#clash-clearance-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 0;
+  font-size: var(--ui-fs-sm);
+}
+
+#clash-clearance-row label,
+#clash-clearance-row .clash-unit {
+  opacity: 0.75;
+}
+
+#clash-clearance {
+  flex: 1;
+  min-width: 0;
+  max-width: 80px;
+}
+
 /* ── Mesh health panel (Mesh -> B-rep promotion, diagnostic-first) ──────── */
 
 #brep-health-panel,

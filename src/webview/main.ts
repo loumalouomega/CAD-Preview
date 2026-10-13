@@ -1654,11 +1654,18 @@ let clashCheckAllRequestId: string | null = null;
 /** Operand names of the in-flight pairwise check — the result carries only
  * geometry, so these are remembered to label the rendered row. */
 let clashLastPair: { partA: string; partB: string } | null = null;
+/** A result row with its raw mm values: volume (mm³) and, when a clearance
+ * threshold was asked for, the near-miss gap (mm) — both rescaled to the
+ * display unit at render time, never stored converted. */
+type ClashRowRaw = Omit<ClashPairDisplay, "overlapVolume" | "clearance"> & {
+  overlapVolumeMm3: number | null;
+  clearanceMm?: number;
+};
 let lastClashResults:
-  | { kind: "pair"; pair: Omit<ClashPairDisplay, "overlapVolume"> & { overlapVolumeMm3: number | null } }
+  | { kind: "pair"; pair: ClashRowRaw }
   | {
       kind: "all";
-      pairs: Array<Omit<ClashPairDisplay, "overlapVolume"> & { overlapVolumeMm3: number | null }>;
+      pairs: ClashRowRaw[];
       totalPairs: number;
       checkedPairs: number;
     }
@@ -1667,12 +1674,16 @@ let lastClashResults:
 function renderClashResults(): void {
   if (!lastClashResults) return;
   const convert = (mm3: number | null) => (mm3 == null ? null : convertVolume(mm3, currentDisplayUnit));
+  const toDisplay = ({ overlapVolumeMm3, clearanceMm, ...rest }: ClashRowRaw): ClashPairDisplay => ({
+    ...rest,
+    overlapVolume: convert(overlapVolumeMm3),
+    ...(clearanceMm !== undefined ? { clearance: convertLength(clearanceMm, currentDisplayUnit) } : {}),
+  });
   if (lastClashResults.kind === "pair") {
-    const { overlapVolumeMm3, ...rest } = lastClashResults.pair;
-    clashPanel.renderPair({ ...rest, overlapVolume: convert(overlapVolumeMm3) }, currentDisplayUnit);
+    clashPanel.renderPair(toDisplay(lastClashResults.pair), currentDisplayUnit);
   } else {
     clashPanel.renderAll(
-      lastClashResults.pairs.map(({ overlapVolumeMm3, ...rest }) => ({ ...rest, overlapVolume: convert(overlapVolumeMm3) })),
+      lastClashResults.pairs.map(toDisplay),
       currentDisplayUnit,
       { totalPairs: lastClashResults.totalPairs, checkedPairs: lastClashResults.checkedPairs }
     );
@@ -1689,7 +1700,7 @@ function clearClashResults(): void {
 }
 
 const clashPanel = new ClashPanel(document.getElementById("clash-panel")!, {
-  onCheck: (partA, partB) => {
+  onCheck: (partA, partB, minClearance) => {
     if (sourceKind !== "brep") {
       clashPanel.renderMessage("Clash detection needs a B-rep source.", true);
       return;
@@ -1704,9 +1715,9 @@ const clashPanel = new ClashPanel(document.getElementById("clash-panel")!, {
     lastClashResults = null;
     clashPanel.setBusy(true);
     clashPanel.renderMessage("Checking…");
-    post({ type: "clashCheckRequest", requestId, partA, partB });
+    post({ type: "clashCheckRequest", requestId, partA, partB, ...(minClearance !== undefined ? { minClearance } : {}) });
   },
-  onCheckAll: () => {
+  onCheckAll: (minClearance) => {
     if (sourceKind !== "brep") {
       clashPanel.renderMessage("Clash detection needs a B-rep source.", true);
       return;
@@ -1716,7 +1727,7 @@ const clashPanel = new ClashPanel(document.getElementById("clash-panel")!, {
     lastClashResults = null;
     clashPanel.setBusy(true);
     clashPanel.renderMessage("Checking all Parts…");
-    post({ type: "clashCheckAllRequest", requestId });
+    post({ type: "clashCheckAllRequest", requestId, ...(minClearance !== undefined ? { minClearance } : {}) });
   },
 });
 
@@ -5782,6 +5793,13 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
           viewer.applyPartVisibility(msg.hide ?? [], msg.focus?.length ? msg.focus : null);
         }
         if (msg.wireframe !== undefined) viewer.setWireframe(msg.wireframe);
+        // After the legacy wireframe flag so an explicit displayMode wins. The
+        // display-mode handle ends in refreshColors(), the contract every
+        // material-affecting switch relies on (Flat swaps the material).
+        if (msg.displayMode !== undefined) appearanceControls?.applyDisplayMode(msg.displayMode);
+        // Section: the same handle view-state restore uses, so the stencil cap
+        // and plane maths are the interactive viewer's, not a second copy.
+        if (msg.clip !== undefined) clippingControls?.applyState(msg.clip);
         viewer.render();
         const data = viewer.captureLabeledScreenshotBase64(msg.label);
         post({ type: "renderViewResult", requestId: msg.requestId, data });
@@ -5850,6 +5868,8 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
           partB: clashLastPair?.partB ?? "",
           hasOverlap: msg.result.hasOverlap,
           overlapVolumeMm3: msg.result.hasOverlap ? msg.result.overlapVolume : null,
+          ...(msg.result.clearance !== undefined ? { clearanceMm: msg.result.clearance } : {}),
+          withinClearance: msg.result.withinClearance,
           unresolvedA: msg.result.unresolvedA,
           unresolvedB: msg.result.unresolvedB,
         },
@@ -5875,6 +5895,8 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
           partB: p.partB,
           hasOverlap: p.hasOverlap,
           overlapVolumeMm3: p.hasOverlap ? p.overlapVolume : null,
+          ...(p.clearance !== undefined ? { clearanceMm: p.clearance } : {}),
+          withinClearance: p.withinClearance,
           screenedByBbox: p.screenedByBbox,
           unchecked: p.unchecked,
           unresolvedA: p.unresolvedA,

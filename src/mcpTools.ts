@@ -86,6 +86,7 @@ import { clean, envelope } from "./untrustedText";
 import { MESH_EXPORT_FORMATS, meshExportFormat, companionSaveName, type MeshExportFormat } from "./meshExportFormats";
 import { sweepTsv, sweepOutputName, runMeshSweep, validateSweepSizes, SWEEP_NOTE } from "./meshSweep";
 import { describeOp } from "./webview/opCatalog";
+import { resolveSnapshotDisplay, type SnapshotClipInput } from "./snapshotOptions";
 import { OP_PARAM_DOCS, explainEditOpRejection, allOpKinds } from "./opCommands";
 // Re-exported: these moved to the pure `opCommands.ts` so the webview command bar can share them.
 export { OP_PARAM_DOCS, explainEditOpRejection, allOpKinds };
@@ -428,7 +429,7 @@ export function describeCapabilities() {
       "get_mass_properties is B-rep sources via OCCT BRepGProp (volume/area/length, center of mass, moments of inertia) and STL/OBJ/PLY/glTF sources via headless triangle integration (volume/area, centroid, watertight flag; no length, no moments of inertia). Other mesh formats compute the equivalent client-side in the webview.",
       "inspect (per-entity bbox/bbox-center/area/length/normal/surfaceType, plus surfaceParams: the analytic radius/axis/half-angle behind that classification) and measure (distance between two entities' bbox centers) are B-rep sources plus STL/OBJ/PLY/glTF sources headless (triangle-based facts in raw file coordinates with mesh-component-N / mesh-triangle-N / mesh-vertex-N ids from load_model; no analytic parameters). Note inspect's `center` is the bbox center, NOT get_mass_properties' mass-weighted centroid — they can differ for an asymmetric shape.",
       "render_snapshot is B-rep sources only, and additionally requires Playwright + a Chromium binary in this environment (`npx playwright install chromium`) — call it and check `supported` rather than assuming availability; not guaranteed present for an installed .vsix (see doc/mcp-server.md).",
-      "render_snapshot/screenshot_shape/render_ops_prefix take tessellationQuality (draft|standard|fine) for the PICTURE only, and report the `tessellation` block actually used (quality + deflections + triangleCount) — nothing else about a render is tessellation-derived. Omitting it is indistinguishable from passing `standard`; it deliberately does NOT follow the cadPreview.tessellationQuality VS Code setting, which is an interactive-viewer default, so an agent's render is reproducible regardless of a user's editor preferences. It is most visible in wireframe, where the tessellation IS the picture; under shading, faceting is partly hidden either way. compare_models' includeSnapshots has no such parameter (a follow-up) and renders both sides at the standard default.",
+      "render_snapshot/screenshot_shape/render_ops_prefix take tessellationQuality (draft|standard|fine) for the PICTURE only, and report the `tessellation` block actually used (quality + deflections + triangleCount) — nothing else about a render is tessellation-derived. Omitting it is indistinguishable from passing `standard`; it deliberately does NOT follow the cadPreview.tessellationQuality VS Code setting, which is an interactive-viewer default, so an agent's render is reproducible regardless of a user's editor preferences. It is most visible in wireframe, where the tessellation IS the picture; under shading, faceting is partly hidden either way. compare_models' includeSnapshots takes it too (both sides render at the same quality) and reports a per-side `tessellation` block.",
       "search_standard_parts/download_standard_part are network calls to the hosted step.parts API (api.step.parts) — the extension's only external network dependency. A network/API failure returns supported:false and is INCONCLUSIVE, never \"no matching parts\"/\"part unavailable\" — retry or report uncertainty, don't treat it as a negative result.",
       "run_parametric_script compiles {variables?, steps} (each step is one op, or one flat `repeat: {times, indexVar, body}` loop expanding a template op-list) into ops appended via the exact same path as apply_edit_ops — not a general scripting language, no code execution. Repeat-generated ops are fully baked (concrete numbers, exprs stripped) — for a value that should stay live/editable later, use a plain op step with exprs referencing a real document variable (set_variables) instead of the repeat construct.",
       "compare_models (bounding-box-centroid + volume solid matching between two files) supports B-rep (STEP/IGES/BREP, edits baked in) and STL/OBJ/PLY/glTF (host-side parsers; pending mesh edits baked in first by the kernel worker's headless mesh-edit replay — the same three.js engine the viewer uses — compared as an STL side) sources, in any combination on either side; meshio-only formats and display-only mesh formats (3MF) have no host-side geometry to derive centroids/volumes from without a webview. Its optional includeSnapshots (default false) additionally renders each B-rep side's before/after PNGs via the same engine as render_snapshot — opt in only when you want to look at the geometry, not just the numeric diff; mesh-format sides never get a snapshot (render_snapshot is B-rep sources only) and degrade to a warning, never a failure.",
@@ -1334,6 +1335,16 @@ export async function checkToleranceTool(ctx: ToolContext, params: ToleranceChec
 // ---------------------------------------------------------------------------
 // check_interference
 
+/** Validates the optional `minClearance` (mm) of the interference tools. A bad
+ * value is caller-input misuse, so it throws before any parse or kernel work. */
+function checkMinClearance(value: number | undefined): number | undefined {
+  if (value === undefined) return undefined;
+  if (!Number.isFinite(value) || value < 0) {
+    throw new Error(`minClearance must be a finite number >= 0 (mm), got ${String(value)}.`);
+  }
+  return value;
+}
+
 /**
  * Interference / clash detection (roadmap item, closed) — a natural sibling
  * to `measure`/`measure_exact`/`compare_models`: reports the overlap volume
@@ -1352,9 +1363,10 @@ export async function checkToleranceTool(ctx: ToolContext, params: ToleranceChec
  */
 export async function checkInterferenceTool(
   ctx: ToolContext,
-  params: { path: string; a?: string[]; b?: string[]; partA?: string; partB?: string }
+  params: { path: string; a?: string[]; b?: string[]; partA?: string; partB?: string; minClearance?: number }
 ): Promise<{ format: CadFormat; supported: boolean; warnings: string[] } & Partial<InterferenceResult>> {
   const modelPath = params.path;
+  const minClearance = checkMinClearance(params.minClearance);
   const route = requireRoute(modelPath);
 
   if (route.strategy !== "occt") {
@@ -1397,7 +1409,15 @@ export async function checkInterferenceTool(
     return { format: route.format, supported: false, hasOverlap: false, overlapVolume: 0, unresolvedA: [], unresolvedB: [], warnings: [...warnings, src.reason] };
   }
   const { bytes, format } = src;
-  const result = await ctx.pipeline.checkInterference(ctx.extensionPath, bytes, format as BRepFormat, ops, idsA, idsB);
+  const result = await ctx.pipeline.checkInterference(
+    ctx.extensionPath,
+    bytes,
+    format as BRepFormat,
+    ops,
+    idsA,
+    idsB,
+    ...(minClearance !== undefined ? [minClearance] : [])
+  );
   if (result.unresolvedA.length > 0) warnings.push(`Operand A: unresolved id(s) ${result.unresolvedA.join(", ")}.`);
   if (result.unresolvedB.length > 0) warnings.push(`Operand B: unresolved id(s) ${result.unresolvedB.join(", ")}.`);
 
@@ -1429,7 +1449,7 @@ export async function checkInterferenceTool(
  */
 export async function checkInterferenceAllTool(
   ctx: ToolContext,
-  params: { path: string; parts?: string[]; maxPairs?: number; maxBooleans?: number }
+  params: { path: string; parts?: string[]; maxPairs?: number; maxBooleans?: number; minClearance?: number }
 ): Promise<{
   format: CadFormat;
   supported: boolean;
@@ -1442,6 +1462,7 @@ export async function checkInterferenceAllTool(
   partial?: boolean;
 }> {
   const modelPath = params.path;
+  const minClearance = checkMinClearance(params.minClearance);
   const route = requireRoute(modelPath);
 
   if (route.strategy !== "occt") {
@@ -1506,8 +1527,8 @@ export async function checkInterferenceAllTool(
     format as BRepFormat,
     ops,
     selected.map((p) => p.volumes),
-    params.maxPairs !== undefined || params.maxBooleans !== undefined
-      ? { maxPairs: params.maxPairs, maxBooleans: params.maxBooleans }
+    params.maxPairs !== undefined || params.maxBooleans !== undefined || minClearance !== undefined
+      ? { maxPairs: params.maxPairs, maxBooleans: params.maxBooleans, ...(minClearance !== undefined ? { minClearance } : {}) }
       : undefined
   );
   warnings.push(...result.warnings);
@@ -1744,7 +1765,8 @@ export async function renderSnapshotTool(
     path: string;
     focus?: string[];
     hide?: string[];
-    displayMode?: "shaded" | "wireframe";
+    displayMode?: string;
+    clip?: SnapshotClipInput;
     view?: SnapshotView;
     composite?: boolean;
     tessellationQuality?: string;
@@ -1769,6 +1791,7 @@ export async function renderSnapshotTool(
   const { ops } = await readEditsResolved(modelPath);
   const warnings: string[] = [];
   const quality = resolveSnapshotQuality(params.tessellationQuality, warnings);
+  const display = resolveSnapshotDisplay(params.displayMode, params.clip, warnings);
   const src = await readOcctSource(modelPath, route, warnings);
   if (!src.ok) {
     return { supported: false, images: [], warnings: [...warnings, src.reason] };
@@ -1778,7 +1801,9 @@ export async function renderSnapshotTool(
   const result = await ctx.pipeline.renderSnapshot(ctx.extensionPath, bytes, format as BRepFormat, ops, {
     focus: params.focus,
     hide: params.hide,
-    wireframe: params.displayMode === "wireframe" ? true : undefined,
+    wireframe: display.wireframe,
+    displayMode: display.displayMode,
+    clip: display.clip,
     // Left UNDEFINED when no view was asked for, so the default packet and
     // every existing caller are unchanged. `mcpTools.test.ts`'s exact-opts
     // assertion is the regression proof of that and must not be edited. `quality`
@@ -2064,8 +2089,17 @@ async function resolveGltfBuffers(ctx: ToolContext, modelPath: string, bytes: Ui
  */
 export async function compareModelsTool(
   ctx: ToolContext,
-  params: { pathA: string; pathB: string; includeSnapshots?: boolean }
-): Promise<{ formatA: CadFormat; formatB: CadFormat; supported: boolean; warnings: string[]; diff?: ModelDiff; images?: RenderImage[] }> {
+  params: { pathA: string; pathB: string; includeSnapshots?: boolean; tessellationQuality?: string }
+): Promise<{
+  formatA: CadFormat;
+  formatB: CadFormat;
+  supported: boolean;
+  warnings: string[];
+  diff?: ModelDiff;
+  images?: RenderImage[];
+  /** Per side, the tessellation actually rendered (present only for a side that produced images). */
+  tessellation?: { A?: RenderTessellation; B?: RenderTessellation };
+}> {
   const routeA = requireRoute(params.pathA);
   const routeB = requireRoute(params.pathB);
 
@@ -2118,22 +2152,43 @@ export async function compareModelsTool(
     renderAvailable = avail.available;
     if (!renderAvailable) warnings.push(`includeSnapshots: visual snapshots skipped — ${avail.reason ?? "renderer unavailable"}.`);
   }
+  // Resolved after the early return above so a bad value never warns for a
+  // call that renders nothing. `undefined` when omitted keeps the
+  // `renderSnapshot` options unchanged (the key is present-but-undefined, which
+  // is indistinguishable from absent under `toHaveBeenCalledWith`).
+  const quality = resolveSnapshotQuality(params.tessellationQuality, warnings);
+  const tessellation: { A?: RenderTessellation; B?: RenderTessellation } = {};
   const renderOne = async (label: "A" | "B", source: CompareSource): Promise<RenderImage[]> => {
     if (source.kind !== "brep") {
       warnings.push(`includeSnapshots: model ${label} has no visual snapshot (${source.kind.toUpperCase()} sources are B-rep sources only for render_snapshot).`);
       return [];
     }
     if (!renderAvailable) return [];
-    const result = await ctx.pipeline.renderSnapshot(ctx.extensionPath, source.bytes, source.format, source.ops, {});
+    const result = await ctx.pipeline.renderSnapshot(
+      ctx.extensionPath,
+      source.bytes,
+      source.format,
+      source.ops,
+      quality === undefined ? {} : { quality }
+    );
     if (!result.supported || !result.images) {
       warnings.push(`includeSnapshots: model ${label} snapshot failed — ${result.reason ?? "unknown error"}.`);
       return [];
     }
+    if (result.tessellation) tessellation[label] = result.tessellation;
     return result.images.map((img) => ({ ...img, label: `${label}-${img.label}` }));
   };
   const [imagesA, imagesB] = await Promise.all([renderOne("A", sourceA), renderOne("B", sourceB)]);
 
-  return { formatA: routeA.format, formatB: routeB.format, supported: true, warnings, diff, images: [...imagesA, ...imagesB] };
+  return {
+    formatA: routeA.format,
+    formatB: routeB.format,
+    supported: true,
+    warnings,
+    diff,
+    images: [...imagesA, ...imagesB],
+    ...(tessellation.A || tessellation.B ? { tessellation } : {}),
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -3639,7 +3694,8 @@ export async function screenshotShapeTool(
     entityId: string;
     view?: SnapshotView;
     context?: boolean;
-    displayMode?: "shaded" | "wireframe";
+    displayMode?: string;
+    clip?: SnapshotClipInput;
     tessellationQuality?: string;
   }
 ): Promise<{ supported: boolean; images: RenderImage[]; warnings: string[]; tessellation?: RenderTessellation }> {
@@ -3663,6 +3719,7 @@ export async function screenshotShapeTool(
   // Past both gates, so a bad `tessellationQuality` cannot be reported as
   // having been substituted into a render that never happened.
   const quality = resolveSnapshotQuality(params.tessellationQuality, warnings);
+  const display = resolveSnapshotDisplay(params.displayMode, params.clip, warnings);
 
   const { ops } = await readEditsResolved(modelPath);
   const src = await readOcctSource(modelPath, route, warnings);
@@ -3678,7 +3735,9 @@ export async function screenshotShapeTool(
 
   const result = await ctx.pipeline.renderSnapshot(ctx.extensionPath, bytes, format as BRepFormat, ops, {
     focus: params.context === true ? undefined : [params.entityId],
-    wireframe: params.displayMode === "wireframe" ? true : undefined,
+    wireframe: display.wireframe,
+    displayMode: display.displayMode,
+    clip: display.clip,
     // One view by default: four angles on a single face is mostly redundant.
     views: resolved.views ?? [{ label: `SHAPE ${params.entityId}`, direction: [1, 0.8, 1] }],
     frameEntity: params.entityId,

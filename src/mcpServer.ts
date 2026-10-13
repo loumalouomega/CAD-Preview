@@ -24,6 +24,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import type { RequestHandlerExtra } from "@modelcontextprotocol/sdk/shared/protocol.js";
 import type { ServerRequest, ServerNotification } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
+import type { SnapshotClipInput } from "./snapshotOptions";
 import { errorToolResult, mergeFieldsIntoResult, mergeWarningsIntoResult, splitUnknownKeys, unknownKeyWarnings } from "./mcpErrors";
 import { REVISION_GUARDED_TOOLS, assertRevision, currentRevision, lockKey, withSidecarLock } from "./mcpRevision";
 import { AsyncLocalStorage } from "async_hooks";
@@ -564,6 +565,14 @@ server.registerTool(
   )
 );
 
+const minClearanceSchema = z
+  .number()
+  .min(0)
+  .optional()
+  .describe(
+    "Near-miss reporting, in mm: for every pair that does NOT overlap, also report `clearance` (the exact minimum distance, 0 for merely-touching solids), the two nearest `witnessA`/`witnessB` points, and `withinClearance` (clearance <= minClearance — a fact, not a verdict). Bounding boxes are inflated by this much before screening, so a near-miss is never skipped as 'far apart'. A pair screened as provably farther than this reports withinClearance:false with no clearance value. Omit for overlap-only results, byte-identical to before."
+  );
+
 server.registerTool(
   "check_interference",
   {
@@ -575,9 +584,10 @@ server.registerTool(
       b: z.array(z.string()).optional().describe("Operand B: solid-N id(s), compounded together if more than one"),
       partA: z.string().optional().describe("Operand A: a Part name, resolved to its assigned volumes (mutually exclusive with 'a')"),
       partB: z.string().optional().describe("Operand B: a Part name, resolved to its assigned volumes (mutually exclusive with 'b')"),
+      minClearance: minClearanceSchema,
     },
   },
-  wrap((args: { path: string; a?: string[]; b?: string[]; partA?: string; partB?: string }) => checkInterferenceTool(ctx, args))
+  wrap((args: { path: string; a?: string[]; b?: string[]; partA?: string; partB?: string; minClearance?: number }) => checkInterferenceTool(ctx, args))
 );
 
 server.registerTool(
@@ -589,10 +599,11 @@ server.registerTool(
       path: modelPath,
       parts: z.array(z.string()).optional().describe("Part names to compare pairwise (default: every Part in the sidecar)"),
       maxPairs: z.number().int().min(0).optional().describe("Work budget: evaluate at most this many pairs in i<j order; the rest return unchecked:true (not clash-free)"),
-      maxBooleans: z.number().int().min(0).optional().describe("Work budget: run at most this many real booleans; screened pairs are free and always reported"),
+      maxBooleans: z.number().int().min(0).optional().describe("Work budget: run at most this many real booleans (a clearance distance query counts as one more unit for its pair); screened pairs are free and always reported"),
+      minClearance: minClearanceSchema,
     },
   },
-  wrap((args: { path: string; parts?: string[]; maxPairs?: number; maxBooleans?: number }) => checkInterferenceAllTool(ctx, args))
+  wrap((args: { path: string; parts?: string[]; maxPairs?: number; maxBooleans?: number; minClearance?: number }) => checkInterferenceAllTool(ctx, args))
 );
 
 server.registerTool(
@@ -643,6 +654,24 @@ server.registerTool(
   wrap((args: { path: string; op: number; role: string; entityId: string }) => synthesizeSelectorTool(ctx, args))
 );
 
+/** Whole-model display mode for the snapshot tools — every mode the viewer's Display group has. */
+const snapshotDisplayMode = z
+  .enum(["shaded", "wireframe", "xray", "hiddenLines", "flat"])
+  .optional()
+  .describe("Whole-model display mode, applied to every returned image: shaded (default) | wireframe | xray | hiddenLines | flat — the same five the viewer's Display group offers.");
+
+/** Section plane for the snapshot tools — the viewer's own clip plane, solid cap included. */
+const snapshotClip = z
+  .object({
+    axis: z.enum(["x", "y", "z"]).optional().describe("Axis preset — the cut is perpendicular to it. Give this OR `normal`."),
+    normal: z.tuple([z.number(), z.number(), z.number()]).optional().describe("Explicit plane normal (need not be normalized, must be non-zero). Give this OR `axis`."),
+    offsetFrac: z.number().min(-1).max(1).describe("Cut position as a fraction of the model's extent along the normal: -1 = min side (nothing cut yet), 0 = through the centre, 1 = max side."),
+  })
+  .optional()
+  .describe(
+    "Section the model with the viewer's clip plane (solid cap on the cut face), for every image. The kept half is the one the normal points into, so to LOOK at the cut face place the camera on the clipped-away side (view direction = -normal, e.g. view {kind:'look-from', direction:[0,0,-1]} for axis z); the default packet's isometrics mostly show the outside of the surviving half."
+  );
+
 server.registerTool(
   "render_snapshot",
   {
@@ -652,7 +681,8 @@ server.registerTool(
       path: modelPath,
       focus: z.array(z.string()).optional().describe("Entity ids — isolate the view to only these"),
       hide: z.array(z.string()).optional().describe("Entity ids — force-hide these"),
-      displayMode: z.enum(["shaded", "wireframe"]).optional().describe("Applies to the whole 4-image packet"),
+      displayMode: snapshotDisplayMode,
+      clip: snapshotClip,
       view: z
         .discriminatedUnion("kind", [
           z.object({ kind: z.literal("named"), name: z.string().describe(`One of: ${NAMED_VIEW_NAMES.join(", ")} (or the aliases iso/iso-a/iso-b)`) }),
@@ -682,7 +712,8 @@ server.registerTool(
       path: string;
       focus?: string[];
       hide?: string[];
-      displayMode?: "shaded" | "wireframe";
+      displayMode?: string;
+      clip?: SnapshotClipInput;
       view?: SnapshotView;
       composite?: boolean;
       tessellationQuality?: string;
@@ -756,9 +787,17 @@ server.registerTool(
   {
     description:
       "Diff two models solid-by-solid, matched by bounding-box-centroid proximity + volume similarity — reports added/removed/matched solids, with each match's raw centre displacement and volume delta (never a black-box moved/unchanged verdict) so you can judge match confidence yourself. STEP/IGES/BREP (edits baked in) and STL/OBJ/PLY/glTF (pending mesh edits baked in by the headless mesh-edit replay, then compared as STL) are supported headless, in any combination; meshio-only formats return supported: false. Optional includeSnapshots (default false) additionally renders each B-rep side's whole-model before/after PNGs (render_snapshot's own DEFAULT_VIEWS engine) as image content blocks — costs up to two headless browser launches and up to 8 images, opt in only when you actually want to look at the geometry.",
-    inputSchema: { pathA: modelPath, pathB: modelPath, includeSnapshots: z.boolean().optional().describe("Also render before/after PNG snapshots for any B-rep side (default false)") },
+    inputSchema: {
+      pathA: modelPath,
+      pathB: modelPath,
+      includeSnapshots: z.boolean().optional().describe("Also render before/after PNG snapshots for any B-rep side (default false)"),
+      tessellationQuality: z
+        .string()
+        .optional()
+        .describe("Snapshot tessellation density: draft | standard | fine (default standard). Only used with includeSnapshots; the response's tessellation block reports what each side was rendered at."),
+    },
   },
-  wrap((args: { pathA: string; pathB: string; includeSnapshots?: boolean }) => compareModelsTool(ctx, args))
+  wrap((args: { pathA: string; pathB: string; includeSnapshots?: boolean; tessellationQuality?: string }) => compareModelsTool(ctx, args))
 );
 
 server.registerTool("remesh_mesh", {
@@ -1253,7 +1292,8 @@ server.registerTool(
         .optional()
         .describe("Camera to frame the entity from; defaults to an isometric"),
       context: z.boolean().optional().describe("Keep the whole model visible instead of isolating the entity"),
-      displayMode: z.enum(["shaded", "wireframe"]).optional(),
+      displayMode: snapshotDisplayMode,
+      clip: snapshotClip,
       tessellationQuality: z.string().optional().describe(
         "B-rep only: draft | standard | fine. Omit for today's density (`standard` — omitting is indistinguishable from passing it). `fine` is ~3x the triangles of `standard` and `draft` roughly half, so it costs real time on a large model. An unrecognized value warns and falls back. The response reports the `tessellation` actually used (quality + deflections + triangleCount). A framed entity fills the image, so its own faceting is unusually visible here — this is where quality buys the most."
       ),
@@ -1265,7 +1305,8 @@ server.registerTool(
       entityId: string;
       view?: SnapshotView;
       context?: boolean;
-      displayMode?: "shaded" | "wireframe";
+      displayMode?: string;
+      clip?: SnapshotClipInput;
       tessellationQuality?: string;
     }) => screenshotShapeTool(ctx, args)
   )

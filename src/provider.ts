@@ -2836,6 +2836,9 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
           if (!route || route.strategy !== "occt") {
             throw new Error("Clash detection needs a B-rep source; mesh sources have no exact boolean geometry to intersect.");
           }
+          if (msg.minClearance !== undefined && !(Number.isFinite(msg.minClearance) && msg.minClearance >= 0)) {
+            throw new Error("Clearance must be a number >= 0 (mm).");
+          }
           // Mirror `checkInterferenceTool`'s `resolveOperand`: volumes only
           // (interference is a solid-only concept); unknown/empty degrades to
           // a warning, never a throw.
@@ -2872,7 +2875,8 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
             format as Extract<CadFormat, "step" | "iges" | "brep" | "csg">,
             replayTail(currentEdits, currentBakedThrough),
             idsA,
-            idsB
+            idsB,
+            ...(msg.minClearance !== undefined ? [msg.minClearance] : [])
           );
           for (const w of warnings) post({ type: "status", text: w });
           if (result.unresolvedA.length > 0) post({ type: "status", text: `Operand A: unresolved id(s) ${result.unresolvedA.join(", ")}.` });
@@ -2897,6 +2901,9 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
           if (!route || route.strategy !== "occt") {
             throw new Error("Clash detection needs a B-rep source; mesh sources have no exact boolean geometry to intersect.");
           }
+          if (msg.minClearance !== undefined && !(Number.isFinite(msg.minClearance) && msg.minClearance >= 0)) {
+            throw new Error("Clearance must be a number >= 0 (mm).");
+          }
           const parts = await readParts(document.uri);
           const usable = parts.filter((p) => p.volumes.length > 0);
           if (usable.length < 2) {
@@ -2917,8 +2924,8 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
             format as Extract<CadFormat, "step" | "iges" | "brep" | "csg">,
             replayTail(currentEdits, currentBakedThrough),
             usable.map((p) => p.volumes),
-            msg.maxPairs !== undefined || msg.maxBooleans !== undefined
-              ? { maxPairs: msg.maxPairs, maxBooleans: msg.maxBooleans }
+            msg.maxPairs !== undefined || msg.maxBooleans !== undefined || msg.minClearance !== undefined
+              ? { maxPairs: msg.maxPairs, maxBooleans: msg.maxBooleans, ...(msg.minClearance !== undefined ? { minClearance: msg.minClearance } : {}) }
               : undefined
           );
           const expected = (usable.length * (usable.length - 1)) / 2;

@@ -592,6 +592,12 @@
         "opening a coloured .csg creates one Part per colour, once"
       ],
       "note": "Written, not yet seen green (no VS Code download here). The kernel half is verified live against real OpenSCAD 2021.01 output and the headless twin through mcp:smoke."
+    },
+    {
+      "id": "snapshot-section-and-clearance",
+      "section": "Snapshot display modes, section clip, compare_models quality and clearance",
+      "gap": "The Clash panel's Clearance field through the real extension host: provider.ts forwarding minClearance to the kernel and validating it, and the near-miss rows in a live webview.",
+      "status": "open"
     }
   ]
 }

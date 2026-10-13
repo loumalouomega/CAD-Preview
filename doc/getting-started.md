@@ -664,6 +664,7 @@ The **Clash** panel (below Mass Properties, B-rep sources only) checks Parts aga
 
 1. Pick two Parts in the dropdowns and click **Check** for a pairwise result, or click **Check all** to test every Part with assigned solids against every other in one call.
 2. Each result row reads `A × B` → `overlap <volume>` or `no overlap`. Pairs the AABB pre-filter decided without a boolean carry an `AABB-screened` note; genuinely touching Parts (shared face, zero volume) correctly report no overlap. Volumes follow the **Units** dropdown like Mass Properties, live-rescaled on change.
+3. The optional **Clearance** field (in mm; empty = overlap only) turns on near-miss reporting: a pair that does not overlap then also shows its exact gap — `no overlap · clearance 0.1 mm · within limit` when the gap is at or under the value you typed, the gap alone when it is larger, and `no overlap · beyond clearance limit` for a pair the bounding-box pre-filter proved is farther away than that. Touching Parts report a clearance of 0. The gap follows the **Units** dropdown; the field itself is always millimetres. A value that is not a number ≥ 0 is refused with a message rather than ignored.
 
 Results are session-only and clear on every model rebuild, since re-tessellation may renumber the ids they name.
 

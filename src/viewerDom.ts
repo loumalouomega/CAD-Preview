@@ -208,6 +208,11 @@ export function viewerBodyHtml(): string {
             <select id="clash-b" title="Second part"></select>
             <button id="clash-check" title="Check the two selected Parts for overlap">Check</button>
           </div>
+          <div id="clash-clearance-row">
+            <label for="clash-clearance">Clearance</label>
+            <input id="clash-clearance" type="text" inputmode="decimal" autocomplete="off" placeholder="off" title="Optional, in mm: also report the exact gap and nearest points for pairs that do not overlap, and whether it is within this distance. Leave empty for overlap-only results." />
+            <span class="clash-unit">mm</span>
+          </div>
           <div id="clash-results"></div>
         </div>
       </div>

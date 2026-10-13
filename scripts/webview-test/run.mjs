@@ -3375,6 +3375,106 @@ test("clash: a partial all-pairs result labels itself partial and never as clash
   assert(/not checked/i.test(text), `the unchecked row never reads as "no overlap" (got ${JSON.stringify(text)})`);
 });
 
+// ── Clearance (roadmap "Clearance (near-miss) reporting in interference checks") ──
+
+test("clash: the clearance field rides both requests in mm, and is absent when empty", async (page) => {
+  await populate(page);
+  await openAdvanced(page);
+  const last = (type) => page.evaluate((t) => (window.__sent ?? []).filter((m) => m.type === t).at(-1) ?? null, type);
+  // The panel disables Check and Check all while a request is in flight, so
+  // each request is answered (with its own requestId) before the next click.
+  const answer = (req) =>
+    page.evaluate((r) => {
+      const reply =
+        r.type === "clashCheckRequest"
+          ? { type: "clashCheckResult", requestId: r.requestId, result: { hasOverlap: false, overlapVolume: 0, unresolvedA: [], unresolvedB: [] } }
+          : { type: "clashCheckAllResult", requestId: r.requestId, pairs: [], warnings: [], totalPairs: 0, checkedPairs: 0, screenedPairs: 0, partial: false };
+      window.postMessage(reply, "*");
+    }, req);
+  await page.selectOption("#clash-a", "Body");
+  await page.selectOption("#clash-b", "Contact faces");
+
+  await page.click("#clash-check");
+  const plain = await last("clashCheckRequest");
+  assert(plain !== null && !("minClearance" in plain), `an empty field sends no minClearance (got ${JSON.stringify(plain)})`);
+  await answer(plain);
+  await sleep(200);
+
+  await page.fill("#clash-clearance", "0,2"); // decimal comma accepted
+  await page.click("#clash-check");
+  const withCheck = await last("clashCheckRequest");
+  assert(withCheck?.minClearance === 0.2, `Check carries minClearance 0.2 (got ${JSON.stringify(withCheck)})`);
+  await answer(withCheck);
+  await sleep(200);
+
+  await page.click("#clash-check-all");
+  const withAll = await last("clashCheckAllRequest");
+  assert(withAll?.minClearance === 0.2, `Check all carries minClearance 0.2 (got ${JSON.stringify(withAll)})`);
+  await answer(withAll);
+});
+
+test("clash: an invalid clearance is refused with guidance and posts nothing", async (page) => {
+  await populate(page);
+  await openAdvanced(page);
+  await page.selectOption("#clash-a", "Body");
+  await page.selectOption("#clash-b", "Contact faces");
+  const count = () => page.evaluate(() => (window.__sent ?? []).filter((m) => m.type === "clashCheckRequest" || m.type === "clashCheckAllRequest").length);
+  const before = await count();
+  for (const bad of ["abc", "-1"]) {
+    await page.fill("#clash-clearance", bad);
+    await page.click("#clash-check");
+    await page.click("#clash-check-all");
+  }
+  await sleep(200);
+  assert((await count()) === before, "no request is posted for a non-numeric or negative clearance");
+  const text = await page.evaluate(() => document.getElementById("clash-results")?.textContent ?? "");
+  assert(/clearance must be a number/i.test(text), `a guidance message explains why (got ${JSON.stringify(text)})`);
+});
+
+test("clash: near-miss rows render as their own state and rescale with the display unit", async (page) => {
+  await populate(page);
+  await openAdvanced(page);
+  await page.fill("#clash-clearance", "0.2");
+  await page.click("#clash-check-all");
+  const req = await page.evaluate(() => (window.__sent ?? []).filter((m) => m.type === "clashCheckAllRequest").at(-1) ?? null);
+  await page.evaluate((id) =>
+    window.postMessage(
+      {
+        type: "clashCheckAllResult",
+        requestId: id,
+        pairs: [
+          { partA: "Body", partB: "Near", a: ["solid-0"], b: ["solid-1"], hasOverlap: false, overlapVolume: 0, clearance: 25.4, witnessA: [0, 0, 0], witnessB: [25.4, 0, 0], withinClearance: true, unresolvedA: [], unresolvedB: [] },
+          { partA: "Body", partB: "Mid", a: ["solid-0"], b: ["solid-2"], hasOverlap: false, overlapVolume: 0, clearance: 50.8, witnessA: [0, 0, 0], witnessB: [50.8, 0, 0], withinClearance: false, unresolvedA: [], unresolvedB: [] },
+          { partA: "Body", partB: "Far", a: ["solid-0"], b: ["solid-3"], hasOverlap: false, overlapVolume: 0, screenedByBbox: true, withinClearance: false, unresolvedA: [], unresolvedB: [] },
+        ],
+        warnings: [],
+        totalPairs: 3,
+        checkedPairs: 3,
+        screenedPairs: 1,
+        partial: false,
+      },
+      "*"
+    ),
+    req.requestId
+  );
+  await sleep(200);
+  const rows = () =>
+    page.evaluate(() => Array.from(document.querySelectorAll("#clash-results .mass-row")).map((r) => ({ text: r.textContent ?? "", near: r.classList.contains("clash-near") })));
+  const mm = await rows();
+  const near = mm.find((r) => r.text.includes("Near"));
+  const mid = mm.find((r) => r.text.includes("Mid"));
+  const far = mm.find((r) => r.text.includes("Far"));
+  assert(near && /clearance 25\.4 mm · within limit/.test(near.text) && near.near, `the within-limit pair is a near-miss row (got ${JSON.stringify(near)})`);
+  assert(mid && /clearance 50\.8 mm/.test(mid.text) && !/within limit/.test(mid.text) && !mid.near, `a measured pair beyond the limit shows its gap only (got ${JSON.stringify(mid)})`);
+  assert(far && /beyond clearance limit/.test(far.text) && !/clearance \d/.test(far.text), `a screened pair says it is beyond the limit without inventing a gap (got ${JSON.stringify(far)})`);
+
+  await page.selectOption("#vc-unit", "in");
+  await sleep(200);
+  const inch = await rows();
+  assert(/clearance 1 in · within limit/.test(inch.find((r) => r.text.includes("Near"))?.text ?? ""), `switching to inches rescales the cached gap (got ${JSON.stringify(inch)})`);
+  await page.selectOption("#vc-unit", "mm");
+});
+
 test("clash: the same Part twice is refused without a host round trip", async (page) => {
   await populate(page);
   await openAdvanced(page);
@@ -5421,6 +5521,59 @@ test("clip P3: an axis-aligned clip is capped too", async (page) => {
   assert(on < 0.35, `the axis cap is bounded by the solid (got ${on.toFixed(4)})`);
 
   await page.evaluate(() => document.body.style.removeProperty("--cad-face"));
+});
+
+/**
+ * R1 — headless snapshots' section + display mode (roadmap "Section plane and
+ * display presets for render_snapshot"). `renderViewRequest` is what
+ * `renderService.ts` posts per view; its `clip` and `displayMode` must reach the
+ * SAME handles the interactive viewer uses, so the cap and the mode are the
+ * real ones rather than a second implementation. Driven with the genuine
+ * message and answered by the genuine `renderViewResult`, not a faked reply.
+ */
+test("render snapshot R1: renderViewRequest applies a section clip and a display mode", async (page) => {
+  await populate(page);
+  await hideGrid(page);
+  await setPanelHidden(page, true);
+  await tagCapColour(page);
+
+  const facing = [0, 0, -1]; // +Z normal keeps the +Z half; look from -Z at the cut
+  await post(page, clipView(null, facing)); // orthographic, framed, no clip
+  await sleep(CLIP_SETTLE);
+
+  const renderView = async (id, extra) => {
+    await post(page, { type: "renderViewRequest", requestId: id, direction: facing, up: [0, 1, 0], label: id, ...extra });
+    const reply = await page.waitForFunction(
+      (rid) => window.__sent?.find((m) => m.requestId === rid && (m.type === "renderViewResult" || m.type === "renderViewError")) ?? null,
+      id,
+      { timeout: 10000 }
+    );
+    const msg = await reply.jsonValue();
+    assert(msg.type === "renderViewResult", `${id}: the view renders (got ${msg.type}${msg.message ? `: ${msg.message}` : ""})`);
+    await sleep(CLIP_SETTLE);
+  };
+
+  await renderView("r1-plain", {});
+  const off = await magentaFraction(page);
+
+  await renderView("r1-clip", { clip: { axis: "z", offsetFrac: 0 } });
+  const on = await magentaFraction(page);
+  assert(off < 0.002, `no cap colour without a clip (got ${off.toFixed(4)})`);
+  assert(on > CAP_FLOOR, `a clip carried by renderViewRequest is capped (got ${on.toFixed(4)})`);
+  assert(on > off * 5, `the cap comes from the clip, not the colour tag (${on.toFixed(4)} vs ${off.toFixed(4)})`);
+
+  // Display mode: shaded (explicit) differs from xray, and the Display group's
+  // own button reflects it — proof it went through applyDisplayMode.
+  await renderView("r1-shaded", { displayMode: "shaded" });
+  const shaded = await frameSignature(page);
+  await renderView("r1-xray", { displayMode: "xray" });
+  const xray = await frameSignature(page);
+  assert(xray.hash !== shaded.hash, "x-ray renders differently from shaded");
+  const active = await page.evaluate(() => document.querySelector(".display-mode-btn.active")?.dataset.mode);
+  assert(active === "xray", `the Display group reflects the requested mode (got ${active})`);
+
+  await page.evaluate(() => document.body.style.removeProperty("--cad-face"));
+  await setPanelHidden(page, false);
 });
 
 /**

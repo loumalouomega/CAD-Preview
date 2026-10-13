@@ -33,6 +33,8 @@ import { viewerBodyHtml } from "./viewerDom";
 import type { HostToWebview, EntityType } from "./protocol";
 import type { CadFormat } from "./fileRouter";
 import type { EditOp } from "./editOps";
+import type { DisplayMode } from "./webview/displayMode";
+import type { ClipPlaneState } from "./webview/clipping";
 
 export type BRepFormat = Extract<CadFormat, "step" | "iges" | "brep" | "csg">;
 
@@ -250,6 +252,10 @@ export async function renderSnapshot(
     focus?: string[];
     hide?: string[];
     wireframe?: boolean;
+    /** Whole-model display mode for every view; wins over `wireframe`. */
+    displayMode?: DisplayMode;
+    /** Section plane for every view (see `renderViewRequest.clip`). */
+    clip?: ClipPlaneState;
     views?: RenderView[];
     composite?: boolean;
     /** Frame this entity instead of the whole model, in every requested view. */
@@ -371,6 +377,8 @@ export async function renderSnapshot(
         focus: focus.length > 0 ? focus : undefined,
         hide: hide.length > 0 ? hide : undefined,
         wireframe: opts.wireframe ?? view.wireframe,
+        displayMode: opts.displayMode,
+        clip: opts.clip,
         frameBox: view.frameBox,
       });
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
