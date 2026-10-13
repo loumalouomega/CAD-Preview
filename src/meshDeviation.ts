@@ -16,6 +16,20 @@
  * surface. Raw statistics are always reported; the "filtered" set only drops
  * Tukey outliers and says how many — a missing region is never hidden,
  * because per-face failures and coverage are computed from the RAW samples.
+ *
+ * Independent check (roadmap "meshio++ hausdorff_distance as a cross-check",
+ * `scripts/probe/examples/deviation-vs-hausdorff.ts`, run against meshio++
+ * 16.31.0): `hausdorffDistance` is a different implementation of the same class
+ * of quantity (vertices + sub-triangle centroids rather than interior R2
+ * samples). On cube-vs-itself, cube-vs-offset-cube (exactly 0.3), concentric
+ * spheres (0.1) and offset spheres (0.25) the two agree to within the sampling
+ * resolution, and neither exceeds the analytic value. The one measured
+ * disagreement is by construction: a thin spike whose apex lies 10 units from
+ * the reference is reported as 10 by meshio++ (the apex is a vertex) but 9.657
+ * here (3.4 % low at 200 000 samples) — interior-point sampling can only
+ * UNDER-report a worst point that sits at a vertex of a small feature. That is
+ * the "sampled, not certified" caveat with a measured size, not a defect.
+ * Adding the surface's own vertices to the sample set would close it.
  */
 import { buildTriangleGrid3D, nearestOnGrid, type TriangleGrid, type Vec3 } from "./triangleDistance";
 
