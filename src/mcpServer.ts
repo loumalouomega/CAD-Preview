@@ -756,9 +756,17 @@ server.registerTool(
   {
     description:
       "Diff two models solid-by-solid, matched by bounding-box-centroid proximity + volume similarity — reports added/removed/matched solids, with each match's raw centre displacement and volume delta (never a black-box moved/unchanged verdict) so you can judge match confidence yourself. STEP/IGES/BREP (edits baked in) and STL/OBJ/PLY/glTF (pending mesh edits baked in by the headless mesh-edit replay, then compared as STL) are supported headless, in any combination; meshio-only formats return supported: false. Optional includeSnapshots (default false) additionally renders each B-rep side's whole-model before/after PNGs (render_snapshot's own DEFAULT_VIEWS engine) as image content blocks — costs up to two headless browser launches and up to 8 images, opt in only when you actually want to look at the geometry.",
-    inputSchema: { pathA: modelPath, pathB: modelPath, includeSnapshots: z.boolean().optional().describe("Also render before/after PNG snapshots for any B-rep side (default false)") },
+    inputSchema: {
+      pathA: modelPath,
+      pathB: modelPath,
+      includeSnapshots: z.boolean().optional().describe("Also render before/after PNG snapshots for any B-rep side (default false)"),
+      tessellationQuality: z
+        .string()
+        .optional()
+        .describe("Snapshot tessellation density: draft | standard | fine (default standard). Only used with includeSnapshots; the response's tessellation block reports what each side was rendered at."),
+    },
   },
-  wrap((args: { pathA: string; pathB: string; includeSnapshots?: boolean }) => compareModelsTool(ctx, args))
+  wrap((args: { pathA: string; pathB: string; includeSnapshots?: boolean; tessellationQuality?: string }) => compareModelsTool(ctx, args))
 );
 
 server.registerTool("remesh_mesh", {

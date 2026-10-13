@@ -3258,6 +3258,33 @@ try {
     );
   }
 
+  // compare_models tessellationQuality (roadmap "Tessellation quality for
+  // compare_models snapshots", closed): the draft/standard/fine density reaches
+  // both sides' pictures and is reported back per side. Same renderer-availability
+  // tolerance as above.
+  if (render.supported) {
+    const cmpDraft = await call("compare_models", { pathA: model, pathB: originalCopy, includeSnapshots: true, tessellationQuality: "draft" });
+    const cmpFine = await call("compare_models", { pathA: model, pathB: originalCopy, includeSnapshots: true, tessellationQuality: "fine" });
+    for (const side of ["A", "B"]) {
+      const d = cmpDraft.tessellation?.[side];
+      const f = cmpFine.tessellation?.[side];
+      assert(d?.quality === "draft" && f?.quality === "fine", `compare_models echoes side ${side}'s tessellation quality (got ${d?.quality}/${f?.quality})`);
+      assert(
+        f.triangleCount > d.triangleCount && f.linearDeflection < d.linearDeflection,
+        `compare_models side ${side}: fine is denser than draft (${f.triangleCount} vs ${d.triangleCount} triangles)`
+      );
+    }
+    assert(
+      diffWithSnapshots.tessellation?.A?.quality === "standard",
+      `compare_models without tessellationQuality renders at standard (got ${JSON.stringify(diffWithSnapshots.tessellation)})`
+    );
+  }
+  const cmpBad = await call("compare_models", { pathA: model, pathB: originalCopy, includeSnapshots: true, tessellationQuality: "ultra" });
+  assert(
+    cmpBad.warnings.some((w) => /tessellationQuality "ultra" is not one of/.test(w)),
+    `compare_models warns on an unrecognized tessellationQuality (got ${JSON.stringify(cmpBad.warnings)})`
+  );
+
   const meshed = await call("generate_mesh", { path: model, options: { sizeMax: bbox.diagonal / 15 } });
   assert(meshed.nodeCount > 0 && meshed.elementCount > 0, `generate_mesh: ${meshed.nodeCount} nodes, ${meshed.elementCount} elements in ${meshed.elapsedMs} ms`);
 

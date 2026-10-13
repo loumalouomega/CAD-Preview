@@ -1604,6 +1604,36 @@ describe("compare_models", () => {
     expect(result.warnings).toEqual([]);
   });
 
+  it("includeSnapshots:true leaves the renderSnapshot opts empty when tessellationQuality is omitted, and echoes each side's tessellation", async () => {
+    const c = ctx();
+    const result = await compareModelsTool(c, { pathA: stpModel, pathB: stpModel2, includeSnapshots: true });
+    for (const call of vi.mocked(c.pipeline.renderSnapshot).mock.calls) expect(call[4]).toEqual({});
+    expect(result.tessellation).toEqual({ A: FAKE_RENDER_RESULT.tessellation, B: FAKE_RENDER_RESULT.tessellation });
+  });
+
+  it("forwards tessellationQuality to both sides' renderSnapshot calls", async () => {
+    const c = ctx();
+    const result = await compareModelsTool(c, { pathA: stpModel, pathB: stpModel2, includeSnapshots: true, tessellationQuality: "fine" });
+    const calls = vi.mocked(c.pipeline.renderSnapshot).mock.calls;
+    expect(calls).toHaveLength(2);
+    for (const call of calls) expect(call[4].quality).toBe("fine");
+    expect(result.warnings).toEqual([]);
+  });
+
+  it("warns and falls back on an unrecognized tessellationQuality instead of rendering silently", async () => {
+    const c = ctx();
+    const result = await compareModelsTool(c, { pathA: stpModel, pathB: stpModel2, includeSnapshots: true, tessellationQuality: "ultra" });
+    for (const call of vi.mocked(c.pipeline.renderSnapshot).mock.calls) expect(call[4].quality).toBe("standard");
+    expect(result.warnings.some((w) => /tessellationQuality "ultra" is not one of/.test(w))).toBe(true);
+  });
+
+  it("does not warn about tessellationQuality when no snapshot is requested", async () => {
+    const c = ctx();
+    const result = await compareModelsTool(c, { pathA: stpModel, pathB: stpModel2, tessellationQuality: "ultra" });
+    expect(result.warnings).toEqual([]);
+    expect(result.tessellation).toBeUndefined();
+  });
+
   it("includeSnapshots:true warns (never fails) for a mesh-format side, with no render call for it", async () => {
     const c = ctx();
     const result = await compareModelsTool(c, { pathA: stpModel, pathB: stlModel, includeSnapshots: true });
