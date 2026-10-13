@@ -51,6 +51,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import type { CadFormat } from "./fileRouter";
 import { formatScadValue, isValidScadName, type ScadValue } from "./scadParams";
+import { sha256Hex } from "./hash";
 import { envelope } from "./untrustedText";
 
 const execFileAsync = promisify(execFileCb);
@@ -235,8 +236,18 @@ export function scadChildEnv(libraryPaths?: readonly string[], base: NodeJS.Proc
   return { ...base, [OPENSCAD_LIBRARY_ENV]: [...extra, ...(inherited && inherited.trim() !== "" ? [inherited] : [])].join(path.delimiter) };
 }
 
-/** The argv for a conversion. Order matters only for readability: flags, `-D`s, then `-o <out> <in>`. */
-export function scadArgs(outPath: string, absSource: string, opts: { backend?: ScadBackend; defines?: Record<string, ScadValue> } = {}): string[] {
+/**
+ * The argv for a conversion: flags, `-D`s, then `-o <out> <in>`, then — only
+ * when a `depfile` is wanted — `-d <depfile>` LAST. It trails the stock
+ * invocation so every argv prefix existing stubs and tests pin is unchanged;
+ * verified against OpenSCAD 2021.01 that `-d` is accepted after the
+ * positional input.
+ */
+export function scadArgs(
+  outPath: string,
+  absSource: string,
+  opts: { backend?: ScadBackend; defines?: Record<string, ScadValue>; depfile?: string } = {}
+): string[] {
   const args: string[] = [];
   if (opts.backend) args.push(`--backend=${opts.backend}`);
   for (const [name, value] of Object.entries(opts.defines ?? {})) {
@@ -246,7 +257,58 @@ export function scadArgs(outPath: string, absSource: string, opts: { backend?: S
     args.push("-D", `${name}=${formatScadValue(value)}`);
   }
   args.push("-o", outPath, absSource);
+  if (opts.depfile) args.push("-d", opts.depfile);
   return args;
+}
+
+/**
+ * Parses the Make-style dependency file `openscad -d` writes into absolute
+ * dependency paths (the source itself and `exclude`d paths removed, order kept,
+ * duplicates dropped).
+ *
+ * Format, captured from OpenSCAD 2021.01 (not assumed): one rule
+ * `<output>: \` followed by tab-indented, backslash-continued paths, the
+ * source LAST; spaces inside a path are `\ `-escaped; used libraries,
+ * includes and `import()`ed files are all listed, and a missing `import()`
+ * target is listed too while a missing `include`/`use` is not (it only warns).
+ * Parsed defensively beyond what the binary emits — multiple rules, `$$`,
+ * `\#`, CRLF, and a Windows `C:\` drive colon (a target ends at a colon
+ * followed by whitespace or the end of the rule, never at a drive letter's).
+ */
+export function parseMakeDepfile(text: string, opts: { cwd: string; exclude?: readonly string[] }): string[] {
+  const exclude = new Set((opts.exclude ?? []).map((p) => path.resolve(opts.cwd, p)));
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const rule of text.replace(/\\\r?\n/g, " ").split(/\r?\n/)) {
+    if (rule.trim() === "") continue;
+    const m = /(?<!\\):(?=\s|$)/.exec(rule);
+    if (!m) continue;
+    const deps = rule.slice(m.index + 1);
+    let cur = "";
+    const flush = (): void => {
+      if (cur === "") return;
+      const abs = path.resolve(opts.cwd, cur);
+      cur = "";
+      if (exclude.has(abs) || seen.has(abs)) return;
+      seen.add(abs);
+      out.push(abs);
+    };
+    for (let i = 0; i < deps.length; i++) {
+      const c = deps[i];
+      if (c === "\\" && i + 1 < deps.length && (deps[i + 1] === " " || deps[i + 1] === "#")) {
+        cur += deps[++i];
+      } else if (c === "$" && deps[i + 1] === "$") {
+        cur += "$";
+        i++;
+      } else if (/\s/.test(c)) {
+        flush();
+      } else {
+        cur += c;
+      }
+    }
+    flush();
+  }
+  return out;
 }
 
 function isMissingBinary(err: unknown): boolean {
@@ -300,16 +362,211 @@ export interface ScadConvertResult {
   diagnostics: ScadDiagnostic[];
   /** Diagnostics that did not fit the cap. */
   droppedCount: number;
+  /**
+   * Absolute paths of every file the evaluation read besides the source itself
+   * (`use`/`include`d libraries, `import()`ed meshes), from openscad's `-d`
+   * dependency list. `[]` when openscad wrote none or the list was unreadable.
+   * Hit or miss, the same list a fresh conversion would have produced.
+   */
+  dependencies: string[];
+  /** `true` when this result came from the in-memory cache and no `openscad` process was spawned. */
+  cached?: boolean;
+}
+
+// ---------------------------------------------------------------------------
+// Conversion cache (OpenSCAD include tracking and conversion cache)
+// ---------------------------------------------------------------------------
+
+/** Entries kept. A handful covers "preview, clearance check and export of the same source" with room for a few models. */
+const SCAD_CACHE_MAX_ENTRIES = 8;
+
+interface ScadCacheEntry {
+  /** Everything that selects the conversion besides file CONTENT: path, binary identity, backend, `-D` set, library paths. */
+  staticKey: string;
+  /** sha256 of the source and of each dependency, `"absent"` for a listed file that did not exist. */
+  hashes: Array<{ file: string; sha256: string }>;
+  csgBytes: Uint8Array;
+  warnings: string[];
+  diagnostics: ScadDiagnostic[];
+  droppedCount: number;
+  dependencies: string[];
+}
+
+/** Most-recently-used first. Module state on purpose: it is the "last few compiles" memo, and is process-local. */
+let scadCache: ScadCacheEntry[] = [];
+
+/** Drops every cached conversion (tests; also safe to call after changing a binary in place). */
+export function clearScadConversionCache(): void {
+  scadCache = [];
+}
+
+type DependencyListener = (sourcePath: string, dependencies: readonly string[]) => void;
+const dependencyListeners = new Set<DependencyListener>();
+
+/**
+ * Subscribes to "this source depends on these files", fired after EVERY
+ * conversion, cache hit or miss (so a late subscriber still learns the list on
+ * the next call). `provider.ts` uses it to watch included files without
+ * threading a collector through ~25 `readOcctSource` call sites. Returns the
+ * unsubscribe function.
+ */
+export function onScadDependencies(listener: DependencyListener): () => void {
+  dependencyListeners.add(listener);
+  return () => {
+    dependencyListeners.delete(listener);
+  };
+}
+
+function notifyDependencies(sourcePath: string, dependencies: readonly string[]): void {
+  for (const l of dependencyListeners) {
+    try {
+      l(sourcePath, dependencies);
+    } catch {
+      // A broken listener must never fail a conversion.
+    }
+  }
 }
 
 /**
- * Runs `openscad -o <tmp>/model.csg <sourcePath>` with `cwd` = the source
- * directory (so relative `use`/`include`/`import` resolve exactly as a manual
- * invocation would), reads the output back, and removes the temp dir in a
- * `finally`. Input is the REAL path, never a temp copy — copying would break
- * those relative references with no error to catch it.
+ * The binary's identity for cache purposes: resolved path + mtime + size.
+ * Deliberately NOT a `--version` spawn — that would make a "cached" conversion
+ * cost a process, and the point is that an unchanged model spawns nothing. An
+ * in-place upgrade changes mtime/size, so it still misses. `undefined` (cannot
+ * resolve or stat) disables caching for that call.
+ */
+async function binaryIdentity(binary: string): Promise<string | undefined> {
+  const candidates: string[] = [];
+  if (binary.includes("/") || binary.includes("\\") || path.isAbsolute(binary)) {
+    candidates.push(binary);
+  } else {
+    const exts = process.platform === "win32" ? ["", ".exe", ".cmd", ".bat"] : [""];
+    for (const dir of (process.env.PATH ?? "").split(path.delimiter)) {
+      if (dir === "") continue;
+      for (const ext of exts) candidates.push(path.join(dir, binary + ext));
+    }
+  }
+  for (const c of candidates) {
+    try {
+      const st = await fs.stat(c);
+      if (st.isFile()) return `${path.resolve(c)}:${st.mtimeMs}:${st.size}`;
+    } catch {
+      // try the next candidate
+    }
+  }
+  return undefined;
+}
+
+function scadStaticKey(parts: {
+  absSource: string;
+  binaryId: string;
+  backend: ScadBackend | undefined;
+  defines: Record<string, ScadValue> | undefined;
+  env: NodeJS.ProcessEnv;
+}): string {
+  const defines = Object.entries(parts.defines ?? {})
+    .map(([k, v]) => [k, formatScadValue(v)] as const)
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+  return JSON.stringify([parts.absSource, parts.binaryId, parts.backend ?? null, defines, parts.env[OPENSCAD_LIBRARY_ENV] ?? ""]);
+}
+
+async function hashFileOrAbsent(file: string): Promise<string> {
+  try {
+    return sha256Hex(await fs.readFile(file));
+  } catch {
+    return "absent";
+  }
+}
+
+/** A cached entry is valid only while every recorded file still hashes the same. */
+async function entryStillValid(entry: ScadCacheEntry): Promise<boolean> {
+  for (const h of entry.hashes) {
+    if ((await hashFileOrAbsent(h.file)) !== h.sha256) return false;
+  }
+  return true;
+}
+
+/** `include`/`use` of a file that does not exist is NOT in the dependency list (openscad only warns), so creating it later cannot invalidate an entry — such a result is never cached. */
+const MISSING_INCLUDE_DIAGNOSTIC = /Can't open (include file|library)/i;
+
+/**
+ * Converts a `.scad` source to `.csg` bytes, through a small in-memory cache.
+ *
+ * Every `.scad` consumer — opening, each edit's re-tessellation, `load_model`,
+ * mass properties, export, meshing — lands here, and a real model takes seconds
+ * under CGAL, so an agent asking three questions used to pay three
+ * conversions. A conversion is reused only while EVERYTHING it read still has
+ * the same bytes: the source and every file openscad's own `-d` dependency
+ * list names (so an edited `use <lib.scad>` is a miss — a source-text-only key
+ * would serve stale geometry), under the same binary, backend, `-D` set and
+ * library paths. A result is never cached when openscad wrote no dependency
+ * list (cannot prove freshness) or when it warned about an `include`/`use` it
+ * could not open (creating that file later would not be seen).
  */
 export async function convertScadToCsg(sourcePath: string, opts: ScadConvertOptions = {}): Promise<ScadConvertResult> {
+  const absSource = path.resolve(sourcePath);
+  const binary = resolveOpenscadBinary(opts.binary);
+  const backend = resolveScadBackend(opts.backend);
+  const binaryId = await binaryIdentity(binary);
+  const staticKey =
+    binaryId === undefined
+      ? undefined
+      : scadStaticKey({ absSource, binaryId, backend, defines: opts.defines, env: scadChildEnv(opts.libraryPaths) });
+
+  if (staticKey !== undefined) {
+    const idx = scadCache.findIndex((e) => e.staticKey === staticKey);
+    if (idx >= 0) {
+      const entry = scadCache[idx];
+      if (await entryStillValid(entry)) {
+        scadCache.splice(idx, 1);
+        scadCache.unshift(entry);
+        notifyDependencies(absSource, entry.dependencies);
+        return {
+          csgBytes: entry.csgBytes.slice(),
+          warnings: [...entry.warnings],
+          diagnostics: entry.diagnostics.map((d) => ({ ...d })),
+          droppedCount: entry.droppedCount,
+          dependencies: [...entry.dependencies],
+          cached: true,
+        };
+      }
+      scadCache.splice(idx, 1);
+    }
+  }
+
+  const { result, depsKnown } = await spawnScadConversion(sourcePath, opts);
+  if (staticKey !== undefined && depsKnown && !result.diagnostics.some((d) => MISSING_INCLUDE_DIAGNOSTIC.test(d.message))) {
+    const files = [absSource, ...result.dependencies];
+    const hashes = await Promise.all(files.map(async (file) => ({ file, sha256: await hashFileOrAbsent(file) })));
+    // A source that vanished between the run and now is not cacheable.
+    if (hashes[0].sha256 !== "absent") {
+      scadCache.unshift({
+        staticKey,
+        hashes,
+        csgBytes: result.csgBytes.slice(),
+        warnings: [...result.warnings],
+        diagnostics: result.diagnostics.map((d) => ({ ...d })),
+        droppedCount: result.droppedCount,
+        dependencies: [...result.dependencies],
+      });
+      if (scadCache.length > SCAD_CACHE_MAX_ENTRIES) scadCache.length = SCAD_CACHE_MAX_ENTRIES;
+    }
+  }
+  notifyDependencies(absSource, result.dependencies);
+  return result;
+}
+
+/**
+ * Runs `openscad -o <tmp>/model.csg <sourcePath> -d <tmp>/model.d` with `cwd` =
+ * the source directory (so relative `use`/`include`/`import` resolve exactly as
+ * a manual invocation would), reads the output back, and removes the temp dir
+ * in a `finally`. Input is the REAL path, never a temp copy — copying would
+ * break those relative references with no error to catch it. `depsKnown` is
+ * false when no readable dependency list came back.
+ */
+async function spawnScadConversion(
+  sourcePath: string,
+  opts: ScadConvertOptions
+): Promise<{ result: ScadConvertResult; depsKnown: boolean }> {
   const binary = resolveOpenscadBinary(opts.binary);
   const timeoutMs = opts.timeoutMs ?? SCAD_CONVERT_TIMEOUT_MS;
   const backend = resolveScadBackend(opts.backend);
@@ -317,6 +574,7 @@ export async function convertScadToCsg(sourcePath: string, opts: ScadConvertOpti
   // The output name MUST end in `.csg` — openscad selects its exporter from
   // the `-o` extension.
   const outPath = path.join(tmpDir, "model.csg");
+  const depPath = path.join(tmpDir, "model.d");
   // The input MUST be absolute: `cwd` below is the source directory (so
   // relative `use`/`include`/`import` resolve as a manual invocation would),
   // and a relative argv path would then resolve against that dir instead of
@@ -327,7 +585,7 @@ export async function convertScadToCsg(sourcePath: string, opts: ScadConvertOpti
   try {
     let stderr = "";
     try {
-      const res = await execFileAsync(binary, scadArgs(outPath, absSource, { backend, defines: opts.defines }), {
+      const res = await execFileAsync(binary, scadArgs(outPath, absSource, { backend, defines: opts.defines, depfile: depPath }), {
         cwd: path.dirname(absSource),
         env: scadChildEnv(opts.libraryPaths),
         timeout: timeoutMs,
@@ -371,7 +629,17 @@ export async function convertScadToCsg(sourcePath: string, opts: ScadConvertOpti
     if (csgBytes.length === 0) {
       throw new ScadConvertError(`openscad wrote an empty .csg for ${path.basename(sourcePath)} — treating as a failed conversion.`, "failed");
     }
-    return { csgBytes, warnings, diagnostics, droppedCount };
+    // The dependency list is best-effort: a missing/unreadable one just means
+    // "cannot prove freshness", never a failed conversion.
+    let dependencies: string[] = [];
+    let depsKnown = false;
+    try {
+      dependencies = parseMakeDepfile(await fs.readFile(depPath, "utf8"), { cwd: path.dirname(absSource), exclude: [absSource, outPath] });
+      depsKnown = true;
+    } catch {
+      // stays unknown
+    }
+    return { result: { csgBytes, warnings, diagnostics, droppedCount, dependencies }, depsKnown };
   } finally {
     await fs.rm(tmpDir, { recursive: true, force: true });
   }

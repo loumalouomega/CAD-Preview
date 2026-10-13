@@ -33,6 +33,9 @@ import {
   scadDiagnosticLine,
   scadWarningLines,
   csgWarningDiagnostic,
+  parseMakeDepfile,
+  clearScadConversionCache,
+  onScadDependencies,
 } from "./scadService";
 
 const FIXTURES = path.join(__dirname, "test-fixtures");
@@ -41,6 +44,7 @@ const FAIL = path.join(FIXTURES, "openscad-fail.sh");
 const SLOW = path.join(FIXTURES, "openscad-slow.sh");
 const ARGV_STUB = path.join(FIXTURES, "openscad-argv-stub.sh");
 const CHATTY = path.join(FIXTURES, "openscad-chatty-stub.sh");
+const DEPS_STUB = path.join(FIXTURES, "openscad-deps-stub.sh");
 
 let savedEnv: string | undefined;
 let savedBackend: string | undefined;
@@ -56,7 +60,8 @@ beforeEach(() => {
   delete process.env[OPENSCAD_LIBRARY_ENV];
   // Belt-and-braces: the stubs are committed +x, but a checkout that drops
   // the bit must not turn into a confusing ENOENT failure.
-  for (const f of [STUB, FAIL, SLOW, ARGV_STUB, CHATTY]) fs.chmodSync(f, 0o755);
+  for (const f of [STUB, FAIL, SLOW, ARGV_STUB, CHATTY, DEPS_STUB]) fs.chmodSync(f, 0o755);
+  clearScadConversionCache();
 });
 
 afterEach(() => {
@@ -282,6 +287,11 @@ describe("scadArgs", () => {
   it("is exactly -o <out> <in> with nothing configured", () => {
     expect(scadArgs("/o.csg", "/in.scad")).toEqual(["-o", "/o.csg", "/in.scad"]);
   });
+  it("appends -d <depfile> last, after the positional input", () => {
+    expect(scadArgs("/o.csg", "/in.scad", { backend: "cgal", depfile: "/o.d" })).toEqual([
+      "--backend=cgal", "-o", "/o.csg", "/in.scad", "-d", "/o.d",
+    ]);
+  });
   it("puts the backend flag and -D pairs before -o", () => {
     expect(scadArgs("/o.csg", "/in.scad", { backend: "manifold", defines: { w: 3, s: "a b", $fn: 32 } })).toEqual([
       "--backend=manifold",
@@ -327,7 +337,10 @@ describe("convertScadToCsg with backend, libraries and overrides", () => {
   it("passes none of it by default (stock invocation unchanged)", async () => {
     const { args, libs } = await run({});
     expect(args[0]).toBe("-o");
-    expect(args).toHaveLength(3);
+    // `-o <out> <in>` plus the trailing `-d <depfile>` that feeds the cache.
+    expect(args).toHaveLength(5);
+    expect(args[3]).toBe("-d");
+    expect(path.basename(args[4])).toBe("model.d");
     expect(libs).toBe("");
   });
 
@@ -464,5 +477,215 @@ describe("convertScadToCsg diagnostics through the real execFile", () => {
     } finally {
       delete process.env.STUB_STDERR;
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Dependency file + conversion cache
+// ---------------------------------------------------------------------------
+
+describe("parseMakeDepfile", () => {
+  // Captured verbatim from OpenSCAD 2021.01 (`openscad -o out.csg -d out.d main.scad`
+  // for a model that `use`s "sub dir/lib one.scad" and `include`s lib2.scad).
+  const REAL =
+    "out.csg: \\\n" +
+    "\t/work/lib2.scad \\\n" +
+    "\t/work/sub\\ dir/lib\\ one.scad \\\n" +
+    "\tmain.scad\n";
+
+  it("parses the real 2021.01 shape: continuations, escaped spaces, relative source", () => {
+    expect(parseMakeDepfile(REAL, { cwd: "/work", exclude: ["/work/main.scad"] })).toEqual([
+      "/work/lib2.scad",
+      "/work/sub dir/lib one.scad",
+    ]);
+  });
+  it("resolves relative paths against cwd and drops duplicates and excluded paths", () => {
+    const text = "o: a.scad ../b.scad a.scad /abs/c.stl o\n";
+    expect(parseMakeDepfile(text, { cwd: "/w/x", exclude: ["/w/x/o"] })).toEqual(["/w/x/a.scad", "/w/b.scad", "/abs/c.stl"]);
+  });
+  it("tolerates CRLF line endings and multiple rules", () => {
+    const text = "o1: \\\r\n\ta.scad\r\no2: b.scad\r\n";
+    expect(parseMakeDepfile(text, { cwd: "/w" })).toEqual(["/w/a.scad", "/w/b.scad"]);
+  });
+  it("does not treat a Windows drive-letter colon as the end of the target", () => {
+    const text = "C:\\tmp\\out.csg: \\\n\tC:\\lib\\a.scad \\\n\tC:\\src\\main.scad\n";
+    const got = parseMakeDepfile(text, { cwd: "C:\\src" });
+    expect(got.some((p) => p.includes("a.scad"))).toBe(true);
+    expect(got.some((p) => p.includes("out.csg"))).toBe(false);
+  });
+  it("returns [] for an empty or colon-less file", () => {
+    expect(parseMakeDepfile("", { cwd: "/w" })).toEqual([]);
+    expect(parseMakeDepfile("nothing here\n", { cwd: "/w" })).toEqual([]);
+  });
+  it("unescapes $$ and \\#", () => {
+    expect(parseMakeDepfile("o: a$$b.scad c\\#d.scad\n", { cwd: "/w" })).toEqual(["/w/a$b.scad", "/w/c#d.scad"]);
+  });
+});
+
+describe("convertScadToCsg cache", () => {
+  let countFile: string;
+
+  function setup(): { dir: string; lib: string; model: string } {
+    const dir = makeModelDir();
+    const lib = path.join(dir, "lib.scad");
+    fs.writeFileSync(lib, "module m() { cube(1); }\n");
+    countFile = path.join(dir, "count.txt");
+    process.env.STUB_COUNT = countFile;
+    process.env.STUB_DEPS = lib;
+    return { dir, lib, model: path.join(dir, "model.scad") };
+  }
+  const spawns = (): number => (fs.existsSync(countFile) ? fs.readFileSync(countFile, "utf8").split("\n").filter(Boolean).length : 0);
+  const text = (r: { csgBytes: Uint8Array }): string => Buffer.from(r.csgBytes).toString("utf8");
+
+  afterEach(() => {
+    for (const k of ["STUB_COUNT", "STUB_DEPS", "STUB_NO_DEPFILE", "STUB_WARN"]) delete process.env[k];
+  });
+
+  it("serves an unchanged model from the cache without spawning openscad", async () => {
+    const { model } = setup();
+    const a = await convertScadToCsg(model, { binary: DEPS_STUB });
+    const b = await convertScadToCsg(model, { binary: DEPS_STUB });
+    expect(spawns()).toBe(1);
+    expect(a.cached).toBeUndefined();
+    expect(b.cached).toBe(true);
+    expect(text(b)).toBe(text(a));
+    expect(b.dependencies).toEqual(a.dependencies);
+    expect(a.dependencies).toHaveLength(1);
+  });
+
+  it("replays the cached warnings and diagnostics on a hit", async () => {
+    const { model } = setup();
+    process.env.STUB_WARN = "ECHO: \"hello\"";
+    const a = await convertScadToCsg(model, { binary: DEPS_STUB });
+    const b = await convertScadToCsg(model, { binary: DEPS_STUB });
+    expect(b.cached).toBe(true);
+    expect(b.warnings).toEqual(a.warnings);
+    expect(b.diagnostics).toEqual(a.diagnostics);
+    expect(a.diagnostics.length).toBeGreaterThan(0);
+  });
+
+  it("misses when an included file's bytes change", async () => {
+    const { model, lib } = setup();
+    const a = await convertScadToCsg(model, { binary: DEPS_STUB });
+    fs.writeFileSync(lib, "module m() { cube(2); }\n");
+    const b = await convertScadToCsg(model, { binary: DEPS_STUB });
+    expect(spawns()).toBe(2);
+    expect(b.cached).toBeUndefined();
+    expect(text(b)).not.toBe(text(a));
+  });
+
+  it("misses when the source changes, and when a listed file appears or vanishes", async () => {
+    const { model, lib } = setup();
+    await convertScadToCsg(model, { binary: DEPS_STUB });
+    fs.appendFileSync(model, "// edited\n");
+    await convertScadToCsg(model, { binary: DEPS_STUB });
+    expect(spawns()).toBe(2);
+    fs.rmSync(lib);
+    await convertScadToCsg(model, { binary: DEPS_STUB });
+    expect(spawns()).toBe(3);
+    // Now cached with the dependency ABSENT; creating it must invalidate.
+    await convertScadToCsg(model, { binary: DEPS_STUB });
+    expect(spawns()).toBe(3);
+    fs.writeFileSync(lib, "x\n");
+    await convertScadToCsg(model, { binary: DEPS_STUB });
+    expect(spawns()).toBe(4);
+  });
+
+  it("misses when the backend, a -D value or the library paths change; ignores -D key order", async () => {
+    const { model } = setup();
+    await convertScadToCsg(model, { binary: DEPS_STUB, defines: { a: 1, b: 2 } });
+    await convertScadToCsg(model, { binary: DEPS_STUB, defines: { b: 2, a: 1 } });
+    expect(spawns()).toBe(1);
+    await convertScadToCsg(model, { binary: DEPS_STUB, defines: { a: 1, b: 3 } });
+    expect(spawns()).toBe(2);
+    await convertScadToCsg(model, { binary: DEPS_STUB, defines: { a: 1, b: 3 }, backend: "cgal" });
+    expect(spawns()).toBe(3);
+    await convertScadToCsg(model, { binary: DEPS_STUB, defines: { a: 1, b: 3 }, backend: "cgal", libraryPaths: ["/opt/x"] });
+    expect(spawns()).toBe(4);
+    await convertScadToCsg(model, { binary: DEPS_STUB, defines: { a: 1, b: 3 }, backend: "cgal", libraryPaths: ["/opt/x"] });
+    expect(spawns()).toBe(4);
+  });
+
+  it("misses when the binary changes in place", async () => {
+    const { dir, model } = setup();
+    const bin = path.join(dir, "openscad-copy.sh");
+    fs.copyFileSync(DEPS_STUB, bin);
+    fs.chmodSync(bin, 0o755);
+    await convertScadToCsg(model, { binary: bin });
+    await convertScadToCsg(model, { binary: bin });
+    expect(spawns()).toBe(1);
+    fs.appendFileSync(bin, "# upgraded\n");
+    await convertScadToCsg(model, { binary: bin });
+    expect(spawns()).toBe(2);
+  });
+
+  it("never caches when openscad wrote no dependency list", async () => {
+    const { model } = setup();
+    process.env.STUB_NO_DEPFILE = "1";
+    const a = await convertScadToCsg(model, { binary: DEPS_STUB });
+    await convertScadToCsg(model, { binary: DEPS_STUB });
+    expect(spawns()).toBe(2);
+    expect(a.dependencies).toEqual([]);
+  });
+
+  it("never caches a result that warned about an include/use it could not open", async () => {
+    const { model } = setup();
+    process.env.STUB_WARN = "WARNING: Can't open include file 'nothere.scad'.";
+    await convertScadToCsg(model, { binary: DEPS_STUB });
+    await convertScadToCsg(model, { binary: DEPS_STUB });
+    expect(spawns()).toBe(2);
+  });
+
+  it("never caches a failed conversion", async () => {
+    const dir = makeModelDir();
+    await expect(convertScadToCsg(path.join(dir, "model.scad"), { binary: FAIL })).rejects.toBeInstanceOf(ScadConvertError);
+    await expect(convertScadToCsg(path.join(dir, "model.scad"), { binary: FAIL })).rejects.toBeInstanceOf(ScadConvertError);
+  });
+
+  it("returns private copies, so a caller mutating a result cannot poison the cache", async () => {
+    const { model } = setup();
+    const a = await convertScadToCsg(model, { binary: DEPS_STUB });
+    const original = text(a);
+    a.csgBytes.fill(0);
+    a.warnings.push("tampered");
+    const b = await convertScadToCsg(model, { binary: DEPS_STUB });
+    expect(b.cached).toBe(true);
+    expect(text(b)).toBe(original);
+    expect(b.warnings).not.toContain("tampered");
+  });
+
+  it("evicts the least recently used entry beyond eight", async () => {
+    const dirs = Array.from({ length: 9 }, () => setup());
+    for (const d of dirs) await convertScadToCsg(d.model, { binary: DEPS_STUB });
+    const before = spawns();
+    await convertScadToCsg(dirs[8].model, { binary: DEPS_STUB });
+    expect(spawns()).toBe(before);
+    await convertScadToCsg(dirs[0].model, { binary: DEPS_STUB });
+    expect(spawns()).toBe(before + 1);
+  });
+
+  it("announces the dependency list after a miss and after a hit", async () => {
+    const { model, lib } = setup();
+    const seen: Array<[string, string[]]> = [];
+    const off = onScadDependencies((src, deps) => seen.push([src, [...deps]]));
+    await convertScadToCsg(model, { binary: DEPS_STUB });
+    await convertScadToCsg(model, { binary: DEPS_STUB });
+    off();
+    await convertScadToCsg(model, { binary: DEPS_STUB });
+    expect(seen).toEqual([
+      [model, [lib]],
+      [model, [lib]],
+    ]);
+  });
+
+  it("flows through resolveEffectiveSource without re-reading or re-spawning", async () => {
+    const { model } = setup();
+    const call = () =>
+      resolveEffectiveSource({ modelPath: model, format: "scad", readBytes: async () => new Uint8Array(), warnings: [], binary: DEPS_STUB });
+    const a = await call();
+    const b = await call();
+    expect(spawns()).toBe(1);
+    expect(Buffer.from(b.bytes).toString()).toBe(Buffer.from(a.bytes).toString());
+    expect(b.format).toBe("csg");
   });
 });

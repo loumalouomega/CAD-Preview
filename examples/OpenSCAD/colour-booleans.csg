@@ -1,0 +1,48 @@
+color([1, 0, 0, 1]) {
+	difference() {
+		cube(size = [10, 10, 10], center = false);
+		multmatrix([[1, 0, 0, 2], [0, 1, 0, 2], [0, 0, 1, 2], [0, 0, 0, 1]]) {
+			cube(size = [3, 3, 3], center = false);
+		}
+	}
+}
+multmatrix([[1, 0, 0, 20], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]]) {
+	color([0, 0, 1, 1]) {
+		union() {
+			cube(size = [10, 10, 10], center = false);
+			multmatrix([[1, 0, 0, 5], [0, 1, 0, 5], [0, 0, 1, 5], [0, 0, 0, 1]]) {
+				cube(size = [10, 10, 10], center = false);
+			}
+		}
+	}
+}
+multmatrix([[1, 0, 0, 50], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]]) {
+	union() {
+		color([1, 0, 0, 1]) {
+			cube(size = [4, 4, 4], center = false);
+		}
+		multmatrix([[1, 0, 0, 10], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]]) {
+			color([0, 0, 1, 1]) {
+				cube(size = [4, 4, 4], center = false);
+			}
+		}
+	}
+}
+multmatrix([[1, 0, 0, 70], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]]) {
+	color([0, 0.501961, 0, 1]) {
+		color([1, 0, 0, 1]) {
+			cube(size = [2, 2, 2], center = false);
+		}
+	}
+}
+multmatrix([[1, 0, 0, 90], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]]) {
+	difference() {
+		color([1, 0, 0, 1]) {
+			cube(size = [3, 3, 3], center = false);
+		}
+		multmatrix([[1, 0, 0, 1], [0, 1, 0, 1], [0, 0, 1, 1], [0, 0, 0, 1]]) {
+			cube(size = [3, 3, 3], center = false);
+		}
+	}
+}
+

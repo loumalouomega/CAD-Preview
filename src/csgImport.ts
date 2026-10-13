@@ -25,8 +25,9 @@
  * Scope, stated plainly, not a silent gap (see the "Complete the OpenSCAD
  * `.csg` node coverage" roadmap history — now closed):
  * - Built: `cube`, `sphere`, `cylinder`, `polyhedron`, `union`,
- *   `difference`, `intersection`, `group`, `color` (transparent — colour is
- *   not imported), `multmatrix`, `translate`, `rotate`, `scale`, `mirror`,
+ *   `difference`, `intersection`, `group`, `color` (no geometry; its colour is
+ *   attributed to the solids it contains and becomes Parts — `csgColorParts.ts`),
+ *   `multmatrix`, `translate`, `rotate`, `scale`, `mirror`,
  *   `linear_extrude`/`rotate_extrude` of a single `polygon`/`square`/`circle`
  *   child (see `csgModel.ts`).
  * - Skipped with a warning (whole subtree dropped — placing children without

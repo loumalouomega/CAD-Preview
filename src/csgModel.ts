@@ -39,6 +39,7 @@
 import type { CsgNode } from "./csgImport";
 import { resolveSegments } from "./csgImport";
 import { buildFlatFace } from "./occtOperations";
+import { parseCsgColor, type CsgColorGroup } from "./csgColorParts";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Oc = any;
@@ -546,13 +547,47 @@ function booleanOf(oc: Oc, kind: "union" | "subtract" | "intersect", a: Shape, b
   return r;
 }
 
+// ---------------------------------------------------------------------------
+// Colour tracking (roadmap "OpenSCAD `color()` and top-level objects become
+// Parts"). A shape handle is tagged with the `#rrggbb` of its nearest
+// enclosing `color()`. Module-level and weakly keyed on purpose: handles are
+// created fresh per build, entries die with them, and threading a colour map
+// through every recursive `evalShapes` call would touch all of them for a
+// bookkeeping side channel.
+// ---------------------------------------------------------------------------
+
+const shapeColor = new WeakMap<object, string>();
+
+/** Tags every still-untagged shape — the INNERMOST `color()` wins, as in OpenSCAD. */
+function tagUntagged(shapes: Shape[], hex: string): void {
+  for (const s of shapes) if (s && typeof s === "object" && !shapeColor.has(s)) shapeColor.set(s, hex);
+}
+
+/** `hex` when every shape carries the same colour, else `undefined` (mixed or untagged). */
+function commonColor(shapes: Shape[]): string | undefined {
+  let hex: string | undefined;
+  for (const s of shapes) {
+    const c = s && typeof s === "object" ? shapeColor.get(s) : undefined;
+    if (c === undefined || (hex !== undefined && c !== hex)) return undefined;
+    hex = c;
+  }
+  return hex;
+}
+
 function evalShapes(oc: Oc, node: CsgNode, cleanup: Cleanup, warn: (m: string) => void, useMaxFN: number): Shape[] {
   if (node.modifier === "*") { warn(`disabled (*${node.name}) subtree — skipping`); return []; }
   if (node.modifier === "!") warn(`show-only (!${node.name}) treated as transparent — siblings are NOT hidden on import`);
 
   const name = node.name;
-  if (name === "group" || name === "color" || name === "render") {
-    // transparent containers (color carries no geometry; render is a no-op)
+  if (name === "color") {
+    const kids = node.children.flatMap((c) => evalShapes(oc, c, cleanup, warn, useMaxFN));
+    const { hex, warning } = parseCsgColor(node.params);
+    if (warning) warn(warning);
+    if (hex) tagUntagged(kids, hex);
+    return kids;
+  }
+  if (name === "group" || name === "render") {
+    // transparent containers (render is a no-op)
     return node.children.flatMap((c) => evalShapes(oc, c, cleanup, warn, useMaxFN));
   }
   if (name === "union" || name === "intersection") {
@@ -562,11 +597,19 @@ function evalShapes(oc: Oc, node: CsgNode, cleanup: Cleanup, warn: (m: string) =
     const all = kids.flat();
     if (all.length === 0) { warn(`${name}() — every child was skipped, nothing to combine`); return []; }
     if (all.length === 1) return all;
+    // A fused/intersected result keeps a colour only if every operand shared it
+    // (a union of red and blue has no single colour; the enclosing color(), if
+    // any, tags it afterwards). Stated in the docs rather than blended.
+    const shared = commonColor(all);
     let acc = all[0];
     for (const s of all.slice(1)) {
       const r = booleanOf(oc, kind, acc, s, cleanup);
       if (!r) { warn(`${name}() boolean did not complete (IsDone() false) — keeping operands uncombined`); return all; }
       acc = r;
+    }
+    if (shared) shapeColor.set(acc, shared);
+    else if (all.some((x) => x && typeof x === "object" && shapeColor.has(x))) {
+      warn(`${name}() combines differently coloured children into one shape — their colours are not kept (only a colour shared by every child, or an enclosing color(), survives)`);
     }
     return [acc];
   }
@@ -583,6 +626,9 @@ function evalShapes(oc: Oc, node: CsgNode, cleanup: Cleanup, warn: (m: string) =
     const tool = rest.length === 1 ? rest[0] : compoundOf(oc, rest, cleanup);
     const r = booleanOf(oc, "subtract", acc, tool, cleanup);
     if (!r) { warn(`difference() boolean did not complete — keeping minuend uncut`); return first; }
+    // OpenSCAD's difference() keeps the FIRST child's colour; the tools do not tint it.
+    const minuendColor = commonColor(first);
+    if (minuendColor) shapeColor.set(r, minuendColor);
     return [r];
   }
   if (name === "multmatrix" || name === "translate" || name === "scale" || name === "mirror" || name === "rotate") {
@@ -595,7 +641,16 @@ function evalShapes(oc: Oc, node: CsgNode, cleanup: Cleanup, warn: (m: string) =
       if (name === "rotate") return kids;
       return [];
     }
-    return applyMatrix(oc, kids, m, cleanup, warn) ?? [];
+    const moved = applyMatrix(oc, kids, m, cleanup, warn) ?? [];
+    // applyMatrix returns one output per input in order: carry each colour over
+    // (the transform builds NEW handles, so the tag would otherwise be lost).
+    if (moved.length === kids.length) {
+      for (let i = 0; i < kids.length; i++) {
+        const c = kids[i] && typeof kids[i] === "object" ? shapeColor.get(kids[i]) : undefined;
+        if (c !== undefined && moved[i] !== kids[i]) shapeColor.set(moved[i], c);
+      }
+    }
+    return moved;
   }
   if (name === "cube") return single(oc, buildBox(oc, node, cleanup, warn));
   if (name === "sphere") return single(oc, buildSphere(oc, node, cleanup, warn, useMaxFN));
@@ -616,6 +671,31 @@ function single(_oc: Oc, s: Shape | null): Shape[] {
 }
 
 /**
+ * Groups the base shape's solids by colour. The final shape is a compound of
+ * `all` in order (or `all[0]` itself), and `collectSolids` numbers solids by a
+ * depth-first explorer walk — which preserves that order — so counting each
+ * top-level shape's solids in sequence reproduces the real `solid-N` ids
+ * exactly. Solids with no colour advance the counter but join no group.
+ */
+function topLevelColorGroups(oc: Oc, all: Shape[], cleanup: Cleanup): CsgColorGroup[] {
+  const groups = new Map<string, string[]>();
+  let next = 0;
+  for (const s of all) {
+    if (s == null || (typeof s.IsNull === "function" && s.IsNull())) continue;
+    const exp = keep(cleanup, new oc.TopExp_Explorer_2(s, oc.TopAbs_ShapeEnum.TopAbs_SOLID, oc.TopAbs_ShapeEnum.TopAbs_SHAPE));
+    const hex = typeof s === "object" ? shapeColor.get(s) : undefined;
+    for (; exp.More(); exp.Next()) {
+      const id = `solid-${next++}`;
+      if (hex === undefined) continue;
+      const ids = groups.get(hex);
+      if (ids) ids.push(id);
+      else groups.set(hex, [id]);
+    }
+  }
+  return [...groups].map(([color, solidIds]) => ({ color, solidIds }));
+}
+
+/**
  * Builds the `.csg` base shape: one compound of every root's solids (or a
  * single solid, or an empty compound when nothing built — the blank-model
  * empty-shape guard downstream handles that, same as an empty `.brep`).
@@ -631,6 +711,8 @@ export function buildCsgShape(
   useMaxFN: number,
   cleanup: Cleanup,
   warnings: string[],
+  /** Optional out-param: receives one entry per distinct `color()` colour, listing the base shape's `solid-N` ids. */
+  colorGroups?: CsgColorGroup[],
 ): Shape {
   warnings.push(...parserWarnings);
   const warn = (m: string): void => { warnings.push(m); };
@@ -640,6 +722,14 @@ export function buildCsgShape(
       all.push(...evalShapes(oc, r, cleanup, warn, useMaxFN));
     } catch (e) {
       warn(`${r.name}() subtree threw (${e instanceof Error ? e.message : String(e)}) — skipping`);
+    }
+  }
+  if (colorGroups) {
+    try {
+      colorGroups.push(...topLevelColorGroups(oc, all, cleanup));
+    } catch (e) {
+      // Colour is supplementary: a failure here must never fail the open.
+      warn(`could not attribute colours to solids (${e instanceof Error ? e.message : String(e)}) — no Parts will be created from color()`);
     }
   }
   if (all.length === 0) return emptyCompound(oc, cleanup);

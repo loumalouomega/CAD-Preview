@@ -2048,6 +2048,97 @@ test("replacing the source while unsaved edits exist asks instead of silently re
 });
 
 /**
+ * Roadmap "OpenSCAD include tracking and conversion cache": a `.scad` model that
+ * `use`s another file must reload when THAT file changes. Driven with the
+ * committed counting stub (`openscad-deps-stub.sh`) because no real openscad
+ * exists on CI; the stub writes the same Make-style dependency list real
+ * OpenSCAD 2021.01 does. The spawn count is the second assertion: the edit's
+ * reload must really re-evaluate (a cache hit would show the stale geometry),
+ * and the open itself must have spawned exactly once.
+ */
+test("editing an included .scad file reloads the open document", async () => {
+  const api = await saveTestApi();
+  const hook = (vscode.extensions.getExtension(EXTENSION_ID)?.exports as { onDidPostMessage?: vscode.Event<{ type: string }> } | undefined)
+    ?.onDidPostMessage;
+  if (!hook || !api) return;
+  const dir = tempDir();
+  const model = path.join(dir, "model.scad");
+  const lib = path.join(dir, "lib.scad");
+  const count = path.join(dir, "count.txt");
+  fs.writeFileSync(lib, "module m() { cube(1); }\n");
+  fs.writeFileSync(model, "include <lib.scad>\nm();\n");
+  const stub = path.join(ROOT, "src", "test-fixtures", "openscad-deps-stub.sh");
+  fs.chmodSync(stub, 0o755);
+  const config = vscode.workspace.getConfiguration("cadPreview");
+  const previous = config.inspect<string>("openscadBinary")?.globalValue;
+  const savedEnv = { STUB_COUNT: process.env.STUB_COUNT, STUB_DEPS: process.env.STUB_DEPS };
+  process.env.STUB_COUNT = count;
+  process.env.STUB_DEPS = lib;
+  await config.update("openscadBinary", stub, vscode.ConfigurationTarget.Global);
+  let geometryPosts = 0;
+  const sub = hook((m) => {
+    if (m.type === "geometry") geometryPosts++;
+  });
+  try {
+    assert(await openDocument(model), "the .scad model opens through the stub binary");
+    assert(await waitFor(() => geometryPosts >= 1, 30000), "the open posts geometry");
+    const spawnsAfterOpen = fs.existsSync(count) ? fs.readFileSync(count, "utf8").split("\n").filter(Boolean).length : 0;
+    assert(spawnsAfterOpen === 1, `opening evaluated the model exactly once (saw ${spawnsAfterOpen})`);
+    const before = geometryPosts;
+    fs.writeFileSync(lib, "module m() { cube(2); }\n");
+    const reloaded = await waitFor(() => geometryPosts > before, 30000); // 300 ms debounce + conversion
+    assert(reloaded, "editing the included file reposts geometry (the dependency watcher fired)");
+    const spawnsAfterEdit = fs.readFileSync(count, "utf8").split("\n").filter(Boolean).length;
+    assert(spawnsAfterEdit === 2, `the reload re-evaluated rather than serving a stale cache hit (saw ${spawnsAfterEdit})`);
+  } finally {
+    sub.dispose();
+    await config.update("openscadBinary", previous, vscode.ConfigurationTarget.Global);
+    for (const [k, v] of Object.entries(savedEnv)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  }
+  await closeAll();
+});
+
+/**
+ * Roadmap "OpenSCAD `color()` and top-level objects become Parts": opening a
+ * `.csg` with coloured solids creates one Part per distinct colour — through
+ * the real provider, kernel worker and parts sidecar — exactly once.
+ * `two-colour.csg` is real OpenSCAD 2021.01 output (red = solid-0 + solid-4,
+ * blue = solid-1 + solid-2, solid-3 uncoloured).
+ */
+test("opening a coloured .csg creates one Part per colour, once", async () => {
+  const hook = (vscode.extensions.getExtension(EXTENSION_ID)?.exports as { onDidPostMessage?: vscode.Event<{ type: string; parts?: Array<{ name: string; volumes: string[] }> }> } | undefined)
+    ?.onDidPostMessage;
+  if (!hook) return;
+  const staged = stage(path.join(ROOT, "examples", "OpenSCAD", "two-colour.csg"));
+  let announced: Array<{ name: string; volumes: string[] }> | undefined;
+  const sub = hook((m) => {
+    if (m.type === "parts" && m.parts && m.parts.length > 0) announced = m.parts;
+  });
+  try {
+    assert(await openDocument(staged), "the coloured .csg opens");
+    assert(await waitFor(() => announced !== undefined, 30000), "the webview is told about the new Parts");
+    assert(
+      JSON.stringify(announced?.map((p) => [p.name, p.volumes])) ===
+        JSON.stringify([["Part red", ["solid-0", "solid-4"]], ["Part blue", ["solid-1", "solid-2"]]]),
+      `one Part per colour, listing the right solids (got ${JSON.stringify(announced)})`
+    );
+    const onDisk = JSON.parse(fs.readFileSync(`${staged}.parts.json`, "utf8")) as { parts: unknown[] };
+    assert(onDisk.parts.length === 2, `the Parts are persisted (got ${onDisk.parts.length})`);
+  } finally {
+    sub.dispose();
+  }
+  await closeAll();
+  assert(await openDocument(staged), "the coloured .csg reopens");
+  await sleep(2000);
+  const again = JSON.parse(fs.readFileSync(`${staged}.parts.json`, "utf8")) as { parts: unknown[] };
+  assert(again.parts.length === 2, `a reopen does not duplicate the Parts (got ${again.parts.length})`);
+  await closeAll();
+});
+
+/**
  * File ▸ New Blank Model… — the whole point of the feature is that the file it
  * creates is an ORDINARY document, so this drives the real command through the
  * real provider rather than checking the write in isolation.

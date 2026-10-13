@@ -178,8 +178,8 @@ Two projects built for AI agents were read for this extension:
 | OpenSCAD evaluation | ReOpenSCAD (own interpreter) | The real binary ships (`.scad` via `openscad`); the [WASM port](#build-and-bundle-an-openscad-wasm-port) is planned; [reimplementing the language](#rejected-scope) is rejected |
 | Customizer parameters | ReOpenSCAD (sliders that rewrite the source) | Shipped both halves: headless `list_scad_parameters` / `convert_scad` with `-D` overrides, and the interactive Customizer section (`.scad` only, validated `-D` Apply + Reset, `<model>.scad-params.json` replayed on every conversion; the source is never written) |
 | Problems tab with line numbers | ReOpenSCAD | Shipped as OpenSCAD diagnostics: stderr is parsed into `{severity, message, file?, line?}` and capped by severity |
-| Compile memo keyed on source + quality | ReOpenSCAD | [OpenSCAD include tracking and conversion cache](#openscad-include-tracking-and-cache) |
-| Per-object listing with colour | ReOpenSCAD | [OpenSCAD `color()` becomes Parts](#openscad-color-parts) |
+| Compile memo keyed on source + quality | ReOpenSCAD | Shipped, keyed on the source **and every file openscad's `-d` dependency list names** (plus binary, backend, `-D` set, library paths); an edited `use`/`include`/`import()` target also reloads an open document |
+| Per-object listing with colour | ReOpenSCAD | Shipped: `color()` becomes one Part per distinct colour on first open of a `.csg`/`.scad` (innermost `color()` wins; a boolean keeps a colour only if its operands shared it) |
 | `get_supported_scad` coverage dictionary | ReOpenSCAD | Shipped inside OpenSCAD diagnostics (skipped `.csg` importer notes join the structured list as severity `warning`; the node name is in the message text, not a separate field) |
 | `check_intersections` with clearance tolerance; `closest_points` | Both | Overlap already ships (`check_interference(_all)`); [clearance reporting](#interference-clearance) is new |
 | `expectedRevision` edits, HTTP 409 on conflict | ReOpenSCAD | Shipped as the MCP revision guard: `get_state` returns a `revisions` fingerprint per sidecar, eleven write tools accept an optional `expectedRevision` and return their new `revision`, and a stale one is refused with code `stale-revision` carrying `currentRevision` (serialised per model and sidecar in-process; not a cross-process lock) |
@@ -356,30 +356,6 @@ These are outcome groupings, not release numbers. Independent small items can sh
 - **First useful increment (M):** a sixth, webview-only display mode — **Geometry** — beside the existing five, rendering the B-rep structure skeletally: points as markers, edges as coloured lines, faces as outlines (translucent fill at most), volumes distinguished by their boundary shells, each kind in its own stable colour with a small legend. It reuses the shipped entity inventory and tessellation; no new kernel binding, no MCP tool (a purely visual interaction stays webview-only per the house rule).
 - **Done when:** on a committed multi-solid fixture, the Geometry mode shows every `point-N` / `edge-N` / `face-N` / `solid-N` recognisable by kind and selectable as today; a committed `test:webview` case toggles into the mode and screenshots it beside the shaded render for comparison.
 - **Out of scope:** mesh views — shaded/wireframe already cover GiD panels (b)–(d); dimension annotations in the structure view (the annotations feature owns those); per-Part colouring, which stays as it is.
-
-#### 2.10 OpenSCAD include tracking and conversion cache {#openscad-include-tracking-and-cache}
-
-*Area: Formats. Effort: M.*
-
-- **Evidence:**
-  - Every `.scad` consumer — opening the file, every edit's re-tessellation, `load_model`, `get_mass_properties`, `export_brep`, `generate_mesh` — calls `resolveEffectiveSource`, which spawns `openscad` afresh with a 120 s budget. Under CGAL a real model takes seconds, and an agent asking three questions pays three conversions.
-  - The source watcher covers the `.scad` file only. A model that `use <lib.scad>`s or `include`s another file does not reload when that file changes, so the viewer silently shows stale geometry.
-  - ReOpenSCAD memoises its last two compiles per quality, keyed on the full source text, so a preview, a clearance check and an export of the same source compile once. Its key can ignore dependencies because it has no filesystem; ours cannot.
-- **First useful increment (M):**
-  1. Confirm on the 2021.01 binary that `openscad -d <deps> -o out.csg in.scad` writes a Make-style dependency list, and record its exact format.
-  2. Parse the list into absolute paths. Key a small in-memory LRU on sha256 of the source plus every dependency, the backend, the sorted `-D` set and the binary's `--version` string. A miss converts; a hit returns the cached `.csg` bytes and warnings.
-  3. Watch each dependency with the existing `watchForExternalChange` helper, so editing a library reloads the document exactly as editing the source does.
-- **Done when:** a second `load_model` on an unchanged model does not spawn `openscad` (a recording stub binary counts spawns); editing an included file reloads an open document; and changing any key input — a dependency's bytes, the backend, a `-D` value — misses the cache.
-- **Out of scope:** a disk cache shared across sessions; caching `.scad` evaluation inside the kernel worker (the [WASM port](#build-and-bundle-an-openscad-wasm-port) owns that path).
-
-#### 2.11 OpenSCAD `color()` and top-level objects become Parts {#openscad-color-parts}
-
-*Area: Formats, Parity. Effort: S–M.*
-
-- **Evidence:** `src/csgModel.ts` treats `color()` as a transparent container — it unwraps it and discards the colour — so a multi-colour `.scad`/`.csg` opens as anonymous `solid-N`s, and Clash, BOM and per-Part meshing all start from nothing. ReOpenSCAD lists every top-level object with its colour and makes each one hideable and exportable on its own. This repository already has the right precedent: a meshio++ import's `kind: "cell"` regions auto-create Parts on first open (`src/meshioRegionParts.ts`).
-- **First useful increment (S–M):** `csgModel.ts` records, for each top-level solid, the colour of its nearest enclosing `color()` (if any). On first open with an empty parts sidecar, `.csg` and `.scad` sources auto-create one Part per distinct colour, named from it (`"Part red"`, or the hex value), coloured with it, and listing its `solid-N` ids. The rules are the meshio ones: never overwrite an existing sidecar, persist once, and say so in `load_model`'s warnings. `.csg` carries no module names, so names cannot come from the source — state that rather than invent one.
-- **Done when:** a committed two-colour fixture opens with two Parts whose volumes match the analytic values, `check_interference_all` and `generate_bom` work on them with no manual assignment, and a reopen does not duplicate them.
-- **Out of scope:** reading colour for the mesh-export path (that is 2.1's colour question); alpha as transparency in the viewer.
 
 #### 2.12 Section plane and display presets for `render_snapshot` {#render-snapshot-section-and-display}
 

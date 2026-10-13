@@ -474,6 +474,112 @@ try {
     }
   }
 
+  // OpenSCAD color() → Parts: no binary needed — two-colour.csg / colour-booleans.csg
+  // are committed REAL OpenSCAD 2021.01 output. Five disjoint cubes: red
+  // (solid-0 = 1000, solid-4 = 8), blue (solid-1 = 125, solid-2 = 64) and one
+  // uncoloured (solid-3 = 27). First open creates one Part per colour with no
+  // manual assignment; BOM / interference work on them straight away; a reopen
+  // does not duplicate; an existing parts sidecar is never touched.
+  {
+    const colourCsg = path.join(dir, "two-colour.csg");
+    fs.copyFileSync(path.join(ROOT, "examples", "OpenSCAD", "two-colour.csg"), colourCsg);
+    const loadedColour = await call("load_model", { path: colourCsg });
+    assert(loadedColour.solids && loadedColour.solids.length === 5, `two-colour.csg builds 5 solids (got ${loadedColour.solids?.length})`);
+    assert(
+      loadedColour.warnings.some((w) => /Created 2 Part\(s\) from color\(\).*no module names/.test(w)),
+      `load_model says it created 2 Parts and why they are colour-named (got ${JSON.stringify(loadedColour.warnings)})`
+    );
+    const colourState = await call("get_state", { path: colourCsg });
+    assert(
+      JSON.stringify(colourState.parts.map((p) => [p.name, p.color, p.volumes])) ===
+        JSON.stringify([["Part red", "#ff0000", ["solid-0", "solid-4"]], ["Part blue", "#0000ff", ["solid-1", "solid-2"]]]),
+      `color() became two Parts listing the right solids (got ${JSON.stringify(colourState.parts)})`
+    );
+    const colourBom = await call("generate_bom", { path: colourCsg });
+    const redRow = colourBom.rows.find((r) => r.name === "Part red");
+    const blueRow = colourBom.rows.find((r) => r.name === "Part blue");
+    assert(
+      redRow && blueRow && Math.abs(redRow.volume - 1008) < 0.5 && Math.abs(blueRow.volume - 189) < 0.5,
+      `generate_bom works on the colour Parts with analytic volumes red 1000+8, blue 125+64 (got ${redRow?.volume} / ${blueRow?.volume})`
+    );
+    const colourClash = await call("check_interference_all", { path: colourCsg });
+    assert(
+      colourClash.supported === true && colourClash.pairs.length === 1 && colourClash.pairs[0].hasOverlap === false,
+      "check_interference_all runs on the colour Parts with no manual assignment (disjoint cubes: no overlap)"
+    );
+    await call("load_model", { path: colourCsg });
+    assert(
+      (await call("get_state", { path: colourCsg })).parts.length === 2,
+      "reopening does not duplicate the colour Parts"
+    );
+
+    const ownedCsg = path.join(dir, "owned-colour.csg");
+    fs.copyFileSync(path.join(ROOT, "examples", "OpenSCAD", "two-colour.csg"), ownedCsg);
+    await call("set_part", { path: ownedCsg, name: "Mine", volumes: ["solid-3"] });
+    const ownedLoad = await call("load_model", { path: ownedCsg });
+    assert(
+      JSON.stringify((await call("get_state", { path: ownedCsg })).parts.map((p) => p.name)) === JSON.stringify(["Mine"]) &&
+        !ownedLoad.warnings.some((w) => /Created \d+ Part/.test(w)),
+      "an existing parts sidecar is never overwritten by colour Parts"
+    );
+
+    // Boolean / nesting rules (see csgModel.ts): the innermost color() wins, a
+    // difference keeps its minuend's colour, a union keeps a colour only if
+    // every operand shared it — and a mixed union is reported, not blended.
+    const boolCsg = path.join(dir, "colour-booleans.csg");
+    fs.copyFileSync(path.join(ROOT, "examples", "OpenSCAD", "colour-booleans.csg"), boolCsg);
+    const boolLoad = await call("load_model", { path: boolCsg });
+    const boolParts = (await call("get_state", { path: boolCsg })).parts;
+    assert(
+      JSON.stringify(boolParts.map((p) => [p.name, p.volumes])) ===
+        JSON.stringify([["Part red", ["solid-0", "solid-4", "solid-5"]], ["Part blue", ["solid-1"]]]),
+      `colour rules: red = difference + innermost-wins + minuend-keeps; blue = shared-colour union; the mixed union has none (got ${JSON.stringify(boolParts)})`
+    );
+    assert(
+      boolLoad.warnings.some((w) => /differently coloured children/.test(w)),
+      "a union of differently coloured children is reported as not keeping its colours"
+    );
+
+    // With replayed edit ops the base solid ids can shift, so no Parts are made — and it says so.
+    const editedCsg = path.join(dir, "edited-colour.csg");
+    fs.copyFileSync(path.join(ROOT, "examples", "OpenSCAD", "two-colour.csg"), editedCsg);
+    await call("apply_edit_ops", { path: editedCsg, ops: [{ op: "addBox", center: [100, 0, 0], size: [1, 1, 1] }] });
+    const editedLoad = await call("load_model", { path: editedCsg });
+    assert(
+      (await call("get_state", { path: editedCsg })).parts.length === 0 && editedLoad.warnings.some((w) => /no Parts were created/.test(w)),
+      "with edit ops replayed over the base, colour Parts are not created and the load says why"
+    );
+  }
+
+  // OpenSCAD include tracking + conversion cache: a two-file model, converted
+  // twice (the second is served from the in-memory cache), then its INCLUDED
+  // library is edited — the next load must re-evaluate and see the new
+  // geometry, never the stale cached .csg. The volume is the oracle: 20x10x5 =
+  // 1000 before, 40x10x5 = 2000 after. Needs the real binary (a stub cannot
+  // produce a volume), so it skips like the blocks around it. The spawn-count
+  // half of the contract (no second `openscad` process) is pinned in
+  // scadService.test.ts / mcpTools.test.ts with a counting stub.
+  {
+    const incMain = path.join(dir, "include-main.scad");
+    const incLib = path.join(dir, "include-lib.scad");
+    fs.copyFileSync(path.join(ROOT, "examples", "OpenSCAD", "include-main.scad"), incMain);
+    fs.copyFileSync(path.join(ROOT, "examples", "OpenSCAD", "include-lib.scad"), incLib);
+    const first = await call("get_mass_properties", { path: incMain });
+    if (first.supported === true) {
+      assert(Math.abs(first.volume - 1000) < 0.5, `include-main.scad evaluates to 20*10*5 = 1000 mm3 (got ${first.volume})`);
+      const again = await call("get_mass_properties", { path: incMain });
+      assert(Math.abs(again.volume - first.volume) < 1e-9, "an unchanged two-file model gives the identical result on a second load");
+      fs.writeFileSync(incLib, fs.readFileSync(incLib, "utf8").replace("plate_w = 20;", "plate_w = 40;"));
+      const edited = await call("get_mass_properties", { path: incMain });
+      assert(
+        Math.abs(edited.volume - 2000) < 0.5,
+        `editing the INCLUDED library re-evaluates the model (1000 -> 2000 mm3, never a stale cache hit; got ${edited.volume})`
+      );
+    } else {
+      console.log("(skipping include-tracking asserts — no openscad binary; set OPENSCAD_BINARY to exercise)");
+    }
+  }
+
   // OpenSCAD Customizer: list_scad_parameters reads the .scad TEXT (no binary
   // needed, so it is asserted unconditionally); convert_scad re-evaluates with
   // -D overrides and needs the binary, so — like minimal.scad above — the

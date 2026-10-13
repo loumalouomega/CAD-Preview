@@ -572,6 +572,26 @@
         "scad customizer: params + overrides render grouped fields; Apply posts the form values",
         "scad customizer: Reset posts empty overrides; the hidden attribute genuinely hides the section"
       ]
+    },
+    {
+      "id": "openscad-include-watch",
+      "section": "OpenSCAD include tracking and conversion cache",
+      "gap": "The provider's per-dependency file watchers reloading an open `.scad` document when an included file changes, in a real Extension Development Host.",
+      "status": "test-written",
+      "closedBy": [
+        "editing an included .scad file reloads the open document"
+      ],
+      "note": "Written against a counting stub binary; not yet seen green because this environment cannot download VS Code for test:integration (the proxy refuses the host). The cache itself and the dependency-list format ARE verified live against OpenSCAD 2021.01 (unit tests, a live probe, and mcp:smoke's include-main.scad block)."
+    },
+    {
+      "id": "openscad-color-parts-open",
+      "section": "OpenSCAD color() becomes Parts",
+      "gap": "The provider creating colour Parts on first open of a coloured .csg through the real extension host (webview post, parts sidecar write, revision echo with the parts watcher), exactly once across a reopen.",
+      "status": "test-written",
+      "closedBy": [
+        "opening a coloured .csg creates one Part per colour, once"
+      ],
+      "note": "Written, not yet seen green (no VS Code download here). The kernel half is verified live against real OpenSCAD 2021.01 output and the headless twin through mcp:smoke."
     }
   ]
 }

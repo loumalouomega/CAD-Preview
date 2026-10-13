@@ -123,6 +123,7 @@ import type { compareModels, CompareSource } from "./modelDiffHost";
 import type { ModelDiff } from "./modelDiff";
 import type { convertToStlBoundary, convertToStlBoundaryWithRegions, convertFoamCaseToStlBoundary, exportViaMeshio, readMeshioMetadata, readMeshioDataInfo, readMeshioProvenance, decimateStlBoundary, runMeshioOps, MeshioDataArrayInfo } from "./meshioService";
 import { buildPartsFromMeshioRegions } from "./meshioRegionParts";
+import { buildPartsFromCsgColors, csgColorPartsNote, type CsgColorGroup } from "./csgColorParts";
 import { validateMmgOptions, type MmgOptions } from "./mmgOptions";
 import { remeshedParts } from "./mmgParts";
 import { buildMeshProvenanceNotes } from "./meshProvenanceNotes";
@@ -665,6 +666,27 @@ async function maybeAutoCreateMeshioParts(ctx: ToolContext, modelPath: string, b
 }
 
 /**
+ * Roadmap "OpenSCAD `color()` and top-level objects become Parts" — the
+ * headless twin of `provider.ts`'s `autoCreateCsgColorParts`: on first open of
+ * a `.csg`/`.scad` whose `color()` nodes colour at least one solid, create one
+ * Part per distinct colour. Same rules as `maybeAutoCreateMeshioParts`: never
+ * overwrites a non-empty parts sidecar, persists once (so a reopen finds them
+ * and does not duplicate), and never throws (colour is supplementary).
+ * Returns the count created.
+ */
+async function maybeAutoCreateCsgParts(modelPath: string, groups: readonly CsgColorGroup[]): Promise<number> {
+  try {
+    if ((await readParts(modelPath)).length > 0) return 0;
+    const parts = buildPartsFromCsgColors(groups);
+    if (parts.length === 0) return 0;
+    await writeParts(modelPath, parts);
+    return parts.length;
+  } catch {
+    return 0;
+  }
+}
+
+/**
  * The `node:fs` adapter for `meshSaveRecovery.ts` — the headless half of the
  * interactive path's identical adapter. `askUnrecognised` is a stub returning
  * `null`: this server has no UI, so the unrecognised branch degrades to a
@@ -851,6 +873,23 @@ export async function loadModel(ctx: ToolContext, params: { path: string }) {
   }
   const { bytes, format } = src;
   const result = await ctx.pipeline.loadBRep(ctx.extensionPath, bytes, format as BRepFormat, ops);
+  // color() → Parts. The colour groups name the BASE shape's solid ids, so they
+  // are only trustworthy while no replayed op can renumber solids: with a
+  // non-empty replay we say so instead of creating Parts that point at the
+  // wrong solids.
+  const colorWarnings: string[] = [];
+  const colorGroups = result.csgColors ?? [];
+  if (colorGroups.length > 0) {
+    if (ops.length === 0) {
+      const created = await maybeAutoCreateCsgParts(modelPath, colorGroups);
+      if (created > 0) colorWarnings.push(csgColorPartsNote(created));
+    } else if ((await readParts(modelPath)).length === 0) {
+      colorWarnings.push(
+        `${colorGroups.length} colour(s) found in color() but no Parts were created: ${ops.length} edit op(s) are replayed over the base, and solid ids shift after edits. Assign Parts by hand, or load the model with no edit ops.`
+      );
+    }
+  }
+  const sidecarsAfter = colorGroups.length > 0 ? await sidecarSummary(modelPath) : sidecars; // `parts` reflects the auto-create
   // One structured list for a `.scad` source: openscad's own diagnostics, then
   // the `.csg` importer's notes (skipped nodes, faceting) as severity warning.
   // Absent for every other source and for a quiet conversion, so those
@@ -867,7 +906,7 @@ export async function loadModel(ctx: ToolContext, params: { path: string }) {
     strategy: route.strategy,
     ...entitySummary(result),
     ...scadDiagnostics,
-    sidecars,
+    sidecars: sidecarsAfter,
     // A persisted op that silently skipped on a PREVIOUS session is reported
     // here the moment the model is loaded — the agent learns immediately
     // rather than after wondering why nothing changed. Query-freeze warnings
@@ -875,7 +914,7 @@ export async function loadModel(ctx: ToolContext, params: { path: string }) {
     // ids; the agent needs to know the query was not honored). `.csg`
     // parse/build warnings (skipped hull/minkowski/2D, faceting
     // approximations) ride it too — same "never silent" rule.
-    warnings: [...opOutcomeWarnings(result.opOutcomes), ...(result.queryWarnings ?? []), ...pointRefRebindWarnings(result.pointRefs ?? [], ops), ...(result.warnings ?? []), ...warnings],
+    warnings: [...opOutcomeWarnings(result.opOutcomes), ...(result.queryWarnings ?? []), ...pointRefRebindWarnings(result.pointRefs ?? [], ops), ...(result.warnings ?? []), ...colorWarnings, ...warnings],
   };
 }
 
