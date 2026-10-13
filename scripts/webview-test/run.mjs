@@ -3381,20 +3381,36 @@ test("clash: the clearance field rides both requests in mm, and is absent when e
   await populate(page);
   await openAdvanced(page);
   const last = (type) => page.evaluate((t) => (window.__sent ?? []).filter((m) => m.type === t).at(-1) ?? null, type);
+  // The panel disables Check and Check all while a request is in flight, so
+  // each request is answered (with its own requestId) before the next click.
+  const answer = (req) =>
+    page.evaluate((r) => {
+      const reply =
+        r.type === "clashCheckRequest"
+          ? { type: "clashCheckResult", requestId: r.requestId, result: { hasOverlap: false, overlapVolume: 0, unresolvedA: [], unresolvedB: [] } }
+          : { type: "clashCheckAllResult", requestId: r.requestId, pairs: [], warnings: [], totalPairs: 0, checkedPairs: 0, screenedPairs: 0, partial: false };
+      window.postMessage(reply, "*");
+    }, req);
   await page.selectOption("#clash-a", "Body");
   await page.selectOption("#clash-b", "Contact faces");
 
   await page.click("#clash-check");
   const plain = await last("clashCheckRequest");
   assert(plain !== null && !("minClearance" in plain), `an empty field sends no minClearance (got ${JSON.stringify(plain)})`);
+  await answer(plain);
+  await sleep(200);
 
   await page.fill("#clash-clearance", "0,2"); // decimal comma accepted
   await page.click("#clash-check");
   const withCheck = await last("clashCheckRequest");
   assert(withCheck?.minClearance === 0.2, `Check carries minClearance 0.2 (got ${JSON.stringify(withCheck)})`);
+  await answer(withCheck);
+  await sleep(200);
+
   await page.click("#clash-check-all");
   const withAll = await last("clashCheckAllRequest");
   assert(withAll?.minClearance === 0.2, `Check all carries minClearance 0.2 (got ${JSON.stringify(withAll)})`);
+  await answer(withAll);
 });
 
 test("clash: an invalid clearance is refused with guidance and posts nothing", async (page) => {
