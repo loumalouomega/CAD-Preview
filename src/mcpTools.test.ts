@@ -1192,6 +1192,29 @@ describe("check_interference", () => {
     expect(result).toMatchObject({ supported: true, hasOverlap: true, overlapVolume: 700 });
   });
 
+  it("forwards minClearance as a trailing pipeline argument, and omits it when unset", async () => {
+    const c = ctx();
+    await checkInterferenceTool(c, { path: stpModel, a: ["solid-0"], b: ["solid-1"], minClearance: 0.2 });
+    expect(c.pipeline.checkInterference).toHaveBeenLastCalledWith(dir, expect.any(Uint8Array), "step", [], ["solid-0"], ["solid-1"], 0.2);
+    await checkInterferenceTool(c, { path: stpModel, a: ["solid-0"], b: ["solid-1"] });
+    expect(vi.mocked(c.pipeline.checkInterference).mock.lastCall).toHaveLength(6);
+  });
+
+  it("rejects a negative or non-finite minClearance before any kernel work", async () => {
+    const c = ctx();
+    for (const bad of [-0.1, NaN, Infinity]) {
+      await expect(checkInterferenceTool(c, { path: stpModel, a: ["solid-0"], b: ["solid-1"], minClearance: bad })).rejects.toThrow(/minClearance/);
+    }
+    expect(c.pipeline.checkInterference).not.toHaveBeenCalled();
+  });
+
+  it("passes the clearance facts the pipeline returns straight through", async () => {
+    const facts = { hasOverlap: false, overlapVolume: 0, unresolvedA: [], unresolvedB: [], clearance: 0.1, witnessA: [0, 0, 0] as [number, number, number], witnessB: [0.1, 0, 0] as [number, number, number], withinClearance: true };
+    const c = ctx(fakePipeline({ checkInterference: vi.fn(async () => facts) }));
+    const result = await checkInterferenceTool(c, { path: stpModel, a: ["solid-0"], b: ["solid-1"], minClearance: 0.2 });
+    expect(result).toMatchObject({ clearance: 0.1, withinClearance: true, witnessB: [0.1, 0, 0] });
+  });
+
   it("compounds multiple ids per operand, passed straight through to the pipeline", async () => {
     const c = ctx();
     await checkInterferenceTool(c, { path: stpModel, a: ["solid-0", "solid-1"], b: ["solid-2"] });
@@ -1283,6 +1306,45 @@ describe("render_snapshot", () => {
     await renderSnapshotTool(c, { path: stpModel, displayMode: "wireframe" });
     const lastCall = vi.mocked(c.pipeline.renderSnapshot).mock.lastCall!;
     expect(lastCall[4].wireframe).toBe(true);
+  });
+
+  // ── displayMode + clip (roadmap "Section plane and display presets for render_snapshot") ──
+  it("forwards every display mode, keeping the legacy wireframe flag only for wireframe", async () => {
+    for (const mode of ["shaded", "xray", "hiddenLines", "flat"]) {
+      const c = ctx();
+      await renderSnapshotTool(c, { path: stpModel, displayMode: mode });
+      const opts = vi.mocked(c.pipeline.renderSnapshot).mock.lastCall![4];
+      expect(opts.displayMode).toBe(mode);
+      expect(opts.wireframe).toBeUndefined();
+    }
+    const c = ctx();
+    await renderSnapshotTool(c, { path: stpModel, displayMode: "wireframe" });
+    const opts = vi.mocked(c.pipeline.renderSnapshot).mock.lastCall![4];
+    expect(opts.displayMode).toBe("wireframe");
+    expect(opts.wireframe).toBe(true);
+  });
+
+  it("forwards a section clip as a ClipPlaneState", async () => {
+    const c = ctx();
+    await renderSnapshotTool(c, { path: stpModel, clip: { axis: "z", offsetFrac: 0.1 } });
+    expect(vi.mocked(c.pipeline.renderSnapshot).mock.lastCall![4].clip).toEqual({ axis: "z", offsetFrac: 0.1 });
+    await renderSnapshotTool(c, { path: stpModel, clip: { normal: [0, 2, 0], offsetFrac: -1 } });
+    expect(vi.mocked(c.pipeline.renderSnapshot).mock.lastCall![4].clip).toEqual({ axis: "y", offsetFrac: -1, normal: [0, 1, 0] });
+  });
+
+  it("leaves displayMode and clip undefined when omitted", async () => {
+    const c = ctx();
+    await renderSnapshotTool(c, { path: stpModel });
+    const opts = vi.mocked(c.pipeline.renderSnapshot).mock.lastCall![4];
+    expect(opts.displayMode).toBeUndefined();
+    expect(opts.clip).toBeUndefined();
+  });
+
+  it("rejects an invalid clip before rendering anything", async () => {
+    const c = ctx();
+    await expect(renderSnapshotTool(c, { path: stpModel, clip: { offsetFrac: 0 } })).rejects.toThrow(/axis/);
+    await expect(renderSnapshotTool(c, { path: stpModel, clip: { axis: "x", offsetFrac: 2 } })).rejects.toThrow(/\[-1, 1\]/);
+    expect(c.pipeline.renderSnapshot).not.toHaveBeenCalled();
   });
 
   it("returns supported: false without calling the pipeline when the renderer is unavailable", async () => {
@@ -4815,6 +4877,17 @@ describe("check_interference_all", () => {
       [["solid-0"], ["solid-1"], ["solid-0", "solid-1"]],
       undefined
     );
+  });
+
+  it("forwards minClearance inside the options object, alone or with a budget", async () => {
+    const c = ctx();
+    await setPart({ path: stpModel, name: "A", volumes: ["solid-0"] });
+    await setPart({ path: stpModel, name: "B", volumes: ["solid-1"] });
+    await checkInterferenceAllTool(c, { path: stpModel, minClearance: 0.5 });
+    expect(vi.mocked(c.pipeline.checkInterferenceAll).mock.lastCall![5]).toEqual({ maxPairs: undefined, maxBooleans: undefined, minClearance: 0.5 });
+    await checkInterferenceAllTool(c, { path: stpModel, maxPairs: 3, minClearance: 0 });
+    expect(vi.mocked(c.pipeline.checkInterferenceAll).mock.lastCall![5]).toEqual({ maxPairs: 3, maxBooleans: undefined, minClearance: 0 });
+    await expect(checkInterferenceAllTool(c, { path: stpModel, minClearance: -1 })).rejects.toThrow(/minClearance/);
   });
 
   it("fails loudly if the pipeline returns a pair count that doesn't match C(n,2)", async () => {

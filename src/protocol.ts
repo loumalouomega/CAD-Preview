@@ -805,6 +805,17 @@ export type HostToWebview =
       /** Entity ids to force-hide. */
       hide?: Array<{ entityType: EntityType; entityId: string }>;
       wireframe?: boolean;
+      /** Whole-model display mode for this view (`render_snapshot`'s
+       *  `displayMode`). Applied through the same `applyDisplayMode` the
+       *  interactive Display group uses, so every mode renders exactly as it
+       *  does there. Takes precedence over `wireframe` when both are present. */
+      displayMode?: DisplayMode;
+      /** Section plane for this view (`render_snapshot`'s `clip`), the same
+       *  `ClipPlaneState` `.view.json` persists, applied through the clip
+       *  controls' own `applyState` (stencil cap included). Sticky for the
+       *  page: every later request without a `clip` keeps it, which is what
+       *  lets one packet share a section; the page is disposable. */
+      clip?: ClipPlaneState;
       /** World-space box to frame INSTEAD of the whole model
        *  (`screenshot_shape`). Framing only — must never drive the
        *  model-scoped pick threshold / helper scales. */
@@ -914,9 +925,9 @@ export type WebviewToHost =
   | { type: "holeTableRequest"; requestId: string }
   /** Clash panel: check one Part against another (volumes only — same
    * Part-name resolution the `check_interference` MCP tool applies). */
-  | { type: "clashCheckRequest"; requestId: string; partA: string; partB: string }
+  | { type: "clashCheckRequest"; requestId: string; partA: string; partB: string; minClearance?: number }
   /** Clash panel: check every Part against every other in one call. */
-  | { type: "clashCheckAllRequest"; requestId: string; maxPairs?: number; maxBooleans?: number }
+  | { type: "clashCheckAllRequest"; requestId: string; maxPairs?: number; maxBooleans?: number; minClearance?: number }
   /** Inspector card: classify the entity the user just selected. */
   /** Run a saved macro, appending its compiled ops to the edit history. */
   | { type: "macroRun"; name: string; parameters: Record<string, string> }

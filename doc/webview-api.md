@@ -1396,7 +1396,7 @@ interface ClashPairDisplay {
 }
 
 class ClashPanel {
-  constructor(panel: HTMLElement, cb: { onCheck: (partA: string, partB: string) => void; onCheckAll: () => void })
+  constructor(panel: HTMLElement, cb: { onCheck: (partA: string, partB: string, minClearance: number | undefined) => void; onCheckAll: (minClearance: number | undefined) => void })
   setEligible(eligible: boolean): void   // B-rep only — hides the section otherwise
   renderParts(names: string[]): void     // repopulates both dropdowns, preserving selections
   setBusy(busy: boolean): void
@@ -1407,7 +1407,7 @@ class ClashPanel {
 }
 ```
 
-`main.ts` drives it with two `requestId` latches (`clashCheckRequestId` / `clashCheckAllRequestId`, same stale-response-guard idiom as `massPropertiesRequestId`) plus a remembered `clashLastPair` (the pair result carries geometry only, so the requested names are remembered to label the row). Raw mm volumes cache in `lastClashResults` so `setDisplayUnit()` re-renders via the existing `convertVolume()` without a new host round trip (the `lastRawMassProperties` precedent); everything clears on model rebuild (re-tessellation may renumber the ids results name). The section hides itself for non-B-rep sources (`setEligible`), with the `#clash-panel[hidden]` CSS override the `[hidden]` hazard demands. Rows reuse the `mass-row`/`mass-message` styles: `A × B` → `overlap <volume>` or `no overlap`, with an `AABB-screened` / unresolved-id note line where applicable. Bounded results render a partial banner (checked of total) plus per-row "not checked — not clash-free" notes for unchecked pairs, never as "no overlap".
+`main.ts` drives it with two `requestId` latches (`clashCheckRequestId` / `clashCheckAllRequestId`, same stale-response-guard idiom as `massPropertiesRequestId`) plus a remembered `clashLastPair` (the pair result carries geometry only, so the requested names are remembered to label the row). Raw mm volumes cache in `lastClashResults` so `setDisplayUnit()` re-renders via the existing `convertVolume()` without a new host round trip (the `lastRawMassProperties` precedent); everything clears on model rebuild (re-tessellation may renumber the ids results name). The section hides itself for non-B-rep sources (`setEligible`), with the `#clash-panel[hidden]` CSS override the `[hidden]` hazard demands. Rows reuse the `mass-row`/`mass-message` styles: `A × B` → `overlap <volume>` or `no overlap`, with an `AABB-screened` / unresolved-id note line where applicable. Bounded results render a partial banner (checked of total) plus per-row "not checked — not clash-free" notes for unchecked pairs, never as "no overlap". The **Clearance** field (`#clash-clearance`, mm) is parsed by the exported `parseClearanceInput` (empty ⇒ `undefined`, a number ≥ 0 ⇒ the value, anything else ⇒ `null` and a refusal message instead of a request); `ClashPairDisplay` gains `clearance` (display unit) and `withinClearance`, `main.ts` caches the raw `clearanceMm` beside `overlapVolumeMm3` and rescales with `convertLength` on a Units change, and a within-limit near-miss row carries the `clash-near` class.
 
 ---
 

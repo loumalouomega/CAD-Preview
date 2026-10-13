@@ -449,6 +449,7 @@ type HostToWebview =
   | { type: 'fitRegionError'; requestId: string; message: string }
   | { type: 'linkedCamera'; camera: LinkedCameraState }
   | { type: 'camerasLinked'; enabled: boolean }
+  | { type: 'renderViewRequest'; requestId: string; direction: [number, number, number]; up?: [number, number, number]; label: string; focus?: Array<{ entityType: EntityType; entityId: string }>; hide?: Array<{ entityType: EntityType; entityId: string }>; wireframe?: boolean; displayMode?: DisplayMode; clip?: ClipPlaneState; frameBox?: { min: [number, number, number]; max: [number, number, number] } }
 ```
 
 ### `geometry`
@@ -924,6 +925,14 @@ Stale responses (a result arriving after a newer keystroke, a form switch, or a 
 { "type": "opPreviewError", "requestId": "1234-0.56", "message": "…" }
 ```
 
+### `renderViewRequest`
+
+Posted by `src/renderService.ts` to its **disposable headless page** (never a live interactive session) once per view of a `render_snapshot` / `screenshot_shape` packet; answered by `renderViewResult { requestId, data }` (a base64 PNG with `label` burned in) or `renderViewError { requestId, message }` (webview → host). It is deliberately a separate pair from `screenshotRequest`: it carries camera, visibility and display fields the interactive Screenshot has no use for. `displayMode` (`shaded` / `wireframe` / `xray` / `hiddenLines` / `flat`) is applied through the same `applyDisplayMode` the Display group uses, after the legacy `wireframe` flag, so it wins when both are present. `clip` is the persisted `ClipPlaneState` (`{axis, offsetFrac, normal?}`, `offsetFrac` in [-1, 1] along the plane normal) applied through the clip controls' own `applyState`, solid cap included; it is sticky for the page, so every later request in the same packet keeps the section. The kept half is the one the normal points into, so a view that looks along `-normal` shows the cut face.
+
+```json
+{ "type": "renderViewRequest", "requestId": "rv-0", "direction": [0, 0, -1], "up": [0, 1, 0], "label": "SECTION", "displayMode": "xray", "clip": { "axis": "z", "offsetFrac": 0 } }
+```
+
 ### `colorFieldResult` / `colorFieldError`
 
 Sent in reply to `colorFieldRequest` (webview → host, below) — **meshio++-imported sources only** (`src/meshioService.ts`'s `readMeshioFieldValues`, called from `provider.ts`'s new `colorFieldRequest` handler). `values` is a base64 `Float32Array`, one entry per triangle CORNER in the SAME order as the currently-loaded model's own triangle soup (i.e. `pristineMesh`'s position attribute) — the webview builds a vertex-coloured overlay directly from it with no further reordering (`src/webview/geometryBuilder.ts`'s `buildColorFieldOverlay`). `min`/`max` seed the legend's gradient bar and are NOT length-dimensioned (no unit conversion/suffix — unlike `measureExactResult`, a scalar field like temperature or stress has no length unit to convert).
@@ -1044,8 +1053,8 @@ type WebviewToHost =
   | { type: 'screenshotResult'; requestId: string; data: string }
   | { type: 'screenshotError'; requestId: string; message: string }
   | { type: 'massPropertiesRequest'; requestId: string; entityId: string | null }
-  | { type: 'clashCheckRequest'; requestId: string; partA: string; partB: string }
-  | { type: 'clashCheckAllRequest'; requestId: string; maxPairs?: number; maxBooleans?: number }
+  | { type: 'clashCheckRequest'; requestId: string; partA: string; partB: string; minClearance?: number }
+  | { type: 'clashCheckAllRequest'; requestId: string; maxPairs?: number; maxBooleans?: number; minClearance?: number }
   | { type: 'macroRun'; name: string; parameters: Record<string, string> }
   | { type: 'macroSaveCurrent' }
   | { type: 'macroDelete'; name: string }
@@ -1374,7 +1383,7 @@ Sent when the Parts section's **Copy BOM** button is clicked — only enabled fo
 
 ### `clashCheckRequest` / `clashCheckAllRequest`
 
-Sent when the Clash panel's **Check** / **Check all** button is clicked, for a B-rep source only (mesh sources never send these — the section is hidden). `clashCheckRequest` names two Parts (`partA`/`partB` — the panel refuses identical picks with a guidance message instead of sending); `clashCheckAllRequest` names none (every Part with volumes) plus optional `maxPairs`/`maxBooleans` work-budget caps.
+Sent when the Clash panel's **Check** / **Check all** button is clicked, for a B-rep source only (mesh sources never send these — the section is hidden). `clashCheckRequest` names two Parts (`partA`/`partB` — the panel refuses identical picks with a guidance message instead of sending); `clashCheckAllRequest` names none (every Part with volumes) plus optional `maxPairs`/`maxBooleans` work-budget caps. Both take an optional `minClearance` (mm, finite and ≥ 0; the panel's Clearance field, omitted when empty): non-overlapping pairs then come back with `clearance`, `witnessA`/`witnessB` and `withinClearance`, which the panel renders as a near-miss row (gap in the display unit; "within limit" when `withinClearance`). A pair the pre-filter proved farther than the limit carries `withinClearance: false` and no `clearance`.
 
 ### `measureExactRequest`
 

@@ -2106,6 +2106,94 @@ try {
   const allMesh = await call("check_interference_all", { path: path.join(ROOT, "examples", "STL", "cube.stl") });
   assert(allMesh.supported === false, "check_interference_all is B-rep-only headless like its single-pair sibling");
 
+  // Clearance (roadmap "Clearance (near-miss) reporting in interference
+  // checks", closed): on its OWN copy so the extra boxes do not perturb the
+  // shared fixture's counts. A = [-5,5]^3 (solid-1); N = centre [10.1,0,0]
+  // → x:[5.1,15.1], a gap of EXACTLY 0.1 from A; F = centre [100,0,0] (far).
+  {
+    const nearModel = path.join(dir, "bull-for-clearance-test.stp");
+    fs.copyFileSync(FIXTURE, nearModel);
+    const nearApplied = await call("apply_edit_ops", {
+      path: nearModel,
+      ops: [
+        { op: "addBox", center: [0, 0, 0], size: [10, 10, 10] },
+        { op: "addBox", center: [10.1, 0, 0], size: [10, 10, 10] },
+        { op: "addBox", center: [100, 0, 0], size: [1, 1, 1] },
+      ],
+    });
+    assert(nearApplied.applied === 3, `clearance fixture: 3 boxes applied (got ${nearApplied.applied})`);
+    await call("set_part", { path: nearModel, name: "NearA", volumes: ["solid-1"] });
+    await call("set_part", { path: nearModel, name: "NearN", volumes: ["solid-2"] });
+    await call("set_part", { path: nearModel, name: "NearF", volumes: ["solid-3"] });
+
+    // single pair
+    const noAsk = await call("check_interference", { path: nearModel, a: ["solid-1"], b: ["solid-2"] });
+    assert(
+      noAsk.hasOverlap === false && noAsk.clearance === undefined && noAsk.withinClearance === undefined,
+      `without minClearance the result carries no clearance facts (got ${JSON.stringify(noAsk)})`
+    );
+    const near02 = await call("check_interference", { path: nearModel, a: ["solid-1"], b: ["solid-2"], minClearance: 0.2 });
+    assert(
+      near02.hasOverlap === false && Math.abs(near02.clearance - 0.1) < 1e-6 && near02.withinClearance === true,
+      `two boxes 0.1 apart: clearance 0.1, within 0.2 (got ${JSON.stringify(near02)})`
+    );
+    assert(
+      Math.abs(near02.witnessA[0] - 5) < 1e-6 && Math.abs(near02.witnessB[0] - 5.1) < 1e-6,
+      `the witnesses sit on the two facing faces (got ${JSON.stringify([near02.witnessA, near02.witnessB])})`
+    );
+    const near005 = await call("check_interference", { path: nearModel, a: ["solid-1"], b: ["solid-2"], minClearance: 0.05 });
+    assert(
+      Math.abs(near005.clearance - 0.1) < 1e-6 && near005.withinClearance === false,
+      `the same pair is NOT within 0.05 (got ${JSON.stringify(near005)})`
+    );
+    const touchClear = await call("check_interference", { path: clashModel, a: ["solid-1"], b: ["solid-4"], minClearance: 0.01 });
+    assert(
+      touchClear.hasOverlap === false && Math.abs(touchClear.clearance) < 1e-6 && touchClear.withinClearance === true,
+      `merely-touching boxes report clearance 0 and are within any clearance (got ${JSON.stringify(touchClear)})`
+    );
+    const overlapClear = await call("check_interference", { path: clashModel, a: ["solid-1"], b: ["solid-2"], minClearance: 5 });
+    assert(
+      overlapClear.hasOverlap === true && Math.abs(overlapClear.overlapVolume - 700) < 1e-6 && overlapClear.clearance === undefined,
+      `an overlapping pair keeps its exact volume and reports no clearance (got ${JSON.stringify(overlapClear)})`
+    );
+    const badClear = await callTolerant("check_interference", { path: nearModel, a: ["solid-1"], b: ["solid-2"], minClearance: -1 });
+    assert(badClear.error && /minClearance/.test(String(badClear.error)), `a negative minClearance is refused (got ${JSON.stringify(badClear)})`);
+
+    // all pairs — the discriminating case: A and N are AABB-disjoint (gap 0.1),
+    // so without the clearance inflation the pre-filter would screen them out.
+    const pairNamed = (r, a, b) => r.pairs.find((p) => (p.partA === a && p.partB === b) || (p.partA === b && p.partB === a));
+    const plainAll = await call("check_interference_all", { path: nearModel });
+    const plainAN = pairNamed(plainAll, "NearA", "NearN");
+    assert(
+      plainAN.screenedByBbox === true && plainAN.clearance === undefined,
+      `without minClearance the near pair is screened by bounding box and carries no clearance (got ${JSON.stringify(plainAN)})`
+    );
+    const clearAll = await call("check_interference_all", { path: nearModel, minClearance: 0.2 });
+    const clearAN = pairNamed(clearAll, "NearA", "NearN");
+    assert(
+      !clearAN.screenedByBbox && clearAN.hasOverlap === false && Math.abs(clearAN.clearance - 0.1) < 1e-6 && clearAN.withinClearance === true,
+      `with minClearance 0.2 the near pair is NOT screened out and reports clearance 0.1 (got ${JSON.stringify(clearAN)})`
+    );
+    const clearAF = pairNamed(clearAll, "NearA", "NearF");
+    assert(
+      clearAF.screenedByBbox === true && clearAF.withinClearance === false && clearAF.clearance === undefined,
+      `a pair provably farther than minClearance is still screened, withinClearance:false and no distance query (got ${JSON.stringify(clearAF)})`
+    );
+    const tightAll = await call("check_interference_all", { path: nearModel, minClearance: 0.05 });
+    const tightAN = pairNamed(tightAll, "NearA", "NearN");
+    assert(
+      tightAN.screenedByBbox === true && tightAN.withinClearance === false,
+      `at minClearance 0.05 the 0.1 gap is provably wider, so the pair is screened and not within (got ${JSON.stringify(tightAN)})`
+    );
+    // The overlap fixture's numbers are unchanged by asking for clearance.
+    const clashWithClearance = await call("check_interference_all", { path: clashModel, minClearance: 0.2 });
+    const reOverlap = pairNamed(clashWithClearance, "BoxA", "BoxB");
+    assert(
+      reOverlap.hasOverlap === true && Math.abs(reOverlap.overlapVolume - 700) < 1e-6,
+      `the shipped overlap pair still reads exactly 700 with minClearance set (got ${reOverlap?.overlapVolume})`
+    );
+  }
+
   // generate_bom (roadmap item, closed) — one row per Part over one parse/
   // replay, SUM-OF-PARTS volumes (documented convention: overlapping members
   // count twice), plus a ready-to-paste TSV string.

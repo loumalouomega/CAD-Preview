@@ -86,6 +86,7 @@ import { clean, envelope } from "./untrustedText";
 import { MESH_EXPORT_FORMATS, meshExportFormat, companionSaveName, type MeshExportFormat } from "./meshExportFormats";
 import { sweepTsv, sweepOutputName, runMeshSweep, validateSweepSizes, SWEEP_NOTE } from "./meshSweep";
 import { describeOp } from "./webview/opCatalog";
+import { resolveSnapshotDisplay, type SnapshotClipInput } from "./snapshotOptions";
 import { OP_PARAM_DOCS, explainEditOpRejection, allOpKinds } from "./opCommands";
 // Re-exported: these moved to the pure `opCommands.ts` so the webview command bar can share them.
 export { OP_PARAM_DOCS, explainEditOpRejection, allOpKinds };
@@ -1334,6 +1335,16 @@ export async function checkToleranceTool(ctx: ToolContext, params: ToleranceChec
 // ---------------------------------------------------------------------------
 // check_interference
 
+/** Validates the optional `minClearance` (mm) of the interference tools. A bad
+ * value is caller-input misuse, so it throws before any parse or kernel work. */
+function checkMinClearance(value: number | undefined): number | undefined {
+  if (value === undefined) return undefined;
+  if (!Number.isFinite(value) || value < 0) {
+    throw new Error(`minClearance must be a finite number >= 0 (mm), got ${String(value)}.`);
+  }
+  return value;
+}
+
 /**
  * Interference / clash detection (roadmap item, closed) — a natural sibling
  * to `measure`/`measure_exact`/`compare_models`: reports the overlap volume
@@ -1352,9 +1363,10 @@ export async function checkToleranceTool(ctx: ToolContext, params: ToleranceChec
  */
 export async function checkInterferenceTool(
   ctx: ToolContext,
-  params: { path: string; a?: string[]; b?: string[]; partA?: string; partB?: string }
+  params: { path: string; a?: string[]; b?: string[]; partA?: string; partB?: string; minClearance?: number }
 ): Promise<{ format: CadFormat; supported: boolean; warnings: string[] } & Partial<InterferenceResult>> {
   const modelPath = params.path;
+  const minClearance = checkMinClearance(params.minClearance);
   const route = requireRoute(modelPath);
 
   if (route.strategy !== "occt") {
@@ -1397,7 +1409,15 @@ export async function checkInterferenceTool(
     return { format: route.format, supported: false, hasOverlap: false, overlapVolume: 0, unresolvedA: [], unresolvedB: [], warnings: [...warnings, src.reason] };
   }
   const { bytes, format } = src;
-  const result = await ctx.pipeline.checkInterference(ctx.extensionPath, bytes, format as BRepFormat, ops, idsA, idsB);
+  const result = await ctx.pipeline.checkInterference(
+    ctx.extensionPath,
+    bytes,
+    format as BRepFormat,
+    ops,
+    idsA,
+    idsB,
+    ...(minClearance !== undefined ? [minClearance] : [])
+  );
   if (result.unresolvedA.length > 0) warnings.push(`Operand A: unresolved id(s) ${result.unresolvedA.join(", ")}.`);
   if (result.unresolvedB.length > 0) warnings.push(`Operand B: unresolved id(s) ${result.unresolvedB.join(", ")}.`);
 
@@ -1429,7 +1449,7 @@ export async function checkInterferenceTool(
  */
 export async function checkInterferenceAllTool(
   ctx: ToolContext,
-  params: { path: string; parts?: string[]; maxPairs?: number; maxBooleans?: number }
+  params: { path: string; parts?: string[]; maxPairs?: number; maxBooleans?: number; minClearance?: number }
 ): Promise<{
   format: CadFormat;
   supported: boolean;
@@ -1442,6 +1462,7 @@ export async function checkInterferenceAllTool(
   partial?: boolean;
 }> {
   const modelPath = params.path;
+  const minClearance = checkMinClearance(params.minClearance);
   const route = requireRoute(modelPath);
 
   if (route.strategy !== "occt") {
@@ -1506,8 +1527,8 @@ export async function checkInterferenceAllTool(
     format as BRepFormat,
     ops,
     selected.map((p) => p.volumes),
-    params.maxPairs !== undefined || params.maxBooleans !== undefined
-      ? { maxPairs: params.maxPairs, maxBooleans: params.maxBooleans }
+    params.maxPairs !== undefined || params.maxBooleans !== undefined || minClearance !== undefined
+      ? { maxPairs: params.maxPairs, maxBooleans: params.maxBooleans, ...(minClearance !== undefined ? { minClearance } : {}) }
       : undefined
   );
   warnings.push(...result.warnings);
@@ -1744,7 +1765,8 @@ export async function renderSnapshotTool(
     path: string;
     focus?: string[];
     hide?: string[];
-    displayMode?: "shaded" | "wireframe";
+    displayMode?: string;
+    clip?: SnapshotClipInput;
     view?: SnapshotView;
     composite?: boolean;
     tessellationQuality?: string;
@@ -1769,6 +1791,7 @@ export async function renderSnapshotTool(
   const { ops } = await readEditsResolved(modelPath);
   const warnings: string[] = [];
   const quality = resolveSnapshotQuality(params.tessellationQuality, warnings);
+  const display = resolveSnapshotDisplay(params.displayMode, params.clip, warnings);
   const src = await readOcctSource(modelPath, route, warnings);
   if (!src.ok) {
     return { supported: false, images: [], warnings: [...warnings, src.reason] };
@@ -1778,7 +1801,9 @@ export async function renderSnapshotTool(
   const result = await ctx.pipeline.renderSnapshot(ctx.extensionPath, bytes, format as BRepFormat, ops, {
     focus: params.focus,
     hide: params.hide,
-    wireframe: params.displayMode === "wireframe" ? true : undefined,
+    wireframe: display.wireframe,
+    displayMode: display.displayMode,
+    clip: display.clip,
     // Left UNDEFINED when no view was asked for, so the default packet and
     // every existing caller are unchanged. `mcpTools.test.ts`'s exact-opts
     // assertion is the regression proof of that and must not be edited. `quality`
@@ -3669,7 +3694,8 @@ export async function screenshotShapeTool(
     entityId: string;
     view?: SnapshotView;
     context?: boolean;
-    displayMode?: "shaded" | "wireframe";
+    displayMode?: string;
+    clip?: SnapshotClipInput;
     tessellationQuality?: string;
   }
 ): Promise<{ supported: boolean; images: RenderImage[]; warnings: string[]; tessellation?: RenderTessellation }> {
@@ -3693,6 +3719,7 @@ export async function screenshotShapeTool(
   // Past both gates, so a bad `tessellationQuality` cannot be reported as
   // having been substituted into a render that never happened.
   const quality = resolveSnapshotQuality(params.tessellationQuality, warnings);
+  const display = resolveSnapshotDisplay(params.displayMode, params.clip, warnings);
 
   const { ops } = await readEditsResolved(modelPath);
   const src = await readOcctSource(modelPath, route, warnings);
@@ -3708,7 +3735,9 @@ export async function screenshotShapeTool(
 
   const result = await ctx.pipeline.renderSnapshot(ctx.extensionPath, bytes, format as BRepFormat, ops, {
     focus: params.context === true ? undefined : [params.entityId],
-    wireframe: params.displayMode === "wireframe" ? true : undefined,
+    wireframe: display.wireframe,
+    displayMode: display.displayMode,
+    clip: display.clip,
     // One view by default: four angles on a single face is mostly redundant.
     views: resolved.views ?? [{ label: `SHAPE ${params.entityId}`, direction: [1, 0.8, 1] }],
     frameEntity: params.entityId,

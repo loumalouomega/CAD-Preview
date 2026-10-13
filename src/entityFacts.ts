@@ -639,6 +639,63 @@ export interface InterferenceResult {
    * every other unresolved-id path in this codebase already follows. */
   unresolvedA: string[];
   unresolvedB: string[];
+  /** Clearance facts — present only when the caller passed `minClearance` AND
+   * the operands do not overlap (an overlapping pair has no clearance to
+   * report). `clearance` is the exact minimum distance between the two
+   * operands (0 for a pair that merely touches); the witnesses are the
+   * nearest points OCCT found on each side. */
+  clearance?: number;
+  witnessA?: Vec3;
+  witnessB?: Vec3;
+  /** Fact, not a verdict: `clearance <= minClearance` as the caller defined
+   * it. `false` also for a pair the bounding-box pre-filter proved is farther
+   * apart than `minClearance` without measuring it (no `clearance` then). */
+  withinClearance?: boolean;
+}
+
+/** The clearance fields shared by {@link InterferenceResult} and
+ * {@link InterferencePairResult}. */
+interface ClearanceFacts {
+  clearance: number;
+  witnessA: Vec3;
+  witnessB: Vec3;
+  withinClearance: boolean;
+}
+
+/**
+ * Exact minimum distance between two operand shapes with the witness points,
+ * via `BRepExtrema_DistShapeShape` — the 0-arg ctor + `LoadS1`/`LoadS2`/
+ * `Perform` shape `measureExact` documents as the one that works in this
+ * build. Returns `null` when the solver does not converge (reported to the
+ * caller as "no clearance facts", never a fabricated number).
+ */
+function clearanceBetween(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  oc: any,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  shapeA: any,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  shapeB: any,
+  minClearance: number,
+  cleanup: Array<{ delete(): void }>
+): ClearanceFacts | null {
+  const dist = new oc.BRepExtrema_DistShapeShape_1();
+  cleanup.push(dist);
+  dist.LoadS1(shapeA);
+  dist.LoadS2(shapeB);
+  dist.Perform();
+  if (!dist.IsDone()) return null;
+  const p1 = dist.PointOnShape1(1);
+  cleanup.push(p1);
+  const p2 = dist.PointOnShape2(1);
+  cleanup.push(p2);
+  const clearance = dist.Value();
+  return {
+    clearance,
+    witnessA: [p1.X(), p1.Y(), p1.Z()],
+    witnessB: [p2.X(), p2.Y(), p2.Z()],
+    withinClearance: clearance <= minClearance,
+  };
 }
 
 /**
@@ -672,7 +729,8 @@ export async function checkInterference(
   format: BRepFormat,
   ops: EditOp[],
   a: string[],
-  b: string[]
+  b: string[],
+  minClearance?: number
 ): Promise<InterferenceResult> {
   const oc = await getOcct(extensionPath);
   const tmpName = `/ci.${format}`;
@@ -698,8 +756,14 @@ export async function checkInterference(
     const shapeB = combineSolids(oc, resolvedB, cleanup);
     const algo = new oc.BRepAlgoAPI_Common_3(shapeA, shapeB);
     cleanup.push(algo);
+    // Clearance facts for a pair that does not overlap — only when asked.
+    const withClearance = (r: InterferenceResult): InterferenceResult => {
+      if (r.hasOverlap || minClearance === undefined) return r;
+      const facts = clearanceBetween(oc, shapeA, shapeB, minClearance, cleanup);
+      return facts ? { ...r, ...facts } : r;
+    };
     if (!algo.IsDone()) {
-      return { hasOverlap: false, overlapVolume: 0, unresolvedA, unresolvedB };
+      return withClearance({ hasOverlap: false, overlapVolume: 0, unresolvedA, unresolvedB });
     }
     const result = algo.Shape();
     cleanup.push(result);
@@ -707,7 +771,7 @@ export async function checkInterference(
 
     // A degenerate (zero-volume) intersection — e.g. two solids that only
     // touch at a face/edge/point — is reported as no real overlap.
-    return { hasOverlap: overlapVolume > 1e-9, overlapVolume, unresolvedA, unresolvedB };
+    return withClearance({ hasOverlap: overlapVolume > 1e-9, overlapVolume, unresolvedA, unresolvedB });
   } catch (err) {
     throw wrapOcctFault(err);
   } finally {
@@ -747,6 +811,13 @@ export interface InterferencePairResult {
    * `false` with `overlapVolume` 0 only because no boolean ran. Callers
    * must label partial results as partial, never as "no clashes". */
   unchecked?: boolean;
+  /** See {@link InterferenceResult}: present only with `minClearance`, for a
+   * pair that does not overlap. A pair the (clearance-inflated) bounding-box
+   * pre-filter rejected carries `withinClearance: false` and no `clearance`. */
+  clearance?: number;
+  witnessA?: Vec3;
+  witnessB?: Vec3;
+  withinClearance?: boolean;
 }
 
 /** Caller-visible work budget for {@link checkInterferenceAll} (roadmap
@@ -763,6 +834,14 @@ export interface InterferenceAllOptions {
    * Screened pairs never consume this budget. Pairs that would need a
    * boolean past the budget are returned as `unchecked: true`. */
   maxBooleans?: number;
+  /** Report clearance (exact minimum distance, witness points,
+   * `withinClearance`) for every non-overlapping pair, and inflate each
+   * group's bounding box by this much before the pre-filter so a near-miss is
+   * never screened out as "far apart". A pair's distance query counts against
+   * `maxBooleans` like its boolean does, at pair granularity (the budget is
+   * checked before a pair starts, so it can be overshot by at most one
+   * query). */
+  minClearance?: number;
 }
 
 export interface InterferenceAllSummary {
@@ -883,13 +962,18 @@ export async function checkInterferenceAll(
       return { ids: [...group], handles, unresolved, extent: { min: min!, max: max! } };
     });
 
+    // With `minClearance` the gap on some axis must exceed it for the pair to
+    // be provably farther apart than the caller cares about; 0 reproduces the
+    // original strict-disjointness test exactly.
+    const minClearance = options?.minClearance;
+    const slack = minClearance ?? 0;
     const strictlyDisjoint = (
       a: { min: Vec3; max: Vec3 },
       b: { min: Vec3; max: Vec3 }
     ): boolean =>
-      a.max[0] < b.min[0] || b.max[0] < a.min[0] ||
-      a.max[1] < b.min[1] || b.max[1] < a.min[1] ||
-      a.max[2] < b.min[2] || b.max[2] < a.min[2];
+      a.max[0] + slack < b.min[0] || b.max[0] + slack < a.min[0] ||
+      a.max[1] + slack < b.min[1] || b.max[1] + slack < a.min[1] ||
+      a.max[2] + slack < b.min[2] || b.max[2] + slack < a.min[2];
 
     // Bounded work budget (roadmap "Bounded assembly interference checks"):
     // deterministic i<j enumeration order; maxPairs caps evaluated pairs,
@@ -921,7 +1005,17 @@ export async function checkInterferenceAll(
           continue;
         }
         if (strictlyDisjoint(gi.extent, gj.extent)) {
-          pairs.push({ a: gi.ids, b: gj.ids, hasOverlap: false, overlapVolume: 0, screenedByBbox: true, ...base });
+          pairs.push({
+            a: gi.ids,
+            b: gj.ids,
+            hasOverlap: false,
+            overlapVolume: 0,
+            screenedByBbox: true,
+            // Provably farther apart than minClearance on some axis, so the
+            // answer to "within clearance?" is known without a distance query.
+            ...(minClearance !== undefined ? { withinClearance: false } : {}),
+            ...base,
+          });
           evaluatedPairs++;
           continue;
         }
@@ -935,19 +1029,30 @@ export async function checkInterferenceAll(
         cleanup.push(algo);
         booleansUsed++;
         evaluatedPairs++;
+        // Clearance facts for a pair that does not overlap. The distance
+        // query is a second unit of kernel work for the pair, so it is charged
+        // to the same budget (the budget is checked before a pair starts, so
+        // it is overshot by at most this one query).
+        const clearanceFacts = (): Partial<ClearanceFacts> => {
+          if (minClearance === undefined) return {};
+          booleansUsed++;
+          return clearanceBetween(oc, shapeA, shapeB, minClearance, cleanup) ?? {};
+        };
         if (!algo.IsDone()) {
-          pairs.push({ a: gi.ids, b: gj.ids, hasOverlap: false, overlapVolume: 0, ...base });
+          pairs.push({ a: gi.ids, b: gj.ids, hasOverlap: false, overlapVolume: 0, ...clearanceFacts(), ...base });
           continue;
         }
         const resultShape = algo.Shape();
         cleanup.push(resultShape);
         const overlapVolume = volumeOf(oc, resultShape, cleanup);
+        // Same degenerate-touching gate as checkInterference above.
+        const hasOverlap = overlapVolume > 1e-9;
         pairs.push({
           a: gi.ids,
           b: gj.ids,
-          // Same degenerate-touching gate as checkInterference above.
-          hasOverlap: overlapVolume > 1e-9,
+          hasOverlap,
           overlapVolume,
+          ...(hasOverlap ? {} : clearanceFacts()),
           ...base,
         });
       }
