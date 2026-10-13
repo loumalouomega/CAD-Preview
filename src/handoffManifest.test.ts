@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { buildHandoffManifest, checkHandoffManifest, parseHandoffManifest, replayFingerprint, serializeHandoffManifest } from "./handoffManifest";
+import { buildHandoffManifest, checkHandoffManifest, deterministicExportId, parseHandoffManifest, replayFingerprint, serializeHandoffManifest } from "./handoffManifest";
 import { DEFAULT_MESH_OPTIONS } from "./meshOptions";
 import type { HandoffFacts } from "./gmshService";
 import type { Part } from "./protocol";
@@ -87,5 +87,41 @@ describe("checkHandoffManifest", () => {
   it("the replay fingerprint is order- and bake-sensitive", () => {
     expect(replayFingerprint([1, 2], 0)).not.toBe(replayFingerprint([2, 1], 0));
     expect(replayFingerprint([1], 0)).not.toBe(replayFingerprint([1], 1));
+  });
+});
+
+describe("deterministic manifests (roadmap \"Reproducible exports\")", () => {
+  const det = () => build({ createdAt: undefined, deterministic: true });
+
+  it("omits createdAt and records the flag; an ordinary manifest keeps createdAt and has no flag", () => {
+    const d = det();
+    expect(d.createdAt).toBeUndefined();
+    expect(d.deterministic).toBe(true);
+    expect(serializeHandoffManifest(d)).not.toContain("createdAt");
+    const ordinary = build();
+    expect(ordinary.createdAt).toBe("2026-09-23T00:00:00.000Z");
+    expect(ordinary.deterministic).toBeUndefined();
+  });
+
+  it("two builds from identical input serialize to identical bytes", () => {
+    expect(serializeHandoffManifest(det())).toBe(serializeHandoffManifest(det()));
+  });
+
+  it("round-trips and still parses without a createdAt (tolerant, version unchanged)", () => {
+    const d = det();
+    expect(parseHandoffManifest(serializeHandoffManifest(d))).toEqual(d);
+    expect(d.version).toBe(1);
+  });
+
+  it("derives a UUID-shaped exportId from the outputs, edit history and format", () => {
+    const m = det();
+    const id = deterministicExportId(m, "mdpaElements");
+    expect(id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+    expect(deterministicExportId(det(), "mdpaElements")).toBe(id);
+    expect(deterministicExportId(m, "msh")).not.toBe(id);
+    const otherOutput = build({ createdAt: undefined, deterministic: true, outputs: [{ path: "/m/a.mdpa", format: "mdpaElements", bytes: new TextEncoder().encode("Begin Elements") }] });
+    expect(deterministicExportId(otherOutput, "mdpaElements")).not.toBe(id);
+    const otherEdits = build({ createdAt: undefined, deterministic: true, ops: [{ op: "addBox" }, { op: "fillet" }] });
+    expect(deterministicExportId(otherEdits, "mdpaElements")).not.toBe(id);
   });
 });

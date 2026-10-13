@@ -1763,6 +1763,10 @@ server.registerTool(
         .optional()
         .describe("Also write <output>.handoff.json: source + edit-history fingerprints, effective options and unit, engine and kernel versions, output hashes, and per-Part physical groups with boundary coverage (costs one extra deterministic meshing pass)"),
       handoffPath: z.string().optional().describe("Explicit absolute path for a version-1 simulation handoff contract."),
+      deterministic: z
+        .boolean()
+        .optional()
+        .describe("Byte-reproducible output: re-exporting the same model gives byte-identical files in every format, and a handoff manifest with no createdAt and an exportId derived from the output hashes. Fixes only fields measured to move (Gmsh model-name counter in .vtk/.xao, meshio++ export timestamps); other formats are already identical. The queue execution receipt is job state and is not affected."),
       ownerId: z.string().optional().describe("Stable study/queue owner; required with requestId and receiptPath for durable execution tracking."),
       requestId: z.string().optional().describe("Stable queue task identity; required with ownerId and receiptPath for durable execution tracking."),
       receiptPath: z.string().optional().describe("Absolute path for the atomic execution receipt. Reusing an existing receipt refuses dispatch."),
@@ -1770,7 +1774,7 @@ server.registerTool(
   },
   wrap(
     (
-      args: { path: string; format: string; outputPath: string; options?: Record<string, unknown>; unit?: string; manifest?: boolean; handoffPath?: string; ownerId?: string; requestId?: string; receiptPath?: string },
+      args: { path: string; format: string; outputPath: string; options?: Record<string, unknown>; unit?: string; manifest?: boolean; handoffPath?: string; deterministic?: boolean; ownerId?: string; requestId?: string; receiptPath?: string },
       onProgress
     ) => exportMeshTool(ctx, { ...args, options: args.options as Partial<MeshOptions> | undefined }, onProgress)
   )

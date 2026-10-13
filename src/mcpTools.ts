@@ -223,7 +223,8 @@ import {
 import { buildPreprocessZip, readPreprocessZip } from "./preprocessArchive";
 import { bomTsv, type BomRow } from "./bomExport";
 import { batchTsv, runBatch, type CollisionPolicy } from "./batchExport";
-import { buildHandoffManifest, checkHandoffManifest, type HandoffManifest, parseHandoffManifest, replayFingerprint, HANDOFF_MANIFEST_SUFFIX } from "./handoffManifest";
+import { buildHandoffManifest, checkHandoffManifest, deterministicExportId, type HandoffManifest, parseHandoffManifest, replayFingerprint, HANDOFF_MANIFEST_SUFFIX } from "./handoffManifest";
+import { normalizeMeshExport } from "./deterministicMesh";
 import { kernelVersions } from "./kernelVersions";
 import { sha256Hex } from "./hash";
 import { renderPrepReportHtml, serializePrepReport, type PrepReport, type ReportImage, type ReportSection } from "./prepReport";
@@ -5140,7 +5141,7 @@ export function rewriteGeoMerge(text: string, xaoName: string): string {
 
 export async function exportMeshTool(
   ctx: ToolContext,
-  params: { path: string; format: string; outputPath: string; options?: Partial<MeshOptions>; unit?: string; manifest?: boolean; handoffPath?: string; ownerId?: string; requestId?: string; receiptPath?: string },
+  params: { path: string; format: string; outputPath: string; options?: Partial<MeshOptions>; unit?: string; manifest?: boolean; handoffPath?: string; deterministic?: boolean; ownerId?: string; requestId?: string; receiptPath?: string },
   onProgress?: ProgressCallback
 ) {
   const modelPath = params.path;
@@ -5170,16 +5171,16 @@ export async function exportMeshTool(
 
   // Same start/done-only scoping as generate_mesh — no mid-call hook exists.
   onProgress?.({ progress: 0, total: 1, message: `Generating + exporting to ${format.id}...` });
-  const written = await writeMeshExportFormat(ctx, modelPath, route, input, options, parts, format, outputPath, unit, warnings);
+  const written = await writeMeshExportFormat(ctx, modelPath, route, input, options, parts, format, outputPath, unit, warnings, undefined, params.deterministic === true);
 
   let writtenManifestPath: string | null = null;
   if (handoffRequested && manifestPath) {
     onProgress?.({ progress: 0.5, total: 1, message: "Writing handoff manifest..." });
-    writtenManifestPath = await writeHandoffManifest(ctx, modelPath, route, input, options, parts, format.id, written, unit, warnings, manifestPath);
+    writtenManifestPath = await writeHandoffManifest(ctx, modelPath, route, input, options, parts, format.id, written, unit, warnings, manifestPath, params.deterministic === true);
   }
   const sizes = await Promise.all(written.map(async (p) => ({ path: p, bytes: (await fs.stat(p)).size })));
   onProgress?.({ progress: 1, total: 1, message: "Done" });
-  return { format: format.id, written: sizes, ...(params.manifest ? { manifest: writtenManifestPath } : {}), ...(params.handoffPath ? { handoff: writtenManifestPath } : {}), warnings };
+  return { format: format.id, written: sizes, ...(params.deterministic === true ? { deterministic: true } : {}), ...(params.manifest ? { manifest: writtenManifestPath } : {}), ...(params.handoffPath ? { handoff: writtenManifestPath } : {}), warnings };
   };
 
   const managed = [params.ownerId, params.requestId, params.receiptPath].some((value) => value !== undefined);
@@ -5373,7 +5374,9 @@ export async function buildExportHandoffManifest(
   /** Mesh-format sources: whether the pending edit tail was baked into `input`
    * (headless mesh-edit replay). Undefined = the caller supplied geometry that
    * already reflects the displayed edits (the FE Mesh panel's own Export). */
-  meshEditsBaked?: boolean
+  meshEditsBaked?: boolean,
+  /** Roadmap "Reproducible exports": omit `createdAt` so a re-export yields a byte-identical manifest. */
+  deterministic = false
 ): Promise<HandoffManifest> {
   const facts = await ctx.pipeline.computeHandoffFacts(ctx.extensionPath, input, options, parts);
   const replay = await currentReplayFingerprint(modelPath);
@@ -5390,7 +5393,7 @@ export async function buildExportHandoffManifest(
     notes.push("Parts are not carried into physical groups for a mesh-format source (no entity correlation); coverage below reflects that.");
   }
   return buildHandoffManifest({
-    createdAt: new Date().toISOString(),
+    ...(deterministic ? { deterministic: true } : { createdAt: new Date().toISOString() }),
     source: { path: path.resolve(modelPath), format: route.format, bytes: new Uint8Array(await fs.readFile(modelPath)) },
     ops: replay.fullOps,
     bakedThrough: replay.bakedThrough,
@@ -5417,14 +5420,15 @@ async function writeHandoffManifest(
   written: string[],
   unit: DisplayUnit,
   warnings: string[],
-  requestedPath?: string
+  requestedPath?: string,
+  deterministic = false
 ): Promise<string> {
   const outputs = await Promise.all(written.map(async (p) => ({ path: p, bytes: new Uint8Array(await fs.readFile(p)) })));
   const baked = warnings.some((w) => w.startsWith("Baked "));
-  const manifest = await buildExportHandoffManifest(ctx, modelPath, route, input, options, parts, formatId, outputs, unit, warnings, baked);
+  const manifest = await buildExportHandoffManifest(ctx, modelPath, route, input, options, parts, formatId, outputs, unit, warnings, baked, deterministic);
   const manifestPath = path.resolve(requestedPath ?? `${written[0]}${HANDOFF_MANIFEST_SUFFIX}`);
   assertNotSourcePath(modelPath, manifestPath);
-  const exportId = randomUUID();
+  const exportId = deterministic ? deterministicExportId(manifest, formatId) : randomUUID();
   const portable = {
     ...manifest,
     exportId,
@@ -5481,7 +5485,7 @@ export async function checkHandoffManifestTool(params: { manifestPath: string })
   }
   const outputs = await Promise.all(manifest.outputs.map(async (o) => ({ path: o.path, sha256: await hashFile(o.path) })));
   const result = checkHandoffManifest(manifest, { sourceSha256, replayFingerprint: fingerprint, outputs });
-  return { manifestPath, source: manifest.source.path, createdAt: manifest.createdAt, ...result };
+  return { manifestPath, source: manifest.source.path, createdAt: manifest.createdAt ?? null, ...result };
 }
 
 /**
@@ -5507,9 +5511,13 @@ async function writeMeshExportFormat(
   outputPath: string,
   unit: DisplayUnit,
   warnings: string[],
-  pregenerated?: MeshResult
+  pregenerated?: MeshResult,
+  /** Roadmap "Reproducible exports": byte-identical output across re-exports (see `deterministicMesh.ts`). */
+  deterministic = false
 ): Promise<string[]> {
   const written: string[] = [];
+  // Rewrites the fields a format was MEASURED to move (a no-op for every other format and role).
+  const norm = (role: string, bytes: Uint8Array): Uint8Array => (deterministic ? normalizeMeshExport(format.id, role, bytes) : bytes);
   if (format.id === "msh") {
     const result = pregenerated ?? (await ctx.pipeline.generateMesh(ctx.extensionPath, input, options, parts));
     await fs.writeFile(outputPath, result.mshText, "utf8");
@@ -5522,7 +5530,7 @@ async function writeMeshExportFormat(
       const xaoName = `${path.basename(outputPath)}.xao`;
       const xaoPath = path.join(path.dirname(outputPath), xaoName);
       assertNotSourcePath(modelPath, xaoPath);
-      await fs.writeFile(xaoPath, geo.xao);
+      await fs.writeFile(xaoPath, norm("xao", geo.xao));
       await fs.writeFile(outputPath, rewriteGeoMerge(geo.text, xaoName), "utf8");
       written.push(outputPath, xaoPath);
       warnings.push(
@@ -5554,6 +5562,7 @@ async function writeMeshExportFormat(
       extension: format.extension,
       companionExtension: format.companion?.extension,
       source: { name: path.basename(modelPath), format: route.format },
+      ...(deterministic ? { deterministic: true } : {}),
       notes: buildMeshProvenanceNotes({
         engineUsed: meshed.engineUsed,
         dimension: options.dimension,
@@ -5567,7 +5576,7 @@ async function writeMeshExportFormat(
       }),
     });
     if (!companion) {
-      await fs.writeFile(outputPath, bytes);
+      await fs.writeFile(outputPath, norm("primary", bytes));
       written.push(outputPath);
     } else {
       // Companion file — written beside the output under the matching stem.
@@ -5579,12 +5588,12 @@ async function writeMeshExportFormat(
       const companionPath = path.join(path.dirname(outputPath), companionName);
       assertNotSourcePath(modelPath, companionPath);
       if (format.companion?.linkage === "sibling") {
-        await fs.writeFile(outputPath, bytes);
+        await fs.writeFile(outputPath, norm("primary", bytes));
       } else {
         const fixedText = Buffer.from(bytes).toString("utf8").split(companion.name).join(companionName);
         await fs.writeFile(outputPath, fixedText, "utf8");
       }
-      await fs.writeFile(companionPath, companion.bytes);
+      await fs.writeFile(companionPath, norm("companion", companion.bytes));
       written.push(outputPath, companionPath);
       warnings.push(
         `The .${format.extension} needs its .${format.companion!.extension} companion — keep the two files together.`
@@ -5598,7 +5607,7 @@ async function writeMeshExportFormat(
       parts,
       format.id as Parameters<typeof exportMeshFormat>[4]
     );
-    await fs.writeFile(outputPath, text, "utf8");
+    await fs.writeFile(outputPath, norm("primary", Buffer.from(text, "utf8")));
     written.push(outputPath);
   }
 

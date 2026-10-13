@@ -3899,6 +3899,64 @@ try {
   assert(!/Date \d{4}-/.test(fs.readFileSync(sheetDet, "utf8")), "a deterministic sheet prints no export date");
   assert(fs.readFileSync(sheetDated, "utf8").includes("Date 2026-01-02"), "an explicit date is honoured, deterministic or not");
 
+  // Reproducible mesh exports and handoff manifest. Measured first
+  // (scripts/probe/examples/mesh-export-determinism.ts, every registered format
+  // written twice): the Gmsh model-name counter leaks into .vtk and the .xao
+  // companion; meshio++ stamps its export time into every text provenance block
+  // and into the HDF5 containers (med/cgns/xdmf's .h5/hmf). Everything else was
+  // already byte-identical. Each flag assertion carries a CONTROL.
+  {
+    const detMesh = path.join(dir, "det-mesh-block.stp");
+    fs.copyFileSync(path.join(ROOT, "examples", "STP", "block.stp"), detMesh);
+    const meshOpts = { sizeMin: 0, sizeMax: 1.5, dimension: 3 };
+    const exportMeshFiles = async (format, stem, extra = {}) => {
+      const out = path.join(dir, stem);
+      const r = await call("export_mesh", { path: detMesh, format, outputPath: out, options: meshOpts, ...extra });
+      return Object.fromEntries(r.written.map((w, i) => [i === 0 ? "primary" : path.extname(w.path).replace(".", "") || `file${i}`, fs.readFileSync(w.path)]));
+    };
+    const sameFiles = (a, b) => Object.keys(a).length === Object.keys(b).length && Object.keys(a).every((k) => b[k] && Buffer.compare(a[k], b[k]) === 0);
+    for (const [fmt, ext] of [["vtk", "vtk"], ["geoUnrolled", "geo_unrolled"], ["vtu", "vtu"], ["med", "med"], ["hmf", "hmf"], ["gid", "post.msh"], ["cgns", "cgns"], ["xdmf", "xdmf"]]) {
+      const plain1 = await exportMeshFiles(fmt, `detm-plain-1.${ext}`);
+      await sleep(1100); // meshio++'s timestamp has one-second resolution
+      const plain2 = await exportMeshFiles(fmt, `detm-plain-2.${ext}`);
+      const det1 = await exportMeshFiles(fmt, `detm-a.${ext}`, { deterministic: true });
+      await sleep(1100);
+      const det2 = await exportMeshFiles(fmt, `detm-b.${ext}`, { deterministic: true });
+      // xdmf names its .h5 inside the primary, which embeds the output stem; compare like-named outputs only.
+      const comparable = fmt === "xdmf" ? (f) => ({ h5: f.h5 }) : (f) => f;
+      assert(sameFiles(comparable(det1), comparable(det2)), `two deterministic ${fmt} exports are byte-identical (${Object.keys(det1).join("+")})`);
+      if (["vtk", "geoUnrolled", "vtu", "med", "hmf", "gid", "cgns", "xdmf"].includes(fmt)) {
+        // CONTROL: this format really does move without the flag (otherwise the pair above proves nothing).
+        assert(!sameFiles(comparable(plain1), comparable(plain2)), `CONTROL: two ordinary ${fmt} exports differ`);
+      }
+    }
+    // Formats measured already identical stay so (so nothing was normalised for them).
+    for (const [fmt, ext] of [["msh", "msh"], ["mdpaElements", "mdpa"], ["inp", "inp"], ["stl", "stl"]]) {
+      const a = await exportMeshFiles(fmt, `detm-stable-a.${ext}`);
+      await sleep(1100);
+      const b = await exportMeshFiles(fmt, `detm-stable-b.${ext}`);
+      assert(sameFiles(a, b), `${fmt} exports are already byte-identical without the flag`);
+    }
+    // The handoff manifest: no createdAt, exportId derived from the output hashes.
+    const man = async (stem, extra = {}) => {
+      const out = path.join(dir, stem);
+      await call("export_mesh", { path: detMesh, format: "mdpaElements", outputPath: out, options: meshOpts, manifest: true, ...extra });
+      return { out, text: fs.readFileSync(`${out}.handoff.json`, "utf8") };
+    };
+    const mDet1 = await man("detm-manifest.mdpa", { deterministic: true });
+    await sleep(1100);
+    const mDet2 = await man("detm-manifest.mdpa", { deterministic: true });
+    assert(mDet1.text === mDet2.text, "two deterministic handoff manifests are byte-identical");
+    const parsedDet = JSON.parse(mDet1.text);
+    assert(parsedDet.createdAt === undefined && parsedDet.deterministic === true && /^[0-9a-f-]{36}$/.test(parsedDet.exportId), "a deterministic manifest has no createdAt, records the flag and carries a derived exportId");
+    const checked = await call("check_handoff_manifest", { manifestPath: `${mDet1.out}.handoff.json` });
+    assert(checked.current === true && checked.createdAt === null, `a deterministic manifest verifies against its re-export (${JSON.stringify(checked.checks)})`);
+    const mPlain1 = await man("detm-manifest-plain.mdpa");
+    await sleep(1100);
+    const mPlain2 = await man("detm-manifest-plain.mdpa");
+    assert(mPlain1.text !== mPlain2.text, "CONTROL: two ordinary handoff manifests differ (createdAt + random exportId)");
+  }
+
   // Tier 0 Phase 1 — the `bakedThrough` watermark end to end through the real
   // kernel: export a file with an edit baked in (exactly what save-in-place
   // writes), attach the sidecar WITH the watermark (exactly what save-in-place
