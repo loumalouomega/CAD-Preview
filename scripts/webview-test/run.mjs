@@ -2800,7 +2800,7 @@ test("Unify faces: the Modify button applies a parameter-free unifySameDomain op
   assert((await sentCount(page, "editsChanged")) === before + 1, "Apply posts exactly one editsChanged");
   const panelOp = await lastOp(page);
   assert(JSON.stringify(panelOp) === JSON.stringify({ op: "unifySameDomain" }), `the panel op is {op:"unifySameDomain"} (got ${JSON.stringify(panelOp)})`);
-  await typeCommand(page, "unifySameDomain");
+  await typeCommand(page, "unifySameDomain {}"); // a bare command name opens the form; an empty body commits
   assert((await sentCount(page, "editsChanged")) === before + 2, `the typed command posts one more editsChanged (message: ${JSON.stringify(await cmdMessage(page))})`);
   assert(JSON.stringify(await lastOp(page)) === JSON.stringify(panelOp), "the typed op equals the panel op");
 });
