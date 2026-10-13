@@ -391,6 +391,8 @@ type HostToWebview =
   | { type: 'exportMesh'; requestId: string; format: CadFormat; unit?: DisplayUnit }
   | { type: 'meshingOptions'; options: MeshOptions }
   | { type: 'meshingPresets'; presets: MeshPresetSummary[] }
+  | { type: 'scadParams'; params: ScadParameter[] }
+  | { type: 'scadOverrides'; overrides: Record<string, ScadValue> }
   | { type: 'viewState'; view: ViewState | null }
   | { type: 'meshingResult'; requestId: string; positions: string; indices: string; edges: string; nodeCount: number; elementCount: number;
       elementGroups: MeshElementGroup[]; elapsedMs: number; quality?: QualitySummary; worstElements?: WorstElementsMsg }
@@ -1017,6 +1019,7 @@ type WebviewToHost =
   | { type: 'partsChanged'; parts: Part[] }
   | { type: 'layersChanged'; layers: Layer[]; nextId: number }
   | { type: 'annotationsChanged'; annotations: Annotation[] }
+  | { type: 'scadApplyOverrides'; overrides: Record<string, unknown> }
   | { type: 'editsChanged'; ops: EditOp[]; variables: ParamVariable[] }
   | { type: 'viewChanged'; view: ViewState }
   | { type: 'setCamerasLinked'; enabled: boolean }
@@ -1120,6 +1123,16 @@ Sent whenever the user saves the current clip plane, enters one numerically, or 
 
 ```json
 { "type": "planesChanged", "planes": [ { "id": "plane-0", "name": "Top datum", "point": [0, 0, 10], "normal": [0, 0, 1] } ] }
+```
+
+### `scadParams` / `scadOverrides` / `scadApplyOverrides`
+
+OpenSCAD Customizer (roadmap "OpenSCAD Customizer panel in the viewer"), `.scad` sources only. `scadParams` carries the host-parsed Customizer parameters (the same `parseScadParameters` `list_scad_parameters` uses — name, type, default, group, description, range/options, line), sent on `ready` and whenever the source file changes externally. `scadOverrides` carries the persisted overrides from `<model>.scad-params.json` (empty when no sidecar exists), sent on `ready` and whenever that sidecar changes externally — silent hydration, never echoed back. `scadApplyOverrides` goes the other way: the panel's current field values on **Apply** (or `{}` on **Reset**). The host validates with `validateScadOverrides` (unknown names and wrong types dropped with a warning, out-of-range applied with a note — the `convert_scad` rule), persists the validated set, and reloads the geometry with the values as `-D` overrides. The source file is never written.
+
+```json
+{ "type": "scadParams", "params": [{ "name": "width", "kind": "number", "default": 40, "group": "Dimensions", "hidden": false, "line": 3, "min": 10, "max": 100 }] }
+{ "type": "scadOverrides", "overrides": { "width": 60 } }
+{ "type": "scadApplyOverrides", "overrides": { "width": 60 } }
 ```
 
 ### `editsChanged`

@@ -35,6 +35,7 @@ export const COLLAPSIBLE_PANELS: readonly { readonly panel: string; readonly hea
   { panel: "parts-panel", header: "parts-header" },
   { panel: "layers-panel", header: "layers-header" },
   { panel: "edits-panel", header: "edits-header" },
+  { panel: "scad-panel", header: "scad-header" },
   { panel: "meshing-panel", header: "meshing-header" },
   { panel: "advanced-group", header: "advanced-header" },
   { panel: "mass-panel", header: "mass-header" },

@@ -382,6 +382,10 @@ export interface EffectiveSourceOptions {
   timeoutMs?: number;
   backend?: string;
   libraryPaths?: string[];
+  /** Customizer overrides, each passed as `-D name=value` (roadmap "OpenSCAD Customizer panel in the viewer" — the
+   * interactive panel persists them in `<model>.scad-params.json` and replays them here; headless `convert_scad`
+   * passes per-call `parameters` the same way). Validate with `validateScadOverrides` first. */
+  defines?: Record<string, ScadValue>;
 }
 
 /**
@@ -406,6 +410,8 @@ export async function resolveEffectiveSource(opts: {
   timeoutMs?: number;
   backend?: string;
   libraryPaths?: string[];
+  /** Customizer overrides for a `.scad` source (see {@link EffectiveSourceOptions.defines}). */
+  defines?: Record<string, ScadValue>;
 }): Promise<{ bytes: Uint8Array; format: CadFormat }> {
   if (opts.format !== "scad") {
     return { bytes: await opts.readBytes(), format: opts.format };
@@ -415,6 +421,7 @@ export async function resolveEffectiveSource(opts: {
     timeoutMs: opts.timeoutMs,
     backend: opts.backend,
     libraryPaths: opts.libraryPaths,
+    defines: opts.defines,
   });
   opts.warnings.push(...warnings);
   if (opts.diagnostics) {

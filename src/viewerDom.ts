@@ -116,6 +116,19 @@ export function viewerBodyHtml(): string {
           <div id="edits-body"></div>
         </div>
       </div>
+      <div id="scad-panel" class="side-section" hidden>
+        <div id="scad-header" class="panel-header">
+          <button class="panel-chevron" type="button" aria-expanded="true" title="Collapse section">${glyph("chevronDown")}</button>
+          <span class="panel-icon" aria-hidden="true">${glyph("pencil")}</span>
+          <span id="scad-title" class="panel-title">Customizer</span>
+          <div id="scad-header-actions">
+            <button id="scad-apply" class="panel-primary-btn" title="Re-evaluate the .scad file with these parameter values (the source file itself is never modified)">${glyph("play")} Apply</button>
+            <button id="scad-reset" class="panel-icon-btn" title="Clear all overrides back to the file's authored defaults">${glyph("rotateCcw")}</button>
+          </div>
+        </div>
+        <div id="scad-body"></div>
+        <div id="scad-status"></div>
+      </div>
       <div id="meshing-panel" class="side-section">
         <div id="meshing-header" class="panel-header">
           <button class="panel-chevron" type="button" aria-expanded="true" title="Collapse section">${glyph("chevronDown")}</button>

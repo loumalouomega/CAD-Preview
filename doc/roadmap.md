@@ -176,7 +176,7 @@ Two projects built for AI agents were read for this extension:
 | Source feature | From | Status here |
 | --- | --- | --- |
 | OpenSCAD evaluation | ReOpenSCAD (own interpreter) | The real binary ships (`.scad` via `openscad`); the [WASM port](#build-and-bundle-an-openscad-wasm-port) is planned; [reimplementing the language](#rejected-scope) is rejected |
-| Customizer parameters | ReOpenSCAD (sliders that rewrite the source) | Headless `list_scad_parameters` / `convert_scad` with `-D` overrides already ship and are stronger; the [interactive panel](#openscad-customizer-panel) is open |
+| Customizer parameters | ReOpenSCAD (sliders that rewrite the source) | Shipped both halves: headless `list_scad_parameters` / `convert_scad` with `-D` overrides, and the interactive Customizer section (`.scad` only, validated `-D` Apply + Reset, `<model>.scad-params.json` replayed on every conversion; the source is never written) |
 | Problems tab with line numbers | ReOpenSCAD | Shipped as OpenSCAD diagnostics: stderr is parsed into `{severity, message, file?, line?}` and capped by severity |
 | Compile memo keyed on source + quality | ReOpenSCAD | [OpenSCAD include tracking and conversion cache](#openscad-include-tracking-and-cache) |
 | Per-object listing with colour | ReOpenSCAD | [OpenSCAD `color()` becomes Parts](#openscad-color-parts) |
@@ -336,17 +336,7 @@ These are outcome groupings, not release numbers. Independent small items can sh
 - **Done when:** the deviation map's sampling caveat is either backed by an independent number or its residual error is characterized, and the sampled-vs-certified distinction in `doc/file-formats.md` and the tool description is accurate about which one a caller is reading.
 - **Recorded as available, deliberately not adopted** (meshio++ 16.23–16.27, same release window): `edit_regions` would introduce a second, parallel concept to `Part`, which is a JSON sidecar over CAD entity ids — the exact divergence `src/entityRebind.ts` exists to prevent, and mesh regions have no viewer-side representation at all. `match_periodic_nodes`, `resample_sequence` and `blend_steps` are periodic- and transient-solver workflows; this tool exports to solvers but does not run them or hold result series, so none has a user workflow here that meets this file's bar for a new item. Recorded so a future review does not re-derive the triage, not as a standing invitation.
 
-#### 2.8 OpenSCAD Customizer panel in the viewer {#openscad-customizer-panel}
-
-*Area: Formats, Parity. Effort: M.*
-
-- **Evidence:** `list_scad_parameters` and `convert_scad` (with the `cadPreview.openscadBackend` and `cadPreview.openscadLibraryPaths` settings) shipped as the headless half of the [SCADarina](https://github.com/CameraRick/SCADarina/) idea — a form over the real OpenSCAD's Customizer parameters. Interactively there is no equivalent: opening a `.scad` in the viewer always evaluates it at its authored defaults, and changing a dimension means editing the source. The parity rule says a user should be able to do what an agent can.
-- **Why it is a separate item and not folded into the headless tools:** an override has to live somewhere. The headless answer — write a new `.csg` — is the right one for an agent, but for a person it would mean a sidecar-less viewer that forgets the values on reopen, or a seventh sidecar (`<model>.scad-params.json`) with its own tolerant parse, watcher, preprocess-archive entry and external-change reconciliation. That is the cost this item exists to decide, not to assume.
-- **First useful increment (M):** a Customizer section in the sidebar, shown only for a `.scad` source and driven by the same `parseScadParameters` the tool uses, rendering a number field / checkbox / select / text field per parameter grouped by `[Group]` with the declared range. **Apply** re-runs the conversion with the values as `-D` overrides through `resolveEffectiveSource` (which would gain a `defines` field) and reloads the geometry. Overrides persist in the sidecar named above, replayed on open, and the source is still never written.
-- **Open questions to answer first:** whether a long conversion (seconds under CGAL) needs the cancellable-progress treatment `loadModel(true)` already gives a large STEP; how an override interacts with an edit-op list whose `edge-N` ids were authored against the default geometry (a changed dimension can renumber them — the same drift `entityRebind.ts` repairs for topology-changing ops, but here the *base* changes, which it does not handle); and whether the Manifold backend, which tessellates differently, should invalidate persisted ids.
-- **Done when:** changing a parameter in the panel re-evaluates the model and the same values reproduce through `convert_scad`, the source file is byte-identical, and an override survives a reopen.
-
-#### 2.9 Coincident-point prompt: collapse or keep independent {#coincident-point-collapse-or-independent}
+#### 2.8 Coincident-point prompt: collapse or keep independent {#coincident-point-collapse-or-independent}
 
 *Area: Geometry, Parity. Effort: S–M.*
 
@@ -358,7 +348,7 @@ These are outcome groupings, not release numbers. Independent small items can sh
 - **Done when:** on a fixture with a committed point, authoring the same coordinates — once via the panel, once headless — offers the choice interactively and honours the recorded field on replay; collapse leaves the `point-N` inventory unchanged, independent adds exactly one; a committed `test:webview` case covers the prompt end to end.
 - **Out of scope:** automatic sewing or healing of near-coincident geometry (the explicit repair op, 3.2); a general coincident-entity merge beyond points; snapping the new coordinates to the old ones (collapse reuses the id, it never moves either point).
 
-#### 2.10 GiD-style geometry structure view {#geometry-structure-view}
+#### 2.9 GiD-style geometry structure view {#geometry-structure-view}
 
 *Area: Geometry. Effort: M.*
 
@@ -367,7 +357,7 @@ These are outcome groupings, not release numbers. Independent small items can sh
 - **Done when:** on a committed multi-solid fixture, the Geometry mode shows every `point-N` / `edge-N` / `face-N` / `solid-N` recognisable by kind and selectable as today; a committed `test:webview` case toggles into the mode and screenshots it beside the shaded render for comparison.
 - **Out of scope:** mesh views — shaded/wireframe already cover GiD panels (b)–(d); dimension annotations in the structure view (the annotations feature owns those); per-Part colouring, which stays as it is.
 
-#### 2.11 OpenSCAD include tracking and conversion cache {#openscad-include-tracking-and-cache}
+#### 2.10 OpenSCAD include tracking and conversion cache {#openscad-include-tracking-and-cache}
 
 *Area: Formats. Effort: M.*
 
@@ -382,7 +372,7 @@ These are outcome groupings, not release numbers. Independent small items can sh
 - **Done when:** a second `load_model` on an unchanged model does not spawn `openscad` (a recording stub binary counts spawns); editing an included file reloads an open document; and changing any key input — a dependency's bytes, the backend, a `-D` value — misses the cache.
 - **Out of scope:** a disk cache shared across sessions; caching `.scad` evaluation inside the kernel worker (the [WASM port](#build-and-bundle-an-openscad-wasm-port) owns that path).
 
-#### 2.12 OpenSCAD `color()` and top-level objects become Parts {#openscad-color-parts}
+#### 2.11 OpenSCAD `color()` and top-level objects become Parts {#openscad-color-parts}
 
 *Area: Formats, Parity. Effort: S–M.*
 
@@ -391,7 +381,7 @@ These are outcome groupings, not release numbers. Independent small items can sh
 - **Done when:** a committed two-colour fixture opens with two Parts whose volumes match the analytic values, `check_interference_all` and `generate_bom` work on them with no manual assignment, and a reopen does not duplicate them.
 - **Out of scope:** reading colour for the mesh-export path (that is 2.1's colour question); alpha as transparency in the viewer.
 
-#### 2.13 Section plane and display presets for `render_snapshot` {#render-snapshot-section-and-display}
+#### 2.12 Section plane and display presets for `render_snapshot` {#render-snapshot-section-and-display}
 
 *Area: Parity. Effort: S.*
 
@@ -400,7 +390,7 @@ These are outcome groupings, not release numbers. Independent small items can sh
 - **Done when:** a `clip` snapshot of a hollow fixture shows the cap colour inside the wall (the `test:webview` magenta-cap technique, applied to the headless page), and each display mode renders distinguishably.
 - **Out of scope:** SVG section drawings (the `section` op plus `export_technical_drawing` already cover a 2D cut).
 
-#### 2.14 Clearance (near-miss) reporting in interference checks {#interference-clearance}
+#### 2.13 Clearance (near-miss) reporting in interference checks {#interference-clearance}
 
 *Area: Geometry. Effort: S–M.*
 
@@ -409,7 +399,7 @@ These are outcome groupings, not release numbers. Independent small items can sh
 - **Done when:** two boxes 0.1 mm apart report `clearance` 0.1 and `withinClearance: true` at 0.2 and `false` at 0.05; an AABB-separated pair beyond the clearance is still screened; and the shipped overlap fixture's numbers are unchanged.
 - **Out of scope:** clearance across poses (see [kinematic mates](#kinematic-mates-and-pose-sweeps)).
 
-#### 2.15 Per-Part material density: mass in mass properties and BOM {#per-part-material-density}
+#### 2.14 Per-Part material density: mass in mass properties and BOM {#per-part-material-density}
 
 *Area: Geometry, Parity. Effort: S–M.*
 
@@ -418,7 +408,7 @@ These are outcome groupings, not release numbers. Independent small items can sh
 - **Done when:** a 10 mm steel cube at 7.85 g/cm³ reports 7.85 g, a two-material assembly reports the sum, and a part with no density is reported as missing rather than as zero.
 - **Out of scope:** reading materials from STEP (the [PMI, layers and materials probe](#read-pmi-layers-and-materials-from-step) could seed this field later); density-weighted inertia.
 
-#### 2.16 Quotable entity references for agent chats {#quotable-entity-references}
+#### 2.15 Quotable entity references for agent chats {#quotable-entity-references}
 
 *Area: Parity. Effort: S.*
 
@@ -427,7 +417,7 @@ These are outcome groupings, not release numbers. Independent small items can sh
 - **Done when:** the copied text, pasted to an agent, resolves through `inspect` to the same face, and copying after a topology-changing edit yields the new id.
 - **Out of scope:** a live channel from the viewer to the MCP server.
 
-#### 2.17 Register the MCP server with VS Code and offer client setup snippets {#register-mcp-server-with-vscode}
+#### 2.16 Register the MCP server with VS Code and offer client setup snippets {#register-mcp-server-with-vscode}
 
 *Area: Platform, Ecosystem. Effort: S–M.*
 
@@ -438,7 +428,7 @@ These are outcome groupings, not release numbers. Independent small items can sh
 - **Done when:** in a real VS Code, the server appears in the MCP server list and `describe_capabilities` answers through it; and each snippet, pasted into its client, starts the server (checked at least for Claude Code).
 - **Out of scope:** an HTTP transport (see [Rejected scope](#rejected-scope)); publishing the server as a separate npm package.
 
-#### 2.18 Printability facts report {#printability-facts-report}
+#### 2.17 Printability facts report {#printability-facts-report}
 
 *Area: Geometry. Effort: M.*
 
@@ -454,7 +444,7 @@ These are outcome groupings, not release numbers. Independent small items can sh
 - **Done when:** a fixture with a known 1 mm wall reports 1 mm within the sampling resolution; a box rotated onto its edge reports more overhang than one on its face; and an unmeasured rule is reported as not checked rather than passed.
 - **Out of scope:** slicing and support generation (see [Rejected scope](#rejected-scope)); choosing an orientation for the user.
 
-#### 2.19 Draft and undercut analysis for a pull direction {#draft-and-undercut-analysis}
+#### 2.18 Draft and undercut analysis for a pull direction {#draft-and-undercut-analysis}
 
 *Area: Geometry. Effort: M.*
 
@@ -463,7 +453,7 @@ These are outcome groupings, not release numbers. Independent small items can sh
 - **Done when:** a box reports its four side walls at exactly 0°, a tapered extrusion reports its taper angle, and a pocket under an overhang is reported as an undercut.
 - **Out of scope:** suggesting a parting line; adding draft (the `draft` op is the tool for that, and its kernel limitation is recorded in `CLAUDE.md`).
 
-#### 2.20 Hole callouts and centre lines on drawing sheets {#hole-callouts-on-drawing-sheets}
+#### 2.19 Hole callouts and centre lines on drawing sheets {#hole-callouts-on-drawing-sheets}
 
 *Area: Drawings. Effort: M.*
 
@@ -472,7 +462,7 @@ These are outcome groupings, not release numbers. Independent small items can sh
 - **Done when:** a plate with four M6 tap-drill holes shows one callout and four centre marks in its top view and none in its side view, in both formats.
 - **Out of scope:** thread annotation beyond the designation; GD&T frames.
 
-#### 2.21 Reproducible exports {#reproducible-exports}
+#### 2.20 Reproducible exports {#reproducible-exports}
 
 *Area: Formats. Effort: S.*
 
@@ -481,7 +471,7 @@ These are outcome groupings, not release numbers. Independent small items can sh
 - **Done when:** two deterministic exports of the same model are byte-identical in every format the diff found unstable, and a manifest written with the flag verifies against a re-export.
 - **Out of scope:** making Gmsh or meshio++ output deterministic beyond what they already are (measured in the first step, not assumed).
 
-#### 2.22 Tessellation quality for `compare_models` snapshots {#tessellation-quality-for-compare-models-snapshots}
+#### 2.21 Tessellation quality for `compare_models` snapshots {#tessellation-quality-for-compare-models-snapshots}
 
 *Area: Parity. Effort: S.*
 

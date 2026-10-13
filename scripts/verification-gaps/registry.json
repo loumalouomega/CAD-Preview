@@ -561,6 +561,17 @@
         "Compressed glTF (Draco and meshopt) loads under the real webview CSP"
       ],
       "note": "Seen green in CI (xvfb-run test:integration on a real VS Code, PR #108 head cef56f7). How a 3MF reads in light/high-contrast themes remains a human judgement, not a tested claim."
+    },
+    {
+      "id": "openscad-customizer-panel",
+      "section": "OpenSCAD Customizer panel in the viewer (roadmap \"OpenSCAD Customizer panel in the viewer\")",
+      "gap": "no real Extension Development Host session was run here \u2014 the Apply->conversion->reload round trip through provider.ts, the sidecar watcher reconciliation, and the panel's feel across themes are F5-only; the panel DOM and message shapes are covered over the real bundle by test:webview.",
+      "status": "test-written",
+      "closedBy": [
+        "scad customizer: .scad documentInfo shows the section; other formats keep it hidden",
+        "scad customizer: params + overrides render grouped fields; Apply posts the form values",
+        "scad customizer: Reset posts empty overrides; the hidden attribute genuinely hides the section"
+      ]
     }
   ]
 }

@@ -204,6 +204,7 @@ import {
   annotationsSidecarPath,
   planesSidecarPath,
   meshOptionsSidecarPath,
+  scadOverridesSidecarPath,
   viewStateSidecarPath,
   geoScriptPath,
   saveJournalPath,
@@ -2876,6 +2877,7 @@ export interface WorkspaceModelEntry {
     annotations: boolean;
     planes: boolean;
     meshOptions: boolean;
+    scadParams: boolean;
     viewState: boolean;
     geoScript: boolean;
   };
@@ -2983,6 +2985,7 @@ export async function listWorkspaceModels(params: { root: string }): Promise<{
           annotations: await fileExists(annotationsSidecarPath(filePath)),
           planes: await fileExists(planesSidecarPath(filePath)),
           meshOptions: await fileExists(meshOptionsSidecarPath(filePath)),
+          scadParams: await fileExists(scadOverridesSidecarPath(filePath)),
           viewState: await fileExists(viewStateSidecarPath(filePath)),
           geoScript: await fileExists(geoScriptPath(filePath)),
         },
@@ -6406,7 +6409,7 @@ export async function savePreprocessTool(params: { path: string; outputPath: str
   assertNotSourcePath(modelPath, outputPath);
 
   const sourceName = path.basename(modelPath);
-  const [source, parts, layers, annotations, planes, edits, meshOptions] = await Promise.all([
+  const [source, parts, layers, annotations, planes, edits, meshOptions, scadOverrides] = await Promise.all([
     readModelBytes(modelPath),
     readOptionalFile(partsSidecarPath(modelPath)),
     readOptionalFile(layersSidecarPath(modelPath)),
@@ -6414,12 +6417,13 @@ export async function savePreprocessTool(params: { path: string; outputPath: str
     readOptionalFile(planesSidecarPath(modelPath)),
     readOptionalFile(editsSidecarPath(modelPath)),
     readOptionalFile(meshOptionsSidecarPath(modelPath)),
+    readOptionalFile(scadOverridesSidecarPath(modelPath)),
   ]);
 
   // Per-entry SHA-256 checksums (roadmap "Archive integrity", closed); the
   // generated .geo script is deliberately NOT packaged — see
   // buildPreprocessZip's doc comment.
-  const zipBytes = buildPreprocessZip({ sourceName, source, parts, layers, annotations, planes, edits, meshOptions });
+  const zipBytes = buildPreprocessZip({ sourceName, source, parts, layers, annotations, planes, edits, meshOptions, scadOverrides });
   await fs.writeFile(outputPath, zipBytes);
   return {
     written: outputPath,
@@ -6432,6 +6436,7 @@ export async function savePreprocessTool(params: { path: string; outputPath: str
       planes: planes !== undefined,
       edits: edits !== undefined,
       meshOptions: meshOptions !== undefined,
+      scadOverrides: scadOverrides !== undefined,
     },
     warnings: [],
   };
@@ -6491,6 +6496,9 @@ export async function loadPreprocessTool(params: { zipPath: string; outputPath: 
     // other options write path.
     await writeMeshOptions(outputPath, parseMeshJson(contents.meshOptions));
   }
+  if (contents.scadOverrides !== undefined) {
+    await fs.writeFile(scadOverridesSidecarPath(outputPath), contents.scadOverrides, "utf8");
+  }
 
   return {
     written: outputPath,
@@ -6502,6 +6510,7 @@ export async function loadPreprocessTool(params: { zipPath: string; outputPath: 
       planes: contents.planes !== undefined,
       edits: contents.edits !== undefined,
       meshOptions: contents.meshOptions !== undefined,
+      scadOverrides: contents.scadOverrides !== undefined,
     },
     warnings: [],
   };

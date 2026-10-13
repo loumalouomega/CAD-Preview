@@ -113,7 +113,7 @@ Opening a STEP/IGES/BREP/CSG/SCAD file for the first time (or reopening one afte
 
 ### The Advanced Group
 
-Every section header reads chevron · icon · title, so a collapsed sidebar is still scannable by icon. The sidebar's top level holds only the four sections that **edit** the document — Components, Parts, Edits, FE Mesh. Everything that only *reports* on it, or pulls from a library, lives under a single collapsible **Advanced** group at the bottom:
+Every section header reads chevron · icon · title, so a collapsed sidebar is still scannable by icon. The sidebar's top level holds only the sections that **edit** the document — Components, Parts, Edits, Customizer (`.scad` sources only), FE Mesh. Everything that only *reports* on it, or pulls from a library, lives under a single collapsible **Advanced** group at the bottom:
 
 | Advanced ▸ | Sections |
 | --- | --- |
@@ -576,6 +576,12 @@ The **Variables** table at the top of the Edits panel makes the model parametric
 Expressions support numbers, variable names, `+ - * / ^`, parentheses, `sqrt/abs/min/max/floor/ceil/round`, `sin/cos/tan` (**degrees**, matching the angle fields), and `pi`. A variable's own expression may reference the variables defined **above** it in the table (so `W = L/2` works; reordering isn't supported). Because the fields are free-text, they no longer have browser spinner arrows — type the value.
 
 If an expression can't be evaluated at Apply time (unknown name, syntax error), the apply is blocked with an inline message. If a *referenced* variable is later deleted or renamed, affected operations keep their last computed values — a warning names the missing variable, and re-adding it restores the parametric link. The delete button's tooltip warns when a variable is still referenced. Variables persist in the same `<model>.edits.json` sidecar as the operations ([format](./file-formats.md#parametric-variables)); variable edits are not part of the op undo/redo history.
+
+### OpenSCAD Customizer
+
+The **Customizer** section (below Edits, `.scad` sources only) is the interactive half of the `list_scad_parameters` / `convert_scad` MCP tools: a form over the file's Customizer parameters, so changing a dimension never means editing the source.
+
+Parameters render grouped by their `[Group]` headers as number fields, checkboxes, dropdowns or text fields, each with its declared range and default. Edit the values and click **Apply** — the file is re-evaluated with the values as `-D` overrides and the geometry reloads (with the usual cancellable progress for a slow CGAL conversion). **Reset** clears every override back to the file's authored defaults. The `.scad` itself is never modified; overrides persist in `<model>.scad-params.json` ([format](./file-formats.md#openscad-customizer-overrides-sidecar-modelscad-paramsjson)) and are replayed on every open, including the headless `load_model` / `generate_mesh` / `export_brep` paths. An override that changes a dimension can renumber `edge-N` / `face-N` ids authored against the defaults — Parts and annotations rebind where they can, and the reload says so on the status line instead of claiming verified highlights. The same values reproduce headlessly through `convert_scad`'s `parameters`.
 
 ### Generating an FE Mesh
 

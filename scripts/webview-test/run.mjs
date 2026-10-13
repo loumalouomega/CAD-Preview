@@ -3052,7 +3052,7 @@ test("context menu: Pin note writes a note annotation and the Saved list shows i
 test("collapse: every sidebar section has a working chevron", async (page) => {
   await populate(page);
   const panels = [
-    "tree-panel", "parts-panel", "edits-panel", "meshing-panel",
+    "tree-panel", "parts-panel", "edits-panel", "scad-panel", "meshing-panel",
     "advanced-group",
     "mass-panel",
     "clash-panel", "brep-health-panel",
@@ -3575,6 +3575,73 @@ test("primitives: the hidden attribute genuinely hides the section", async (page
     return el.getBoundingClientRect().height;
   });
   assert(height === 0, `#primitives-panel[hidden] renders nothing (got ${height}px)`);
+});
+
+test("scad customizer: .scad documentInfo shows the section; other formats keep it hidden", async (page) => {
+  await populate(page);
+  const hiddenInitially = await page.evaluate(() => document.getElementById("scad-panel")?.offsetParent !== null);
+  assert(!hiddenInitially, "the Customizer section starts hidden before any documentInfo arrives");
+  await post(page, { type: "documentInfo", name: "model.scad", path: "/tmp/model.scad", format: "scad", dirty: false, unsavedEdits: 0 });
+  await sleep(150);
+  const shown = await page.evaluate(() => document.getElementById("scad-panel")?.offsetParent !== null);
+  assert(shown, "the Customizer section is genuinely rendered for a .scad source");
+  await post(page, { type: "documentInfo", name: "bull.stp", path: "/tmp/bull.stp", format: "step", dirty: false, unsavedEdits: 0 });
+  await sleep(150);
+  const hiddenAgain = await page.evaluate(() => document.getElementById("scad-panel")?.offsetParent !== null);
+  assert(!hiddenAgain, "the Customizer section hides again for a non-scad source");
+});
+
+test("scad customizer: params + overrides render grouped fields; Apply posts the form values", async (page) => {
+  await populate(page);
+  await post(page, { type: "documentInfo", name: "model.scad", path: "/tmp/model.scad", format: "scad", dirty: false, unsavedEdits: 0 });
+  await sleep(150);
+  await post(page, {
+    type: "scadParams",
+    params: [
+      { name: "width", kind: "number", default: 40, group: "Dimensions", hidden: false, line: 3, min: 10, max: 100 },
+      { name: "chamfer", kind: "boolean", default: false, group: "Dimensions", hidden: false, line: 4 },
+      { name: "corner", kind: "string", default: "round", group: "", hidden: false, line: 5, options: [{ value: "round" }, { value: "square", label: "Square corners" }] },
+    ],
+  });
+  await post(page, { type: "scadOverrides", overrides: { width: 60 } });
+  await sleep(200);
+  const view = await page.evaluate(() => ({
+    groups: [...document.querySelectorAll("#scad-body .scad-group")].map((e) => e.textContent),
+    rows: [...document.querySelectorAll("#scad-body .scad-row")].map((r) => r.querySelector(".scad-label")?.textContent ?? ""),
+    widthValue: document.querySelector('[data-scad-name="width"]')?.value ?? null,
+    chamferChecked: document.querySelector('[data-scad-name="chamfer"]')?.checked ?? null,
+    cornerOptions: [...document.querySelectorAll('[data-scad-name="corner"] option')].map((o) => o.textContent),
+    status: document.getElementById("scad-status")?.textContent ?? "",
+  }));
+  assert(view.groups.includes("Dimensions") && view.groups.includes("Parameters"), `params group by [Group] with an ungrouped header (got ${JSON.stringify(view.groups)})`);
+  assert(view.rows.includes("width") && view.rows.includes("chamfer") && view.rows.includes("corner"), `one row per parameter (got ${JSON.stringify(view.rows)})`);
+  assert(view.widthValue === "60", `the persisted override fills the field (got ${JSON.stringify(view.widthValue)})`);
+  assert(view.chamferChecked === false, "a boolean renders as an unchecked checkbox at its default");
+  assert(view.cornerOptions.some((t) => /Square corners/.test(t ?? "")), `option labels render (got ${JSON.stringify(view.cornerOptions)})`);
+  assert(/1 override/.test(view.status), `the status counts the active override (got ${JSON.stringify(view.status)})`);
+  await page.evaluate(() => (window.__sent.length = 0));
+  await page.fill('[data-scad-name="width"]', "70");
+  await page.click("#scad-apply");
+  await sleep(150);
+  const req = await page.evaluate(() => (window.__sent ?? []).filter((m) => m.type === "scadApplyOverrides").at(-1) ?? null);
+  assert(req !== null && req.overrides.width === 70 && req.overrides.chamfer === false, `Apply posts the form values (got ${JSON.stringify(req)})`);
+});
+
+test("scad customizer: Reset posts empty overrides; the hidden attribute genuinely hides the section", async (page) => {
+  await populate(page);
+  await post(page, { type: "documentInfo", name: "model.scad", path: "/tmp/model.scad", format: "scad", dirty: false, unsavedEdits: 0 });
+  await sleep(150);
+  await page.evaluate(() => (window.__sent.length = 0));
+  await page.click("#scad-reset");
+  await sleep(150);
+  const req = await page.evaluate(() => (window.__sent ?? []).filter((m) => m.type === "scadApplyOverrides").at(-1) ?? null);
+  assert(req !== null && Object.keys(req.overrides).length === 0, `Reset posts empty overrides (got ${JSON.stringify(req)})`);
+  const height = await page.evaluate(() => {
+    const el = document.getElementById("scad-panel");
+    el.hidden = true;
+    return el.getBoundingClientRect().height;
+  });
+  assert(height === 0, `#scad-panel[hidden] renders nothing (got ${height}px)`);
 });
 
 test("layers: section renders beside Parts with its own glyph; New posts with the counter", async (page) => {
@@ -6712,7 +6779,7 @@ test("sidebar: every section header carries the same rounded icon tile, between 
   await openAdvanced(page);
   const headers = await page.evaluate(() => {
     const ids = [
-      "tree-header", "parts-header", "layers-header", "edits-header", "meshing-header", "advanced-header", "mass-header",
+      "tree-header", "parts-header", "layers-header", "edits-header", "scad-header", "meshing-header", "advanced-header", "mass-header",
       "clash-header", "brep-health-header", "mesh-health-header", "region-fit-header", "primitives-header", "macros-header", "standard-parts-header",
     ];
     return ids.map((id) => {

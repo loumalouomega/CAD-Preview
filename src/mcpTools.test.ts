@@ -4379,6 +4379,7 @@ describe("save_preprocess", () => {
       planes: false,
       edits: true,
       meshOptions: false,
+      scadOverrides: false,
     });
     expect((await fs.stat(zipOut)).size).toBeGreaterThan(0);
   });
@@ -4418,7 +4419,7 @@ describe("load_preprocess", () => {
     const result = await loadPreprocessTool({ zipPath: zipOut, outputPath: restored });
 
     expect(result.manifestSource).toBe("model.stp");
-    expect(result.restored).toEqual({ parts: true, layers: false, annotations: false, planes: false, edits: true, meshOptions: false });
+    expect(result.restored).toEqual({ parts: true, layers: false, annotations: false, planes: false, edits: true, meshOptions: false, scadOverrides: false });
     expect(await fs.readFile(restored, "utf8")).toBe(await fs.readFile(stpModel, "utf8"));
 
     const restoredEdits = await readEdits(restored);
