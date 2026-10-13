@@ -3,6 +3,7 @@ import { Viewer } from "./viewer";
 import { refreshPalette } from "./palette";
 import { buildEntityReferenceIndex, QUERYABLE_PANEL_FORMS } from "./opCatalog";
 import { hoverContent, inspectorContent, summaryLine } from "./entityExplain";
+import { formatEntityReferences } from "./entityReference";
 import { UI_GLYPHS } from "../uiGlyphs";
 import { MacrosPanel } from "./macrosPanel";
 import { selectionGroupsFor } from "./selectionGroups";
@@ -650,6 +651,9 @@ function renderEditsUi(): void {
   // event) is what keeps `EditsModel.list()`'s deep clone off the pointermove
   // path.
   rebuildEntityRefIndex();
+  // Facts were read against a particular op list; any change to it (even one
+  // that leaves the length equal) makes them unquotable.
+  knownEntityFacts.clear();
   const { values, errors } = evaluateVariables(variablesModel.list());
   const { ops: variableResolved } = resolveEditOps(editsModel.list(), values);
   const { ops } = resolvePlaneRefs(variableResolved, planesModel.list());
@@ -3360,6 +3364,13 @@ function hideInspectorCard(): void {
  * already use. */
 let entityFactsRequestId: string | null = null;
 
+/** What a copied entity reference quotes as the file (from `documentInfo`). */
+let currentDocumentPath = "";
+/** Facts the inspector card has already fetched, with the op-list length they
+ * were read against — a reference quotes them only while that still holds, and
+ * never triggers a fetch of its own. */
+const knownEntityFacts = new Map<string, { facts: EntityFacts; opCount: number }>();
+
 function requestEntityFacts(entityId: string): void {
   if (!inspectorEl) return;
   // Mesh sources have no analytic surface type at all; the host would only
@@ -3731,6 +3742,37 @@ function setupSelectionControls(): void {
       input.focus();
     });
     ctxMenu.append(noteBtn);
+
+    // Copy reference (roadmap "Quotable entity references"): the MCP server runs
+    // in another process and cannot see the selection, so this puts a
+    // self-describing, paste-ready line on the clipboard. The right-clicked
+    // entity, or the whole selection when it is part of one.
+    const refBtn = document.createElement("button");
+    refBtn.id = "ctx-copy-reference";
+    refBtn.setAttribute("role", "menuitem");
+    const picked = selection.list();
+    const refEntities = picked.some((e) => e.entityId === result.entityId) ? picked : [result];
+    refBtn.textContent = refEntities.length > 1 ? `Copy ${refEntities.length} references` : "Copy reference";
+    refBtn.title = "Copy a quotable reference to paste to an agent (file#id, facts, and the op count the id is valid for)";
+    refBtn.addEventListener("click", () => {
+      const opCount = editsModel.list().length;
+      const text = formatEntityReferences(
+        refEntities.map((e) => {
+          const known = knownEntityFacts.get(e.entityId);
+          return {
+            path: currentDocumentPath || "(unsaved document)",
+            entityId: e.entityId,
+            opCount,
+            facts: known && known.opCount === opCount ? known.facts : null,
+          };
+        })
+      );
+      void copyTextToClipboard(text).then((ok) => {
+        setStatus(ok ? `Copied ${refEntities.length === 1 ? "reference" : `${refEntities.length} references`} to ${refEntities[0].entityId}${refEntities.length > 1 ? " …" : ""}` : "Could not copy to the clipboard.", !ok);
+      });
+      closeMenu();
+    });
+    ctxMenu.append(refBtn);
     const sep = document.createElement("div");
     sep.className = "ctx-sep";
     ctxMenu.append(sep);
@@ -5706,6 +5748,7 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
       break;
 
     case "documentInfo": {
+      currentDocumentPath = msg.relativePath ?? msg.path;
       // The menubar's document chip. Everything goes through textContent /
       // title — the name is a filename, i.e. untrusted document-derived text,
       // and must never reach innerHTML. A missing element (a stripped-down
@@ -5935,6 +5978,7 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
         break;
       }
       if (msg.requestId !== entityFactsRequestId) break; // stale — a newer selection superseded it
+      knownEntityFacts.set(msg.facts.entityId, { facts: msg.facts, opCount: editsModel.list().length });
       renderInspectorCard(msg.facts.entityId, msg.facts);
       break;
 

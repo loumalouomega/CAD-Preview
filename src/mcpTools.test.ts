@@ -4146,6 +4146,74 @@ describe("export_mesh", () => {
     expect(stale.checks.find((x) => x.name === "source")?.ok).toBe(true);
   });
 
+  describe("deterministic (roadmap \"Reproducible exports\")", () => {
+    // A fake whose Gmsh output carries the moving model-name counter, the way the real one does.
+    const counting = () => {
+      let n = 0;
+      return fakePipeline({
+        exportMeshFormat: vi.fn(async () => `# vtk DataFile Version 2.0\nmodel-${++n}, Created by Gmsh 5.0.0 \nASCII\n`),
+        exportGeoUnrolled: vi.fn(async () => ({ text: 'Merge "x.xao";\n', xao: new Uint8Array(Buffer.from(`<XAO><geometry name="model-${++n}"></geometry></XAO>`)) })),
+      });
+    };
+
+    it("two deterministic exports are byte-identical (output, XAO companion, manifest); the same pair without the flag is not", async () => {
+      const c = ctx(counting());
+      const out = path.join(dir, "det.vtk");
+      const manifestPath = `${out}.handoff.json`;
+      await exportMeshTool(c, { path: stpModel, format: "vtk", outputPath: out, manifest: true, deterministic: true });
+      const a = [await fs.readFile(out, "utf8"), await fs.readFile(manifestPath, "utf8")];
+      await exportMeshTool(c, { path: stpModel, format: "vtk", outputPath: out, manifest: true, deterministic: true });
+      const b = [await fs.readFile(out, "utf8"), await fs.readFile(manifestPath, "utf8")];
+      expect(b).toEqual(a);
+      const m = JSON.parse(a[1]);
+      expect(m.createdAt).toBeUndefined();
+      expect(m.deterministic).toBe(true);
+      expect(m.exportId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+      expect(a[0]).toContain("model-1, Created by Gmsh");
+
+      // Control: without the flag the same pair differs, in the file and in the manifest.
+      const o2 = path.join(dir, "plain.vtk");
+      await exportMeshTool(c, { path: stpModel, format: "vtk", outputPath: o2, manifest: true });
+      const p1 = [await fs.readFile(o2, "utf8"), JSON.parse(await fs.readFile(`${o2}.handoff.json`, "utf8"))];
+      await exportMeshTool(c, { path: stpModel, format: "vtk", outputPath: o2, manifest: true });
+      const p2 = [await fs.readFile(o2, "utf8"), JSON.parse(await fs.readFile(`${o2}.handoff.json`, "utf8"))];
+      expect(p2[0]).not.toBe(p1[0]);
+      expect(p1[1].createdAt).toEqual(expect.any(String));
+      expect(p1[1].exportId).not.toBe(p2[1].exportId);
+      expect(p1[1].deterministic).toBeUndefined();
+    });
+
+    it("normalises the XAO companion's model name", async () => {
+      const c = ctx(counting());
+      const out = path.join(dir, "det.geo_unrolled");
+      await exportMeshTool(c, { path: stpModel, format: "geoUnrolled", outputPath: out, deterministic: true });
+      const first = await fs.readFile(`${out}.xao`, "utf8");
+      await exportMeshTool(c, { path: stpModel, format: "geoUnrolled", outputPath: out, deterministic: true });
+      expect(await fs.readFile(`${out}.xao`, "utf8")).toBe(first);
+      expect(first).toContain('<geometry name="model-1">');
+    });
+
+    it("forwards the flag to the meshio bridge only when asked, and echoes it", async () => {
+      const c = ctx();
+      const out = path.join(dir, "det.vtu");
+      const plain = await exportMeshTool(c, { path: stpModel, format: "vtu", outputPath: out });
+      expect(vi.mocked(c.pipeline.exportViaMeshio).mock.lastCall![2]).not.toHaveProperty("deterministic");
+      expect(plain).not.toHaveProperty("deterministic");
+      const det = await exportMeshTool(c, { path: stpModel, format: "vtu", outputPath: out, deterministic: true });
+      expect(vi.mocked(c.pipeline.exportViaMeshio).mock.lastCall![2]).toMatchObject({ deterministic: true });
+      expect(det.deterministic).toBe(true);
+    });
+
+    it("check_handoff_manifest accepts a manifest with no createdAt", async () => {
+      const c = ctx();
+      const out = path.join(dir, "det.msh");
+      await exportMeshTool(c, { path: stpModel, format: "msh", outputPath: out, manifest: true, deterministic: true });
+      const r = await checkHandoffManifestTool({ manifestPath: `${out}.handoff.json` });
+      expect(r.current).toBe(true);
+      expect(r.createdAt).toBeNull();
+    });
+  });
+
   it("writes the XAO companion and rewrites the Merge stub for geoUnrolled", async () => {
     const out = path.join(dir, "out.geo_unrolled");
     const result = await exportMeshTool(ctx(), { path: stpModel, format: "geoUnrolled", outputPath: out });

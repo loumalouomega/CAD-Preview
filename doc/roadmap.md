@@ -189,13 +189,13 @@ Two projects built for AI agents were read for this extension:
 | Agent-readable busy errors ("retry, do not edit"); closed vocabularies | Both | Shipped as coded MCP errors: `isError` results carry `structuredContent {code, message, hint?, retryable}`, and an undeclared parameter produces a warning naming the nearest real key (warn-only; strict mode deferred) |
 | "Connect AI" setup snippets; one-install plugin | Both | [Register the MCP server with VS Code](#register-mcp-server-with-vscode) |
 | `ui://` MCP-App inline viewer | Both | [MCP App inline preview](#mcp-app-inline-preview) (probe) |
-| `cad_view` returns the user's selection as quotable refs | text-to-cad | [Quotable entity references](#quotable-entity-references) |
+| `cad_view` returns the user's selection as quotable refs | text-to-cad | [Quotable entity references](#quotable-entity-references) (Copy reference shipped; stored queries remain) |
 | Snapshot presets (xray, hidden-line) and section mode | text-to-cad | Shipped: `render_snapshot` / `screenshot_shape` take all five display modes and an optional section `clip` (the viewer's own clip plane, solid cap included) |
 | `mass_properties` with density | text-to-cad | [Per-Part material density](#per-part-material-density) |
 | dfam-check (overhangs, wall thickness, support, orientations, plate fit) | text-to-cad, ReOpenSCAD (plates) | [Printability facts report](#printability-facts-report) |
 | dfm draft and undercuts | text-to-cad | [Draft and undercut analysis](#draft-and-undercut-analysis) |
 | Engineering-drawing hole callouts, CENTER layer | text-to-cad | [Hole callouts on drawing sheets](#hole-callouts-on-drawing-sheets); the sheet itself ships |
-| Byte-deterministic writers (mesh formats, manifest) | text-to-cad | [Reproducible mesh exports](#reproducible-exports) |
+| Byte-deterministic writers (mesh formats, manifest) | text-to-cad | Shipped — see `CLAUDE.md`'s "Reproducible exports" |
 | Per-solid signed-volume check | text-to-cad | Addendum to [More facts in the B-rep validity report](#more-facts-in-the-b-rep-validity-report) |
 | 3MF export with colour | Both | 3MF geometry shipped; colour remains in [More mesh formats](#more-mesh-formats-through-three-s-bundled-loaders) |
 | STEP from a mesh with merged coplanar faces | ReOpenSCAD | [Planar-facet merging before promotion](#planar-facet-merging-promotion) (probe) |
@@ -362,8 +362,9 @@ These are outcome groupings, not release numbers. Independent small items can sh
 *Area: Parity. Effort: S.*
 
 - **Evidence:** the MCP server runs in a separate process from VS Code, so an agent cannot see what the user selected. Telling it means reading an id off the hover tooltip and typing it. text-to-cad's `cad_view` returns the user's selection as quotable refs (`/abs/path.step#o1.2.f7`), tied to one saved revision with no fuzzy matching.
-- **First useful increment (S):** a **Copy reference** row in the right-click context menu, writing one line per selected entity: the workspace-relative path and id (`examples/STP/bull.stp#face-12`), the `summaryLine` facts the selection pill already computes, and the op-list length the id is valid against. When the selection was made through a stored query, or one can be synthesised (`synthesizeSelector`), the query JSON is appended so the reference survives renumbering. The text says plainly that a bare id is valid only for that op-list length.
-- **Done when:** the copied text, pasted to an agent, resolves through `inspect` to the same face, and copying after a topology-changing edit yields the new id.
+- **Done so far:** a **Copy reference** row in the right-click context menu writes one line per entity — workspace-relative path and id, the pill's facts when already fetched, and the op-list length the id is valid against (`examples/STP/bull.stp#face-12 — planar, 8,119.27 mm² (valid for 3 ops)`). See `CLAUDE.md`'s "Quotable entity references".
+- **What is left (S):** append the stored-query JSON (via `synthesizeSelector`, one `selectorSynthesizeRequest` per copied face that has a producing-op bucket) so the reference survives renumbering.
+- **Done when:** a pasted reference resolves through `inspect` to the same face, and a reference copied for a face with a producing op carries a query that still resolves after an unrelated topology-changing edit.
 - **Out of scope:** a live channel from the viewer to the MCP server.
 
 #### 2.16 Register the MCP server with VS Code and offer client setup snippets {#register-mcp-server-with-vscode}
@@ -410,15 +411,6 @@ These are outcome groupings, not release numbers. Independent small items can sh
 - **First useful increment (M):** for each hole group whose axis is parallel to a view's direction, draw centre marks on its circular edges, and one leader callout per group in the view where the holes appear as circles (`4× Ø6.8 THRU` with the nearest designation, from `holeTable.ts` and `holeStandards.ts`). SVG gets the marks in their own group; DXF gets a new `CENTER` layer beside `0`, `HIDDEN`, `DIMENSIONS`, `BORDER` and `TITLE`. Callouts are facts, never a tolerance class the geometry does not carry.
 - **Done when:** a plate with four M6 tap-drill holes shows one callout and four centre marks in its top view and none in its side view, in both formats.
 - **Out of scope:** thread annotation beyond the designation; GD&T frames.
-
-#### 2.20 Reproducible mesh exports and handoff manifest {#reproducible-exports}
-
-*Area: Formats. Effort: S.*
-
-- **Evidence:** STEP and drawing-sheet exports are now reproducible behind an opt-in `deterministic` flag (IGES and BREP already were) — see `CLAUDE.md`'s "Reproducible exports". What it did **not** cover: `export_mesh` outputs (Gmsh and meshio++ formats were never diffed for moving fields), and the handoff manifest, which still stamps `createdAt` and a random `exportId`, so a manifest written twice is never byte-identical even when its outputs are.
-- **First useful increment (S):** diff each registered mesh export format twice (the probe `scripts/probe/examples/export-determinism.ts` already does the double-export; extend it to `export_mesh`), normalise only fields it finds moving, and give the manifest the flag: omit `createdAt`, derive `exportId` from the output hashes, record `deterministic: true` (optional field, tolerant parse, version unchanged).
-- **Done when:** a manifest written with the flag verifies against a re-export and two deterministic exports are byte-identical in every mesh format the diff found unstable.
-- **Out of scope:** the named-Part STEP path's occasional pcurve-value variation (an OCCT build issue, not a header field).
 
 ### Probe-gated — establish feasibility before estimating
 

@@ -598,6 +598,16 @@
       "section": "Snapshot display modes, section clip, compare_models quality and clearance",
       "gap": "The Clash panel's Clearance field through the real extension host: provider.ts forwarding minClearance to the kernel and validating it, and the near-miss rows in a live webview.",
       "status": "open"
+    },
+    {
+      "id": "quotable-entity-references",
+      "section": "Quotable entity references",
+      "gap": "The host posting documentInfo.relativePath (vscode.workspace.asRelativePath) in a real extension host, as Copy reference quotes it; the webview half is covered over the real bundle.",
+      "status": "test-written",
+      "closedBy": [
+        "Ctrl+S bakes through the same join as Export save-in-place"
+      ],
+      "note": "Assertion added to the existing document-chip case; not seen green here (no VS Code download)."
     }
   ]
 }

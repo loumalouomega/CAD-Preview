@@ -859,6 +859,8 @@ Hovering a row previews through `viewer.renderSelection()` **directly, never int
 is a capture-phase `pointerdown` that `preventDefault()`s, mirroring `dropdownMenu.ts`'s own
 discipline: the click that closes the menu must not also reach the canvas and change the selection.
 
+The menu's second row, **Copy reference** (roadmap "Quotable entity references for agent chats"), formats the right-clicked entity — or the whole selection when it contains it — with the pure `entityReference.ts` (`formatEntityReference`/`formatEntityReferences`): `<path>#<id> [— <descriptor>, <measure>] (valid for <N> ops)`, one line per entity. `<path>` is `documentInfo.relativePath` (falling back to `path`); `<N>` is the full op-list length, the index space `render_ops_prefix` uses. Facts come from a `knownEntityFacts` map filled by `entityFactsResult` and cleared on every `renderEditsUi()`; a copy never issues an `entityFactsRequest`.
+
 The handler's fourth argument is the **world-space hit point**, used by the menu's first row,
 **Pin note…** (roadmap Tier 1 "Parity gaps"), which appears in every pick mode. Clicking it
 replaces the rows with an inline text field (webviews block `prompt()`): Enter pushes a

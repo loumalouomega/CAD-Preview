@@ -33,7 +33,10 @@ export interface ManifestPart {
 export interface HandoffManifest {
   version: number;
   kind: "cad-preview-handoff";
-  createdAt: string;
+  /** Absent in a `deterministic` manifest (an export time would make two otherwise identical manifests differ). */
+  createdAt?: string;
+  /** Present (`true`) when written with the `deterministic` flag: no `createdAt`, and the portable `exportId` is derived from the output hashes. */
+  deterministic?: true;
   source: { path: string; format: string; sha256: string };
   replay: { opCount: number; bakedThrough: number; fingerprint: string; editsBaked: boolean };
   /** Stated once: `meshOptions` sizes are native mm; geometry AND sizes were scaled by `scaleFactor` into `unit` at export. */
@@ -60,7 +63,9 @@ export function replayFingerprint(ops: readonly unknown[], bakedThrough: number)
 }
 
 export interface ManifestInput {
-  createdAt: string;
+  /** Omit for a `deterministic` manifest. */
+  createdAt?: string;
+  deterministic?: boolean;
   source: { path: string; format: string; bytes: Uint8Array };
   ops: readonly unknown[];
   bakedThrough: number;
@@ -102,7 +107,7 @@ export function buildHandoffManifest(input: ManifestInput): HandoffManifest {
   return {
     version: HANDOFF_MANIFEST_VERSION,
     kind: "cad-preview-handoff",
-    createdAt: input.createdAt,
+    ...(input.deterministic ? { deterministic: true as const } : { createdAt: input.createdAt }),
     source: { path: input.source.path, format: input.source.format, sha256: sha256Hex(input.source.bytes) },
     replay: {
       opCount: input.ops.length,
@@ -126,6 +131,19 @@ export function buildHandoffManifest(input: ManifestInput): HandoffManifest {
     },
     notes,
   };
+}
+
+/**
+ * The portable `exportId` of a `deterministic` manifest: a pure function of what
+ * was exported (the output hashes, in order, plus the edit-history fingerprint
+ * and format), so re-exporting the same model yields the same id. UUID-shaped so
+ * a consumer validating the field's format is unaffected.
+ */
+export function deterministicExportId(manifest: Pick<HandoffManifest, "outputs" | "replay">, formatId: string): string {
+  const h = sha256Hex(
+    new TextEncoder().encode(JSON.stringify({ outputs: manifest.outputs.map((o) => o.sha256), replay: manifest.replay.fingerprint, format: formatId }))
+  );
+  return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20, 32)}`;
 }
 
 export function serializeHandoffManifest(m: HandoffManifest): string {

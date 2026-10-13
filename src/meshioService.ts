@@ -1514,7 +1514,22 @@ export interface MeshioExportOptions {
    * factual to record.
    */
   notes?: Array<{ category: string; detail: string }>;
+  /**
+   * Byte-reproducible output (roadmap "Reproducible exports"). meshio++ stamps
+   * the export time into every text format's provenance block (`Timestamp:
+   * <ISO>Z`) and HDF5 containers (MED/CGNS/XDMF's `.h5`/HMF) carry object
+   * timestamps and the checksums over them. Rewriting binary containers by
+   * hand would risk corrupting them, so the clock is pinned instead: `Date.now`
+   * — which the WASM module's `time()`/`clock_gettime` resolve to — reads the
+   * epoch for the duration of the synchronous `convert` call and is restored in
+   * a `finally`. The call is synchronous (no await inside the pinned span) in a
+   * single-threaded worker, so nothing else can observe the patched clock.
+   */
+  deterministic?: boolean;
 }
+
+/** The instant a `deterministic` meshio++ export is stamped with (the epoch, like STEP's fixed header). */
+export const DETERMINISTIC_EXPORT_TIME_MS = 0;
 
 export async function exportViaMeshio(
   gmshMshText: string,
@@ -1529,7 +1544,18 @@ export async function exportViaMeshio(
   const companionPath = companionName ? `/${companionName}` : undefined;
   m.FS.writeFile(inPath, Buffer.from(gmshMshText, "utf8"));
   try {
-    const convert = () => m.convert(inPath, outPath, { inFormat: "gmsh", outFormat: outMeshioFormat });
+    const convertNow = () => m.convert(inPath, outPath, { inFormat: "gmsh", outFormat: outMeshioFormat });
+    const convert = options.deterministic
+      ? () => {
+          const realNow = Date.now;
+          Date.now = () => DETERMINISTIC_EXPORT_TIME_MS;
+          try {
+            convertNow();
+          } finally {
+            Date.now = realNow;
+          }
+        }
+      : convertNow;
     // The scope opens for a source, for notes, or both — notes without a
     // source (a document with no route) still record the conversion chain.
     if (options.source || (options.notes && options.notes.length > 0)) {

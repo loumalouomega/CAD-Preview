@@ -913,6 +913,7 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
         type: "documentInfo" as const,
         name: path.basename(document.uri.fsPath),
         path: document.uri.fsPath,
+        relativePath: vscode.workspace.asRelativePath(document.uri, false),
         format: route?.format ?? null,
         dirty: isDocumentDirty(),
         unsavedEdits: unsavedEditCount(),
