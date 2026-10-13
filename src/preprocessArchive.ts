@@ -4,7 +4,7 @@ import { zipSync, unzipSync, strToU8, strFromU8 } from "fflate";
 /**
  * Pure (vscode-free, but Node-only — never imported by the webview) builder/
  * reader for the "preprocess archive" — a single `.zip` bundling the CAD
- * source file plus whichever of its parts/layers/planes/annotations/edits/mesh-options
+ * source file plus whichever of its parts/layers/planes/annotations/edits/mesh-options/scad-params
  * sidecars currently exist, so the whole working state of a document can be
  * packaged and restored elsewhere. Mirrors the `*Sidecar.ts` convention: this
  * module only holds pure parse/serialize logic; `provider.ts`
@@ -86,6 +86,7 @@ export interface PreprocessArchiveInput {
   planes?: string;
   edits?: string;
   meshOptions?: string;
+  scadOverrides?: string;
 }
 
 export interface PreprocessArchiveContents {
@@ -97,6 +98,7 @@ export interface PreprocessArchiveContents {
   planes?: string;
   edits?: string;
   meshOptions?: string;
+  scadOverrides?: string;
 }
 
 /** Builds a `.zip` containing a `manifest.json` (with per-entry SHA-256
@@ -114,6 +116,7 @@ export function buildPreprocessZip(input: PreprocessArchiveInput): Uint8Array {
   if (input.planes !== undefined) entries[`${input.sourceName}.planes.json`] = strToU8(input.planes);
   if (input.edits !== undefined) entries[`${input.sourceName}.edits.json`] = strToU8(input.edits);
   if (input.meshOptions !== undefined) entries[`${input.sourceName}.mesh.json`] = strToU8(input.meshOptions);
+  if (input.scadOverrides !== undefined) entries[`${input.sourceName}.scad-params.json`] = strToU8(input.scadOverrides);
 
   const checksums: Record<string, string> = {};
   for (const [name, bytes] of Object.entries(entries)) checksums[name] = sha256Hex(bytes);
@@ -208,6 +211,7 @@ export function readPreprocessZip(bytes: Uint8Array): PreprocessArchiveContents 
     planes: readText(`${manifest.source}.planes.json`),
     edits: readText(`${manifest.source}.edits.json`),
     meshOptions: readText(`${manifest.source}.mesh.json`),
+    scadOverrides: readText(`${manifest.source}.scad-params.json`),
   };
 }
 

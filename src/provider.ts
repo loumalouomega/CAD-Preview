@@ -43,8 +43,11 @@ import {
 } from "./protocol";
 import type { CadFormat, FileRoute, MeshParseFormat } from "./fileRouter";
 import { COMPARABLE_MESH_FORMATS, ambiguityCaveatFor, displayOnlyMeshMessage, matchExtension } from "./fileRouter";
-import { resolveEffectiveSource } from "./scadService";
+import { onScadDependencies, resolveEffectiveSource } from "./scadService";
+import { buildPartsFromCsgColors, csgColorPartsNote, type CsgColorGroup } from "./csgColorParts";
 import { readScadSettings } from "./scadSettings";
+import { parseScadParameters, validateScadOverrides } from "./scadParams";
+import type { ScadValue } from "./scadParams";
 import { connectSpaceMouse, disconnectSpaceMouse } from "./spaceMouse";
 import { isMeshioFieldFailure, describeMeshioFieldFailure, isHealableSizeError, AUTO_DECIMATE_TARGET_TRIANGLES, stlBytesForHeal } from "./meshioService";
 import { validateMeshioOpSpec } from "./meshioOps";
@@ -56,6 +59,7 @@ import { readParts, writeParts, sidecarUri } from "./partsStore";
 import { readLayers, writeLayers, layersSidecarUri } from "./layersStore";
 import { readAnnotations, writeAnnotations, annotationsSidecarUri } from "./annotationsStore";
 import { readPlanes, writePlanes, planesSidecarUri } from "./planesStore";
+import { readScadOverrides, writeScadOverrides, scadOverridesSidecarUri } from "./scadOverridesStore";
 import { readEdits, writeEdits, editsSidecarUri } from "./editsStore";
 import { assertNotDirty } from "./dirtyGuard";
 import {
@@ -85,6 +89,7 @@ import { parsePartsJson } from "./partsSidecar";
 import { parseLayersFile, layersWithDefault, resolveLayerDrawFilter, type LayerDrawSubset } from "./layersSidecar";
 import { parseAnnotationsJson } from "./annotationsSidecar";
 import { parsePlanesJson } from "./planesSidecar";
+import { parseScadOverridesJson } from "./scadOverridesSidecar";
 import { isExternalAppend, parseEditsJson, replayTail } from "./editsSidecar";
 import { parseMeshJson } from "./meshOptionsSidecar";
 import { DISPLAY_UNITS, UNIT_LABELS, displayUnitFromUnitName, unitScaleFactor, type DisplayUnit } from "./lengthUnits";
@@ -788,6 +793,7 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
       meshOptionsSidecarUri(modelUri),
       geoScriptUri(modelUri),
       viewStateSidecarUri(modelUri),
+      scadOverridesSidecarUri(modelUri),
     ];
   }
 
@@ -940,6 +946,8 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
     // File-menu "Save" can flush all three sidecars immediately. The webview
     // re-sends these on every change, so these copies are always current.
     let currentParts: Part[] = [];
+    /** Resolves once the `ready` handshake's parts hydration (and selector heal) has run — see `autoCreateCsgColorParts`. */
+    let partsHydration: Promise<unknown> = Promise.resolve();
     // Presentation/drawing layers (roadmap "Layers, distinct from Parts") —
     // same "retained for Save to flush" reason as `currentParts`. Membership
     // rebinds across topology changes like Parts (see `rebindPartsOnChange`);
@@ -957,6 +965,11 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
     // NOT rebound across topology changes: a plane stores resolved vectors,
     // never a live face reference, so replay never renumbers it.
     let currentPlanes: ConstructionPlane[] = [];
+    // OpenSCAD Customizer overrides (roadmap "OpenSCAD Customizer panel in the
+    // viewer") — persisted in `<model>.scad-params.json`, replayed as `-D`
+    // defines on every conversion. Written immediately on Apply (no debounce —
+    // Apply IS the save), so File ▸ Save has nothing to flush for this one.
+    let currentScadOverrides: Record<string, ScadValue> = {};
     let currentMeshOptions: MeshOptions | undefined;
     // The last view state received from the webview (or read from the
     // sidecar), retained for the same "Save flushes everything" reason as
@@ -1511,6 +1524,35 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
      * regardless of `showProgress`, since the underlying race it closes can
      * happen on any of the four call sites, not just the slow ones.
      */
+    /**
+     * Roadmap "OpenSCAD `color()` and top-level objects become Parts" — the
+     * interactive twin of `mcpTools.ts`'s `maybeAutoCreateCsgParts`. When a
+     * `.csg`/`.scad` load reports colour groups, create one Part per distinct
+     * colour — but only into a still-empty parts sidecar (never overwrite or
+     * duplicate), only while no replayed op can renumber the base solids the
+     * groups name, and after the open-time parts hydration has finished (so
+     * the hydration's own `parts` post cannot overwrite this one). Persists
+     * immediately and records the new disk revision so the parts watcher
+     * reads our own write as an echo, not a conflict.
+     */
+    const autoCreateCsgColorParts = async (groups: readonly CsgColorGroup[] | undefined): Promise<void> => {
+      if (!groups || groups.length === 0) return;
+      try {
+        await partsHydration;
+        if (replayTail(currentEdits, currentBakedThrough).length > 0) return;
+        if (currentParts.length > 0 || (await readParts(document.uri)).length > 0) return;
+        const parts = buildPartsFromCsgColors(groups);
+        if (parts.length === 0) return;
+        currentParts = parts;
+        await writeParts(document.uri, parts);
+        revisions.noteSynced("parts", await diskFingerprint("parts"));
+        post({ type: "parts", parts });
+        post({ type: "status", text: csgColorPartsNote(parts.length) });
+      } catch (err) {
+        post({ type: "status", text: `Could not create Parts from color(): ${(err as Error).message}` });
+      }
+    };
+
     const loadModel = (showProgress = false) => {
       if (!route) return;
       if (route.strategy === "three") {
@@ -1559,11 +1601,11 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
                 // that raced the cancel.
                 docPipeline.cancel();
               });
-              await this.handleBRep(document.uri, format, post, resolvedEdits, documentKey, generation, brepLoadGeneration, autoFit, progress, currentBakedThrough, currentEdits.slice(0, currentBakedThrough).map((o) => o.op));
+              await autoCreateCsgColorParts(await this.handleBRep(document.uri, format, post, resolvedEdits, documentKey, generation, brepLoadGeneration, autoFit, progress, currentBakedThrough, currentEdits.slice(0, currentBakedThrough).map((o) => o.op)));
             }
           );
         } else {
-          void this.handleBRep(document.uri, format, post, resolvedEdits, documentKey, generation, brepLoadGeneration, autoFit, undefined, currentBakedThrough, currentEdits.slice(0, currentBakedThrough).map((o) => o.op));
+          void this.handleBRep(document.uri, format, post, resolvedEdits, documentKey, generation, brepLoadGeneration, autoFit, undefined, currentBakedThrough, currentEdits.slice(0, currentBakedThrough).map((o) => o.op)).then(autoCreateCsgColorParts);
         }
       }
     };
@@ -1838,16 +1880,24 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
       });
     };
 
-    watchForExternalChange(document.uri, () => {
-      if (!route) return;
-      // Tier 0: our own in-place save fires this watcher too — skip exactly
-      // one event rather than "reloading" what we just wrote.
-      if (expectOwnSourceSave) {
-        expectOwnSourceSave = false;
-        return;
-      }
+    /**
+     * What happens when the model's geometry inputs changed on disk: reload,
+     * or — with unbaked edits pending — ask first. Shared by the source
+     * watcher and the `.scad` include watchers below, which differ only in
+     * wording and in whether our own in-place save can have caused the event.
+     */
+    const reloadAfterInputChange = (what: string, replaced: string, holder: string): void => {
       if (!isDocumentDirty()) {
-        post({ type: "status", text: "File changed on disk — reloading…" });
+        post({ type: "status", text: `${what} changed on disk — reloading…` });
+        // A `.scad` source change can add, remove or rename Customizer
+        // parameters — re-parse and re-post them alongside the reload so the
+        // panel never shows a stale form.
+        if (route?.format === "scad") {
+          void vscode.workspace.fs.readFile(document.uri).then(
+            (b) => post({ type: "scadParams", params: parseScadParameters(Buffer.from(b).toString("utf8")) }),
+            () => post({ type: "scadParams", params: [] })
+          );
+        }
         loadModel(true);
         return;
       }
@@ -1856,18 +1906,82 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
       // different base is the user's call, not ours.
       void (async () => {
         const choice = await vscode.window.showWarningMessage(
-          `${fileName} was replaced on disk while it has ${unsavedEditCount()} unsaved edit(s). Reload the new file (your edits are kept in the sidecar and replayed over it)?`,
+          `${replaced} was replaced on disk while ${holder} has ${unsavedEditCount()} unsaved edit(s). Reload the new file (your edits are kept in the sidecar and replayed over it)?`,
           {},
           "Reload",
           "Keep editing"
         );
         if (choice === "Reload") {
-          post({ type: "status", text: "File changed on disk — reloading…" });
+          post({ type: "status", text: `${what} changed on disk — reloading…` });
           loadModel(true);
         } else {
-          post({ type: "status", text: "Source changed on disk — still showing the previous version; reopen to load it" });
+          post({ type: "status", text: `${what} changed on disk — still showing the previous version; reopen to load it` });
         }
       })();
+    };
+
+    watchForExternalChange(document.uri, () => {
+      if (!route) return;
+      // Tier 0: our own in-place save fires this watcher too — skip exactly
+      // one event rather than "reloading" what we just wrote.
+      if (expectOwnSourceSave) {
+        expectOwnSourceSave = false;
+        return;
+      }
+      reloadAfterInputChange("File", fileName, "it");
+    });
+
+    // Roadmap "OpenSCAD include tracking and conversion cache": a `.scad` model
+    // that `use`s / `include`s / `import()`s other files must reload when THOSE
+    // change, or the viewer silently shows stale geometry. The file list is
+    // openscad's own `-d` dependency list, announced by `scadService.ts` after
+    // every conversion; we keep exactly one watcher per listed file, diffed on
+    // each announcement. The reload's own conversion re-announces an unchanged
+    // list, so this cannot loop. (The conversion cache validates the same files
+    // by content, so the reload is a real re-evaluation, not a stale hit.)
+    const dependencyWatchers = new Map<string, vscode.Disposable>();
+    const watchDependency = (dep: string): vscode.Disposable => {
+      const watcher = vscode.workspace.createFileSystemWatcher(
+        new vscode.RelativePattern(vscode.Uri.file(path.dirname(dep)), path.basename(dep))
+      );
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const debounced = (): void => {
+        if (timer) clearTimeout(timer);
+        timer = setTimeout(() => {
+          if (route) reloadAfterInputChange(`Included file ${path.basename(dep)}`, `Included file ${path.basename(dep)}`, fileName);
+        }, EXTERNAL_CHANGE_DEBOUNCE_MS);
+      };
+      watcher.onDidChange(debounced);
+      watcher.onDidCreate(debounced);
+      watcher.onDidDelete(debounced);
+      return {
+        dispose: () => {
+          if (timer) clearTimeout(timer);
+          watcher.dispose();
+        },
+      };
+    };
+    const syncDependencyWatchers = (deps: readonly string[]): void => {
+      const wanted = new Set(deps);
+      for (const [dep, w] of dependencyWatchers) {
+        if (!wanted.has(dep)) {
+          w.dispose();
+          dependencyWatchers.delete(dep);
+        }
+      }
+      for (const dep of wanted) {
+        if (!dependencyWatchers.has(dep)) dependencyWatchers.set(dep, watchDependency(dep));
+      }
+    };
+    const stopListeningForDependencies = onScadDependencies((src, deps) => {
+      if (src === path.resolve(document.uri.fsPath)) syncDependencyWatchers(deps);
+    });
+    watcherDisposables.push({
+      dispose: () => {
+        stopListeningForDependencies();
+        for (const w of dependencyWatchers.values()) w.dispose();
+        dependencyWatchers.clear();
+      },
     });
 
     watchSidecar("edits", async () => {
@@ -1984,6 +2098,24 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
       })();
     });
 
+    // OpenSCAD Customizer overrides (roadmap "OpenSCAD Customizer panel in the
+    // viewer"): content-compared like every other sidecar watcher — our own
+    // Apply writes land in memory before they land on disk, so they read as
+    // echoes. An external change adopts + reloads the geometry (the overrides
+    // are the conversion's inputs). No conflict prompt (the `viewState`
+    // precedent): Apply is an explicit write, not a debounced autosave racing
+    // a keystroke, so last-writer-wins is the honest rule.
+    watchForExternalChange(scadOverridesSidecarUri(document.uri), () => {
+      void (async () => {
+        const overrides = await readScadOverrides(document.uri);
+        if (JSON.stringify(overrides) === JSON.stringify(currentScadOverrides)) return;
+        currentScadOverrides = overrides;
+        post({ type: "scadOverrides", overrides: currentScadOverrides });
+        post({ type: "status", text: "Customizer overrides updated externally" });
+        if (route?.format === "scad") loadModel();
+      })();
+    });
+
     webviewPanel.onDidDispose(() => {
       for (const d of watcherDisposables) d.dispose();
       // Fire-and-forget — nothing depends on this settling before the tab
@@ -2089,7 +2221,7 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
         // trip for that route instead (it may need to auto-create Parts from
         // region data first) — calling both would double-post "parts".
         if (!route || route.strategy !== "meshio") {
-          void this.sendParts(document.uri, post).then(async (parts) => {
+          partsHydration = this.sendParts(document.uri, post).then(async (parts) => {
             currentParts = parts;
             // Heal a stale selector cache on open (a part whose query still
             // hits keeps its stored ids; anything else freezes with a status
@@ -2137,6 +2269,25 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
           currentViewState = view ?? undefined;
           post({ type: "viewState", view });
         });
+        // OpenSCAD Customizer (roadmap "OpenSCAD Customizer panel in the
+        // viewer"): params come from the source text (same parseScadParameters
+        // list_scad_parameters uses — no binary needed), overrides from the
+        // sidecar. Posted for a `.scad` document only; anything else leaves
+        // the panel hidden with nothing to hydrate.
+        if (route.format === "scad") {
+          void (async () => {
+            try {
+              const text = Buffer.from(await vscode.workspace.fs.readFile(document.uri)).toString("utf8");
+              post({ type: "scadParams", params: parseScadParameters(text) });
+            } catch {
+              post({ type: "scadParams", params: [] });
+            }
+          })();
+          void readScadOverrides(document.uri).then((overrides) => {
+            currentScadOverrides = overrides;
+            post({ type: "scadOverrides", overrides: currentScadOverrides });
+          });
+        }
         this.sendViewerDefaults(post);
         void this.sendMacros(document.uri, post);
         void this.sendMeshPresets(document.uri, post);
@@ -2203,6 +2354,45 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
             (err) => post({ type: "error", message: `Could not save construction planes: ${(err as Error).message}` })
           );
         }, PARTS_SAVE_DEBOUNCE_MS);
+        return;
+      }
+
+      if (msg.type === "scadApplyOverrides") {
+        // OpenSCAD Customizer Apply (roadmap "OpenSCAD Customizer panel in the
+        // viewer"): validate the form's values against the live source text
+        // (unknown names and wrong types dropped with a warning, out-of-range
+        // applied with a note — the convert_scad rule), persist the validated
+        // set, and reload the geometry with the values as -D overrides. The
+        // source file itself is never written. An override that changes a
+        // dimension can renumber edge-N/face-N ids authored against the
+        // defaults — Parts and annotations go through the existing rebind, but
+        // a changed *base* is outside what entityRebind repairs, so the reload
+        // warns loudly instead of claiming verified highlights.
+        if (!route || route.format !== "scad") return;
+        void (async () => {
+          try {
+            const text = Buffer.from(await vscode.workspace.fs.readFile(document.uri)).toString("utf8");
+            const { defines, warnings } = validateScadOverrides(parseScadParameters(text), msg.overrides);
+            currentScadOverrides = defines;
+            try {
+              await writeScadOverrides(document.uri, currentScadOverrides);
+            } catch (err) {
+              post({ type: "error", message: `Could not save Customizer overrides: ${(err as Error).message}` });
+              return;
+            }
+            post({ type: "scadOverrides", overrides: currentScadOverrides });
+            for (const w of warnings) post({ type: "status", text: w });
+            if (currentParts.length > 0 || currentAnnotations.length > 0) {
+              post({
+                type: "status",
+                text: "Customizer overrides changed the base shape — Part and annotation ids may have shifted; check highlights before meshing.",
+              });
+            }
+            loadModel(true);
+          } catch (err) {
+            post({ type: "error", message: `Could not apply Customizer overrides: ${(err as Error).message}` });
+          }
+        })();
         return;
       }
 
@@ -3478,12 +3668,46 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
       format: CadFormat,
       warnings: string[]
     ): Promise<{ bytes: Uint8Array; format: CadFormat }> {
+      // OpenSCAD Customizer (roadmap "OpenSCAD Customizer panel in the
+      // viewer"): a `.scad` source replays its persisted `<model>.scad-params.json`
+      // overrides as `-D` defines on every conversion — opening, every edit's
+      // re-tessellation, BOM/hole-table/clash/health/measure, meshing and
+      // export. Read from disk (not a closure) so this class-level helper stays
+      // stateless like every other caller; the webview's Apply awaits the
+      // sidecar write before reloading, so a read here sees the new values.
+      // Unknown names and wrong types are dropped with a warning (the
+      // `convert_scad` rule); out-of-range values apply with a note since
+      // OpenSCAD itself does not clamp. The source file itself is never written.
+      let defines: Record<string, ScadValue> | undefined;
+      if (format === "scad") {
+        try {
+          const [textBytes, stored] = await Promise.all([
+            vscode.workspace.fs.readFile(uri).then(
+              (b) => Buffer.from(b).toString("utf8"),
+              () => ""
+            ),
+            readScadOverrides(uri),
+          ]);
+          if (textBytes !== "" && Object.keys(stored).length > 0) {
+            const { defines: validated, warnings: overrideWarnings } = validateScadOverrides(
+              parseScadParameters(textBytes),
+              stored
+            );
+            defines = validated;
+            warnings.push(...overrideWarnings);
+          }
+        } catch {
+          // A failed sidecar/source read degrades to authored defaults — the
+          // conversion itself still runs, never blocked by the overrides.
+        }
+      }
       return resolveEffectiveSource({
         modelPath: uri.fsPath,
         format,
         readBytes: async () => vscode.workspace.fs.readFile(uri),
         warnings,
         ...readScadSettings(),
+        ...(defines && Object.keys(defines).length > 0 ? { defines } : {}),
       });
     }
 
@@ -3507,7 +3731,7 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
      */
     bakedThrough = 0,
     bakedKinds: EditOpKind[] = []
-  ): Promise<void> {
+  ): Promise<CsgColorGroup[] | undefined> {
     try {
       post({ type: "status", text: `Loading ${format.toUpperCase()} kernel…` });
       progress?.report({ message: `Loading ${format.toUpperCase()} kernel…` });
@@ -3597,6 +3821,9 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
           })
           .catch(() => { /* flat tree stays */ });
       }
+      // `.csg`/`.scad` colour groups (undefined for every other source): the
+      // caller decides whether to turn them into Parts.
+      return result.csgColors;
     } catch (err) {
       if (generation !== genHolder.current) return; // superseded or cancelled — see doc comment above
       if (err instanceof JobCancelledError) return; // this document's kernel work was cancelled (Cancel, or the tab closed)
@@ -5137,7 +5364,7 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
           return undefined;
         }
       };
-      const [source, parts, layers, annotations, planes, edits, meshOptions] = await Promise.all([
+      const [source, parts, layers, annotations, planes, edits, meshOptions, scadOverrides] = await Promise.all([
         vscode.workspace.fs.readFile(uri),
         readOptional(sidecarUri(uri)),
         readOptional(layersSidecarUri(uri)),
@@ -5145,8 +5372,9 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
         readOptional(planesSidecarUri(uri)),
         readOptional(editsSidecarUri(uri)),
         readOptional(meshOptionsSidecarUri(uri)),
+        readOptional(scadOverridesSidecarUri(uri)),
       ]);
-      const zipBytes = buildPreprocessZip({ sourceName, source, parts, layers, annotations, planes, edits, meshOptions });
+      const zipBytes = buildPreprocessZip({ sourceName, source, parts, layers, annotations, planes, edits, meshOptions, scadOverrides });
       await vscode.workspace.fs.writeFile(saveUri, zipBytes);
       post({ type: "status", text: `Saved preprocess archive to ${saveUri.fsPath}` });
     } catch (err) {
@@ -5228,6 +5456,9 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
         const options = parseMeshJson(contents.meshOptions);
         await writeMeshOptions(destUri, options);
         await writeGeoScript(destUri, options);
+      }
+      if (contents.scadOverrides !== undefined) {
+        await writeScadOverrides(destUri, parseScadOverridesJson(contents.scadOverrides));
       }
 
       await vscode.commands.executeCommand("vscode.openWith", destUri, CadPreviewProvider.viewType);

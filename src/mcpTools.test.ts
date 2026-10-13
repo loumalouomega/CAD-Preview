@@ -80,7 +80,7 @@ import {
   exportDrawingSheetTool,
   exportSvgSilhouetteTool,
 } from "./mcpTools";
-import { readEdits, readParts, readLayers, readAnnotations, readPlanes, writeAnnotations, writeEdits, editsSidecarPath, geoScriptPath, partsSidecarPath, layersSidecarPath, annotationsSidecarPath, planesSidecarPath } from "./mcpSidecars";
+import { readEdits, readParts, writeParts, readLayers, readAnnotations, readPlanes, writeAnnotations, writeEdits, editsSidecarPath, geoScriptPath, partsSidecarPath, layersSidecarPath, annotationsSidecarPath, planesSidecarPath } from "./mcpSidecars";
 import type { EditOp } from "./editOps";
 import { MESH_EXPORT_FORMATS } from "./meshExportFormats";
 import { BREP_ONLY_OPS, TOPOLOGY_CHANGING_OPS } from "./editOps";
@@ -94,6 +94,7 @@ import type { EntityFacts, MeasureResult, ExactMeasureResult, InterferenceResult
 import type { RenderResult } from "./renderService";
 import type { PartSearchResult, DownloadedPart } from "./stepPartsService";
 import type { Part } from "./protocol";
+import { clearScadConversionCache } from "./scadService";
 import type { OpOutcome } from "./editOps";
 import type { ModelDiff } from "./modelDiff";
 import type { MeshHealthReport, PromoteMeshResult } from "./meshHeal";
@@ -687,6 +688,92 @@ describe("load_model", () => {
       if (saved === undefined) delete process.env.OPENSCAD_BINARY;
       else process.env.OPENSCAD_BINARY = saved;
     }
+  });
+
+  it("a second load_model on an unchanged .scad does not spawn openscad again, and an edited include re-evaluates", async () => {
+    const saved = { bin: process.env.OPENSCAD_BINARY, count: process.env.STUB_COUNT, deps: process.env.STUB_DEPS };
+    const stub = path.join(__dirname, "test-fixtures", "openscad-deps-stub.sh");
+    await fs.chmod(stub, 0o755);
+    const lib = path.join(dir, "lib.scad");
+    const count = path.join(dir, "spawns.txt");
+    await fs.writeFile(lib, "module m() { cube(1); }\n");
+    process.env.OPENSCAD_BINARY = stub;
+    process.env.STUB_COUNT = count;
+    process.env.STUB_DEPS = lib;
+    clearScadConversionCache();
+    const spawns = async (): Promise<number> => (await fs.readFile(count, "utf8").catch(() => "")).split("\n").filter(Boolean).length;
+    try {
+      const c = ctx();
+      await loadModel(c, { path: scadModel });
+      await loadModel(c, { path: scadModel });
+      expect(await spawns()).toBe(1);
+      const calls = (c.pipeline.loadBRep as ReturnType<typeof vi.fn>).mock.calls;
+      expect(Buffer.from(calls[1][1] as Uint8Array).toString()).toBe(Buffer.from(calls[0][1] as Uint8Array).toString());
+      await fs.writeFile(lib, "module m() { cube(2); }\n");
+      await loadModel(c, { path: scadModel });
+      expect(await spawns()).toBe(2);
+      expect(Buffer.from((c.pipeline.loadBRep as ReturnType<typeof vi.fn>).mock.calls[2][1] as Uint8Array).toString()).not.toBe(
+        Buffer.from(calls[0][1] as Uint8Array).toString()
+      );
+    } finally {
+      for (const [k, v] of [["OPENSCAD_BINARY", saved.bin], ["STUB_COUNT", saved.count], ["STUB_DEPS", saved.deps]] as const) {
+        if (v === undefined) delete process.env[k];
+        else process.env[k] = v;
+      }
+      clearScadConversionCache();
+    }
+  });
+
+  describe("color() Parts", () => {
+    const GROUPS = [
+      { color: "#ff0000", solidIds: ["solid-0", "solid-4"] },
+      { color: "#0000ff", solidIds: ["solid-1", "solid-2"] },
+    ];
+    const withColors = () =>
+      ctx(fakePipeline({ loadBRep: vi.fn(async () => ({ ...FAKE_BREP_RESULT, csgColors: GROUPS })) }));
+    let csgModel: string;
+    beforeEach(async () => {
+      csgModel = path.join(dir, "colours.csg");
+      await fs.writeFile(csgModel, "cube(size = [1, 1, 1], center = false);\n");
+    });
+
+    it("creates one Part per colour on first open, says so, and reflects them in sidecars", async () => {
+      const result = await loadModel(withColors(), { path: csgModel });
+      const parts = await readParts(csgModel);
+      expect(parts.map((p) => [p.name, p.volumes])).toEqual([
+        ["Part red", ["solid-0", "solid-4"]],
+        ["Part blue", ["solid-1", "solid-2"]],
+      ]);
+      expect(result.warnings.join(" ")).toMatch(/Created 2 Part\(s\) from color\(\).*no module names/);
+      expect(result.sidecars.parts).toEqual(["Part red", "Part blue"]);
+    });
+
+    it("does not duplicate them on a second open", async () => {
+      await loadModel(withColors(), { path: csgModel });
+      const again = await loadModel(withColors(), { path: csgModel });
+      expect((await readParts(csgModel)).length).toBe(2);
+      expect(again.warnings.join(" ")).not.toMatch(/Created/);
+    });
+
+    it("never overwrites an existing parts sidecar", async () => {
+      await writeParts(csgModel, [{ name: "Mine", color: "#123456", volumes: ["solid-3"], surfaces: [], lines: [], points: [] }]);
+      const result = await loadModel(withColors(), { path: csgModel });
+      expect((await readParts(csgModel)).map((p) => p.name)).toEqual(["Mine"]);
+      expect(result.warnings.join(" ")).not.toMatch(/Created/);
+    });
+
+    it("creates nothing and explains why when edit ops are replayed over the base", async () => {
+      await writeEdits(csgModel, [{ op: "addBox", center: [0, 0, 0], size: [1, 1, 1] }], [], 0);
+      const result = await loadModel(withColors(), { path: csgModel });
+      expect(await readParts(csgModel)).toEqual([]);
+      expect(result.warnings.join(" ")).toMatch(/no Parts were created.*edit op/);
+    });
+
+    it("is silent for a source with no coloured solids", async () => {
+      const result = await loadModel(ctx(), { path: csgModel });
+      expect(await readParts(csgModel)).toEqual([]);
+      expect(result.warnings.join(" ")).not.toMatch(/color\(\)/);
+    });
   });
 
   it("rejects unsupported extensions", async () => {
@@ -4379,6 +4466,7 @@ describe("save_preprocess", () => {
       planes: false,
       edits: true,
       meshOptions: false,
+      scadOverrides: false,
     });
     expect((await fs.stat(zipOut)).size).toBeGreaterThan(0);
   });
@@ -4418,7 +4506,7 @@ describe("load_preprocess", () => {
     const result = await loadPreprocessTool({ zipPath: zipOut, outputPath: restored });
 
     expect(result.manifestSource).toBe("model.stp");
-    expect(result.restored).toEqual({ parts: true, layers: false, annotations: false, planes: false, edits: true, meshOptions: false });
+    expect(result.restored).toEqual({ parts: true, layers: false, annotations: false, planes: false, edits: true, meshOptions: false, scadOverrides: false });
     expect(await fs.readFile(restored, "utf8")).toBe(await fs.readFile(stpModel, "utf8"));
 
     const restoredEdits = await readEdits(restored);

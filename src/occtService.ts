@@ -20,6 +20,7 @@ import { hasTargetQueries } from "./editOps";
 import { resolveOpOperandQueries } from "./opQueryResolve";
 import { parseCsg } from "./csgImport";
 import { buildCsgShape } from "./csgModel";
+import type { CsgColorGroup } from "./csgColorParts";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let _ocPromise: Promise<any> | null = null;
@@ -174,6 +175,12 @@ export interface BRepResult {
    * `format === "csg"` with something to report; every other source omits
    * it, so existing consumers see no shape change. */
   warnings?: string[];
+  /** Roadmap "OpenSCAD `color()` and top-level objects become Parts": for a
+   * `.csg` base shape, one entry per distinct `color()` colour listing the
+   * BASE shape's `solid-N` ids (the numbering before any edit op runs — a
+   * consumer must only use it while no replayed op can renumber solids).
+   * Present only for `format === "csg"` with at least one coloured solid. */
+  csgColors?: CsgColorGroup[];
   /** Roadmap "Post geometry before the XCAF assembly tree": true when the
    * call deferred the STEP assembly read (`deferAssemblyTree`), so `tree` is
    * the FLAT per-solid list and the caller should follow up with
@@ -246,6 +253,8 @@ export interface BRepCacheEntry {
    * {@link BRepResult.warnings}) — carried so the append-reuse path still
    * reports them without rebuilding. Empty for every other format. */
   warnings: string[];
+  /** `.csg` colour groups for the BASE shape (see {@link BRepResult.csgColors}), carried like `warnings`. */
+  csgColors: CsgColorGroup[];
 }
 
 function bytesEqual(a: Uint8Array, b: Uint8Array): boolean {
@@ -350,18 +359,21 @@ export async function loadBRepCached(
   let baseCleanup: Array<{ delete(): void }>;
   let assemblyTreeCache: XcafAssemblyInfo | null | undefined;
   let baseWarnings: string[];
+  let baseCsgColors: CsgColorGroup[];
   if (baseReusable && previous) {
     baseShape = previous.baseShape;
     baseCleanup = previous.baseCleanup;
     assemblyTreeCache = previous.assemblyTreeCache;
     baseWarnings = previous.warnings;
+    baseCsgColors = previous.csgColors;
   } else {
     baseCleanup = [];
     baseWarnings = [];
+    baseCsgColors = [];
     const tmpName = `/in.${format}`;
     oc.FS.writeFile(tmpName, bytes);
     try {
-      baseShape = readShape(oc, tmpName, format, baseCleanup, baseWarnings);
+      baseShape = readShape(oc, tmpName, format, baseCleanup, baseWarnings, baseCsgColors);
       // Independent second parse, only for STEP — see xcafTree.ts's doc
       // comment for why this can't reuse `baseShape`/the plain reader's
       // shape. Best-effort: any failure degrades to `null` (flat tree),
@@ -450,10 +462,11 @@ export async function loadBRepCached(
     // The cache stores the FOLDED list (resolved ops for query documents) —
     // the append check above compares against it, so a query document's next
     // call (whose sidecar ops still carry queries) correctly misses.
-    const cache: BRepCacheEntry = { ocInstance: oc, bytes, format, baseShape, baseCleanup, assemblyTreeCache, treeGroups: summarizeGroups(groups), solidSigs, ops: foldOps, shape, opsCleanup, opOutcomes, opBuckets, guideCollector, guideIds, pointRefs, warnings: baseWarnings };
+    const cache: BRepCacheEntry = { ocInstance: oc, bytes, format, baseShape, baseCleanup, assemblyTreeCache, treeGroups: summarizeGroups(groups), solidSigs, ops: foldOps, shape, opsCleanup, opOutcomes, opBuckets, guideCollector, guideIds, pointRefs, warnings: baseWarnings, csgColors: baseCsgColors };
     const result: BRepResult = { groups, edges, points, tree, opOutcomes, opBuckets, guideIds, queryWarnings };
     if (pointRefs.length > 0) result.pointRefs = pointRefs;
     if (baseWarnings.length > 0) result.warnings = [...baseWarnings];
+    if (baseCsgColors.length > 0) result.csgColors = baseCsgColors.map((g) => ({ color: g.color, solidIds: [...g.solidIds] }));
     if (assemblyTreeCache === undefined) result.assemblyPending = true;
     return { result, cache };
   } catch (err) {
@@ -482,7 +495,8 @@ export async function loadBRep(
   const cleanup: Array<{ delete(): void }> = [];
   try {
     const baseWarnings: string[] = [];
-    const baseShape = readShape(oc, tmpName, format, cleanup, baseWarnings);
+    const baseCsgColors: CsgColorGroup[] = [];
+    const baseShape = readShape(oc, tmpName, format, cleanup, baseWarnings, baseCsgColors);
     const assemblyTreeCache = format === "step" ? readXcafAssembly(oc, tmpName) : null;
     const opOutcomes: OpOutcome[] = [];
     const opBuckets: OpBucket[] = [];
@@ -508,6 +522,7 @@ export async function loadBRep(
     const result: BRepResult = { groups, edges, points, tree, opOutcomes, opBuckets, guideIds, queryWarnings };
     if (pointRefs.length > 0) result.pointRefs = pointRefs;
     if (baseWarnings.length > 0) result.warnings = [...baseWarnings];
+    if (baseCsgColors.length > 0) result.csgColors = baseCsgColors;
     return result;
   } catch (err) {
     throw wrapOcctFault(err);
@@ -648,7 +663,7 @@ function attachFaceCounts(groups: TreeGroupSummary[], node: TreeNode): TreeNode 
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-export function readShape(oc: any, filePath: string, format: string, cleanup: Array<{ delete(): void }>, csgWarnings?: string[]): any {
+export function readShape(oc: any, filePath: string, format: string, cleanup: Array<{ delete(): void }>, csgWarnings?: string[], csgColors?: CsgColorGroup[]): any {
   const retDone = oc.IFSelect_ReturnStatus.IFSelect_RetDone.value;
 
   // OpenSCAD `.csg` (path (a) of the OpenSCAD support feature): the MEMFS
@@ -666,7 +681,7 @@ export function readShape(oc: any, filePath: string, format: string, cleanup: Ar
     }
     const parsed = parseCsg(text);
     const warnings = csgWarnings ?? [];
-    return buildCsgShape(oc, parsed.roots, parsed.warnings, parsed.useMaxFN, cleanup, warnings);
+    return buildCsgShape(oc, parsed.roots, parsed.warnings, parsed.useMaxFN, cleanup, warnings, csgColors);
   }
 
   if (format === "step") {

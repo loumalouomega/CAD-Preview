@@ -3,8 +3,8 @@
  * `editsStore.ts` / `partsStore.ts` / `meshOptionsStore.ts` (which wrap the
  * same pure parsers in `vscode.workspace.fs`). Must stay byte-compatible with
  * what `provider.ts` reads on reopen: same `<model>.edits.json` /
- * `.parts.json` / `.layers.json` / `.planes.json` / `.mesh.json` / `.geo` filenames, same tolerant-read
- * defaults, same one-way `.geo` regeneration on every options write.
+ * `.parts.json` / `.layers.json` / `.planes.json` / `.mesh.json` / `.geo` / `.scad-params.json`
+ * filenames, same tolerant-read defaults, same one-way `.geo` regeneration on every options write.
  */
 import { bundledSheetTemplatesPath, parseSheetTemplatesJson, serializeSheetTemplatesJson, type SheetTemplateLibrary } from "./sheetTemplates";
 import * as fs from "fs/promises";
@@ -17,6 +17,8 @@ import { parsePartsJson, serializePartsJson } from "./partsSidecar";
 import { parseLayersFile, serializeLayersJson } from "./layersSidecar";
 import { parseAnnotationsJson, serializeAnnotationsJson } from "./annotationsSidecar";
 import { parsePlanesJson, serializePlanesJson } from "./planesSidecar";
+import { parseScadOverridesJson } from "./scadOverridesSidecar";
+import type { ScadValue } from "./scadParams";
 import { DEFAULT_MESH_OPTIONS, type MeshOptions } from "./meshOptions";
 import { parseMeshJson, serializeMeshJson, generateGeoScript } from "./meshOptionsSidecar";
 import { parseScriptLibraryJson, serializeScriptLibraryJson, type ScriptLibrary } from "./scriptLibrary";
@@ -54,6 +56,15 @@ export function planesSidecarPath(modelPath: string): string {
 
 export function meshOptionsSidecarPath(modelPath: string): string {
   return `${modelPath}.mesh.json`;
+}
+
+/** `<model>.scad-params.json` — OpenSCAD Customizer overrides (roadmap "OpenSCAD Customizer panel in the viewer").
+ * Read-only over MCP (no tool writes it — `convert_scad` takes per-call
+ * `parameters` instead); declared here so every companion filename has ONE
+ * derivation point — `list_workspace_models` presence and `save_preprocess`
+ * read from here rather than hand-concatenating a string that could drift. */
+export function scadOverridesSidecarPath(modelPath: string): string {
+  return `${modelPath}.scad-params.json`;
 }
 
 export function geoScriptPath(modelPath: string): string {
@@ -170,6 +181,16 @@ export async function readMeshOptions(modelPath: string): Promise<MeshOptions> {
     return parseMeshJson(text);
   } catch {
     return DEFAULT_MESH_OPTIONS;
+  }
+}
+
+/** Reads + validates the OpenSCAD Customizer overrides sidecar; `{}` when missing or unreadable. */
+export async function readScadOverrides(modelPath: string): Promise<Record<string, ScadValue>> {
+  try {
+    const text = await fs.readFile(scadOverridesSidecarPath(modelPath), "utf8");
+    return parseScadOverridesJson(text);
+  } catch {
+    return {};
   }
 }
 

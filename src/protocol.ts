@@ -25,6 +25,7 @@ import type { MeshSweepRun } from "./meshSweep";
 import type { HoleTableRow } from "./holeTable";
 import type { AnnotatedTolerance } from "./toleranceBand";
 import type { SelectorQuery } from "./selectorQuery";
+import type { ScadParameter, ScadValue } from "./scadParams";
 
 export type { EditOp } from "./editOps";
 export type { ParamVariable } from "./editVariables";
@@ -487,6 +488,17 @@ export type HostToWebview =
    * Applied silently by `PlanesModel.load()` (no `onChange` echo), the same
    * contract `"parts"`/`"annotations"` rely on to avoid a write loop. */
   | { type: "planes"; planes: ConstructionPlane[] }
+  /** OpenSCAD Customizer parameters for a `.scad` source (roadmap "OpenSCAD
+   * Customizer panel in the viewer") — the host parses the source text with
+   * the same `parseScadParameters` `list_scad_parameters` uses and posts the
+   * result. Sent on `ready` for a `.scad` document and whenever the source
+   * file changes externally. Never sent for any other format. */
+  | { type: "scadParams"; params: ScadParameter[] }
+  /** Full replacement of the document's Customizer overrides — sent on the
+   * `ready` handshake and whenever `<model>.scad-params.json` changes
+   * externally. Applied silently (no echo), the same contract `"parts"`
+   * relies on to avoid a write loop. Only meaningful for a `.scad` source. */
+  | { type: "scadOverrides"; overrides: Record<string, ScadValue> }
   | {
       type: "edits";
       ops: EditOp[];
@@ -840,6 +852,14 @@ export type WebviewToHost =
   | { type: "layersChanged"; layers: Layer[]; nextId: number }
   | { type: "annotationsChanged"; annotations: Annotation[] }
   | { type: "planesChanged"; planes: ConstructionPlane[] }
+  /** OpenSCAD Customizer Apply (roadmap "OpenSCAD Customizer panel in the
+   * viewer"): the panel's current field values. The host validates them with
+   * `validateScadOverrides` (unknown names and wrong types dropped with a
+   * warning, out-of-range applied with a note — the `convert_scad` rule),
+   * persists the validated set to `<model>.scad-params.json`, and reloads the
+   * geometry through `resolveEffectiveSource` with the values as `-D`
+   * overrides. The source file itself is never written. */
+  | { type: "scadApplyOverrides"; overrides: Record<string, unknown> }
   | { type: "editsChanged"; ops: EditOp[]; variables: ParamVariable[] }
   | { type: "viewChanged"; view: ViewState }
   | { type: "openFile" }

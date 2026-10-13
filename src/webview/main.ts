@@ -49,6 +49,8 @@ import { MeshHealthPanel } from "./meshHealthPanel";
 import { BrepHealthPanel } from "./brepHealthPanel";
 import { RegionFitPanel } from "./regionFitPanel";
 import { PrimitivePanel } from "./primitivePanel";
+import { ScadCustomizerPanel } from "./scadCustomizerPanel";
+import type { ScadParameter, ScadValue } from "../scadParams";
 import { PassagesPanel } from "./passagesPanel";
 import { emitPrimitiveOps } from "../primitiveEmit";
 import { fitConstructionPlane, fitOpForKind, fitStoreWarning } from "../fitMapping";
@@ -2002,6 +2004,37 @@ function setPrimitivesEligible(eligible: boolean): void {
   if (!eligible) {
     primitiveRecognizeRequestId = null;
     lastPrimitiveReport = null;
+  }
+}
+
+// ── OpenSCAD Customizer (roadmap "OpenSCAD Customizer panel in the viewer") ─
+// Interactive half of list_scad_parameters/convert_scad. The host parses the
+// `.scad` source text (same parseScadParameters) and posts params + persisted
+// overrides; Apply posts the form's values back for validation, persistence
+// and a geometry reload. The source file itself is never written.
+let lastScadParams: ScadParameter[] = [];
+let lastScadOverrides: Record<string, ScadValue> = {};
+let currentFormat: import("../fileRouter").CadFormat | null = null;
+
+const scadPanel = new ScadCustomizerPanel(document.getElementById("scad-panel")!, {
+  onApply: (overrides) => {
+    scadPanel.setBusy(true);
+    scadPanel.setStatus("Applying…");
+    post({ type: "scadApplyOverrides", overrides });
+  },
+  onReset: () => {
+    scadPanel.setBusy(true);
+    scadPanel.setStatus("Resetting…");
+    post({ type: "scadApplyOverrides", overrides: {} });
+  },
+});
+
+function setScadEligible(): void {
+  const eligible = currentFormat === "scad";
+  scadPanel.setEligible(eligible);
+  if (!eligible) {
+    lastScadParams = [];
+    lastScadOverrides = {};
   }
 }
 
@@ -5416,6 +5449,7 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
         renderAnnotationsList(); // detached status may have changed for the new model
         renderEditsUi(); // re-render the history with the fresh per-op outcome markers
         flashExternalEdits();
+        scadPanel.setBusy(false); // a Customizer Apply's reload landed
         setSelectableModes(["volume", "surface", "line", "point"]);
         editsPanel.setBRepOnly(true); // fillet/chamfer available for B-rep
         sourceKind = "brep";
@@ -5470,6 +5504,27 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
       if (editsModel.list().some((o) => (o as unknown as Record<string, unknown>).planeId)) {
         renderEditsUi();
         if (pristineMesh) rebuildMeshModel();
+      }
+      break;
+
+    case "scadParams":
+      // Silent hydration — the host parsed the `.scad` source text with the
+      // same parseScadParameters list_scad_parameters uses. Never echoed back.
+      lastScadParams = msg.params;
+      if (currentFormat === "scad") scadPanel.render(lastScadParams, lastScadOverrides);
+      break;
+
+    case "scadOverrides":
+      // Silent hydration (initial load or an external sidecar change) — does
+      // not echo back as a write, same contract as "parts"/"planes".
+      lastScadOverrides = { ...msg.overrides };
+      if (currentFormat === "scad") {
+        scadPanel.render(lastScadParams, lastScadOverrides);
+        scadPanel.setStatus(
+          Object.keys(lastScadOverrides).length > 0
+            ? `${Object.keys(lastScadOverrides).length} override(s) active`
+            : ""
+        );
       }
       break;
 
@@ -5581,6 +5636,7 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
 
     case "error":
       setStatus(msg.message, true);
+      scadPanel.setBusy(false); // a Customizer Apply's conversion failed — re-enable the form
       break;
 
     case "editError":
@@ -5643,6 +5699,8 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
       // title — the name is a filename, i.e. untrusted document-derived text,
       // and must never reach innerHTML. A missing element (a stripped-down
       // harness) is a no-op rather than a throw, like every other setup here.
+      currentFormat = msg.format;
+      setScadEligible();
       const chip = document.getElementById("doc-chip");
       const name = document.getElementById("doc-chip-name");
       const format = document.getElementById("doc-chip-format");
