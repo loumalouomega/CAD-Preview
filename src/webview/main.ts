@@ -4594,7 +4594,7 @@ function setupAppearanceControls(): AppearanceControlsHandle {
   });
 
   // Display mode replaces the old standalone Wireframe toolbar toggle —
-  // Shaded/Wireframe are two of five mutually exclusive states now (see
+  // Shaded/Wireframe are two of six mutually exclusive states now (see
   // src/webview/displayMode.ts). A material-affecting switch (Flat swaps the
   // active material instance) needs colours/selection re-applied afterward —
   // refreshColors() already does both, the same contract setModel() relies on.
@@ -4603,6 +4603,8 @@ function setupAppearanceControls(): AppearanceControlsHandle {
     viewer.setDisplayMode(mode);
     refreshColors();
     for (const b of modeBtns) b.classList.toggle("active", b.dataset.mode === mode);
+    const legend = document.getElementById("geometry-legend");
+    if (legend) legend.hidden = mode !== "geometry";
   };
   for (const btn of modeBtns) {
     btn.addEventListener("click", () => {

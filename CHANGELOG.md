@@ -4,6 +4,12 @@ All notable changes to the "CAD Preview" extension are documented in this file.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/); this project does not yet strictly follow Semantic Versioning (pre-1.0 releases moved fast and bundled multiple features per bump).
 
+## [Unreleased]
+
+### Added
+
+- **Geometry display mode (roadmap 2.9).** A sixth Display mode shows the B-rep structure GiD-style: faint faces, through-solid edges, enlarged point markers, a bounding shell per solid in a stable colour, and a legend. Webview-only; selection is unchanged.
+
 ## [3.16.0] - 2026-10-14
 
 ### Added

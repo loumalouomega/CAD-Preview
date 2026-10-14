@@ -133,7 +133,7 @@ Ids are never reused — the next is the highest existing N plus one — so dele
 ### `ViewState`
 
 ```typescript
-type DisplayMode = 'shaded' | 'wireframe' | 'xray' | 'hiddenLines' | 'flat'
+type DisplayMode = 'shaded' | 'wireframe' | 'xray' | 'hiddenLines' | 'flat' | 'geometry'
 type ClipAxis = 'x' | 'y' | 'z'
 
 interface ClipPlaneState {

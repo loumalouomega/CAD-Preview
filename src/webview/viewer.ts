@@ -19,6 +19,7 @@ import type { MeasurementPick } from "./measurementState";
 import { drawLabel } from "./labelOverlay";
 import { compositeCanvas } from "./canvasComposite";
 import { type DisplayMode } from "./displayMode";
+import { GEOMETRY_FACE_OPACITY, GEOMETRY_POINT_SCALE, solidColor, solidIndexOf } from "./geometryStyle";
 import {
   computePaneRects,
   glViewportForPane,
@@ -277,6 +278,9 @@ export class Viewer {
    * `meshOverlay`/`measurementOverlay`), built on demand and torn down the
    * moment the mode changes or the model reloads. See `setDisplayMode()`. */
   private hiddenLineGhosts: THREE.Group | null = null;
+  /** Geometry display mode's structure overlay (edge lines + per-solid bounding
+   * shells); a scene sibling of `model` like `hiddenLineGhosts`, so unpickable. */
+  private geometryOverlay: THREE.Group | null = null;
   /** The Markup annotation overlay's `<canvas>` (owned/drawn-to by
    * `main.ts`'s `setupMarkupControls()` — `Viewer` only needs a reference to
    * composite it into a screenshot; see `captureScreenshotBase64()`). `null`
@@ -737,6 +741,7 @@ export class Viewer {
   private clearModel(): void {
     if (!this.model) return;
     this.clearHiddenLineGhosts(); // references the model's edge geometries, about to be disposed
+    this.clearGeometryOverlay();
     this.clearClipCap(); // ditto — its stencil markers reference the model's face geometries
     this.scene.remove(this.model);
     this.model.traverse((obj) => {
@@ -993,7 +998,7 @@ export class Viewer {
     this.pointSpriteScale = radius * 0.01;
     this.model?.traverse((obj) => {
       if (obj instanceof THREE.Sprite && obj.userData.entityType === "point") {
-        obj.scale.setScalar(this.pointSpriteScale);
+        obj.scale.setScalar(this.pointSpriteScale * (this.displayMode === "geometry" ? GEOMETRY_POINT_SCALE : 1));
       }
     });
 
@@ -1547,6 +1552,7 @@ export class Viewer {
     this.meshOverlay?.traverse(apply);
     this.worstElementsOverlay?.traverse(apply);
     this.hiddenLineGhosts?.traverse(apply);
+    this.geometryOverlay?.traverse(apply);
     this.colorFieldOverlay?.traverse(apply);
     this.opPreview?.traverse(apply); // a clipped model clips its preview the same way
   }
@@ -2164,6 +2170,7 @@ export class Viewer {
 
     // Ghost lines and the clip cap are cheap, idempotent rebuilds.
     if (this.displayMode === "hiddenLines") this.buildHiddenLineGhosts();
+    if (this.displayMode === "geometry") this.buildGeometryOverlay();
     if (this.clipCap) this.rebuildClipCap();
 
     this.requestRender();
@@ -2250,11 +2257,104 @@ export class Viewer {
     this.applyClippingPlane();
     if (this.displayMode === "hiddenLines") this.buildHiddenLineGhosts();
     else this.clearHiddenLineGhosts();
+    if (this.displayMode === "geometry") this.buildGeometryOverlay();
+    else this.clearGeometryOverlay();
+    this.applyGeometryPoints();
+  }
+
+  /** Geometry mode draws point markers larger and through solids; every other
+   * mode restores the depth-tested `pointSpriteScale` size `frame()` set. */
+  private applyGeometryPoints(): void {
+    const geometry = this.displayMode === "geometry";
+    this.model?.traverse((obj) => {
+      if (!(obj instanceof THREE.Sprite) || obj.userData.entityType !== "point") return;
+      obj.scale.setScalar(this.pointSpriteScale * (geometry ? GEOMETRY_POINT_SCALE : 1));
+      const mat = obj.material as THREE.SpriteMaterial;
+      mat.depthTest = !geometry;
+      mat.needsUpdate = true;
+      obj.renderOrder = geometry ? 10 : 0;
+    });
+  }
+
+  /**
+   * The Geometry display mode's skeletal overlay: every edge redrawn opaque
+   * and through the faces (their fill is near-transparent here), plus one
+   * bounding shell per solid in that solid's stable colour so volumes read as
+   * distinct objects. Shares edge geometry with the real lines (dispose only
+   * materials) and is a scene sibling of `model`, hence never picked.
+   */
+  private buildGeometryOverlay(): void {
+    this.clearGeometryOverlay();
+    if (!this.model) return;
+    const group = new THREE.Group();
+    const solidBoxes = new Map<string, THREE.Box3>();
+    this.model.traverse((obj) => {
+      if (obj instanceof THREE.Line && obj.userData.entityType === "line") {
+        const mat = new THREE.LineBasicMaterial({
+          color: paletteColor("geometryEdge"),
+          depthTest: false,
+          depthWrite: false,
+        });
+        const line = new THREE.Line(obj.geometry, mat);
+        line.renderOrder = 5;
+        group.add(line);
+      } else if (obj instanceof THREE.Mesh && obj.userData.entityType === "surface") {
+        const gid = String(obj.userData.groupId ?? "default");
+        obj.geometry.computeBoundingBox();
+        const bb = obj.geometry.boundingBox;
+        if (!bb) return;
+        const box = solidBoxes.get(gid) ?? new THREE.Box3().makeEmpty();
+        box.union(bb);
+        solidBoxes.set(gid, box);
+      }
+    });
+    for (const [gid, box] of solidBoxes) {
+      if (box.isEmpty()) continue;
+      const shell = new THREE.Box3Helper(box, new THREE.Color(solidColor(solidIndexOf(gid))));
+      const mat = shell.material as THREE.LineBasicMaterial;
+      mat.depthTest = false;
+      mat.transparent = true;
+      mat.opacity = 0.6;
+      shell.renderOrder = 4;
+      shell.userData.geometryShell = gid;
+      group.add(shell);
+    }
+    // Edge geometry is in model space; follow the model's up-axis rotation.
+    group.position.copy(this.model.position);
+    group.rotation.copy(this.model.rotation);
+    group.scale.copy(this.model.scale);
+    this.geometryOverlay = group;
+    this.scene.add(group);
+    this.applyClippingPlane();
+  }
+
+  private clearGeometryOverlay(): void {
+    if (!this.geometryOverlay) return;
+    this.scene.remove(this.geometryOverlay);
+    this.geometryOverlay.traverse((obj) => {
+      // Edge geometry is shared with the real lines — dispose materials (and
+      // the shells' own geometry, which is not shared) only.
+      if (obj.userData.geometryShell !== undefined) (obj as THREE.Mesh).geometry?.dispose();
+      const mat = (obj as THREE.Line).material as THREE.Material | undefined;
+      mat?.dispose();
+    });
+    this.geometryOverlay = null;
+  }
+
+  /** Test/diagnostic accessor: how many edge lines and solid shells the Geometry overlay holds. */
+  getGeometryOverlayCounts(): { edges: number; shells: number } {
+    let edges = 0, shells = 0;
+    this.geometryOverlay?.children.forEach((c) => {
+      if (c.userData.geometryShell !== undefined) shells++;
+      else edges++;
+    });
+    return { edges, shells };
   }
 
   /** X-Ray's extra opacity multiplier, composed into `highlightGroup()`'s
    * `baseOpacity` formula — see `setDisplayMode()`'s doc comment. */
   private displayOpacityFactor(): number {
+    if (this.displayMode === "geometry") return GEOMETRY_FACE_OPACITY;
     return this.displayMode === "xray" ? 0.35 : 1;
   }
 
