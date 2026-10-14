@@ -545,7 +545,7 @@ Sent alongside (or shortly after) `geometry` for B-rep files. Also sent for Thre
 
 ### `loadUrl`
 
-Sent for mesh-format files (STL/OBJ/PLY/glTF/3MF). The `url` is a `vscode-webview://` URI produced by `webview.asWebviewUri(uri)`. The webview calls `loadMeshFromUrl(url, format)`.
+Sent for mesh-format files (STL/OBJ/PLY/glTF/3MF/Collada). The `url` is a `vscode-webview://` URI produced by `webview.asWebviewUri(uri)`. The webview calls `loadMeshFromUrl(url, format)`.
 
 ```json
 {

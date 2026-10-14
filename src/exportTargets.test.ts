@@ -96,6 +96,26 @@ describe("3MF as a display-only mesh format", () => {
   });
 });
 
+describe("Collada as an import-only, display-only mesh format", () => {
+  it("offers every mesh export format for a .dae source, with no save-in-place", () => {
+    const all = ["stl", "obj", "ply", "gltf", "3mf"];
+    expect(exportTargetsFor({ strategy: "three", format: "dae" })).toEqual(all);
+    expect(exportTargetsFor({ strategy: "three", format: "dae" }, true)).toEqual(all);
+    expect(MESH_SAVE_IN_PLACE_FORMATS.has("dae")).toBe(false);
+  });
+
+  it("is never an export target for any other source (there is no Collada writer)", () => {
+    for (const route of [
+      { strategy: "occt", format: "step" },
+      { strategy: "three", format: "stl" },
+      { strategy: "three", format: "3mf" },
+    ] as const) {
+      expect(exportTargetsFor(route, true)).not.toContain("dae");
+    }
+    expect(UNIT_CONVERTIBLE_FORMATS.has("dae")).toBe(false);
+  });
+});
+
 describe("UNIT_CONVERTIBLE_FORMATS", () => {
   it("includes STEP and IGES — both now have a verified way to set their header unit on write", () => {
     expect(UNIT_CONVERTIBLE_FORMATS.has("step")).toBe(true);

@@ -7332,6 +7332,93 @@ test("3MF colour: export writes the file colours and Part colours, and an uncolo
   assert(threeMfTriangles(plain) === 12, `and still its 12 triangles (got ${threeMfTriangles(plain)})`);
 });
 
+const stlBounds = (buf) => {
+  const tris = buf.readUInt32LE(80);
+  const lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
+  for (let t = 0; t < tris; t++) for (let v = 0; v < 3; v++) for (let a = 0; a < 3; a++) {
+    const x = buf.readFloatLE(84 + t * 50 + 12 + v * 12 + a * 4);
+    lo[a] = Math.min(lo[a], x); hi[a] = Math.max(hi[a], x);
+  }
+  return { tris, lo, size: hi.map((h, i) => h - lo[i]) };
+};
+
+test("Collada: a committed cube opens, renders and exports to STL, and the export reopens with the same triangle count", async (page) => {
+  await openColoured(page, "/examples/Collada/cube.dae", "dae");
+  const status = await page.evaluate(() => document.getElementById("status").textContent);
+  assert(!/fail|error/i.test(status), `no load error is reported (status ${JSON.stringify(status)})`);
+  const stats = await viewportModelStats(page);
+  assert(stats.fraction > 0.01 && stats.centre > 0, `the model renders and is centred (fraction ${stats.fraction.toFixed(3)})`);
+
+  const first = await exportBytes(page, "stl");
+  const b = stlBounds(first);
+  assert(b.tris === 12, `exporting the loaded cube writes its 12 triangles (got ${b.tris})`);
+  assert(b.size.every((v) => Math.abs(v - 10) < 1e-3), `a unit="millimeter" cube measures 10 mm per side (got ${JSON.stringify(b.size)})`);
+
+  await post(page, { type: "loadUrl", url: `data:application/octet-stream;base64,${first.toString("base64")}`, format: "stl" });
+  await sleep(1200);
+  assert(stlBounds(await exportBytes(page, "stl")).tris === 12, "reopening the exported STL and exporting again keeps the triangle count");
+});
+
+test("Collada: the declared unit is applied (millimetre, metre and inch files all measure their real size)", async (page) => {
+  // The loader multiplies by the raw <unit meter> (metres); the viewer works in mm.
+  for (const [file, want] of [["cube.dae", 10], ["cube-metre.dae", 10], ["cube-inch.dae", 25.4]]) {
+    await openColoured(page, `/examples/Collada/${file}`, "dae");
+    const b = stlBounds(await exportBytes(page, "stl"));
+    assert(b.tris === 12, `${file}: 12 triangles (got ${b.tris})`);
+    assert(b.size.every((v) => Math.abs(v - want) < 1e-3), `${file} measures ${want} mm per side (got ${JSON.stringify(b.size)})`);
+  }
+});
+
+test("Collada: the declared unit seeds the Units dropdown (inch → in, metre → m, millimetre → mm)", async (page) => {
+  const unit = () => page.evaluate(() => document.getElementById("vc-unit").value);
+  for (const [file, want] of [["cube-inch.dae", "in"], ["cube-metre.dae", "m"], ["cube.dae", "mm"], ["cube-inch.dae", "in"]]) {
+    await openColoured(page, `/examples/Collada/${file}`, "dae");
+    assert((await unit()) === want, `${file} selects ${want} (got ${await unit()})`);
+  }
+  // Presentation only: seeding inches leaves the geometry at 25.4 mm.
+  assert(stlBounds(await exportBytes(page, "stl")).size.every((v) => Math.abs(v - 25.4) < 1e-3), "seeding the selector leaves the geometry at 25.4 mm");
+});
+
+test("Collada: a Z_UP file is shown raw (the loader's own Y-up rotation is dropped), like STL/OBJ/glTF", async (page) => {
+  // cube.dae is Z_UP and spans [0,10]^3. ColladaLoader would rotate it -90deg
+  // about X (z range [-10,0] after export); the viewer owns that rotation.
+  await openColoured(page, "/examples/Collada/cube.dae", "dae");
+  const z = stlBounds(await exportBytes(page, "stl"));
+  assert(z.lo.every((v) => Math.abs(v) < 1e-3), `the Z_UP cube's minimum corner stays at the origin (got ${JSON.stringify(z.lo)})`);
+  // Control: the Y_UP fixture is raw too, so both agree.
+  await openColoured(page, "/examples/Collada/cube-metre.dae", "dae");
+  const y = stlBounds(await exportBytes(page, "stl"));
+  assert(y.lo.every((v) => Math.abs(v) < 1e-3), `and so is the Y_UP cube (got ${JSON.stringify(y.lo)})`);
+});
+
+test("Collada colour: a material colour renders, an unbound file stays the palette grey, and a Part colour wins and is undone", async (page) => {
+  await openColoured(page, "/examples/Collada/cube-colour.dae", "dae");
+  await lookFrom(page, ISO_FRONT);
+  const red = await hueCounts(page);
+  assert(red.red > 3 * MIN_PX, `the red Phong material shows (got ${JSON.stringify(red)})`);
+  assert(red.green < MAX_STRAY && red.blue < MAX_STRAY, `with no stray hues (got ${JSON.stringify(red)})`);
+
+  // Control: the material-less fixture gets the loader's plain white default,
+  // which must NOT show as a file colour.
+  await openColoured(page, "/examples/Collada/cube.dae", "dae");
+  await lookFrom(page, ISO_FRONT);
+  const plain = await hueCounts(page);
+  assert(plain.red < MAX_STRAY && plain.green < MAX_STRAY && plain.blue < MAX_STRAY, `an uncoloured Collada file shows no file colour (got ${JSON.stringify(plain)})`);
+
+  await openColoured(page, "/examples/Collada/cube-colour.dae", "dae");
+  await lookFrom(page, ISO_FRONT);
+  const ids = Array.from({ length: 8 }, (_, i) => `node-${i}`);
+  await post(page, { type: "parts", parts: [{ name: "Skin", color: "#ff00ff", volumes: ids, surfaces: [], lines: [], points: [] }] });
+  await sleep(600);
+  const painted = await hueCounts(page);
+  assert(painted.magenta > 3 * MIN_PX, `a Part colour covers the visible faces (got ${JSON.stringify(painted)})`);
+  assert(painted.red < MAX_STRAY, `and replaces the file colour rather than tinting it (got ${JSON.stringify(painted)})`);
+  await post(page, { type: "parts", parts: [] });
+  await sleep(600);
+  const restored = await hueCounts(page);
+  assert(restored.red > 3 * MIN_PX && restored.magenta < MAX_STRAY, `removing the Part restores the file colour (got ${JSON.stringify(restored)})`);
+});
+
 // Compressed glTF (roadmap "Compressed glTF"). This harness serves the repo
 // tree with NO Content-Security-Policy, so it proves the decoder logic and the
 // staged file paths (dist/draco/…, derived from the viewer.js script URL) but

@@ -2978,6 +2978,24 @@ try {
     assert(/display-only mesh format/i.test(mesh3mf.error ?? ""), `generate_mesh refuses a 3MF by name (got: ${JSON.stringify(mesh3mf).slice(0, 240)})`);
   }
 
+  // Collada is DISPLAY-ONLY on the host exactly like 3MF: same refusals, by name.
+  {
+    const dae = path.join(ROOT, "examples", "Collada", "cube.dae");
+    const healthDae = await call("check_mesh_health", { path: dae });
+    assert(
+      healthDae.supported === false && /dae has no host-side triangle-soup parser/i.test(healthDae.warnings?.[0] ?? ""),
+      `check_mesh_health refuses a Collada file by name (got: ${JSON.stringify(healthDae)})`
+    );
+    const promoteDae = await callTolerant("promote_mesh_to_brep", { path: dae, outputPath: path.join(dir, "from-dae.step") });
+    assert(/dae has no host-side triangle-soup parser/i.test(promoteDae.error ?? ""), `promote_mesh_to_brep refuses a Collada file by name (got: ${JSON.stringify(promoteDae)})`);
+    const compareDae = await call("compare_models", { pathA: dae, pathB: path.join(ROOT, "examples", "STL", "cube.stl") });
+    assert(compareDae.supported === false && /display-only/i.test((compareDae.warnings ?? []).join(" ")), `compare_models refuses a Collada file and says display-only (got: ${JSON.stringify(compareDae).slice(0, 240)})`);
+    const loadDae = await call("load_model", { path: dae });
+    assert(loadDae.format === "dae" && /DAE is display-only/.test((loadDae.warnings ?? []).join(" ")), `load_model opens a Collada file with a display-only warning (got: ${JSON.stringify(loadDae).slice(0, 240)})`);
+    const meshDae = await callTolerant("generate_mesh", { path: dae });
+    assert(/display-only mesh format/i.test(meshDae.error ?? ""), `generate_mesh refuses a Collada file by name (got: ${JSON.stringify(meshDae).slice(0, 240)})`);
+  }
+
   // Tier 1 "Auto-decimate under MAX_HEALABLE_TRIANGLES" —
   // examples/STL/large-sphere-100k.stl is a real 99904-triangle mesh, over
   // the 50000-triangle ceiling the per-triangle sewing pipeline refuses.

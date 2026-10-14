@@ -1,6 +1,6 @@
 ---
 name: CAD-Preview
-description: Use when CAD-Preview MCP tools are available (mcp__cad-preview__*) — modeling, editing, measuring or meshing a CAD file (STEP/IGES/BREP/STL/OBJ/PLY/glTF/meshio; 3MF is display-only). Triggers on tool availability, not on the product name.
+description: Use when CAD-Preview MCP tools are available (mcp__cad-preview__*) — modeling, editing, measuring or meshing a CAD file (STEP/IGES/BREP/STL/OBJ/PLY/glTF/meshio; 3MF and Collada are display-only). Triggers on tool availability, not on the product name.
 ---
 
 # CAD-Preview

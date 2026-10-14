@@ -97,6 +97,8 @@ export const EXPORT_EXTENSION: Record<CadFormat, string> = {
   gltf: "glb",
   // 3MF: hand-rolled zip+XML writer in `meshExporters.ts` (geometry only).
   "3mf": "3mf",
+  // Import-only: never an export target (no Collada writer); present for Record exhaustiveness.
+  dae: "dae",
   // meshio++-only formats (below) are never reachable via `exportTargetsFor` —
   // they're import-only document formats, not export targets — but every
   // `CadFormat` member needs an entry here for `Record<CadFormat, string>` to
@@ -135,6 +137,8 @@ export const EXPORT_LABEL: Record<CadFormat, string> = {
   ply: "PLY",
   gltf: "glTF Binary",
   "3mf": "3MF",
+  // Never offered by exportTargetsFor (import-only) — present only for Record exhaustiveness.
+  dae: "Collada",
   // Never offered by exportTargetsFor (see EXPORT_EXTENSION's comment) — present only for Record exhaustiveness.
   vtk: "VTK",
   vtu: "VTU",

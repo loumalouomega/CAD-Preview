@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="utf-8"?>
+<COLLADA xmlns="http://www.collada.org/2005/11/COLLADASchema" version="1.4.1">
+  <asset>
+    <contributor><authoring_tool>CAD-Preview scripts/dae-fixtures/make-dae.mjs</authoring_tool></contributor>
+    <unit meter="0.001" name="millimeter"/>
+    <up_axis>Z_UP</up_axis>
+  </asset>
+  <library_effects>
+    <effect id="red-fx"><profile_COMMON><technique sid="common"><phong>
+      <diffuse><color>1 0 0 1</color></diffuse>
+    </phong></technique></profile_COMMON></effect>
+  </library_effects>
+  <library_materials>
+    <material id="red" name="red"><instance_effect url="#red-fx"/></material>
+  </library_materials>
+  <library_geometries>
+    <geometry id="cube-mesh" name="cube">
+      <mesh>
+        <source id="cube-pos">
+          <float_array id="cube-pos-array" count="24">0 0 0 10 0 0 10 10 0 0 10 0 0 0 10 10 0 10 10 10 10 0 10 10</float_array>
+          <technique_common><accessor source="#cube-pos-array" count="8" stride="3">
+            <param name="X" type="float"/><param name="Y" type="float"/><param name="Z" type="float"/>
+          </accessor></technique_common>
+        </source>
+        <vertices id="cube-vtx"><input semantic="POSITION" source="#cube-pos"/></vertices>
+        <triangles count="12" material="red-sym">
+          <input semantic="VERTEX" source="#cube-vtx" offset="0"/>
+          <p>0 2 1 0 3 2 4 5 6 4 6 7 0 1 5 0 5 4 3 7 6 3 6 2 0 4 7 0 7 3 1 2 6 1 6 5</p>
+        </triangles>
+      </mesh>
+    </geometry>
+  </library_geometries>
+  <library_visual_scenes>
+    <visual_scene id="scene">
+      <node id="cube-node" name="cube">
+        <instance_geometry url="#cube-mesh"><bind_material><technique_common><instance_material symbol="red-sym" target="#red"/></technique_common></bind_material></instance_geometry>
+      </node>
+    </visual_scene>
+  </library_visual_scenes>
+  <scene><instance_visual_scene url="#scene"/></scene>
+</COLLADA>

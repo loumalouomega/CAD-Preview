@@ -3,7 +3,7 @@ import * as THREE from "three";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { MTLLoader } from "three/examples/jsm/loaders/MTLLoader.js";
-import { parseMeshObject, parseObjObject, tagMeshEntities, meshFromGeometry } from "./meshObject";
+import { parseMeshObject, parseObjObject, tagMeshEntities, meshFromGeometry, convertColladaMaterials, applyDefaultMaterial } from "./meshObject";
 import { isNativeColor } from "./nativeColor";
 import { objMaterialLibraries } from "./meshLoaders";
 
@@ -95,5 +95,53 @@ describe("OBJ materials", () => {
 describe("parseMeshObject", () => {
   it("throws for a format it has no loader for rather than returning undefined", () => {
     expect(() => parseMeshObject(new Uint8Array(4), "3mf" as unknown as "stl")).toThrow(/no loader for "3mf"/);
+  });
+});
+
+describe("convertColladaMaterials", () => {
+  const geo = () => new THREE.BoxGeometry(1, 1, 1);
+  const mesh = (m: THREE.Material | THREE.Material[]) => new THREE.Mesh(geo(), m);
+  const phong = (hex: number, name = "") => Object.assign(new THREE.MeshPhongMaterial({ color: hex }), { name });
+
+  it("keeps a coloured file material as a native colour", () => {
+    const g = new THREE.Group();
+    g.add(mesh(phong(0xff0000, "red")));
+    convertColladaMaterials(g);
+    const m = (g.children[0] as THREE.Mesh).material as THREE.MeshStandardMaterial;
+    expect(m.isMeshStandardMaterial).toBe(true);
+    expect(m.color.getHex()).toBe(0xff0000);
+    expect(isNativeColor(m)).toBe(true);
+  });
+
+  it("clears the loader's fallback and its invented plain-white default, so the palette look (and any Part colour) applies", () => {
+    const fallback = Object.assign(new THREE.MeshBasicMaterial({ color: 0xff00ff }), { name: THREE.Loader.DEFAULT_MATERIAL_NAME });
+    const g = new THREE.Group();
+    g.add(mesh(fallback), mesh(new THREE.MeshPhongMaterial()));
+    convertColladaMaterials(g);
+    for (const c of g.children) expect((c as THREE.Mesh).material).toBeUndefined();
+    applyDefaultMaterial(g);
+    for (const c of g.children) {
+      const m = (c as THREE.Mesh).material as THREE.MeshStandardMaterial;
+      expect(m.color.getHex()).toBe(0xc0c4cc);
+      expect(isNativeColor(m)).toBe(false);
+    }
+  });
+
+  it("a NAMED white material is a real file colour and is kept (control for the white-default rule)", () => {
+    const g = new THREE.Group();
+    g.add(mesh(phong(0xffffff, "paper")));
+    convertColladaMaterials(g);
+    expect(isNativeColor((g.children[0] as THREE.Mesh).material as THREE.Material)).toBe(true);
+  });
+
+  it("keeps every slot of a multi-material mesh so group material indices stay valid", () => {
+    const g = new THREE.Group();
+    g.add(mesh([phong(0x00ff00, "green"), new THREE.MeshPhongMaterial()]));
+    convertColladaMaterials(g);
+    const mats = (g.children[0] as THREE.Mesh).material as THREE.MeshStandardMaterial[];
+    expect(mats).toHaveLength(2);
+    expect(isNativeColor(mats[0])).toBe(true);
+    expect(mats[1].color.getHex()).toBe(0xc0c4cc);
+    expect(isNativeColor(mats[1])).toBe(false);
   });
 });

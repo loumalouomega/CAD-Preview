@@ -800,6 +800,33 @@ test("Compressed glTF (Draco and meshopt) loads under the real webview CSP", asy
     assert(Math.abs(max - min - edge) < 1e-3, `${name}: the cube measures ${edge} mm along x (got ${max - min})`);
     await closeAll();
   }
+
+  // Collada rides the same case for the same reason: `ColladaLoader` needs
+  // `DOMParser`, and the unit scale (metres in the loader, mm in the viewer) is
+  // what the metre and inch files pin.
+  for (const [name, edge] of [["cube.dae", 10], ["cube-metre.dae", 10], ["cube-inch.dae", 25.4]] as const) {
+    const staged = stage(path.join(ROOT, "examples", "Collada", name));
+    const out = path.join(path.dirname(staged), "from-dae.stl");
+    assert(await openDocument(staged), `${name} opens`);
+    await withModals([pick("STL"), pick("Native"), save(out)], async () => {
+      await vscode.commands.executeCommand("cad-preview.export");
+      await waitForFile(out);
+    });
+    const buf = fs.readFileSync(out);
+    const count = buf.length >= 84 ? buf.readUInt32LE(80) : 0;
+    assert(count === 12, `${name}: the displayed model carries the cube's 12 triangles (got ${count})`);
+    let max = -Infinity;
+    let min = Infinity;
+    for (let i = 0; i < count; i++) {
+      for (let v = 0; v < 3; v++) {
+        const x = buf.readFloatLE(84 + i * 50 + 12 + v * 12);
+        max = Math.max(max, x);
+        min = Math.min(min, x);
+      }
+    }
+    assert(Math.abs(max - min - edge) < 1e-3, `${name}: the cube measures ${edge} mm along x (got ${max - min})`);
+    await closeAll();
+  }
 });
 
 test("Save in place bakes ops into the source with .bak + watermark", async () => {
