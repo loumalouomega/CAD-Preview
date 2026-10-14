@@ -3,10 +3,12 @@ import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { DRACOLoader } from "three/examples/jsm/loaders/DRACOLoader.js";
 import { MTLLoader } from "three/examples/jsm/loaders/MTLLoader.js";
 import { ThreeMFLoader } from "three/examples/jsm/loaders/3MFLoader.js";
+import { ColladaLoader } from "three/examples/jsm/loaders/ColladaLoader.js";
 import type { CadFormat } from "../fileRouter";
 import { isSafeRelativePath } from "../safeRelativePath";
-import { applyDefaultMaterial, convertThreeMfMaterials, parseMeshObject, parseObjObject } from "./meshObject";
+import { applyDefaultMaterial, convertColladaMaterials, convertThreeMfMaterials, parseMeshObject, parseObjObject } from "./meshObject";
 import { threeMfDeclaredUnit, threeMfMmPerUnit } from "../threeMf";
+import { colladaDeclaredUnit, colladaMmPerUnit } from "../colladaUnits";
 import { gltfUsesCompression } from "./gltfSniff";
 
 /**
@@ -129,6 +131,8 @@ export async function loadMeshFromUrl(
       return loadGltf(url);
     case "3mf":
       return load3mf(url);
+    case "dae":
+      return loadDae(url);
     default:
       throw new Error(`Mesh loader for "${format}" is not implemented.`);
   }
@@ -204,6 +208,41 @@ async function load3mf(url: string): Promise<THREE.Object3D> {
   const mm = threeMfMmPerUnit(bytes);
   if (mm !== 1) group.scale.multiplyScalar(mm);
   const unit = threeMfDeclaredUnit(bytes);
+  if (unit) group.userData.declaredUnit = unit;
+  return group;
+}
+
+/**
+ * Loads a Collada `.dae`. `ColladaLoader` needs `DOMParser`, so it lives here
+ * and nowhere the kernel worker imports. Two loader behaviours are replaced
+ * rather than trusted:
+ * - **Units:** the loader scales the scene by the raw `<unit meter>` (metres),
+ *   `NaN` if malformed. That scale is reset and the scene is scaled to
+ *   millimetres from {@link colladaMmPerUnit}; the declared unit seeds the
+ *   (presentation-only) Units dropdown through `userData.declaredUnit`.
+ * - **Up axis:** for `Z_UP` the loader rotates the scene to Y-up, but
+ *   `Viewer.setModel` owns the root rotation (the user's up-axis setting), so
+ *   the rotation is dropped and the vertices are shown raw, like STL/OBJ/glTF.
+ * The scene is wrapped in a fresh Group so the viewer's root rotation never
+ * collides with the loader's. Textures are ignored (no `path` is passed) and
+ * only flat material colours are kept (`convertColladaMaterials`).
+ */
+async function loadDae(url: string): Promise<THREE.Object3D> {
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`Failed to fetch ${url}: ${res.status}`);
+  const text = await res.text();
+  const result = new ColladaLoader().parse(text, "");
+  if (!result) throw new Error("Could not parse the Collada file (invalid or empty XML).");
+  const scene = result.scene;
+  scene.rotation.set(0, 0, 0);
+  scene.scale.set(1, 1, 1);
+  const group = new THREE.Group();
+  group.add(scene);
+  convertColladaMaterials(group);
+  applyDefaultMaterial(group);
+  const mm = colladaMmPerUnit(text);
+  if (mm !== 1) group.scale.multiplyScalar(mm);
+  const unit = colladaDeclaredUnit(text);
   if (unit) group.userData.declaredUnit = unit;
   return group;
 }

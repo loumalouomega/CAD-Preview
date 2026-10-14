@@ -43,6 +43,9 @@
             "filenamePattern": "*.3mf"
           },
           {
+            "filenamePattern": "*.dae"
+          },
+          {
             "filenamePattern": "*.step"
           },
           {

@@ -159,6 +159,57 @@ export function convertThreeMfMaterials(group: THREE.Object3D): void {
 }
 
 /**
+ * Re-expresses the materials a Collada (`.dae`) produced (Phong / Lambert /
+ * Basic, all with a flat `color`) as the viewer's standard material, marked
+ * native so the file's colour shows and a Part colour still wins. Textures are
+ * deliberately dropped (sibling image files are outside the webview's CSP
+ * reach and the viewer is a geometry tool).
+ *
+ * Two loader artefacts are NOT file colours and are cleared so
+ * `applyDefaultMaterial` gives them the palette look: the loader's magenta
+ * fallback for an unresolved material binding (named
+ * `THREE.Loader.DEFAULT_MATERIAL_NAME`), and the plain white, unnamed,
+ * textureless `MeshPhongMaterial` it invents for a primitive with no material
+ * at all. A file material that really is plain white and unnamed is
+ * indistinguishable from the latter and is treated the same.
+ */
+export function convertColladaMaterials(group: THREE.Object3D): void {
+  const converted = new Map<THREE.Material, THREE.MeshStandardMaterial>();
+  const convert = (src: THREE.Material | undefined): THREE.Material | undefined => {
+    if (!src || src.name === THREE.Loader.DEFAULT_MATERIAL_NAME) return undefined;
+    const c = (src as THREE.MeshPhongMaterial).color;
+    if (!c || !(c as THREE.Color).isColor) return undefined;
+    const m = src as THREE.MeshPhongMaterial;
+    if (src.name === "" && !m.map && c.getHex() === 0xffffff) return undefined;
+    let out = converted.get(src);
+    if (!out) {
+      out = new THREE.MeshStandardMaterial({
+        color: c.getHex(),
+        metalness: 0.1,
+        roughness: 0.7,
+        side: THREE.DoubleSide,
+      });
+      out.name = src.name;
+      markNativeColor(out);
+      converted.set(src, out);
+    }
+    return out;
+  };
+  group.traverse((child) => {
+    if (!(child instanceof THREE.Mesh)) return;
+    const mats = child.material;
+    if (Array.isArray(mats)) {
+      // A multi-material mesh keeps every slot (group material indices stay
+      // valid): a cleared slot becomes the default look explicitly.
+      const fallback = new THREE.MeshStandardMaterial({ color: 0xc0c4cc, metalness: 0.1, roughness: 0.7, side: THREE.DoubleSide });
+      child.material = mats.map((m) => convert(m) ?? fallback);
+    } else {
+      child.material = convert(mats) as THREE.Material;
+    }
+  });
+}
+
+/**
  * Parses OBJ text. With a loaded `.mtl` (`MTLLoader.parse(...)` result,
  * preloaded) the file's materials are applied natively; without one this is
  * exactly what the headless bake parses, so the object hierarchy — and every

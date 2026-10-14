@@ -24,6 +24,8 @@ describe("routeFile", () => {
     expect(routeFile("m.glb")).toEqual({ strategy: "three", format: "gltf" });
     expect(routeFile("m.3mf")).toEqual({ strategy: "three", format: "3mf" });
     expect(routeFile("M.3MF")).toEqual({ strategy: "three", format: "3mf" });
+    expect(routeFile("m.dae")).toEqual({ strategy: "three", format: "dae" });
+    expect(routeFile("M.DAE")).toEqual({ strategy: "three", format: "dae" });
   });
 
   it("is case-insensitive", () => {
@@ -175,6 +177,11 @@ describe("display-only mesh formats", () => {
   it("3MF is display-only and never host-comparable", () => {
     expect(DISPLAY_ONLY_MESH_FORMATS.has("3mf")).toBe(true);
     expect(COMPARABLE_MESH_FORMATS.has("3mf")).toBe(false);
+  });
+
+  it("Collada is display-only and never host-comparable", () => {
+    expect(DISPLAY_ONLY_MESH_FORMATS.has("dae")).toBe(true);
+    expect(COMPARABLE_MESH_FORMATS.has("dae")).toBe(false);
   });
 
   it("the refusal names the format and the action", () => {

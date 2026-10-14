@@ -110,6 +110,7 @@ The extension host is a Node.js process. These modules run there — never in th
 | `src/objSolidSignatures.ts` | Wires `objParser.ts` + `meshComponents.ts` into `SolidSignature[]` for Compare Models' OBJ side (pure, unit-tested) |
 | `src/plyParser.ts` | Pure host-side PLY parser (ASCII + both binary endiannesses, one shared header parser) into a flat indexed mesh (vscode/OCCT/THREE-free, unit-tested) |
 | `src/plySolidSignatures.ts` | Wires `plyParser.ts` + `meshComponents.ts` into `SolidSignature[]` for Compare Models' PLY side (pure, unit-tested) |
+| `src/colladaUnits.ts` | Collada `<unit meter>` readers (`colladaMetresPerUnit`, `colladaMmPerUnit`, `colladaDeclaredUnit`) — pure; the loader itself is three's `ColladaLoader` in the webview only |
 | `src/threeMf.ts` | 3MF writer (`build3mf`, hand-rolled on `fflate`, byte-stable; optional per-triangle `colors` become one `<basematerials>`) and unit readers (`threeMfMmPerUnit`, `threeMfDeclaredUnit`) — pure; the loader itself is three's `3MFLoader` in the webview only |
 | `src/gltfParser.ts` | Pure host-side glTF 2.0 / GLB parser (geometry only — node world matrices applied, then welded) into a flat indexed mesh (vscode/OCCT/THREE-free, unit-tested **and cross-validated against three.js's own `GLTFLoader`**) |
 | `src/gltfSolidSignatures.ts` | Wires `gltfParser.ts` + `meshComponents.ts` into `SolidSignature[]` for Compare Models' glTF side (pure, unit-tested) |
@@ -733,7 +734,7 @@ Maps file extensions to a render strategy and canonical format identifier.
 ```typescript
 type RenderStrategy = 'occt' | 'three' | 'meshio'
 type CadFormat =
-  | 'step' | 'iges' | 'brep' | 'csg' | 'scad' | 'stl' | 'obj' | 'ply' | 'gltf' | '3mf'
+  | 'step' | 'iges' | 'brep' | 'csg' | 'scad' | 'stl' | 'obj' | 'ply' | 'gltf' | '3mf' | 'dae'
   | 'vtk' | 'vtu' | 'med' | 'cgns' | 'exodus' | 'xdmf' | 'mdpa'
   | 'openfoam'
   | 'gmsh' | 'abaqus' | 'unv' | 'su2' | 'medit' | 'gid' | 'nastran'
@@ -742,7 +743,7 @@ const MESHIO_FORMATS: readonly CadFormat[]  // the 15 meshio-routed CadFormat me
 const AMBIGUOUS_MESHIO_EXTENSIONS: ReadonlyMap<string, string>  // extension -> caveat message; "msh" (also ANSYS/FreeFem), "inp" (also ANSYS APDL) and "bdf" (also X11 bitmap fonts) default to this codebase's own Gmsh/Abaqus/Nastran output, surfaced as a status/warning on open
 type MeshParseFormat = 'stl' | 'obj' | 'ply' | 'gltf'
 const COMPARABLE_MESH_FORMATS: ReadonlySet<CadFormat>  // = {stl, obj, ply, gltf}
-const DISPLAY_ONLY_MESH_FORMATS: ReadonlySet<CadFormat> // = {3mf}: loaded by the webview only; every other `three` format is in the set above (pinned by a drift-guard test)
+const DISPLAY_ONLY_MESH_FORMATS: ReadonlySet<CadFormat> // = {3mf, dae}: loaded by the webview only; every other `three` format is in the set above (pinned by a drift-guard test)
 function displayOnlyMeshMessage(format: CadFormat, what: string): string  // the one refusal wording every host-side gate uses
 ```
 
@@ -774,6 +775,7 @@ Returns `undefined` for unrecognized extensions (the extension never opens those
 | `.ply`          | `three`  | `ply`    |
 | `.gltf`, `.glb` | `three`  | `gltf`   |
 | `.3mf`          | `three`  | `3mf` (display-only on the host) |
+| `.dae`          | `three`  | `dae` (import-only; display-only on the host) |
 | `.vtk`          | `meshio` | `vtk`    |
 | `.vtu`          | `meshio` | `vtu`    |
 | `.med`          | `meshio` | `med`    |
