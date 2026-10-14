@@ -6,6 +6,7 @@ import { GLTFExporter } from "three/examples/jsm/exporters/GLTFExporter.js";
 import type { CadFormat } from "../fileRouter";
 import { unitScaleFactor, type DisplayUnit } from "../lengthUnits";
 import { build3mf, type ThreeMfObject } from "../threeMf";
+import { defaultFaceColor } from "./geometryBuilder";
 
 export interface ExportedMesh {
   data: string;
@@ -55,10 +56,18 @@ function applyExportScale(model: THREE.Object3D, unit: DisplayUnit | undefined):
  * `userData.groupId` (every face of one B-rep solid, every facet of one mesh
  * node) become ONE object; a mesh without one is its own object. Lines and
  * sprites are ignored.
+ *
+ * Colour is each surface mesh's `userData.baseColor` — what `setEntityColors`
+ * resolved (Part colour, else a native file colour, else the palette default) —
+ * not `material.color`, which Flat mode and the selection highlight rewrite.
+ * The palette default is theme-dependent and is not a colour the model has, so
+ * it (and a missing `baseColor`) is written as "no colour": an uncoloured model
+ * exports exactly as before.
  */
 function threeMfObjects(root: THREE.Object3D): ThreeMfObject[] {
   root.updateMatrixWorld(true);
-  const byGroup = new Map<string, { positions: number[]; indices: number[] }>();
+  const byGroup = new Map<string, { positions: number[]; indices: number[]; colors: number[] }>();
+  const noColor = defaultFaceColor();
   const order: string[] = [];
   let anon = 0;
   const v = new THREE.Vector3();
@@ -70,7 +79,7 @@ function threeMfObjects(root: THREE.Object3D): ThreeMfObject[] {
     const key = gid ?? `mesh-${anon++}`;
     let bucket = byGroup.get(key);
     if (!bucket) {
-      bucket = { positions: [], indices: [] };
+      bucket = { positions: [], indices: [], colors: [] };
       byGroup.set(key, bucket);
       order.push(key);
     }
@@ -82,8 +91,15 @@ function threeMfObjects(root: THREE.Object3D): ThreeMfObject[] {
     const index = o.geometry.getIndex();
     if (index) for (let i = 0; i < index.count; i++) bucket.indices.push(base + index.getX(i));
     else for (let i = 0; i < pos.count; i++) bucket.indices.push(base + i);
+    const base3 = (o.userData as { baseColor?: number }).baseColor;
+    const colour = base3 === undefined || base3 === noColor ? -1 : base3;
+    const triangles = (index ? index.count : pos.count) / 3;
+    for (let t = 0; t < triangles; t++) bucket.colors.push(colour);
   });
-  return order.map((name) => ({ name, positions: byGroup.get(name)!.positions, indices: byGroup.get(name)!.indices }));
+  return order.map((name) => {
+    const b = byGroup.get(name)!;
+    return { name, positions: b.positions, indices: b.indices, colors: b.colors };
+  });
 }
 
 /**

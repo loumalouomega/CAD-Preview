@@ -5,8 +5,8 @@ import { MTLLoader } from "three/examples/jsm/loaders/MTLLoader.js";
 import { ThreeMFLoader } from "three/examples/jsm/loaders/3MFLoader.js";
 import type { CadFormat } from "../fileRouter";
 import { isSafeRelativePath } from "../safeRelativePath";
-import { applyDefaultMaterial, parseMeshObject, parseObjObject } from "./meshObject";
-import { threeMfMmPerUnit } from "../threeMf";
+import { applyDefaultMaterial, convertThreeMfMaterials, parseMeshObject, parseObjObject } from "./meshObject";
+import { threeMfDeclaredUnit, threeMfMmPerUnit } from "../threeMf";
 import { gltfUsesCompression } from "./gltfSniff";
 
 /**
@@ -188,20 +188,22 @@ async function loadGltf(url: string): Promise<THREE.Object3D> {
  * Loads a 3MF. `3MFLoader` uses `DOMParser`, so it lives here and nowhere the
  * kernel worker imports. It reads the model's `unit` attribute but never
  * applies it, so the declared unit is read separately and applied as a root
- * scale (the viewer works in millimetres). Geometry only: the file's
- * colours/materials are replaced by the default material.
+ * scale (the viewer works in millimetres) and recorded on
+ * `userData.declaredUnit` so the caller can seed the Units dropdown. The
+ * file's `basematerials`/`colorgroup` colours are kept as native colours
+ * (`convertThreeMfMaterials`); everything else gets the default material.
  */
 async function load3mf(url: string): Promise<THREE.Object3D> {
   const res = await fetch(url);
   if (!res.ok) throw new Error(`Failed to fetch ${url}: ${res.status}`);
   const data = await res.arrayBuffer();
   const group = new ThreeMFLoader().parse(data);
-  // The loader attaches the file's own materials; geometry-only means ours.
-  group.traverse((child) => {
-    if (child instanceof THREE.Mesh) child.material = undefined as unknown as THREE.Material;
-  });
+  convertThreeMfMaterials(group);
   applyDefaultMaterial(group);
-  const mm = threeMfMmPerUnit(new Uint8Array(data));
+  const bytes = new Uint8Array(data);
+  const mm = threeMfMmPerUnit(bytes);
   if (mm !== 1) group.scale.multiplyScalar(mm);
+  const unit = threeMfDeclaredUnit(bytes);
+  if (unit) group.userData.declaredUnit = unit;
   return group;
 }

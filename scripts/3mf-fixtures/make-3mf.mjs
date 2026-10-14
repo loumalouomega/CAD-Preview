@@ -1,11 +1,13 @@
 // Regenerates examples/3MF/cube.3mf (a 10 mm cube, unit="millimeter") and
-// examples/3MF/cube-inch.3mf (the same idea as a 1 inch cube, unit="inch")
+// examples/3MF/cube-inch.3mf (the same idea as a 1 inch cube, unit="inch") and
+// examples/3MF/cube-colour.3mf (the 10 mm cube with its first six triangles
+// red and its last six blue, written per triangle through <basematerials>)
 // with the SAME writer the viewer's Export uses (src/threeMf.ts), so the
 // committed bytes are exactly what the exporter produces.
 //
 //   node scripts/3mf-fixtures/make-3mf.mjs
 //
-// Neither fixture is hand-edited; change this script and regenerate.
+// No fixture is hand-edited; change this script and regenerate.
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -30,5 +32,9 @@ function cube(s) {
 fs.mkdirSync(OUT, { recursive: true });
 fs.writeFileSync(path.join(OUT, "cube.3mf"), build3mf([cube(10)], "mm"));
 fs.writeFileSync(path.join(OUT, "cube-inch.3mf"), build3mf([cube(1)], "in"));
+const RED = 0xff0000, BLUE = 0x0000ff;
+const coloured = cube(10);
+coloured.colors = [...new Array(6).fill(RED), ...new Array(6).fill(BLUE)];
+fs.writeFileSync(path.join(OUT, "cube-colour.3mf"), build3mf([coloured], "mm"));
 fs.rmSync(tmp, { recursive: true, force: true });
-console.log("wrote examples/3MF/cube.3mf and cube-inch.3mf");
+console.log("wrote examples/3MF/cube.3mf, cube-inch.3mf and cube-colour.3mf");

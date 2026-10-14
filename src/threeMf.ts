@@ -5,10 +5,12 @@
  * asks {@link threeMfMmPerUnit} how big the file's declared unit is, because
  * three's `3MFLoader` reads the `unit` attribute but never applies it.
  *
- * Geometry only: no colours/materials, one `<object type="model">` per solid.
- * The writer takes already-scaled coordinates plus the unit label, so the file
- * keeps its real-world size under a correct label (the STEP/IGES rule), never
- * a mislabelled-mm file.
+ * One `<object type="model">` per solid. Colour is optional and per triangle
+ * (`ThreeMfObject.colors`): written as a single `<basematerials>` resource, and
+ * only when at least one triangle carries a colour, so an uncoloured export is
+ * byte-identical to a geometry-only one. The writer takes already-scaled
+ * coordinates plus the unit label, so the file keeps its real-world size under
+ * a correct label (the STEP/IGES rule), never a mislabelled-mm file.
  */
 import { unzipSync, zipSync, strToU8, strFromU8 } from "fflate";
 import type { DisplayUnit } from "./lengthUnits";
@@ -20,6 +22,11 @@ export interface ThreeMfObject {
   positions: ArrayLike<number>;
   /** Flat vertex-index triples, or `null` for a non-indexed triangle soup. */
   indices: ArrayLike<number> | null;
+  /**
+   * Optional `0xRRGGBB` per triangle (one entry per triangle, in triangle
+   * order); a negative entry, or a missing array, means "no colour".
+   */
+  colors?: ArrayLike<number>;
 }
 
 const MODEL_PATH = "3D/3dmodel.model";
@@ -66,9 +73,25 @@ function esc(text: string): string {
  * count is never changed.
  */
 export function build3mf(objects: readonly ThreeMfObject[], unit: DisplayUnit = "mm"): Uint8Array {
+  // Distinct colours across all objects, in first-seen order: the one shared
+  // `<basematerials>` resource. Present only when some triangle is coloured,
+  // so a colourless model keeps today's ids and bytes.
+  const palette: number[] = [];
+  const paletteIndex = new Map<number, number>();
+  for (const obj of objects) {
+    for (let t = 0; obj.colors && t < obj.colors.length; t++) {
+      const c = obj.colors[t];
+      if (c >= 0 && !paletteIndex.has(c)) {
+        paletteIndex.set(c, palette.length);
+        palette.push(c);
+      }
+    }
+  }
+  const materialsId = palette.length > 0 ? 1 : 0;
+
   const parts: string[] = [];
   const buildItems: string[] = [];
-  let id = 0;
+  let id = materialsId;
   for (const obj of objects) {
     const pos = obj.positions;
     const idx = obj.indices;
@@ -77,6 +100,16 @@ export function build3mf(objects: readonly ThreeMfObject[], unit: DisplayUnit = 
     id++;
     const verts: string[] = [];
     const tris: string[] = [];
+    // Colour of triangle `t` as a palette index, or -1 for none.
+    const paletteOf = (t: number): number => {
+      const c = obj.colors && t < obj.colors.length ? obj.colors[t] : -1;
+      return c >= 0 ? paletteIndex.get(c)! : -1;
+    };
+    // A uniform, fully coloured object carries its colour once on the object
+    // (pid/pindex); anything else is written per triangle (pid/p1).
+    let uniform = paletteOf(0);
+    for (let t = 1; t < triCount && uniform >= 0; t++) if (paletteOf(t) !== uniform) uniform = -1;
+    const objectColour = uniform >= 0 ? ` pid="${materialsId}" pindex="${uniform}"` : "";
     const weld = new Map<string, number>();
     const vertexOf = (src: number): number => {
       const x = pos[src * 3], y = pos[src * 3 + 1], z = pos[src * 3 + 2];
@@ -93,20 +126,28 @@ export function build3mf(objects: readonly ThreeMfObject[], unit: DisplayUnit = 
       const a = idx ? idx[t * 3] : t * 3;
       const b = idx ? idx[t * 3 + 1] : t * 3 + 1;
       const c = idx ? idx[t * 3 + 2] : t * 3 + 2;
-      tris.push(`<triangle v1="${vertexOf(a)}" v2="${vertexOf(b)}" v3="${vertexOf(c)}"/>`);
+      const pc = uniform >= 0 ? -1 : paletteOf(t);
+      const colourAttrs = pc >= 0 ? ` pid="${materialsId}" p1="${pc}"` : "";
+      tris.push(`<triangle v1="${vertexOf(a)}" v2="${vertexOf(b)}" v3="${vertexOf(c)}"${colourAttrs}/>`);
     }
     const name = obj.name ? ` name="${esc(obj.name)}"` : "";
     parts.push(
-      `<object id="${id}" type="model"${name}><mesh><vertices>${verts.join("")}</vertices><triangles>${tris.join("")}</triangles></mesh></object>`
+      `<object id="${id}" type="model"${objectColour}${name}><mesh><vertices>${verts.join("")}</vertices><triangles>${tris.join("")}</triangles></mesh></object>`
     );
     buildItems.push(`<item objectid="${id}"/>`);
   }
-  if (id === 0) throw new Error("3MF export: the model has no triangles to write.");
+  if (id === materialsId) throw new Error("3MF export: the model has no triangles to write.");
+
+  const hex = (c: number): string => `#${c.toString(16).padStart(6, "0").toUpperCase()}`;
+  const materials =
+    palette.length > 0
+      ? `<basematerials id="${materialsId}">${palette.map((c) => `<base name="${hex(c)}" displaycolor="${hex(c)}"/>`).join("")}</basematerials>`
+      : "";
 
   const model =
     `<?xml version="1.0" encoding="UTF-8"?>\n` +
     `<model unit="${THREE_MF_UNIT_NAMES[unit]}" xml:lang="en-US" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02">` +
-    `<resources>${parts.join("")}</resources><build>${buildItems.join("")}</build></model>\n`;
+    `<resources>${materials}${parts.join("")}</resources><build>${buildItems.join("")}</build></model>\n`;
   const contentTypes =
     `<?xml version="1.0" encoding="UTF-8"?>\n` +
     `<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">` +
@@ -127,6 +168,22 @@ export function build3mf(objects: readonly ThreeMfObject[], unit: DisplayUnit = 
   );
 }
 
+/** The `unit` a `.3mf` declares on its root model part, lower-cased; the spec default when absent, `undefined` for an unreadable package. */
+function declaredUnitName(bytes: Uint8Array): string | undefined {
+  try {
+    const files = unzipSync(bytes, {
+      filter: (f) => /\.model$/i.test(f.name) && f.originalSize <= MAX_MODEL_PART_BYTES,
+    });
+    const names = Object.keys(files);
+    const name = names.find((n) => n.toLowerCase() === MODEL_PATH.toLowerCase()) ?? names[0];
+    if (!name) return undefined;
+    const m = /<model\b[^>]*?\bunit\s*=\s*"([^"]*)"/i.exec(strFromU8(files[name]));
+    return (m ? m[1] : DEFAULT_UNIT).toLowerCase();
+  } catch {
+    return undefined;
+  }
+}
+
 /**
  * Millimetres per unit of the `unit` a `.3mf` declares on its root model part.
  * `1` for a missing/unrecognized unit (the spec default is millimetres) or an
@@ -134,17 +191,17 @@ export function build3mf(objects: readonly ThreeMfObject[], unit: DisplayUnit = 
  * decoded it, never throws over a unit.
  */
 export function threeMfMmPerUnit(bytes: Uint8Array): number {
-  try {
-    const files = unzipSync(bytes, {
-      filter: (f) => /\.model$/i.test(f.name) && f.originalSize <= MAX_MODEL_PART_BYTES,
-    });
-    const names = Object.keys(files);
-    const name = names.find((n) => n.toLowerCase() === MODEL_PATH.toLowerCase()) ?? names[0];
-    if (!name) return 1;
-    const m = /<model\b[^>]*?\bunit\s*=\s*"([^"]*)"/i.exec(strFromU8(files[name]));
-    const unit = (m ? m[1] : DEFAULT_UNIT).toLowerCase();
-    return MM_PER_THREE_MF_UNIT[unit] ?? 1;
-  } catch {
-    return 1;
-  }
+  const unit = declaredUnitName(bytes);
+  return (unit && MM_PER_THREE_MF_UNIT[unit]) || 1;
+}
+
+/**
+ * The Units-dropdown entry matching the file's declared unit, or `undefined`
+ * (micron, an unknown unit, an unreadable package) — the caller then leaves
+ * the selector on millimetres. Presentation only: the loader has already
+ * scaled the geometry by {@link threeMfMmPerUnit}.
+ */
+export function threeMfDeclaredUnit(bytes: Uint8Array): DisplayUnit | undefined {
+  const unit = declaredUnitName(bytes);
+  return (Object.keys(THREE_MF_UNIT_NAMES) as DisplayUnit[]).find((k) => THREE_MF_UNIT_NAMES[k] === unit);
 }
