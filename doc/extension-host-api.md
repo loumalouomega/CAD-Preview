@@ -110,7 +110,7 @@ The extension host is a Node.js process. These modules run there — never in th
 | `src/objSolidSignatures.ts` | Wires `objParser.ts` + `meshComponents.ts` into `SolidSignature[]` for Compare Models' OBJ side (pure, unit-tested) |
 | `src/plyParser.ts` | Pure host-side PLY parser (ASCII + both binary endiannesses, one shared header parser) into a flat indexed mesh (vscode/OCCT/THREE-free, unit-tested) |
 | `src/plySolidSignatures.ts` | Wires `plyParser.ts` + `meshComponents.ts` into `SolidSignature[]` for Compare Models' PLY side (pure, unit-tested) |
-| `src/threeMf.ts` | 3MF writer (`build3mf`, hand-rolled on `fflate`, geometry only, byte-stable) and unit reader (`threeMfMmPerUnit`) — pure; the loader itself is three's `3MFLoader` in the webview only |
+| `src/threeMf.ts` | 3MF writer (`build3mf`, hand-rolled on `fflate`, byte-stable; optional per-triangle `colors` become one `<basematerials>`) and unit readers (`threeMfMmPerUnit`, `threeMfDeclaredUnit`) — pure; the loader itself is three's `3MFLoader` in the webview only |
 | `src/gltfParser.ts` | Pure host-side glTF 2.0 / GLB parser (geometry only — node world matrices applied, then welded) into a flat indexed mesh (vscode/OCCT/THREE-free, unit-tested **and cross-validated against three.js's own `GLTFLoader`**) |
 | `src/gltfSolidSignatures.ts` | Wires `gltfParser.ts` + `meshComponents.ts` into `SolidSignature[]` for Compare Models' glTF side (pure, unit-tested) |
 | `src/silhouetteEdges.ts` | Pure silhouette-edge extraction from a welded indexed mesh, given a view direction (vscode/OCCT/THREE-free, unit-tested) |

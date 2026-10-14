@@ -120,6 +120,45 @@ export function convertObjMaterials(group: THREE.Object3D): void {
 }
 
 /**
+ * Re-expresses the materials a 3MF produced (`MeshPhongMaterial`, or
+ * `MeshStandardMaterial` for a metallic `basematerials`) as the viewer's
+ * standard material, marked native: the `displaycolor` (alpha dropped — the
+ * viewer composes opacity itself), a `colorgroup`'s vertex colours and a
+ * texture map are kept. The loader's own fallback for a triangle with no
+ * `pid` (named `THREE.Loader.DEFAULT_MATERIAL_NAME`, plain white) is NOT a
+ * file colour: it is cleared so `applyDefaultMaterial` gives it the palette
+ * look and a Part colour is not shadowed by a stashed white.
+ */
+export function convertThreeMfMaterials(group: THREE.Object3D): void {
+  const converted = new Map<THREE.Material, THREE.MeshStandardMaterial>();
+  group.traverse((child) => {
+    if (!(child instanceof THREE.Mesh)) return;
+    const src = child.material as THREE.Material;
+    if (!src || src.name === THREE.Loader.DEFAULT_MATERIAL_NAME) {
+      child.material = undefined as unknown as THREE.Material;
+      return;
+    }
+    const phong = src as THREE.MeshPhongMaterial;
+    if (!phong.isMeshPhongMaterial && !(src as THREE.MeshStandardMaterial).isMeshStandardMaterial) return;
+    let out = converted.get(src);
+    if (!out) {
+      out = new THREE.MeshStandardMaterial({
+        color: phong.color.getHex(),
+        map: phong.map ?? null,
+        vertexColors: phong.vertexColors,
+        metalness: 0.1,
+        roughness: 0.7,
+        side: THREE.DoubleSide,
+      });
+      out.name = phong.name;
+      markNativeColor(out);
+      converted.set(src, out);
+    }
+    child.material = out;
+  });
+}
+
+/**
  * Parses OBJ text. With a loaded `.mtl` (`MTLLoader.parse(...)` result,
  * preloaded) the file's materials are applied natively; without one this is
  * exactly what the headless bake parses, so the object hierarchy — and every

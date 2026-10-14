@@ -7258,6 +7258,80 @@ test("3MF: the declared unit is applied on load and written on export", async (p
   assert(Math.max(...xs) - Math.min(...xs) > 0.99 && Math.max(...xs) - Math.min(...xs) < 1.01, `with coordinates in inches (span ${Math.max(...xs) - Math.min(...xs)})`);
 });
 
+test("3MF: the declared unit seeds the Units dropdown (inch file → in, millimetre file → mm)", async (page) => {
+  const unit = () => page.evaluate(() => document.getElementById("vc-unit").value);
+  await openColoured(page, "/examples/3MF/cube-inch.3mf", "3mf");
+  assert((await unit()) === "in", `a unit="inch" file selects inches (got ${await unit()})`);
+  await openColoured(page, "/examples/3MF/cube.3mf", "3mf");
+  assert((await unit()) === "mm", `a unit="millimeter" file selects millimetres (got ${await unit()})`);
+  // The selector is presentation only: the inch cube is still 25.4 mm of geometry.
+  await openColoured(page, "/examples/3MF/cube-inch.3mf", "3mf");
+  const stl = stlExtent(await exportBytes(page, "stl"));
+  assert(stl.size.every((v) => Math.abs(v - 25.4) < 1e-3), `and seeding it leaves the geometry at 25.4 mm (got ${JSON.stringify(stl.size)})`);
+});
+
+const threeMfModel = (buf) => strFromU8(unzipSync(new Uint8Array(buf))["3D/3dmodel.model"]);
+const threeMfColours = (buf) => [...threeMfModel(buf).matchAll(/displaycolor="(#[0-9A-F]{6})"/g)].map((m) => m[1]).sort();
+
+test("3MF colour: a coloured file renders its own colours and an uncoloured one stays the palette grey", async (page) => {
+  await openColoured(page, "/examples/3MF/cube-colour.3mf", "3mf");
+  await lookFrom(page, ISO_FRONT);
+  const coloured = await hueCounts(page);
+  assert(coloured.red > MIN_PX && coloured.blue > MIN_PX, `the red and blue triangles show their file colours (got ${JSON.stringify(coloured)})`);
+  assert(coloured.green < MAX_STRAY && coloured.magenta < MAX_STRAY && coloured.cyan < MAX_STRAY, `with no stray hues (got ${JSON.stringify(coloured)})`);
+
+  // Control: the geometry-only fixture carries no colour, so none appears.
+  await openColoured(page, "/examples/3MF/cube.3mf", "3mf");
+  await lookFrom(page, ISO_FRONT);
+  const plain = await hueCounts(page);
+  assert(plain.red < MAX_STRAY && plain.blue < MAX_STRAY, `an uncoloured 3MF shows no file colour (got ${JSON.stringify(plain)})`);
+});
+
+test("3MF colour: a Part colour replaces the file colours and removing it brings them back", async (page) => {
+  await openColoured(page, "/examples/3MF/cube-colour.3mf", "3mf");
+  await lookFrom(page, ISO_FRONT);
+  // The loader builds one mesh per distinct colour, so the cube is node-2 and node-3.
+  await post(page, { type: "parts", parts: [{ name: "Skin", color: "#ff00ff", volumes: ["node-2", "node-3"], surfaces: [], lines: [], points: [] }] });
+  await sleep(600);
+  const painted = await hueCounts(page);
+  assert(painted.magenta > 3 * MIN_PX, `the Part colour covers the visible faces (got ${JSON.stringify(painted)})`);
+  assert(painted.red < MAX_STRAY && painted.blue < MAX_STRAY, `and replaces the file colours rather than tinting them (got ${JSON.stringify(painted)})`);
+  await post(page, { type: "parts", parts: [] });
+  await sleep(600);
+  const restored = await hueCounts(page);
+  assert(restored.red > MIN_PX && restored.blue > MIN_PX, `removing the Part restores the file colours (got ${JSON.stringify(restored)})`);
+  assert(restored.magenta < MAX_STRAY, `with no Part colour left over (got ${JSON.stringify(restored)})`);
+});
+
+test("3MF colour: export writes the file colours and Part colours, and an uncoloured model stays colourless", async (page) => {
+  await openColoured(page, "/examples/3MF/cube-colour.3mf", "3mf");
+  const same = await exportBytes(page, "3mf");
+  assert(threeMfTriangles(same) === 12, `the coloured cube exports its 12 triangles (got ${threeMfTriangles(same)})`);
+  assert(JSON.stringify(threeMfColours(same)) === JSON.stringify(["#0000FF", "#FF0000"]), `with exactly its red and blue colours (got ${JSON.stringify(threeMfColours(same))})`);
+
+  // A Part colour wins over the file colour in the export.
+  await post(page, { type: "parts", parts: [{ name: "Skin", color: "#ff00ff", volumes: ["node-2", "node-3"], surfaces: [], lines: [], points: [] }] });
+  await sleep(600);
+  const painted = await exportBytes(page, "3mf");
+  assert(JSON.stringify(threeMfColours(painted)) === JSON.stringify(["#FF00FF"]), `a Part colour replaces the file colours (got ${JSON.stringify(threeMfColours(painted))})`);
+
+  await post(page, { type: "parts", parts: [] });
+  await sleep(400);
+
+  // Reopen the export through the loader: the colours survive a full round trip.
+  await post(page, { type: "loadUrl", url: `data:application/octet-stream;base64,${same.toString("base64")}`, format: "3mf" });
+  await sleep(1200);
+  await lookFrom(page, ISO_FRONT);
+  const again = await hueCounts(page);
+  assert(again.red > MIN_PX && again.blue > MIN_PX, `the exported file reopens with both colours (got ${JSON.stringify(again)})`);
+
+  // Control: nothing coloured in, nothing coloured out.
+  await openColoured(page, "/examples/3MF/cube.3mf", "3mf");
+  const plain = await exportBytes(page, "3mf");
+  assert(!threeMfModel(plain).includes("basematerials"), "an uncoloured model exports with no basematerials");
+  assert(threeMfTriangles(plain) === 12, `and still its 12 triangles (got ${threeMfTriangles(plain)})`);
+});
+
 // Compressed glTF (roadmap "Compressed glTF"). This harness serves the repo
 // tree with NO Content-Security-Policy, so it proves the decoder logic and the
 // staged file paths (dist/draco/…, derived from the viewer.js script URL) but
