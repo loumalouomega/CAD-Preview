@@ -5,6 +5,7 @@ import type { CadFormat } from "./fileRouter";
 import type { EditOp } from "./editOps";
 import type { Part } from "./protocol";
 import type { BomRow } from "./bomExport";
+import { massGrams } from "./materialDensity";
 import { groupCylindricalFaces, type CylindricalFaceFacts, type HoleTableRow } from "./holeTable";
 
 export type BRepFormat = Extract<CadFormat, "step" | "iges" | "brep" | "csg">;
@@ -288,6 +289,8 @@ export async function computeBom(
         pointCount: part.points.length,
         volume: resolvedCount > 0 ? volume : null,
         area: resolvedCount > 0 ? area : null,
+        density: part.density ?? null,
+        mass: resolvedCount > 0 && part.density !== undefined ? massGrams(volume, part.density) : null,
         unresolvedIds,
       };
     });

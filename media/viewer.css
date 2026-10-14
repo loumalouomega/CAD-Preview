@@ -25,6 +25,7 @@
   --cad-mesh-wire: #1a3d66;
   --cad-worst-element: #ff3b30;
   --cad-hidden-line-ghost: #8fa8c9;
+  --cad-geometry-edge: #5aa9ff;
   --cad-background: #1e1e1e;
   --cad-grid-center: #888888;
   --cad-grid-division: #444444;
@@ -44,6 +45,7 @@ body.vscode-light {
   --cad-mesh: #1f6fd0;
   --cad-mesh-wire: #9dc2ee;
   --cad-hidden-line-ghost: #6b7d96;
+  --cad-geometry-edge: #1f5fbf;
   --cad-background: #f3f3f3;
   --cad-grid-center: #9a9a9a;
   --cad-grid-division: #c8c8c8;
@@ -60,6 +62,7 @@ body.vscode-high-contrast {
   --cad-mesh: #6fc3ff;
   --cad-mesh-wire: #ffffff;
   --cad-hidden-line-ghost: #c0c0c0;
+  --cad-geometry-edge: #7fc4ff;
   --cad-background: #000000;
   --cad-grid-center: #ffffff;
   --cad-grid-division: #767676;
@@ -78,6 +81,7 @@ body.vscode-high-contrast-light {
   --cad-mesh: #0f4a9c;
   --cad-mesh-wire: #000000;
   --cad-hidden-line-ghost: #3b3b3b;
+  --cad-geometry-edge: #0b4fa8;
   --cad-background: #ffffff;
   --cad-grid-center: #000000;
   --cad-grid-division: #949494;
@@ -189,6 +193,30 @@ body {
   overflow: hidden;
   position: relative;
 }
+
+/* Geometry display mode legend (hidden outside that mode). */
+#geometry-legend {
+  position: absolute;
+  left: 8px;
+  bottom: 8px;
+  display: flex;
+  gap: 10px;
+  padding: 4px 8px;
+  font-size: 11px;
+  color: var(--vscode-foreground);
+  background: var(--vscode-editorWidget-background);
+  border: 1px solid var(--vscode-editorWidget-border, transparent);
+  border-radius: 3px;
+  pointer-events: none;
+  z-index: 5;
+}
+#geometry-legend[hidden] { display: none; }
+#geometry-legend span { display: inline-flex; align-items: center; gap: 4px; }
+#geometry-legend i { display: inline-block; width: 10px; height: 10px; }
+#geometry-legend .gl-point { border-radius: 50%; background: var(--cad-point); }
+#geometry-legend .gl-edge { height: 2px; background: var(--cad-geometry-edge); }
+#geometry-legend .gl-face { background: var(--cad-face); opacity: 0.35; }
+#geometry-legend .gl-solid { border: 2px solid hsl(137 70% 55%); box-sizing: border-box; }
 
 #app canvas {
   display: block;
@@ -1668,6 +1696,27 @@ body:not(:has(#side.visible)) #status {
   border-color: var(--vscode-focusBorder, #007fd4);
 }
 
+.part-density {
+  width: 3.6em;
+  flex-shrink: 0;
+  font: inherit;
+  font-size: var(--ui-fs-label);
+  color: inherit;
+  text-align: right;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--ui-r-xs);
+  padding: 1px 3px;
+}
+.part-density:hover { border-color: var(--vscode-input-border, #3c3c3c); }
+.part-density:focus {
+  outline: none;
+  background: var(--vscode-input-background, #1e1e1e);
+  border-color: var(--vscode-focusBorder, #007fd4);
+}
+/* An unset density stays out of the row until it is hovered or focused, so it
+   never squeezes the part name; a set one is always shown. */
+.part-row:not(:hover):not(:focus-within) .part-density:placeholder-shown { display: none; }
 .part-badge {
   font-size: var(--ui-fs-label);
   opacity: 0.6;

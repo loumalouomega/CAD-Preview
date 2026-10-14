@@ -314,6 +314,14 @@ export function viewerBodyHtml(): string {
     <button id="sidebar-resize" type="button" role="separator" title="Drag or press ArrowLeft/ArrowRight to resize the sidebar"></button>
     <div id="app">
       <canvas id="markup-canvas"></canvas>
+      <!-- Geometry display mode legend: one swatch per primitive kind the mode
+           draws. Shown only in that mode (main.ts applyDisplayMode). -->
+      <div id="geometry-legend" hidden aria-label="Geometry legend">
+        <span><i class="gl-point"></i>Points</span>
+        <span><i class="gl-edge"></i>Edges</span>
+        <span><i class="gl-face"></i>Faces</span>
+        <span><i class="gl-solid"></i>Solids</span>
+      </div>
       <!-- Split-view pane separators — pure visual dividers over the single
            WebGL canvas (pointer-events:none), shown only while a 2×2 layout
            is active. Below the markup canvas so annotations draw over them. -->
@@ -503,6 +511,7 @@ export function viewerBodyHtml(): string {
         <button class="display-mode-btn" data-mode="xray" title="X-Ray — translucent faces, edges visible through them">${icon("xray")} X-Ray</button>
         <button class="display-mode-btn" data-mode="hiddenLines" title="Hidden Lines — occluded edges shown faintly through solids">${icon("hiddenLines")} Hidden</button>
         <button class="display-mode-btn" data-mode="flat" title="Flat — unlit constant-colour faces, no shading gradient">${icon("flat")} Flat</button>
+        <button class="display-mode-btn" data-mode="geometry" title="Geometry — the B-rep structure: points, edges, faces and solids (bounding shells) as distinct primitives">${icon("edges")} Geom</button>
       </div>
       <span class="vc-div" aria-hidden="true"></span>
       <div class="vc-inline-group">

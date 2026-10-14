@@ -50,6 +50,8 @@ export interface Palette {
   worstElement: number;
   /** Hidden-Lines display mode's ghost lines. */
   hiddenLineGhost: number;
+  /** Geometry display mode's edge lines. */
+  geometryEdge: number;
   /** Scene background. */
   background: number;
   /** Grid helper's centre-line colour. */
@@ -79,6 +81,7 @@ export const PALETTE_FALLBACKS: Readonly<Palette> = Object.freeze({
   meshWire: 0x1a3d66,
   worstElement: 0xff3b30,
   hiddenLineGhost: 0x8fa8c9,
+  geometryEdge: 0x5aa9ff,
   background: 0x1e1e1e,
   gridCenter: 0x888888,
   gridDivision: 0x444444,
@@ -98,6 +101,7 @@ const CSS_VAR_NAMES: Readonly<Record<keyof Palette, string>> = Object.freeze({
   meshWire: "--cad-mesh-wire",
   worstElement: "--cad-worst-element",
   hiddenLineGhost: "--cad-hidden-line-ghost",
+  geometryEdge: "--cad-geometry-edge",
   background: "--cad-background",
   gridCenter: "--cad-grid-center",
   gridDivision: "--cad-grid-division",

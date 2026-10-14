@@ -5640,6 +5640,38 @@ test("render snapshot R1: renderViewRequest applies a section clip and a display
 });
 
 /**
+ * Geometry display mode (roadmap "GiD-style geometry structure view"): the
+ * sixth Display button renders the B-rep skeleton (near-transparent faces,
+ * opaque edge overlay, enlarged points, solid shells) and shows its legend.
+ * Asserts RENDERED visibility (offsetParent), a frame that differs from
+ * shaded, and that switching back restores the shaded frame exactly.
+ */
+test("display mode Geometry: legend shows, frame differs from shaded, shaded restores", async (page) => {
+  await populate(page);
+  await hideGrid(page);
+  await setPanelHidden(page, true);
+  const legendShown = () => page.evaluate(() => document.getElementById("geometry-legend")?.offsetParent !== null);
+  const click = async (mode) => {
+    await page.evaluate((m) => document.querySelector(`.display-mode-btn[data-mode="${m}"]`)?.click(), mode);
+    await sleep(CLIP_SETTLE);
+  };
+  await click("shaded");
+  const shaded = await frameSignature(page);
+  assert(!(await legendShown()), "the legend is not rendered in shaded mode");
+  await click("geometry");
+  const geom = await frameSignature(page);
+  assert(await legendShown(), "the legend is rendered in Geometry mode");
+  assert(geom.hash !== shaded.hash, "Geometry renders differently from shaded");
+  const active = await page.evaluate(() => document.querySelector(".display-mode-btn.active")?.dataset.mode);
+  assert(active === "geometry", `the Geometry button is active (got ${active})`);
+  await click("shaded");
+  const back = await frameSignature(page);
+  assert(back.hash === shaded.hash, "switching back to shaded restores the shaded frame");
+  assert(!(await legendShown()), "the legend is hidden again after leaving Geometry");
+  await setPanelHidden(page, false);
+});
+
+/**
  * P4 — the widened persisted shape survives the webview round trip.
  *
  * `getState()`'s widened output is otherwise untested anywhere: the sidecar
@@ -6873,7 +6905,7 @@ test("dock: the collapse control sits at the end of the bar, after the overflow 
     return { toggleLeft: toggle.left, moreRight: more.right, modesShowIcon: modes.some(Boolean), modeCount: modes.length };
   });
   assert(m.toggleLeft >= m.moreRight - 1, `the collapse control follows ⋯ (toggle left ${m.toggleLeft.toFixed(0)}, ⋯ right ${m.moreRight.toFixed(0)})`);
-  assert(m.modeCount === 5 && !m.modesShowIcon, "the display modes are text-only segments");
+  assert(m.modeCount === 6 && !m.modesShowIcon, "the display modes are text-only segments");
   await page.click("#vc-toggle");
   await sleep(80);
   const collapsedRendered = await page.evaluate(() => document.getElementById("vc-toggle").offsetParent !== null);

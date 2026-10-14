@@ -92,6 +92,15 @@ describe("parsePartsJson", () => {
     }
   });
 
+  it("parses a positive finite density and drops anything else, and round-trips it", () => {
+    const base = { name: "P", color: "#fff", volumes: [], surfaces: [], lines: [], points: [] };
+    for (const [raw, expected] of [[7.85, 7.85], [0, undefined], [-1, undefined], ["7", undefined], [null, undefined]] as Array<[unknown, number | undefined]>) {
+      expect(parsePartsJson(JSON.stringify({ parts: [{ ...base, density: raw }] }))[0].density).toBe(expected);
+    }
+    const parts: Part[] = [{ ...base, name: "P", color: "#123456", density: 1.24 }];
+    expect(parsePartsJson(serializePartsJson("m.step", parts))[0].density).toBe(1.24);
+  });
+
   it("parses a valid meshGrading band and drops an invalid one", () => {
     const base = { name: "P", color: "#fff", volumes: [], surfaces: [], lines: [], points: [] };
     const valid = { sizeAtWall: 0.15, sizeFar: 1, distNear: 0.3, distFar: 1.5 };

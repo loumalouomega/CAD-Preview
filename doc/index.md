@@ -50,7 +50,7 @@ features:
 
   - icon: 🔬
     title: Display Modes & Grid Helpers
-    details: Five rendering modes — Shaded, Wireframe, X-Ray, Hidden Lines, and Flat/unlit — plus world-space axes and a reference grid, all from the view-controls panel and toolbar.
+    details: Six rendering modes — Shaded, Wireframe, X-Ray, Hidden Lines, Flat/unlit, and a GiD-style Geometry structure view — plus world-space axes and a reference grid, all from the view-controls panel and toolbar.
 
   - icon: 🚀
     title: Lazy WASM, Fast Activation

@@ -530,6 +530,23 @@ try {
       redRow && blueRow && Math.abs(redRow.volume - 1008) < 0.5 && Math.abs(blueRow.volume - 189) < 0.5,
       `generate_bom works on the colour Parts with analytic volumes red 1000+8, blue 125+64 (got ${redRow?.volume} / ${blueRow?.volume})`
     );
+    // Per-Part density: mass = volume x density on the real kernel volumes.
+    await call("set_part", { path: colourCsg, name: "Part red", density: 7.85 });
+    await call("set_part", { path: colourCsg, name: "Part blue", material: "aluminium" });
+    const massBom = await call("generate_bom", { path: colourCsg });
+    const redMass = massBom.rows.find((r) => r.name === "Part red")?.mass;
+    const blueMass = massBom.rows.find((r) => r.name === "Part blue")?.mass;
+    assert(
+      Math.abs(redMass - 1.008 * 7.85) < 0.005 && Math.abs(blueMass - 0.189 * 2.7) < 0.002 &&
+        Math.abs(massBom.totalMassGrams - (1.008 * 7.85 + 0.189 * 2.7)) < 0.01,
+      `generate_bom mass is analytic volume x density (red ${redMass}, blue ${blueMass}, total ${massBom.totalMassGrams})`
+    );
+    await call("set_part", { path: colourCsg, name: "Part blue", density: null });
+    const partialBom = await call("generate_bom", { path: colourCsg });
+    assert(
+      partialBom.totalMassGrams === null && JSON.stringify(partialBom.partsMissingDensity) === JSON.stringify(["Part blue"]),
+      "a Part without density leaves the total null and is named, not counted as zero"
+    );
     const colourClash = await call("check_interference_all", { path: colourCsg });
     assert(
       colourClash.supported === true && colourClash.pairs.length === 1 && colourClash.pairs[0].hasOverlap === false,
@@ -6704,6 +6721,67 @@ try {
     bracketState.solids[0].faceIds.length === 18,
     `the finished bracket has the 18 faces the tutorial claims (got ${bracketState.solids[0].faceIds.length})`
   );
+
+  // --- doc/tutorials/cantilever.md, against the live kernel -----------------
+  //
+  // The beam is 100x10x10 centred on the origin (it fully encloses the seed
+  // block). Its two end faces are found by inspect's normal, not by a guessed
+  // id, then become the FixedEnd / LoadFace Parts; the MDPA's own node table
+  // proves each SubModelPart sits exactly on its end plane.
+  {
+    const beamModel = path.join(dir, "tutorial-cantilever.stp");
+    const resetBeam = () => {
+      fs.copyFileSync(path.join(ROOT, "examples", "STP", "block.stp"), beamModel);
+      for (const ext of [".edits.json", ".parts.json", ".mesh.json"]) fs.rmSync(`${beamModel}${ext}`, { force: true });
+    };
+    resetBeam();
+    const beamOps = [{ op: "addBox", center: [0, 0, 0], size: [100, 10, 10] }];
+    await callWithCleanRetry("apply_edit_ops", { path: beamModel, ops: beamOps }, resetBeam);
+    const beamState = await call("load_model", { path: beamModel });
+    assert(beamState.solids.length === 2, `the cantilever has the seed plus the beam (got ${beamState.solids.length} solids)`);
+    const beamMass = await call("get_mass_properties", { path: beamModel, entityId: "solid-1" });
+    assert(Math.abs(beamMass.volume - 10000) < 1e-3, `the beam is 100x10x10 = 10000 mm3 (got ${beamMass.volume})`);
+    const endFaces = { fixed: null, load: null };
+    for (const faceId of beamState.solids[1].faceIds) {
+      const f = await call("inspect", { path: beamModel, entityId: faceId });
+      const n = f.normal;
+      const cx = f.center?.[0];
+      // Located by position (the end plane), with the normal only confirming it is an X-facing plane.
+      if (n && Math.abs(n[0]) > 0.99 && typeof cx === "number") {
+        if (Math.abs(cx + 50) < 1e-6) endFaces.fixed = faceId;
+        else if (Math.abs(cx - 50) < 1e-6) endFaces.load = faceId;
+      }
+    }
+    assert(endFaces.fixed && endFaces.load, `both end faces found by normal (got ${JSON.stringify(endFaces)})`);
+    await call("set_part", { path: beamModel, name: "FixedEnd", surfaces: [endFaces.fixed] });
+    await call("set_part", { path: beamModel, name: "LoadFace", surfaces: [endFaces.load] });
+    const beamMdpa = path.join(dir, "tutorial-cantilever.mdpa");
+    await call("export_mesh", {
+      path: beamModel,
+      format: "mdpaElements",
+      outputPath: beamMdpa,
+      options: { sizeMin: 0, sizeMax: 5, dimension: 3 },
+      manifest: true,
+    });
+    const beamText = fs.readFileSync(beamMdpa, "utf8");
+    const beamNodes = new Map();
+    for (const line of (beamText.match(/Begin Nodes([\s\S]*?)End Nodes/)?.[1] ?? "").split("\n")) {
+      const m = line.trim().match(/^(\d+)\s+(\S+)\s+(\S+)\s+(\S+)/);
+      if (m) beamNodes.set(Number(m[1]), [Number(m[2]), Number(m[3]), Number(m[4])]);
+    }
+    for (const [name, x] of [["FixedEnd", -50], ["LoadFace", 50]]) {
+      const block = (beamText.match(new RegExp(`Begin SubModelPart ${name}\\b[\\s\\S]*?^End SubModelPart$`, "m")) ?? [])[0];
+      assert(!!block, `the cantilever MDPA carries a SubModelPart ${name}`);
+      const ids = (block.match(/Begin SubModelPartNodes([\s\S]*?)End SubModelPartNodes/)?.[1] ?? "")
+        .split("\n").map((l) => l.trim()).filter((l) => /^\d+$/.test(l)).map(Number);
+      assert(ids.length >= 4, `${name} lists its nodes (got ${ids.length})`);
+      assert(
+        ids.every((id) => Math.abs((beamNodes.get(id) ?? [NaN])[0] - x) < 1e-6),
+        `every ${name} node sits exactly on the x = ${x} end plane`
+      );
+    }
+    assert(fs.existsSync(`${beamMdpa}.handoff.json`), "the cantilever export writes a handoff manifest");
+  }
 
   // --- the `.thin()` sweep-family feature (first cut) -----------------------
   //

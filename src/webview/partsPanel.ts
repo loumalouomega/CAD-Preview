@@ -8,6 +8,8 @@ export interface PartsPanelCallbacks {
   onRemovePart: (index: number) => void;
   onRename: (index: number, name: string) => void;
   onRecolor: (index: number, color: string) => void;
+  /** Sets (a positive g/cm³ number) or clears (`undefined`) the part's material density. */
+  onSetDensity: (index: number, density: number | undefined) => void;
   onRemoveEntity: (index: number, entityType: "volume" | "surface" | "line" | "point", entityId: string) => void;
   onSelectPart: (index: number | null) => void;
   /** Toggles whether this part's entities are hidden (display-only, never persisted). */
@@ -144,6 +146,34 @@ export class PartsPanel {
     });
     name.addEventListener("click", (e) => e.stopPropagation());
     row.appendChild(name);
+
+    const density = document.createElement("input");
+    density.type = "number";
+    density.className = "part-density";
+    density.min = "0";
+    density.step = "any";
+    density.placeholder = "g/cm³";
+    density.title = "Material density in g/cm³ (e.g. steel 7.85, aluminium 2.7) — drives BOM mass; empty = unset";
+    density.setAttribute("aria-label", "Density in grams per cubic centimetre");
+    if (part.density !== undefined) density.value = String(part.density);
+    // Commit on change (Enter/blur); an empty or non-positive entry clears it,
+    // and Escape restores before blur so no half-typed value lands.
+    density.addEventListener("change", () => {
+      const n = Number(density.value);
+      this.cb.onSetDensity(index, density.value.trim() !== "" && Number.isFinite(n) && n > 0 ? n : undefined);
+    });
+    density.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        e.stopPropagation();
+        density.blur();
+      } else if (e.key === "Escape") {
+        e.stopPropagation();
+        density.value = part.density !== undefined ? String(part.density) : "";
+        density.blur();
+      }
+    });
+    density.addEventListener("click", (e) => e.stopPropagation());
+    row.appendChild(density);
 
     const badge = document.createElement("span");
     badge.className = "part-badge";

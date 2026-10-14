@@ -1,5 +1,6 @@
 import type { Part } from "./protocol";
 import { validateSelectorQuery } from "./selectorQuery";
+import { validateDensity } from "./materialDensity";
 import { validateMeshGrading, validateMeshStructured } from "./meshOptions";
 
 /** Pure (vscode-free) parse/serialize for the parts sidecar — unit-testable. */
@@ -54,6 +55,7 @@ export function parsePartsJson(text: string): Part[] {
         typeof p.meshSize === "number" && Number.isFinite(p.meshSize) && p.meshSize > 0
           ? p.meshSize
           : undefined,
+      density: validateDensity((p as { density?: unknown }).density),
       meshGrading: validateMeshGrading((p as { meshGrading?: unknown }).meshGrading),
       meshStructured: validateMeshStructured((p as { meshStructured?: unknown }).meshStructured),
       ...(selector && selectorOpKind ? { selector, selectorOpKind } : {}),

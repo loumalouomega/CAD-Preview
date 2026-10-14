@@ -72,6 +72,13 @@ export class PartsModel {
     this.onChange();
   }
 
+  setDensity(index: number, density: number | undefined): void {
+    const p = this.parts[index];
+    if (!p) return;
+    p.density = density;
+    this.onChange();
+  }
+
   setMeshGrading(index: number, grading: MeshGrading | undefined): void {
     const p = this.parts[index];
     if (!p) return;
@@ -155,6 +162,7 @@ function clone(p: Part): Part {
     lines: [...p.lines],
     points: [...p.points],
     meshSize: p.meshSize,
+    density: p.density,
     // Same immutable-object-reference-is-safe reasoning as `selector` below —
     // `meshGrading`'s four numbers are only ever read, never mutated in
     // place; a shared reference across clones is safe. Must be copied here

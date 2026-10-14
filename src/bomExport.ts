@@ -25,6 +25,10 @@ export interface BomRow {
    * `null` when no member resolved to a real solid. */
   volume: number | null;
   area: number | null;
+  /** The Part's density in g/cm³, or `null` when none is set. */
+  density: number | null;
+  /** Sum-of-parts mass in grams (`volume` × `density`); `null` when the Part has no density or no member resolved — never `0`. */
+  mass: number | null;
   /** `volumes` ids that didn't resolve in the current (post-edit-replay)
    * shape — same graceful drop-and-report convention as every other
    * unresolved-id path. */
@@ -36,11 +40,12 @@ export interface BomRow {
  * (the "Copy BOM" tab-separated convention this feature was mined from).
  * Numbers are rounded to 4 decimal places only HERE (display), never in
  * {@link BomRow} itself; an unmeasurable row leaves the numeric cell empty
- * rather than writing a misleading `0`.
+ * rather than writing a misleading `0`. A row from an older host may omit the
+ * density/mass keys entirely, so `undefined` is empty too, never a throw.
  */
 export function bomTsv(rows: BomRow[]): string {
-  const fmt = (n: number | null): string => (n === null ? "" : String(Number(n.toFixed(4))));
-  const header = ["Name", "Solids", "Surfaces", "Lines", "Points", "Volume_mm3", "Area_mm2", "Unresolved"];
+  const fmt = (n: number | null | undefined): string => (n == null || !Number.isFinite(n) ? "" : String(Number(n.toFixed(4))));
+  const header = ["Name", "Solids", "Surfaces", "Lines", "Points", "Volume_mm3", "Area_mm2", "Density_g_cm3", "Mass_g", "Unresolved"];
   const lines = rows.map((r) =>
     [
       r.name,
@@ -50,6 +55,8 @@ export function bomTsv(rows: BomRow[]): string {
       String(r.pointCount),
       fmt(r.volume),
       fmt(r.area),
+      fmt(r.density),
+      fmt(r.mass),
       r.unresolvedIds.join(","),
     ].join("\t")
   );

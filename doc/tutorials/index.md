@@ -13,6 +13,7 @@ doing them in order costs less than dipping in, but any of them works on its own
 | [A parametric bolt-circle flange](/tutorials/bolt-circle-flange) | A round flange whose bolt count and circle radius are driven by variables | Variables, expressions, circular patterns, pattern-then-subtract |
 | [A shelled enclosure](/tutorials/enclosure) | An open-topped box built from a 2D sketch | Profile sketches, extrude, shell, build-time face roles |
 | [Prepare a part for FEA](/tutorials/fea-prep) | The bracket, meshed and exported for Kratos | Parts, per-part mesh sizing, FE meshing, Kratos MDPA export |
+| [A cantilever beam](/tutorials/cantilever) | A 100 × 10 × 10 beam with fixed-end and load-face parts, exported to Kratos MDPA | Parts as boundary regions, density and mass, MDPA export, handoff manifest |
 | [Model with an AI agent](/tutorials/agent-mcp) | The same bracket, built by an agent over MCP | The MCP server, `apply_edit_ops`, `inspect`, agent verification |
 
 ![The full CAD Preview editor — 3D viewer, orientation cube, sidebar panels, toolbar, and view controls.](/screenshots/viewer-main.png)

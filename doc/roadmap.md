@@ -27,7 +27,7 @@ Existing implementation references were checked against the repository where not
 
 **Extended 2026-10-09.** Extension, not a planning review. The lower command bar for manual geometry ops was added as 2.1, top of Ready product work; the eleven existing section-2 items shifted to 2.2–2.12 with anchors unchanged, so name-based links survive. Its command table and examples were then extended in place for approval. "Define lines, arcs and curves from preexisting points" was added as 2.0, above 2.1, as the section's top priority — deliberately out of the gapless 1..N sequence; it has since shipped and left this list (`CLAUDE.md`'s `point-N` references section), so section 2 again started at 2.1. The lower command bar has since shipped too (`CLAUDE.md`'s "Lower command bar" section), leaving the list; section 2 was renumbered from 2.1.
 
-**Extended 2026-10-09.** Extension, not a planning review. [Coincident-point prompt: collapse or keep independent](#coincident-point-collapse-or-independent) was added as 2.13 and [GiD-style geometry structure view](#geometry-structure-view) as 2.14, at the end of Ready product work; nothing was re-ranked.
+**Extended 2026-10-09.** Extension, not a planning review. [Coincident-point prompt: collapse or keep independent](#coincident-point-collapse-or-independent) was added as 2.13 and a GiD-style geometry structure view (since shipped and removed) as 2.14, at the end of Ready product work; nothing was re-ranked.
 
 **Extended 2026-10-12.** Extension, not a planning review: nothing was re-ranked, and every new item is appended at the end of its section so existing IDs and anchors are unchanged. Two outside projects were compared — [ReOpenSCAD](https://github.com/Matvey-Kuk/reopenscad) and [text-to-cad](https://github.com/earthtojake/text-to-cad) — and the [agent-CAD comparison](#agent-cad-comparison) below records what each feature became here. Added: 1.3 (OpenSCAD diagnostics), 2.12–2.24 (OpenSCAD include tracking, `color()` Parts, snapshot sections, clearance checks, material density, quotable references, MCP registration, MCP revision guard and agent-edit marking (both since shipped and removed), printability facts, draft analysis, hole callouts, reproducible exports), 3.12 (planar-facet promotion), 5.3 (MCP App inline preview) and 6.3 (kinematic mates). Evidence addenda went to 2.1 and 3.3, and four rejections to Non-goals.
 
@@ -155,7 +155,7 @@ CAD-Preview is embedded in [KKSS](https://github.com/loumalouomega/KKSS) as its 
 | Ask | From | Status here |
 | --- | --- | --- |
 | Every new capability reachable through this repository's MCP server, since that is the only way the KKSS assistant sees it | KKSS roadmap | Already a house rule ("Shared capabilities must reach both consumers" above) |
-| A small, reproducible structural example that a geometry-to-results tutorial can reuse | KKSS roadmap | [Canonical worked example](#canonical-worked-example-for-the-simulation-tutorial) |
+| A small, reproducible structural example that a geometry-to-results tutorial can reuse | KKSS roadmap | [Canonical worked example](#canonical-worked-example-for-the-simulation-tutorial) (the page ships; the cross-repo check remains) |
 | Performance baselines covering more than the OCCT and Gmsh paths | KKSS roadmap | Shipped; see `CLAUDE.md` |
 | One UI vocabulary across both extensions: view snaps 1–6 and `i` proposed for upstreaming, and "Cut Plane" / "REAR" renames pending | VSCode-MDPA-Preview `doc/ui-design-system.md` | [Shared UI design system](#shared-ui-design-system-with-vscode-mdpa-preview) |
 | A scheduled job that compares dependency pins with npm | VSCode-MDPA-Preview roadmap | Shipped; see `CLAUDE.md` |
@@ -191,7 +191,7 @@ Two projects built for AI agents were read for this extension:
 | `ui://` MCP-App inline viewer | Both | [MCP App inline preview](#mcp-app-inline-preview) (probe) |
 | `cad_view` returns the user's selection as quotable refs | text-to-cad | [Quotable entity references](#quotable-entity-references) (Copy reference shipped; stored queries remain) |
 | Snapshot presets (xray, hidden-line) and section mode | text-to-cad | Shipped: `render_snapshot` / `screenshot_shape` take all five display modes and an optional section `clip` (the viewer's own clip plane, solid cap included) |
-| `mass_properties` with density | text-to-cad | [Per-Part material density](#per-part-material-density) |
+| `mass_properties` with density | text-to-cad | Shipped: `Part.density` gives BOM mass and a per-solid `massGrams` (mass-weighted centre and density-weighted inertia remain out) |
 | dfam-check (overhangs, wall thickness, support, orientations, plate fit) | text-to-cad, ReOpenSCAD (plates) | [Printability facts report](#printability-facts-report) |
 | dfm draft and undercuts | text-to-cad | [Draft and undercut analysis](#draft-and-undercut-analysis) |
 | Engineering-drawing hole callouts, CENTER layer | text-to-cad | [Hole callouts on drawing sheets](#hole-callouts-on-drawing-sheets); the sheet itself ships |
@@ -289,15 +289,11 @@ These are outcome groupings, not release numbers. Independent small items can sh
 
 #### 2.3 Canonical worked example for the simulation tutorial {#canonical-worked-example-for-the-simulation-tutorial}
 
-*Area: Ecosystem.*
+*Area: Ecosystem. Effort: S.*
 
-- **Evidence:**
-  - KKSS's roadmap plans a geometry-to-results tutorial built around one small, reproducible structural example. It wants to reuse a fixture from this repository rather than invent geometry.
-  - This repository's own tutorials (`doc/tutorials/`) are executable: `npm test` compiles their op lists, and `mcp:smoke` pins the bracket tutorial.
-- **First useful increment (S):**
-  - A cantilever-beam tutorial: a box, a fixed-end Part, a loaded-face Part, a mesh preset, and an MDPA export with a handoff manifest.
-  - Pin it in `mcp:smoke` with analytic volume and exact Part membership, like the bracket tutorial.
-- **Done when:** the page builds, its op list compiles under `npm test`, and the exported MDPA opens in VSCode-MDPA-Preview with both SubModelParts populated.
+- **Done so far:** [A cantilever beam](/tutorials/cantilever) — a 100 × 10 × 10 box, `FixedEnd` and `LoadFace` Parts, an optional steel density, and an MDPA export with a handoff manifest. `mcp:smoke` pins it on the live kernel: the beam's volume is exactly 10 000 mm³, and every node of each `SubModelPart` sits exactly on its end plane (x = −50 / +50).
+- **What is left (S):** the cross-repository check — open the exported `.mdpa` in VSCode-MDPA-Preview and confirm both SubModelParts populate. It needs that extension and is not exercised from this repository.
+- **Done when:** that check passes, and KKSS's tutorial links to the page.
 
 #### 2.6 meshio++ `check_quality` as a caller-supplied quality gate {#meshio-check-quality-gate}
 
@@ -319,24 +315,6 @@ These are outcome groupings, not release numbers. Independent small items can sh
   - Panel and bar surface the prompt/choice wherever a raw coordinate can create a point (point form, curve endpoints typed raw).
 - **Done when:** on a fixture with a committed point, authoring the same coordinates — once via the panel, once headless — offers the choice interactively and honours the recorded field on replay; collapse leaves the `point-N` inventory unchanged, independent adds exactly one; a committed `test:webview` case covers the prompt end to end.
 - **Out of scope:** automatic sewing or healing of near-coincident geometry (the explicit repair op, 3.2); a general coincident-entity merge beyond points; snapping the new coordinates to the old ones (collapse reuses the id, it never moves either point).
-
-#### 2.9 GiD-style geometry structure view {#geometry-structure-view}
-
-*Area: Geometry. Effort: M.*
-
-- **Evidence:** the Display Mode selector (`src/webview/displayMode.ts`) offers five mutually exclusive tessellation renderings — `shaded` / `wireframe` / `xray` / `hiddenLines` / `flat` — and none of them shows the model's topological structure. GiD's geometry view (panel (a) in the reference image: skeletal line drawing with colour-coded entity kinds, as opposed to its mesh views (b)–(d), which this extension's shaded/wireframe modes already cover) lets the user see at a glance what the model is *made of*: points, lines, surfaces and volumes as distinct, easily recognisable primitives. The picking pipeline already enumerates exactly those kinds (`point-N` / `edge-N` / `face-N` / `solid-N`), but there is no view that renders them as such.
-- **First useful increment (M):** a sixth, webview-only display mode — **Geometry** — beside the existing five, rendering the B-rep structure skeletally: points as markers, edges as coloured lines, faces as outlines (translucent fill at most), volumes distinguished by their boundary shells, each kind in its own stable colour with a small legend. It reuses the shipped entity inventory and tessellation; no new kernel binding, no MCP tool (a purely visual interaction stays webview-only per the house rule).
-- **Done when:** on a committed multi-solid fixture, the Geometry mode shows every `point-N` / `edge-N` / `face-N` / `solid-N` recognisable by kind and selectable as today; a committed `test:webview` case toggles into the mode and screenshots it beside the shaded render for comparison.
-- **Out of scope:** mesh views — shaded/wireframe already cover GiD panels (b)–(d); dimension annotations in the structure view (the annotations feature owns those); per-Part colouring, which stays as it is.
-
-#### 2.14 Per-Part material density: mass in mass properties and BOM {#per-part-material-density}
-
-*Area: Geometry, Parity. Effort: S–M.*
-
-- **Evidence:** `get_mass_properties`, the Mass Properties panel, `generate_bom` and Copy BOM all report volume only; there is no density anywhere. text-to-cad's `mass_properties([(solid, density)])` returns mass, a mass-weighted centre and the inertia tensor, which is what a procurement BOM or a shipping estimate actually needs.
-- **First useful increment (S–M):** an optional `Part.density` (g/cm³) — tolerant parse in `partsSidecar.ts`, and copied in `PartsModel.clone()` (the documented trap where a field missing from a field-by-field clone silently stops persisting). `set_part` takes it; the Parts panel shows it beside the colour. Mass properties report `mass` and a mass-weighted centre when every selected solid has a density, and say which solids lack one otherwise. The BOM gains a mass column. A short bundled material table (steel, aluminium, ABS, PLA, …) can fill the field by name, but stores the number.
-- **Done when:** a 10 mm steel cube at 7.85 g/cm³ reports 7.85 g, a two-material assembly reports the sum, and a part with no density is reported as missing rather than as zero.
-- **Out of scope:** reading materials from STEP (the [PMI, layers and materials probe](#read-pmi-layers-and-materials-from-step) could seed this field later); density-weighted inertia.
 
 #### 2.15 Quotable entity references for agent chats {#quotable-entity-references}
 

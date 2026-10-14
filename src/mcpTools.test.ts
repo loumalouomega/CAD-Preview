@@ -409,6 +409,8 @@ function fakePipeline(overrides: Partial<Pipeline> = {}): Pipeline {
         pointCount: p.points.length,
         volume: p.volumes.length > 0 ? 1000 * p.volumes.length : null,
         area: p.volumes.length > 0 ? 600 * p.volumes.length : null,
+        density: (p as { density?: number }).density ?? null,
+        mass: p.volumes.length > 0 && (p as { density?: number }).density !== undefined ? (1000 * p.volumes.length / 1000) * (p as { density?: number }).density! : null,
         unresolvedIds: [],
       })),
       warnings: [],
@@ -3259,6 +3261,48 @@ describe("set_variables", () => {
   });
 });
 
+describe("per-Part density", () => {
+  it("set_part stores density, resolves a material name to a number, clears with null and warns on junk", async () => {
+    await setPart({ path: stpModel, name: "P", density: 2.7 });
+    expect((await readParts(stpModel))[0].density).toBe(2.7);
+    await setPart({ path: stpModel, name: "P", material: "Steel" });
+    expect((await readParts(stpModel))[0].density).toBe(7.85);
+    const bad = await setPart({ path: stpModel, name: "P", density: -1 });
+    expect(bad.warnings[0]).toMatch(/positive/);
+    expect((await readParts(stpModel))[0].density).toBe(7.85); // unchanged
+    const unknown = await setPart({ path: stpModel, name: "P", material: "unobtainium" });
+    expect(unknown.warnings[0]).toMatch(/Unknown material/);
+    await setPart({ path: stpModel, name: "P", density: null });
+    expect((await readParts(stpModel))[0].density).toBeUndefined();
+  });
+
+  it("generate_bom reports mass per Part and the assembly total; a Part without density makes the total null and is named", async () => {
+    await setPart({ path: stpModel, name: "Steel", volumes: ["solid-0"], density: 7.85 });
+    await setPart({ path: stpModel, name: "Alu", volumes: ["solid-1", "solid-2"], density: 2.7 });
+    const full = await generateBomTool(ctx(), { path: stpModel });
+    expect(full.rows![0].mass).toBeCloseTo(7.85, 9); // 1000 mm3 = 1 cm3
+    expect(full.rows![1].mass).toBeCloseTo(5.4, 9); // 2 cm3 x 2.7
+    expect(full.totalMassGrams).toBeCloseTo(13.25, 9);
+    expect(full.partsMissingDensity).toEqual([]);
+    await setPart({ path: stpModel, name: "Alu", density: null });
+    const partial = await generateBomTool(ctx(), { path: stpModel });
+    expect(partial.rows![1].mass).toBeNull();
+    expect(partial.totalMassGrams).toBeNull();
+    expect(partial.partsMissingDensity).toEqual(["Alu"]);
+    expect(partial.warnings.join(" ")).toMatch(/Alu/);
+  });
+
+  it("get_mass_properties reports mass for a solid inside a Part with density, and says so when none is set", async () => {
+    await setPart({ path: stpModel, name: "Steel", volumes: ["solid-0"], density: 7.85 });
+    const withMass = await getMassProperties(ctx(), { path: stpModel, entityId: "solid-0" });
+    expect(withMass.massGrams).toBeCloseTo((24 / 1000) * 7.85, 12); // fake volume is 24 mm3
+    expect(withMass.densityPart).toBe("Steel");
+    const without = await getMassProperties(ctx(), { path: stpModel, entityId: "solid-1" });
+    expect(without.massGrams).toBeUndefined();
+    expect(without.warnings.join(" ")).toMatch(/No density/);
+  });
+});
+
 describe("set_part", () => {
   it("upserts, updates, and removes parts", async () => {
     await setPart({ path: stpModel, name: "Inlet", surfaces: ["face-0"], meshSize: 0.5 });
@@ -4883,9 +4927,11 @@ describe("generate_bom", () => {
     expect(result.rows![1]).toMatchObject({ name: "Boss", solidCount: 2, surfaceCount: 1, volume: 2000 });
 
     const lines = result.bom!.split("\n");
-    expect(lines[0]).toBe("Name\tSolids\tSurfaces\tLines\tPoints\tVolume_mm3\tArea_mm2\tUnresolved");
+    expect(lines[0]).toBe("Name\tSolids\tSurfaces\tLines\tPoints\tVolume_mm3\tArea_mm2\tDensity_g_cm3\tMass_g\tUnresolved");
     expect(lines[1].split("\t")[0]).toBe("Body");
     expect(lines[2].split("\t")[5]).toBe("2000");
+    expect(result.totalMassGrams).toBeNull(); // no densities set
+    expect(result.partsMissingDensity).toEqual(["Body", "Boss"]);
 
     // One pipeline call for both parts — not one per part.
     expect(c.pipeline.computeBom).toHaveBeenCalledTimes(1);
