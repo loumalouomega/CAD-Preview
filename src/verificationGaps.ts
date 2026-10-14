@@ -1,16 +1,17 @@
 /**
  * The structural gate behind roadmap 1.1 "Verification-debt burn-down".
  *
- * `CLAUDE.md` is a chronological session log, so its "Verification gap, stated
- * plainly" notes outlive the gaps they describe. A raw `grep -c` over it would
- * be trivially gameable by rewording and would ratchet upward on every honest
- * retrospective, so this counts something STRUCTURAL instead:
+ * Prose "verification gap" notes outlive the gaps they describe, and a raw
+ * `grep -c` over them would be trivially gameable by rewording and would ratchet
+ * upward on every honest retrospective, so this counts something STRUCTURAL
+ * instead:
  *
- * - A **registry** (`scripts/verification-gaps/registry.json`) holds one entry
- *   per unverified claim, with a status.
- * - Every gap note in `CLAUDE.md` must carry a `[vg:<id>[,<id>…]]` marker that
- *   resolves to registry entries — so a NEW unverified feature cannot land
- *   silently: its note fails the gate until it is registered.
+ * - A **registry** (`scripts/verification-gaps/registry.json`) is the single
+ *   source of truth: one entry per unverified claim, with a status. Gaps are
+ *   recorded there, not as paragraphs in `CLAUDE.md`.
+ * - `CLAUDE.md` is no longer required to cite every entry. If a prose gap note
+ *   is written there anyway, it must still carry a `[vg:<id>[,<id>…]]` marker
+ *   that resolves to a registry entry — a note cannot sit outside the registry.
  * - An entry can only be `closed` by naming harness test titles that literally
  *   exist in `scripts/webview-test/run.mjs` or `test/integration/suite/index.ts`.
  *   Renaming or deleting the covering test re-opens the debt; rewording prose
@@ -28,7 +29,7 @@ export type GapStatus = "open" | "test-written" | "closed" | "none";
 
 export interface GapEntry {
   id: string;
-  /** The `CLAUDE.md` section the claim came from. Display only. */
+  /** Where the claim originated (historically a `CLAUDE.md` section title). Display only. */
   section: string;
   /** What is unverified, in one line. Display only. */
   gap: string;
@@ -74,13 +75,6 @@ export function findGapNotes(text: string): GapNote[] {
     notes.push({ line: i + 1, text: line.trim(), ids });
   });
   return notes;
-}
-
-/** Every `[vg:…]` id mentioned ANYWHERE in the text (notes and the closure table alike). */
-export function allMarkerIds(text: string): Set<string> {
-  const ids = new Set<string>();
-  for (const m of text.matchAll(MARKER_PATTERN)) for (const id of m[1].split(",")) if (id) ids.add(id);
-  return ids;
 }
 
 /**
@@ -166,11 +160,6 @@ export function checkGaps(input: GateInput): string[] {
     for (const id of n.ids) {
       if (!seen.has(id)) problems.push(`CLAUDE.md:${n.line} cites [vg:${id}], which is not in the registry`);
     }
-  }
-
-  const mentioned = allMarkerIds(input.claudeMd);
-  for (const e of registry.entries) {
-    if (!mentioned.has(e.id)) problems.push(`registry entry "${e.id}" is not referenced by any [vg:${e.id}] marker in CLAUDE.md (an orphaned entry cannot be audited)`);
   }
 
   const open = unresolvedCount(registry);

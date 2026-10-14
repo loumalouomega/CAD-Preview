@@ -3,7 +3,6 @@ import fs from "fs";
 import path from "path";
 import {
   findGapNotes,
-  allMarkerIds,
   harnessTestTitles,
   parseRegistry,
   checkGaps,
@@ -42,10 +41,6 @@ describe("findGapNotes", () => {
     const notes = findGapNotes(md);
     expect(notes.map((n) => n.line)).toEqual([2, 3, 4, 5, 6]);
     expect(notes.map((n) => n.ids)).toEqual([["a"], ["b", "c"], [], ["d"], ["e"]]);
-  });
-
-  it("reads markers anywhere in the text for the orphan check", () => {
-    expect([...allMarkerIds("x [vg:a] y\n- z [vg:b,c]")].sort()).toEqual(["a", "b", "c"]);
   });
 });
 
@@ -118,10 +113,10 @@ describe("checkGaps — every rule fails when it should", () => {
     expect(checkGaps(down).join("\n")).toMatch(/fell to 1 \(baseline 2\)/);
   });
 
-  it("an orphaned registry entry fails — it could not be audited from CLAUDE.md", () => {
+  it("a registry entry needs no marker in CLAUDE.md — the registry is the source of truth", () => {
     const i = base();
-    i.registry = reg(...i.registry.entries, entry({ id: "orphan", status: "none", note: "n/a" }));
-    expect(checkGaps(i).join("\n")).toMatch(/"orphan" is not referenced/);
+    i.registry = reg(...i.registry.entries, entry({ id: "unmentioned", status: "none", note: "n/a" }));
+    expect(checkGaps(i)).toEqual([]);
   });
 
   it("status none must say why; duplicate ids fail", () => {

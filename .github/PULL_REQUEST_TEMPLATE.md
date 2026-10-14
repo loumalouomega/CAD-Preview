@@ -32,14 +32,14 @@ Per CLAUDE.md's "Keep docs in sync" header — update everything the change touc
 - [ ] File-format behavior changed → `doc/file-formats.md` + the format tables in `README.md` / `doc/index.md` / `doc/getting-started.md`
 - [ ] Module/API surface changed → `doc/extension-host-api.md` and/or `doc/webview-api.md`
 - [ ] UI/toolbar flows changed → `doc/getting-started.md`
-- [ ] Non-obvious gotchas or verifications → `CLAUDE.md`
+- [ ] Non-obvious gotchas or invariants a future change could break → `CLAUDE.md` (invariants only — verification narrative belongs in the commit message)
 - [ ] MCP surface changed → `doc/mcp-server.md` (+ `scripts/mcp-smoke/run.mjs` where relevant)
 
 ## Notes
 
 <!-- Verification gaps that no automated check reached, stated plainly. If a
      new bundled dependency ships in the .vsix, note its license and say why
-     it is GPL-3.0-compatible (CLAUDE.md's "License" section). Roadmap items
+     it is GPL-3.0-compatible (CLAUDE.md's "Working rules" licence bullet). Roadmap items
      are named by heading, never "roadmap item N" — path names and quoted
      historical mentions excepted, see .github/PULL_REQUEST_TEMPLATE.md's
      sibling check in npm test. -->
