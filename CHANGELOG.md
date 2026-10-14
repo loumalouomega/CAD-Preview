@@ -6,7 +6,14 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/); thi
 
 ## [Unreleased]
 
+### Changed
+
+- **meshio++ updated 16.31.0 → 16.42.0.** API-additive; the format tables are unchanged and the existing import/export/analysis paths pass `npm test`, `mcp:smoke` and `npm run compat` unmodified.
+
 ### Added
+
+- **`segment_mesh_surface` MCP tool.** Splits a mesh's whole surface into smooth patches and fits each with a plane/sphere/cylinder/cone/torus (meshio++ `segment` + `fitPrimitives`), facts only: per-patch fit type, residuals, raw parameters, adjacency. Mesh sources only.
+- **`render_snapshot` for stl/obj/ply/gltf sources**, software-rendered by meshio++ with no Playwright/Chromium (`engine: "meshio-software"`, raw triangles, edit ops not baked).
 
 - **Geometry display mode (roadmap 2.9).** A sixth Display mode shows the B-rep structure GiD-style: faint faces, through-solid edges, enlarged point markers, a bounding shell per solid in a stable colour, and a legend. Webview-only; selection is unchanged.
 

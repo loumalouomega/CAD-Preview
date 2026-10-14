@@ -510,6 +510,12 @@ function fakePipeline(overrides: Partial<Pipeline> = {}): Pipeline {
       freeEdgeCount: 0, nonManifoldEdgeCount: 0, candidates: [], simplest: null,
       simplestRule: "", warnings: [],
     })),
+    renderMeshSoftware: vi.fn(async () => ({ triangleCount: 0, images: [], warnings: [] })),
+    segmentMeshSurface: vi.fn(async () => ({
+      numPatches: 0, numMerged: 0, numFeatureEdges: 0, numBoundaryEdges: 0, numNonManifoldEdges: 0,
+      fitCounts: { plane: 0, sphere: 0, cylinder: 0, cone: 0, torus: 0, unfitted: 0 },
+      patches: [], adjacency: [], truncated: false, warnings: [],
+    })),
     promoteMeshToBrep: vi.fn(async () => FAKE_PROMOTE_RESULT),
     repairMesh: vi.fn(async () => FAKE_REPAIR_RESULT),
     convertToStlBoundary: vi.fn(async () => new TextEncoder().encode("solid x\nendsolid x\n")),
@@ -1295,6 +1301,17 @@ describe("check_interference", () => {
   });
 });
 
+describe("render_snapshot (mesh source)", () => {
+  it("routes an STL through the software renderer, never the Playwright pipeline", async () => {
+    const c = ctx();
+    const r = await renderSnapshotTool(c, { path: stlModel });
+    expect(c.pipeline.renderMeshSoftware).toHaveBeenCalledTimes(1);
+    expect(c.pipeline.renderSnapshot).not.toHaveBeenCalled();
+    expect(r.engine).toBe("meshio-software");
+    expect(r.warnings.join(" ")).toMatch(/not baked/i);
+  });
+});
+
 describe("render_snapshot", () => {
   it("returns the pipeline's images for a B-rep source when the renderer is available", async () => {
     const c = ctx();
@@ -1362,9 +1379,9 @@ describe("render_snapshot", () => {
     expect(result).toEqual({ supported: false, images: [], warnings: ["no chromium"] });
   });
 
-  it("returns supported: false with a warning for mesh sources, without checking availability", async () => {
+  it("returns supported: false with a warning for meshio-only sources, without checking availability", async () => {
     const c = ctx();
-    const result = await renderSnapshotTool(c, { path: stlModel });
+    const result = await renderSnapshotTool(c, { path: path.join(path.dirname(stlModel), "model.vtu") });
     expect(c.pipeline.isRenderAvailable).not.toHaveBeenCalled();
     expect(c.pipeline.renderSnapshot).not.toHaveBeenCalled();
     expect(result.supported).toBe(false);

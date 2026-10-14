@@ -134,6 +134,8 @@ import type { MeshioCompanion } from "./meshioService";
 import type { checkMeshHealth, MeshHealthReport, promoteMeshToBrep, PromoteMeshResult } from "./meshHeal";
 import type { recognizePrimitives, PrimitiveReport } from "./primitiveReport";
 import type { fitMeshRegion } from "./meshRegionFit";
+import type { segmentMeshSurface, SegmentMeshOptions } from "./meshSegment";
+import type { renderMeshSoftware } from "./meshSoftwareRender";
 import type { MeshRegionFit } from "./fitMapping";
 import { fitConstructionPlane, fitOpForKind, fitStoreWarning, FIT_DERIVED_FROM } from "./fitMapping";
 import { emitPrimitiveOps } from "./primitiveEmit";
@@ -287,6 +289,8 @@ export interface Pipeline {
   checkBrepHealth: typeof checkBrepHealth;
   recognizePrimitives: typeof recognizePrimitives;
   fitMeshRegion: typeof fitMeshRegion;
+  segmentMeshSurface: typeof segmentMeshSurface;
+  renderMeshSoftware: typeof renderMeshSoftware;
   promoteMeshToBrep: typeof promoteMeshToBrep;
   repairMesh: typeof repairMesh;
   exportSvgSilhouette: typeof exportSvgSilhouette;
@@ -1788,16 +1792,28 @@ export async function renderSnapshotTool(
     composite?: boolean;
     tessellationQuality?: string;
   }
-): Promise<{ supported: boolean; images: RenderImage[]; warnings: string[]; tessellation?: RenderTessellation }> {
+): Promise<{ supported: boolean; images: RenderImage[]; warnings: string[]; tessellation?: RenderTessellation; engine?: "meshio-software"; triangleCount?: number }> {
   const modelPath = params.path;
   const route = requireRoute(modelPath);
 
   if (route.strategy !== "occt") {
-    return {
-      supported: false,
-      images: [],
-      warnings: [`${route.format} is a mesh-format source: render_snapshot is B-rep sources only in this version.`],
-    };
+    if (!COMPARABLE_MESH_FORMATS.has(route.format)) {
+      return {
+        supported: false,
+        images: [],
+        warnings: [`${route.format} is a mesh-format source with no host-side triangle parser: render_snapshot renders B-rep sources and stl/obj/ply/gltf only.`],
+      };
+    }
+    // Mesh sources take meshio++'s software rasterizer — a different engine from
+    // the Playwright viewer render, reported as such rather than substituted silently.
+    const warnings: string[] = [
+      "Rendered by meshio++'s software rasterizer (engine: meshio-software) from the raw file's triangles: pending edit ops are NOT baked, and focus/hide/clip/displayMode/view/composite/tessellationQuality are not applied. Axes are the file's own (ISO, +Z, -Y, +X).",
+    ];
+    const bytes = await readModelBytes(modelPath);
+    const format = route.format as MeshParseFormat;
+    const external = format === "gltf" ? await resolveGltfBuffers(ctx, modelPath, bytes) : undefined;
+    const r = await ctx.pipeline.renderMeshSoftware(bytes, format, { wireframe: params.displayMode === "wireframe" }, external);
+    return { supported: true, engine: "meshio-software", images: r.images, triangleCount: r.triangleCount, warnings: [...warnings, ...r.warnings] };
   }
 
   const avail = await ctx.pipeline.isRenderAvailable();
@@ -2551,6 +2567,43 @@ export async function fitMeshRegionTool(
   }
   // The report carries its own warnings (a capped region, a degenerate seed, no
   // cylinder axis) — spread last so those surface rather than an empty array.
+  return { format: route.format, supported: true, ...report };
+}
+
+// ---------------------------------------------------------------------------
+// segment_mesh_surface
+
+/**
+ * Whole-surface segmentation into smooth patches with a primitive fit per patch
+ * (meshio++ `segment` + `fitPrimitives`). Same gate as `fit_mesh_region`: mesh
+ * sources with a host-side triangle parser only. Facts only, nothing stored.
+ */
+export async function segmentMeshSurfaceTool(
+  ctx: ToolContext,
+  params: { path: string } & SegmentMeshOptions
+) {
+  const modelPath = params.path;
+  const route = requireRoute(modelPath);
+  if (route.strategy === "occt") {
+    return {
+      format: route.format,
+      supported: false,
+      warnings: [`${route.format} is a B-rep source — its surfaces are already exact, so use inspect/recognize_primitives rather than segmenting triangles.`],
+    };
+  }
+  if (!COMPARABLE_MESH_FORMATS.has(route.format)) {
+    return {
+      format: route.format,
+      supported: false,
+      warnings: [`${route.format} has no host-side triangle-soup parser (only stl/obj/ply/gltf are supported) — cannot segment it headless.`],
+    };
+  }
+  const bytes = await readModelBytes(modelPath);
+  const format = route.format as MeshParseFormat;
+  const external = format === "gltf" ? await resolveGltfBuffers(ctx, modelPath, bytes) : undefined;
+  const { path: _path, ...options } = params;
+  void _path;
+  const report = await ctx.pipeline.segmentMeshSurface(bytes, format, options, external);
   return { format: route.format, supported: true, ...report };
 }
 
