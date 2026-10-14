@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="69.276" height="69.276" viewBox="0 0 69.276 69.276">
-<path fill="none" stroke-width="1.19553" stroke-linecap="round" stroke-linejoin="round" stroke="rgb(0%, 0%, 0%)" stroke-opacity="1" stroke-miterlimit="10" d="M -28.347682 -19.843 L 28.34809 -19.843 L 28.34809 19.843 L -28.347682 19.843 Z M -28.347682 -19.843 " transform="matrix(0.989657, 0, 0, -0.989657, 34.304486, 34.304486)"/>
-<path fill="none" stroke-width="1.29515" stroke-linecap="round" stroke-linejoin="round" stroke="rgb(0%, 0%, 0%)" stroke-opacity="1" stroke-dasharray="2.98883 2.98883" stroke-miterlimit="10" d="M 0 -19.843 L 0 19.843 " transform="matrix(0.989657, 0, 0, -0.989657, 34.304486, 34.304486)"/>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="69.227" height="52.319" viewBox="0 0 69.227 52.319">
+<path fill="none" stroke-width="1.19553" stroke-linecap="round" stroke-linejoin="round" stroke="rgb(0%, 0%, 0%)" stroke-opacity="1" stroke-miterlimit="10" d="M -28.345688 -19.841229 L -28.345688 19.844476 L 28.347611 19.844476 L 28.347611 -19.841229 Z M -28.345688 -19.841229 " transform="matrix(0.987151, 0, 0, -0.987151, 34.231473, 25.823869)"/>
+<path fill="none" stroke-width="1.29515" stroke-linecap="round" stroke-linejoin="round" stroke="rgb(0%, 0%, 0%)" stroke-opacity="1" stroke-dasharray="2.98883 2.98883" stroke-miterlimit="10" d="M -0.0010169 -19.841229 L -0.0010169 19.844476 " transform="matrix(0.987151, 0, 0, -0.987151, 34.231473, 25.823869)"/>
 </svg>
