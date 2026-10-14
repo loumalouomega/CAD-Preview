@@ -113,14 +113,14 @@ Opening a STEP/IGES/BREP/CSG/SCAD file for the first time (or reopening one afte
 
 ### The Advanced Group
 
-Every section header reads chevron · icon · title, so a collapsed sidebar is still scannable by icon. The sidebar's top level holds only the sections that **edit** the document — Components, Parts, Edits, Customizer (`.scad` sources only), FE Mesh. Everything that only *reports* on it, or pulls from a library, lives under a single collapsible **Advanced** group at the bottom:
+Every section header reads chevron · icon · title, so a collapsed sidebar is still scannable by icon. The sidebar's top level holds only the sections that **edit** the document — Components, Parts, Layers, Edits, Customizer (`.scad` sources only), FE Mesh. Everything that only *reports* on it, or pulls from a library, lives under a single collapsible **Advanced** group at the bottom:
 
 | Advanced ▸ | Sections |
 | --- | --- |
 | **Analysis** | Mass Properties, Clash, B-rep Health, Mesh Health, Region fit, Primitives, Passages |
 | **Library** | Macros, Standard Parts |
 
-Advanced starts collapsed. Its header carries a badge counting how many of its nine sections apply to the current file (`7 of 9` on a STEP source, where Mesh Health and Region fit want a mesh; a plain `9` when all of them apply), so you can tell whether opening it is worth the click without opening it. Each section inside keeps its own chevron and collapses independently, exactly as before — the group simply adds one more level.
+Advanced starts collapsed. Its header carries a badge counting how many of its nine sections apply to the current file (`7 of 9` on a STEP/IGES/BREP source; `5 of 9` on a native STL/OBJ/PLY/glTF source; `3 of 9` on a meshio-converted source), so you can tell whether opening it is worth the click without opening it. Each section inside keeps its own chevron and collapses independently, exactly as before — the group simply adds one more level.
 
 ### Collapsing Sidebar Sections
 
@@ -680,6 +680,21 @@ The **B-rep Health** panel (Advanced ▸ Analysis, STEP/IGES/BREP sources only) 
 3. Below it: solid/shell/face/edge counts, one row per solid (shells and how many are open), and one row per flagged subshape with the checker's named statuses — for example `face-13 — UnorientableShape` or `shell-0 — NotClosed`. Hover a face, edge or solid row to highlight it in the view.
 
 `shell-N` ids are local to this report; nothing else in CAD Preview names shells. A model that passes is not guaranteed to mesh in Gmsh — the checker and the mesher test different things. The same report is available headless as the `check_brep_health` MCP tool.
+
+### Mesh Health
+
+The **Mesh Health** panel (Advanced ▸ Analysis, native STL/OBJ/PLY/glTF sources only) reports whether a triangle mesh can be sewn into a solid — the interactive counterpart of the `check_mesh_health` MCP tool. It repairs nothing itself.
+
+1. Click **Check Healability**. Each connected component gets one row-group: free/non-manifold edge counts, degenerate face count, the required sewing tolerance (or `did not close`), healed area/volume delta vs. the raw mesh, plus meshio++'s oriented signals — **Inconsistently wound pairs** (adjacent triangles wound oppositely, invisible to the edge counts), **Inverted faces** (shown only when non-zero), and triangle quality.
+2. Tick **Auto-decimate** (session-only, off by default) to run the check over a meshio++-decimated copy (~1,000 triangles) instead of a mesh above the 50,000-triangle ceiling; the report states the resampling actually applied.
+3. **Promote to B-rep…** enables only once a report shows at least one closed component; **Repair (robust)…** enables only once a report shows at least one component that did not close. Both write a new file via a save dialog and never modify the open document; re-run **Check Healability** on the result before acting further.
+
+### Region Fit
+
+The **Region Fit** panel (Advanced ▸ Analysis, native STL/OBJ/PLY/glTF sources only) fits a plane / cylinder / sphere to a mesh region — the interactive counterpart of the `fit_mesh_region` MCP tool. It emits no ops by itself.
+
+1. Click **Pick seed**, then click a surface. The panel grows a region outward from the nearest triangle and reports the triangle count (plus `capped` when it hit the size cap), the `simplest` candidate, warnings, and one row per fitted plane/cylinder/sphere with its residual.
+2. **Save plane** stores the fitted plane as a named construction plane (`<model>.planes.json`); **Add cylinder** / **Add sphere** push the corresponding creation op onto the edit history. Buttons enable only when that candidate fitted.
 
 ### Passages
 

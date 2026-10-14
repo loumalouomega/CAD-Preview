@@ -638,7 +638,7 @@ None of these depends on another's result.
 - **Evidence today:**
   - `promote_mesh_to_brep` and `check_mesh_health` build one `BRepBuilderAPI_MakeFace` per triangle and sew them. The cost scales with triangle count, which is why `MAX_HEALABLE_TRIANGLES` refuses meshes above 50 000 and auto-decimation targets about 1 000.
   - The pieces exist: `src/webview/meshFacets.ts`'s `segmentCoplanarFacets` (pure, already used host-side by `meshioRegionParts.ts`) groups near-coplanar triangles, and `addSurfaceFromLines`' multi-loop path builds a planar face with holes from closed loops, choosing hole orientation by winding sign.
-  - The alternative is to sew per triangle and then merge with `ShapeUpgrade_UnifySameDomain`, which now ships as the `unifySameDomain` edit op (`CLAUDE.md`'s "Unify same-domain faces" section) — but that keeps the per-triangle cost it is meant to remove.
+  - The alternative is to sew per triangle and then merge with `ShapeUpgrade_UnifySameDomain`, which now ships as the parameter-free whole-model `unifySameDomain` edit op — but that keeps the per-triangle cost it is meant to remove.
 - **Probe (S):**
   1. For `cube.stl`, a faceted cylinder STL and one large polyhedral mesh, extract each facet's boundary loops (outer plus holes) in the facet's plane, and build one face per facet through the multi-loop construction.
   2. Sew the faces and build the solid as `promoteMeshToBrep` does.

@@ -69,6 +69,9 @@ interface Part {
   surfaces: string[]  // face ids (last-good cache when selector is set)
   lines: string[]     // edge ids
   points: string[]    // point ids
+  meshSize?: number   // optional Gmsh target element size for local refinement
+  meshGrading?: MeshGrading   // optional distance-graded sizing around the part (B-rep only)
+  meshStructured?: MeshStructured   // optional transfinite divisions per meshed edge (B-rep only)
   selector?: SelectorQuery   // re-executable query naming surfaces; host re-resolves it (annotation+cache)
   selectorOpKind?: string    // producing op's kind at synthesis time (stale-index guard)
 }
@@ -156,6 +159,7 @@ interface ViewState {
   panes?: PaneViewState[]                    // one per pane of `layout`, row-major; absent = single pane
   collapsedPanels?: string[]                 // sidebar sections collapsed to their header, by panel id
   sidebarWidth?: number                      // resizable sidebar width in px; absent = 220 default
+  bookmarks?: ViewBookmark[]                 // named saved viewpoints (View ▾ menu); session-persisted per document
 }
 ```
 
@@ -178,7 +182,7 @@ type EditOp =
   | { op: 'translate'; targets: string[]; vec: Vec3 }
   | { op: 'rotate'; targets: string[]; axisPoint: Vec3; axisDir: Vec3; angleDeg: number }
   | { op: 'scale'; targets: string[]; center: Vec3; factors: Vec3 }   // uniform = [s,s,s]
-  | { op: 'mirror'; targets: string[]; planePoint?: Vec3; planeNormal?: Vec3; midplaneFaces?: [string, string] }  // XOR: inline pair or two planar parallel faces
+  | { op: 'mirror'; targets: string[]; planePoint?: Vec3; planeNormal?: Vec3; planeId?: string; midplaneFaces?: [string, string] }  // XOR: inline pair or planeId or two planar parallel faces
   | { op: 'boolean'; kind: 'union' | 'subtract' | 'intersect'; a: string[]; b: string[] }
   | { op: 'fillet'; edges: string[]; radius: number }
   | { op: 'chamfer'; edges: string[]; distance: number; distance2?: number; angleDeg?: number; face?: string }
@@ -198,17 +202,21 @@ type EditOp =
   //                       1..N = inner loops in order; omit = face as modeled).
   //                       An explicit pick refuses `thin` (thin builds from the
   //                       outer boundary alone).
-  | { op: 'extrude'; profile?: string; profileEdges?: string[]; dir: Vec3; length: number; thin?: number; thinOuter?: number; pick?: 'outer' | 'all' | number[] }
+  | { op: 'extrude'; profile?: string; profileEdges?: string[]; dir: Vec3; length?: number; upToFace?: string; thin?: number; thinOuter?: number; pick?: 'outer' | 'all' | number[] }  // length XOR upToFace (planar-face plane)
   | { op: 'revolve'; profile?: string; profileEdges?: string[]; axisPoint: Vec3; axisDir: Vec3; angleDeg: number; thin?: number; thinOuter?: number; pick?: 'outer' | 'all' | number[] }
   | { op: 'sweep'; profile?: string; profileEdges?: string[]; path: string; thin?: number; thinOuter?: number; pick?: 'outer' | 'all' | number[] }
-  | { op: 'loft'; profiles?: string[]; profileEdgeSets?: string[][]; thin?: number; thinOuter?: number }
+  | { op: 'loft'; profiles?: string[]; profileEdgeSets?: string[][]; thin?: number; thinOuter?: number; guides?: string[]; smoothing?: boolean }
+  | { op: 'rib'; spineEdges: string[]; dir: Vec3; thin: number; thinOuter?: number; upTo: string; blendRadius?: number }  // thin required, symmetric; fused into the model, not appended
+  | { op: 'wrap'; profile: string; target: 'cylinder' | 'cone'; axisPoint: Vec3; axisDir: Vec3; radius: number; halfAngleDeg?: number; thickness: number; variant: 'emboss' | 'engrave' | 'standalone'; targets?: string[] }
   | { op: 'explode'; factor: number }
   | { op: 'mate'; faceA: string; faceB: string }
   | { op: 'shell'; thickness: number; openingFaces: string[]; join?: 'arc'|'intersection'|'tangent' }        // >= 1 face id; negative = walls inward
-  | { op: 'draft'; faces: string[]; angleDeg: number; planePoint?: Vec3; planeNormal?: Vec3 }  // 0<angle<90; omit the plane = each face's own plane
+  | { op: 'draft'; faces: string[]; angleDeg: number; planePoint?: Vec3; planeNormal?: Vec3; planeId?: string }  // 0<angle<90; omit the plane = each face's own plane
+  | { op: 'defeature'; faces: string[] }   // removes faces as recognized features; solid heals behind them
+  | { op: 'unifySameDomain' }   // parameter-free, whole model: merges same-surface faces/edges
   | { op: 'addEdgeSlot'; edge: string; width: number }               // stadium slot face around an existing edge
-  | { op: 'splitByPlane'; targets: string[]; planePoint?: Vec3; planeNormal?: Vec3; midplaneFaces?: [string, string]; keep: 'both' | 'positive' | 'negative' }
-  | { op: 'section'; targets: string[]; planePoint?: Vec3; planeNormal?: Vec3; midplaneFaces?: [string, string] }
+  | { op: 'splitByPlane'; targets: string[]; planePoint?: Vec3; planeNormal?: Vec3; planeId?: string; midplaneFaces?: [string, string]; keep: 'both' | 'positive' | 'negative' }
+  | { op: 'section'; targets: string[]; planePoint?: Vec3; planeNormal?: Vec3; planeId?: string; midplaneFaces?: [string, string] }
   | { op: 'drill'; targets: string[]; profile?: string; profileEdges?: string[]; pick?: 'outer' | 'all' | number[]; dir: Vec3; length: number }  // region prism(s) cut from the targets; explicit length only
   | { op: 'addBox'; center: Vec3; size: Vec3 }
   | { op: 'addSphere'; center: Vec3; radius: number }
@@ -340,14 +348,22 @@ interface ComponentHealthReport {   // src/meshHeal.ts — one per connected com
   healedVolume: number | null
   areaDeltaPct: number | null
   volumeDeltaPct: number | null
+  inconsistentPairCount: number | null   // meshio++ oriented signal (null when unanalyzable)
+  inconsistentEdges: Array<[number, number]>   // welded-vertex pairs, capped at 200
+  inconsistentEdgePoints: Array<[number, number, number]>   // midpoints, same order
+  inconsistentEdgesTruncated: boolean
+  inconsistentDisagreement?: string   // only when meshio++'s two counts differ
+  invertedCellCount: number | null
+  quality: QualitySummary | null   // normalized min-angle summary; null when all-NaN
 }
 
 interface MeshHealthReport {
   componentCount: number
   components: ComponentHealthReport[]
+  decimated?: { fromTriangles: number; toTriangles: number; ratio: number }   // only over an auto-decimated mesh
 }
 
-interface MeshRegionFit {              // src/meshRegionFit.ts
+interface MeshRegionFit {              // src/fitMapping.ts
   seedTriangle: number
   triangleCount: number
   capped: boolean
@@ -360,6 +376,11 @@ interface MeshRegionFit {              // src/meshRegionFit.ts
   simplestRule: string
   warnings: string[]
 }
+
+interface MeshioOpSpec {              // src/meshioOps.ts — one panel Run = one entry (transform_mesh takes a list)
+  op: 'clean' | 'decimate' | 'smooth' | 'subdivide' | 'refine' | 'agglomerate' | 'convertCells'
+  ratio?: number; iterations?: number; levels?: number; method?: string; mode?: string; targetGroupSize?: number
+}
 ```
 
 `ViewerDefaults` mirrors the `cadPreview.*` VS Code settings (`src/viewerDefaults.ts`) — cross-document defaults only; a per-document sidecar value or a runtime toggle (the toolbar Grid button) always wins once set. `MassProperties` is computed via OCCT `BRepGProp` for B-rep sources (`src/massProperties.ts`); mesh sources compute the equivalent client-side and never send it over this protocol at all (no host round trip) — see [Extension Host API](./extension-host-api.md) and [Webview API](./webview-api.md).
@@ -371,20 +392,24 @@ interface MeshRegionFit {              // src/meshRegionFit.ts
 ```typescript
 type HostToWebview =
   | { type: 'geometry'; meshes: EncodedMesh[]; edges: EncodedEdge[]; points: EncodedPoint[]; opOutcomes?: OpOutcome[]; guideIds?: string[]; opBuckets?: OpBucket[]; autoFit?: boolean }
-  | { type: 'tree';     root: TreeNode; sourceUnit?: string }
+  | { type: 'tree';     root: TreeNode; sourceUnit?: string; upgrade?: boolean }
+  | { type: 'planes'; planes: ConstructionPlane[] }
+  | { type: 'documentInfo'; name: string; path: string; format: string; dirty: boolean; unsavedEdits: number }
+  | { type: 'kernelStatus'; state: KernelState }
   | { type: 'loadUrl';  url: string; format: CadFormat }
   | {
       type: 'loadMeshBytes'; sourceFormat: CadFormat; dataBase64: string
       meshioMetadata?: {
         regions: Array<{ name: string; kind: string; numEntries: number }>
         pointDataNames: string[]; cellDataNames: string[]; fieldDataNames: string[]
+        arrays?: Array<{ name: string; location: string; components: number; min: number; max: number; nanCount: number }>
       }
       regionAssignment?: { regionNames: string[]; triangleRegionIndex: string }
     }
   | { type: 'parts';    parts: Part[] }
   | { type: 'layers';   layers: Layer[]; nextId: number }
   | { type: 'annotations'; annotations: Annotation[] }
-  | { type: 'edits';    ops: EditOp[]; variables: ParamVariable[]; bakedThrough?: number }
+  | { type: 'edits';    ops: EditOp[]; variables: ParamVariable[]; bakedThrough?: number; externalFrom?: number }
   | { type: 'status';   text: string }
   | { type: 'error';    message: string }
   | { type: 'editError'; message: string }
@@ -427,6 +452,12 @@ type HostToWebview =
   | { type: 'measureExactError'; requestId: string; message: string }
   | { type: 'meshHealResult'; requestId: string; report: MeshHealthReport }
   | { type: 'meshHealError'; requestId: string; message: string }
+  | { type: 'brepHealthResult'; requestId: string; report: BrepHealthReport }
+  | { type: 'brepHealthError'; requestId: string; message: string }
+  | { type: 'meshioOpsResult'; requestId: string; steps: Array<{ op: string; applied: boolean; detail: string }>; warnings: string[] }
+  | { type: 'meshioOpsError'; requestId: string; message: string }
+  | { type: 'remeshResult'; requestId: string; report?: object; written?: string; warnings: string[]; cancelled?: boolean }
+  | { type: 'remeshError'; requestId: string; message: string }
   | { type: 'bomResult'; requestId: string; rows: BomRow[]; warnings: string[] }
   | { type: 'bomError'; requestId: string; message: string }
   | { type: 'holeTableResult'; requestId: string; rows: HoleTableRow[]; warnings: string[] }
@@ -445,8 +476,6 @@ type HostToWebview =
   | { type: 'opPreviewError'; requestId: string; message: string }
   | { type: 'colorFieldResult'; requestId: string; values: string; min: number; max: number }
   | { type: 'colorFieldError'; requestId: string; message: string }
-  | { type: 'fitRegionResult'; requestId: string; fit: MeshRegionFit }
-  | { type: 'fitRegionError'; requestId: string; message: string }
   | { type: 'linkedCamera'; camera: LinkedCameraState }
   | { type: 'camerasLinked'; enabled: boolean }
   | { type: 'renderViewRequest'; requestId: string; direction: [number, number, number]; up?: [number, number, number]; label: string; focus?: Array<{ entityType: EntityType; entityId: string }>; hide?: Array<{ entityType: EntityType; entityId: string }>; wireframe?: boolean; displayMode?: DisplayMode; clip?: ClipPlaneState; frameBox?: { min: [number, number, number]; max: [number, number, number] } }
@@ -1028,6 +1057,10 @@ type WebviewToHost =
   | { type: 'partsChanged'; parts: Part[] }
   | { type: 'layersChanged'; layers: Layer[]; nextId: number }
   | { type: 'annotationsChanged'; annotations: Annotation[] }
+  | { type: 'planesChanged'; planes: ConstructionPlane[] }
+  | { type: 'newBlank' }
+  | { type: 'savePreprocessRequest' }
+  | { type: 'loadPreprocessRequest' }
   | { type: 'scadApplyOverrides'; overrides: Record<string, unknown> }
   | { type: 'editsChanged'; ops: EditOp[]; variables: ParamVariable[] }
   | { type: 'viewChanged'; view: ViewState }
@@ -1042,7 +1075,7 @@ type WebviewToHost =
   | { type: 'meshingChanged'; options: MeshOptions }
   | { type: 'meshingGenerate'; requestId: string; options: MeshOptions; stl?: string }
   | { type: 'meshSweepRequest'; requestId: string; sizes: number[]; options: MeshOptions; stl?: string; writeOutputs?: boolean }
-  | { type: 'meshingExport'; requestId: string; target: MeshExportFormatId; options: MeshOptions; stl?: string; unit?: DisplayUnit }
+  | { type: 'meshingExport'; requestId: string; target: MeshExportFormatId; options: MeshOptions; stl?: string; unit?: DisplayUnit; manifest?: boolean }
   | { type: 'meshingCancel'; requestId: string }
   | { type: 'meshPresetApply'; name: string }
   | { type: 'meshPresetSaveCurrent' }
@@ -1052,6 +1085,8 @@ type WebviewToHost =
   | { type: 'repairMeshButtonClicked' }
   | { type: 'screenshotResult'; requestId: string; data: string }
   | { type: 'screenshotError'; requestId: string; message: string }
+  | { type: 'renderViewResult'; requestId: string; data: string }
+  | { type: 'renderViewError'; requestId: string; message: string }
   | { type: 'massPropertiesRequest'; requestId: string; entityId: string | null }
   | { type: 'clashCheckRequest'; requestId: string; partA: string; partB: string; minClearance?: number }
   | { type: 'clashCheckAllRequest'; requestId: string; maxPairs?: number; maxBooleans?: number; minClearance?: number }
@@ -1080,6 +1115,8 @@ type WebviewToHost =
   | { type: 'exportDxfRequest' }
   | { type: 'exportDrawingRequest' }
   | { type: 'exportSheetRequest' }
+  | { type: 'meshioOpsRequest'; requestId: string; ops: MeshioOpSpec[] }
+  | { type: 'remeshRequest'; requestId: string; source: 'file' | 'generated'; options: object; meshOptions: MeshOptions; stl?: string }
   | { type: 'opPreviewRequest'; requestId: string; op: EditOp }
 ```
 ### `partsChanged`
@@ -1092,7 +1129,7 @@ Sent whenever the user mutates parts (create / rename / recolour / delete / assi
 
 ### `layers`
 
-Sent after geometry, once the host has read the layers sidecar (`<model>.layers.json`) — same timing/role as `parts`/`annotations`. Carries the saved layers (empty array when no sidecar exists — the default layer is implicit until the first real layer is created). The webview loads them into `LayersModel` (silent `load()`, no `onChange` echo — hydrating from disk must not post straight back as a write) and renders the Layers panel. `nextId` is the allocation counter the sidecar persists, adopted by the webview so a created layer never recycles a deleted id.
+(Host → webview detail documented in this section for historical reasons — see the `HostToWebview` union above.) Sent after geometry, once the host has read the layers sidecar (`<model>.layers.json`) — same timing/role as `parts`/`annotations`. Carries the saved layers (empty array when no sidecar exists — the default layer is implicit until the first real layer is created). The webview loads them into `LayersModel` (silent `load()`, no `onChange` echo — hydrating from disk must not post straight back as a write) and renders the Layers panel. `nextId` is the allocation counter the sidecar persists, adopted by the webview so a created layer never recycles a deleted id.
 
 Also sent when `<model>.layers.json` changes externally, via the same content-compared watcher every other sidecar uses — and resent by a rebind after a topology-changing edit, since layer membership (an `EntityIdBag` like Parts) is rematched geometrically on the same pass.
 
@@ -1110,7 +1147,7 @@ Sent whenever the user mutates layers (create / rename / recolour / visibility /
 
 ### `planes`
 
-Sent after geometry, once the host has read the construction-planes sidecar (`<model>.planes.json`) — same timing/role as `parts`/`annotations` (roadmap "A named, persisted construction-plane entity", Phase 3 closed). Carries the saved planes (empty array when no sidecar exists). The webview loads them into `PlanesModel` (silent `load()`, no `onChange` echo — hydrating from disk must not post straight back as a write) and renders the Planes group in the view-controls panel.
+(Host → webview detail documented in this section for historical reasons — see the `HostToWebview` union above.) Sent after geometry, once the host has read the construction-planes sidecar (`<model>.planes.json`) — same timing/role as `parts`/`annotations` (roadmap "A named, persisted construction-plane entity", Phase 3 closed). Carries the saved planes (empty array when no sidecar exists). The webview loads them into `PlanesModel` (silent `load()`, no `onChange` echo — hydrating from disk must not post straight back as a write) and renders the Planes group in the view-controls panel.
 
 Also sent when `<model>.planes.json` changes externally, via the same content-compared watcher every other sidecar uses. Unlike `parts`/`annotations` it is **never** resent by a rebind: a `ConstructionPlane` stores resolved vectors, not entity ids, so a topology-changing op leaves it untouched by design.
 
@@ -1136,7 +1173,7 @@ Sent whenever the user saves the current clip plane, enters one numerically, or 
 
 ### `scadParams` / `scadOverrides` / `scadApplyOverrides`
 
-OpenSCAD Customizer (roadmap "OpenSCAD Customizer panel in the viewer"), `.scad` sources only. `scadParams` carries the host-parsed Customizer parameters (the same `parseScadParameters` `list_scad_parameters` uses — name, type, default, group, description, range/options, line), sent on `ready` and whenever the source file changes externally. `scadOverrides` carries the persisted overrides from `<model>.scad-params.json` (empty when no sidecar exists), sent on `ready` and whenever that sidecar changes externally — silent hydration, never echoed back. `scadApplyOverrides` goes the other way: the panel's current field values on **Apply** (or `{}` on **Reset**). The host validates with `validateScadOverrides` (unknown names and wrong types dropped with a warning, out-of-range applied with a note — the `convert_scad` rule), persists the validated set, and reloads the geometry with the values as `-D` overrides. The source file is never written.
+OpenSCAD Customizer (roadmap "OpenSCAD Customizer panel in the viewer"), `.scad` sources only. `scadParams` / `scadOverrides` are host → webview hydration (documented here beside their `scadApplyOverrides` counterpart — see the `HostToWebview` union above); `scadParams` carries the host-parsed Customizer parameters (the same `parseScadParameters` `list_scad_parameters` uses — name, type, default, group, description, range/options, line), sent on `ready` and whenever the source file changes externally. `scadOverrides` carries the persisted overrides from `<model>.scad-params.json` (empty when no sidecar exists), sent on `ready` and whenever that sidecar changes externally — silent hydration, never echoed back. `scadApplyOverrides` goes the other way: the panel's current field values on **Apply** (or `{}` on **Reset**). The host validates with `validateScadOverrides` (unknown names and wrong types dropped with a warning, out-of-range applied with a note — the `convert_scad` rule), persists the validated set, and reloads the geometry with the values as `-D` overrides. The source file is never written.
 
 ```json
 { "type": "scadParams", "params": [{ "name": "width", "kind": "number", "default": 40, "group": "Dimensions", "hidden": false, "line": 3, "min": 10, "max": 100 }] }
@@ -1563,12 +1600,12 @@ B-rep targets (STEP/IGES/BREP) skip the `exportMesh` round-trip entirely — the
 ### Host side (`src/protocol.ts`)
 
 ```typescript
-export function encodeBuffer(arr: Float32Array | Uint32Array): string {
-  return Buffer.from(arr.buffer).toString('base64')
+export function encodeBuffer(arr: Float32Array | Uint32Array | Int32Array): string {
+  return Buffer.from(arr.buffer, arr.byteOffset, arr.byteLength).toString('base64')
 }
 ```
 
-Uses Node.js `Buffer` (not available in the webview).
+Uses Node.js `Buffer` (not available in the webview). The byte-offset/length slice matters: Node `Buffer`s are pooled, so encoding `arr.buffer` whole would leak unrelated pool bytes.
 
 ### Webview side (`src/webview/geometryBuilder.ts`)
 

@@ -563,7 +563,7 @@ The **File ▸ Export…** menu item (or Ctrl+E) converts the currently displaye
 
 | Source pipeline | Export targets |
 | --- | --- |
-| B-rep (STEP/IGES/BREP) | its **own** format first (confirmed save-in-place), then the other two B-rep formats, **plus** STL/OBJ/PLY/glTF/3MF |
+| B-rep (STEP/IGES/BREP/CSG/SCAD) | its **own** format first (confirmed save-in-place), then the other B-rep formats, **plus** STL/OBJ/PLY/glTF/3MF |
 | Mesh (STL/OBJ/PLY) | its **own** format first (confirmed save-in-place), then the other mesh formats |
 | Mesh (3MF) | the other mesh formats only (display-only on the host; never saved in place) |
 | Mesh (glTF) | the other mesh formats only (glTF is never offered its own format — the exporter only emits binary `.glb`, so saving in place would change container) |

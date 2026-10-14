@@ -476,13 +476,13 @@ Non-topology-changing ops are skipped entirely in both paths (their ids are alre
 
 ---
 
-## `src/meshRegionGrow.ts`, `src/primitiveFit.ts`, and `src/meshRegionFit.ts`
+## `src/meshRegionGrow.ts`, `src/primitiveFit.ts`, and `src/fitMapping.ts`
 
 Mesh-side region fitting (the `fit_mesh_region` feature) — `fit_mesh_region`. All three are pure and **dependency-free**, and the whole path is **WASM-free** (no `getOcct`), so it preserves the "opening a pure-mesh file must never load the WASM" invariant.
 
 - **`meshRegionGrow.ts`** — `growRegion(positions, indices, seedTriangle, {angleDeg, maxTriangles})` → `{triangles, capped}`, a seeded dihedral-gated flood fill copying `connectedComponents`' discipline. Plus `nearestTriangleToPoint` (centroid distance — documented as a *seed* resolver, not a containment test), `regionPoints`, and `regionNormals`. Deliberately NOT `meshFacets.ts`'s `segmentCoplanarFacets`: that is global segmentation with no cap, is not THREE-free, and its 15° tolerance is tuned to split flat faces where this needs to walk across a curve.
 - **`primitiveFit.ts`** — `symmetricEigen` (3×3 cyclic Jacobi, ascending, since every consumer wants the *smallest* eigenvector), `solveLinear`, `fitPlane` (point PCA), `fitSphere` (Kasa), `fitCylinder` (axis from the covariance of the **normals**, then a 2D Kasa circle), and `axialExtent`. None of this existed anywhere in the repo before — there is no matrix library in the host dependency set, so it is hand-rolled like every other pure module.
-- **`meshRegionFit.ts`** — the orchestrator: `parseToWeldedMesh` → resolve seed → grow → fit all three → residual via `maxDeviation`. Publishes every candidate with its own residual rather than picking a winner, so a caller can disagree. `simplestOf(candidates)` is exported and pure — the published rule (simplest shape first, then a residual threshold) applied over exactly the numbers the result carries, so `simplestRule`'s "recompute it yourself" claim is verifiable rather than aspirational.
+- **`fitMapping.ts`** — the orchestrator (`MeshRegionFit` lives here): `parseToWeldedMesh` → resolve seed → grow → fit all three → residual via `maxDeviation`. Publishes every candidate with its own residual rather than picking a winner, so a caller can disagree. `simplestOf(candidates)` is exported and pure — the published rule (simplest shape first, then a residual threshold) applied over exactly the numbers the result carries, so `simplestRule`'s "recompute it yourself" claim is verifiable rather than aspirational.
 
 `primitiveSdf.ts`'s `Primitive` union gained a `plane` variant for this — its one unbounded member. A fitted cylinder is infinite and must be clipped to the region's axial extent before its residual means anything.
 
@@ -733,13 +733,13 @@ Maps file extensions to a render strategy and canonical format identifier.
 ```typescript
 type RenderStrategy = 'occt' | 'three' | 'meshio'
 type CadFormat =
-  | 'step' | 'iges' | 'brep' | 'stl' | 'obj' | 'ply' | 'gltf' | '3mf'
+  | 'step' | 'iges' | 'brep' | 'csg' | 'scad' | 'stl' | 'obj' | 'ply' | 'gltf' | '3mf'
   | 'vtk' | 'vtu' | 'med' | 'cgns' | 'exodus' | 'xdmf' | 'mdpa'
   | 'openfoam'
-  | 'gmsh' | 'abaqus' | 'unv' | 'su2' | 'medit'
+  | 'gmsh' | 'abaqus' | 'unv' | 'su2' | 'medit' | 'gid' | 'nastran'
 interface FileRoute { strategy: RenderStrategy; format: CadFormat }
-const MESHIO_FORMATS: readonly CadFormat[]  // the 13 meshio-routed CadFormat members, one source of truth
-const AMBIGUOUS_MESHIO_EXTENSIONS: ReadonlyMap<string, string>  // extension -> caveat message; "msh" (also ANSYS/FreeFem) and "inp" (also ANSYS APDL) default to this codebase's own Gmsh/Abaqus output, surfaced as a status/warning on open
+const MESHIO_FORMATS: readonly CadFormat[]  // the 15 meshio-routed CadFormat members, one source of truth
+const AMBIGUOUS_MESHIO_EXTENSIONS: ReadonlyMap<string, string>  // extension -> caveat message; "msh" (also ANSYS/FreeFem), "inp" (also ANSYS APDL) and "bdf" (also X11 bitmap fonts) default to this codebase's own Gmsh/Abaqus/Nastran output, surfaced as a status/warning on open
 type MeshParseFormat = 'stl' | 'obj' | 'ply' | 'gltf'
 const COMPARABLE_MESH_FORMATS: ReadonlySet<CadFormat>  // = {stl, obj, ply, gltf}
 const DISPLAY_ONLY_MESH_FORMATS: ReadonlySet<CadFormat> // = {3mf}: loaded by the webview only; every other `three` format is in the set above (pinned by a drift-guard test)
@@ -767,6 +767,8 @@ Returns `undefined` for unrecognized extensions (the extension never opens those
 | `.step`, `.stp` | `occt`   | `step`   |
 | `.iges`, `.igs` | `occt`   | `iges`   |
 | `.brep`         | `occt`   | `brep`   |
+| `.csg`          | `occt`   | `csg`    |
+| `.scad`         | `occt`   | `scad`   |
 | `.stl`          | `three`  | `stl`    |
 | `.obj`          | `three`  | `obj`    |
 | `.ply`          | `three`  | `ply`    |
@@ -785,6 +787,8 @@ Returns `undefined` for unrecognized extensions (the extension never opens those
 | `.unv`          | `meshio` | `unv`    |
 | `.su2`          | `meshio` | `su2`    |
 | `.mesh`         | `meshio` | `medit`  |
+| `.bdf`          | `meshio` | `nastran` |
+| `.post.msh`     | `meshio` | `gid` (compound suffix; `.post.res` sibling is staged, not opened directly) |
 
 ---
 
@@ -927,7 +931,7 @@ Maps a `FileRoute` to the formats it can be exported to, and the file extension/
 function exportTargetsFor(route: FileRoute): CadFormat[]
 ```
 
-B-rep sources (`route.strategy === "occt"`) return the other two B-rep formats plus all four mesh formats. Mesh sources (`route.strategy === "three"`) return the other mesh formats only. The source's own format is always excluded.
+B-rep sources (`route.strategy === "occt"`) return the other B-rep formats plus all mesh formats. Mesh sources (`route.strategy === "three"`) return the other mesh formats only. The source's own format is always excluded.
 
 ```typescript
 const EXPORT_EXTENSION: Record<CadFormat, string>  // e.g. gltf → "glb"
@@ -1558,10 +1562,10 @@ Defines the host ↔ webview message contract. See [Host ↔ Webview Protocol](.
 ### Buffer Encoding
 
 ```typescript
-function encodeBuffer(arr: Float32Array | Uint32Array): string
+function encodeBuffer(arr: Float32Array | Uint32Array | Int32Array): string
 ```
 
-Encodes a typed array as a base64 string for safe `postMessage` transport. Uses `Buffer.from(arr.buffer).toString('base64')` (Node.js `Buffer` — host-side only).
+Encodes a typed array as a base64 string for safe `postMessage` transport. Uses `Buffer.from(arr.buffer, arr.byteOffset, arr.byteLength).toString('base64')` (Node.js `Buffer` — host-side only; the offset/length slice avoids leaking pooled `Buffer` bytes).
 
 The corresponding decode helpers (`decodeF32`, `decodeU32`) live in `src/webview/geometryBuilder.ts` and use browser `atob`.
 
@@ -1571,8 +1575,23 @@ The corresponding decode helpers (`decodeF32`, `decodeU32`) live in `src/webview
 
 The standalone MCP server — a third esbuild bundle (`dist/mcp-server.js`) that exposes the same headless pipeline (`loadBRep`/`exportBRep`/`generateMesh`/ `exportMeshFormat`/`exportMdpa`/`exportGeoUnrolled`/`computeMassProperties`) to AI agents over stdio JSON-RPC, with no VS Code involved.
 
-- **`mcpServer.ts`** is the entry: it rebinds `console.log/info/warn/debug` to stderr *before anything else* (the Emscripten WASM modules print through `console.log`, and stdout is the JSON-RPC channel), resolves `extensionPath` (`CAD_PREVIEW_ROOT` env var or the bundle dir's parent), and registers the fourteen tools with the `@modelcontextprotocol/sdk` `McpServer` + `StdioServerTransport`.
+- **`mcpServer.ts`** is the entry: it rebinds `console.log/info/warn/debug` to stderr *before anything else* (the Emscripten WASM modules print through `console.log`, and stdout is the JSON-RPC channel), resolves `extensionPath` (`CAD_PREVIEW_ROOT` env var or the bundle dir's parent), and registers the tool catalog with the `@modelcontextprotocol/sdk` `McpServer` + `StdioServerTransport` (see the tool table in [MCP Server](./mcp-server.md); the count is asserted in `mcp:smoke`, so bump it with the table when adding a tool).
 - **`mcpTools.ts`** holds the tool handlers as plain async functions over an injected `Pipeline` object (defaulting to the real OCCT/Gmsh functions in the server, faked in `mcpTools.test.ts` — the `.wasm` imports only resolve under esbuild's plugin, never vitest). Ops arrive as raw JSON gated by `validateEditOp`; results are stats/summaries, never geometry buffers.
-- **`mcpSidecars.ts`** is the node-fs counterpart of `editsStore.ts`/ `partsStore.ts`/`annotationsStore.ts`/`meshOptionsStore.ts` over the same pure `*Sidecar.ts` parsers — byte-compatible with what `provider.ts` reads on reopen — plus the `assertNotSourcePath` guard (every writer except the explicit opt-in `save_model` tool still refuses the source path). `readAnnotations`/`writeAnnotations` are plain sidecar I/O (not part of the `Pipeline` interface — that interface holds only WASM/OCCT/Gmsh/network-touching functions vitest must fake; `rebindPartsAcrossOps` IS in `Pipeline` since it re-derives ids from live geometry).
+- **`mcpSidecars.ts`** is the node-fs counterpart of the extension's sidecar stores over the same pure `*Sidecar.ts` parsers — byte-compatible with what `provider.ts` reads on reopen — plus the `assertNotSourcePath` guard (every writer except the explicit opt-in `save_model` tool still refuses the source path). Companion filenames are derived here for edits/parts/layers/annotations/planes/mesh-options/scad-params/view-state (view-state and scad-params are read-only over MCP: no tool writes them). `readAnnotations`/`writeAnnotations` are plain sidecar I/O (not part of the `Pipeline` interface — that interface holds only WASM/OCCT/Gmsh/network-touching functions vitest must fake; `rebindPartsAcrossOps` IS in `Pipeline` since it re-derives ids from live geometry).
 
 See [MCP Server](./mcp-server.md) for registration, the tool reference, and the headless capability matrix.
+
+## Other load-bearing modules (indexed so they stop being doc-dark)
+
+Pure helpers and pipeline pieces with no dedicated section above — each is one line here, with the full contract in its source header:
+
+- **`src/meshExportFormats.ts`** — the one export-format registry (`via: gmsh|mdpa|meshio`, optional companion) used by host, webview and MCP; see `doc/protocol.md`'s `meshingExport`.
+- **`src/preprocessArchive.ts`** — Save/Load Preprocess `.zip` (`isSafeEntryName`, zip-bomb caps, checksums); see `doc/file-formats.md`'s archive section.
+- **`src/saveJournal.ts` + `src/meshSaveRecovery.ts`** — interrupted-mesh-save transaction (`<model>.save-journal.json`); see `doc/file-formats.md`.
+- **`src/renderService.ts`** — headless `renderViewRequest` renderer (Playwright/Chromium, degrades to `supported: false`).
+- **`src/holeTable.ts`** — `holeTableTsv` shared by the Parts-panel copy button and `generate_hole_table`.
+- **`src/nastranDeck.ts`** — `BEGIN BULK` normalization at meshio staging.
+- **`src/kernelClient.ts` / `src/kernelWorker.ts` / `src/kernelIpc.ts`** — forked-child runtime (serialized queue, watchdog, generic typed-array marshal); `provider.ts` and `mcpTools.ts` talk only to the `Pipeline` interface.
+- **`src/ftetwildService.ts`** — fTetWild singleton (`tetrahedralizeTyped`, always `{threads: false}`); underlies `engine: "ftetwild"` and `repair_mesh`.
+- **`src/meshioBoundary.ts` / `src/meshTopology.ts`** — STL-boundary funnel guards and the pure edge-topology analyzer (deliberately orientation-blind; winding comes from `featureEdges`).
+- **`src/opCommands.ts` / `src/opQueryResolve.ts` / `src/mcpErrors.ts` / `src/mcpRevision.ts` / `src/untrustedText.ts`** — command table + `OP_PARAM_DOCS`, sequential target-query fold, coded errors, `expectedRevision` guard, document-text envelopes.
