@@ -54,4 +54,13 @@ describe("bomTsv mass columns", () => {
     expect(a.slice(7, 9)).toEqual(["7.85", "7.85"]);
     expect(b.slice(7, 9)).toEqual(["", ""]);
   });
+
+  it("renders a row from an older host that omits density/mass as empty cells, not a throw", () => {
+    // The Copy BOM webview fixture predates these keys; the shape is what matters.
+    const legacy = { ...row(), density: undefined, mass: undefined } as unknown as BomRow;
+    const cells = bomTsv([legacy]).split("\n")[1].split("\t");
+    expect(cells[7]).toBe("");
+    expect(cells[8]).toBe("");
+    expect(cells[5]).toBe("1000");
+  });
 });

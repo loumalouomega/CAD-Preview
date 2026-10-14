@@ -40,10 +40,11 @@ export interface BomRow {
  * (the "Copy BOM" tab-separated convention this feature was mined from).
  * Numbers are rounded to 4 decimal places only HERE (display), never in
  * {@link BomRow} itself; an unmeasurable row leaves the numeric cell empty
- * rather than writing a misleading `0`.
+ * rather than writing a misleading `0`. A row from an older host may omit the
+ * density/mass keys entirely, so `undefined` is empty too, never a throw.
  */
 export function bomTsv(rows: BomRow[]): string {
-  const fmt = (n: number | null): string => (n === null ? "" : String(Number(n.toFixed(4))));
+  const fmt = (n: number | null | undefined): string => (n == null || !Number.isFinite(n) ? "" : String(Number(n.toFixed(4))));
   const header = ["Name", "Solids", "Surfaces", "Lines", "Points", "Volume_mm3", "Area_mm2", "Density_g_cm3", "Mass_g", "Unresolved"];
   const lines = rows.map((r) =>
     [
