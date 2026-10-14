@@ -217,9 +217,9 @@ Run a specific test file: `npx vitest run src/fileRouter.test.ts`
 
 ### The verification-gap gate
 
-Features that were checked only by hand carry a "Verification gap" note in `CLAUDE.md`. `npm test` keeps that debt from growing silently (`src/verificationGaps.test.ts`):
+Features that were checked only by hand are recorded in `scripts/verification-gaps/registry.json` — the single list of unverified claims; do not write prose "verification gap" paragraphs in `CLAUDE.md`. `npm test` keeps that debt from growing silently (`src/verificationGaps.test.ts`):
 
-- Every such note must end in a `[vg:<id>]` marker naming an entry in `scripts/verification-gaps/registry.json`. A new unverified feature therefore fails the suite until it is registered.
+- A new unverified claim is a new registry entry, which raises the unresolved count and so fails the suite until the baseline is raised deliberately in the same change. If a prose gap note does appear in `CLAUDE.md` anyway, it must end in a `[vg:<id>]` marker naming a registry entry.
 - An entry becomes `closed` only by listing `closedBy` — exact `test("…")` titles from `scripts/webview-test/run.mjs` or `test/integration/suite/index.ts`. Rewording a note cannot close it, and renaming or deleting the covering test re-opens it. `test-written` means a test exists but has not yet been seen green, and still counts as unresolved.
 - `scripts/verification-gaps/baseline.json` caps the unresolved count. Closing an entry means lowering it by one in the same change; the gate fails if the count falls without the baseline following.
 
