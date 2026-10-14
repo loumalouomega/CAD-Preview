@@ -155,7 +155,7 @@ CAD-Preview is embedded in [KKSS](https://github.com/loumalouomega/KKSS) as its 
 | Ask | From | Status here |
 | --- | --- | --- |
 | Every new capability reachable through this repository's MCP server, since that is the only way the KKSS assistant sees it | KKSS roadmap | Already a house rule ("Shared capabilities must reach both consumers" above) |
-| A small, reproducible structural example that a geometry-to-results tutorial can reuse | KKSS roadmap | [Canonical worked example](#canonical-worked-example-for-the-simulation-tutorial) |
+| A small, reproducible structural example that a geometry-to-results tutorial can reuse | KKSS roadmap | [Canonical worked example](#canonical-worked-example-for-the-simulation-tutorial) (the page ships; the cross-repo check remains) |
 | Performance baselines covering more than the OCCT and Gmsh paths | KKSS roadmap | Shipped; see `CLAUDE.md` |
 | One UI vocabulary across both extensions: view snaps 1–6 and `i` proposed for upstreaming, and "Cut Plane" / "REAR" renames pending | VSCode-MDPA-Preview `doc/ui-design-system.md` | [Shared UI design system](#shared-ui-design-system-with-vscode-mdpa-preview) |
 | A scheduled job that compares dependency pins with npm | VSCode-MDPA-Preview roadmap | Shipped; see `CLAUDE.md` |
@@ -289,15 +289,11 @@ These are outcome groupings, not release numbers. Independent small items can sh
 
 #### 2.3 Canonical worked example for the simulation tutorial {#canonical-worked-example-for-the-simulation-tutorial}
 
-*Area: Ecosystem.*
+*Area: Ecosystem. Effort: S.*
 
-- **Evidence:**
-  - KKSS's roadmap plans a geometry-to-results tutorial built around one small, reproducible structural example. It wants to reuse a fixture from this repository rather than invent geometry.
-  - This repository's own tutorials (`doc/tutorials/`) are executable: `npm test` compiles their op lists, and `mcp:smoke` pins the bracket tutorial.
-- **First useful increment (S):**
-  - A cantilever-beam tutorial: a box, a fixed-end Part, a loaded-face Part, a mesh preset, and an MDPA export with a handoff manifest.
-  - Pin it in `mcp:smoke` with analytic volume and exact Part membership, like the bracket tutorial.
-- **Done when:** the page builds, its op list compiles under `npm test`, and the exported MDPA opens in VSCode-MDPA-Preview with both SubModelParts populated.
+- **Done so far:** [A cantilever beam](/tutorials/cantilever) — a 100 × 10 × 10 box, `FixedEnd` and `LoadFace` Parts, an optional steel density, and an MDPA export with a handoff manifest. `mcp:smoke` pins it on the live kernel: the beam's volume is exactly 10 000 mm³, and every node of each `SubModelPart` sits exactly on its end plane (x = −50 / +50).
+- **What is left (S):** the cross-repository check — open the exported `.mdpa` in VSCode-MDPA-Preview and confirm both SubModelParts populate. It needs that extension and is not exercised from this repository.
+- **Done when:** that check passes, and KKSS's tutorial links to the page.
 
 #### 2.6 meshio++ `check_quality` as a caller-supplied quality gate {#meshio-check-quality-gate}
 

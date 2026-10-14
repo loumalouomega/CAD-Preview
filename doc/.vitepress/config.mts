@@ -39,6 +39,7 @@ export default defineConfig({
           { text: 'Parametric bolt-circle flange', link: '/tutorials/bolt-circle-flange' },
           { text: 'A shelled enclosure',          link: '/tutorials/enclosure' },
           { text: 'Prepare a part for FEA',       link: '/tutorials/fea-prep' },
+          { text: 'A cantilever beam',            link: '/tutorials/cantilever' },
           { text: 'Model with an AI agent',       link: '/tutorials/agent-mcp' },
         ],
       },
