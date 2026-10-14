@@ -6745,7 +6745,12 @@ try {
     for (const faceId of beamState.solids[1].faceIds) {
       const f = await call("inspect", { path: beamModel, entityId: faceId });
       const n = f.normal;
-      if (n && Math.abs(n[0]) > 0.99) (n[0] < 0 ? (endFaces.fixed = faceId) : (endFaces.load = faceId));
+      const cx = f.center?.[0];
+      // Located by position (the end plane), with the normal only confirming it is an X-facing plane.
+      if (n && Math.abs(n[0]) > 0.99 && typeof cx === "number") {
+        if (Math.abs(cx + 50) < 1e-6) endFaces.fixed = faceId;
+        else if (Math.abs(cx - 50) < 1e-6) endFaces.load = faceId;
+      }
     }
     assert(endFaces.fixed && endFaces.load, `both end faces found by normal (got ${JSON.stringify(endFaces)})`);
     await call("set_part", { path: beamModel, name: "FixedEnd", surfaces: [endFaces.fixed] });
