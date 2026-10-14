@@ -4,6 +4,32 @@ All notable changes to the "CAD Preview" extension are documented in this file.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/); this project does not yet strictly follow Semantic Versioning (pre-1.0 releases moved fast and bundled multiple features per bump).
 
+## [3.16.0] - 2026-10-14
+
+### Added
+
+- **3MF as a display-only mesh source and an export target (roadmap 2.1).** `.3mf` files open through meshio++ as import-only meshes; export produces `.3mf` as well. Colour rides both directions, and the Units dropdown is seeded from the file's unit metadata.
+- **Collada (`.dae`) as a display-only, import-only mesh format (roadmap 2.1).** `.dae` files open as triangulated meshes with per-file units (metre/centimetre/millimetre/inch) honoured on import.
+- **OpenSCAD include tracking, conversion cache and `color()` Parts (roadmap 2.10, 2.11).** `convert_scad` tracks `include`/`use` dependencies and caches conversions; `color()` blocks in `.scad` sources arrive as Parts. A Customizer panel exposes the file's top-level parameters.
+- **`unifySameDomain` edit op (roadmap 2.4).** Merges same-domain faces in B-rep models, with a typed form and icon.
+- **Snapshot display modes, section clip and clearance in interference checks (roadmap 2.12, 2.13).** Snapshots carry display modes and a section clip; `check_interference` reports clearance. `compare_models` accepts `tessellationQuality` for `includeSnapshots` with a per-side tessellation block (roadmap 2.21).
+- **`tessellationQuality` on `hit_test` (roadmap 2.5).** The picking call takes an optional quality and reports the mesh it picked against.
+- **Optimistic revision guard for MCP sidecar writes, agent-made edits marked in the viewer (roadmap 2.19).** Concurrent sidecar writes are guarded by revision; edits made by agents are flagged in the Edits panel.
+- **Copy reference in the context menu (roadmap 2.15, first increment).** Right-click an entity to copy a quotable reference.
+- **Reproducible exports.** Opt-in deterministic STEP and drawing-sheet exports (NaN STEP output is refused rather than written); `export_mesh` and the handoff manifest are deterministic. The deviation map is cross-checked against meshio++ `hausdorffDistance` (roadmap 2.7).
+- **Hand-authored Nastran fixtures with pinned geometry (roadmap 1.2).** Fixed-, free- and large-field `.bdf` decks covering hand-written cards, not just this extension's own output.
+- **`check_mesh_health` reports inconsistently wound edges** from meshio++ `featureEdges`.
+
+### Fixed
+
+- **Named-Part STEP export writing no geometry in multi-file mode.** The export now carries the part's geometry.
+- **Kernel abort vocabulary recognizes the funcref table trap**, so the worker resets instead of staying poisoned.
+
+### Documentation
+
+- New formats, mesh tools and viewer features documented; screenshots regenerated.
+- `CLAUDE.md` trimmed from ~1.2 MB to ~55 KB; the verification-gap registry is the source of truth.
+
 ## [3.15.0] - 2026-10-12
 
 ### Added
@@ -781,6 +807,7 @@ This release republishes v1.9.0's full changelog (below) unchanged; v1.9.0 itsel
 
 - Initial release: read-only 3D preview for CAD and mesh files (STEP, IGES, BREP, STL, OBJ, PLY, glTF) inside a VS Code custom editor, using OpenCascade.js (OCCT WASM) in the extension host for B-rep formats and Three.js in the webview for rendering.
 
+[3.16.0]: https://github.com/loumalouomega/CAD-Preview/compare/v3.15.0...v3.16.0
 [3.15.0]: https://github.com/loumalouomega/CAD-Preview/compare/v3.14.0...v3.15.0
 [3.14.0]: https://github.com/loumalouomega/CAD-Preview/compare/v3.13.0...v3.14.0
 [3.13.0]: https://github.com/loumalouomega/CAD-Preview/compare/v3.12.0...v3.13.0
