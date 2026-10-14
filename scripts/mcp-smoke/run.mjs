@@ -2875,6 +2875,18 @@ try {
     flippedComponent.inconsistentPairCount === 3,
     `...but meshio++ reports 3 inconsistently-wound pairs — the gap this phase closes (got ${flippedComponent.inconsistentPairCount})`
   );
+  // featureEdges names WHERE: three edges of the tetrahedron, with midpoints.
+  assert(
+    flippedComponent.inconsistentEdges.length === 3 &&
+      flippedComponent.inconsistentEdgePoints.length === 3 &&
+      flippedComponent.inconsistentEdgesTruncated === false &&
+      flippedComponent.inconsistentDisagreement === undefined,
+    `...and lists the 3 offending edges with midpoints, no count disagreement (got ${JSON.stringify(flippedComponent.inconsistentEdges)})`
+  );
+  assert(
+    cleanComponent.inconsistentEdges.length === 0,
+    `check_mesh_health(cube.stl) lists no inconsistent edges (got ${JSON.stringify(cleanComponent.inconsistentEdges)})`
+  );
   assert(
     Math.abs(cleanComponent.healedVolume - 1000) < 1e-3 && Math.abs(cleanComponent.volumeDeltaPct) < 1e-6,
     `check_mesh_health(cube.stl) reports the exact healed volume with ~0 delta (got: ${JSON.stringify(cleanComponent)})`
@@ -6594,6 +6606,10 @@ try {
   assert(
     preRepairHealth.components[0].freeEdgeCount === 3 && preRepairHealth.components[0].requiredTolerance === null,
     `check_mesh_health(holed-cube.stl) before repair: 3 free edges, never closed (got: ${JSON.stringify(preRepairHealth.components[0])})`
+  );
+  assert(
+    preRepairHealth.components[0].inconsistentPairCount === 0 && preRepairHealth.components[0].inconsistentEdges.length === 0,
+    `...and an OPEN mesh is not an inconsistently wound one (got: ${preRepairHealth.components[0].inconsistentPairCount})`
   );
   const repairedStl = path.join(dir, "repaired-cube.stl");
   const repairResult = await call("repair_mesh", { path: holedCubeStl, outputPath: repairedStl });

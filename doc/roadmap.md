@@ -301,15 +301,6 @@ These are outcome groupings, not release numbers. Independent small items can sh
   - Pin it in `mcp:smoke` with analytic volume and exact Part membership, like the bracket tutorial.
 - **Done when:** the page builds, its op list compiles under `npm test`, and the exported MDPA opens in VSCode-MDPA-Preview with both SubModelParts populated.
 
-#### 2.5 meshio++ `feature_edges` replaces the hand-rolled winding check {#meshio-feature-edges-winding-check}
-
-*Area: Meshing. Effort: S–M.*
-
-- **Evidence:** `src/meshTopology.ts` keys every edge through `edgeKey(a, b)`, which **sorts the pair and discards orientation** before counting — so two adjacent triangles wound in opposite directions still register as a clean manifold edge. That is a real, committed blind spot: `examples/STL/flipped-winding-tet.stl` reports `freeEdgeCount: 0` and `nonManifoldEdgeCount: 0` while carrying a reversed face. The current answer is `analyzeMeshioSurfaces`'s hand-rolled `inconsistentPairCount` (added in the meshio++ capability-surface phase), which re-counts the same fact through meshio++'s own surface diagnostics — an acknowledgement that the pure analyzer cannot see it, worked around rather than fixed. meshio++ 16.23.0 added `featureEdges(mesh, featureAngle)`, which returns sharp, open, non-manifold **and inconsistently wound** edges as a `line` mesh with `feature:kind`/`feature:angle` cell data, and works on a volume's skin.
-- **Why this is a product item and not a refactor:** the two signals answer different questions and the kernel's is strictly stronger. `meshTopology.ts` stays exactly as it is — it is a *pure, WASM-free* module that `check_mesh_health` calls per connected component without a kernel, and that property is worth keeping. `featureEdges` answers the oriented question the pure module structurally cannot.
-- **First useful increment (S–M):** report `inconsistentEdgeIds` (not just a count) from `analyzeMeshioSurfaces` using `featureEdges`' `feature:kind === "inconsistent"`, and cross-check it against the existing `inconsistentPairCount` on `flipped-winding-tet.stl` and the clean fixtures. If they agree on every committed fixture, retire the hand-rolled counter and say so in the same commit — one implementation of a fact, the same rule that removed the duplicated edge enumerator. A disagreement is a finding in itself and belongs in the write-up either way.
-- **Done when:** the count has one implementation, the pure analyzer's limitation is documented as a deliberate boundary rather than an open gap, and a fixture whose two implementations disagree cannot land silently.
-
 #### 2.6 meshio++ `check_quality` as a caller-supplied quality gate {#meshio-check-quality-gate}
 
 *Area: Meshing. Effort: S–M.*

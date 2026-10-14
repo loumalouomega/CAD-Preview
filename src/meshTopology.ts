@@ -16,6 +16,13 @@
  * sewing's coarser tolerance. This module reports the mesh's OWN edge
  * topology as a fast, WASM-free first signal, not a substitute for the
  * OCCT-side ladder.
+ *
+ * Orientation is a deliberate boundary of this module: edges are keyed through
+ * a SORTED pair, so two adjacent triangles wound oppositely still look like a
+ * clean manifold edge. The oriented answer (and the offending edges
+ * themselves) comes from meshio++'s `featureEdges` in
+ * `meshioService.ts`'s `analyzeMeshioSurfaces`, which keeps this module pure
+ * and WASM-free.
  */
 
 import { edgeKey } from "./meshComponents";

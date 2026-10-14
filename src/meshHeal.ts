@@ -105,6 +105,16 @@ export interface ComponentHealthReport {
    * wound.
    */
   inconsistentPairCount: number | null;
+  /**
+   * Where those pairs are: welded-mesh vertex index pairs (capped; see
+   * `inconsistentEdgesTruncated`) and each edge's midpoint in model
+   * coordinates. Empty when `inconsistentPairCount` is 0 or `null`.
+   */
+  inconsistentEdges: Array<[number, number]>;
+  inconsistentEdgePoints: Array<[number, number, number]>;
+  inconsistentEdgesTruncated: boolean;
+  /** Present only if meshio++'s two inconsistent-winding counts disagreed. */
+  inconsistentDisagreement?: string;
   /** Cells whose orientation is flipped relative to the rest (meshio++ `stats`). */
   invertedCellCount: number | null;
   /** Triangle-shape quality (meshio++ `attachQuality`) as normalized minimum
@@ -322,6 +332,12 @@ export async function checkMeshHealth(
         areaDeltaPct: solidProps && rawArea > 0 ? ((solidProps.area - rawArea) / rawArea) * 100 : null,
         volumeDeltaPct: solidProps && rawVolume > 0 ? ((solidProps.volume - rawVolume) / rawVolume) * 100 : null,
         inconsistentPairCount: meshioAnalyses[index]?.inconsistentPairCount ?? null,
+        inconsistentEdges: meshioAnalyses[index]?.inconsistentEdges ?? [],
+        inconsistentEdgePoints: meshioAnalyses[index]?.inconsistentEdgePoints ?? [],
+        inconsistentEdgesTruncated: meshioAnalyses[index]?.inconsistentEdgesTruncated ?? false,
+        ...(meshioAnalyses[index]?.inconsistentDisagreement
+          ? { inconsistentDisagreement: meshioAnalyses[index]!.inconsistentDisagreement }
+          : {}),
         invertedCellCount: meshioAnalyses[index]?.invertedCellCount ?? null,
         quality: meshioAnalyses[index]?.quality ?? null,
       };
