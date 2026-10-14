@@ -191,7 +191,7 @@ Two projects built for AI agents were read for this extension:
 | `ui://` MCP-App inline viewer | Both | [MCP App inline preview](#mcp-app-inline-preview) (probe) |
 | `cad_view` returns the user's selection as quotable refs | text-to-cad | [Quotable entity references](#quotable-entity-references) (Copy reference shipped; stored queries remain) |
 | Snapshot presets (xray, hidden-line) and section mode | text-to-cad | Shipped: `render_snapshot` / `screenshot_shape` take all five display modes and an optional section `clip` (the viewer's own clip plane, solid cap included) |
-| `mass_properties` with density | text-to-cad | [Per-Part material density](#per-part-material-density) |
+| `mass_properties` with density | text-to-cad | Shipped: `Part.density` gives BOM mass and a per-solid `massGrams` (mass-weighted centre and density-weighted inertia remain out) |
 | dfam-check (overhangs, wall thickness, support, orientations, plate fit) | text-to-cad, ReOpenSCAD (plates) | [Printability facts report](#printability-facts-report) |
 | dfm draft and undercuts | text-to-cad | [Draft and undercut analysis](#draft-and-undercut-analysis) |
 | Engineering-drawing hole callouts, CENTER layer | text-to-cad | [Hole callouts on drawing sheets](#hole-callouts-on-drawing-sheets); the sheet itself ships |
@@ -319,15 +319,6 @@ These are outcome groupings, not release numbers. Independent small items can sh
   - Panel and bar surface the prompt/choice wherever a raw coordinate can create a point (point form, curve endpoints typed raw).
 - **Done when:** on a fixture with a committed point, authoring the same coordinates — once via the panel, once headless — offers the choice interactively and honours the recorded field on replay; collapse leaves the `point-N` inventory unchanged, independent adds exactly one; a committed `test:webview` case covers the prompt end to end.
 - **Out of scope:** automatic sewing or healing of near-coincident geometry (the explicit repair op, 3.2); a general coincident-entity merge beyond points; snapping the new coordinates to the old ones (collapse reuses the id, it never moves either point).
-
-#### 2.14 Per-Part material density: mass in mass properties and BOM {#per-part-material-density}
-
-*Area: Geometry, Parity. Effort: S–M.*
-
-- **Evidence:** `get_mass_properties`, the Mass Properties panel, `generate_bom` and Copy BOM all report volume only; there is no density anywhere. text-to-cad's `mass_properties([(solid, density)])` returns mass, a mass-weighted centre and the inertia tensor, which is what a procurement BOM or a shipping estimate actually needs.
-- **First useful increment (S–M):** an optional `Part.density` (g/cm³) — tolerant parse in `partsSidecar.ts`, and copied in `PartsModel.clone()` (the documented trap where a field missing from a field-by-field clone silently stops persisting). `set_part` takes it; the Parts panel shows it beside the colour. Mass properties report `mass` and a mass-weighted centre when every selected solid has a density, and say which solids lack one otherwise. The BOM gains a mass column. A short bundled material table (steel, aluminium, ABS, PLA, …) can fill the field by name, but stores the number.
-- **Done when:** a 10 mm steel cube at 7.85 g/cm³ reports 7.85 g, a two-material assembly reports the sum, and a part with no density is reported as missing rather than as zero.
-- **Out of scope:** reading materials from STEP (the [PMI, layers and materials probe](#read-pmi-layers-and-materials-from-step) could seed this field later); density-weighted inertia.
 
 #### 2.15 Quotable entity references for agent chats {#quotable-entity-references}
 

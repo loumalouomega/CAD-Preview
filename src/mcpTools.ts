@@ -222,6 +222,7 @@ import {
 } from "./meshSaveRecovery";
 import { buildPreprocessZip, readPreprocessZip } from "./preprocessArchive";
 import { bomTsv, type BomRow } from "./bomExport";
+import { densityForMaterial, totalMass, validateDensity } from "./materialDensity";
 import { batchTsv, runBatch, type CollisionPolicy } from "./batchExport";
 import { buildHandoffManifest, checkHandoffManifest, deterministicExportId, type HandoffManifest, parseHandoffManifest, replayFingerprint, HANDOFF_MANIFEST_SUFFIX } from "./handoffManifest";
 import { normalizeMeshExport } from "./deterministicMesh";
@@ -936,7 +937,7 @@ async function readMeshInspection(ctx: ToolContext, modelPath: string, format: M
 export async function getMassProperties(
   ctx: ToolContext,
   params: { path: string; entityId?: string }
-): Promise<{ format: CadFormat; entityId: string; supported: boolean; warnings: string[]; watertight?: boolean } & Partial<MassProperties>> {
+): Promise<{ format: CadFormat; entityId: string; supported: boolean; warnings: string[]; watertight?: boolean; massGrams?: number; densityGcm3?: number; densityPart?: string } & Partial<MassProperties>> {
   const modelPath = params.path;
   const route = requireRoute(modelPath);
   const entityId = params.entityId ?? null;
@@ -978,11 +979,23 @@ export async function getMassProperties(
     ops,
     entityId
   );
+  // Mass for a single solid whose Part carries a density (volume is only ever
+  // computed for whole model / solid-N, so mass is too).
+  let massFields: { massGrams?: number; densityGcm3?: number; densityPart?: string } = {};
+  if (entityId && /^solid-\d+$/.test(entityId) && typeof properties.volume === "number") {
+    const owner = (await readParts(modelPath)).find((p) => p.density !== undefined && p.volumes.includes(entityId));
+    if (owner && owner.density !== undefined) {
+      massFields = { massGrams: (properties.volume / 1000) * owner.density, densityGcm3: owner.density, densityPart: owner.name };
+    } else {
+      warnings.push(`No density set for ${entityId} — no mass reported (set_part density/material on a Part containing it).`);
+    }
+  }
   return {
     format: route.format,
     entityId: entityId ?? "whole-model",
     supported: true,
     ...properties,
+    ...massFields,
     warnings,
   };
 }
@@ -1038,7 +1051,7 @@ export async function checkBrepHealthTool(
 export async function generateBomTool(
   ctx: ToolContext,
   params: { path: string }
-): Promise<{ format: CadFormat; supported: boolean; warnings: string[]; rows?: BomRow[]; bom?: string }> {
+): Promise<{ format: CadFormat; supported: boolean; warnings: string[]; rows?: BomRow[]; bom?: string; totalMassGrams?: number | null; partsMissingDensity?: string[] }> {
   const modelPath = params.path;
   const route = requireRoute(modelPath);
 
@@ -1069,7 +1082,10 @@ export async function generateBomTool(
   }
   const { bytes, format } = src;
   const result = await ctx.pipeline.computeBom(ctx.extensionPath, bytes, format as BRepFormat, ops, parts);
-  return { format: route.format, supported: true, rows: result.rows, bom: bomTsv(result.rows), warnings: [...warnings, ...result.warnings] };
+  const mass = totalMass(result.rows);
+  const bomWarnings = [...warnings, ...result.warnings];
+  if (mass.missing.length > 0) bomWarnings.push(`No mass for part(s) without a density (or with no resolved solid): ${mass.missing.join(", ")} — totalMassGrams is null (set_part density/material).`);
+  return { format: route.format, supported: true, rows: result.rows, bom: bomTsv(result.rows), totalMassGrams: mass.total, partsMissingDensity: mass.missing, warnings: bomWarnings };
 }
 
 // ---------------------------------------------------------------------------
@@ -4090,6 +4106,10 @@ export async function setPart(params: {
   lines?: string[];
   points?: string[];
   meshSize?: number | null;
+  /** Material density in g/cm³; `null` clears. */
+  density?: number | null;
+  /** Bundled material name (e.g. "steel") resolved to a density NUMBER on write; ignored when `density` is given. */
+  material?: string;
   meshGrading?: MeshGrading | null;
   meshStructured?: MeshStructured | null;
   /**
@@ -4145,6 +4165,17 @@ export async function setPart(params: {
       }
     }
   }
+  let resolvedDensity = existing?.density;
+  if (params.density === null) resolvedDensity = undefined;
+  else if (params.density !== undefined) {
+    const d = validateDensity(params.density);
+    if (d === undefined) warnings.push("density must be a positive number (g/cm3) — ignored.");
+    else resolvedDensity = d;
+  } else if (params.material !== undefined) {
+    const d = densityForMaterial(params.material);
+    if (d === undefined) warnings.push(`Unknown material "${params.material}" — density unchanged. Pass density (g/cm3) directly.`);
+    else resolvedDensity = d;
+  }
   const part: Part = {
     name: params.name,
     color: params.color ?? existing?.color ?? PART_COLORS[parts.length % PART_COLORS.length],
@@ -4158,6 +4189,7 @@ export async function setPart(params: {
         : typeof params.meshSize === "number" && Number.isFinite(params.meshSize) && params.meshSize > 0
           ? params.meshSize
           : existing?.meshSize,
+    density: resolvedDensity,
     meshGrading:
       params.meshGrading === null
         ? undefined
@@ -4196,7 +4228,7 @@ export async function setPart(params: {
     );
   }
   return {
-    parts: parts.map((p) => ({ name: p.name, color: p.color, meshSize: p.meshSize ?? null, meshGrading: p.meshGrading ?? null })),
+    parts: parts.map((p) => ({ name: p.name, color: p.color, density: p.density ?? null, meshSize: p.meshSize ?? null, meshGrading: p.meshGrading ?? null })),
     warnings,
   };
 }

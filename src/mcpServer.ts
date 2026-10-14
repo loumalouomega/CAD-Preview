@@ -1396,7 +1396,7 @@ server.registerTool(
   "set_part",
   {
     description:
-      "Create, update, or remove a named part (FEM sub-model-part) grouping entity ids from load_model's inventory. Parts drive per-part colours, Gmsh physical groups in mesh exports (B-rep sources), optional per-part meshSize refinement (a flat size confined to the part's own entities), and optional meshGrading (a distance-graded size AROUND the part — sizeAtWall within distNear, growing to sizeFar at distFar; B-rep sources only, same as physical groups and meshSize), and optional meshStructured (transfinite node count per meshed edge for an exact mapped grid on regular regions; B-rep sources only). Omitted fields keep their current values; meshSize/meshGrading/meshStructured: null clears them. Optional selector stores a re-executable SelectorQuery beside the raw surfaces cache (same shape resolve_selector takes) — the host re-resolves it against the current op list and overwrites surfaces on an oracle-clean result; null clears a stored one.",
+      "Create, update, or remove a named part (FEM sub-model-part) grouping entity ids from load_model's inventory. Parts drive per-part colours, Gmsh physical groups in mesh exports (B-rep sources), optional per-part meshSize refinement (a flat size confined to the part's own entities), and optional meshGrading (a distance-graded size AROUND the part — sizeAtWall within distNear, growing to sizeFar at distFar; B-rep sources only, same as physical groups and meshSize), and optional meshStructured (transfinite node count per meshed edge for an exact mapped grid on regular regions; B-rep sources only). Optional density (g/cm3) or material name gives the part a mass: generate_bom adds Density/Mass columns and a total, get_mass_properties on a solid-N inside the part reports massGrams; a part with no density is reported as missing, never zero. Omitted fields keep their current values; meshSize/meshGrading/meshStructured/density: null clears them. Optional selector stores a re-executable SelectorQuery beside the raw surfaces cache (same shape resolve_selector takes) — the host re-resolves it against the current op list and overwrites surfaces on an oracle-clean result; null clears a stored one.",
     inputSchema: {
       path: modelPath,
       name: z.string().describe("Part name (the upsert key)"),
@@ -1407,6 +1407,8 @@ server.registerTool(
       lines: z.array(z.string()).optional().describe("edge-N ids"),
       points: z.array(z.string()).optional().describe("point-N ids"),
       meshSize: z.number().nullable().optional().describe("Target element size for local refinement; null clears"),
+      density: z.number().nullable().optional().describe("Material density in g/cm3 (> 0); drives generate_bom mass and get_mass_properties mass for a solid-N in the Part; null clears"),
+      material: z.string().optional().describe("Bundled material name (steel, stainless steel, aluminium, copper, brass, titanium, abs, pla, petg, nylon, water) resolved to a density NUMBER on write; ignored when density is given"),
       meshGrading: z
         .object({
           sizeAtWall: z.number().describe("Element size at/within distNear of the part's entities (> 0)"),
@@ -1438,6 +1440,8 @@ server.registerTool(
       lines?: string[];
       points?: string[];
       meshSize?: number | null;
+      density?: number | null;
+      material?: string;
       meshGrading?: { sizeAtWall: number; sizeFar: number; distNear: number; distFar: number } | null;
       meshStructured?: { divisions: number } | null;
       selector?: unknown;

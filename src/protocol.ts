@@ -78,6 +78,8 @@ export interface Part {
   lines: string[];     // edge ids
   points: string[];    // point (vertex) ids
   meshSize?: number;   // optional Gmsh target element size for local refinement
+  /** Optional material density in g/cm³ (roadmap "Per-Part material density"); BOM mass and `get_mass_properties` mass read it. */
+  density?: number;
   /**
    * Optional distance-graded sizing (roadmap "Boundary-layer and
    * distance-threshold mesh sizing", Phase 1): elements stay at `sizeAtWall`

@@ -10,6 +10,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/); thi
 
 - **Geometry display mode (roadmap 2.9).** A sixth Display mode shows the B-rep structure GiD-style: faint faces, through-solid edges, enlarged point markers, a bounding shell per solid in a stable colour, and a legend. Webview-only; selection is unchanged.
 
+- **Per-Part material density (roadmap 2.14).** `Part.density` (g/cm³; `set_part` `density` or bundled `material` name, Parts-panel field) gives `generate_bom` Density/Mass columns and a total, and `get_mass_properties` a `massGrams` for a solid inside a Part with density. A Part without density is reported as missing, never zero.
+
 ## [3.16.0] - 2026-10-14
 
 ### Added

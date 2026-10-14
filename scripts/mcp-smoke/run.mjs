@@ -530,6 +530,23 @@ try {
       redRow && blueRow && Math.abs(redRow.volume - 1008) < 0.5 && Math.abs(blueRow.volume - 189) < 0.5,
       `generate_bom works on the colour Parts with analytic volumes red 1000+8, blue 125+64 (got ${redRow?.volume} / ${blueRow?.volume})`
     );
+    // Per-Part density: mass = volume x density on the real kernel volumes.
+    await call("set_part", { path: colourCsg, name: "Part red", density: 7.85 });
+    await call("set_part", { path: colourCsg, name: "Part blue", material: "aluminium" });
+    const massBom = await call("generate_bom", { path: colourCsg });
+    const redMass = massBom.rows.find((r) => r.name === "Part red")?.mass;
+    const blueMass = massBom.rows.find((r) => r.name === "Part blue")?.mass;
+    assert(
+      Math.abs(redMass - 1.008 * 7.85) < 0.005 && Math.abs(blueMass - 0.189 * 2.7) < 0.002 &&
+        Math.abs(massBom.totalMassGrams - (1.008 * 7.85 + 0.189 * 2.7)) < 0.01,
+      `generate_bom mass is analytic volume x density (red ${redMass}, blue ${blueMass}, total ${massBom.totalMassGrams})`
+    );
+    await call("set_part", { path: colourCsg, name: "Part blue", density: null });
+    const partialBom = await call("generate_bom", { path: colourCsg });
+    assert(
+      partialBom.totalMassGrams === null && JSON.stringify(partialBom.partsMissingDensity) === JSON.stringify(["Part blue"]),
+      "a Part without density leaves the total null and is named, not counted as zero"
+    );
     const colourClash = await call("check_interference_all", { path: colourCsg });
     assert(
       colourClash.supported === true && colourClash.pairs.length === 1 && colourClash.pairs[0].hasOverlap === false,

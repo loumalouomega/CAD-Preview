@@ -1696,6 +1696,27 @@ body:not(:has(#side.visible)) #status {
   border-color: var(--vscode-focusBorder, #007fd4);
 }
 
+.part-density {
+  width: 3.6em;
+  flex-shrink: 0;
+  font: inherit;
+  font-size: var(--ui-fs-label);
+  color: inherit;
+  text-align: right;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--ui-r-xs);
+  padding: 1px 3px;
+}
+.part-density:hover { border-color: var(--vscode-input-border, #3c3c3c); }
+.part-density:focus {
+  outline: none;
+  background: var(--vscode-input-background, #1e1e1e);
+  border-color: var(--vscode-focusBorder, #007fd4);
+}
+/* An unset density stays out of the row until it is hovered or focused, so it
+   never squeezes the part name; a set one is always shown. */
+.part-row:not(:hover):not(:focus-within) .part-density:placeholder-shown { display: none; }
 .part-badge {
   font-size: var(--ui-fs-label);
   opacity: 0.6;
