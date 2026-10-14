@@ -67,6 +67,7 @@ import {
   recognizePrimitivesTool,
   decomposeToPrimitivesTool,
   fitMeshRegionTool,
+  segmentMeshSurfaceTool,
   transformMeshTool,
   remeshMeshTool,
   inspectMeshioFieldsTool,
@@ -676,7 +677,7 @@ server.registerTool(
   "render_snapshot",
   {
     description:
-      "Facts only, via images (see describe_capabilities' verdictConventions): 4 labelled PNGs (two opposed isometrics + top + front) of the current model with sidecar edits replayed, exactly as load_model sees it. Visual review is diagnostic, not authoritative — convert any concern into an inspect/measure check before treating it as validated; don't loop on repeated snapshots, only re-render after a change to visible geometry. REQUIRES Playwright + a Chromium binary in this environment (`npx playwright install chromium`) — call it and check `supported`; not guaranteed available everywhere (see doc/mcp-server.md). B-rep sources only.",
+      "Facts only, via images (see describe_capabilities' verdictConventions): 4 labelled PNGs (two opposed isometrics + top + front) of the current model with sidecar edits replayed, exactly as load_model sees it. Visual review is diagnostic, not authoritative — convert any concern into an inspect/measure check before treating it as validated; don't loop on repeated snapshots, only re-render after a change to visible geometry. REQUIRES Playwright + a Chromium binary in this environment (`npx playwright install chromium`) — call it and check `supported`; not guaranteed available everywhere (see doc/mcp-server.md). B-rep sources use that viewer render. stl/obj/ply/gltf sources are instead software-rendered by meshio++ (no Playwright needed; result has engine:\"meshio-software\"): 4 PNGs ISO/+Z/-Y/+X in the FILE's own axes, raw triangles (edit ops NOT baked), and focus/hide/clip/view/composite/tessellationQuality are not applied.",
     inputSchema: {
       path: modelPath,
       focus: z.array(z.string()).optional().describe("Entity ids — isolate the view to only these"),
@@ -929,6 +930,25 @@ server.registerTool(
     (args: { path: string; seedPoint: [number, number, number]; angleDeg?: number; maxTriangles?: number; store?: string; name?: string }) =>
       fitMeshRegionTool(ctx, args)
   )
+);
+
+server.registerTool(
+  "segment_mesh_surface",
+  {
+    description:
+      "Segment a mesh's WHOLE surface into smooth patches (meshio++ region growing bounded by feature edges at `featureAngle`, default 30) and fit each patch with the first accepted of plane / sphere / cylinder / cone / torus. Reports per patch: triangle count, fit type (or \"none\"), rms and max residual, inlier fraction and the raw parameter row (plane: point+normal; sphere: centre, radius at [6]; cylinder: point, axis, radius at [6]), plus patch adjacency and counts per kind. Facts only: nothing is stored and no verdict is drawn — fit_mesh_region is the seeded, single-region sibling that can store a plane/cylinder/sphere. Fits are vertex-based and `types` selects an allowed SET, not a priority: a cylinder whose vertices are only its two end rings also lies on a sphere and is reported as one unless `types` omits \"sphere\". Mesh sources only (stl/obj/ply/gltf); B-rep sources return supported:false (use recognize_primitives). The listing is capped at `maxPatches` (reported via `truncated`).",
+    inputSchema: {
+      path: modelPath,
+      featureAngle: z.number().optional().describe("Dihedral angle in degrees (0..180) above which an edge bounds a patch (default 30)"),
+      minPatchCells: z.number().optional().describe("Patches smaller than this many triangles are merged into a neighbour (default 1)"),
+      tolerance: z.number().optional().describe("Fit tolerance, relative to the patch size unless absoluteTolerance (default 0.01)"),
+      absoluteTolerance: z.boolean().optional().describe("Interpret tolerance in model units instead of relative to patch size"),
+      minInlierFraction: z.number().optional().describe("Fraction of a patch's vertices that must lie within tolerance (default 0.9)"),
+      types: z.array(z.enum(["plane", "sphere", "cylinder", "cone", "torus"])).optional().describe("Primitive kinds a patch may be fitted with (default all five)"),
+      maxPatches: z.number().optional().describe("Cap on patches listed (default 200)"),
+    },
+  },
+  wrap((args: Parameters<typeof segmentMeshSurfaceTool>[1]) => segmentMeshSurfaceTool(ctx, args))
 );
 
 server.registerTool(

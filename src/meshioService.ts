@@ -157,7 +157,7 @@ function resetMeshioIfAbort(err: unknown): boolean {
  * leaving every later meshio++ call in the same window failing with the same
  * opaque message. A non-abort error passes through unchanged.
  */
-function wrapMeshioFault(err: unknown): Error {
+export function wrapMeshioFault(err: unknown): Error {
   if (!resetMeshioIfAbort(err)) return err instanceof Error ? err : new Error(String(err));
   const raw = ((err as Error)?.message ?? String(err)).trim();
   return new Error(`meshio++ crashed (${raw || "WASM abort"}) — the kernel has been reset; try the operation again.`);
@@ -1197,7 +1197,7 @@ const FEATURE_KIND_INCONSISTENT = 4;
  * `local`, so a result expressed in the compact space can be reported in the
  * space the rest of `check_mesh_health` uses.
  */
-function componentMesh(
+export function componentMesh(
   positions: Float32Array,
   indices: Uint32Array,
   triangles: readonly number[]

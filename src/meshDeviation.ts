@@ -19,7 +19,7 @@
  *
  * Independent check (roadmap "meshio++ hausdorff_distance as a cross-check",
  * `scripts/probe/examples/deviation-vs-hausdorff.ts`, run against meshio++
- * 16.31.0): `hausdorffDistance` is a different implementation of the same class
+ * 16.42.0): `hausdorffDistance` is a different implementation of the same class
  * of quantity (vertices + sub-triangle centroids rather than interior R2
  * samples). On cube-vs-itself, cube-vs-offset-cube (exactly 0.3), concentric
  * spheres (0.1) and offset spheres (0.25) the two agree to within the sampling

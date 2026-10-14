@@ -318,8 +318,8 @@ try {
   assert(capsText.length > 100, "resources/read cad-preview://capabilities returns JSON text");
 
   const tools = (await request("tools/list", {})).tools.map((t) => t.name);
-  assert(tools.length === 74, `tools/list exposes 74 tools (got ${tools.length}: ${tools.join(", ")})`);
-  for (const t of ["list_workspace_models", "check_interference_all", "generate_bom", "generate_hole_table", "render_ops_prefix", "check_tolerance", "inspect_meshio_fields", "pin_annotation", "import_svg", "save_mesh_preset", "list_mesh_presets", "apply_mesh_preset", "compare_mesh_refinement", "export_tessellated_stl", "estimate_mesh_budget", "analyze_passages", "measure_mesh_deviation", "save_sheet_template", "list_sheet_templates", "batch_export", "check_handoff_manifest", "generate_prep_report", "job_status", "job_cancel", "check_brep_health", "list_scad_parameters", "convert_scad", "list_layers", "set_layer", "assign_layer"]) {
+  assert(tools.length === 75, `tools/list exposes 75 tools (got ${tools.length}: ${tools.join(", ")})`);
+  for (const t of ["list_workspace_models", "check_interference_all", "generate_bom", "generate_hole_table", "render_ops_prefix", "check_tolerance", "inspect_meshio_fields", "pin_annotation", "import_svg", "save_mesh_preset", "list_mesh_presets", "apply_mesh_preset", "compare_mesh_refinement", "export_tessellated_stl", "estimate_mesh_budget", "analyze_passages", "measure_mesh_deviation", "save_sheet_template", "list_sheet_templates", "batch_export", "check_handoff_manifest", "generate_prep_report", "job_status", "job_cancel", "check_brep_health", "list_scad_parameters", "convert_scad", "list_layers", "set_layer", "assign_layer", "segment_mesh_surface"]) {
     assert(tools.includes(t), `tools/list exposes ${t}`);
   }
 
@@ -2779,6 +2779,30 @@ try {
   const cleanHealth = await call("check_mesh_health", { path: cubeStl });
   assert(cleanHealth.supported === true, "check_mesh_health supports a clean STL source");
   assert(cleanHealth.componentCount === 1, `check_mesh_health(cube.stl): 1 component expected (got ${cleanHealth.componentCount})`);
+  // segment_mesh_surface: a cube is exactly six planar patches, a sphere one
+  // spherical patch of radius 10 (analytic expectations, not "did not throw").
+  const cubeSeg = await call("segment_mesh_surface", { path: cubeStl });
+  assert(
+    cubeSeg.supported === true && cubeSeg.numPatches === 6 && cubeSeg.fitCounts.plane === 6 && cubeSeg.fitCounts.unfitted === 0,
+    `segment_mesh_surface(cube.stl): 6 plane patches expected (got ${JSON.stringify(cubeSeg.fitCounts)}, ${cubeSeg.numPatches} patches)`
+  );
+  assert(
+    cubeSeg.patches.every((p) => p.triangleCount === 2 && p.fitType === "plane" && p.rms < 1e-6),
+    "segment_mesh_surface(cube.stl): every patch is 2 coplanar triangles with ~0 residual"
+  );
+  const sphereSeg = await call("segment_mesh_surface", { path: path.join(ROOT, "examples", "STL", "large-sphere-100k.stl") });
+  assert(
+    sphereSeg.numPatches === 1 && sphereSeg.patches[0].fitType === "sphere" && Math.abs(sphereSeg.patches[0].params[6] - 10) < 0.05,
+    `segment_mesh_surface(large-sphere-100k.stl): one sphere of radius ~10 expected (got ${JSON.stringify(sphereSeg.patches[0])})`
+  );
+  const softSnap = await call("render_snapshot", { path: cubeStl });
+  assert(
+    softSnap.supported === true && softSnap.engine === "meshio-software" && softSnap.images?.length === 4,
+    `render_snapshot(cube.stl) software-renders 4 views (got supported=${softSnap.supported}, engine=${softSnap.engine}, images=${softSnap.images?.length})`
+  );
+  assert(softSnap.triangleCount === 12 && softSnap.warnings.some((w) => /NOT baked/.test(w)), "software snapshot reports 12 triangles and states edits are not baked");
+  const stepSeg = await call("segment_mesh_surface", { path: path.join(ROOT, "examples", "STP", "block.stp") });
+  assert(stepSeg.supported === false, "segment_mesh_surface refuses a B-rep source");
   const cleanComponent = cleanHealth.components[0];
   assert(
     cleanComponent.freeEdgeCount === 0 && cleanComponent.nonManifoldEdgeCount === 0 && cleanComponent.degenerateFaceCount === 0,

@@ -4,9 +4,9 @@
     "date": "2026-10-13",
     "opencascade.js": "1.1.1",
     "@loumalouomega/gmsh-wasm": "0.3.0",
-    "@meshioplusplus/wasm": "16.31.0",
+    "@meshioplusplus/wasm": "16.42.0",
     "float-tetwild-wasm": "0.2.0",
-    "result": "49 pass"
+    "result": "50 pass"
   },
   "seed": "STP/block.stp",
   "seedVolume": 60,

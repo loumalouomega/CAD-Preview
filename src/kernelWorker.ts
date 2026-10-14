@@ -50,6 +50,8 @@ import { checkMeshHealth, promoteMeshToBrep } from "./meshHeal";
 import { checkBrepHealth } from "./brepHealth";
 import { recognizePrimitives } from "./primitiveReport";
 import { fitMeshRegion } from "./meshRegionFit";
+import { segmentMeshSurface } from "./meshSegment";
+import { renderMeshSoftware } from "./meshSoftwareRender";
 import { exportSvgSilhouette, exportDrawingSheet } from "./svgSilhouetteHost";
 import { buildPrimitivesFile } from "./primitiveWrite";
 import { exportTessellatedStl } from "./tessellationExport";
@@ -172,6 +174,8 @@ const handlers: Record<keyof DocumentPipeline, Handler> = {
   checkBrepHealth: checkBrepHealth as Handler,
   recognizePrimitives: recognizePrimitives as Handler,
   fitMeshRegion: fitMeshRegion as Handler,
+  segmentMeshSurface: segmentMeshSurface as Handler,
+  renderMeshSoftware: renderMeshSoftware as Handler,
   promoteMeshToBrep: promoteMeshToBrep as Handler,
   repairMesh: repairMesh as Handler,
   exportSvgSilhouette: exportSvgSilhouette as Handler,
