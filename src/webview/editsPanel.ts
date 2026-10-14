@@ -100,6 +100,7 @@ export type ModifyDraft = (
   | { kind: "shell"; thickness: number }
   | { kind: "draft"; angleDeg: number; planePoint?: Vec3; planeNormal?: Vec3; planeId?: string }
   | { kind: "defeature" }
+  | { kind: "unifySameDomain" }
   | { kind: "splitByPlane"; planePoint: Vec3; planeNormal: Vec3; planeId?: string; keep: "both" | "positive" | "negative" }
   | { kind: "section"; planePoint: Vec3; planeNormal: Vec3; planeId?: string }
   | { kind: "drill"; dir: Vec3; length: number }
@@ -1143,6 +1144,10 @@ export class EditsPanel {
       case "defeature":
         f.appendChild(this.hint("Removes the selected faces (Surf mode) as recognized features — fillets, chamfers — healing the solid behind them"));
         this.applyButtonDraft("Apply", "Defeature the selected faces", (): ModifyDraft => ({ kind: "defeature" }), (d) => this.cb.onApplyModify(d));
+        break;
+      case "unifySameDomain":
+        f.appendChild(this.hint("Merges adjacent faces and edges on the same underlying surface — e.g. the seam a union leaves — across the whole model. Face and edge ids are renumbered; Parts are rebound or dropped"));
+        this.applyButtonDraft("Apply", "Unify same-domain faces", (): ModifyDraft => ({ kind: "unifySameDomain" }), (d) => this.cb.onApplyModify(d));
         break;
       case "splitByPlane":
         f.appendChild(this.hint("Splits the selected volumes (Vol mode) by the plane"));

@@ -440,6 +440,8 @@ export function applyOneOp(oc: any, shape: any, op: EditOp, cleanup: Array<{ del
       return draftFaces(oc, shape, op, cleanup, fail);
     case "defeature":
       return defeatureFaces(oc, shape, op, cleanup, fail);
+    case "unifySameDomain":
+      return unifySameDomainShape(oc, shape, cleanup, fail);
     case "splitByPlane":
       return splitSolidsByPlane(oc, shape, op as any, cleanup, fail);
     case "section":
@@ -4431,6 +4433,41 @@ function defeatureFaces(oc: any, shape: any, op: Extract<EditOp, { op: "defeatur
     return res;
   } catch {
     fail?.("defeature builder threw");
+    return shape;
+  }
+}
+
+/**
+ * Merges faces and edges that lie on the same underlying surface/curve — the
+ * seam a boolean union leaves between coplanar faces — with
+ * `ShapeUpgrade_UnifySameDomain`. VERIFIED call shape (live WASM, see
+ * CLAUDE.md): `_2(shape, UnifyEdges, UnifyFaces, ConcatBSplines)` with
+ * `(true, true, false)`, then `Build()` + `Shape()`. A model with nothing to
+ * merge is returned UNCHANGED (same handle) with a "nothing to merge" fact, not
+ * an error; the face count decides, since the kernel hands back a new shape
+ * object even when it changed nothing.
+ */
+function unifySameDomainShape(oc: any, shape: any, cleanup: Array<{ delete(): void }>, fail?: OutcomeFail): any {
+  const keep = <T extends { delete(): void }>(h: T): T => { cleanup.push(h); return h; };
+  try {
+    const before = collectFaces(oc, shape, cleanup).length;
+    const unify = keep(new oc.ShapeUpgrade_UnifySameDomain_2(shape, true, true, false));
+    try {
+      unify.Build();
+    } catch {
+      fail?.("unifySameDomain Build threw");
+      return shape;
+    }
+    const res = unify.Shape();
+    cleanup.push(res);
+    const after = collectFaces(oc, res, cleanup).length;
+    if (after >= before) {
+      fail?.("nothing to merge — no adjacent faces share an underlying surface");
+      return shape;
+    }
+    return res;
+  } catch {
+    fail?.("unifySameDomain builder threw");
     return shape;
   }
 }

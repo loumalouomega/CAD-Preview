@@ -950,6 +950,94 @@ try {
     );
   }
 
+  // unifySameDomain — two touching 10-unit boxes (blank base), fused: the union
+  // leaves each shared-plane side split in two (10 faces); unifySameDomain
+  // merges them to 6 at an unchanged volume (2000). A Part on a split face is
+  // rebound onto the merged face or reported dropped — never silently
+  // repointed. A model with nothing to merge (a single box) is left unchanged
+  // and reported as not applied, with a fact-style diagnostic.
+  {
+    const usdModel = path.join(dir, "fused-for-unify.brep");
+    const resetUsd = () => {
+      fs.copyFileSync(path.join(ROOT, "examples", "BREP", "blank.brep"), usdModel);
+      fs.rmSync(`${usdModel}.edits.json`, { force: true });
+      fs.rmSync(`${usdModel}.parts.json`, { force: true });
+    };
+    resetUsd();
+    await callWithCleanRetry(
+      "apply_edit_ops",
+      {
+        path: usdModel,
+        ops: [
+          { op: "addBox", center: [0, 0, 0], size: [10, 10, 10] },
+          { op: "addBox", center: [10, 0, 0], size: [10, 10, 10] },
+          { op: "boolean", kind: "union", a: ["solid-0"], b: ["solid-1"] },
+        ],
+      },
+      resetUsd
+    );
+    const usdFaceIds = (r) => r.solids.flatMap((g) => g.faceIds);
+    const usdFused = await call("load_model", { path: usdModel });
+    assert(usdFaceIds(usdFused).length === 10, `the fused boxes carry the split seam: 10 faces (got ${usdFaceIds(usdFused).length})`);
+    // A face on the +y side that the union split: area 100 (half of the 200 merged face).
+    let usdSplitFace = null;
+    for (const id of usdFaceIds(usdFused)) {
+      if (usdSplitFace !== null) break;
+      const f = await call("inspect", { path: usdModel, entityId: id });
+      if (f.normal && Math.abs(f.normal[1] - 1) < 1e-6 && Math.abs(f.area - 100) < 1e-6) usdSplitFace = id;
+    }
+    assert(usdSplitFace !== null, "found a +y split face of area 100 before the unify");
+    await call("set_part", { path: usdModel, name: "TopSplit", surfaces: [usdSplitFace] });
+    const usdApplied = await callWithCleanRetry(
+      "apply_edit_ops",
+      { path: usdModel, ops: [{ op: "unifySameDomain" }] },
+      () => {
+        resetUsd();
+      }
+    );
+    assert(usdApplied.applied === 1, `unifySameDomain applied (got ${JSON.stringify(usdApplied.report)})`);
+    const usdMerged = await call("load_model", { path: usdModel });
+    assert(usdFaceIds(usdMerged).length === 6, `unifySameDomain merged 10 → 6 faces (got ${usdFaceIds(usdMerged).length})`);
+    const usdMass = await call("get_mass_properties", { path: usdModel });
+    assert(
+      Math.abs(usdMass.volume - 2000) / 2000 < 1e-6,
+      `the merge leaves the volume unchanged at 2000 (got ${usdMass.volume})`
+    );
+    const usdBucket = (usdMerged.opBuckets ?? []).find((b) => b.op === 3);
+    assert(
+      usdBucket !== undefined && Object.keys(usdBucket.roles).every((r) => r === "produced"),
+      `unifySameDomain records only the generic produced role (got ${JSON.stringify(usdBucket?.roles)})`
+    );
+    // The Part is rebound onto a face that really is the merged 200-area +y
+    // face, or dropped — never left pointing at a different, wrong face.
+    const usdPart = (await call("get_state", { path: usdModel })).parts.find((p) => p.name === "TopSplit");
+    assert(usdPart !== undefined, "the Part itself survives the topology change");
+    for (const id of usdPart.surfaces ?? []) {
+      const f = await call("inspect", { path: usdModel, entityId: id });
+      assert(
+        f.normal && Math.abs(f.normal[1] - 1) < 1e-6 && Math.abs(f.area - 200) < 1e-6,
+        `a rebound Part face is the merged +y face, never a different one (got ${JSON.stringify(f)})`
+      );
+    }
+    assert(
+      (usdPart.surfaces ?? []).length > 0 || (usdApplied.warnings ?? []).some((w) => /dropped/i.test(w)),
+      `a Part that could not be rebound is reported dropped (got surfaces=${JSON.stringify(usdPart.surfaces)}, warnings=${JSON.stringify(usdApplied.warnings)})`
+    );
+    // Nothing to merge: a second unify on the already-merged model is a
+    // reported no-op, not an error and not a topology change.
+    const usdAgain = await callWithCleanRetry(
+      "apply_edit_ops",
+      { path: usdModel, ops: [{ op: "unifySameDomain" }] },
+      () => {
+        resetUsd();
+      }
+    );
+    assert(
+      usdAgain.applied === 0 && /nothing to merge/i.test(usdAgain.report[0]?.diagnostic ?? ""),
+      `unifying an already-merged model is a reported no-op (got ${JSON.stringify(usdAgain.report)})`
+    );
+  }
+
   // Op-operand queries (Phase B) — block.stp + a 10x20x30 box at [200,0,0],
   // then an extrude whose `profile` is a BUCKET QUERY (op 0's largest body
   // face — one of the two 600-area x-normal faces), exercising: live
@@ -2786,6 +2874,18 @@ try {
   assert(
     flippedComponent.inconsistentPairCount === 3,
     `...but meshio++ reports 3 inconsistently-wound pairs — the gap this phase closes (got ${flippedComponent.inconsistentPairCount})`
+  );
+  // featureEdges names WHERE: three edges of the tetrahedron, with midpoints.
+  assert(
+    flippedComponent.inconsistentEdges.length === 3 &&
+      flippedComponent.inconsistentEdgePoints.length === 3 &&
+      flippedComponent.inconsistentEdgesTruncated === false &&
+      flippedComponent.inconsistentDisagreement === undefined,
+    `...and lists the 3 offending edges with midpoints, no count disagreement (got ${JSON.stringify(flippedComponent.inconsistentEdges)})`
+  );
+  assert(
+    cleanComponent.inconsistentEdges.length === 0,
+    `check_mesh_health(cube.stl) lists no inconsistent edges (got ${JSON.stringify(cleanComponent.inconsistentEdges)})`
   );
   assert(
     Math.abs(cleanComponent.healedVolume - 1000) < 1e-3 && Math.abs(cleanComponent.volumeDeltaPct) < 1e-6,
@@ -6506,6 +6606,10 @@ try {
   assert(
     preRepairHealth.components[0].freeEdgeCount === 3 && preRepairHealth.components[0].requiredTolerance === null,
     `check_mesh_health(holed-cube.stl) before repair: 3 free edges, never closed (got: ${JSON.stringify(preRepairHealth.components[0])})`
+  );
+  assert(
+    preRepairHealth.components[0].inconsistentPairCount === 0 && preRepairHealth.components[0].inconsistentEdges.length === 0,
+    `...and an OPEN mesh is not an inconsistently wound one (got: ${preRepairHealth.components[0].inconsistentPairCount})`
   );
   const repairedStl = path.join(dir, "repaired-cube.stl");
   const repairResult = await call("repair_mesh", { path: holedCubeStl, outputPath: repairedStl });

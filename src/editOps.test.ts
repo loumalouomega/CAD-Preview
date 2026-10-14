@@ -218,13 +218,15 @@ describe("validateEditOp", () => {
     expect(validateEditOp({
       op: "mirror", targets: ["solid-0"], planePoint: [0, 0, 5], planeNormal: [0, 0, 0],
     })).toBeNull();
+    // unifySameDomain takes no operands; stray keys are dropped
+    expect(validateEditOp({ op: "unifySameDomain", junk: 1 })).toEqual({ op: "unifySameDomain" });
     // defeature: empty/missing face list
     expect(validateEditOp({ op: "defeature", faces: [] })).toBeNull();
     expect(validateEditOp({ op: "defeature" })).toBeNull();
   });
 
   it("modify ops are topology-changing, B-rep only", () => {
-    for (const kind of ["shell", "defeature", "splitByPlane", "section", "rib", "wrap"] as const) {
+    for (const kind of ["shell", "defeature", "unifySameDomain", "splitByPlane", "section", "rib", "wrap"] as const) {
       expect(TOPOLOGY_CHANGING_OPS.has(kind)).toBe(true);
       expect(BREP_ONLY_OPS.has(kind)).toBe(true);
     }

@@ -608,6 +608,12 @@
         "Ctrl+S bakes through the same join as Export save-in-place"
       ],
       "note": "Assertion added to the existing document-chip case; not seen green here (no VS Code download)."
+    },
+    {
+      "id": "unify-same-domain-faces",
+      "section": "Unify same-domain faces",
+      "gap": "The Unify faces button's look in light and high-contrast themes, and the history row's skipped marking for a nothing-to-merge apply, in a real Extension Development Host session; the message flow is covered over the real bundle.",
+      "status": "open"
     }
   ]
 }

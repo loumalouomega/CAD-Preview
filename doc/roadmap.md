@@ -301,23 +301,6 @@ These are outcome groupings, not release numbers. Independent small items can sh
   - Pin it in `mcp:smoke` with analytic volume and exact Part membership, like the bracket tutorial.
 - **Done when:** the page builds, its op list compiles under `npm test`, and the exported MDPA opens in VSCode-MDPA-Preview with both SubModelParts populated.
 
-#### 2.4 Unify same-domain faces as an edit op {#unify-same-domain-faces-as-an-edit-op}
-
-*Area: Geometry.*
-
-- **Evidence (probed with the B-rep validity report, opencascade.js 1.1.1):** `new oc.ShapeUpgrade_UnifySameDomain_2(shape, true, true, false)` → `Build()` → `Shape()` merged two fused 10 mm boxes from 10 faces / 20 edges to 6 / 12 with the volume unchanged (2000.0000000000005 both sides); on a box with one fillet it correctly changed nothing (7 faces before and after, volume 997.853981147513 both sides). `_1()` + `Initialize(shape, true, true, false)` is the fallback form.
-- **First useful increment (M):** a `unifySameDomain` edit op — B-rep only, topology-changing (every downstream `face-N`/`edge-N` renumbers, so Parts and annotations go through the existing rebind), explicit and undoable, never an automatic consequence of a failed `check_brep_health`. Needs a panel button, which means a TikZ icon through the `icons/` pipeline (`pdflatex` + `pdftocairo`), an `OP_PARAM_DOCS` entry, the generic `produced` bucket role, and a `mcp:smoke` assertion on the fused-box face count and volume.
-- **Done when:** the fused-box fixture drops 10 → 6 faces through `apply_edit_ops` at an unchanged volume, and a Part on one of the merged faces is rebound or reported dropped, never silently repointed.
-
-#### 2.5 meshio++ `feature_edges` replaces the hand-rolled winding check {#meshio-feature-edges-winding-check}
-
-*Area: Meshing. Effort: S–M.*
-
-- **Evidence:** `src/meshTopology.ts` keys every edge through `edgeKey(a, b)`, which **sorts the pair and discards orientation** before counting — so two adjacent triangles wound in opposite directions still register as a clean manifold edge. That is a real, committed blind spot: `examples/STL/flipped-winding-tet.stl` reports `freeEdgeCount: 0` and `nonManifoldEdgeCount: 0` while carrying a reversed face. The current answer is `analyzeMeshioSurfaces`'s hand-rolled `inconsistentPairCount` (added in the meshio++ capability-surface phase), which re-counts the same fact through meshio++'s own surface diagnostics — an acknowledgement that the pure analyzer cannot see it, worked around rather than fixed. meshio++ 16.23.0 added `featureEdges(mesh, featureAngle)`, which returns sharp, open, non-manifold **and inconsistently wound** edges as a `line` mesh with `feature:kind`/`feature:angle` cell data, and works on a volume's skin.
-- **Why this is a product item and not a refactor:** the two signals answer different questions and the kernel's is strictly stronger. `meshTopology.ts` stays exactly as it is — it is a *pure, WASM-free* module that `check_mesh_health` calls per connected component without a kernel, and that property is worth keeping. `featureEdges` answers the oriented question the pure module structurally cannot.
-- **First useful increment (S–M):** report `inconsistentEdgeIds` (not just a count) from `analyzeMeshioSurfaces` using `featureEdges`' `feature:kind === "inconsistent"`, and cross-check it against the existing `inconsistentPairCount` on `flipped-winding-tet.stl` and the clean fixtures. If they agree on every committed fixture, retire the hand-rolled counter and say so in the same commit — one implementation of a fact, the same rule that removed the duplicated edge enumerator. A disagreement is a finding in itself and belongs in the write-up either way.
-- **Done when:** the count has one implementation, the pure analyzer's limitation is documented as a deliberate boundary rather than an open gap, and a fixture whose two implementations disagree cannot land silently.
-
 #### 2.6 meshio++ `check_quality` as a caller-supplied quality gate {#meshio-check-quality-gate}
 
 *Area: Meshing. Effort: S–M.*
@@ -655,7 +638,7 @@ None of these depends on another's result.
 - **Evidence today:**
   - `promote_mesh_to_brep` and `check_mesh_health` build one `BRepBuilderAPI_MakeFace` per triangle and sew them. The cost scales with triangle count, which is why `MAX_HEALABLE_TRIANGLES` refuses meshes above 50 000 and auto-decimation targets about 1 000.
   - The pieces exist: `src/webview/meshFacets.ts`'s `segmentCoplanarFacets` (pure, already used host-side by `meshioRegionParts.ts`) groups near-coplanar triangles, and `addSurfaceFromLines`' multi-loop path builds a planar face with holes from closed loops, choosing hole orientation by winding sign.
-  - The alternative is to sew per triangle and then merge with `ShapeUpgrade_UnifySameDomain`, which was probed under [Unify same-domain faces](#unify-same-domain-faces-as-an-edit-op) — but that keeps the per-triangle cost it is meant to remove.
+  - The alternative is to sew per triangle and then merge with `ShapeUpgrade_UnifySameDomain`, which now ships as the `unifySameDomain` edit op (`CLAUDE.md`'s "Unify same-domain faces" section) — but that keeps the per-triangle cost it is meant to remove.
 - **Probe (S):**
   1. For `cube.stl`, a faceted cylinder STL and one large polyhedral mesh, extract each facet's boundary loops (outer plus holes) in the facet's plane, and build one face per facet through the multi-loop construction.
   2. Sew the faces and build the solid as `promoteMeshToBrep` does.

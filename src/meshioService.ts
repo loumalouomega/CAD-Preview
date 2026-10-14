@@ -1152,6 +1152,18 @@ export interface MeshioSurfaceAnalysis {
   watertight: boolean;
   /** meshio++'s own area, independent of `areaOfTriangles`. */
   area: number;
+  /**
+   * The oppositely-wound edges themselves, as pairs of WELDED-mesh vertex
+   * indices (`featureEdges`' `feature:kind === 4`), capped at
+   * `MAX_REPORTED_INCONSISTENT_EDGES`. `inconsistentPairCount` stays the true
+   * total; `inconsistentEdgesTruncated` says when the list is shorter.
+   */
+  inconsistentEdges: Array<[number, number]>;
+  /** Midpoint of each edge in `inconsistentEdges` (same order), in model coordinates. */
+  inconsistentEdgePoints: Array<[number, number, number]>;
+  inconsistentEdgesTruncated: boolean;
+  /** Set when `featureEdges` and `surfaceWatertightCheck` disagreed about the inconsistent count; the edge-list count wins. */
+  inconsistentDisagreement?: string;
   /** Cells whose orientation is flipped relative to the rest. */
   invertedCellCount: number;
   /**
@@ -1173,25 +1185,76 @@ export interface MeshioSurfaceAnalysis {
   quality: QualitySummary | null;
 }
 
-/** Builds a meshio++ `Mesh` holding only `triangles`, with points compacted and reindexed. */
-function componentMesh(positions: Float32Array, indices: Uint32Array, triangles: readonly number[]): MeshioMesh {
+/** Cap on `MeshioSurfaceAnalysis.inconsistentEdges`; the true total stays in `inconsistentPairCount`. */
+export const MAX_REPORTED_INCONSISTENT_EDGES = 200;
+
+/** `featureEdges`' `feature:kind` code for an inconsistently wound edge. */
+const FEATURE_KIND_INCONSISTENT = 4;
+
+/**
+ * Builds a meshio++ `Mesh` holding only `triangles`, with points compacted and
+ * reindexed. `original[local]` is the welded-mesh vertex index of local point
+ * `local`, so a result expressed in the compact space can be reported in the
+ * space the rest of `check_mesh_health` uses.
+ */
+function componentMesh(
+  positions: Float32Array,
+  indices: Uint32Array,
+  triangles: readonly number[]
+): { mesh: MeshioMesh; original: number[] } {
   const remap = new Map<number, number>();
+  const original: number[] = [];
   const points: number[] = [];
   const data = new Int32Array(triangles.length * 3);
   let w = 0;
   for (const t of triangles) {
     for (let k = 0; k < 3; k++) {
-      const original = indices[t * 3 + k];
-      let mapped = remap.get(original);
+      const src = indices[t * 3 + k];
+      let mapped = remap.get(src);
       if (mapped === undefined) {
         mapped = remap.size;
-        remap.set(original, mapped);
-        points.push(positions[original * 3], positions[original * 3 + 1], positions[original * 3 + 2]);
+        remap.set(src, mapped);
+        original.push(src);
+        points.push(positions[src * 3], positions[src * 3 + 1], positions[src * 3 + 2]);
       }
       data[w++] = mapped;
     }
   }
-  return { points: new Float64Array(points), dim: 3, cells: [{ type: "triangle", nodesPerCell: 3, data }] };
+  return { mesh: { points: new Float64Array(points), dim: 3, cells: [{ type: "triangle", nodesPerCell: 3, data }] }, original };
+}
+
+/**
+ * Pulls the inconsistently wound edges out of a `featureEdges` result. Pure
+ * (no WASM) so the BigInt handling and index mapping are unit-testable:
+ * meshio >= 11.2 hands integer cell data over as `BigInt64Array`, so the kind
+ * code must be compared through `Number()`.
+ */
+export function inconsistentEdgesFromFeatureEdges(
+  lines: { data: ArrayLike<number> } | undefined,
+  kinds: ArrayLike<number | bigint> | undefined,
+  original: readonly number[],
+  positions: Float32Array,
+  cap = MAX_REPORTED_INCONSISTENT_EDGES
+): { edges: Array<[number, number]>; points: Array<[number, number, number]>; total: number } {
+  const edges: Array<[number, number]> = [];
+  const points: Array<[number, number, number]> = [];
+  let total = 0;
+  const n = lines ? Math.floor(lines.data.length / 2) : 0;
+  for (let i = 0; i < n; i++) {
+    if (Number(kinds?.[i]) !== FEATURE_KIND_INCONSISTENT) continue;
+    total++;
+    if (edges.length >= cap) continue;
+    const a = original[lines!.data[i * 2]];
+    const b = original[lines!.data[i * 2 + 1]];
+    if (a === undefined || b === undefined) continue;
+    edges.push([a, b]);
+    points.push([
+      (positions[a * 3] + positions[b * 3]) / 2,
+      (positions[a * 3 + 1] + positions[b * 3 + 1]) / 2,
+      (positions[a * 3 + 2] + positions[b * 3 + 2]) / 2,
+    ]);
+  }
+  return { edges, points, total };
 }
 
 export async function analyzeMeshioSurfaces(
@@ -1208,8 +1271,23 @@ export async function analyzeMeshioSurfaces(
 
   return components.map((triangles) => {
     try {
-      const mesh = componentMesh(positions, indices, triangles);
+      const { mesh, original } = componentMesh(positions, indices, triangles);
       const check = m.surfaceWatertightCheck(mesh);
+      // Only the inconsistent class (angle 180 = no sharp-edge scan to pay for).
+      const fe = m.featureEdges(mesh, 180, false, false, false, true);
+      const found = inconsistentEdgesFromFeatureEdges(
+        fe.mesh?.cells?.[0],
+        fe.mesh?.cell_data?.["feature:kind"]?.[0],
+        original,
+        positions
+      );
+      // The edge list is the primary source; the older count is a cross-check,
+      // and a disagreement is reported rather than silently resolved.
+      const inconsistentPairCount = typeof fe.numInconsistent === "number" ? fe.numInconsistent : found.total;
+      const disagreement =
+        inconsistentPairCount !== check.inconsistentPairs
+          ? `featureEdges found ${inconsistentPairCount} inconsistently wound edge(s) but surfaceWatertightCheck found ${check.inconsistentPairs}; the featureEdges count is reported.`
+          : undefined;
       const stats = m.stats(mesh);
       // meshio++ reports NaN where a metric does not apply to a cell type, and
       // `summarizeQuality` compares with `<` and accumulates a mean — a single
@@ -1222,7 +1300,11 @@ export async function analyzeMeshioSurfaces(
       return {
         boundaryEdgeCount: check.boundaryEdges,
         nonManifoldEdgeCount: check.nonManifoldEdges,
-        inconsistentPairCount: check.inconsistentPairs,
+        inconsistentPairCount,
+        inconsistentEdges: found.edges,
+        inconsistentEdgePoints: found.points,
+        inconsistentEdgesTruncated: found.total > found.edges.length,
+        ...(disagreement ? { inconsistentDisagreement: disagreement } : {}),
         degenerateTriangleCount: check.degenerateTriangles,
         watertight: check.watertight,
         area: typeof stats.totalArea === "number" ? stats.totalArea : 0,
