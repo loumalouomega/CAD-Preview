@@ -305,14 +305,25 @@ async function loadGeometryAndApplyOptions(
   if (input.kind === "brep") {
     gmsh.model.occ.importShapes(tmpPath);
     gmsh.model.occ.synchronize();
-    // Conformal multi-body meshing: fragment every imported
-    // solid against the rest so touching solids share interface nodes. Probed
-    // live (gmsh-wasm 0.3.0): two touching boxes go from 44 duplicate
-    // interface nodes to 0 with an unchanged element count, tags preserved as
-    // [3,1,3,2]; three boxes and `fragment(all, [])` behave identically;
-    // single-solid output is byte-identical with and without (block.stp 381 /
-    // 1282 either way), so default-on is safe. Parts MUST resolve after this
-    // renumbering — hence applyPartsToGmshModel runs after, never before.
+    // Conformal multi-body meshing: fragment the imported bodies against each
+    // other so touching bodies share interface nodes. Probed live (gmsh-wasm
+    // 0.3.0): two touching boxes go from 44 duplicate interface nodes to 0
+    // with an unchanged element count, tags preserved as [3,1,3,2]; three
+    // boxes and `fragment(all, [])` behave identically; single-solid output is
+    // byte-identical with and without (block.stp 381 / 1282 either way), so
+    // default-on is safe. Parts MUST resolve after this renumbering — hence
+    // applyPartsToGmshModel runs after, never before.
+    //
+    // Planar models have no solids, so their surfaces are the meshed bodies:
+    // the STEP importer gives every face its OWN boundary curves even when the
+    // CAD shape shares one edge (measured on the two-face fsi_mok channel:
+    // pre-fragment curve-to-surface map lists disjoint curve sets, 0 shared),
+    // and fragmenting the faces merges the coincident boundaries into shared
+    // curves. Without it the two sides mesh their common edge independently
+    // (0 shared nodes), and a Part over that edge matches two coincident
+    // candidates — under `matchNearest`'s ambiguity rule neither, so its
+    // conditions land on duplicate free-geometry lines and Kratos rejects the
+    // mesh as having conditions with no elements.
     if (options.conformal) {
       try {
         const vols = (gmsh.model.getEntities(3).dimTags as number[]) ?? [];
@@ -320,6 +331,13 @@ async function loadGeometryAndApplyOptions(
           gmsh.model.occ.fragment([...vols], []);
           gmsh.model.occ.synchronize();
           conformalApplied = true;
+        } else if (vols.length === 0) {
+          const surfaces = (gmsh.model.getEntities(2).dimTags as number[]) ?? [];
+          if (surfaces.length >= 4) {
+            gmsh.model.occ.fragment([...surfaces], []);
+            gmsh.model.occ.synchronize();
+            conformalApplied = true;
+          }
         }
       } catch (err) {
         // A failed OCC fragment may already have changed Gmsh's current model.
