@@ -233,17 +233,37 @@ export interface AddPointOp {
   coincident?: "reuse" | "independent";
 }
 /** Add a standalone straight-line edge from `start` to `end`. */
-export interface AddLineOp { op: "addLine"; start: Vec3; end: Vec3; guide?: boolean; }
+export interface AddLineOp {
+  op: "addLine"; start: Vec3; end: Vec3; guide?: boolean;
+  /** What to do when a raw (non-`point-N`) endpoint coincides with an existing `point-N` within the model tolerance: `"reuse"` snaps it to that point and shares its vertex (no new `point-N`); `"independent"`/unset builds its own vertex there, as before, and notes the coincidence. Recorded on the op so replay is deterministic. */
+  coincident?: "reuse" | "independent";
+}
 /** Add a standalone circular-arc edge: the circle at (`center`,`normal`,`radius`), trimmed from `startAngleDeg` to `endAngleDeg` (sweeping counterclockwise about `normal`, wrapping through 0° if `endAngleDeg < startAngleDeg`). */
 export interface AddArcOp { op: "addArc"; center: Vec3; normal: Vec3; radius: number; startAngleDeg: number; endAngleDeg: number; guide?: boolean; }
 /** Add a standalone polyline: straight edges through `points` in order (≥ 2; ≥ 3 when `closed`, which adds the last→first edge). */
-export interface AddPolylineOp { op: "addPolyline"; points: Vec3[]; closed: boolean; guide?: boolean; }
+export interface AddPolylineOp {
+  op: "addPolyline"; points: Vec3[]; closed: boolean; guide?: boolean;
+  /** What to do when a raw (non-`point-N`) endpoint coincides with an existing `point-N` within the model tolerance: `"reuse"` snaps it to that point and shares its vertex (no new `point-N`); `"independent"`/unset builds its own vertex there, as before, and notes the coincidence. Recorded on the op so replay is deterministic. */
+  coincident?: "reuse" | "independent";
+}
 /** Add a standalone circular-arc edge through three points (must not be collinear — a collinear triple is skipped by the engine). */
-export interface AddThreePointArcOp { op: "addThreePointArc"; p1: Vec3; p2: Vec3; p3: Vec3; guide?: boolean; }
+export interface AddThreePointArcOp {
+  op: "addThreePointArc"; p1: Vec3; p2: Vec3; p3: Vec3; guide?: boolean;
+  /** What to do when a raw (non-`point-N`) endpoint coincides with an existing `point-N` within the model tolerance: `"reuse"` snaps it to that point and shares its vertex (no new `point-N`); `"independent"`/unset builds its own vertex there, as before, and notes the coincidence. Recorded on the op so replay is deterministic. */
+  coincident?: "reuse" | "independent";
+}
 /** Add a standalone smooth B-spline curve through `points` (approximating fit, endpoint-exact — this OCCT build has no exact interpolator bound). */
-export interface AddSplineOp { op: "addSpline"; points: Vec3[]; guide?: boolean; }
+export interface AddSplineOp {
+  op: "addSpline"; points: Vec3[]; guide?: boolean;
+  /** What to do when a raw (non-`point-N`) endpoint coincides with an existing `point-N` within the model tolerance: `"reuse"` snaps it to that point and shares its vertex (no new `point-N`); `"independent"`/unset builds its own vertex there, as before, and notes the coincidence. Recorded on the op so replay is deterministic. */
+  coincident?: "reuse" | "independent";
+}
 /** Add a standalone Bézier curve with the given control points (curve passes through the first and last only). */
-export interface AddBezierOp { op: "addBezier"; controlPoints: Vec3[]; guide?: boolean; }
+export interface AddBezierOp {
+  op: "addBezier"; controlPoints: Vec3[]; guide?: boolean;
+  /** What to do when a raw (non-`point-N`) endpoint coincides with an existing `point-N` within the model tolerance: `"reuse"` snaps it to that point and shares its vertex (no new `point-N`); `"independent"`/unset builds its own vertex there, as before, and notes the coincidence. Recorded on the op so replay is deterministic. */
+  coincident?: "reuse" | "independent";
+}
 /** Add a standalone elliptical-arc edge: `radiusX` along the in-plane `up` axis, `radiusY` perpendicular, trimmed from `startAngleDeg` to `endAngleDeg` (counterclockwise about `normal`). 0→360 is the full ellipse. */
 export interface AddEllipseArcOp { op: "addEllipseArc"; center: Vec3; normal: Vec3; up: Vec3; radiusX: number; radiusY: number; startAngleDeg: number; endAngleDeg: number; guide?: boolean; }
 /** Add a standalone helical edge: `turns` revolutions of `pitch` height each around the `axis` through `center` (the helix starts at the base), on a cylinder of `radius`. */
@@ -381,6 +401,21 @@ export function getVec3Slot(op: EditOp, slot: string): Vec3 | null {
   if (!p) return null;
   const v = (op as unknown as Record<string, unknown>)[p.name];
   return asVec3(p.index === undefined ? v : Array.isArray(v) ? v[p.index] : null);
+}
+
+/** The curve kinds whose raw endpoints take a {@link AddLineOp.coincident} choice. */
+export const COINCIDENT_CURVE_KINDS: ReadonlySet<EditOpKind> = new Set<EditOpKind>(["addLine", "addThreePointArc", "addPolyline", "addSpline", "addBezier"]);
+
+/** The slot paths of a coincident-capable curve's two endpoints (`start`/`end`, `p1`/`p3`, or the first and last entry of its point list). Empty for other kinds. */
+export function curveEndpointSlots(op: EditOp): string[] {
+  switch (op.op) {
+    case "addLine": return ["start", "end"];
+    case "addThreePointArc": return ["p1", "p3"];
+    case "addPolyline": return [`points[0]`, `points[${op.points.length - 1}]`];
+    case "addSpline": return [`points[0]`, `points[${op.points.length - 1}]`];
+    case "addBezier": return [`controlPoints[0]`, `controlPoints[${op.controlPoints.length - 1}]`];
+    default: return [];
+  }
 }
 
 /** Writes `value` into `slot` of `op` in place (used by the cache write-back and the kernel's resolve step on a CLONE). A slot that does not exist is ignored. */
@@ -915,6 +950,10 @@ export function validateEditOp(raw: unknown): EditOp | null {
     if (typeof rawGuide !== "boolean") return null;
     if (!GUIDE_KINDS.has(clean.op as EditOpKind)) return null;
     (clean as unknown as Record<string, unknown>).guide = rawGuide;
+  }
+  const rawCoincident = (raw as Record<string, unknown>).coincident;
+  if ((rawCoincident === "reuse" || rawCoincident === "independent") && COINCIDENT_CURVE_KINDS.has(clean.op as EditOpKind)) {
+    (clean as unknown as Record<string, unknown>).coincident = rawCoincident;
   }
   const exprs = sanitizeExprs((raw as Record<string, unknown>).exprs, clean);
   if (exprs) clean.exprs = exprs;

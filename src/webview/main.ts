@@ -56,7 +56,7 @@ import type { ScadParameter, ScadValue } from "../scadParams";
 import { PassagesPanel } from "./passagesPanel";
 import { emitPrimitiveOps } from "../primitiveEmit";
 import { fitConstructionPlane, fitOpForKind, fitStoreWarning } from "../fitMapping";
-import { validateEditOp, GUIDE_KINDS } from "../editOps";
+import { validateEditOp, GUIDE_KINDS, COINCIDENT_CURVE_KINDS, curveEndpointSlots, getVec3Slot } from "../editOps";
 import type { SelectorQuery } from "../selectorQuery";
 import type { FacePredicate } from "../selectorPredicate";
 import { StandardPartsPanel } from "./standardPartsPanel";
@@ -1269,6 +1269,28 @@ const editsPanel = new EditsPanel(document.getElementById("edits-panel")!, {
         editsPanel.showCoincidentPrompt(hit, (choice) => {
           cancelOpPreview();
           editsModel.push({ ...op, coincident: choice });
+          setStatus("");
+        });
+        return;
+      }
+    }
+    // Same question for a curve whose raw (typed or picked-as-coordinate)
+    // endpoint lands on an existing point; `point-N` slots are shared already.
+    if (COINCIDENT_CURVE_KINDS.has(resolved.op.op)) {
+      const op = resolved.op;
+      const refs = (op as { pointRefs?: Record<string, unknown> }).pointRefs ?? {};
+      const points = allPointPositionsInModelSpace();
+      const diagonal = viewer.getModelExtents()?.diagonal ?? 0;
+      let hit: ReturnType<typeof findCoincidentPoint> = null;
+      for (const slot of curveEndpointSlots(op)) {
+        const at = refs[slot] ? null : getVec3Slot(op, slot);
+        hit = at ? findCoincidentPoint(at, points, diagonal) : null;
+        if (hit) break;
+      }
+      if (hit) {
+        editsPanel.showCoincidentPrompt(hit, (choice) => {
+          cancelOpPreview();
+          editsModel.push({ ...op, coincident: choice } as typeof op);
           setStatus("");
         });
         return;

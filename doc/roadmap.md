@@ -27,7 +27,7 @@ Existing implementation references were checked against the repository where not
 
 **Extended 2026-10-09.** Extension, not a planning review. The lower command bar for manual geometry ops was added as 2.1, top of Ready product work; the eleven existing section-2 items shifted to 2.2–2.12 with anchors unchanged, so name-based links survive. Its command table and examples were then extended in place for approval. "Define lines, arcs and curves from preexisting points" was added as 2.0, above 2.1, as the section's top priority — deliberately out of the gapless 1..N sequence; it has since shipped and left this list (`CLAUDE.md`'s `point-N` references section), so section 2 again started at 2.1. The lower command bar has since shipped too (`CLAUDE.md`'s "Lower command bar" section), leaving the list; section 2 was renumbered from 2.1.
 
-**Extended 2026-10-09.** Extension, not a planning review. [Coincident-point prompt: collapse or keep independent](#coincident-point-collapse-or-independent) was added as 2.13 and a GiD-style geometry structure view (since shipped and removed) as 2.14, at the end of Ready product work; nothing was re-ranked.
+**Extended 2026-10-09.** Extension, not a planning review. The coincident-point prompt (since shipped and removed; see `CLAUDE.md`'s "Coincident points") was added as 2.13 and a GiD-style geometry structure view (since shipped and removed) as 2.14, at the end of Ready product work; nothing was re-ranked.
 
 **Extended 2026-10-12.** Extension, not a planning review: nothing was re-ranked, and every new item is appended at the end of its section so existing IDs and anchors are unchanged. Two outside projects were compared — [ReOpenSCAD](https://github.com/Matvey-Kuk/reopenscad) and [text-to-cad](https://github.com/earthtojake/text-to-cad) — and the [agent-CAD comparison](#agent-cad-comparison) below records what each feature became here. Added: 1.3 (OpenSCAD diagnostics), 2.12–2.24 (OpenSCAD include tracking, `color()` Parts, snapshot sections, clearance checks, material density, quotable references, MCP registration, MCP revision guard and agent-edit marking (both since shipped and removed), printability facts, draft analysis, hole callouts, reproducible exports), 3.12 (planar-facet promotion), 5.3 (MCP App inline preview) and 6.3 (kinematic mates). Evidence addenda went to 2.1 and 3.3, and four rejections to Non-goals.
 
@@ -296,15 +296,6 @@ These are outcome groupings, not release numbers. Independent small items can sh
 - **Done so far:** [A cantilever beam](/tutorials/cantilever) — a 100 × 10 × 10 box, `FixedEnd` and `LoadFace` Parts, an optional steel density, and an MDPA export with a handoff manifest. `mcp:smoke` pins it on the live kernel: the beam's volume is exactly 10 000 mm³, and every node of each `SubModelPart` sits exactly on its end plane (x = −50 / +50).
 - **What is left (S):** the cross-repository check — open the exported `.mdpa` in VSCode-MDPA-Preview and confirm both SubModelParts populate. It needs that extension and is not exercised from this repository.
 - **Done when:** that check passes, and KKSS's tutorial links to the page.
-
-#### 2.8 Coincident-point prompt: curve endpoints typed raw {#coincident-point-collapse-or-independent}
-
-*Area: Geometry, Parity. Effort: S.*
-
-- **Done so far:** `addPoint` records `coincident: "reuse" | "independent"`; the fold detects a coincident `point-N` (same `1e-3 × bboxDiagonal` tolerance as `point-N` references), reports it as an op `note` in `apply_edit_ops` warnings and the response entry, and the point form asks Collapse / Keep independent inline. See `CLAUDE.md`'s "Coincident points".
-- **What is left (S):** the same choice where a **raw coordinate typed into a curve op's endpoint** lands on an existing point. Today those slots silently create their own edge endpoints (use a `point-N` slot to share). Needs a probe of whether the curve builders' vertices merge in `collectVertices`, then a note (and a per-slot choice) on the curve ops.
-- **Done when:** a curve endpoint typed at an existing point's coordinates reports the coincidence, and the chosen behaviour is recorded and replays deterministically.
-- **Out of scope:** automatic sewing or healing of near-coincident geometry (the explicit repair op); a general coincident-entity merge beyond points; moving either point (collapse reuses the id).
 
 #### 2.15 Quotable entity references for agent chats {#quotable-entity-references}
 

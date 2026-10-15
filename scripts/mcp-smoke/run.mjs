@@ -8050,6 +8050,29 @@ try {
     assert((await pointCount()) === base + 3, "coincident:independent adds exactly one more point");
   }
 
+  // --- curve endpoints typed raw: coincident choice (roadmap "Coincident-point prompt: curve endpoints typed raw") ---
+  {
+    const ceModel = path.join(dir, "coincident-curve.stp");
+    fs.copyFileSync(path.join(ROOT, "examples", "STP", "block.stp"), ceModel);
+    const pointCount = async () => (await call("load_model", { path: ceModel })).pointCount;
+    const CORNER = [1.5, 2, 2.5]; // a vertex of the 3x4x5 block centred on the origin
+    const base = await pointCount();
+    const far = await call("apply_edit_ops", { path: ceModel, ops: [{ op: "addLine", start: [100, 100, 100], end: [101, 100, 100] }] });
+    assert((await pointCount()) === base + 2 && !(far.warnings ?? []).some((w) => /coincid|reused/.test(w)), "control: a line away from every point adds two points and no coincidence note");
+    const indep = await call("apply_edit_ops", { path: ceModel, ops: [{ op: "addLine", start: CORNER, end: [50, 50, 50] }] });
+    assert((await pointCount()) === base + 4, "an unset choice keeps today's behaviour: a twin vertex at the corner");
+    assert(indep.warnings.some((w) => /coincides with an existing point \(start ↔ point-\d+\) and was kept independent/.test(w)), `the raw-endpoint coincidence is reported (${JSON.stringify(indep.warnings)})`);
+    const reuse = await call("apply_edit_ops", { path: ceModel, ops: [{ op: "addLine", start: CORNER, end: [60, 60, 60], coincident: "reuse" }] });
+    assert(reuse.applied === 1 && (await pointCount()) === base + 5, "coincident:reuse shares the corner vertex — one new point, not two");
+    assert(reuse.warnings.some((w) => /reused existing point/.test(w)) && !reuse.warnings.some((w) => /did NOT apply/.test(w)), `the reuse is a note, not a skip (${JSON.stringify(reuse.warnings)})`);
+    const arc = await call("apply_edit_ops", { path: ceModel, ops: [{ op: "addThreePointArc", p1: CORNER, p2: [10, 20, 2.5], p3: [20, 5, 2.5], coincident: "reuse" }] });
+    assert(arc.applied === 1 && (await pointCount()) === base + 6, `a three-point arc shares the corner vertex (${JSON.stringify(arc.warnings)})`);
+    const poly = await call("apply_edit_ops", { path: ceModel, ops: [{ op: "addPolyline", points: [CORNER, [70, 0, 0], [80, 10, 0]], closed: false, coincident: "reuse" }] });
+    assert(poly.applied === 1 && (await pointCount()) === base + 8, `a polyline shares its first vertex (${JSON.stringify(poly.warnings)})`);
+    const replay = await pointCount();
+    assert(replay === base + 8, "replaying the persisted ops (load_model) reproduces the same point count");
+  }
+
   // --- analyze_passages (roadmap "Narrow-gap and passage resolution preflight") ---
   {
     const P = path.join(ROOT, "examples", "STP", "passages");

@@ -2753,6 +2753,65 @@ test("coincident point: Add at an existing point's coordinates asks Collapse / K
   assert((await sentCount(page, "editsChanged")) === mid + 1 && op?.coincident === undefined && (await page.evaluate(() => document.getElementById("coincident-prompt") === null)), `a non-coincident point is pushed directly with no field (got ${JSON.stringify(op)})`);
 });
 
+test("coincident curve endpoint: a raw Line start on an existing point asks Collapse / Keep independent and records the choice", async (page) => {
+  await populate(page);
+  await enablePicking(page, "point");
+  const status = await runModeFilter(page, "point", "nearXY", "5");
+  assert(/matched (\d+) of/.test(status), `precondition: points were picked (got ${JSON.stringify(status)})`);
+  await page.click("#select-menu");
+  await sleep(150);
+  const openLine = async () => {
+    await page.evaluate(() => {
+      if (document.querySelector("#edits-params .point-ref-bar")) return;
+      [...document.querySelectorAll(".op-btn")].find((b) => b.querySelector(".op-name")?.textContent === "Line")?.click();
+    });
+    await sleep(200);
+  };
+  await openLine();
+  await page.evaluate(() => document.querySelector("#edits-params .point-ref-use")?.click());
+  await sleep(250);
+  const pos = await page.evaluate(() => [...document.querySelectorAll('#edits-params input[data-name="start"]')].map((i) => Number(i.value)));
+  assert(pos.length === 3 && pos.every(Number.isFinite), `precondition: an existing point's position was read (got ${JSON.stringify(pos)})`);
+  // Re-open the Line form fresh so both slots are raw coordinates, not point chips.
+  await page.evaluate(() => [...document.querySelectorAll(".op-btn")].find((b) => b.querySelector(".op-name")?.textContent === "Line")?.click());
+  await sleep(150);
+  await openLine();
+  const fill = (name, v) => page.evaluate(([n, vv]) => {
+    [...document.querySelectorAll(`#edits-params input[data-name="${n}"]`)].forEach((inp, k) => {
+      inp.value = String(vv[k]);
+      inp.dispatchEvent(new Event("input", { bubbles: true }));
+      inp.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+  }, [name, v]);
+  const addLine = () => page.evaluate(() => [...document.querySelectorAll("#edits-params .compose-apply")].find((b) => b.textContent === "Add")?.click());
+  const lastOp = () => page.evaluate(() => (window.__sent ?? []).findLast((x) => x.type === "editsChanged")?.ops.at(-1));
+  await fill("start", pos);
+  await fill("end", [pos[0] + 9000, pos[1] + 9000, pos[2] + 9000]);
+  const before = await sentCount(page, "editsChanged");
+  await addLine();
+  await sleep(300);
+  const shown = await page.evaluate(() => { const el = document.getElementById("coincident-prompt"); return { visible: !!el && el.offsetParent !== null, text: el?.textContent ?? "" }; });
+  assert(shown.visible && /Coincides with point-\d+/.test(shown.text), `the prompt is rendered for a raw coincident endpoint (got ${JSON.stringify(shown)})`);
+  assert((await sentCount(page, "editsChanged")) === before, "nothing is pushed until a choice is made");
+  await page.evaluate(() => [...document.querySelectorAll("#coincident-prompt button")].find((b) => b.textContent === "Collapse")?.click());
+  await sleep(300);
+  let op = await lastOp();
+  assert(op?.op === "addLine" && op.coincident === "reuse", `Collapse pushes addLine with coincident:"reuse" (got ${JSON.stringify(op)})`);
+  await addLine();
+  await sleep(300);
+  await page.evaluate(() => [...document.querySelectorAll("#coincident-prompt button")].find((b) => b.textContent === "Keep independent")?.click());
+  await sleep(300);
+  op = await lastOp();
+  assert(op?.op === "addLine" && op.coincident === "independent", `Keep independent pushes coincident:"independent" (got ${JSON.stringify(op)})`);
+  // Control: both endpoints far from every point -> pushed directly, no field.
+  await fill("start", [8000, 8000, 8000]);
+  const mid = await sentCount(page, "editsChanged");
+  await addLine();
+  await sleep(300);
+  op = await lastOp();
+  assert((await sentCount(page, "editsChanged")) === mid + 1 && op?.coincident === undefined && (await page.evaluate(() => document.getElementById("coincident-prompt") === null)), `a non-coincident line is pushed directly with no field (got ${JSON.stringify(op)})`);
+});
+
 /**
  * Point references on curve ops (the "Define lines, arcs and curves from
  * preexisting points" feature). Kernel resolution is live-verified in
