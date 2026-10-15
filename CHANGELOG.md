@@ -4,7 +4,7 @@ All notable changes to the "CAD Preview" extension are documented in this file.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/); this project does not yet strictly follow Semantic Versioning (pre-1.0 releases moved fast and bundled multiple features per bump).
 
-## [Unreleased]
+## [3.17.0] - 2026-10-15
 
 ### Changed
 
@@ -14,10 +14,20 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/); thi
 
 - **`segment_mesh_surface` MCP tool.** Splits a mesh's whole surface into smooth patches and fits each with a plane/sphere/cylinder/cone/torus (meshio++ `segment` + `fitPrimitives`), facts only: per-patch fit type, residuals, raw parameters, adjacency. Mesh sources only.
 - **`render_snapshot` for stl/obj/ply/gltf sources**, software-rendered by meshio++ with no Playwright/Chromium (`engine: "meshio-software"`, raw triangles, edit ops not baked).
+- **`check_mesh_quality` MCP tool and FE Mesh quality gate.** Facts-only gate over the generated mesh against caller-supplied thresholds (per-clause evaluated/violations/fraction/worst cell, vacuous clauses flagged), exposed as an FE Mesh panel row beside the Gmsh minSICN summary.
+- **`addPoint` coincident-point choice.** Records `coincident: reuse|independent`; the replay fold detects a point coinciding with an existing point-N and reports it as an informational note — reuse adds no entity yet counts as applied. The point form asks inline (Collapse / Keep independent).
 
 - **Geometry display mode (roadmap 2.9).** A sixth Display mode shows the B-rep structure GiD-style: faint faces, through-solid edges, enlarged point markers, a bounding shell per solid in a stable colour, and a legend. Webview-only; selection is unchanged.
 
 - **Per-Part material density (roadmap 2.14).** `Part.density` (g/cm³; `set_part` `density` or bundled `material` name, Parts-panel field) gives `generate_bom` Density/Mass columns and a total, and `get_mass_properties` a `massGrams` for a solid inside a Part with density. A Part without density is reported as missing, never zero.
+
+### Fixed
+
+- **Copy BOM tolerates rows without density/mass.** BOM rows from older payloads that omit the numeric cells render as empty cells instead of throwing on `toFixed` and aborting the copy.
+
+### Documentation
+
+- **Cantilever beam tutorial (roadmap 2.3, in-repo half).** End-to-end worked example with `mcp:smoke` coverage.
 
 ## [3.16.0] - 2026-10-14
 
@@ -822,6 +832,7 @@ This release republishes v1.9.0's full changelog (below) unchanged; v1.9.0 itsel
 
 - Initial release: read-only 3D preview for CAD and mesh files (STEP, IGES, BREP, STL, OBJ, PLY, glTF) inside a VS Code custom editor, using OpenCascade.js (OCCT WASM) in the extension host for B-rep formats and Three.js in the webview for rendering.
 
+[3.17.0]: https://github.com/loumalouomega/CAD-Preview/compare/v3.16.0...v3.17.0
 [3.16.0]: https://github.com/loumalouomega/CAD-Preview/compare/v3.15.0...v3.16.0
 [3.15.0]: https://github.com/loumalouomega/CAD-Preview/compare/v3.14.0...v3.15.0
 [3.14.0]: https://github.com/loumalouomega/CAD-Preview/compare/v3.13.0...v3.14.0
