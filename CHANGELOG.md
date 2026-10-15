@@ -8,6 +8,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/); thi
 
 ### Added
 
+- **Copy reference** appends a stored query (`— query {…}`) for a face produced by the last topology-changing edit, so a pasted reference survives renumbering (`resolve_selector`).
 - Curve ops (`addLine`, `addThreePointArc`, `addPolyline`, `addSpline`, `addBezier`) take `coincident: "reuse" | "independent"` for raw endpoints that land on an existing point: the coincidence is reported, **Collapse** shares the existing vertex (no twin `point-N`), and the Edits panel asks inline.
 
 ## [3.17.0] - 2026-10-15

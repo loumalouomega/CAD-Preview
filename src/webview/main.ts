@@ -3,7 +3,7 @@ import { Viewer } from "./viewer";
 import { refreshPalette } from "./palette";
 import { buildEntityReferenceIndex, QUERYABLE_PANEL_FORMS } from "./opCatalog";
 import { hoverContent, inspectorContent, summaryLine } from "./entityExplain";
-import { formatEntityReferences } from "./entityReference";
+import { formatEntityReferences, producingBucketFor } from "./entityReference";
 import { UI_GLYPHS } from "../uiGlyphs";
 import { MacrosPanel } from "./macrosPanel";
 import { selectionGroupsFor } from "./selectionGroups";
@@ -2503,6 +2503,16 @@ let pendingOpQueries: PendingOpQuery[] = [];
  * the reply needs to stage against. Single-flight (the panel disables its
  * button while busy); a second click can't start until the first lands. */
 let selectorSynthesizeRequest: { id: string; form: PanelOpId; field: string; ids: string[] } | null = null;
+/** In-flight Copy-reference synthesize round trips, by requestId; settle with [] on error or timeout. */
+const referenceSynthesizeWaiters = new Map<string, (results: import("../protocol").SelectorSynthesizeResultEntry[]) => void>();
+function requestReferenceQueries(op: number, role: string, entityIds: string[]): Promise<import("../protocol").SelectorSynthesizeResultEntry[]> {
+  return new Promise((resolve) => {
+    const requestId = `ref-${Date.now()}-${Math.random()}`;
+    const timer = setTimeout(() => { referenceSynthesizeWaiters.delete(requestId); resolve([]); }, 15000);
+    referenceSynthesizeWaiters.set(requestId, (results) => { clearTimeout(timer); resolve(results); });
+    post({ type: "selectorSynthesizeRequest", requestId, op, role, entityIds: entityIds.slice(0, 25) });
+  });
+}
 
 /**
  * The operand field + current ids the open form's query row would pin, read
@@ -3819,21 +3829,43 @@ function setupSelectionControls(): void {
     refBtn.title = "Copy a quotable reference to paste to an agent (file#id, facts, and the op count the id is valid for)";
     refBtn.addEventListener("click", () => {
       const opCount = editsModel.list().length;
-      const text = formatEntityReferences(
-        refEntities.map((e) => {
-          const known = knownEntityFacts.get(e.entityId);
-          return {
-            path: currentDocumentPath || "(unsaved document)",
-            entityId: e.entityId,
-            opCount,
-            facts: known && known.opCount === opCount ? known.facts : null,
-          };
-        })
-      );
-      void copyTextToClipboard(text).then((ok) => {
-        setStatus(ok ? `Copied ${refEntities.length === 1 ? "reference" : `${refEntities.length} references`} to ${refEntities[0].entityId}${refEntities.length > 1 ? " …" : ""}` : "Could not copy to the clipboard.", !ok);
-      });
+      const entities = refEntities.map((e) => e.entityId);
       closeMenu();
+      void (async () => {
+        // Stored queries (B-rep faces produced by the last topology-changing op
+        // only): one synthesize round trip per (op, role) group, so the line
+        // survives renumbering. A refusal or timeout just leaves the query off.
+        const queries = new Map<string, import("../selectorQuery").SelectorQuery>();
+        const groups = new Map<string, { op: number; role: string; ids: string[] }>();
+        if (sourceKind === "brep") {
+          for (const id of entities) {
+            const b = producingBucketFor(lastOpBuckets, id);
+            if (!b) continue;
+            const key = `${b.op}/${b.role}`;
+            const g = groups.get(key) ?? { op: b.op, role: b.role, ids: [] };
+            g.ids.push(id);
+            groups.set(key, g);
+          }
+        }
+        await Promise.all([...groups.values()].map(async (g) => {
+          const results = await requestReferenceQueries(g.op, g.role, g.ids);
+          for (const r of results) if (r.query) queries.set(r.entityId, r.query);
+        }));
+        const text = formatEntityReferences(
+          refEntities.map((e) => {
+            const known = knownEntityFacts.get(e.entityId);
+            return {
+              path: currentDocumentPath || "(unsaved document)",
+              entityId: e.entityId,
+              opCount,
+              facts: known && known.opCount === opCount ? known.facts : null,
+              query: queries.get(e.entityId) ?? null,
+            };
+          })
+        );
+        const ok = await copyTextToClipboard(text);
+        setStatus(ok ? `Copied ${refEntities.length === 1 ? "reference" : `${refEntities.length} references`} to ${refEntities[0].entityId}${refEntities.length > 1 ? " …" : ""}${queries.size ? ` (${queries.size} with a stored query)` : ""}` : "Could not copy to the clipboard.", !ok);
+      })();
     });
     ctxMenu.append(refBtn);
     const sep = document.createElement("div");
@@ -6059,6 +6091,8 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
       break;
 
     case "selectorSynthesizeResult": {
+      const refWaiter = referenceSynthesizeWaiters.get(msg.requestId);
+      if (refWaiter) { referenceSynthesizeWaiters.delete(msg.requestId); refWaiter(msg.results); break; }
       const req = selectorSynthesizeRequest;
       if (!req || msg.requestId !== req.id) break; // stale — a newer synthesize (or a geometry reload) superseded it; never consume its latch
       selectorSynthesizeRequest = null;
@@ -6083,12 +6117,15 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
       break;
     }
 
-    case "selectorSynthesizeError":
+    case "selectorSynthesizeError": {
+      const refWaiter = referenceSynthesizeWaiters.get(msg.requestId);
+      if (refWaiter) { referenceSynthesizeWaiters.delete(msg.requestId); refWaiter([]); break; }
       if (!selectorSynthesizeRequest || msg.requestId !== selectorSynthesizeRequest.id) break; // stale
       selectorSynthesizeRequest = null;
       editsPanel.setQueryBusy(false);
       editsPanel.showQueryResult(msg.message, true);
       break;
+    }
 
     case "standardPartsSearchResult":
       if (msg.requestId !== standardPartsSearchRequestId) break; // stale — a newer search superseded it

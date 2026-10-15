@@ -191,7 +191,7 @@ Two projects built for AI agents were read for this extension:
 | Agent-readable busy errors ("retry, do not edit"); closed vocabularies | Both | Shipped as coded MCP errors: `isError` results carry `structuredContent {code, message, hint?, retryable}`, and an undeclared parameter produces a warning naming the nearest real key (warn-only; strict mode deferred) |
 | "Connect AI" setup snippets; one-install plugin | Both | [Register the MCP server with VS Code](#register-mcp-server-with-vscode) |
 | `ui://` MCP-App inline viewer | Both | [MCP App inline preview](#mcp-app-inline-preview) (probe) |
-| `cad_view` returns the user's selection as quotable refs | text-to-cad | [Quotable entity references](#quotable-entity-references) (Copy reference shipped; stored queries remain) |
+| `cad_view` returns the user's selection as quotable refs | text-to-cad | Shipped: Copy reference quotes `file#id`, facts, the op count and a stored query (`CLAUDE.md`'s Selection bullet) |
 | Snapshot presets (xray, hidden-line) and section mode | text-to-cad | Shipped: `render_snapshot` / `screenshot_shape` take all five display modes and an optional section `clip` (the viewer's own clip plane, solid cap included) |
 | `mass_properties` with density | text-to-cad | Shipped: `Part.density` gives BOM mass and a per-solid `massGrams` (mass-weighted centre and density-weighted inertia remain out) |
 | dfam-check (overhangs, wall thickness, support, orientations, plate fit) | text-to-cad, ReOpenSCAD (plates) | [Printability facts report](#printability-facts-report) |
@@ -296,16 +296,6 @@ These are outcome groupings, not release numbers. Independent small items can sh
 - **Done so far:** [A cantilever beam](/tutorials/cantilever) — a 100 × 10 × 10 box, `FixedEnd` and `LoadFace` Parts, an optional steel density, and an MDPA export with a handoff manifest. `mcp:smoke` pins it on the live kernel: the beam's volume is exactly 10 000 mm³, and every node of each `SubModelPart` sits exactly on its end plane (x = −50 / +50).
 - **What is left (S):** the cross-repository check — open the exported `.mdpa` in VSCode-MDPA-Preview and confirm both SubModelParts populate. It needs that extension and is not exercised from this repository.
 - **Done when:** that check passes, and KKSS's tutorial links to the page.
-
-#### 2.15 Quotable entity references for agent chats {#quotable-entity-references}
-
-*Area: Parity. Effort: S.*
-
-- **Evidence:** the MCP server runs in a separate process from VS Code, so an agent cannot see what the user selected. Telling it means reading an id off the hover tooltip and typing it. text-to-cad's `cad_view` returns the user's selection as quotable refs (`/abs/path.step#o1.2.f7`), tied to one saved revision with no fuzzy matching.
-- **Done so far:** a **Copy reference** row in the right-click context menu writes one line per entity — workspace-relative path and id, the pill's facts when already fetched, and the op-list length the id is valid against (`examples/STP/bull.stp#face-12 — planar, 8,119.27 mm² (valid for 3 ops)`). See `CLAUDE.md`'s "Quotable entity references".
-- **What is left (S):** append the stored-query JSON (via `synthesizeSelector`, one `selectorSynthesizeRequest` per copied face that has a producing-op bucket) so the reference survives renumbering.
-- **Done when:** a pasted reference resolves through `inspect` to the same face, and a reference copied for a face with a producing op carries a query that still resolves after an unrelated topology-changing edit.
-- **Out of scope:** a live channel from the viewer to the MCP server.
 
 #### 2.16 Register the MCP server with VS Code and offer client setup snippets {#register-mcp-server-with-vscode}
 
@@ -867,7 +857,7 @@ The MMG core probe is complete; its working volume/surface paths and negative op
   - **Pass:** at least one host renders it within the ceiling → admitted.
   - **Fail:** no host renders it, or the SDK cannot declare it → recorded; PNGs remain the answer.
 - **If admitted (M):** a `preview` resource offered beside `render_snapshot` (not replacing it — the PNGs are what an agent can *look at*), with a size cap that falls back to the images.
-- **Out of scope:** reporting the user's camera or selection back to the agent through the page (see [quotable references](#quotable-entity-references) for the cheap version).
+- **Out of scope:** reporting the user's camera or selection back to the agent through the page (the shipped Copy reference is the cheap version).
 
 ### 6. Strategic — multi-phase bets {#strategic-—-multi-phase-bets}
 

@@ -3278,6 +3278,51 @@ test("context menu: Copy reference quotes file#id and the op count it is valid f
   assert(/Copied reference/.test(status), `the status line confirms the copy (got ${JSON.stringify(status)})`);
 });
 
+test("context menu: Copy reference appends a stored query for a face produced by the last op", async (page) => {
+  await page.evaluate(() => {
+    window.__lastGeometry = null;
+    window.addEventListener("message", (e) => {
+      if (e.data?.type === "geometry") window.__lastGeometry = e.data;
+    });
+  });
+  await populate(page);
+  await enablePicking(page, "surface");
+  await page.evaluate(() => {
+    window.__clip = null;
+    navigator.clipboard.writeText = async (t) => { window.__clip = t; };
+  });
+  await post(page, { type: "documentInfo", name: "bull.stp", path: "/abs/work/a.stp", relativePath: "a.stp", format: "step", dirty: false, unsavedEdits: 0 });
+  const box = await viewportBox(page);
+  const copyOnce = async () => {
+    await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2, { button: "right" });
+    await sleep(250);
+    await page.evaluate(() => document.getElementById("ctx-copy-reference")?.click());
+    await sleep(400);
+    return page.evaluate(() => window.__clip);
+  };
+  const plain = await copyOnce();
+  const id = /#(face-\d+)/.exec(plain ?? "")?.[1];
+  assert(!!id && !/ query /.test(plain), `control: with no bucket the reference has no query (got ${JSON.stringify(plain)})`);
+  // Inject a bucket naming the clicked face, and answer the synthesize request like the host would.
+  await page.evaluate(() => {
+    const seen = new Set();
+    setInterval(() => {
+      for (const m of window.__sent ?? []) {
+        if (m.type !== "selectorSynthesizeRequest" || seen.has(m.requestId)) continue;
+        seen.add(m.requestId);
+        window.postMessage({ type: "selectorSynthesizeResult", requestId: m.requestId, results: m.entityIds.map((entityId) => ({ entityId, query: { kind: "bucket", op: m.op, role: m.role, index: 0 }, kind: "extrude" })) }, "*");
+      }
+    }, 30);
+  });
+  await page.evaluate((faceId) => window.postMessage({ ...window.__lastGeometry, opBuckets: [{ op: 0, kind: "extrude", roles: { side: [faceId] } }] }, "*"), id);
+  await sleep(250);
+  await page.evaluate(() => { window.__clip = null; });
+  const withQuery = await copyOnce();
+  assert(typeof withQuery === "string" && withQuery.includes(`#${id}`) && / — query \{.*"role":"side".*\}$/.test(withQuery), `the reference carries the stored query (got ${JSON.stringify(withQuery)})`);
+  const req = await page.evaluate(() => window.__sent.findLast((x) => x.type === "selectorSynthesizeRequest"));
+  assert(req?.op === 0 && req.role === "side" && req.entityIds.length === 1, `one synthesize request for the (op, role) group (got ${JSON.stringify(req)})`);
+});
+
 // ── Collapsible sidebar sections ──────────────────────────────────────────
 //
 // The chevrons, the collapse geometry, and the `.view.json` round trip. The

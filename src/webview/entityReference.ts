@@ -16,6 +16,8 @@
  */
 import type { EntityFacts } from "../entityFacts";
 import { summaryLine } from "./entityExplain";
+import type { OpBucket } from "../opBuckets";
+import type { SelectorQuery } from "../selectorQuery";
 
 export interface EntityReferenceInput {
   /** Workspace-relative path when the file is inside a workspace folder, else the full path. */
@@ -25,6 +27,21 @@ export interface EntityReferenceInput {
   opCount: number;
   /** Facts the inspector already fetched for this entity, if any — never fetched just for a copy. */
   facts?: EntityFacts | null;
+  /** Stored query that re-derives this face by role, when one was synthesized — appended as compact JSON so the reference survives renumbering. */
+  query?: SelectorQuery | null;
+}
+
+/**
+ * The (op, role) bucket a face id can be synthesized from, or null. Ids in a
+ * bucket are valid only against that op's own state, so only the LAST bucket
+ * qualifies: any later topology-changing op may have renumbered the id, and a
+ * query synthesized against the wrong face would be a confident lie.
+ */
+export function producingBucketFor(buckets: readonly OpBucket[] | null | undefined, faceId: string): { op: number; role: string } | null {
+  if (!buckets || buckets.length === 0 || !faceId.startsWith("face-")) return null;
+  const last = buckets.reduce((a, b) => (b.op > a.op ? b : a));
+  for (const [role, ids] of Object.entries(last.roles)) if (ids.includes(faceId)) return { op: last.op, role };
+  return null;
 }
 
 /** One reference line. Facts are included only when supplied; nothing is guessed. */
@@ -36,7 +53,8 @@ export function formatEntityReference(input: EntityReferenceInput): string {
     const s = summaryLine(facts);
     detail = ` — ${[s.descriptor, s.measure].filter(Boolean).join(", ")}`;
   }
-  return `${path}#${entityId}${detail} (valid for ${opCount} ${noun})`;
+  const q = input.query ? ` — query ${JSON.stringify(input.query)}` : "";
+  return `${path}#${entityId}${detail} (valid for ${opCount} ${noun})${q}`;
 }
 
 /**
