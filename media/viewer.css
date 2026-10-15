@@ -2313,6 +2313,34 @@ input[type="range"].meshing-slider:focus {
   border-top: 1px solid var(--vscode-sideBar-border, #3c3c3c);
 }
 
+#meshing-gate {
+  padding: 4px 8px 8px;
+  border-top: 1px solid var(--vscode-sideBar-border, #3c3c3c);
+}
+#meshing-gate[hidden] {
+  display: none;
+}
+.meshing-gate-label,
+.meshing-gate-result {
+  font-size: var(--ui-fs-label);
+  opacity: 0.75;
+}
+.meshing-gate-row {
+  display: flex;
+  gap: 4px;
+  margin: 2px 0;
+}
+.meshing-gate-row input {
+  flex: 1;
+  min-width: 0;
+}
+.meshing-gate-result:empty {
+  display: none;
+}
+.meshing-gate-head {
+  margin-bottom: 2px;
+}
+
 .meshing-quality-summary {
   font-size: var(--ui-fs-label);
   opacity: 0.75;

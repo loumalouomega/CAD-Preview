@@ -420,6 +420,53 @@ test("overlays: meshingResult lights the toggle and hides model faces; Clear rev
   assert(off === false, "Clear disposes the overlay and unlights the toggle");
 });
 
+const GATE_RESULT = {
+  passed: false,
+  numCells: 1966,
+  numInverted: 0,
+  numDegenerate: 0,
+  vacuousChecks: 1,
+  summary: "",
+  checks: [
+    { name: "scaled_jacobian >= 0.99", metric: "quality:scaled_jacobian", min: 0.99, max: null, maxFraction: 0, evaluated: 1282, violations: 1282, fraction: 1, worst: 0.2011, worstCell: 1918, passed: false, vacuous: false },
+    { name: "volume >= 1", metric: "volume", min: 1, max: null, maxFraction: 0, evaluated: 0, violations: 0, fraction: 0, worst: null, worstCell: null, passed: true, vacuous: true },
+  ],
+};
+
+test("quality gate: row appears with a mesh, Run posts the typed text, the reply renders facts, a stale reply is ignored, Clear hides it", async (page) => {
+  await populate(page);
+  const hiddenBefore = await page.evaluate(() => document.getElementById("meshing-gate")?.offsetParent === null);
+  assert(hiddenBefore, "the quality gate row is not rendered before a mesh exists");
+  await postMeshingResult(page);
+  await sleep(700);
+  const shown = await page.evaluate(() => document.getElementById("meshing-gate")?.offsetParent !== null);
+  assert(shown, "the quality gate row is genuinely rendered once a mesh is shown");
+  await page.fill("#meshing-gate-spec", "scaled_jacobian >= 0.99");
+  await page.evaluate(() => (window.__sent.length = 0));
+  await page.click("#meshing-gate-run");
+  const req = await page.evaluate(() => (window.__sent ?? []).filter((m) => m.type === "qualityGateRequest").at(-1) ?? null);
+  assert(req !== null && req.require === "scaled_jacobian >= 0.99", `Run posts a qualityGateRequest with the typed text (got ${JSON.stringify(req)})`);
+  await page.evaluate(([r]) => window.postMessage({ type: "qualityGateResult", requestId: "stale", result: r }, "*"), [GATE_RESULT]);
+  await sleep(150);
+  const stale = await page.evaluate(() => document.getElementById("meshing-gate-result")?.textContent ?? "");
+  assert(/Checking/.test(stale), `a stale reply renders nothing (got ${JSON.stringify(stale.slice(0, 60))})`);
+  await page.evaluate(([id, r]) => window.postMessage({ type: "qualityGateResult", requestId: id, result: r }, "*"), [req.requestId, GATE_RESULT]);
+  await sleep(200);
+  const view = await page.evaluate(() => ({
+    head: document.querySelector(".meshing-gate-head")?.textContent ?? "",
+    lines: [...document.querySelectorAll(".meshing-gate-check")].map((e) => e.textContent),
+    runEnabled: !document.getElementById("meshing-gate-run").disabled,
+  }));
+  assert(/Outside your thresholds/.test(view.head) && /1966 cells/.test(view.head), `the header states the outcome against the caller's thresholds (got ${JSON.stringify(view.head)})`);
+  assert(view.lines.length === 2 && /1282 of 1282 cells violate/.test(view.lines[0]) && /cell 1918/.test(view.lines[0]), `the failing clause lists violations and the worst cell (got ${JSON.stringify(view.lines[0])})`);
+  assert(/vacuous/.test(view.lines[1]), `a clause that applied to no cell is named vacuous (got ${JSON.stringify(view.lines[1])})`);
+  assert(view.runEnabled, "Run is re-enabled after the reply");
+  await page.click("#meshing-clear");
+  await sleep(400);
+  const hiddenAfter = await page.evaluate(() => document.getElementById("meshing-gate")?.offsetParent === null);
+  assert(hiddenAfter, "Clear hides the quality gate row again");
+});
+
 /**
  * F. Render-on-demand: the webview must draw only when something changed.
  *

@@ -46,6 +46,7 @@ import {
   saveSheetTemplate,
   listSheetTemplates,
   estimateMeshBudgetTool,
+  checkMeshQualityTool,
   analyzePassagesTool,
   measureMeshDeviationTool,
   saveModelTool,
@@ -373,6 +374,18 @@ const FAKE_PROMOTE_RESULT: PromoteMeshResult = {
   warnings: [],
 };
 
+const FAKE_QUALITY_GATE = {
+  passed: true,
+  numCells: 10,
+  numInverted: 0,
+  numDegenerate: 0,
+  checks: [
+    { name: "scaled_jacobian >= 0.2", metric: "quality:scaled_jacobian", min: 0.2, max: null, maxFraction: 0, evaluated: 8, violations: 0, fraction: 0, worst: 0.31, worstCell: 4, passed: true, vacuous: false },
+  ],
+  vacuousChecks: 0,
+  summary: "quality gate: PASS (10 cells)\n",
+};
+
 const FAKE_REPAIR_RESULT = {
   stlBytes: new TextEncoder().encode("solid repaired\nendsolid repaired"),
   nodeCount: 42,
@@ -522,6 +535,7 @@ function fakePipeline(overrides: Partial<Pipeline> = {}): Pipeline {
     convertToStlBoundaryWithRegions: vi.fn(async () => ({ stlBytes: new TextEncoder().encode("solid x\nendsolid x\n") })),
     exportViaMeshio: vi.fn(async () => ({ bytes: new TextEncoder().encode("fake-meshio-bytes") })),
     readMeshioMetadata: vi.fn(async () => ({ regions: [], pointDataNames: [], cellDataNames: [], fieldDataNames: [] })),
+    checkMeshQuality: vi.fn(async () => FAKE_QUALITY_GATE),
     readMeshioDataInfo: vi.fn(async () => []),
     readMeshioProvenance: vi.fn(async () => null),
     runMeshioOps: vi.fn(async () => ({ bytes: new Uint8Array([1, 2, 3]), steps: [], warnings: [] })),
@@ -4490,6 +4504,28 @@ describe("estimate_mesh_budget", () => {
     const c = ctx();
     const r = await estimateMeshBudgetTool(c, { path: stlModel }); // empty STL, sentinel sizeMax
     expect(r.estimate.status).toBe("unavailable");
+  });
+});
+
+describe("check_mesh_quality", () => {
+  it("meshes, then gates the generated MSH text against the caller's threshold, returning facts", async () => {
+    const c = ctx();
+    const r = await checkMeshQualityTool(c, { path: stpModel, require: " scaled_jacobian >= 0.2 ", maxInverted: 2 });
+    const call = vi.mocked(c.pipeline.checkMeshQuality).mock.lastCall!;
+    expect(call[1]).toBe("scaled_jacobian >= 0.2");
+    expect(call[2]).toEqual({ maxInverted: 2, maxDegenerate: undefined });
+    expect(r.checks[0].worstCell).toBe(4);
+    expect(r.require).toBe("scaled_jacobian >= 0.2");
+    expect(r.warnings.join(" ")).not.toMatch(/vacuous|No `require`/);
+  });
+
+  it("reports a clause that applied to no cell as vacuous, and a missing threshold text", async () => {
+    const vacuous = { ...FAKE_QUALITY_GATE, vacuousChecks: 1, checks: [{ ...FAKE_QUALITY_GATE.checks[0], evaluated: 0, vacuous: true, worst: null, worstCell: null }] };
+    const c = ctx(fakePipeline({ checkMeshQuality: vi.fn(async () => vacuous) }));
+    const r = await checkMeshQualityTool(c, { path: stpModel });
+    expect(r.warnings.join(" ")).toMatch(/No `require`/);
+    expect(r.warnings.join(" ")).toMatch(/applied to no cell/);
+    expect(r.checks[0].vacuous).toBe(true);
   });
 });
 

@@ -972,6 +972,8 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
     // Apply IS the save), so File ▸ Save has nothing to flush for this one.
     let currentScadOverrides: Record<string, ScadValue> = {};
     let currentMeshOptions: MeshOptions | undefined;
+    /** MSH text of the last mesh this panel generated — what the quality gate runs over. Reset at the start of each generate. */
+    let lastMshText: string | null = null;
     // The last view state received from the webview (or read from the
     // sidecar), retained for the same "Save flushes everything" reason as
     // `currentMeshOptions` — `undefined` until the webview's first
@@ -2545,8 +2547,10 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
             if (!input) throw new Error("No mesh geometry available: missing STL data.");
             const { parts, options } = await this.resolveMeshPartsAndOptions(document.uri, input, msg.options);
             const startedAt = Date.now();
+            lastMshText = null;
             const result = await this.docPipeline(document.uri).generateMesh(this.context.extensionPath, input, options, parts);
             this.assertMeshingJobActive();
+            lastMshText = result.mshText;
             post({
               type: "meshingResult",
               requestId: msg.requestId,
@@ -3595,6 +3599,17 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
           post({ type: "brepHealthResult", requestId: msg.requestId, report });
         } catch (err) {
           post({ type: "brepHealthError", requestId: msg.requestId, message: (err as Error).message });
+        }
+        return;
+      }
+
+      if (msg.type === "qualityGateRequest") {
+        try {
+          if (lastMshText === null) throw new Error("Generate a mesh first — the quality gate runs over the last generated mesh.");
+          const result = await docPipeline.checkMeshQuality(lastMshText, msg.require.trim());
+          post({ type: "qualityGateResult", requestId: msg.requestId, result });
+        } catch (err) {
+          post({ type: "qualityGateError", requestId: msg.requestId, message: (err as Error).message });
         }
         return;
       }

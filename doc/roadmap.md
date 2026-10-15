@@ -297,15 +297,6 @@ These are outcome groupings, not release numbers. Independent small items can sh
 - **What is left (S):** the cross-repository check — open the exported `.mdpa` in VSCode-MDPA-Preview and confirm both SubModelParts populate. It needs that extension and is not exercised from this repository.
 - **Done when:** that check passes, and KKSS's tutorial links to the page.
 
-#### 2.6 meshio++ `check_quality` as a caller-supplied quality gate {#meshio-check-quality-gate}
-
-*Area: Meshing. Effort: S–M.*
-
-- **Evidence:** the FE Mesh panel reports `min`/mean/histogram of Gmsh's `minSICN` via `src/meshQuality.ts`'s `summarizeQuality`, plus a "N elements below quality 0.20" line. Every one of those is **descriptive** — a number to read. A user preparing a part for a solver has to know which of those numbers matters to *their* solver and invent the threshold themselves; a library that applies a stricter criterion will simply produce a mesh this panel says is fine. meshio++ 16.24.0 added `checkQuality(mesh, require, maxInverted, maxDegenerate)`, taking thresholds as one specification text (`"scaled_jacobian >= 0.2; aspect_ratio <= 5 @ 1%"`, clauses separated by `;`/`,`/newline, `#` comments, `@` an allowed violating fraction) and reporting per-check violations, the fraction, and the worst value with its cell.
-- **Framing discipline, which is the whole design question:** the threshold must stay the **caller's**, supplied per call, and the result reported as a fact (`passed`, per-check violation counts, worst value) rather than a computed verdict. That is the `verdictConventions` rule this codebase already states — tools report facts, the caller renders the judgment — and a hard-coded "PASS"/"FAIL" would be the first thing to violate it. A vacuous pass (a threshold that applies to no cell) must be reported as such, not as success.
-- **First useful increment (S–M):** an `estimate_mesh_budget`-shaped sibling: an MCP tool plus a panel row that runs the gate over the generated mesh and reports per-check results. It belongs **beside** the existing Gmsh `minSICN` summary rather than replacing it — the two metrics measure different things (a Jacobian on the actual cells vs. a shape-quality index), and a user needs both. The meshing spec for the docs lives in `doc/gmsh-integration.md`, which is where the comparison belongs.
-- **Done when:** a caller can state a threshold, get per-check facts back, and a deliberately bad mesh and a deliberately good one are distinguishable on the same fixture. Interactive and MCP reach the same result, per the parity rule.
-
 #### 2.8 Coincident-point prompt: collapse or keep independent {#coincident-point-collapse-or-independent}
 
 *Area: Geometry, Parity. Effort: S–M.*

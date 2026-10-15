@@ -122,7 +122,7 @@ import type {
 } from "./stepPartsService";
 import type { compareModels, CompareSource } from "./modelDiffHost";
 import type { ModelDiff } from "./modelDiff";
-import type { convertToStlBoundary, convertToStlBoundaryWithRegions, convertFoamCaseToStlBoundary, exportViaMeshio, readMeshioMetadata, readMeshioDataInfo, readMeshioProvenance, decimateStlBoundary, runMeshioOps, MeshioDataArrayInfo } from "./meshioService";
+import type { convertToStlBoundary, convertToStlBoundaryWithRegions, convertFoamCaseToStlBoundary, exportViaMeshio, readMeshioMetadata, checkMeshQuality, readMeshioDataInfo, readMeshioProvenance, decimateStlBoundary, runMeshioOps, MeshioDataArrayInfo } from "./meshioService";
 import { buildPartsFromMeshioRegions } from "./meshioRegionParts";
 import { buildPartsFromCsgColors, csgColorPartsNote, type CsgColorGroup } from "./csgColorParts";
 import { validateMmgOptions, type MmgOptions } from "./mmgOptions";
@@ -280,6 +280,7 @@ export interface Pipeline {
   convertFoamCaseToStlBoundary: typeof convertFoamCaseToStlBoundary;
   exportViaMeshio: typeof exportViaMeshio;
   readMeshioMetadata: typeof readMeshioMetadata;
+  checkMeshQuality: typeof checkMeshQuality;
   readMeshioDataInfo: typeof readMeshioDataInfo;
   readMeshioProvenance: typeof readMeshioProvenance;
   decimateStlBoundary: typeof decimateStlBoundary;
@@ -5152,6 +5153,48 @@ export async function estimateMeshBudgetTool(ctx: ToolContext, params: { path: s
     facts,
     options: { sizeMax: options.sizeMax, dimension: options.dimension, elementOrder: options.elementOrder, elementShape: options.elementShape, engine: options.engine, budgetElements: options.budgetElements ?? null },
     note: "An estimate from a calibrated empirical model — not a mesh. generate_mesh reports the actual counts.",
+    warnings,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// check_mesh_quality (roadmap "meshio++ check_quality as a caller-supplied quality gate")
+
+/**
+ * Generates the FE mesh exactly as `generate_mesh` would, then runs meshio++'s
+ * quality gate over it against the CALLER's threshold text. Reports facts per
+ * clause (violations, fraction, worst value and cell, `vacuous` when the metric
+ * applied to no cell) — `passed` is meshio++'s comparison against the caller's
+ * numbers, never a verdict this tool invents. Complements `generate_mesh`'s
+ * descriptive `quality` (Gmsh minSICN): a Jacobian/aspect gate on the actual
+ * cells measures something different.
+ */
+export async function checkMeshQualityTool(
+  ctx: ToolContext,
+  params: { path: string; require?: string; maxInverted?: number; maxDegenerate?: number; options?: Partial<MeshOptions> }
+) {
+  const modelPath = params.path;
+  const route = requireRoute(modelPath);
+  const warnings: string[] = [];
+  const spec = (params.require ?? "").trim();
+  const input = await resolveMeshInputHeadless(ctx, modelPath, route, warnings);
+  const base = await effectiveMeshOptions(modelPath, params.options);
+  const { parts, options } = await resolveMeshPartsAndOptionsHeadless(modelPath, input, base, warnings);
+  const meshed = await ctx.pipeline.generateMesh(ctx.extensionPath, input, options, parts);
+  warnings.push(...meshed.warnings);
+  const gate = await ctx.pipeline.checkMeshQuality(meshed.mshText, spec, {
+    maxInverted: params.maxInverted,
+    maxDegenerate: params.maxDegenerate,
+  });
+  if (spec === "") warnings.push("No `require` threshold text given — only the inverted/degenerate cell counts were gated.");
+  if (gate.vacuousChecks > 0) {
+    warnings.push(`${gate.vacuousChecks} clause(s) applied to no cell (e.g. a volume metric on a surface mesh): their \`passed\` is vacuous.`);
+  }
+  return {
+    require: spec,
+    ...gate,
+    elementCount: meshed.elementCount,
+    note: "Facts against your threshold: nothing here is a verdict. Gmsh's minSICN summary (generate_mesh `quality`) measures a different index; use both.",
     warnings,
   };
 }

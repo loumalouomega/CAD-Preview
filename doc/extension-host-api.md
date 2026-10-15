@@ -93,6 +93,7 @@ The extension host is a Node.js process. These modules run there — never in th
 | `src/passageAnalysis.ts` | Pure narrow-gap core: `findPassages` (coaxial-cylinder annuli with axial overlap, facing-plane slots with a true in-plane triangle overlap test, void-only via outward normals, requested size from Parts/global) (unit-tested) |
 | `src/passageAnalysisHost.ts` | Kernel half: measures each face (analytic `faceSurfaceInfo`, orientation-aware winding normal, tessellation points) — a `Pipeline` key (`analyzePassages`) |
 | `src/meshBudget.ts` | Pure, calibrated mesh size/memory estimate shared by the FE Mesh panel and `estimate_mesh_budget` (`estimateMeshBudget`, `budgetWarning`, formatters; raw calibration rows in `scripts/perf/mesh-budget-calibration.json`) (unit-tested against those rows) |
+| `src/meshQualityGate.ts` | Pure shape of meshio++'s quality-gate result: `normalizeQualityGate` (bigint-safe, flags a clause that evaluated no cell as `vacuous`) and `describeGateCheck`; shared by the FE Mesh Quality-gate row and `check_mesh_quality` |
 | `src/nonce.ts` | Shared CSP script-nonce generator, used by every webview HTML builder |
 | `src/changelogParser.ts` | Pure `CHANGELOG.md` parser + markdown→HTML renderer for the What's New panel (vscode-free, unit-tested) |
 | `src/whatsNew.ts` | Version-upgrade check (`context.globalState`) + the standalone "What's New" webview panel |
@@ -810,6 +811,12 @@ async function convertToStlBoundary(
   companions?: readonly MeshioCompanion[]
 ): Promise<Uint8Array>
 async function convertFoamCaseToStlBoundary(markerPath: string): Promise<Uint8Array>
+// Quality gate (a Pipeline key, meshio-only): MSH 4.1 text in, facts out. `spec` is the caller's threshold text.
+async function checkMeshQuality(
+  gmshMshText: string,
+  spec: string,
+  options?: { maxInverted?: number; maxDegenerate?: number }
+): Promise<QualityGateResult>
 async function exportViaMeshio(
   gmshMshText: string,
   outMeshioFormat: string

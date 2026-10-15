@@ -1,4 +1,6 @@
 import { importRuntimePackage } from "./runtimePackage";
+import { normalizeQualityGate } from "./meshQualityGate";
+import type { QualityGateResult } from "./meshQualityGate";
 import { remeshMmg } from "./mmgService";
 import { prepareMmgMesh, harvestMmgMesh } from "./mmgMesh";
 import type { MmgOptions } from "./mmgOptions";
@@ -1580,6 +1582,31 @@ function boundaryTrianglesToAsciiStl(
   * `src/meshProvenanceNotes.ts`) rides the same scope as extra `Note:`
   * lines, where the block exists at all.
   */
+
+/**
+ * Runs meshio++'s quality gate over a Gmsh MSH 4.1 text. `spec` is the
+ * CALLER's threshold text (empty → only the inverted/degenerate counts);
+ * `maxInverted`/`maxDegenerate` default to 0, negative disables. A malformed
+ * spec or unknown metric throws meshio++'s own message (not an abort, so it
+ * passes through `wrapMeshioFault` unchanged).
+ */
+export async function checkMeshQuality(
+  gmshMshText: string,
+  spec: string,
+  options: { maxInverted?: number; maxDegenerate?: number } = {}
+): Promise<QualityGateResult> {
+  const m = await getMeshio();
+  const inPath = "/q.msh";
+  m.FS.writeFile(inPath, Buffer.from(gmshMshText, "utf8"));
+  try {
+    const mesh = m.readMesh(inPath, "gmsh");
+    return normalizeQualityGate(m.checkQuality(mesh, spec, options.maxInverted ?? 0, options.maxDegenerate ?? 0));
+  } catch (err) {
+    throw wrapMeshioFault(err);
+  } finally {
+    try { m.FS.unlink(inPath); } catch { /* ignore */ }
+  }
+}
 
 export interface MeshioExportOptions {
   /** MEMFS write extension, from the registry entry. Defaults to `outMeshioFormat`. */

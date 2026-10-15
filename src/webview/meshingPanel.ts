@@ -1,5 +1,6 @@
 import { SIZE_MAX_SENTINEL, DEFAULT_MESH_OPTIONS, validateMeshGrading, validateMeshStructured, type MeshOptions, type MeshGrading, type MeshStructured } from "../meshOptions";
 import type { QualitySummary } from "../meshQuality";
+import { describeGateCheck, type QualityGateResult } from "../meshQualityGate";
 import { TOOLBAR_ICONS } from "../toolbarIcons";
 import { MESH_EXPORT_FORMATS, type MeshExportFormatId } from "../meshExportFormats";
 import { DISPLAY_UNITS, UNIT_LABELS, type DisplayUnit } from "../lengthUnits";
@@ -64,6 +65,8 @@ export interface MeshingPanelCallbacks {
   onCancel?: (requestId: string) => void;
   /** Measure the generated boundary's deviation from the reference at `tolerance` (mm). */
   onDeviation?: (tolerance: number) => void;
+  /** Gate the last generated mesh against the typed threshold text (the wiring posts `qualityGateRequest`). */
+  onQualityGate?: (require: string) => void;
   /** Export in the format/unit currently picked in the two `<select>`s. `unit`
    * is a real geometric scale applied before Gmsh ever sees the geometry
    * (mirroring the model Export command's own unit conversion) — "mm" is
@@ -129,6 +132,10 @@ export class MeshingPanel {
   private readonly body: HTMLElement;
   private readonly statusEl: HTMLElement;
   private readonly qualityEl: HTMLElement;
+  private gateEl!: HTMLElement;
+  private gateInput!: HTMLInputElement;
+  private gateBtn!: HTMLButtonElement;
+  private gateResultEl!: HTMLElement;
   private readonly progressEl: HTMLElement;
   private readonly generateBtn: HTMLButtonElement;
   private readonly cancelBtn: HTMLButtonElement;
@@ -216,6 +223,7 @@ export class MeshingPanel {
     this.body = panel.querySelector("#meshing-body")!;
     this.statusEl = panel.querySelector("#meshing-status")!;
     this.qualityEl = panel.querySelector("#meshing-quality")!;
+    this.buildGateRow();
     this.progressEl = panel.querySelector("#meshing-progress")!;
     this.generateBtn = panel.querySelector("#meshing-generate")!;
     this.cancelBtn = panel.querySelector("#meshing-cancel")!;
@@ -966,15 +974,96 @@ export class MeshingPanel {
     if (!status) {
       this.statusEl.textContent = "";
       this.renderQuality(undefined, undefined);
+      this.gateEl.hidden = true;
     } else if ("error" in status) {
       this.statusEl.textContent = status.error;
       this.statusEl.classList.add("meshing-status-error");
       this.renderQuality(undefined, undefined);
+      this.gateEl.hidden = true;
     } else {
+      this.gateEl.hidden = false;
       const elapsed = status.elapsedMs != null ? ` · ${formatElapsed(status.elapsedMs)}` : "";
       this.statusEl.textContent = `Nodes: ${status.nodeCount} · Elements: ${status.elementCount}${elapsed}`;
       this.renderQuality(status.quality, status.worstElements);
     }
+  }
+
+  /** The caller-supplied quality gate (meshio++ `checkQuality`): a threshold
+   * text input + Run, shown only while a generated mesh is displayed. Built
+   * once and kept across `render()` calls so the typed text survives. Beside
+   * — never replacing — the descriptive minSICN summary above it. */
+  private buildGateRow(): void {
+    const el = document.createElement("div");
+    el.id = "meshing-gate";
+    el.hidden = true;
+    const label = document.createElement("div");
+    label.className = "meshing-gate-label";
+    label.textContent = "Quality gate (meshio++)";
+    const row = document.createElement("div");
+    row.className = "meshing-gate-row";
+    const input = document.createElement("input");
+    input.type = "text";
+    input.id = "meshing-gate-spec";
+    input.value = "scaled_jacobian >= 0.2";
+    input.spellcheck = false;
+    input.title = 'Your threshold text: clauses separated by ";", each METRIC >= V or METRIC <= V with an optional "@ N%" allowed violating fraction, e.g. "scaled_jacobian >= 0.2; aspect_ratio <= 5 @ 1%". Inverted and degenerate cells are always gated.';
+    input.setAttribute("aria-label", "Quality gate threshold text");
+    const btn = document.createElement("button");
+    btn.id = "meshing-gate-run";
+    btn.textContent = "Run";
+    btn.title = "Gate the last generated mesh against this threshold text";
+    const run = () => {
+      if (btn.disabled) return;
+      this.gateResultEl.textContent = "Checking…";
+      this.gateResultEl.classList.remove("meshing-status-error");
+      btn.disabled = true;
+      this.cb.onQualityGate?.(input.value);
+    };
+    btn.addEventListener("click", run);
+    input.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") run();
+    });
+    row.append(input, btn);
+    const result = document.createElement("div");
+    result.id = "meshing-gate-result";
+    result.className = "meshing-gate-result";
+    el.append(label, row, result);
+    this.qualityEl.insertAdjacentElement("afterend", el);
+    this.gateEl = el;
+    this.gateInput = input;
+    this.gateBtn = btn;
+    this.gateResultEl = result;
+  }
+
+  /** Renders the gate's facts: one line per clause, vacuous clauses named. */
+  renderGateResult(result: QualityGateResult): void {
+    this.gateBtn.disabled = false;
+    this.gateResultEl.classList.remove("meshing-status-error");
+    this.gateResultEl.replaceChildren();
+    const head = document.createElement("div");
+    head.className = "meshing-gate-head";
+    head.textContent = `${result.passed ? "Within" : "Outside"} your thresholds · ${result.numCells} cells`;
+    this.gateResultEl.appendChild(head);
+    for (const c of result.checks) {
+      const line = document.createElement("div");
+      line.className = "meshing-gate-check";
+      line.textContent = `${c.passed ? "✓" : "✗"} ${describeGateCheck(c)}`;
+      this.gateResultEl.appendChild(line);
+    }
+  }
+
+  /** Drops a previous gate result — it described a mesh that was just replaced. */
+  resetGate(): void {
+    this.gateBtn.disabled = false;
+    this.gateResultEl.replaceChildren();
+    this.gateResultEl.classList.remove("meshing-status-error");
+  }
+
+  renderGateMessage(text: string, isError = true): void {
+    this.gateBtn.disabled = false;
+    this.gateResultEl.replaceChildren();
+    this.gateResultEl.textContent = text;
+    this.gateResultEl.classList.toggle("meshing-status-error", isError);
   }
 
   /** Renders the per-element quality summary as a min/mean line plus a

@@ -1324,6 +1324,7 @@ async function currentStlIfMeshSource(): Promise<string | undefined> {
   return (await exportModel(model, "stl")).data;
 }
 
+let qualityGateRequestId: string | null = null;
 const meshingPanel = new MeshingPanel(document.getElementById("meshing-panel")!, {
   onOptionsChange: (patch) => meshingModel.update(patch),
   // Same store the Parts panel edits — one Part.meshSize, two mirrored inputs.
@@ -1337,7 +1338,13 @@ const meshingPanel = new MeshingPanel(document.getElementById("meshing-panel")!,
     meshingPanel.renderDeviationMessage("Meshing and measuring deviation…");
     post({ type: "meshDeviationRequest", requestId, tolerance, options: meshingModel.get(), stl: await currentStlIfMeshSource() });
   },
+  onQualityGate: (require) => {
+    const requestId = `${Date.now()}-${Math.random()}`;
+    qualityGateRequestId = requestId;
+    post({ type: "qualityGateRequest", requestId, require });
+  },
   onGenerate: async () => {
+    meshingPanel.resetGate();
     const stl = await currentStlIfMeshSource();
     const requestId = `${Date.now()}-${Math.random()}`;
     activeMeshingRequestId = requestId;
@@ -6186,6 +6193,16 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
       });
       break;
 
+    case "qualityGateResult":
+      if (msg.requestId !== qualityGateRequestId) break; // stale — a newer run superseded it
+      qualityGateRequestId = null;
+      meshingPanel.renderGateResult(msg.result);
+      break;
+    case "qualityGateError":
+      if (msg.requestId !== qualityGateRequestId) break;
+      qualityGateRequestId = null;
+      meshingPanel.renderGateMessage(msg.message);
+      break;
     case "passagesResult":
       if (msg.requestId !== passagesRequestId) break; // stale — a newer analysis/load superseded it
       passagesRequestId = null;
