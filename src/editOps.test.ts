@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { validateEditOp, BREP_ONLY_OPS, TOPOLOGY_CHANGING_OPS, GUIDE_KINDS, QUERYABLE_OPERAND_FIELDS, POINT_REF_KINDS, pointRefSlotsOf, getVec3Slot, setVec3Slot } from "./editOps";
+import { validateEditOp, curveEndpointSlots, BREP_ONLY_OPS, TOPOLOGY_CHANGING_OPS, GUIDE_KINDS, QUERYABLE_OPERAND_FIELDS, POINT_REF_KINDS, pointRefSlotsOf, getVec3Slot, setVec3Slot } from "./editOps";
 
 describe("validateEditOp", () => {
   it("accepts well-formed transform ops", () => {
@@ -455,6 +455,24 @@ describe("validateEditOp", () => {
       .toEqual({ op: "addPoint", position: [1, 2, 3], coincident: "independent" });
     expect(validateEditOp({ op: "addPoint", position: [1, 2, 3], coincident: "merge" }))
       .toEqual({ op: "addPoint", position: [1, 2, 3] });
+  });
+
+  it("keeps a valid coincident choice on curve ops and drops it elsewhere", () => {
+    expect(validateEditOp({ op: "addLine", start: [0, 0, 0], end: [1, 0, 0], coincident: "reuse" }))
+      .toEqual({ op: "addLine", start: [0, 0, 0], end: [1, 0, 0], coincident: "reuse" });
+    expect(validateEditOp({ op: "addPolyline", points: [[0, 0, 0], [1, 0, 0]], closed: false, coincident: "independent" }))
+      .toEqual({ op: "addPolyline", points: [[0, 0, 0], [1, 0, 0]], closed: false, coincident: "independent" });
+    expect(validateEditOp({ op: "addSpline", points: [[0, 0, 0], [1, 1, 0], [2, 0, 0]], coincident: "merge" }))
+      .toEqual({ op: "addSpline", points: [[0, 0, 0], [1, 1, 0], [2, 0, 0]] });
+    // arcs derive their endpoints from angles — no typed endpoint, no choice
+    expect(validateEditOp({ op: "addArc", center: [0, 0, 0], normal: [0, 0, 1], radius: 1, startAngleDeg: 0, endAngleDeg: 90, coincident: "reuse" }))
+      .toEqual({ op: "addArc", center: [0, 0, 0], normal: [0, 0, 1], radius: 1, startAngleDeg: 0, endAngleDeg: 90 });
+  });
+
+  it("curveEndpointSlots names the first and last typed point", () => {
+    expect(curveEndpointSlots({ op: "addLine", start: [0, 0, 0], end: [1, 0, 0] })).toEqual(["start", "end"]);
+    expect(curveEndpointSlots({ op: "addBezier", controlPoints: [[0, 0, 0], [1, 1, 0], [2, 0, 0]] })).toEqual(["controlPoints[0]", "controlPoints[2]"]);
+    expect(curveEndpointSlots({ op: "addPoint", position: [0, 0, 0] })).toEqual([]);
   });
 
   it("rejects malformed wireframe ops", () => {

@@ -237,12 +237,12 @@ type EditOp =
   | { op: 'addSlotProfile'; center: Vec3; normal: Vec3; up: Vec3; length: number; width: number; guide?: boolean }
   | { op: 'addTrapezoidProfile'; center: Vec3; normal: Vec3; up: Vec3; bottomWidth: number; topWidth: number; height: number; guide?: boolean }
   | { op: 'addPoint'; position: Vec3; guide?: boolean; coincident?: 'reuse' | 'independent' }
-  | { op: 'addLine'; start: Vec3; end: Vec3; guide?: boolean }                          // any Vec3 slot of the curve ops may be a `point-N` — see pointRefs below
+  | { op: 'addLine'; start: Vec3; end: Vec3; guide?: boolean; coincident?: 'reuse' | 'independent' }                        // any Vec3 slot of the curve ops may be a `point-N` — see pointRefs below
   | { op: 'addArc'; center: Vec3; normal: Vec3; radius: number; startAngleDeg: number; endAngleDeg: number; guide?: boolean }
-  | { op: 'addPolyline'; points: Vec3[]; closed: boolean; guide?: boolean }            // >= 2 points (>= 3 when closed)
-  | { op: 'addThreePointArc'; p1: Vec3; p2: Vec3; p3: Vec3; guide?: boolean }
-  | { op: 'addSpline'; points: Vec3[]; guide?: boolean }                               // approximating, endpoint-exact fit
-  | { op: 'addBezier'; controlPoints: Vec3[]; guide?: boolean }
+  | { op: 'addPolyline'; points: Vec3[]; closed: boolean; guide?: boolean; coincident?: 'reuse' | 'independent' }            // >= 2 points (>= 3 when closed)
+  | { op: 'addThreePointArc'; p1: Vec3; p2: Vec3; p3: Vec3; guide?: boolean; coincident?: 'reuse' | 'independent' }
+  | { op: 'addSpline'; points: Vec3[]; guide?: boolean; coincident?: 'reuse' | 'independent' }                               // approximating, endpoint-exact fit
+  | { op: 'addBezier'; controlPoints: Vec3[]; guide?: boolean; coincident?: 'reuse' | 'independent' }  // `coincident` on the five curves above: what a RAW first/last position landing on an existing point does — see getting-started
   | { op: 'addEllipseArc'; center: Vec3; normal: Vec3; up: Vec3; radiusX: number; radiusY: number; startAngleDeg: number; endAngleDeg: number; guide?: boolean }
   | { op: 'addHelix'; center: Vec3; axis: Vec3; radius: number; pitch: number; turns: number; guide?: boolean }
   | { op: 'addSurfaceFromLines'; edges: string[] }   // >= 3 edge ids, must close into a loop

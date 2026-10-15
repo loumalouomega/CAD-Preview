@@ -1,5 +1,5 @@
 import type { EditOp, Vec3, OpOutcome, OutcomeFail, RegionPick } from "./editOps";
-import { TOPOLOGY_CHANGING_OPS, setVec3Slot } from "./editOps";
+import { TOPOLOGY_CHANGING_OPS, COINCIDENT_CURVE_KINDS, curveEndpointSlots, getVec3Slot, setVec3Slot } from "./editOps";
 import type { OpBucket } from "./opBuckets";
 import { PRODUCED_ROLE } from "./opBuckets";
 // TYPE-ONLY, and that is load-bearing: `entityFacts.ts` imports this module
@@ -3491,7 +3491,44 @@ function addWireframePrimitive(oc: any, shape: any, op: EditOp, cleanup: Array<{
       fail?.note?.(`new point coincides with point-${hit} and was kept independent`);
     }
   }
-  const entity = buildWireframePrimitive(oc, resolved, cleanup);
+  let built: EditOp = resolved;
+  let shared: Map<string, any> | undefined;
+  if (COINCIDENT_CURVE_KINDS.has(op.op)) {
+    // Raw endpoint slots only: a `point-N` reference was already pinned to an
+    // existing vertex's coordinates by resolvePointRefs and is not a coincidence.
+    const rawSlots = curveEndpointSlots(resolved).filter((slot) => !(resolved as { pointRefs?: Record<string, unknown> }).pointRefs?.[slot]);
+    const hits: Array<{ slot: string; index: number }> = [];
+    for (const slot of rawSlots) {
+      const at = getVec3Slot(resolved, slot);
+      const index = at ? coincidentPointIndex(oc, shape, at, cleanup) : -1;
+      if (index >= 0) hits.push({ slot, index });
+    }
+    if (hits.length > 0) {
+      const names = hits.map((h) => `${h.slot} ↔ point-${h.index}`).join(", ");
+      if ((resolved as { coincident?: string }).coincident === "reuse") {
+        // Snap each hit endpoint onto the existing vertex (so the curve passes
+        // through it exactly) and share that vertex instead of building a twin.
+        built = JSON.parse(JSON.stringify(resolved)) as EditOp;
+        shared = new Map();
+        const verts = collectVertices(oc, shape, cleanup);
+        for (const h of hits) {
+          const p = oc.BRep_Tool.Pnt(verts[h.index]);
+          cleanup.push(p);
+          setVec3Slot(built, h.slot, [p.X(), p.Y(), p.Z()]);
+          shared.set(h.slot, verts[h.index]);
+        }
+        fail?.note?.(`endpoint reused existing point (${names}) — shared vertex, no new point`);
+      } else {
+        fail?.note?.(`endpoint coincides with an existing point (${names}) and was kept independent`);
+      }
+    }
+  }
+  let entity = buildWireframePrimitive(oc, built, cleanup, shared);
+  if (!entity && shared) {
+    // Vertex sharing refused (the builder rejected the vertex/curve pair): fall back to an independent endpoint.
+    fail?.note?.("could not share the existing vertex — endpoint built independently");
+    entity = buildWireframePrimitive(oc, built, cleanup);
+  }
   if (!entity) {
     fail?.(`could not build the ${op.op} entity`, "check the coordinates (a collinear 3-point arc, for example, cannot build an edge)");
     return shape;
@@ -3517,8 +3554,11 @@ function addWireframePrimitive(oc: any, shape: any, op: EditOp, cleanup: Array<{
 
 /** Builds the new vertex/edge, or null on builder failure. */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function buildWireframePrimitive(oc: any, op: EditOp, cleanup: Array<{ delete(): void }>): any {
+function buildWireframePrimitive(oc: any, op: EditOp, cleanup: Array<{ delete(): void }>, shared?: Map<string, any>): any {
   const keep = <T extends { delete(): void }>(h: T): T => { cleanup.push(h); return h; };
+  // One vertex per point: the shared existing vertex for a reused slot, else a fresh one.
+  const vertexFor = (slot: string, v: Vec3): any =>
+    shared?.get(slot) ?? keep(keep(new oc.BRepBuilderAPI_MakeVertex(keep(pnt(oc, v)))).Vertex());
   try {
     switch (op.op) {
       case "addPoint": {
@@ -3527,7 +3567,10 @@ function buildWireframePrimitive(oc: any, op: EditOp, cleanup: Array<{ delete():
         return vertex.IsNull() ? null : keep(vertex);
       }
       case "addLine": {
-        const edge = keep(new oc.BRepBuilderAPI_MakeEdge_3(keep(pnt(oc, op.start)), keep(pnt(oc, op.end)))).Edge();
+        // `MakeEdge_2(vertex, vertex)` (verified) is what lets an endpoint share an existing vertex.
+        const edge = shared?.size
+          ? keep(new oc.BRepBuilderAPI_MakeEdge_2(vertexFor("start", op.start), vertexFor("end", op.end))).Edge()
+          : keep(new oc.BRepBuilderAPI_MakeEdge_3(keep(pnt(oc, op.start)), keep(pnt(oc, op.end)))).Edge();
         return edge.IsNull() ? null : keep(edge);
       }
       case "addArc": {
@@ -3543,10 +3586,14 @@ function buildWireframePrimitive(oc: any, op: EditOp, cleanup: Array<{ delete():
         // enumerated by the unrestricted edge extraction, so each segment gets
         // its own pickable `edge-N`).
         const pts = op.points.map((p) => keep(pnt(oc, p)));
+        const verts = shared?.size ? op.points.map((p, i) => vertexFor(`points[${i}]`, p)) : null;
         const mkWire = keep(new oc.BRepBuilderAPI_MakeWire_1());
         const last = op.closed ? pts.length : pts.length - 1;
         for (let i = 0; i < last; i++) {
-          const edge = keep(keep(new oc.BRepBuilderAPI_MakeEdge_3(pts[i], pts[(i + 1) % pts.length])).Edge());
+          const j = (i + 1) % pts.length;
+          const edge = verts
+            ? keep(keep(new oc.BRepBuilderAPI_MakeEdge_2(verts[i], verts[j])).Edge())
+            : keep(keep(new oc.BRepBuilderAPI_MakeEdge_3(pts[i], pts[j])).Edge());
           mkWire.Add_1(edge);
         }
         if (!mkWire.IsDone()) return null;
@@ -3558,7 +3605,7 @@ function buildWireframePrimitive(oc: any, op: EditOp, cleanup: Array<{ delete():
         // `IsDone()` is false for a collinear triple, the graceful-skip gate.
         const mk = keep(new oc.GC_MakeArcOfCircle_4(keep(pnt(oc, op.p1)), keep(pnt(oc, op.p2)), keep(pnt(oc, op.p3))));
         if (!mk.IsDone()) return null;
-        return edgeFromCurveHandle(oc, keep(mk.Value()), cleanup);
+        return edgeFromCurveHandle(oc, keep(mk.Value()), cleanup, shared && endpointVertices(vertexFor, "p1", op.p1, "p3", op.p3));
       }
       case "addSpline": {
         // `GeomAPI_PointsToBSpline_2(arr, 3, 8, GeomAbs_C2, 1e-6)` (verified):
@@ -3567,7 +3614,7 @@ function buildWireframePrimitive(oc: any, op: EditOp, cleanup: Array<{ delete():
         const arr = keep(new oc.TColgp_Array1OfPnt_2(1, op.points.length));
         op.points.forEach((p, i) => arr.SetValue(i + 1, keep(pnt(oc, p))));
         const fit = keep(new oc.GeomAPI_PointsToBSpline_2(arr, 3, 8, oc.GeomAbs_Shape.GeomAbs_C2, 1e-6));
-        return edgeFromCurveHandle(oc, keep(fit.Curve()), cleanup);
+        return edgeFromCurveHandle(oc, keep(fit.Curve()), cleanup, shared && endpointVertices(vertexFor, `points[0]`, op.points[0], `points[${op.points.length - 1}]`, op.points[op.points.length - 1]));
       }
       case "addBezier": {
         // `TColgp_Array1OfPnt_2(1, n)` + `Geom_BezierCurve_1(arr)` (verified).
@@ -3575,7 +3622,11 @@ function buildWireframePrimitive(oc: any, op: EditOp, cleanup: Array<{ delete():
         op.controlPoints.forEach((p, i) => arr.SetValue(i + 1, keep(pnt(oc, p))));
         const bez = new oc.Geom_BezierCurve_1(arr); // owned by the handle below
         const hCurve = keep(new oc.Handle_Geom_Curve_2(bez));
-        const mkEdge = keep(new oc.BRepBuilderAPI_MakeEdge_24(hCurve));
+        const nb = op.controlPoints.length - 1;
+        const ends = shared?.size ? endpointVertices(vertexFor, "controlPoints[0]", op.controlPoints[0], `controlPoints[${nb}]`, op.controlPoints[nb]) : null;
+        const mkEdge = ends
+          ? keep(new oc.BRepBuilderAPI_MakeEdge_29(hCurve, ends[0], ends[1], hCurve.get().FirstParameter(), hCurve.get().LastParameter()))
+          : keep(new oc.BRepBuilderAPI_MakeEdge_24(hCurve));
         if (!mkEdge.IsDone()) return null;
         const edge = keep(mkEdge.Edge());
         return edge.IsNull() ? null : edge;
@@ -3626,16 +3677,24 @@ function buildWireframePrimitive(oc: any, op: EditOp, cleanup: Array<{ delete():
   }
 }
 
+/** The (first, last) vertices of a curve whose endpoints may be shared; `vertexFor` returns the shared vertex for a slot, else builds one at the given coordinate. */
+function endpointVertices(vertexFor: (slot: string, v: Vec3) => any, firstSlot: string, first: Vec3, lastSlot: string, last: Vec3): [any, any] {
+  return [vertexFor(firstSlot, first), vertexFor(lastSlot, last)];
+}
+
 /**
  * Wraps a `Handle_Geom_TrimmedCurve`/`Handle_Geom_BSplineCurve` (any Geom curve
  * handle with `.get()`) into a `TopoDS_Edge` via `Handle_Geom_Curve_2` +
  * `BRepBuilderAPI_MakeEdge_24` (both verified against the live WASM).
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function edgeFromCurveHandle(oc: any, handle: any, cleanup: Array<{ delete(): void }>): any {
+function edgeFromCurveHandle(oc: any, handle: any, cleanup: Array<{ delete(): void }>, ends?: [any, any] | null): any {
   const keep = <T extends { delete(): void }>(h: T): T => { cleanup.push(h); return h; };
   const hCurve = keep(new oc.Handle_Geom_Curve_2(handle.get()));
-  const mkEdge = keep(new oc.BRepBuilderAPI_MakeEdge_24(hCurve));
+  // `MakeEdge_29(curve, v1, v2, t0, t1)` (verified) trims the curve between two EXISTING vertices.
+  const mkEdge = ends
+    ? keep(new oc.BRepBuilderAPI_MakeEdge_29(hCurve, ends[0], ends[1], hCurve.get().FirstParameter(), hCurve.get().LastParameter()))
+    : keep(new oc.BRepBuilderAPI_MakeEdge_24(hCurve));
   if (!mkEdge.IsDone()) return null;
   const edge = keep(mkEdge.Edge());
   return edge.IsNull() ? null : edge;
