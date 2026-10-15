@@ -236,7 +236,7 @@ type EditOp =
   | { op: 'addRoundedRectangleProfile'; center: Vec3; normal: Vec3; up: Vec3; width: number; height: number; cornerRadius: number; guide?: boolean }
   | { op: 'addSlotProfile'; center: Vec3; normal: Vec3; up: Vec3; length: number; width: number; guide?: boolean }
   | { op: 'addTrapezoidProfile'; center: Vec3; normal: Vec3; up: Vec3; bottomWidth: number; topWidth: number; height: number; guide?: boolean }
-  | { op: 'addPoint'; position: Vec3; guide?: boolean }
+  | { op: 'addPoint'; position: Vec3; guide?: boolean; coincident?: 'reuse' | 'independent' }
   | { op: 'addLine'; start: Vec3; end: Vec3; guide?: boolean }                          // any Vec3 slot of the curve ops may be a `point-N` — see pointRefs below
   | { op: 'addArc'; center: Vec3; normal: Vec3; radius: number; startAngleDeg: number; endAngleDeg: number; guide?: boolean }
   | { op: 'addPolyline'; points: Vec3[]; closed: boolean; guide?: boolean }            // >= 2 points (>= 3 when closed)

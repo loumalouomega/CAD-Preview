@@ -227,7 +227,11 @@ export interface AddSlotProfileOp { op: "addSlotProfile"; center: Vec3; normal: 
 /** Add a standalone flat isosceles-trapezoid profile face: `bottomWidth` along the in-plane `up` axis at the bottom, `topWidth` at the top, `height` between them. */
 export interface AddTrapezoidProfileOp { op: "addTrapezoidProfile"; center: Vec3; normal: Vec3; up: Vec3; bottomWidth: number; topWidth: number; height: number; guide?: boolean; }
 /** Add a standalone point (vertex) at `position`. Never resolved as an operand by any other op — display-only. */
-export interface AddPointOp { op: "addPoint"; position: Vec3; guide?: boolean; }
+export interface AddPointOp {
+  op: "addPoint"; position: Vec3; guide?: boolean;
+  /** What to do when `position` coincides (within the model tolerance) with an existing `point-N`: `"reuse"` adds no entity (the op stays in the list, applied with a note naming the point); `"independent"`/unset adds a second point there, as before, and notes the coincidence. Recorded on the op so replay is deterministic. */
+  coincident?: "reuse" | "independent";
+}
 /** Add a standalone straight-line edge from `start` to `end`. */
 export interface AddLineOp { op: "addLine"; start: Vec3; end: Vec3; guide?: boolean; }
 /** Add a standalone circular-arc edge: the circle at (`center`,`normal`,`radius`), trimmed from `startAngleDeg` to `endAngleDeg` (sweeping counterclockwise about `normal`, wrapping through 0° if `endAngleDeg < startAngleDeg`). */
@@ -454,11 +458,16 @@ export interface OpOutcome {
   diagnostic?: string;
   /** Optional actionable suggestion accompanying `diagnostic`. */
   hint?: string;
+  /** Informational, only on an op that DID apply (e.g. a new point coincides with an existing one, or was collapsed into it). Never makes `applied` false. */
+  note?: string;
 }
 
 /** Called by an op helper at each of its skip sites, immediately before
  * returning the unmodified shape/model — first call wins for that op. */
-export type OutcomeFail = (diagnostic: string, hint?: string) => void;
+export type OutcomeFail = ((diagnostic: string, hint?: string) => void) & {
+  /** Records an informational `OpOutcome.note` for this op (the op still counts as applied). */
+  note?: (text: string) => void;
+};
 
 /** Ops that change topology and therefore reassign `face-N`/`edge-N` ids on reload. */
 export const TOPOLOGY_CHANGING_OPS: ReadonlySet<EditOpKind> = new Set([
@@ -1396,7 +1405,10 @@ function validateEditOpCore(raw: unknown): EditOp | null {
     }
     case "addPoint": {
       const position = asVec3(o.position);
-      return position ? { op: "addPoint", position } : null;
+      if (!position) return null;
+      return o.coincident === "reuse" || o.coincident === "independent"
+        ? { op: "addPoint", position, coincident: o.coincident }
+        : { op: "addPoint", position };
     }
     case "addLine": {
       const start = asVec3(o.start);

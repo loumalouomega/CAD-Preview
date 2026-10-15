@@ -297,17 +297,14 @@ These are outcome groupings, not release numbers. Independent small items can sh
 - **What is left (S):** the cross-repository check — open the exported `.mdpa` in VSCode-MDPA-Preview and confirm both SubModelParts populate. It needs that extension and is not exercised from this repository.
 - **Done when:** that check passes, and KKSS's tutorial links to the page.
 
-#### 2.8 Coincident-point prompt: collapse or keep independent {#coincident-point-collapse-or-independent}
+#### 2.8 Coincident-point prompt: curve endpoints typed raw {#coincident-point-collapse-or-independent}
 
-*Area: Geometry, Parity. Effort: S–M.*
+*Area: Geometry, Parity. Effort: S.*
 
-- **Evidence:** `addPoint` takes a raw `Vec3` only (`AddPointOp {position: Vec3}` in `src/editOps.ts`), and nothing checks it against existing geometry — a point authored at another point's coordinates silently becomes a second, independent `point-N` at the same location. The same silent duplication arises at curve endpoints now that the curve ops' coordinate slots accept `point-N` ids beside raw coordinates (the "Define lines, arcs and curves from preexisting points" feature). GiD and similar pre-processors ask at this exact moment whether coincident points are one node or two.
-- **First useful increment (S–M):**
-  - Host-side, at apply time: when a new point's coordinates coincide with an existing `point-N` within the model's working tolerance, the op does not apply silently — interactively a small floating prompt names the existing point and offers **Collapse** (reuse the existing `point-N`, no new entity) or **Keep independent** (a second `point-N` at the same coordinates, as today). The choice is recorded on the op (`coincident: "reuse" | "independent"`), so replay, undo and headless runs are deterministic — never a modal that blocks a script.
-  - Headless (`apply_edit_ops`, the lower command bar): the same field is settable per call, defaulting to today's behaviour (`independent`) with a diagnostic that names the coincident point, so no script changes meaning silently.
-  - Panel and bar surface the prompt/choice wherever a raw coordinate can create a point (point form, curve endpoints typed raw).
-- **Done when:** on a fixture with a committed point, authoring the same coordinates — once via the panel, once headless — offers the choice interactively and honours the recorded field on replay; collapse leaves the `point-N` inventory unchanged, independent adds exactly one; a committed `test:webview` case covers the prompt end to end.
-- **Out of scope:** automatic sewing or healing of near-coincident geometry (the explicit repair op, 3.2); a general coincident-entity merge beyond points; snapping the new coordinates to the old ones (collapse reuses the id, it never moves either point).
+- **Done so far:** `addPoint` records `coincident: "reuse" | "independent"`; the fold detects a coincident `point-N` (same `1e-3 × bboxDiagonal` tolerance as `point-N` references), reports it as an op `note` in `apply_edit_ops` warnings and the response entry, and the point form asks Collapse / Keep independent inline. See `CLAUDE.md`'s "Coincident points".
+- **What is left (S):** the same choice where a **raw coordinate typed into a curve op's endpoint** lands on an existing point. Today those slots silently create their own edge endpoints (use a `point-N` slot to share). Needs a probe of whether the curve builders' vertices merge in `collectVertices`, then a note (and a per-slot choice) on the curve ops.
+- **Done when:** a curve endpoint typed at an existing point's coordinates reports the coincidence, and the chosen behaviour is recorded and replays deterministically.
+- **Out of scope:** automatic sewing or healing of near-coincident geometry (the explicit repair op); a general coincident-entity merge beyond points; moving either point (collapse reuses the id).
 
 #### 2.15 Quotable entity references for agent chats {#quotable-entity-references}
 

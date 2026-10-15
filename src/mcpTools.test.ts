@@ -4507,6 +4507,22 @@ describe("estimate_mesh_budget", () => {
   });
 });
 
+describe("opOutcomeWarnings notes", () => {
+  it("an applied op with a note surfaces as a warning without counting as skipped", async () => {
+    const c = ctx(
+      fakePipeline({
+        loadBRep: vi.fn(async () => ({
+          ...FAKE_BREP_RESULT,
+          opOutcomes: [{ index: 0, kind: "addPoint" as const, applied: true, note: "reused point-0 (coincident) — no new point added" }],
+        })) as never,
+      })
+    );
+    const r = await applyEditOps(c, { path: stpModel, ops: [{ op: "addPoint", position: [0, 0, 0], coincident: "reuse" }] });
+    expect(r.warnings.join(" ")).toMatch(/reused point-0/);
+    expect(r.warnings.join(" ")).not.toMatch(/did NOT apply/);
+  });
+});
+
 describe("check_mesh_quality", () => {
   it("meshes, then gates the generated MSH text against the caller's threshold, returning facts", async () => {
     const c = ctx();

@@ -8032,6 +8032,24 @@ try {
     assert(badSpec.error && /unknown metric/.test(badSpec.error), `an unknown metric is a clear error (${badSpec.error})`);
   }
 
+  // --- addPoint coincident choice (roadmap "Coincident-point prompt: collapse or keep independent") ---
+  {
+    const cpModel = path.join(dir, "coincident-point.stp");
+    fs.copyFileSync(path.join(ROOT, "examples", "STP", "block.stp"), cpModel);
+    const pointCount = async () => (await call("load_model", { path: cpModel })).pointCount;
+    const base = await pointCount();
+    await call("apply_edit_ops", { path: cpModel, ops: [{ op: "addPoint", position: [100, 100, 100] }] });
+    assert((await pointCount()) === base + 1, "a first point at a free location adds exactly one point-N");
+    const indep = await call("apply_edit_ops", { path: cpModel, ops: [{ op: "addPoint", position: [100, 100, 100] }] });
+    assert((await pointCount()) === base + 2, "an unset choice keeps today's behaviour: a second independent point");
+    assert(indep.warnings.some((w) => /coincides with point-\d+ and was kept independent/.test(w)), `the coincidence is reported, never silent (${JSON.stringify(indep.warnings)})`);
+    const reuse = await call("apply_edit_ops", { path: cpModel, ops: [{ op: "addPoint", position: [100, 100, 100], coincident: "reuse" }] });
+    assert(reuse.applied === 1 && (await pointCount()) === base + 2, "coincident:reuse adds no entity yet counts as applied (not a skipped op)");
+    assert(reuse.warnings.some((w) => /reused point-\d+/.test(w)) && !reuse.warnings.some((w) => /did NOT apply/.test(w)), `the collapse is a note, not a skip (${JSON.stringify(reuse.warnings)})`);
+    await call("apply_edit_ops", { path: cpModel, ops: [{ op: "addPoint", position: [100, 100, 100], coincident: "independent" }] });
+    assert((await pointCount()) === base + 3, "coincident:independent adds exactly one more point");
+  }
+
   // --- analyze_passages (roadmap "Narrow-gap and passage resolution preflight") ---
   {
     const P = path.join(ROOT, "examples", "STP", "passages");

@@ -601,13 +601,15 @@ function entitySummary(result: BRepResult) {
  * different build), but it is never silent either. Empty input → no warnings.
  */
 function opOutcomeWarnings(outcomes: OpOutcome[]): string[] {
+  const notes = outcomes.filter((o) => o.applied && o.note).map((o) => `#${o.index} (${o.kind}) — ${o.note}`);
   const skipped = outcomes.filter((o) => !o.applied);
-  if (skipped.length === 0) return [];
+  if (skipped.length === 0) return notes;
   const details = skipped
     .map((o) => `#${o.index} (${o.kind}) — ${o.diagnostic ?? "no reason recorded"}`)
     .join("; ");
   const hint = skipped.find((o) => o.hint)?.hint;
   return [
+    ...notes,
     `${skipped.length} of ${outcomes.length} edit op(s) did NOT apply during replay: ${details}.` + (hint ? ` Hint: ${hint}` : ""),
   ];
 }
@@ -3363,6 +3365,7 @@ export async function applyEditOps(
         entry.applied = outcome.applied;
         if (outcome.diagnostic) entry.diagnostic = outcome.diagnostic;
         if (outcome.hint) entry.hint = outcome.hint;
+        if (outcome.note) (entry as { note?: string }).note = outcome.note;
       }
       // Count only THIS call's accepted ops that skipped — the replay's outcome
       // list also covers previously-persisted ops, and a PERSISTED op that skips

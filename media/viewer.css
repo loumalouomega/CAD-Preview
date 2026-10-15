@@ -2313,6 +2313,19 @@ input[type="range"].meshing-slider:focus {
   border-top: 1px solid var(--vscode-sideBar-border, #3c3c3c);
 }
 
+.coincident-prompt {
+  margin: 4px 0;
+  padding: 4px 6px;
+  font-size: var(--ui-fs-label);
+  border: 1px solid var(--vscode-focusBorder, #3c3c3c);
+  border-radius: 3px;
+}
+.coincident-prompt-row {
+  display: flex;
+  gap: 4px;
+  margin-top: 4px;
+}
+
 #meshing-gate {
   padding: 4px 8px 8px;
   border-top: 1px solid var(--vscode-sideBar-border, #3c3c3c);

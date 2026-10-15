@@ -2686,6 +2686,73 @@ async function enablePicking(page, mode) {
   await sleep(150);
 }
 
+test("coincident point: Add at an existing point's coordinates asks Collapse / Keep independent and records the choice", async (page) => {
+  await populate(page);
+  await enablePicking(page, "point");
+  const status = await runModeFilter(page, "point", "nearXY", "5");
+  assert(/matched (\d+) of/.test(status), `precondition: points were picked (got ${JSON.stringify(status)})`);
+  await page.click("#select-menu");
+  await sleep(150);
+  const openForm = async (name, marker) => {
+    await page.evaluate(([n, m]) => {
+      if (document.querySelector(m)) return;
+      [...document.querySelectorAll(".op-btn")].find((b) => b.querySelector(".op-name")?.textContent === n)?.click();
+    }, [name, marker]);
+    await sleep(200);
+  };
+  // Borrow a real point's coordinates through the Line form's pick binding.
+  await openForm("Line", "#edits-params .point-ref-bar");
+  await page.evaluate(() => document.querySelector("#edits-params .point-ref-use")?.click());
+  await sleep(250);
+  const pos = await page.evaluate(() => [...document.querySelectorAll('#edits-params input[data-name="start"]')].map((i) => Number(i.value)));
+  assert(pos.length === 3 && pos.every(Number.isFinite), `precondition: an existing point's position was read (got ${JSON.stringify(pos)})`);
+  // Switch to the Point form (a second click collapses Line first, then open Point).
+  await page.evaluate(() => [...document.querySelectorAll(".op-btn")].find((b) => b.querySelector(".op-name")?.textContent === "Line")?.click());
+  await sleep(150);
+  await openForm("Point", '#edits-params input[data-name="position"]');
+  await page.evaluate((p) => {
+    [...document.querySelectorAll('#edits-params input[data-name="position"]')].forEach((inp, k) => {
+      inp.value = String(p[k]);
+      inp.dispatchEvent(new Event("input", { bubbles: true }));
+      inp.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+  }, pos);
+  const addAt = async () => page.evaluate(() => [...document.querySelectorAll("#edits-params .compose-apply")].find((b) => b.textContent === "Add")?.click());
+  const before = await sentCount(page, "editsChanged");
+  await addAt();
+  await sleep(300);
+  const shown = await page.evaluate(() => {
+    const el = document.getElementById("coincident-prompt");
+    return { visible: !!el && el.offsetParent !== null, text: el?.textContent ?? "", status: document.getElementById("status")?.textContent ?? "", pos: [...document.querySelectorAll('#edits-params input[data-name="position"]')].map((i) => i.value) };
+  });
+  assert(shown.visible && /Coincides with point-\d+/.test(shown.text), `the coincident prompt is rendered and names the point (got ${JSON.stringify(shown)})`);
+  assert((await sentCount(page, "editsChanged")) === before, "nothing is pushed until a choice is made");
+  await page.evaluate(() => [...document.querySelectorAll("#coincident-prompt button")].find((b) => b.textContent === "Collapse")?.click());
+  await sleep(300);
+  let op = await page.evaluate(() => (window.__sent ?? []).findLast((x) => x.type === "editsChanged")?.ops.at(-1));
+  assert((await sentCount(page, "editsChanged")) === before + 1 && op?.op === "addPoint" && op.coincident === "reuse", `Collapse pushes addPoint with coincident:"reuse" (got ${JSON.stringify(op)})`);
+  assert(await page.evaluate(() => document.getElementById("coincident-prompt") === null), "the prompt is dismissed after a choice");
+  await addAt();
+  await sleep(300);
+  await page.evaluate(() => [...document.querySelectorAll("#coincident-prompt button")].find((b) => b.textContent === "Keep independent")?.click());
+  await sleep(300);
+  op = await page.evaluate(() => (window.__sent ?? []).findLast((x) => x.type === "editsChanged")?.ops.at(-1));
+  assert(op?.op === "addPoint" && op.coincident === "independent", `Keep independent pushes coincident:"independent" (got ${JSON.stringify(op)})`);
+  // Control: a point far from every existing one is pushed straight away, no prompt.
+  await page.evaluate(() => {
+    [...document.querySelectorAll('#edits-params input[data-name="position"]')].forEach((inp, k) => {
+      inp.value = String([9000, 9000, 9000][k]);
+      inp.dispatchEvent(new Event("input", { bubbles: true }));
+      inp.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+  });
+  const mid = await sentCount(page, "editsChanged");
+  await addAt();
+  await sleep(300);
+  op = await page.evaluate(() => (window.__sent ?? []).findLast((x) => x.type === "editsChanged")?.ops.at(-1));
+  assert((await sentCount(page, "editsChanged")) === mid + 1 && op?.coincident === undefined && (await page.evaluate(() => document.getElementById("coincident-prompt") === null)), `a non-coincident point is pushed directly with no field (got ${JSON.stringify(op)})`);
+});
+
 /**
  * Point references on curve ops (the "Define lines, arcs and curves from
  * preexisting points" feature). Kernel resolution is live-verified in

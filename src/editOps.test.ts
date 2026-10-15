@@ -448,6 +448,15 @@ describe("validateEditOp", () => {
       .toEqual({ op: "addVolumeFromSurfaces", faces: ["face-0", "face-1", "face-2", "face-3"] });
   });
 
+  it("keeps a valid addPoint coincident choice and drops an unknown one", () => {
+    expect(validateEditOp({ op: "addPoint", position: [1, 2, 3], coincident: "reuse" }))
+      .toEqual({ op: "addPoint", position: [1, 2, 3], coincident: "reuse" });
+    expect(validateEditOp({ op: "addPoint", position: [1, 2, 3], coincident: "independent" }))
+      .toEqual({ op: "addPoint", position: [1, 2, 3], coincident: "independent" });
+    expect(validateEditOp({ op: "addPoint", position: [1, 2, 3], coincident: "merge" }))
+      .toEqual({ op: "addPoint", position: [1, 2, 3] });
+  });
+
   it("rejects malformed wireframe ops", () => {
     // missing position
     expect(validateEditOp({ op: "addPoint", position: [0, 0] })).toBeNull();
