@@ -1,4 +1,5 @@
 import type { CadFormat } from "./fileRouter";
+import type { QualityGateResult } from "./meshQualityGate";
 import type { EditOp } from "./editOps";
 import type { ParamVariable } from "./editVariables";
 import type { MeshOptions, MeshGrading, MeshStructured, MeshEngine } from "./meshOptions";
@@ -735,6 +736,12 @@ export type HostToWebview =
    * report compared against (null = unbounded). */
   | { type: "passagesResult"; requestId: string; report: PassageReport; sizeMax: number | null }
   | { type: "passagesError"; requestId: string; message: string }
+  /** FE Mesh quality gate (roadmap "meshio++ check_quality as a caller-supplied quality gate"):
+   * meshio++'s `checkQuality` over the LAST generated mesh, against the
+   * caller's threshold text. Facts only (see `QualityGateResult`); same
+   * requestId + stale-guard idiom. */
+  | { type: "qualityGateResult"; requestId: string; result: QualityGateResult }
+  | { type: "qualityGateError"; requestId: string; message: string }
   /** CAD-to-mesh deviation (roadmap "CAD-to-mesh deviation map"): the report
    * plus the mesh boundary as per-corner positions (base64 Float32, 9 per
    * triangle) and per-corner distances (base64 Float32, 3 per triangle) for
@@ -1014,6 +1021,11 @@ export type WebviewToHost =
    * mesh size and Parts. The host reads source, tail ops, Parts and the stored
    * mesh options itself. */
   | { type: "passagesRequest"; requestId: string; targetCells: number }
+  /** FE Mesh ▸ Quality gate: gate the last generated mesh (the host keeps its
+   * MSH text per document) against `require`. The host answers with
+   * `qualityGateError` when no mesh has been generated, or for a malformed
+   * threshold text. */
+  | { type: "qualityGateRequest"; requestId: string; require: string }
   /** FE Mesh ▸ Deviation: generate with these options (as Generate would) and
    * measure the boundary against the reference. `stl` as for meshingGenerate. */
   | { type: "meshDeviationRequest"; requestId: string; tolerance: number; options: MeshOptions; stl?: string }

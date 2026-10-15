@@ -74,6 +74,7 @@ export const KERNELS_BY_FUNCTION: Record<keyof DocumentPipeline, readonly Kernel
   convertFoamCaseToStlBoundary: M,
   exportViaMeshio: M,
   readMeshioMetadata: M,
+  checkMeshQuality: M,
   readMeshioDataInfo: M,
   readMeshioProvenance: M,
   decimateStlBoundary: M,

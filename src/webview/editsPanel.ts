@@ -1703,6 +1703,38 @@ export class EditsPanel {
    * the button exists. Centralizing the append makes that unrepeatable: a
    * form that registers a draft reader always renders its commit button.
    */
+  /**
+   * Inline (never modal) prompt under the Apply row: the typed point coincides
+   * with an existing `point-N`. **Collapse** reuses it (no new entity),
+   * **Keep independent** adds a second point there; either choice is recorded
+   * on the op. Re-rendering the form drops it.
+   */
+  showCoincidentPrompt(pointId: string, onChoice: (choice: "reuse" | "independent") => void): void {
+    this.paramsEl.querySelector("#coincident-prompt")?.remove();
+    const host = this.paramsEl.querySelector(".compose-apply")?.parentElement;
+    if (!host) { onChoice("independent"); return; } // no form to host the prompt: keep today's behaviour
+    const box = document.createElement("div");
+    box.id = "coincident-prompt";
+    box.className = "coincident-prompt";
+    const msg = document.createElement("div");
+    msg.textContent = `Coincides with ${pointId}.`;
+    const mk = (label: string, title: string, choice: "reuse" | "independent") => {
+      const b = document.createElement("button");
+      b.textContent = label;
+      b.title = title;
+      b.addEventListener("click", () => { box.remove(); onChoice(choice); });
+      return b;
+    };
+    const row = document.createElement("div");
+    row.className = "coincident-prompt-row";
+    row.append(
+      mk("Collapse", `Reuse ${pointId} — no new point is added`, "reuse"),
+      mk("Keep independent", `Add a second point at the same coordinates`, "independent")
+    );
+    box.append(msg, row);
+    host.insertAdjacentElement("afterend", box);
+  }
+
   private applyButtonDraft<D>(label: string, title: string, read: () => D, apply: (d: D) => void): void {
     // Construction-geometry checkbox: guide-kind forms get one generic
     // `guide` field appended after their params (see `renderParams`), read

@@ -34,6 +34,27 @@ export interface PointRefResolution { opIndex: number; slot: string; id: string;
  * and, with none there, the op is skipped — a renumbered or moved point is
  * never silently repointed. A bare reference (no `at` yet) is trusted by id.
  */
+function pointMatchTolerance(oc: any, shape: any, cleanup: Array<{ delete(): void }>): number {
+  try { return Math.max(1e-3 * bboxDiagonal(oc, shape, cleanup), 1e-6); } catch { return 1e-6; /* empty shape: keep the floor */ }
+}
+
+/** The `point-N` index of the existing vertex nearest `position` within the model tolerance, or -1. Same tolerance as `resolvePointRefs`. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function coincidentPointIndex(oc: any, shape: any, position: Vec3, cleanup: Array<{ delete(): void }>): number {
+  const verts = collectVertices(oc, shape, cleanup);
+  const tol = pointMatchTolerance(oc, shape, cleanup);
+  let best = -1;
+  let bestDist = Infinity;
+  verts.forEach((v: any, i: number) => {
+    const p = oc.BRep_Tool.Pnt(v);
+    const d = Math.hypot(p.X() - position[0], p.Y() - position[1], p.Z() - position[2]);
+    p.delete();
+    if (d <= tol && d < bestDist) { bestDist = d; best = i; }
+  });
+  return best;
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 function resolvePointRefs(
   oc: any, shape: any, op: EditOp, cleanup: Array<{ delete(): void }>, fail: OutcomeFail,
   sink?: Array<Omit<PointRefResolution, "opIndex">>
@@ -47,8 +68,7 @@ function resolvePointRefs(
     p.delete();
     return out;
   });
-  let tol = 1e-6;
-  try { tol = Math.max(1e-3 * bboxDiagonal(oc, shape, cleanup), 1e-6); } catch { /* empty shape: keep the floor */ }
+  const tol = pointMatchTolerance(oc, shape, cleanup);
   const dist = (a: Vec3, b: Vec3): number => Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
   const clone = JSON.parse(JSON.stringify(op)) as EditOp;
   for (const [slot, ref] of Object.entries(refs)) {
@@ -225,6 +245,7 @@ export function applyEditsBRep(oc: any, baseShape: any, ops: EditOp[], cleanup: 
       outcome.diagnostic = diagnostic;
       if (hint) outcome.hint = hint;
     };
+    fail.note = (text) => { outcome.note = text; };
     const refSink: Array<Omit<PointRefResolution, "opIndex">> | undefined = pointRefCollector && op.pointRefs ? [] : undefined;
     try {
       shape = applyOneOp(oc, shape, op, cleanup, fail, guideCollector, refSink);
@@ -240,7 +261,9 @@ export function applyEditsBRep(oc: any, baseShape: any, ops: EditOp[], cleanup: 
     // Every helper signals a skip by returning the SAME shape handle (its own
     // documented convention), so identity is the universal backstop for any
     // skip site without its own `fail` reason yet.
-    if (outcome.applied && shape === before) {
+    // (An intentional `coincident: "reuse"` collapse leaves the shape unchanged
+    // on purpose and records a note instead.)
+    if (outcome.applied && shape === before && !outcome.note) {
       fail("returned the model unchanged");
     }
     if (opBuckets !== undefined && outcome.applied && shape !== before && TOPOLOGY_CHANGING_OPS.has(op.op)) {
@@ -3458,6 +3481,16 @@ function addWireframePrimitive(oc: any, shape: any, op: EditOp, cleanup: Array<{
   // (everything before it in the fold) — see resolvePointRefs.
   const resolved = resolvePointRefs(oc, shape, op, cleanup, fail ?? (() => undefined), pointRefSink);
   if (!resolved) return shape;
+  if (op.op === "addPoint") {
+    const hit = coincidentPointIndex(oc, shape, op.position, cleanup);
+    if (hit >= 0) {
+      if (op.coincident === "reuse") {
+        fail?.note?.(`reused point-${hit} (coincident) — no new point added`);
+        return shape;
+      }
+      fail?.note?.(`new point coincides with point-${hit} and was kept independent`);
+    }
+  }
   const entity = buildWireframePrimitive(oc, resolved, cleanup);
   if (!entity) {
     fail?.(`could not build the ${op.op} entity`, "check the coordinates (a collinear 3-point arc, for example, cannot build an edge)");

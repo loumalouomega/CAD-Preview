@@ -66,7 +66,7 @@ export const OP_PARAM_DOCS: Record<EditOpKind, string> = {
   addSlotProfile: '{center: [x,y,z], normal: [x,y,z], up: [x,y,z], length: n (> width), width: n>0}',
   addTrapezoidProfile:
     '{center: [x,y,z], normal: [x,y,z], up: [x,y,z], bottomWidth: n>0, topWidth: n>0, height: n>0}',
-  addPoint: '{position: [x,y,z]}',
+  addPoint: '{position: [x,y,z], coincident?: "reuse"|"independent"} (coincident: what to do when position matches an existing point-N — reuse adds no entity, independent adds a second point; default independent, with a note)',
   addLine: '{start: [x,y,z] | "point-N", end: [x,y,z] | "point-N"} — any position slot of the curve ops (addLine/addArc/addPolyline/addThreePointArc/addSpline/addBezier/addEllipseArc/addHelix) may be a point-N id (or {id: "point-N", at: [x,y,z]}) naming an existing point, resolved against the model as of that op; an id whose point has moved or been renumbered is re-anchored by its recorded position (a warning), else the op is skipped with a diagnostic',
   addArc: '{center: [x,y,z] | "point-N", normal: [x,y,z], radius: n>0, startAngleDeg: n, endAngleDeg: n (CCW about normal)}',
   addPolyline: '{points: ([x,y,z] | "point-N")[] (>=2; >=3 when closed), closed: boolean}',

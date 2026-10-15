@@ -30,6 +30,7 @@ import { AnnotationsModel } from "./annotationsModel";
 import { PlanesModel } from "./planesModel";
 import { TOOLBAR_ICONS } from "../toolbarIcons";
 import { EditsModel } from "./editsModel";
+import { findCoincidentPoint } from "../coincidentPoint";
 import { EditsPanel, type TransformDraft, type FeatureDraft, type ModifyDraft, type PrimitiveDraft, type HoleDraft, type ProfileDraft, type WireframeDraft, type AlignDraft, type PatternDraft } from "./editsPanel";
 import { OpPreviewScheduler } from "./opPreviewScheduler";
 import { draftBucketFor, bandFaceIds, previewBandLegend, tintDisplayName } from "./opPreviewBands";
@@ -881,6 +882,21 @@ function pointPositionsInModelSpace(ids: string[]): Map<string, Vec3> {
   return out;
 }
 
+/** Every `point-N` sprite (hidden Parts included) with its MODEL-space position — for the coincident-point pre-check. */
+function allPointPositionsInModelSpace(): Array<{ id: string; position: Vec3 }> {
+  const model = viewer.getModel();
+  if (!model) return [];
+  model.updateMatrixWorld(true);
+  const out: Array<{ id: string; position: Vec3 }> = [];
+  model.traverse((o) => {
+    if (o instanceof THREE.Sprite && o.userData.entityType === "point") {
+      const local = model.worldToLocal(o.getWorldPosition(new THREE.Vector3()));
+      out.push({ id: String(o.userData.entityId), position: [local.x, local.y, local.z] });
+    }
+  });
+  return out;
+}
+
 /** The `pointRefs` a curve draft carries, as an object to spread onto the op (nothing when the draft follows no point). */
 function pointRefsOf(d: { pointRefs?: PointRefs } | Record<string, any>): { pointRefs?: PointRefs } {
   return d.pointRefs && Object.keys(d.pointRefs).length > 0 ? { pointRefs: d.pointRefs } : {};
@@ -1243,6 +1259,21 @@ const editsPanel = new EditsPanel(document.getElementById("edits-panel")!, {
   onApplyWireframe: (draft) => {
     const resolved = buildOpForPanel(draft.kind, draft);
     if (resolved.error || !resolved.op) { setStatus(resolved.error ?? "Cannot add this curve.", true); return; }
+    // A new point at an existing point's coordinates: ask (inline, never modal)
+    // whether to reuse it or keep a second independent point, and record the
+    // answer on the op. The host re-checks in the fold either way.
+    if (resolved.op.op === "addPoint") {
+      const op = resolved.op;
+      const hit = findCoincidentPoint(op.position, allPointPositionsInModelSpace(), viewer.getModelExtents()?.diagonal ?? 0);
+      if (hit) {
+        editsPanel.showCoincidentPrompt(hit, (choice) => {
+          cancelOpPreview();
+          editsModel.push({ ...op, coincident: choice });
+          setStatus("");
+        });
+        return;
+      }
+    }
     cancelOpPreview();
     editsModel.push(resolved.op);
     setStatus("");
@@ -1324,6 +1355,7 @@ async function currentStlIfMeshSource(): Promise<string | undefined> {
   return (await exportModel(model, "stl")).data;
 }
 
+let qualityGateRequestId: string | null = null;
 const meshingPanel = new MeshingPanel(document.getElementById("meshing-panel")!, {
   onOptionsChange: (patch) => meshingModel.update(patch),
   // Same store the Parts panel edits — one Part.meshSize, two mirrored inputs.
@@ -1337,7 +1369,13 @@ const meshingPanel = new MeshingPanel(document.getElementById("meshing-panel")!,
     meshingPanel.renderDeviationMessage("Meshing and measuring deviation…");
     post({ type: "meshDeviationRequest", requestId, tolerance, options: meshingModel.get(), stl: await currentStlIfMeshSource() });
   },
+  onQualityGate: (require) => {
+    const requestId = `${Date.now()}-${Math.random()}`;
+    qualityGateRequestId = requestId;
+    post({ type: "qualityGateRequest", requestId, require });
+  },
   onGenerate: async () => {
+    meshingPanel.resetGate();
     const stl = await currentStlIfMeshSource();
     const requestId = `${Date.now()}-${Math.random()}`;
     activeMeshingRequestId = requestId;
@@ -6186,6 +6224,16 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
       });
       break;
 
+    case "qualityGateResult":
+      if (msg.requestId !== qualityGateRequestId) break; // stale — a newer run superseded it
+      qualityGateRequestId = null;
+      meshingPanel.renderGateResult(msg.result);
+      break;
+    case "qualityGateError":
+      if (msg.requestId !== qualityGateRequestId) break;
+      qualityGateRequestId = null;
+      meshingPanel.renderGateMessage(msg.message);
+      break;
     case "passagesResult":
       if (msg.requestId !== passagesRequestId) break; // stale — a newer analysis/load superseded it
       passagesRequestId = null;

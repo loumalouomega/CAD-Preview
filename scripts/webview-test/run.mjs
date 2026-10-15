@@ -420,6 +420,53 @@ test("overlays: meshingResult lights the toggle and hides model faces; Clear rev
   assert(off === false, "Clear disposes the overlay and unlights the toggle");
 });
 
+const GATE_RESULT = {
+  passed: false,
+  numCells: 1966,
+  numInverted: 0,
+  numDegenerate: 0,
+  vacuousChecks: 1,
+  summary: "",
+  checks: [
+    { name: "scaled_jacobian >= 0.99", metric: "quality:scaled_jacobian", min: 0.99, max: null, maxFraction: 0, evaluated: 1282, violations: 1282, fraction: 1, worst: 0.2011, worstCell: 1918, passed: false, vacuous: false },
+    { name: "volume >= 1", metric: "volume", min: 1, max: null, maxFraction: 0, evaluated: 0, violations: 0, fraction: 0, worst: null, worstCell: null, passed: true, vacuous: true },
+  ],
+};
+
+test("quality gate: row appears with a mesh, Run posts the typed text, the reply renders facts, a stale reply is ignored, Clear hides it", async (page) => {
+  await populate(page);
+  const hiddenBefore = await page.evaluate(() => document.getElementById("meshing-gate")?.offsetParent === null);
+  assert(hiddenBefore, "the quality gate row is not rendered before a mesh exists");
+  await postMeshingResult(page);
+  await sleep(700);
+  const shown = await page.evaluate(() => document.getElementById("meshing-gate")?.offsetParent !== null);
+  assert(shown, "the quality gate row is genuinely rendered once a mesh is shown");
+  await page.fill("#meshing-gate-spec", "scaled_jacobian >= 0.99");
+  await page.evaluate(() => (window.__sent.length = 0));
+  await page.click("#meshing-gate-run");
+  const req = await page.evaluate(() => (window.__sent ?? []).filter((m) => m.type === "qualityGateRequest").at(-1) ?? null);
+  assert(req !== null && req.require === "scaled_jacobian >= 0.99", `Run posts a qualityGateRequest with the typed text (got ${JSON.stringify(req)})`);
+  await page.evaluate(([r]) => window.postMessage({ type: "qualityGateResult", requestId: "stale", result: r }, "*"), [GATE_RESULT]);
+  await sleep(150);
+  const stale = await page.evaluate(() => document.getElementById("meshing-gate-result")?.textContent ?? "");
+  assert(/Checking/.test(stale), `a stale reply renders nothing (got ${JSON.stringify(stale.slice(0, 60))})`);
+  await page.evaluate(([id, r]) => window.postMessage({ type: "qualityGateResult", requestId: id, result: r }, "*"), [req.requestId, GATE_RESULT]);
+  await sleep(200);
+  const view = await page.evaluate(() => ({
+    head: document.querySelector(".meshing-gate-head")?.textContent ?? "",
+    lines: [...document.querySelectorAll(".meshing-gate-check")].map((e) => e.textContent),
+    runEnabled: !document.getElementById("meshing-gate-run").disabled,
+  }));
+  assert(/Outside your thresholds/.test(view.head) && /1966 cells/.test(view.head), `the header states the outcome against the caller's thresholds (got ${JSON.stringify(view.head)})`);
+  assert(view.lines.length === 2 && /1282 of 1282 cells violate/.test(view.lines[0]) && /cell 1918/.test(view.lines[0]), `the failing clause lists violations and the worst cell (got ${JSON.stringify(view.lines[0])})`);
+  assert(/vacuous/.test(view.lines[1]), `a clause that applied to no cell is named vacuous (got ${JSON.stringify(view.lines[1])})`);
+  assert(view.runEnabled, "Run is re-enabled after the reply");
+  await page.click("#meshing-clear");
+  await sleep(400);
+  const hiddenAfter = await page.evaluate(() => document.getElementById("meshing-gate")?.offsetParent === null);
+  assert(hiddenAfter, "Clear hides the quality gate row again");
+});
+
 /**
  * F. Render-on-demand: the webview must draw only when something changed.
  *
@@ -2638,6 +2685,73 @@ async function enablePicking(page, mode) {
   await page.click("#select-menu");
   await sleep(150);
 }
+
+test("coincident point: Add at an existing point's coordinates asks Collapse / Keep independent and records the choice", async (page) => {
+  await populate(page);
+  await enablePicking(page, "point");
+  const status = await runModeFilter(page, "point", "nearXY", "5");
+  assert(/matched (\d+) of/.test(status), `precondition: points were picked (got ${JSON.stringify(status)})`);
+  await page.click("#select-menu");
+  await sleep(150);
+  const openForm = async (name, marker) => {
+    await page.evaluate(([n, m]) => {
+      if (document.querySelector(m)) return;
+      [...document.querySelectorAll(".op-btn")].find((b) => b.querySelector(".op-name")?.textContent === n)?.click();
+    }, [name, marker]);
+    await sleep(200);
+  };
+  // Borrow a real point's coordinates through the Line form's pick binding.
+  await openForm("Line", "#edits-params .point-ref-bar");
+  await page.evaluate(() => document.querySelector("#edits-params .point-ref-use")?.click());
+  await sleep(250);
+  const pos = await page.evaluate(() => [...document.querySelectorAll('#edits-params input[data-name="start"]')].map((i) => Number(i.value)));
+  assert(pos.length === 3 && pos.every(Number.isFinite), `precondition: an existing point's position was read (got ${JSON.stringify(pos)})`);
+  // Switch to the Point form (a second click collapses Line first, then open Point).
+  await page.evaluate(() => [...document.querySelectorAll(".op-btn")].find((b) => b.querySelector(".op-name")?.textContent === "Line")?.click());
+  await sleep(150);
+  await openForm("Point", '#edits-params input[data-name="position"]');
+  await page.evaluate((p) => {
+    [...document.querySelectorAll('#edits-params input[data-name="position"]')].forEach((inp, k) => {
+      inp.value = String(p[k]);
+      inp.dispatchEvent(new Event("input", { bubbles: true }));
+      inp.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+  }, pos);
+  const addAt = async () => page.evaluate(() => [...document.querySelectorAll("#edits-params .compose-apply")].find((b) => b.textContent === "Add")?.click());
+  const before = await sentCount(page, "editsChanged");
+  await addAt();
+  await sleep(300);
+  const shown = await page.evaluate(() => {
+    const el = document.getElementById("coincident-prompt");
+    return { visible: !!el && el.offsetParent !== null, text: el?.textContent ?? "", status: document.getElementById("status")?.textContent ?? "", pos: [...document.querySelectorAll('#edits-params input[data-name="position"]')].map((i) => i.value) };
+  });
+  assert(shown.visible && /Coincides with point-\d+/.test(shown.text), `the coincident prompt is rendered and names the point (got ${JSON.stringify(shown)})`);
+  assert((await sentCount(page, "editsChanged")) === before, "nothing is pushed until a choice is made");
+  await page.evaluate(() => [...document.querySelectorAll("#coincident-prompt button")].find((b) => b.textContent === "Collapse")?.click());
+  await sleep(300);
+  let op = await page.evaluate(() => (window.__sent ?? []).findLast((x) => x.type === "editsChanged")?.ops.at(-1));
+  assert((await sentCount(page, "editsChanged")) === before + 1 && op?.op === "addPoint" && op.coincident === "reuse", `Collapse pushes addPoint with coincident:"reuse" (got ${JSON.stringify(op)})`);
+  assert(await page.evaluate(() => document.getElementById("coincident-prompt") === null), "the prompt is dismissed after a choice");
+  await addAt();
+  await sleep(300);
+  await page.evaluate(() => [...document.querySelectorAll("#coincident-prompt button")].find((b) => b.textContent === "Keep independent")?.click());
+  await sleep(300);
+  op = await page.evaluate(() => (window.__sent ?? []).findLast((x) => x.type === "editsChanged")?.ops.at(-1));
+  assert(op?.op === "addPoint" && op.coincident === "independent", `Keep independent pushes coincident:"independent" (got ${JSON.stringify(op)})`);
+  // Control: a point far from every existing one is pushed straight away, no prompt.
+  await page.evaluate(() => {
+    [...document.querySelectorAll('#edits-params input[data-name="position"]')].forEach((inp, k) => {
+      inp.value = String([9000, 9000, 9000][k]);
+      inp.dispatchEvent(new Event("input", { bubbles: true }));
+      inp.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+  });
+  const mid = await sentCount(page, "editsChanged");
+  await addAt();
+  await sleep(300);
+  op = await page.evaluate(() => (window.__sent ?? []).findLast((x) => x.type === "editsChanged")?.ops.at(-1));
+  assert((await sentCount(page, "editsChanged")) === mid + 1 && op?.coincident === undefined && (await page.evaluate(() => document.getElementById("coincident-prompt") === null)), `a non-coincident point is pushed directly with no field (got ${JSON.stringify(op)})`);
+});
 
 /**
  * Point references on curve ops (the "Define lines, arcs and curves from

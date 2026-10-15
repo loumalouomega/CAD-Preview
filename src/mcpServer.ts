@@ -100,6 +100,7 @@ import {
   cadJobCancelTool,
   compareMeshRefinementTool,
   estimateMeshBudgetTool,
+  checkMeshQualityTool,
   analyzePassagesTool,
   measureMeshDeviationTool,
   saveSheetTemplate,
@@ -1768,6 +1769,24 @@ server.registerTool(
   },
   wrap((args: { path: string; options?: Record<string, unknown> }) =>
     estimateMeshBudgetTool(ctx, { path: args.path, options: args.options as Partial<MeshOptions> | undefined })
+  )
+);
+
+server.registerTool(
+  "check_mesh_quality",
+  {
+    description:
+      "Generate the FE mesh exactly as generate_mesh would, then run meshio++'s quality gate over it against YOUR threshold text. `require` is clauses separated by `;`/`,`/newline, each `METRIC >= V` or `METRIC <= V`, with an optional `@ N%` allowed violating fraction, e.g. \"scaled_jacobian >= 0.2; aspect_ratio <= 5 @ 1%\" (metrics: volume, scaled_jacobian, aspect_ratio, skewness, min_angle, max_angle, warpage, min_dihedral, max_dihedral, inverted, degenerate). Inverted and degenerate cell counts are always gated (maxInverted/maxDegenerate default 0, negative disables). Returns facts per clause — evaluated cells, violations, fraction, worst value and its cell — and flags a clause that applied to no cell as `vacuous`; `passed` is meshio++'s comparison against your numbers, not a verdict. Complements generate_mesh's Gmsh minSICN summary (a different index).",
+    inputSchema: {
+      path: modelPath,
+      require: z.string().optional().describe("Threshold text (see description). Omit to gate only inverted/degenerate counts."),
+      maxInverted: z.number().int().optional().describe("Allowed inverted cells (default 0, negative disables)"),
+      maxDegenerate: z.number().int().optional().describe("Allowed degenerate cells (default 0, negative disables)"),
+      options: meshOptionsOverride,
+    },
+  },
+  wrap((args: { path: string; require?: string; maxInverted?: number; maxDegenerate?: number; options?: Record<string, unknown> }) =>
+    checkMeshQualityTool(ctx, { ...args, options: args.options as Partial<MeshOptions> | undefined })
   )
 );
 

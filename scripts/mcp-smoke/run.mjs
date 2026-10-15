@@ -318,8 +318,8 @@ try {
   assert(capsText.length > 100, "resources/read cad-preview://capabilities returns JSON text");
 
   const tools = (await request("tools/list", {})).tools.map((t) => t.name);
-  assert(tools.length === 75, `tools/list exposes 75 tools (got ${tools.length}: ${tools.join(", ")})`);
-  for (const t of ["list_workspace_models", "check_interference_all", "generate_bom", "generate_hole_table", "render_ops_prefix", "check_tolerance", "inspect_meshio_fields", "pin_annotation", "import_svg", "save_mesh_preset", "list_mesh_presets", "apply_mesh_preset", "compare_mesh_refinement", "export_tessellated_stl", "estimate_mesh_budget", "analyze_passages", "measure_mesh_deviation", "save_sheet_template", "list_sheet_templates", "batch_export", "check_handoff_manifest", "generate_prep_report", "job_status", "job_cancel", "check_brep_health", "list_scad_parameters", "convert_scad", "list_layers", "set_layer", "assign_layer", "segment_mesh_surface"]) {
+  assert(tools.length === 76, `tools/list exposes 76 tools (got ${tools.length}: ${tools.join(", ")})`);
+  for (const t of ["list_workspace_models", "check_interference_all", "generate_bom", "generate_hole_table", "render_ops_prefix", "check_tolerance", "inspect_meshio_fields", "pin_annotation", "import_svg", "save_mesh_preset", "list_mesh_presets", "apply_mesh_preset", "compare_mesh_refinement", "export_tessellated_stl", "estimate_mesh_budget", "analyze_passages", "measure_mesh_deviation", "save_sheet_template", "list_sheet_templates", "batch_export", "check_handoff_manifest", "generate_prep_report", "job_status", "job_cancel", "check_brep_health", "list_scad_parameters", "convert_scad", "list_layers", "set_layer", "assign_layer", "segment_mesh_surface", "check_mesh_quality"]) {
     assert(tools.includes(t), `tools/list exposes ${t}`);
   }
 
@@ -8010,6 +8010,44 @@ try {
     fs.copyFileSync(path.join(ROOT, "examples", "STL", "holed-cube.stl"), openStl);
     const open = await call("estimate_mesh_budget", { path: openStl, options: { sizeMin: 0, sizeMax: 1, dimension: 3 } });
     assert(open.estimate.status === "unavailable" && /closed volume/.test(open.estimate.reason), "an open mesh's 3D estimate is unavailable, not a guess");
+  }
+
+  // --- check_mesh_quality (roadmap "meshio++ check_quality as a caller-supplied quality gate") ---
+  {
+    // Same mesh, two caller thresholds: the lenient one passes, the impossible
+    // one fails with every evaluated cell violating and a worst cell named.
+    const qModel = path.join(dir, "quality-gate.stp");
+    fs.copyFileSync(path.join(ROOT, "examples", "STP", "block.stp"), qModel);
+    const opts = { sizeMin: 0, sizeMax: 1.5, dimension: 3 };
+    const good = await call("check_mesh_quality", { path: qModel, require: "scaled_jacobian >= 0.01", options: opts });
+    assert(good.passed === true && good.checks[0].violations === 0, `a lenient threshold passes (${JSON.stringify(good.checks[0])})`);
+    assert(good.checks[0].evaluated > 0 && good.checks[0].evaluated < good.numCells, "the volume metric evaluates only the volume cells, not every cell");
+    assert(good.checks[0].worst > 0.01 && good.checks[0].worstCell !== null, "the worst value and cell are reported as facts");
+    const bad = await call("check_mesh_quality", { path: qModel, require: "scaled_jacobian >= 0.99", options: opts });
+    assert(bad.passed === false && bad.checks[0].violations === bad.checks[0].evaluated, "an impossible threshold fails on every evaluated cell");
+    assert(bad.checks[0].worst === good.checks[0].worst, "the same mesh gives the same worst value under either threshold");
+    const allowed = await call("check_mesh_quality", { path: qModel, require: "scaled_jacobian >= 0.99 @ 100%", options: opts });
+    assert(allowed.passed === true && allowed.checks[0].fraction === 1, "an allowed violating fraction is honoured and the real fraction still reported");
+    const badSpec = await callTolerant("check_mesh_quality", { path: qModel, require: "bogus >= 1", options: opts });
+    assert(badSpec.error && /unknown metric/.test(badSpec.error), `an unknown metric is a clear error (${badSpec.error})`);
+  }
+
+  // --- addPoint coincident choice (roadmap "Coincident-point prompt: collapse or keep independent") ---
+  {
+    const cpModel = path.join(dir, "coincident-point.stp");
+    fs.copyFileSync(path.join(ROOT, "examples", "STP", "block.stp"), cpModel);
+    const pointCount = async () => (await call("load_model", { path: cpModel })).pointCount;
+    const base = await pointCount();
+    await call("apply_edit_ops", { path: cpModel, ops: [{ op: "addPoint", position: [100, 100, 100] }] });
+    assert((await pointCount()) === base + 1, "a first point at a free location adds exactly one point-N");
+    const indep = await call("apply_edit_ops", { path: cpModel, ops: [{ op: "addPoint", position: [100, 100, 100] }] });
+    assert((await pointCount()) === base + 2, "an unset choice keeps today's behaviour: a second independent point");
+    assert(indep.warnings.some((w) => /coincides with point-\d+ and was kept independent/.test(w)), `the coincidence is reported, never silent (${JSON.stringify(indep.warnings)})`);
+    const reuse = await call("apply_edit_ops", { path: cpModel, ops: [{ op: "addPoint", position: [100, 100, 100], coincident: "reuse" }] });
+    assert(reuse.applied === 1 && (await pointCount()) === base + 2, "coincident:reuse adds no entity yet counts as applied (not a skipped op)");
+    assert(reuse.warnings.some((w) => /reused point-\d+/.test(w)) && !reuse.warnings.some((w) => /did NOT apply/.test(w)), `the collapse is a note, not a skip (${JSON.stringify(reuse.warnings)})`);
+    await call("apply_edit_ops", { path: cpModel, ops: [{ op: "addPoint", position: [100, 100, 100], coincident: "independent" }] });
+    assert((await pointCount()) === base + 3, "coincident:independent adds exactly one more point");
   }
 
   // --- analyze_passages (roadmap "Narrow-gap and passage resolution preflight") ---

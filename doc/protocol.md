@@ -236,7 +236,7 @@ type EditOp =
   | { op: 'addRoundedRectangleProfile'; center: Vec3; normal: Vec3; up: Vec3; width: number; height: number; cornerRadius: number; guide?: boolean }
   | { op: 'addSlotProfile'; center: Vec3; normal: Vec3; up: Vec3; length: number; width: number; guide?: boolean }
   | { op: 'addTrapezoidProfile'; center: Vec3; normal: Vec3; up: Vec3; bottomWidth: number; topWidth: number; height: number; guide?: boolean }
-  | { op: 'addPoint'; position: Vec3; guide?: boolean }
+  | { op: 'addPoint'; position: Vec3; guide?: boolean; coincident?: 'reuse' | 'independent' }
   | { op: 'addLine'; start: Vec3; end: Vec3; guide?: boolean }                          // any Vec3 slot of the curve ops may be a `point-N` — see pointRefs below
   | { op: 'addArc'; center: Vec3; normal: Vec3; radius: number; startAngleDeg: number; endAngleDeg: number; guide?: boolean }
   | { op: 'addPolyline'; points: Vec3[]; closed: boolean; guide?: boolean }            // >= 2 points (>= 3 when closed)
@@ -1473,6 +1473,14 @@ Sent from the Passages panel (roadmap "Narrow-gap and passage resolution preflig
 
 ```json
 { "type": "passagesRequest", "requestId": "1234-0.56", "targetCells": 3 }
+```
+
+### `qualityGateRequest` / `qualityGateResult` / `qualityGateError`
+
+Sent from the FE Mesh panel's **Quality gate** row (roadmap "meshio++ check_quality as a caller-supplied quality gate") — the interactive half of `check_mesh_quality`. The row is rendered only while a generated mesh is displayed. `qualityGateRequest` carries the caller's threshold text `require` (e.g. `scaled_jacobian >= 0.2; aspect_ratio <= 5 @ 1%`); the host keeps the MSH text of the **last mesh that panel generated** (reset at the start of each generate) and runs meshio++'s `checkQuality` over it. It replies `qualityGateError` when nothing has been generated or the text is malformed (meshio++'s own message names the unknown metric). `qualityGateResult` carries a `QualityGateResult` (`src/meshQualityGate.ts`): `passed`, `numCells`, `numInverted`, `numDegenerate`, `checks[]` (`name`, `metric`, `min`/`max`, `maxFraction`, `evaluated`, `violations`, `fraction`, `worst`, `worstCell`, `passed`, `vacuous`) and `vacuousChecks`. Facts only — the panel words `passed` as "Within / Outside your thresholds". Correlated by `requestId`; a stale reply is ignored.
+
+```json
+{ "type": "qualityGateRequest", "requestId": "1234-0.56", "require": "scaled_jacobian >= 0.2" }
 ```
 
 ### `brepHealthRequest`
