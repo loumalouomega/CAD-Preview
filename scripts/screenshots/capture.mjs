@@ -282,6 +282,47 @@ const SHOTS = [
     target: { sel: "#parts-panel" },
   },
   {
+    // Mesh Health needs a NATIVE STL source (the host triangle-soup parsers'
+    // gate — a B-rep or meshio-converted document hides the panel), so this
+    // loads the cube fixture over a real `loadUrl`, clicks Check Healability,
+    // and answers with the report the real pipeline returns for that fixture:
+    // one closed component at the tightest ladder rung with ~0 delta. That is
+    // the state worth shooting — the rows render and Promote / Fit to CAD
+    // (meshio++ 17.2.0's fitCad) are enabled while Repair correctly stays off.
+    file: "mesh-health.png",
+    setup: async (page) => {
+      await populate(page);
+      await post(page, { type: "loadUrl", url: "/examples/STL/cube.stl", format: "stl" });
+      await sleep(700);
+      // The Advanced group ships collapsed.
+      const collapsed = await page.evaluate(
+        () => document.getElementById("advanced-group")?.classList.contains("collapsed") ?? false
+      );
+      if (collapsed) await page.click("#advanced-header > .panel-chevron");
+      await sleep(120);
+      await page.click("#mesh-health-check");
+      const requestId = await page.waitForFunction(() => {
+        const req = (window.__sent || []).findLast((m) => m.type === "meshHealRequest");
+        return req ? req.requestId : false;
+      }).then((h) => h.jsonValue());
+      await post(page, {
+        type: "meshHealResult",
+        requestId,
+        report: {
+          componentCount: 1,
+          components: [
+            {
+              index: 0, triangleCount: 12, freeEdgeCount: 0, nonManifoldEdgeCount: 0, degenerateFaceCount: 0,
+              requiredTolerance: 1e-6, areaDeltaPct: 0, volumeDeltaPct: 0,
+            },
+          ],
+        },
+      });
+      await sleep(200);
+    },
+    target: { sel: "#mesh-health-panel" },
+  },
+  {
     file: "edits-geometry.png",
     setup: async (page) => {
       await populate(page);

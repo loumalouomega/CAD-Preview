@@ -689,6 +689,8 @@ The **B-rep Health** panel (Advanced ▸ Analysis, STEP/IGES/BREP sources only) 
 
 The **Mesh Health** panel (Advanced ▸ Analysis, native STL/OBJ/PLY/glTF sources only) reports whether a triangle mesh can be sewn into a solid — the interactive counterpart of the `check_mesh_health` MCP tool. It repairs nothing itself.
 
+![The Mesh Health panel: a one-component report with free/non-manifold edges, degenerate faces and the required sewing tolerance, with Promote to B-rep… and Fit to CAD… enabled and Repair (robust)… correctly disabled.](/screenshots/mesh-health.png)
+
 1. Click **Check Healability**. Each connected component gets one row-group: free/non-manifold edge counts, degenerate face count, the required sewing tolerance (or `did not close`), healed area/volume delta vs. the raw mesh, plus meshio++'s oriented signals — **Inconsistently wound pairs** (adjacent triangles wound oppositely, invisible to the edge counts), **Inverted faces** (shown only when non-zero), and triangle quality.
 2. Tick **Auto-decimate** (session-only, off by default) to run the check over a meshio++-decimated copy (~1,000 triangles) instead of a mesh above the 50,000-triangle ceiling; the report states the resampling actually applied.
 3. **Promote to B-rep…** enables only once a report shows at least one closed component; **Repair (robust)…** enables only once a report shows at least one component that did not close. Both write a new file via a save dialog and never modify the open document; re-run **Check Healability** on the result before acting further.
