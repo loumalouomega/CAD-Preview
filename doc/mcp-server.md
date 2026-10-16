@@ -83,6 +83,12 @@ Every tool that persists one of those sidecars accepts an optional `expectedRevi
 
 ## Registering with an MCP client
 
+**In VS Code** nothing needs registering: the extension contributes an MCP server definition ("CAD Preview"), so the server appears in VS Code's MCP server list and agent mode can use it. It runs `dist/mcp-server.js` with the editor's own Node (`ELECTRON_RUN_AS_NODE=1`), so no separate Node is required.
+
+**For any other client**, run **CAD Preview: Connect an agent…** from the Command Palette, pick a client (Claude Code, `.mcp.json`, Claude Desktop, Cursor, VS Code workspace file, Windsurf, Codex) and the matching snippet — with this installation's absolute paths filled in — is copied to the clipboard. VS Code's own `.vscode/mcp.json` uses a `servers` key; the other JSON clients use `mcpServers`.
+
+To register by hand instead:
+
 With Claude Code:
 
 ```bash

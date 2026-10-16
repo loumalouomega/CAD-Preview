@@ -230,10 +230,31 @@ test("the extension is installed, activates, and registers its commands", async 
     "cad-preview.open", "cad-preview.compareModels", "cad-preview.whatsNew",
     "cad-preview.export", "cad-preview.saveAs", "cad-preview.exportSvg",
     "cad-preview.exportDxf", "cad-preview.savePreprocess", "cad-preview.loadPreprocess",
-    "cad-preview.refreshModels", "cad-preview.new",
+    "cad-preview.refreshModels", "cad-preview.new", "cad-preview.connectAgent",
   ]) {
     assert(commands.includes(id), `command ${id} is registered`);
   }
+});
+
+test("Connect an agent copies a registration snippet naming the installed MCP server", async () => {
+  const ext = vscode.extensions.getExtension(EXTENSION_ID);
+  assert(!!ext, "the extension is installed");
+  const record = await withModals([pick("Cursor")], async () => {
+    await vscode.commands.executeCommand("cad-preview.connectAgent");
+  });
+  assert(
+    (record.quickPicks[0]?.labels ?? []).some((l) => l.includes("Claude Code")),
+    `the picker offers Claude Code (offered ${JSON.stringify(record.quickPicks[0]?.labels)})`
+  );
+  const text = await vscode.env.clipboard.readText();
+  const doc = JSON.parse(text) as { mcpServers: Record<string, { command: string; args: string[]; env: Record<string, string> }> };
+  const server = doc.mcpServers["cad-preview"];
+  assert(!!server && server.args[0]?.endsWith("mcp-server.js"), `the snippet points at dist/mcp-server.js (${text})`);
+  assert(
+    server.args[0] === path.join(ext!.extensionPath, "dist", "mcp-server.js"),
+    "the path is the installed extension's own dist/mcp-server.js"
+  );
+  assert(server.env.ELECTRON_RUN_AS_NODE === "1", "the snippet sets ELECTRON_RUN_AS_NODE=1");
 });
 
 /**

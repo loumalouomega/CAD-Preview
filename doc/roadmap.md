@@ -189,7 +189,7 @@ Two projects built for AI agents were read for this extension:
 | `expectedRevision` edits, HTTP 409 on conflict | ReOpenSCAD | Shipped as the MCP revision guard: `get_state` returns a `revisions` fingerprint per sidecar, eleven write tools accept an optional `expectedRevision` and return their new `revision`, and a stale one is refused with code `stale-revision` carrying `currentRevision` (serialised per model and sidecar in-process; not a cross-process lock) |
 | Highlighting AI-made edits | ReOpenSCAD | Shipped: appended rows carry a transient `external` badge and their faces flash once (webview memory only; pure appends only) |
 | Agent-readable busy errors ("retry, do not edit"); closed vocabularies | Both | Shipped as coded MCP errors: `isError` results carry `structuredContent {code, message, hint?, retryable}`, and an undeclared parameter produces a warning naming the nearest real key (warn-only; strict mode deferred) |
-| "Connect AI" setup snippets; one-install plugin | Both | [Register the MCP server with VS Code](#register-mcp-server-with-vscode) |
+| "Connect AI" setup snippets; one-install plugin | Both | Shipped: VS Code lists the server through an MCP server-definition provider, and **CAD Preview: Connect an agent…** copies a per-client snippet (Claude Code, `.mcp.json`, Claude Desktop, Cursor, VS Code, Windsurf, Codex) with the installed path filled in |
 | `ui://` MCP-App inline viewer | Both | [MCP App inline preview](#mcp-app-inline-preview) (probe) |
 | `cad_view` returns the user's selection as quotable refs | text-to-cad | Shipped: Copy reference quotes `file#id`, facts, the op count and a stored query (`CLAUDE.md`'s Selection bullet) |
 | Snapshot presets (xray, hidden-line) and section mode | text-to-cad | Shipped: `render_snapshot` / `screenshot_shape` take all five display modes and an optional section `clip` (the viewer's own clip plane, solid cap included) |
@@ -297,18 +297,7 @@ These are outcome groupings, not release numbers. Independent small items can sh
 - **What is left (S):** the cross-repository check — open the exported `.mdpa` in VSCode-MDPA-Preview and confirm both SubModelParts populate. It needs that extension and is not exercised from this repository.
 - **Done when:** that check passes, and KKSS's tutorial links to the page.
 
-#### 2.16 Register the MCP server with VS Code and offer client setup snippets {#register-mcp-server-with-vscode}
-
-*Area: Platform, Ecosystem. Effort: S–M.*
-
-- **Evidence:** using the bundled MCP server means finding the installed extension's path and writing `claude mcp add cad-preview -- node <path>/dist/mcp-server.js` by hand, with a Node on `PATH`. VS Code's own agent mode cannot see the server at all, although the extension targets `vscode ^1.140.0`, which has the MCP server-definition-provider API. ReOpenSCAD's "Connect AI" dialog shows a ready snippet per client (Claude Code, Claude Desktop, Cursor, VS Code, Windsurf, Codex), and text-to-cad installs its server with one command.
-- **First useful increment (S–M):**
-  - `contributes.mcpServerDefinitionProviders` plus a provider that launches `dist/mcp-server.js` with `process.execPath` and `ELECTRON_RUN_AS_NODE=1`, so no separate Node is needed (the Flatpak recipe in `doc/development.md` already relies on this).
-  - A **CAD Preview: Connect an agent…** command that shows copyable snippets for the common clients, filled with the installed extension's absolute path and the same environment.
-- **Done when:** in a real VS Code, the server appears in the MCP server list and `describe_capabilities` answers through it; and each snippet, pasted into its client, starts the server (checked at least for Claude Code).
-- **Out of scope:** an HTTP transport (see [Rejected scope](#rejected-scope)); publishing the server as a separate npm package.
-
-#### 2.17 Printability facts report {#printability-facts-report}
+#### 2.16 Printability facts report {#printability-facts-report}
 
 *Area: Geometry. Effort: M.*
 
@@ -324,7 +313,7 @@ These are outcome groupings, not release numbers. Independent small items can sh
 - **Done when:** a fixture with a known 1 mm wall reports 1 mm within the sampling resolution; a box rotated onto its edge reports more overhang than one on its face; and an unmeasured rule is reported as not checked rather than passed.
 - **Out of scope:** slicing and support generation (see [Rejected scope](#rejected-scope)); choosing an orientation for the user.
 
-#### 2.18 Draft and undercut analysis for a pull direction {#draft-and-undercut-analysis}
+#### 2.17 Draft and undercut analysis for a pull direction {#draft-and-undercut-analysis}
 
 *Area: Geometry. Effort: M.*
 
@@ -333,7 +322,7 @@ These are outcome groupings, not release numbers. Independent small items can sh
 - **Done when:** a box reports its four side walls at exactly 0°, a tapered extrusion reports its taper angle, and a pocket under an overhang is reported as an undercut.
 - **Out of scope:** suggesting a parting line; adding draft (the `draft` op is the tool for that, and its kernel limitation is recorded in `CLAUDE.md`).
 
-#### 2.19 Hole callouts and centre lines on drawing sheets {#hole-callouts-on-drawing-sheets}
+#### 2.18 Hole callouts and centre lines on drawing sheets {#hole-callouts-on-drawing-sheets}
 
 *Area: Drawings. Effort: M.*
 

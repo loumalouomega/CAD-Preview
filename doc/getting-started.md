@@ -779,6 +779,10 @@ The SVG output is a single self-contained `<path>` with no external references, 
 
 Run **CAD Preview: Batch Export…** from the Command Palette to export many files at once without opening them: pick the files, a target (STEP, IGES, BREP, a one-view SVG/DXF technical drawing, or an SVG/DXF drawing sheet), a destination folder, and what to do when an output already exists (skip, add a numeric suffix, or overwrite — an input file is never overwritten). Files run one at a time with a cancellable progress notification; a file that fails becomes a failed row and the rest still export. A report panel lists every file with its status, output, how many edits were baked in (B-rep sources bake their whole edit history; a mesh source's drawing bakes its pending edits through the same engine the viewer replays with), and any error or warning. The same batch is available headlessly as the `batch_export` MCP tool.
 
+### Connect an agent
+
+VS Code agent mode lists the bundled MCP server automatically. For another client, run **CAD Preview: Connect an agent…**, choose the client, and paste the copied snippet into its config (see [MCP Server](./mcp-server.md#registering-with-an-mcp-client)).
+
 ### Preparation report
 
 Run **CAD Preview: Preparation Report…** to write a one-stop summary of a model's preparation facts: `report.json` plus a self-contained `report.html` (no scripts, no network — safe to mail or archive). It uses the focused tab (saving its sidecars first), or asks for a file when none is focused, then asks for a destination folder. Sections cover source identity (file hash and edit fingerprint), the effective mesh options, edit replay, mass properties, BOM, hole table, mesh health, narrow passages, the budget estimate beside the actual generated mesh, and — through the `generate_prep_report` MCP tool — deviation, a handoff-manifest check and snapshots. Every section says whether it ran, and if not, why; nothing is silently left out. Mesh-format sources' inspection facts describe the raw file (their pending edits are not baked into them); the meshing sections bake those edits first.

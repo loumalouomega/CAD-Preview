@@ -1,6 +1,7 @@
 import * as vscode from "vscode";
 import { CadPreviewProvider } from "./provider";
 import { registerModelsView } from "./modelsView";
+import { registerMcpIntegration } from "./mcpRegistration";
 import { maybeShowWhatsNew } from "./whatsNew";
 import { disconnectSpaceMouse } from "./spaceMouse";
 import { setTestSheetFormAnswer } from "./drawingSheetForm";
@@ -42,6 +43,7 @@ export interface CadPreviewTestApi {
 export function activate(context: vscode.ExtensionContext): CadPreviewTestApi | undefined {
   context.subscriptions.push(CadPreviewProvider.register(context));
   registerModelsView(context, CadPreviewProvider.viewType);
+  registerMcpIntegration(context);
   void maybeShowWhatsNew(context);
   return context.extensionMode === vscode.ExtensionMode.Test
     ? {
