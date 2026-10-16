@@ -6,6 +6,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/); thi
 
 ## [Unreleased]
 
+## [3.18.0] - 2026-10-16
+
 ### Added
 
 - **Printability panel** (Advanced ▸ Analysis): the interactive half of `check_printability` — build direction, overhang limit, bundled process and plate, per-body sampled wall facts, per-direction overhang / plate contact / support upper bound, a "Not checked" list, and the overhang faces coloured in the view.
