@@ -1901,7 +1901,8 @@ body:not(:has(#side.visible)) #status {
 #mesh-health-actions,
 #brep-health-actions,
 #primitives-actions,
-#passages-actions {
+#passages-actions,
+#printability-actions {
   display: flex;
   gap: 2px;
   flex-wrap: wrap;
@@ -1913,6 +1914,7 @@ body:not(:has(#side.visible)) #status {
 #brep-health-actions button,
 #primitives-actions button,
 #passages-actions button,
+#printability-actions button,
 #mass-refresh {
   font: inherit;
   font-size: var(--ui-fs-sm);
@@ -1931,6 +1933,7 @@ body:not(:has(#side.visible)) #status {
 #brep-health-actions button:hover:not(:disabled),
 #primitives-actions button:hover:not(:disabled),
 #passages-actions button:hover:not(:disabled),
+#printability-actions button:hover:not(:disabled),
 #mass-refresh:hover:not(:disabled) {
   opacity: 1;
   background: var(--vscode-toolbar-hoverBackground, rgba(255,255,255,0.1));
@@ -1940,7 +1943,8 @@ body:not(:has(#side.visible)) #status {
 #mesh-health-actions button:disabled,
 #brep-health-actions button:disabled,
 #primitives-actions button:disabled,
-#passages-actions button:disabled { opacity: 0.35; cursor: default; }
+#passages-actions button:disabled,
+#printability-actions button:disabled { opacity: 0.35; cursor: default; }
 
 #meshing-worst-toggle.active {
   opacity: 1;
@@ -2485,7 +2489,8 @@ input[type="range"].meshing-slider:focus {
 #region-fit-panel[hidden],
 #primitives-panel[hidden],
 #scad-panel[hidden],
-#passages-panel[hidden] {
+#passages-panel[hidden],
+#printability-panel[hidden] {
   display: none;
 }
 
@@ -2793,6 +2798,76 @@ input[type="range"].meshing-slider:focus {
 }
 
 .passages-message-error {
+  color: var(--vscode-inputValidation-errorForeground, #f48771);
+  opacity: 1;
+}
+
+/* ── Printability panel (roadmap "Printability facts report") ── */
+
+#printability-panel {
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+  max-height: 40%;
+  overflow: hidden;
+  border-top: 1px solid var(--vscode-sideBar-border, #3c3c3c);
+}
+
+#printability-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 8px;
+  padding: 2px 8px;
+  font-size: var(--ui-fs-sm);
+  opacity: 0.85;
+}
+
+#printability-options label { text-transform: none; white-space: nowrap; }
+
+#printability-options select,
+#printability-options input {
+  font: inherit;
+  font-size: var(--ui-fs-sm);
+  color: var(--vscode-input-foreground, #ccc);
+  background: var(--vscode-input-background, #3c3c3c);
+  border: 1px solid var(--vscode-input-border, transparent);
+  border-radius: var(--ui-r-xs);
+  padding: 0 3px;
+}
+
+#printability-limit { width: 2.5em; }
+
+#printability-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 4px 8px;
+}
+
+.printability-row {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 4px 0;
+  border-bottom: 1px solid var(--vscode-sideBar-border, #3c3c3c);
+  font-size: var(--ui-fs-sm);
+}
+
+.printability-row:last-child { border-bottom: none; }
+
+.printability-title { font-weight: 600; opacity: 0.9; }
+
+.printability-facts { opacity: 0.75; font-variant-numeric: tabular-nums; }
+
+.printability-row.warn .printability-facts { color: var(--vscode-editorWarning-foreground, #cca700); opacity: 1; }
+
+.printability-message {
+  font-size: var(--ui-fs-sm);
+  opacity: 0.7;
+  padding: 6px 0;
+}
+
+.printability-message-error {
   color: var(--vscode-inputValidation-errorForeground, #f48771);
   opacity: 1;
 }

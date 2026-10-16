@@ -119,7 +119,7 @@ Every section header reads chevron · icon · title, so a collapsed sidebar is s
 
 | Advanced ▸ | Sections |
 | --- | --- |
-| **Analysis** | Mass Properties, Clash, B-rep Health, Mesh Health, Region fit, Primitives, Passages |
+| **Analysis** | Mass Properties, Clash, B-rep Health, Mesh Health, Region fit, Primitives, Passages, Printability |
 | **Library** | Macros, Standard Parts |
 
 Advanced starts collapsed. Its header carries a badge counting how many of its nine sections apply to the current file (`7 of 9` on a STEP/IGES/BREP source; `5 of 9` on a native STL/OBJ/PLY/glTF source; `3 of 9` on a meshio-converted source), so you can tell whether opening it is worth the click without opening it. Each section inside keeps its own chevron and collapses independently, exactly as before — the group simply adds one more level.
@@ -130,7 +130,7 @@ Every sidebar section — and the Advanced group itself — has a chevron at the
 
 The collapsed/expanded layout is remembered **per document**, in the same `<model>.view.json` sidecar that already stores the camera, display mode and clip plane, so reopening a file restores the sidebar exactly as you left it. Merely opening a document never creates that file — only an actual change does.
 
-Sections that don't apply to the current file (Clash, B-rep Health, Primitives and Passages are shown only for a STEP/IGES/BREP source; Mesh Health and Region fit only for a native STL/OBJ/PLY/glTF source) are hidden entirely rather than collapsed, independently of this — the Advanced badge is what tells you how many were left out.
+Sections that don't apply to the current file (Clash, B-rep Health, Primitives and Passages are shown only for a STEP/IGES/BREP source, Printability for any source with host-measurable triangles (not 3MF, Collada or AMF); Mesh Health and Region fit only for a native STL/OBJ/PLY/glTF source) are hidden entirely rather than collapsed, independently of this — the Advanced badge is what tells you how many were left out.
 
 ### Resizing the Sidebar
 
@@ -706,6 +706,16 @@ The **Passages** panel (below Primitives, B-rep sources only) is a pre-meshing c
 - a **slot** between two parallel flat faces facing each other — width is their distance, and they must genuinely overlap.
 
 Only gaps of empty space count — the two faces of a wall are never reported. Each row shows the width, roughly how many cells the current size puts across it (from the smallest Part size on either face, else the FE Mesh global size) and the size that would give your target; hovering a row highlights both faces. Under-resolved rows (warning colour) offer **Apply local size**, which creates or updates a Part named `Passage face-A/face-B` on the two faces with that mesh size — an ordinary Part, so it persists, rebinds, and shows in FE Mesh › Part sizes. These are estimates; generate a mesh to confirm. Headless: `analyze_passages`, then `set_part`.
+
+### Printability
+
+The **Printability** panel (below Passages; any source with triangles — a B-rep is measured through its fine tessellation, a mesh with its pending edits) reports **facts** about how a model would print; it never says "printable". Choose a build direction (**up**), optionally an **overhang limit** in degrees from vertical (blank uses the process limit, else 45), a bundled **process** (FDM, SLA, SLS, MJF — starter figures from typical design guides, each naming its source, not standards) and a **plate**, then click **Check**:
+
+- per body: closed or open (free and non-manifold edge counts), volume, and **sampled** wall thickness (minimum, 5th percentile, median; inward rays from deterministic surface samples — an estimate at that resolution that can miss a feature smaller than the spacing) with a count of samples under the process minimum wall;
+- for the chosen direction: overhang area (faces inclined more than the limit; exactly at the limit is not counted), flat plate-contact area, a support-volume **upper bound**, build height, footprint and whether it fits the plate; the other five directions list their overhang area;
+- rules it cannot measure (minimum hole size, bridge span, trapped powder or resin, warping, finish) are listed as **Not checked**, never as passed.
+
+The overhang faces of the chosen direction are coloured in the view (yellow); **Clear** removes the colouring, and so does an edit. The same report is available headless as the `check_printability` MCP tool.
 
 ### Primitives
 

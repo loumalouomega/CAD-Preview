@@ -194,7 +194,7 @@ Two projects built for AI agents were read for this extension:
 | `cad_view` returns the user's selection as quotable refs | text-to-cad | Shipped: Copy reference quotes `file#id`, facts, the op count and a stored query (`CLAUDE.md`'s Selection bullet) |
 | Snapshot presets (xray, hidden-line) and section mode | text-to-cad | Shipped: `render_snapshot` / `screenshot_shape` take all five display modes and an optional section `clip` (the viewer's own clip plane, solid cap included) |
 | `mass_properties` with density | text-to-cad | Shipped: `Part.density` gives BOM mass and a per-solid `massGrams` (mass-weighted centre and density-weighted inertia remain out) |
-| dfam-check (overhangs, wall thickness, support, orientations, plate fit) | text-to-cad, ReOpenSCAD (plates) | [Printability facts report](#printability-facts-report) |
+| dfam-check (overhangs, wall thickness, support, orientations, plate fit) | text-to-cad, ReOpenSCAD (plates) | Shipped as `check_printability` (overhang area, sampled wall thickness, support-volume upper bound, plate fit; unmeasured rules listed as not checked) and the Advanced ▸ Analysis **Printability** panel with an overhang colour overlay |
 | dfm draft and undercuts | text-to-cad | [Draft and undercut analysis](#draft-and-undercut-analysis) |
 | Engineering-drawing hole callouts, CENTER layer | text-to-cad | [Hole callouts on drawing sheets](#hole-callouts-on-drawing-sheets); the sheet itself ships |
 | Byte-deterministic writers (mesh formats, manifest) | text-to-cad | Shipped — see `CLAUDE.md`'s "Reproducible exports" |
@@ -298,23 +298,7 @@ These are outcome groupings, not release numbers. Independent small items can sh
 - **What is left (S):** the cross-repository check — open the exported `.mdpa` in VSCode-MDPA-Preview and confirm both SubModelParts populate. It needs that extension and is not exercised from this repository.
 - **Done when:** that check passes, and KKSS's tutorial links to the page.
 
-#### 2.16 Printability facts report {#printability-facts-report}
-
-*Area: Geometry. Effort: M.*
-
-- **Evidence:** nothing here answers "will this print". Mesh Health checks closure and B-rep Health checks validity, but neither measures overhangs or walls. text-to-cad's `dfam-check` reports, from a mesh: watertightness and body count; a units-suspect flag from the bounding box; down-facing area below a limit angle; ray-cast wall thickness (minimum, 5th percentile, median, per body); a support-volume upper bound; and the six axis orientations compared by support and build height. It compares these against a process-limits table (FDM, SLA, SLS, MJF, with sources) and reports what it cannot check as need-more-info. ReOpenSCAD adds a build-plate fit check per printer.
-- **First useful increment (M):** a `check_printability` MCP tool plus a section under Advanced ▸ Analysis, over the welded triangles every source already reduces to (fine tessellation for a B-rep, the baked edits for a mesh). All numbers are facts in the `verdictConventions` sense:
-  - closure and bodies from `meshTopology.ts`;
-  - overhang area below a caller-supplied angle (default 45°), for six orientations;
-  - wall thickness by casting rays inward from sampled surface points, using the `three-mesh-bvh` already bundled in the kernel worker;
-  - a support-volume upper bound per orientation;
-  - fit against a named or explicit build plate.
-
-  A bundled process-limits table, each row carrying its source, lets the report state where a measured value falls; rules it cannot measure (minimum hole, bridges, trapped powder) are listed as not checked. Overhang faces get a colour overlay through the colour-field path.
-- **Done when:** a fixture with a known 1 mm wall reports 1 mm within the sampling resolution; a box rotated onto its edge reports more overhang than one on its face; and an unmeasured rule is reported as not checked rather than passed.
-- **Out of scope:** slicing and support generation (see [Rejected scope](#rejected-scope)); choosing an orientation for the user.
-
-#### 2.17 Draft and undercut analysis for a pull direction {#draft-and-undercut-analysis}
+#### 2.16 Draft and undercut analysis for a pull direction {#draft-and-undercut-analysis}
 
 *Area: Geometry. Effort: M.*
 
@@ -323,7 +307,7 @@ These are outcome groupings, not release numbers. Independent small items can sh
 - **Done when:** a box reports its four side walls at exactly 0°, a tapered extrusion reports its taper angle, and a pocket under an overhang is reported as an undercut.
 - **Out of scope:** suggesting a parting line; adding draft (the `draft` op is the tool for that, and its kernel limitation is recorded in `CLAUDE.md`).
 
-#### 2.18 Hole callouts and centre lines on drawing sheets {#hole-callouts-on-drawing-sheets}
+#### 2.17 Hole callouts and centre lines on drawing sheets {#hole-callouts-on-drawing-sheets}
 
 *Area: Drawings. Effort: M.*
 
