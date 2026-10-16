@@ -130,6 +130,16 @@ export const EXPORT_EXTENSION: Record<CadFormat, string> = {
   // written by `iga_refine` (as .cad.json), never by this table's paths.
   cad_json: "cad.json",
   nastran: "bdf",
+  // meshio++ 17.3.0's six writers (see meshExportFormats.ts, which owns their
+  // FE-panel export path with the `.meshb`/`.plt`/... extensions; these entries
+  // keep `Record<CadFormat, string>` exhaustive for a Ctrl+S save of a document
+  // opened in one of the formats).
+  tecplot: "plt",
+  xplt: "xplt",
+  marc_t19: "t19",
+  abaqus_fil: "fil",
+  ansys_rst: "rst",
+  lsdyna_d3plot: "d3plot",
 };
 
 /** Human-readable label for a format, used in the export quick-pick. */
@@ -166,4 +176,12 @@ export const EXPORT_LABEL: Record<CadFormat, string> = {
   libmesh: "libMesh",
   cad_json: "Kratos CAD JSON",
   nastran: "Nastran Bulk Data",
+  // meshio++ 17.3.0's six (labels follow EXPORT_EXTENSION's comment block; the
+  // FE Mesh panel's picker gets the friendlier names from meshExportFormats.ts).
+  tecplot: "Tecplot Binary",
+  xplt: "FEBio Plot",
+  marc_t19: "MSC Marc Post File",
+  abaqus_fil: "Abaqus Results",
+  ansys_rst: "Ansys MAPDL Results",
+  lsdyna_d3plot: "LS-DYNA d3plot",
 };

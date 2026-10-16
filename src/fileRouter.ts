@@ -18,7 +18,8 @@ export type CadFormat =
   | "gid"
   | "libmesh"
   | "cad_json"
-  | "nastran";
+  | "nastran"
+  | "tecplot" | "xplt" | "marc_t19" | "abaqus_fil" | "ansys_rst" | "lsdyna_d3plot";
 
 /** `CadFormat` members routed through meshio++ — kept as one list so every
  * place that needs to enumerate them (package.json's generation, docs) has a
@@ -51,6 +52,9 @@ export type CadFormat =
 export const MESHIO_FORMATS: readonly CadFormat[] = [
   "vtk", "vtu", "med", "cgns", "exodus", "xdmf", "mdpa", "openfoam",
   "gmsh", "abaqus", "unv", "su2", "medit", "gid", "nastran", "libmesh", "cad_json",
+  // meshio++ 17.3.0's new binary writers — each adopted only after the live
+  // round-trip check below (see EXTENSION_MAP).
+  "tecplot", "xplt", "marc_t19", "abaqus_fil", "ansys_rst", "lsdyna_d3plot",
 ];
 
 /**
@@ -76,6 +80,7 @@ export const AMBIGUOUS_MESHIO_EXTENSIONS: ReadonlyMap<string, string> = new Map(
   ["msh", "Assumed to be a Gmsh mesh (this extension's own FE Mesh export format) — an ANSYS or FreeFem .msh file will not parse correctly."],
   ["inp", "Assumed to be an Abaqus input file (this extension's own FE Mesh export format) — an ANSYS APDL .inp file will not parse correctly."],
   ["bdf", "Assumed to be a Nastran bulk-data deck (this extension's own FE Mesh export format) — an X11 bitmap-font .bdf file will not parse."],
+  ["rst", "Assumed to be an Ansys MAPDL results file — a ReStructuredText document will not open as a mesh."],
 ]);
 
 /** The mesh formats with a pure host-side triangle parser (`stlParser.ts`,
@@ -209,6 +214,40 @@ const EXTENSION_MAP: Record<string, FileRoute> = {
   // (the cells ARE the surface), so `convertToStlBoundary` linearizes its
   // cells in place — see the cad_json branch there.
   "cad.json": { strategy: "meshio", format: "cad_json" },
+  // meshio++ 17.3.0's new binary writers (PR #163, "write support for
+  // multiple binary formats"). Each of the six below was verified live
+  // against the 17.3.0 full artifact feeding it this pipeline's ACTUAL
+  // generateMesh()-shaped MSH 4.1 (the Mesh.SaveAll vertex/line blocks
+  // included) and reading the writer's own output back: every writer
+  // finished and every read kept the tetra/triangle/line classes (the
+  // results-file writers merge the previous blocks into one per cell type —
+  // binout-style, documented in `doc/file-formats.md`; xplt/.plt/.meshb keep
+  // the per-region block layout but drop the 0-D vertex blocks). Two shape
+  // facts to keep straight:
+  // - `tecplot`: the OLD exclusion note in `meshExportFormats.ts` killed
+  //   Gmsh's own tecplot writer — meshio++'s binary `#!TDV112` writer
+  //   accepts vertex cells fine, so the meshio route reclaims the format.
+  // - `medit` binary (`.meshb`): the FIRST format routed on an id that was
+  //   already routed (`.mesh` → medit's ASCII reader) — meshio++'s medit
+  //   reader takes both variants under one format name, binary by content.
+  // Deliberately NOT routed, with the reason each was rejected:
+  // - `nastran_h5` (`.h5`): a ubiquitous extension (XDMF companions, generic
+  //   HDF5), and `routeFile` is resolution-blind — a foreign .h5 would route
+  //   to Nastran-table parsing. The writer works (the registry row in
+  //   meshExportFormats skips it for the same reason).
+  // - `szplt` / `vtx`: this published build has neither TecIO nor ADIOS2
+  //   linked — `convert` refuses them by name.
+  // - `neuroglancer`: round-trips vertex points only (its own conformance
+  //   column), so an exported FE mesh would lose all connectivity.
+  // `.rst` carries an ambiguity caveat (ReStructuredText) — see
+  // AMBIGUOUS_MESHIO_EXTENSIONS.
+  plt: { strategy: "meshio", format: "tecplot" },
+  xplt: { strategy: "meshio", format: "xplt" },
+  meshb: { strategy: "meshio", format: "medit" },
+  "t19": { strategy: "meshio", format: "marc_t19" },
+  "fil": { strategy: "meshio", format: "abaqus_fil" },
+  rst: { strategy: "meshio", format: "ansys_rst" },
+  d3plot: { strategy: "meshio", format: "lsdyna_d3plot" },
   // EnSight Gold is NOT routed, deliberately. The plumbing is all in place —
   // `meshioCompanions.ts` already carries `ensight: ["case", "geo"]` and
   // unit-tests it, and the format only became readable at all in meshio++
