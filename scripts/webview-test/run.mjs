@@ -2753,6 +2753,65 @@ test("coincident point: Add at an existing point's coordinates asks Collapse / K
   assert((await sentCount(page, "editsChanged")) === mid + 1 && op?.coincident === undefined && (await page.evaluate(() => document.getElementById("coincident-prompt") === null)), `a non-coincident point is pushed directly with no field (got ${JSON.stringify(op)})`);
 });
 
+test("coincident curve endpoint: a raw Line start on an existing point asks Collapse / Keep independent and records the choice", async (page) => {
+  await populate(page);
+  await enablePicking(page, "point");
+  const status = await runModeFilter(page, "point", "nearXY", "5");
+  assert(/matched (\d+) of/.test(status), `precondition: points were picked (got ${JSON.stringify(status)})`);
+  await page.click("#select-menu");
+  await sleep(150);
+  const openLine = async () => {
+    await page.evaluate(() => {
+      if (document.querySelector("#edits-params .point-ref-bar")) return;
+      [...document.querySelectorAll(".op-btn")].find((b) => b.querySelector(".op-name")?.textContent === "Line")?.click();
+    });
+    await sleep(200);
+  };
+  await openLine();
+  await page.evaluate(() => document.querySelector("#edits-params .point-ref-use")?.click());
+  await sleep(250);
+  const pos = await page.evaluate(() => [...document.querySelectorAll('#edits-params input[data-name="start"]')].map((i) => Number(i.value)));
+  assert(pos.length === 3 && pos.every(Number.isFinite), `precondition: an existing point's position was read (got ${JSON.stringify(pos)})`);
+  // Re-open the Line form fresh so both slots are raw coordinates, not point chips.
+  await page.evaluate(() => [...document.querySelectorAll(".op-btn")].find((b) => b.querySelector(".op-name")?.textContent === "Line")?.click());
+  await sleep(150);
+  await openLine();
+  const fill = (name, v) => page.evaluate(([n, vv]) => {
+    [...document.querySelectorAll(`#edits-params input[data-name="${n}"]`)].forEach((inp, k) => {
+      inp.value = String(vv[k]);
+      inp.dispatchEvent(new Event("input", { bubbles: true }));
+      inp.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+  }, [name, v]);
+  const addLine = () => page.evaluate(() => [...document.querySelectorAll("#edits-params .compose-apply")].find((b) => b.textContent === "Add")?.click());
+  const lastOp = () => page.evaluate(() => (window.__sent ?? []).findLast((x) => x.type === "editsChanged")?.ops.at(-1));
+  await fill("start", pos);
+  await fill("end", [pos[0] + 9000, pos[1] + 9000, pos[2] + 9000]);
+  const before = await sentCount(page, "editsChanged");
+  await addLine();
+  await sleep(300);
+  const shown = await page.evaluate(() => { const el = document.getElementById("coincident-prompt"); return { visible: !!el && el.offsetParent !== null, text: el?.textContent ?? "" }; });
+  assert(shown.visible && /Coincides with point-\d+/.test(shown.text), `the prompt is rendered for a raw coincident endpoint (got ${JSON.stringify(shown)})`);
+  assert((await sentCount(page, "editsChanged")) === before, "nothing is pushed until a choice is made");
+  await page.evaluate(() => [...document.querySelectorAll("#coincident-prompt button")].find((b) => b.textContent === "Collapse")?.click());
+  await sleep(300);
+  let op = await lastOp();
+  assert(op?.op === "addLine" && op.coincident === "reuse", `Collapse pushes addLine with coincident:"reuse" (got ${JSON.stringify(op)})`);
+  await addLine();
+  await sleep(300);
+  await page.evaluate(() => [...document.querySelectorAll("#coincident-prompt button")].find((b) => b.textContent === "Keep independent")?.click());
+  await sleep(300);
+  op = await lastOp();
+  assert(op?.op === "addLine" && op.coincident === "independent", `Keep independent pushes coincident:"independent" (got ${JSON.stringify(op)})`);
+  // Control: both endpoints far from every point -> pushed directly, no field.
+  await fill("start", [8000, 8000, 8000]);
+  const mid = await sentCount(page, "editsChanged");
+  await addLine();
+  await sleep(300);
+  op = await lastOp();
+  assert((await sentCount(page, "editsChanged")) === mid + 1 && op?.coincident === undefined && (await page.evaluate(() => document.getElementById("coincident-prompt") === null)), `a non-coincident line is pushed directly with no field (got ${JSON.stringify(op)})`);
+});
+
 /**
  * Point references on curve ops (the "Define lines, arcs and curves from
  * preexisting points" feature). Kernel resolution is live-verified in
@@ -3217,6 +3276,51 @@ test("context menu: Copy reference quotes file#id and the op count it is valid f
   assert(closed, "copying closes the menu");
   const status = await page.evaluate(() => document.getElementById("status")?.textContent ?? "");
   assert(/Copied reference/.test(status), `the status line confirms the copy (got ${JSON.stringify(status)})`);
+});
+
+test("context menu: Copy reference appends a stored query for a face produced by the last op", async (page) => {
+  await page.evaluate(() => {
+    window.__lastGeometry = null;
+    window.addEventListener("message", (e) => {
+      if (e.data?.type === "geometry") window.__lastGeometry = e.data;
+    });
+  });
+  await populate(page);
+  await enablePicking(page, "surface");
+  await page.evaluate(() => {
+    window.__clip = null;
+    navigator.clipboard.writeText = async (t) => { window.__clip = t; };
+  });
+  await post(page, { type: "documentInfo", name: "bull.stp", path: "/abs/work/a.stp", relativePath: "a.stp", format: "step", dirty: false, unsavedEdits: 0 });
+  const box = await viewportBox(page);
+  const copyOnce = async () => {
+    await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2, { button: "right" });
+    await sleep(250);
+    await page.evaluate(() => document.getElementById("ctx-copy-reference")?.click());
+    await sleep(400);
+    return page.evaluate(() => window.__clip);
+  };
+  const plain = await copyOnce();
+  const id = /#(face-\d+)/.exec(plain ?? "")?.[1];
+  assert(!!id && !/ query /.test(plain), `control: with no bucket the reference has no query (got ${JSON.stringify(plain)})`);
+  // Inject a bucket naming the clicked face, and answer the synthesize request like the host would.
+  await page.evaluate(() => {
+    const seen = new Set();
+    setInterval(() => {
+      for (const m of window.__sent ?? []) {
+        if (m.type !== "selectorSynthesizeRequest" || seen.has(m.requestId)) continue;
+        seen.add(m.requestId);
+        window.postMessage({ type: "selectorSynthesizeResult", requestId: m.requestId, results: m.entityIds.map((entityId) => ({ entityId, query: { kind: "bucket", op: m.op, role: m.role, index: 0 }, kind: "extrude" })) }, "*");
+      }
+    }, 30);
+  });
+  await page.evaluate((faceId) => window.postMessage({ ...window.__lastGeometry, opBuckets: [{ op: 0, kind: "extrude", roles: { side: [faceId] } }] }, "*"), id);
+  await sleep(250);
+  await page.evaluate(() => { window.__clip = null; });
+  const withQuery = await copyOnce();
+  assert(typeof withQuery === "string" && withQuery.includes(`#${id}`) && / — query \{.*"role":"side".*\}$/.test(withQuery), `the reference carries the stored query (got ${JSON.stringify(withQuery)})`);
+  const req = await page.evaluate(() => window.__sent.findLast((x) => x.type === "selectorSynthesizeRequest"));
+  assert(req?.op === 0 && req.role === "side" && req.entityIds.length === 1, `one synthesize request for the (op, role) group (got ${JSON.stringify(req)})`);
 });
 
 // ── Collapsible sidebar sections ──────────────────────────────────────────

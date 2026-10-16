@@ -27,7 +27,7 @@ Existing implementation references were checked against the repository where not
 
 **Extended 2026-10-09.** Extension, not a planning review. The lower command bar for manual geometry ops was added as 2.1, top of Ready product work; the eleven existing section-2 items shifted to 2.2–2.12 with anchors unchanged, so name-based links survive. Its command table and examples were then extended in place for approval. "Define lines, arcs and curves from preexisting points" was added as 2.0, above 2.1, as the section's top priority — deliberately out of the gapless 1..N sequence; it has since shipped and left this list (`CLAUDE.md`'s `point-N` references section), so section 2 again started at 2.1. The lower command bar has since shipped too (`CLAUDE.md`'s "Lower command bar" section), leaving the list; section 2 was renumbered from 2.1.
 
-**Extended 2026-10-09.** Extension, not a planning review. [Coincident-point prompt: collapse or keep independent](#coincident-point-collapse-or-independent) was added as 2.13 and a GiD-style geometry structure view (since shipped and removed) as 2.14, at the end of Ready product work; nothing was re-ranked.
+**Extended 2026-10-09.** Extension, not a planning review. The coincident-point prompt (since shipped and removed; see `CLAUDE.md`'s "Coincident points") was added as 2.13 and a GiD-style geometry structure view (since shipped and removed) as 2.14, at the end of Ready product work; nothing was re-ranked.
 
 **Extended 2026-10-12.** Extension, not a planning review: nothing was re-ranked, and every new item is appended at the end of its section so existing IDs and anchors are unchanged. Two outside projects were compared — [ReOpenSCAD](https://github.com/Matvey-Kuk/reopenscad) and [text-to-cad](https://github.com/earthtojake/text-to-cad) — and the [agent-CAD comparison](#agent-cad-comparison) below records what each feature became here. Added: 1.3 (OpenSCAD diagnostics), 2.12–2.24 (OpenSCAD include tracking, `color()` Parts, snapshot sections, clearance checks, material density, quotable references, MCP registration, MCP revision guard and agent-edit marking (both since shipped and removed), printability facts, draft analysis, hole callouts, reproducible exports), 3.12 (planar-facet promotion), 5.3 (MCP App inline preview) and 6.3 (kinematic mates). Evidence addenda went to 2.1 and 3.3, and four rejections to Non-goals.
 
@@ -191,7 +191,7 @@ Two projects built for AI agents were read for this extension:
 | Agent-readable busy errors ("retry, do not edit"); closed vocabularies | Both | Shipped as coded MCP errors: `isError` results carry `structuredContent {code, message, hint?, retryable}`, and an undeclared parameter produces a warning naming the nearest real key (warn-only; strict mode deferred) |
 | "Connect AI" setup snippets; one-install plugin | Both | [Register the MCP server with VS Code](#register-mcp-server-with-vscode) |
 | `ui://` MCP-App inline viewer | Both | [MCP App inline preview](#mcp-app-inline-preview) (probe) |
-| `cad_view` returns the user's selection as quotable refs | text-to-cad | [Quotable entity references](#quotable-entity-references) (Copy reference shipped; stored queries remain) |
+| `cad_view` returns the user's selection as quotable refs | text-to-cad | Shipped: Copy reference quotes `file#id`, facts, the op count and a stored query (`CLAUDE.md`'s Selection bullet) |
 | Snapshot presets (xray, hidden-line) and section mode | text-to-cad | Shipped: `render_snapshot` / `screenshot_shape` take all five display modes and an optional section `clip` (the viewer's own clip plane, solid cap included) |
 | `mass_properties` with density | text-to-cad | Shipped: `Part.density` gives BOM mass and a per-solid `massGrams` (mass-weighted centre and density-weighted inertia remain out) |
 | dfam-check (overhangs, wall thickness, support, orientations, plate fit) | text-to-cad, ReOpenSCAD (plates) | [Printability facts report](#printability-facts-report) |
@@ -296,25 +296,6 @@ These are outcome groupings, not release numbers. Independent small items can sh
 - **Done so far:** [A cantilever beam](/tutorials/cantilever) — a 100 × 10 × 10 box, `FixedEnd` and `LoadFace` Parts, an optional steel density, and an MDPA export with a handoff manifest. `mcp:smoke` pins it on the live kernel: the beam's volume is exactly 10 000 mm³, and every node of each `SubModelPart` sits exactly on its end plane (x = −50 / +50).
 - **What is left (S):** the cross-repository check — open the exported `.mdpa` in VSCode-MDPA-Preview and confirm both SubModelParts populate. It needs that extension and is not exercised from this repository.
 - **Done when:** that check passes, and KKSS's tutorial links to the page.
-
-#### 2.8 Coincident-point prompt: curve endpoints typed raw {#coincident-point-collapse-or-independent}
-
-*Area: Geometry, Parity. Effort: S.*
-
-- **Done so far:** `addPoint` records `coincident: "reuse" | "independent"`; the fold detects a coincident `point-N` (same `1e-3 × bboxDiagonal` tolerance as `point-N` references), reports it as an op `note` in `apply_edit_ops` warnings and the response entry, and the point form asks Collapse / Keep independent inline. See `CLAUDE.md`'s "Coincident points".
-- **What is left (S):** the same choice where a **raw coordinate typed into a curve op's endpoint** lands on an existing point. Today those slots silently create their own edge endpoints (use a `point-N` slot to share). Needs a probe of whether the curve builders' vertices merge in `collectVertices`, then a note (and a per-slot choice) on the curve ops.
-- **Done when:** a curve endpoint typed at an existing point's coordinates reports the coincidence, and the chosen behaviour is recorded and replays deterministically.
-- **Out of scope:** automatic sewing or healing of near-coincident geometry (the explicit repair op); a general coincident-entity merge beyond points; moving either point (collapse reuses the id).
-
-#### 2.15 Quotable entity references for agent chats {#quotable-entity-references}
-
-*Area: Parity. Effort: S.*
-
-- **Evidence:** the MCP server runs in a separate process from VS Code, so an agent cannot see what the user selected. Telling it means reading an id off the hover tooltip and typing it. text-to-cad's `cad_view` returns the user's selection as quotable refs (`/abs/path.step#o1.2.f7`), tied to one saved revision with no fuzzy matching.
-- **Done so far:** a **Copy reference** row in the right-click context menu writes one line per entity — workspace-relative path and id, the pill's facts when already fetched, and the op-list length the id is valid against (`examples/STP/bull.stp#face-12 — planar, 8,119.27 mm² (valid for 3 ops)`). See `CLAUDE.md`'s "Quotable entity references".
-- **What is left (S):** append the stored-query JSON (via `synthesizeSelector`, one `selectorSynthesizeRequest` per copied face that has a producing-op bucket) so the reference survives renumbering.
-- **Done when:** a pasted reference resolves through `inspect` to the same face, and a reference copied for a face with a producing op carries a query that still resolves after an unrelated topology-changing edit.
-- **Out of scope:** a live channel from the viewer to the MCP server.
 
 #### 2.16 Register the MCP server with VS Code and offer client setup snippets {#register-mcp-server-with-vscode}
 
@@ -876,7 +857,7 @@ The MMG core probe is complete; its working volume/surface paths and negative op
   - **Pass:** at least one host renders it within the ceiling → admitted.
   - **Fail:** no host renders it, or the SDK cannot declare it → recorded; PNGs remain the answer.
 - **If admitted (M):** a `preview` resource offered beside `render_snapshot` (not replacing it — the PNGs are what an agent can *look at*), with a size cap that falls back to the images.
-- **Out of scope:** reporting the user's camera or selection back to the agent through the page (see [quotable references](#quotable-entity-references) for the cheap version).
+- **Out of scope:** reporting the user's camera or selection back to the agent through the page (the shipped Copy reference is the cheap version).
 
 ### 6. Strategic — multi-phase bets {#strategic-—-multi-phase-bets}
 
