@@ -326,7 +326,7 @@ export async function convertToStlBoundary(
     // linearized in place instead, and only the resulting triangle blocks are
     // emitted (the edge lines must not reach the STL fan-triangulator, which
     // refuses a 2-node block).
-    let boundary: { points: Float64Array; dim: number };
+    let boundary: MeshioMesh;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     let blocks: any[];
     if (meshioFormat === "cad_json") {

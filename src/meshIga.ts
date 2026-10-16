@@ -111,7 +111,7 @@ export interface IgaRefineResult {
 
 export interface IgaEvaluateOptions {
   /** 1 adds first derivatives and (a surface's) unit normals. */
-  derivatives?: 0 | 1;
+  derivatives?: number;
   /** Points per knot span a trimming curve is sampled at (2..4096). */
   trimSamples?: number;
 }
