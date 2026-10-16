@@ -161,8 +161,8 @@ describe("routeFile", () => {
     expect(new Set(MESHIO_FORMATS).size).toBe(MESHIO_FORMATS.length);
   });
 
-  it("AMBIGUOUS_MESHIO_EXTENSIONS names exactly msh, inp and bdf, each with a non-empty caveat", () => {
-    expect(new Set(AMBIGUOUS_MESHIO_EXTENSIONS.keys())).toEqual(new Set(["msh", "inp", "bdf"]));
+  it("AMBIGUOUS_MESHIO_EXTENSIONS names exactly msh, inp, bdf and rst, each with a non-empty caveat", () => {
+    expect(new Set(AMBIGUOUS_MESHIO_EXTENSIONS.keys())).toEqual(new Set(["msh", "inp", "bdf", "rst"]));
     for (const message of AMBIGUOUS_MESHIO_EXTENSIONS.values()) {
       expect(message.length).toBeGreaterThan(0);
     }

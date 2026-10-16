@@ -187,6 +187,68 @@ export const MESH_EXPORT_FORMATS = [
     filterLabel: "libMesh Mesh",
     via: "meshio",
   },
+  // meshio++ 17.3.0's new binary writers (PR #163). Each was verified live
+  // against the 17.3.0 FULL artifact, exactly like the eight above: fed this
+  // pipeline's real generateMesh()-shaped MSH 4.1 (Mesh.SaveAll vertex/line
+  // cells included — a bar Gmsh's OWN tecplot writer failed; meshio++'s
+  // binary .plt writer passes it), the writer finished, the result read
+  // back through meshio++'s own reader with the tetra/triangle/line classes
+  // intact, and the extension routes the result for a full re-open (see
+  // fileRouter's batch comment for the survived/dropped block layout per
+  // format and for the four formats deliberately NOT added — szplt/vtx
+  // (build lacks TecIO/ADIOS2, convert refuses by name), neuroglancer
+  // (round-trips vertex points only) and nastran_h5 (a `.h5` write target
+  // would collide with the XDMF companion convention and a ubiquitous
+  // extension this table cannot content-sniff).
+  {
+    id: "tecplot",
+    label: "Tecplot binary (.plt)",
+    extension: "plt",
+    filterLabel: "Tecplot Binary Mesh",
+    via: "meshio",
+  },
+  {
+    id: "xplt",
+    label: "FEBio plot (.xplt)",
+    extension: "xplt",
+    filterLabel: "FEBio Plot Mesh",
+    via: "meshio",
+  },
+  {
+    id: "medit",
+    label: "INRIA Medit binary (.meshb)",
+    extension: "meshb",
+    filterLabel: "INRIA Medit Binary Mesh",
+    via: "meshio",
+  },
+  {
+    id: "marc_t19",
+    label: "MSC Marc post file (.t19)",
+    extension: "t19",
+    filterLabel: "MSC Marc Post Mesh",
+    via: "meshio",
+  },
+  {
+    id: "abaqus_fil",
+    label: "Abaqus results (.fil)",
+    extension: "fil",
+    filterLabel: "Abaqus Results",
+    via: "meshio",
+  },
+  {
+    id: "ansys_rst",
+    label: "Ansys MAPDL results (.rst)",
+    extension: "rst",
+    filterLabel: "Ansys MAPDL Results",
+    via: "meshio",
+  },
+  {
+    id: "lsdyna_d3plot",
+    label: "LS-DYNA d3plot (.d3plot)",
+    extension: "d3plot",
+    filterLabel: "LS-DYNA d3plot Mesh",
+    via: "meshio",
+  },
 ] as const satisfies readonly MeshExportFormat[];
 
 export type MeshExportFormatId = (typeof MESH_EXPORT_FORMATS)[number]["id"];

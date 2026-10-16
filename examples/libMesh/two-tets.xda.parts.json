@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "source": "two-tets.xda",
+  "parts": [
+    {
+      "name": "subdomain_0",
+      "color": "#e6194b",
+      "volumes": [],
+      "surfaces": [
+        "node-0/face-0",
+        "node-0/face-1",
+        "node-0/face-2",
+        "node-0/face-3",
+        "node-0/face-4",
+        "node-0/face-5"
+      ],
+      "lines": [],
+      "points": []
+    }
+  ]
+}
