@@ -53,8 +53,9 @@ node_modules/**
 # ESM kernels are staged beside the bundles; inventory: scripts/runtimeAssets.mjs.
 !dist/meshio/package.json
 !dist/meshio/src/index.mjs
-!dist/meshio/dist/meshioplusplus_wasm.mjs
-!dist/meshio/dist/meshioplusplus_wasm.wasm
+!dist/meshio/THIRD_PARTY_NOTICES.md
+!dist/meshio/dist/meshioplusplus_wasm_full.mjs
+!dist/meshio/dist/meshioplusplus_wasm_full.wasm
 !dist/ftetwild/package.json
 !dist/ftetwild/index.js
 !dist/ftetwild/dist/floattetwild.serial.mjs

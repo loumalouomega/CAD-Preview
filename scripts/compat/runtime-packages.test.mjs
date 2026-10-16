@@ -77,6 +77,10 @@ describe('CJS runtime package loading without loader aliases', () => {
     cpSync('examples/MED/two-material-tets.med', join(dir, 'input.med'));
     success(run(dir, `
       const m = await api.getMeshio(); assert.equal(m.parallelBackend(), 'seq');
+      // The full artifact is the only one staged: OpenCASCADE, the zstd/lz4
+      // VTK XML codecs and bzip2 must all be in the loaded module.
+      assert.equal(m.buildFlavour(), 'full', 'staged artifact is the full one');
+      for (const probe of ['hasOcct', 'hasZstd', 'hasLz4', 'hasBzip2']) assert.equal(m[probe](), true, probe);
       const bytes = require('node:fs').readFileSync(require('node:path').join(__dirname, 'input.med'));
       m.FS.writeFile('/input.med', bytes);
       const mesh = m.readMesh('/input.med', 'med');
@@ -98,6 +102,24 @@ describe('CJS runtime package loading without loader aliases', () => {
       m.FS.writeFile('/input.off', 'OFF\\n4 4 0\\n0 0 0\\n1 0 0\\n0 1 0\\n0 0 1\\n3 0 2 1\\n3 0 1 3\\n3 0 3 2\\n3 1 2 3\\n');
       m.convert('/input.off', '/output.stl', { inFormat: 'off', outFormat: 'stl' });
       assert.ok(m.FS.readFile('/output.stl').length > 84);
+      // The full artifact's own capabilities: VTK XML zstd blocks, bzip2
+      // libMesh, and fit_cad (mesh -> analytic CAD) end to end on a cube.
+      const tet = { points: new Float64Array([0,0,0,1,0,0,0,1,0,0,0,1]), dim: 3,
+        cells: [{ type: 'tetra', data: new Int32Array([0,1,2,3]), nodesPerCell: 4 }] };
+      m.writeMesh('/codec.vtu', tet, 'vtu', { encoding: 'binary', codec: 'zstd' });
+      assert.ok(new TextDecoder().decode(m.FS.readFile('/codec.vtu')).includes('vtkZSTDDataCompressor'));
+      m.writeMesh('/compressed.xda.bz2', tet);
+      assert.equal(m.readMesh('/compressed.xda.bz2').cells[0].type, 'tetra');
+      m.FS.writeFile('/cube.off', 'OFF\\n8 12 0\\n0 0 0\\n1 0 0\\n1 1 0\\n0 1 0\\n0 0 1\\n1 0 1\\n1 1 1\\n0 1 1\\n3 0 2 1\\n3 0 3 2\\n3 4 5 6\\n3 4 6 7\\n3 0 1 5\\n3 0 5 4\\n3 1 2 6\\n3 1 6 5\\n3 2 3 7\\n3 2 7 6\\n3 3 0 4\\n3 3 4 7\\n');
+      m.convert('/cube.off', '/cube.stl', { inFormat: 'off', outFormat: 'stl' });
+      const skin = m.readMesh('/cube.stl');
+      const fitted = m.fitPrimitives(m.segment(skin).mesh).mesh;
+      const fit = m.fitCad(fitted, { stepPath: '/fit.step' });
+      assert.equal(fit.valid, true);
+      assert.equal(fit.numSolids, 1);
+      assert.equal(fit.numPlane, 6);
+      assert.ok(Math.abs(fit.volume - 1) < 1e-6, 'cube volume');
+      assert.ok(m.FS.readFile('/fit.step').length > 0);
       const result = await api.tetrahedralize({ positions: new Float32Array([0,0,0,1,0,0,0,1,0,0,0,1]), indices: new Uint32Array([0,2,1,0,1,3,0,3,2,1,2,3]) }, { idealEdgeLengthRel: 0.5, maxIts: 2 });
       assert.ok(result.tets.length > 0); assert.ok(result.vertices.length > 0);
     `));

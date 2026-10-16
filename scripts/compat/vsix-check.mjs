@@ -82,7 +82,11 @@ const required = [...new Set([
 
 const forbidden = [
   /^src\//,
+  // Only the full pair is staged; the lean pair and both `_mt` flavours must
+  // never ship (see scripts/runtimeAssets.mjs).
+  /^dist\/meshio\/dist\/meshioplusplus_wasm\.(?:mjs|wasm)$/,
   /^dist\/meshio\/dist\/meshioplusplus_wasm_mt\./,
+  /^dist\/meshio\/dist\/meshioplusplus_wasm_full_mt\./,
   /^node_modules\/(?:@meshioplusplus\/wasm|float-tetwild-wasm)\//,
   /^examples\//,
   /^scripts\//,
