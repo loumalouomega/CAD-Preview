@@ -92,6 +92,10 @@ The extension host is a Node.js process. These modules run there — never in th
 | `src/meshDeviationHost.ts` | Kernel half: reference = the CAD's fine tessellation (per-face regions) or raw STL; mesh = a `generateMesh` run with the same inputs — a `Pipeline` key (`measureMeshDeviation`) |
 | `src/passageAnalysis.ts` | Pure narrow-gap core: `findPassages` (coaxial-cylinder annuli with axial overlap, facing-plane slots with a true in-plane triangle overlap test, void-only via outward normals, requested size from Parts/global) (unit-tested) |
 | `src/passageAnalysisHost.ts` | Kernel half: measures each face (analytic `faceSurfaceInfo`, orientation-aware winding normal, tessellation points) — a `Pipeline` key (`analyzePassages`) |
+| `src/printability.ts` | Pure printability core: `analyzePrintability` (bodies and closure, six-orientation overhang / plate contact / support-volume upper bound / plate fit, sampled wall thickness by inward rays, units-suspect flag, `notChecked` list) and `overhangFlags` (per-triangle overhang flags for an overlay). Facts only; a cavity shell keeps its winding, an inside-out body is flipped |
+| `src/triangleRay.ts` | Pure uniform-grid ray caster (`buildTriangleGrid`, `castRay`): Möller–Trumbore with a 3D DDA walk; keeps `three-mesh-bvh` webview-only |
+| `src/printabilityHost.ts` | Kernel half: any `CompareSource` → welded triangles (B-rep at `fine` tessellation with edits baked) → `analyzePrintability`, optional overhang overlay data — a `Pipeline` key (`checkPrintability`) |
+| `src/processLimits.ts` | Pure parse/resolve of the bundled `process-limits/starter-limits.json` (processes with a stated source, build plates); explicit caller numbers win |
 | `src/meshBudget.ts` | Pure, calibrated mesh size/memory estimate shared by the FE Mesh panel and `estimate_mesh_budget` (`estimateMeshBudget`, `budgetWarning`, formatters; raw calibration rows in `scripts/perf/mesh-budget-calibration.json`) (unit-tested against those rows) |
 | `src/meshQualityGate.ts` | Pure shape of meshio++'s quality-gate result: `normalizeQualityGate` (bigint-safe, flags a clause that evaluated no cell as `vacuous`) and `describeGateCheck`; shared by the FE Mesh Quality-gate row and `check_mesh_quality` |
 | `src/nonce.ts` | Shared CSP script-nonce generator, used by every webview HTML builder |
@@ -111,6 +115,7 @@ The extension host is a Node.js process. These modules run there — never in th
 | `src/objSolidSignatures.ts` | Wires `objParser.ts` + `meshComponents.ts` into `SolidSignature[]` for Compare Models' OBJ side (pure, unit-tested) |
 | `src/plyParser.ts` | Pure host-side PLY parser (ASCII + both binary endiannesses, one shared header parser) into a flat indexed mesh (vscode/OCCT/THREE-free, unit-tested) |
 | `src/plySolidSignatures.ts` | Wires `plyParser.ts` + `meshComponents.ts` into `SolidSignature[]` for Compare Models' PLY side (pure, unit-tested) |
+| `src/amfUnits.ts` | AMF `unit` reader (`amfDeclaredUnit`, zip-aware) — pure; seeds the Units dropdown only, since three's `AMFLoader` already scales to millimetres |
 | `src/colladaUnits.ts` | Collada `<unit meter>` readers (`colladaMetresPerUnit`, `colladaMmPerUnit`, `colladaDeclaredUnit`) — pure; the loader itself is three's `ColladaLoader` in the webview only |
 | `src/threeMf.ts` | 3MF writer (`build3mf`, hand-rolled on `fflate`, byte-stable; optional per-triangle `colors` become one `<basematerials>`) and unit readers (`threeMfMmPerUnit`, `threeMfDeclaredUnit`) — pure; the loader itself is three's `3MFLoader` in the webview only |
 | `src/gltfParser.ts` | Pure host-side glTF 2.0 / GLB parser (geometry only — node world matrices applied, then welded) into a flat indexed mesh (vscode/OCCT/THREE-free, unit-tested **and cross-validated against three.js's own `GLTFLoader`**) |
@@ -777,6 +782,7 @@ Returns `undefined` for unrecognized extensions (the extension never opens those
 | `.gltf`, `.glb` | `three`  | `gltf`   |
 | `.3mf`          | `three`  | `3mf` (display-only on the host) |
 | `.dae`          | `three`  | `dae` (import-only; display-only on the host) |
+| `.amf`          | `three`  | `amf` (import-only; display-only on the host) |
 | `.vtk`          | `meshio` | `vtk`    |
 | `.vtu`          | `meshio` | `vtu`    |
 | `.med`          | `meshio` | `med`    |

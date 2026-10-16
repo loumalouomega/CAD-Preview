@@ -281,6 +281,24 @@ export function viewerBodyHtml(): string {
         </div>
         <div id="passages-body"></div>
       </div>
+      <div id="printability-panel" class="side-section" hidden>
+        <div id="printability-header" class="panel-header">
+          <button class="panel-chevron" type="button" aria-expanded="true" title="Collapse section">${glyph("chevronDown")}</button>
+          <span class="panel-icon" aria-hidden="true">${glyph("layersDim")}</span>
+          <span id="printability-title" class="panel-title">Printability</span>
+          <div id="printability-actions">
+            <button id="printability-check" title="Measure overhang area, sampled wall thickness and build-plate fit. Facts only: no pass/fail verdict, and the rules it cannot measure are listed as not checked">${icon("generate")} Check</button>
+            <button id="printability-clear" title="Remove the overhang colouring from the view">Clear</button>
+          </div>
+        </div>
+        <div id="printability-options">
+          <label title="Build direction: the face pointing away from the plate. The overhang colouring shows this direction">up <select id="printability-up"><option>+Z</option><option>-Z</option><option>+Y</option><option>-Y</option><option>+X</option><option>-X</option></select></label>
+          <label title="Largest overhang angle from vertical (degrees); blank uses the process limit, else 45">limit° <input id="printability-limit" type="text" inputmode="decimal" size="3" placeholder="45" /></label>
+          <label title="Bundled starter limits (a typical design-guide figure, not a standard); each row names its source">process <select id="printability-process"><option value="">none</option><option value="fdm">FDM</option><option value="sla">SLA</option><option value="sls">SLS</option><option value="mjf">MJF</option></select></label>
+          <label title="Bundled build plate sizes">plate <select id="printability-plate"><option value="">none</option><option value="ender-3">Ender-3</option><option value="prusa-mk4">Prusa MK4</option><option value="bambu-x1">Bambu X1</option><option value="form-3">Form 3</option></select></label>
+        </div>
+        <div id="printability-body"></div>
+      </div>
       <div class="advanced-subhead">Library</div>
       <div id="macros-panel" class="side-section">
         <div id="macros-header" class="panel-header">

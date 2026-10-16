@@ -230,10 +230,31 @@ test("the extension is installed, activates, and registers its commands", async 
     "cad-preview.open", "cad-preview.compareModels", "cad-preview.whatsNew",
     "cad-preview.export", "cad-preview.saveAs", "cad-preview.exportSvg",
     "cad-preview.exportDxf", "cad-preview.savePreprocess", "cad-preview.loadPreprocess",
-    "cad-preview.refreshModels", "cad-preview.new",
+    "cad-preview.refreshModels", "cad-preview.new", "cad-preview.connectAgent",
   ]) {
     assert(commands.includes(id), `command ${id} is registered`);
   }
+});
+
+test("Connect an agent copies a registration snippet naming the installed MCP server", async () => {
+  const ext = vscode.extensions.getExtension(EXTENSION_ID);
+  assert(!!ext, "the extension is installed");
+  const record = await withModals([pick("Cursor")], async () => {
+    await vscode.commands.executeCommand("cad-preview.connectAgent");
+  });
+  assert(
+    (record.quickPicks[0]?.labels ?? []).some((l) => l.includes("Claude Code")),
+    `the picker offers Claude Code (offered ${JSON.stringify(record.quickPicks[0]?.labels)})`
+  );
+  const text = await vscode.env.clipboard.readText();
+  const doc = JSON.parse(text) as { mcpServers: Record<string, { command: string; args: string[]; env: Record<string, string> }> };
+  const server = doc.mcpServers["cad-preview"];
+  assert(!!server && server.args[0]?.endsWith("mcp-server.js"), `the snippet points at dist/mcp-server.js (${text})`);
+  assert(
+    server.args[0] === path.join(ext!.extensionPath, "dist", "mcp-server.js"),
+    "the path is the installed extension's own dist/mcp-server.js"
+  );
+  assert(server.env.ELECTRON_RUN_AS_NODE === "1", "the snippet sets ELECTRON_RUN_AS_NODE=1");
 });
 
 /**
@@ -807,6 +828,33 @@ test("Compressed glTF (Draco and meshopt) loads under the real webview CSP", asy
   for (const [name, edge] of [["cube.dae", 10], ["cube-metre.dae", 10], ["cube-inch.dae", 25.4]] as const) {
     const staged = stage(path.join(ROOT, "examples", "Collada", name));
     const out = path.join(path.dirname(staged), "from-dae.stl");
+    assert(await openDocument(staged), `${name} opens`);
+    await withModals([pick("STL"), pick("Native"), save(out)], async () => {
+      await vscode.commands.executeCommand("cad-preview.export");
+      await waitForFile(out);
+    });
+    const buf = fs.readFileSync(out);
+    const count = buf.length >= 84 ? buf.readUInt32LE(80) : 0;
+    assert(count === 12, `${name}: the displayed model carries the cube's 12 triangles (got ${count})`);
+    let max = -Infinity;
+    let min = Infinity;
+    for (let i = 0; i < count; i++) {
+      for (let v = 0; v < 3; v++) {
+        const x = buf.readFloatLE(84 + i * 50 + 12 + v * 12);
+        max = Math.max(max, x);
+        min = Math.min(min, x);
+      }
+    }
+    assert(Math.abs(max - min - edge) < 1e-3, `${name}: the cube measures ${edge} mm along x (got ${max - min})`);
+    await closeAll();
+  }
+
+  // AMF rides the same case too: `AMFLoader` needs `DOMParser`, and (unlike
+  // 3MF/Collada) it already scales to mm itself, so the inch file pins that the
+  // viewer does not scale a second time.
+  for (const [name, edge] of [["cube.amf", 10], ["cube-inch.amf", 25.4], ["cube-zip.amf", 10]] as const) {
+    const staged = stage(path.join(ROOT, "examples", "AMF", name));
+    const out = path.join(path.dirname(staged), "from-amf.stl");
     assert(await openDocument(staged), `${name} opens`);
     await withModals([pick("STL"), pick("Native"), save(out)], async () => {
       await vscode.commands.executeCommand("cad-preview.export");

@@ -97,6 +97,7 @@ export const KERNELS_BY_FUNCTION: Record<keyof DocumentPipeline, readonly Kernel
   buildPrimitivesFile: O,
   exportTessellatedStl: O,
   analyzePassages: O,
+  checkPrintability: O, // OCCT only for a B-rep source — listed by what it DEFINITELY touches
   measureMeshDeviation: G, // OCCT only for a B-rep reference — listed by what it DEFINITELY touches
   bakeMeshEdits: NONE, // pure three.js mesh-edit replay (headless mesh-edit replay)
   decodeGltfGeometry: NONE, // Draco / meshopt decoders: their own WASM, not one of the four tracked kernels

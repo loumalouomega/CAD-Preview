@@ -3406,7 +3406,7 @@ test("collapse: hides EVERY body sibling, not just #x-body", async (page) => {
   );
 });
 
-test("advanced: the group ships collapsed, hides its eight children, and opens on its chevron", async (page) => {
+test("advanced: the group ships collapsed, hides its ten children, and opens on its chevron", async (page) => {
   await populate(page);
 
   // Collapsed by default is the entire point: the sidebar's top level should
@@ -3414,7 +3414,7 @@ test("advanced: the group ships collapsed, hides its eight children, and opens o
   const shut = await page.evaluate(() => {
     const ids = [
       "mass-panel", "clash-panel", "brep-health-panel", "mesh-health-panel", "region-fit-panel",
-      "primitives-panel", "passages-panel", "macros-panel", "standard-parts-panel",
+      "primitives-panel", "passages-panel", "printability-panel", "macros-panel", "standard-parts-panel",
     ];
     return {
       collapsed: document.getElementById("advanced-group").classList.contains("collapsed"),
@@ -3430,13 +3430,13 @@ test("advanced: the group ships collapsed, hides its eight children, and opens o
   assert(shut.collapsed, "the group starts collapsed");
   assert(shut.headerShown, "its header is still visible while collapsed");
   assert(!shut.bodyShown, "its body is hidden while collapsed");
-  assert(!shut.anyChildShown, "none of the nine children render while it is collapsed");
+  assert(!shut.anyChildShown, "none of the ten children render while it is collapsed");
   assert(shut.topLevel, "Components/Parts/Edits/FE Mesh stayed OUT of the group");
 
   // The badge must report availability, not the raw child count: on this
   // B-rep fixture Mesh Health and Region fit gate themselves out.
   const badge = await page.evaluate(() => document.getElementById("advanced-count").textContent.trim());
-  assert(badge === "7 of 9", `the badge counts only the available children (got ${JSON.stringify(badge)})`);
+  assert(badge === "8 of 10", `the badge counts only the available children (got ${JSON.stringify(badge)})`);
 
   await openAdvanced(page);
   const open = await page.evaluate(() => ({
@@ -3878,6 +3878,76 @@ test("passages: Analyze posts targetCells; the reply renders findings; Apply cre
   const made = parts.find((p) => p.name === "Passage face-3/face-4");
   assert(after > before && made, `Apply posts partsChanged with a passage Part (got ${JSON.stringify(parts.map((p) => p.name))})`);
   assert(made && made.surfaces.includes("face-3") && made.surfaces.includes("face-4") && Math.abs(made.meshSize - 1 / 3) < 1e-12, `the Part carries both faces and the suggested size (got ${JSON.stringify(made)})`);
+});
+
+const PRINTABILITY_REPORT = {
+  triangles: 12,
+  vertices: 8,
+  bodyCount: 2,
+  bodies: [
+    { index: 0, triangles: 12, closed: true, freeEdges: 0, nonManifoldEdges: 0, volume: 1000, bounds: null, wall: { samples: 100, noHit: 0, min: 1, p5: 1, median: 10, belowMinWall: 7 } },
+    { index: 1, triangles: 12, closed: false, freeEdges: 4, nonManifoldEdges: 0, volume: 8, bounds: null, wall: { samples: 0, noHit: 0, min: null, p5: null, median: null } },
+  ],
+  bounds: null,
+  unitsSuspect: { suspect: false, diagonal: 17 },
+  overhangLimitDeg: 45,
+  orientations: ["+X", "-X", "+Y", "-Y", "+Z", "-Z"].map((up, i) => ({
+    up, overhangArea: i === 4 ? 200 : 0, plateContactArea: 100, overhangTriangles: 4, supportVolumeUpperBound: 123, buildHeight: 10, footprint: [10, 10], fitsPlate: i !== 0,
+  })),
+  sampling: { requested: 2000, used: 100, capped: false, note: "sampled" },
+  process: { name: "fdm", minWallMm: 0.8, maxOverhangDeg: 45, source: "typical FDM guidance" },
+  notChecked: [{ rule: "bridge span", checked: false, reason: "span length between supports is not measured" }],
+  warnings: ["At least one body is not a closed manifold"],
+};
+
+test("printability: Check posts the typed options; the reply renders facts + not-checked rows and colours the view; a stale reply and Clear are honoured", async (page) => {
+  await populate(page);
+  await openAdvanced(page);
+  assert(await page.evaluate(() => document.getElementById("printability-panel")?.offsetParent != null), "the Printability section is available for a B-rep source");
+  await page.selectOption("#printability-process", "fdm");
+  await page.selectOption("#printability-plate", "prusa-mk4");
+  await page.selectOption("#printability-up", "+Z");
+  await page.fill("#printability-limit", "30");
+  await page.click("#printability-check");
+  await sleep(200);
+  const req = await page.evaluate(() => (window.__sent ?? []).filter((m) => m.type === "printabilityRequest").at(-1) ?? null);
+  assert(req !== null && req.process === "fdm" && req.plate === "prusa-mk4" && req.up === "+Z" && req.overhangLimitDeg === 30, `Check posts the typed options (got ${JSON.stringify(req)})`);
+  // Check is disabled while a request is in flight: answer the first one with an error (which also proves the error path re-enables it).
+  await page.evaluate((id) => window.postMessage({ type: "printabilityError", requestId: id, message: "boom" }, "*"), req.requestId);
+  await sleep(200);
+  assert(/boom/.test(await page.evaluate(() => document.getElementById("printability-body").textContent)) && !(await page.evaluate(() => document.getElementById("printability-check").disabled)), "an error reply is shown and re-enables Check");
+  await page.fill("#printability-limit", "95");
+  await page.click("#printability-check");
+  assert(/between 0 and 90/.test(await page.evaluate(() => document.getElementById("printability-body").textContent)), "an out-of-range limit is refused in the panel, not sent");
+  const sentBefore = await page.evaluate(() => (window.__sent ?? []).filter((m) => m.type === "printabilityRequest").length);
+  assert(sentBefore === 1, `the refused click posted nothing (got ${sentBefore} requests)`);
+
+  // 12 triangles x 3 corners; a flat overlay is enough for the plumbing check.
+  const positions = Buffer.from(new Float32Array(12 * 9).fill(1).buffer).toString("base64");
+  const values = Buffer.from(new Float32Array(12 * 3).fill(1).buffer).toString("base64");
+  await page.evaluate(([report, positions, values]) => window.postMessage({ type: "printabilityResult", requestId: "stale", report, up: "+Z", positions, values }, "*"), [PRINTABILITY_REPORT, positions, values]);
+  await sleep(150);
+  assert(!/Body 0/.test(await page.evaluate(() => document.getElementById("printability-body").textContent)), "a stale reply renders nothing");
+
+  await page.fill("#printability-limit", "30");
+  await page.click("#printability-check");
+  const req2 = await page.evaluate(() => (window.__sent ?? []).filter((m) => m.type === "printabilityRequest").at(-1));
+  await page.evaluate(([id, report, positions, values]) => window.postMessage({ type: "printabilityResult", requestId: id, report, up: "+Z", positions, values }, "*"), [req2.requestId, PRINTABILITY_REPORT, positions, values]);
+  await sleep(250);
+  const view = await page.evaluate(() => ({
+    rows: [...document.querySelectorAll(".printability-row")].map((r) => ({ warn: r.classList.contains("warn"), text: r.textContent })),
+    head: document.querySelector("#printability-body .printability-message")?.textContent ?? "",
+  }));
+  const text = view.rows.map((r) => r.text).join("\n");
+  assert(/Body 0 · closed/.test(text) && /wall min 1 · p5 1 · median 10 mm \(100 samples\) · 7 under the process minimum/.test(text), `the closed body shows its sampled wall facts (got ${JSON.stringify(text.slice(0, 260))})`);
+  assert(view.rows.find((r) => /Body 1 · open \(4 free/.test(r.text))?.warn === true, "an open body is flagged");
+  assert(/Build \+Z .*overhang 200 mm² .*fits the plate/.test(text), "the chosen direction's overhang and plate fit render");
+  assert(/Not checked: bridge span/.test(text), "an unmeasured rule is listed as not checked, not passed");
+  assert(/sampled/.test(view.head) && /fdm/.test(view.head), "the header labels the wall figures as sampled and names the process");
+  // The overlay took the colour-field slot; Clear releases it (a later stale reply must not re-arm it).
+  await page.click("#printability-clear");
+  await sleep(150);
+  assert(!(await page.evaluate(() => window.__sent.some((m) => m.type === "error"))), "Clear raises no error");
 });
 
 test("primitives: reply renders recognized + unrecognized rows; a stale reply is ignored", async (page) => {
@@ -7656,6 +7726,61 @@ test("Collada colour: a material colour renders, an unbound file stays the palet
   assert(plain.red < MAX_STRAY && plain.green < MAX_STRAY && plain.blue < MAX_STRAY, `an uncoloured Collada file shows no file colour (got ${JSON.stringify(plain)})`);
 
   await openColoured(page, "/examples/Collada/cube-colour.dae", "dae");
+  await lookFrom(page, ISO_FRONT);
+  const ids = Array.from({ length: 8 }, (_, i) => `node-${i}`);
+  await post(page, { type: "parts", parts: [{ name: "Skin", color: "#ff00ff", volumes: ids, surfaces: [], lines: [], points: [] }] });
+  await sleep(600);
+  const painted = await hueCounts(page);
+  assert(painted.magenta > 3 * MIN_PX, `a Part colour covers the visible faces (got ${JSON.stringify(painted)})`);
+  assert(painted.red < MAX_STRAY, `and replaces the file colour rather than tinting it (got ${JSON.stringify(painted)})`);
+  await post(page, { type: "parts", parts: [] });
+  await sleep(600);
+  const restored = await hueCounts(page);
+  assert(restored.red > 3 * MIN_PX && restored.magenta < MAX_STRAY, `removing the Part restores the file colour (got ${JSON.stringify(restored)})`);
+});
+
+test("AMF: a committed cube (plain and zipped) opens, renders and exports to STL, and the export reopens with the same triangle count", async (page) => {
+  for (const file of ["cube.amf", "cube-zip.amf"]) {
+    await openColoured(page, `/examples/AMF/${file}`, "amf");
+    const status = await page.evaluate(() => document.getElementById("status").textContent);
+    assert(!/fail|error/i.test(status), `${file}: no load error is reported (status ${JSON.stringify(status)})`);
+    const stats = await viewportModelStats(page);
+    assert(stats.fraction > 0.01 && stats.centre > 0, `${file}: the model renders and is centred (fraction ${stats.fraction.toFixed(3)})`);
+    const first = await exportBytes(page, "stl");
+    const b = stlBounds(first);
+    assert(b.tris === 12, `${file}: exporting the loaded cube writes its 12 triangles (got ${b.tris})`);
+    assert(b.size.every((v) => Math.abs(v - 10) < 1e-3), `${file}: a unit="millimeter" cube measures 10 mm per side (got ${JSON.stringify(b.size)})`);
+    await post(page, { type: "loadUrl", url: `data:application/octet-stream;base64,${first.toString("base64")}`, format: "stl" });
+    await sleep(1200);
+    assert(stlBounds(await exportBytes(page, "stl")).tris === 12, `${file}: reopening the exported STL keeps the triangle count`);
+  }
+});
+
+test("AMF: the declared unit is applied once (the loader already scales to mm) and seeds the Units dropdown", async (page) => {
+  const unit = () => page.evaluate(() => document.getElementById("vc-unit").value);
+  for (const [file, wantSize, wantUnit] of [["cube-inch.amf", 25.4, "in"], ["cube.amf", 10, "mm"], ["cube-inch.amf", 25.4, "in"]]) {
+    await openColoured(page, `/examples/AMF/${file}`, "amf");
+    const b = stlBounds(await exportBytes(page, "stl"));
+    assert(b.size.every((v) => Math.abs(v - wantSize) < 1e-3), `${file} measures ${wantSize} mm per side, not double-scaled (got ${JSON.stringify(b.size)})`);
+    assert((await unit()) === wantUnit, `${file} selects ${wantUnit} (got ${await unit()})`);
+  }
+});
+
+test("AMF colour: a material colour renders, an unbound file stays the palette grey, and a Part colour wins and is undone", async (page) => {
+  await openColoured(page, "/examples/AMF/cube-colour.amf", "amf");
+  await lookFrom(page, ISO_FRONT);
+  const red = await hueCounts(page);
+  assert(red.red > 3 * MIN_PX, `the red material shows (got ${JSON.stringify(red)})`);
+  assert(red.green < MAX_STRAY && red.blue < MAX_STRAY, `with no stray hues (got ${JSON.stringify(red)})`);
+
+  // Control: the material-less fixture gets the loader's 0xaaaaff fallback,
+  // which must NOT show as a file colour (it is blue-ish).
+  await openColoured(page, "/examples/AMF/cube.amf", "amf");
+  await lookFrom(page, ISO_FRONT);
+  const plain = await hueCounts(page);
+  assert(plain.red < MAX_STRAY && plain.green < MAX_STRAY && plain.blue < MAX_STRAY, `an uncoloured AMF file shows no file colour (got ${JSON.stringify(plain)})`);
+
+  await openColoured(page, "/examples/AMF/cube-colour.amf", "amf");
   await lookFrom(page, ISO_FRONT);
   const ids = Array.from({ length: 8 }, (_, i) => `node-${i}`);
   await post(page, { type: "parts", parts: [{ name: "Skin", color: "#ff00ff", volumes: ids, surfaces: [], lines: [], points: [] }] });

@@ -46,6 +46,9 @@
             "filenamePattern": "*.dae"
           },
           {
+            "filenamePattern": "*.amf"
+          },
+          {
             "filenamePattern": "*.step"
           },
           {
@@ -232,6 +235,16 @@
       {
         "command": "cad-preview.spaceMouseDisconnect",
         "title": "CAD Preview: Disconnect SpaceMouse"
+      },
+      {
+        "command": "cad-preview.connectAgent",
+        "title": "CAD Preview: Connect an agent…"
+      }
+    ],
+    "mcpServerDefinitionProviders": [
+      {
+        "id": "cad-preview.mcp",
+        "label": "CAD Preview"
       }
     ],
     "keybindings": [

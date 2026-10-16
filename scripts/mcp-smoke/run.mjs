@@ -318,8 +318,8 @@ try {
   assert(capsText.length > 100, "resources/read cad-preview://capabilities returns JSON text");
 
   const tools = (await request("tools/list", {})).tools.map((t) => t.name);
-  assert(tools.length === 76, `tools/list exposes 76 tools (got ${tools.length}: ${tools.join(", ")})`);
-  for (const t of ["list_workspace_models", "check_interference_all", "generate_bom", "generate_hole_table", "render_ops_prefix", "check_tolerance", "inspect_meshio_fields", "pin_annotation", "import_svg", "save_mesh_preset", "list_mesh_presets", "apply_mesh_preset", "compare_mesh_refinement", "export_tessellated_stl", "estimate_mesh_budget", "analyze_passages", "measure_mesh_deviation", "save_sheet_template", "list_sheet_templates", "batch_export", "check_handoff_manifest", "generate_prep_report", "job_status", "job_cancel", "check_brep_health", "list_scad_parameters", "convert_scad", "list_layers", "set_layer", "assign_layer", "segment_mesh_surface", "check_mesh_quality"]) {
+  assert(tools.length === 77, `tools/list exposes 77 tools (got ${tools.length}: ${tools.join(", ")})`);
+  for (const t of ["check_printability", "list_workspace_models", "check_interference_all", "generate_bom", "generate_hole_table", "render_ops_prefix", "check_tolerance", "inspect_meshio_fields", "pin_annotation", "import_svg", "save_mesh_preset", "list_mesh_presets", "apply_mesh_preset", "compare_mesh_refinement", "export_tessellated_stl", "estimate_mesh_budget", "analyze_passages", "measure_mesh_deviation", "save_sheet_template", "list_sheet_templates", "batch_export", "check_handoff_manifest", "generate_prep_report", "job_status", "job_cancel", "check_brep_health", "list_scad_parameters", "convert_scad", "list_layers", "set_layer", "assign_layer", "segment_mesh_surface", "check_mesh_quality"]) {
     assert(tools.includes(t), `tools/list exposes ${t}`);
   }
 
@@ -3035,6 +3035,24 @@ try {
     assert(loadDae.format === "dae" && /DAE is display-only/.test((loadDae.warnings ?? []).join(" ")), `load_model opens a Collada file with a display-only warning (got: ${JSON.stringify(loadDae).slice(0, 240)})`);
     const meshDae = await callTolerant("generate_mesh", { path: dae });
     assert(/display-only mesh format/i.test(meshDae.error ?? ""), `generate_mesh refuses a Collada file by name (got: ${JSON.stringify(meshDae).slice(0, 240)})`);
+  }
+
+  // AMF is DISPLAY-ONLY on the host exactly like 3MF: same refusals, by name.
+  {
+    const amf = path.join(ROOT, "examples", "AMF", "cube.amf");
+    const healthAmf = await call("check_mesh_health", { path: amf });
+    assert(
+      healthAmf.supported === false && /amf has no host-side triangle-soup parser/i.test(healthAmf.warnings?.[0] ?? ""),
+      `check_mesh_health refuses an AMF file by name (got: ${JSON.stringify(healthAmf)})`
+    );
+    const promoteAmf = await callTolerant("promote_mesh_to_brep", { path: amf, outputPath: path.join(dir, "from-amf.step") });
+    assert(/amf has no host-side triangle-soup parser/i.test(promoteAmf.error ?? ""), `promote_mesh_to_brep refuses an AMF file by name (got: ${JSON.stringify(promoteAmf)})`);
+    const compareAmf = await call("compare_models", { pathA: amf, pathB: path.join(ROOT, "examples", "STL", "cube.stl") });
+    assert(compareAmf.supported === false && /display-only/i.test((compareAmf.warnings ?? []).join(" ")), `compare_models refuses an AMF file and says display-only (got: ${JSON.stringify(compareAmf).slice(0, 240)})`);
+    const loadAmf = await call("load_model", { path: amf });
+    assert(loadAmf.format === "amf" && /AMF is display-only/.test((loadAmf.warnings ?? []).join(" ")), `load_model opens an AMF file with a display-only warning (got: ${JSON.stringify(loadAmf).slice(0, 240)})`);
+    const meshAmf = await callTolerant("generate_mesh", { path: amf });
+    assert(/display-only mesh format/i.test(meshAmf.error ?? ""), `generate_mesh refuses an AMF file by name (got: ${JSON.stringify(meshAmf).slice(0, 240)})`);
   }
 
   // Tier 1 "Auto-decimate under MAX_HEALABLE_TRIANGLES" —
@@ -8102,6 +8120,38 @@ try {
     );
     const state = await call("get_state", { path: annulus });
     assert(state.parts.some((p) => p.name === "Annular gap" && Math.abs(p.meshSize - f.suggestedSize) < 1e-12), "the applied size survives in the parts sidecar (reopen)");
+  }
+
+  // --- check_printability (roadmap "Printability facts report") ---
+  {
+    const PF = path.join(ROOT, "examples", "STL", "printability");
+    const up = (r, a) => r.orientations.find((o) => o.up === a);
+    const slab = await call("check_printability", { path: path.join(PF, "slab-1mm.stl"), process: { minWallMm: 1.5, source: "smoke" } });
+    assert(slab.supported && slab.bodyCount === 1 && slab.bodies[0].closed, `the slab is one closed body (${JSON.stringify(slab.bodies?.[0])})`);
+    assert(Math.abs(slab.bodies[0].wall.min - 1) < 0.01 && Math.abs(slab.bodies[0].wall.median - 1) < 0.01, `a 1 mm slab reports a 1 mm wall (${JSON.stringify(slab.bodies[0].wall)})`);
+    assert(slab.bodies[0].wall.belowMinWall > 0.9 * slab.bodies[0].wall.samples, "most samples are under a 1.5 mm process minimum");
+    assert(slab.notChecked.length >= 4 && slab.notChecked.every((n) => n.checked === false), "unmeasured rules are listed as checked:false, not passed");
+
+    const cube = await call("check_printability", { path: path.join(ROOT, "examples", "STL", "cube.stl"), overhangLimitDeg: 30, plate: "ender-3" });
+    assert(Math.abs(up(cube, "+Z").overhangArea) < 1e-6 && Math.abs(up(cube, "+Z").plateContactArea - 100) < 1e-3, "a cube on a face has no overhang and 100 mm2 of plate contact");
+    assert(Math.abs(cube.bodies[0].volume - 1000) < 1e-3 && Math.abs(cube.bodies[0].wall.min - 10) < 0.01, "the cube is 1000 mm3 with a 10 mm wall");
+    assert(up(cube, "+Z").fitsPlate === true, "the cube fits an Ender-3 plate");
+    const edge = await call("check_printability", { path: path.join(PF, "cube-on-edge.stl"), overhangLimitDeg: 30 });
+    assert(Math.abs(up(edge, "+Z").overhangArea - 200) < 0.5 && up(edge, "+Z").overhangArea > up(cube, "+Z").overhangArea, `a cube stood on an edge overhangs by 200 mm2 (${up(edge, "+Z").overhangArea})`);
+    const tiny = await call("check_printability", { path: path.join(PF, "cube-on-edge.stl"), plate: { x: 5, y: 5, z: 5 } });
+    assert(up(tiny, "+Z").fitsPlate === false, "the cube does not fit a 5 mm plate");
+
+    const blockCopy = path.join(dir, "pf-block.stp");
+    fs.copyFileSync(path.join(ROOT, "examples", "STP", "block.stp"), blockCopy);
+    const brep = await call("check_printability", { path: blockCopy, maxSamples: 600 });
+    assert(brep.supported && brep.bodyCount === 1 && Math.abs(brep.bodies[0].volume - 60) < 0.05, `the 3x4x5 block is one 60 mm3 body (${brep.bodies?.[0]?.volume})`);
+    assert(Math.abs(brep.bodies[0].wall.min - 3) < 0.05, `its thinnest wall is 3 mm (${brep.bodies[0].wall.min})`);
+    assert(Math.abs(up(brep, "+Z").plateContactArea - 12) < 0.05, "standing on its 3x4 face gives 12 mm2 of plate contact");
+
+    const threeMf = await call("check_printability", { path: path.join(ROOT, "examples", "3MF", "cube.3mf") });
+    assert(threeMf.supported === false && /display-only/.test(threeMf.warnings.join(" ")), "a 3MF is refused by name (display-only)");
+    const bad = await callTolerant("check_printability", { path: path.join(PF, "slab-1mm.stl"), process: "laser" });
+    assert(/Unknown process/.test(bad.error ?? ""), `an unknown bundled process names the choices (${JSON.stringify(bad).slice(0, 160)})`);
   }
 
   // --- measure_mesh_deviation (roadmap "CAD-to-mesh deviation map") ---

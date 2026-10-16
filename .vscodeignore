@@ -17,6 +17,7 @@ third-party/**
 !dist/mmg-core.wasm
 !dist/macros/starter-library.json
 !dist/mesh-presets/starter-presets.json
+!dist/process-limits/starter-limits.json
 !dist/sheet-templates/starter-templates.json
 # Draco decoders (roadmap "Compressed glTF"): the web pair three's DRACOLoader
 # fetches in the webview, the Node wasm the kernel worker hands to draco3d, and
@@ -86,6 +87,8 @@ macros/**
 # Same for `mesh-presets/` (roadmap Tier 1 "Reusable meshing presets"):
 # source ships as `dist/mesh-presets/`, resolved via `bundledMeshPresetsPath`.
 mesh-presets/**
+# `process-limits/` → `dist/process-limits/` (bundledProcessLimitsPath).
+process-limits/**
 # And `sheet-templates/` → `dist/sheet-templates/` (bundledSheetTemplatesPath).
 sheet-templates/**
 # Every dev/test script (screenshots, mcp-smoke, perf, webview-test, compat,

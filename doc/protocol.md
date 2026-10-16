@@ -467,6 +467,8 @@ type HostToWebview =
   | { type: 'fitRegionError'; requestId: string; message: string }
   | { type: 'primitiveRecognizeResult'; requestId: string; report: PrimitiveReport }
   | { type: 'passagesResult'; requestId: string; report: PassageReport; sizeMax: number | null }
+  | { type: 'printabilityResult'; requestId: string; report: PrintabilityReport; up: Axis; positions: string; values: string }
+  | { type: 'printabilityError'; requestId: string; message: string }
   | { type: 'passagesError'; requestId: string; message: string }
   | { type: 'meshDeviationResult'; requestId: string; report: DeviationReport; positions: string; distances: string; max: number }
   | { type: 'meshDeviationError'; requestId: string; message: string }
@@ -546,7 +548,7 @@ Sent alongside (or shortly after) `geometry` for B-rep files. Also sent for Thre
 
 ### `loadUrl`
 
-Sent for mesh-format files (STL/OBJ/PLY/glTF/3MF/Collada). The `url` is a `vscode-webview://` URI produced by `webview.asWebviewUri(uri)`. The webview calls `loadMeshFromUrl(url, format)`.
+Sent for mesh-format files (STL/OBJ/PLY/glTF/3MF/Collada/AMF). The `url` is a `vscode-webview://` URI produced by `webview.asWebviewUri(uri)`. The webview calls `loadMeshFromUrl(url, format)`.
 
 ```json
 {
@@ -1104,6 +1106,7 @@ type WebviewToHost =
   | { type: 'fitRegionRequest'; requestId: string; point: [number, number, number] }
   | { type: 'primitiveRecognizeRequest'; requestId: string }
   | { type: 'passagesRequest'; requestId: string; targetCells: number }
+  | { type: 'printabilityRequest'; requestId: string; process?: string; plate?: string; up: Axis; overhangLimitDeg?: number; stl?: string }
   | { type: 'meshDeviationRequest'; requestId: string; tolerance: number; options: MeshOptions; stl?: string }
   | { type: 'decomposeExportClicked' }
   | { type: 'decomposeSaveMacroClicked' }
@@ -1473,6 +1476,14 @@ Sent from the Passages panel (roadmap "Narrow-gap and passage resolution preflig
 
 ```json
 { "type": "passagesRequest", "requestId": "1234-0.56", "targetCells": 3 }
+```
+
+### `printabilityRequest` / `printabilityResult` / `printabilityError`
+
+Sent from the Printability panel (roadmap "Printability facts report") — the interactive half of `check_printability`. `printabilityRequest` carries the build direction `up` (`+X`…`-Z`, the direction the overlay shows), optional `overhangLimitDeg`, and optional bundled `process` / `plate` names (the host resolves them against `dist/process-limits/starter-limits.json`; an unknown name is a `printabilityError`). For a B-rep the host reads the source and unbaked op tail itself; for a mesh source `stl` is the webview-serialised displayed (edited) mesh, exactly as for `meshingGenerate`; a display-only format (3MF/Collada/AMF) is refused by name. `printabilityResult` carries the full `PrintabilityReport` (bodies with sampled wall stats, the six orientations, `notChecked` rules, warnings) plus the overhang overlay for `up`: `positions` (base64 Float32, 9 per triangle) and `values` (base64 Float32, 3 per triangle, 1 = needs support), drawn through the colour-field overlay slot. Correlated by `requestId`; a stale reply is ignored.
+
+```json
+{ "type": "printabilityRequest", "requestId": "1234-0.56", "up": "+Z", "process": "fdm", "plate": "prusa-mk4" }
 ```
 
 ### `qualityGateRequest` / `qualityGateResult` / `qualityGateError`

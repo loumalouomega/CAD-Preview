@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "note": "Starter values for comparing a model against a printing process. They are typical published design-guide figures rounded for a starting point, NOT standards and NOT a machine's real limits — override them with your own printer's numbers. Every row carries the basis it was taken from.",
+  "processes": {
+    "fdm": {
+      "minWallMm": 0.8,
+      "maxOverhangDeg": 45,
+      "source": "Typical FDM guidance: wall of about two 0.4 mm nozzle widths; overhangs beyond about 45 degrees from vertical usually need support. Machine- and material-dependent."
+    },
+    "sla": {
+      "minWallMm": 0.4,
+      "source": "Typical resin (SLA/DLP) design-guide minimum for a supported wall; supports are always required, so no overhang limit is given. Resin-dependent."
+    },
+    "sls": {
+      "minWallMm": 0.7,
+      "source": "Typical powder-bed (SLS) design-guide minimum wall; the powder bed supports overhangs, so no overhang limit is given. Material-dependent."
+    },
+    "mjf": {
+      "minWallMm": 0.5,
+      "source": "Typical Multi Jet Fusion design-guide minimum wall; overhangs are powder-supported, so no overhang limit is given. Material-dependent."
+    }
+  },
+  "plates": {
+    "ender-3": { "x": 220, "y": 220, "z": 250, "source": "Creality Ender-3 published build volume" },
+    "prusa-mk4": { "x": 250, "y": 210, "z": 220, "source": "Prusa MK4 published build volume" },
+    "bambu-x1": { "x": 256, "y": 256, "z": 256, "source": "Bambu Lab X1 published build volume" },
+    "form-3": { "x": 145, "y": 145, "z": 185, "source": "Formlabs Form 3 published build volume" }
+  }
+}

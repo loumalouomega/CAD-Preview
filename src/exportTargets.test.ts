@@ -146,3 +146,24 @@ describe("EXPORT_EXTENSION", () => {
     expect(EXPORT_EXTENSION.ply).toBe("ply");
   });
 });
+
+describe("AMF as an import-only, display-only mesh format", () => {
+  it("offers every mesh export format for an .amf source, with no save-in-place", () => {
+    const all = ["stl", "obj", "ply", "gltf", "3mf"];
+    expect(exportTargetsFor({ strategy: "three", format: "amf" })).toEqual(all);
+    expect(exportTargetsFor({ strategy: "three", format: "amf" }, true)).toEqual(all);
+    expect(MESH_SAVE_IN_PLACE_FORMATS.has("amf")).toBe(false);
+  });
+
+  it("is never an export target for any other source (there is no AMF writer)", () => {
+    for (const route of [
+      { strategy: "occt", format: "step" },
+      { strategy: "three", format: "stl" },
+      { strategy: "three", format: "3mf" },
+      { strategy: "three", format: "dae" },
+    ] as const) {
+      expect(exportTargetsFor(route, true)).not.toContain("amf");
+    }
+    expect(UNIT_CONVERTIBLE_FORMATS.has("amf")).toBe(false);
+  });
+});

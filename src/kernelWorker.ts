@@ -57,6 +57,7 @@ import { exportSvgSilhouette, exportDrawingSheet } from "./svgSilhouetteHost";
 import { buildPrimitivesFile } from "./primitiveWrite";
 import { exportTessellatedStl } from "./tessellationExport";
 import { analyzePassages } from "./passageAnalysisHost";
+import { checkPrintability } from "./printabilityHost";
 import { measureMeshDeviation } from "./meshDeviationHost";
 import { bakeMeshEdits } from "./meshEditBake";
 import { decodeGltfGeometry } from "./gltfDecode";
@@ -185,6 +186,7 @@ const handlers: Record<keyof DocumentPipeline, Handler> = {
   buildPrimitivesFile: buildPrimitivesFile as Handler,
   exportTessellatedStl: exportTessellatedStl as Handler,
   analyzePassages: analyzePassages as Handler,
+  checkPrintability: checkPrintability as Handler,
   measureMeshDeviation: measureMeshDeviation as Handler,
   bakeMeshEdits: bakeMeshEdits as Handler,
   decodeGltfGeometry: decodeGltfGeometry as Handler,

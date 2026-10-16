@@ -146,6 +146,9 @@ export { DEFAULT_SHEET_VIEWS };
 import { mergeSheetTemplates, type SheetTemplate } from "./sheetTemplates";
 import type { TitleBlockFields } from "./drawingSheet";
 import type { analyzePassages } from "./passageAnalysisHost";
+import type { checkPrintability } from "./printabilityHost";
+import { resolvePlate, resolveProcess } from "./processLimits";
+import type { BuildPlate } from "./printability";
 import type { measureMeshDeviation } from "./meshDeviationHost";
 import type { bakeMeshEdits } from "./meshEditBake";
 import type { decodeGltfGeometry } from "./gltfDecode";
@@ -182,6 +185,7 @@ import {
   readBundledScriptLibrary,
   readScriptLibrary,
   readBundledMeshPresetLibrary,
+  readBundledProcessLimits,
   readMeshPresetLibrary,
   readSheetTemplateLibrary,
   writeSheetTemplateLibrary,
@@ -299,6 +303,7 @@ export interface Pipeline {
   buildPrimitivesFile: typeof buildPrimitivesFile;
   exportTessellatedStl: typeof exportTessellatedStl;
   analyzePassages: typeof analyzePassages;
+  checkPrintability: typeof checkPrintability;
   measureMeshDeviation: typeof measureMeshDeviation;
   bakeMeshEdits: typeof bakeMeshEdits;
   decodeGltfGeometry: typeof decodeGltfGeometry;
@@ -401,6 +406,7 @@ export function describeCapabilities() {
       "Tools report facts (numbers, images, structured warnings) — you render the verdict, not the tool.",
       "A tool/network failure or a `supported: false` response is need-more-info, never a silent pass or fail.",
       "render_snapshot's images (and compare_models' optional includeSnapshots ones) are diagnostic, not authoritative — convert a visual concern into an inspect/measure check before treating anything as validated.",
+      "check_printability reports measured numbers per orientation and per body — overhang area, plate contact, a support-volume UPPER BOUND, SAMPLED wall thickness (an estimate at the stated resolution, never a minimum certificate), plate fit — and lists every rule it cannot measure under `notChecked` with checked:false: an unmeasured rule is not a passed rule. A process or plate only adds counts to compare against; each bundled row names its source and is a starting point, not a standard.",
       "hit_test is the inverse of render_snapshot (pixel/ray -> entity id) and needs no browser, so unlike the image tools it never degrades to supported:false. Its hit point and face normal feed render_snapshot's look-from view, closing the loop.",
       "fit_mesh_region publishes EVERY candidate fit with its own residual rather than one winner, because a flat region is also fitted by an enormous sphere with a tiny residual — `simplest` applies the published plane<cylinder<sphere rule to those same numbers, and you can apply a different one. A shape that is absent could not be fitted at all.",
       "recognize_primitives' `candidate` is a HYPOTHESIS, not a classification: judge it from the `fitResidual` published beside it (and `fitResidualFrac`, the same number relative to the solid's size). A `candidate: null` with a populated `inventory` is a real answer — a filleted box is honestly not a box — not a failure to recognize.",
@@ -431,7 +437,7 @@ export function describeCapabilities() {
       ],
     },
     headlessLimitations: [
-      "3MF (.3mf) and Collada (.dae) are DISPLAY-ONLY mesh formats: they open and edit in the viewer (3MF: three's 3MFLoader plus a hand-rolled zip+XML writer; Collada: three's ColladaLoader, import-only, flat colours kept and textures ignored), but the host has no triangle parser for them, so load_model reports them without an inventory and get_mass_properties, inspect, measure, compare_models, check_mesh_health, promote_mesh_to_brep, repair_mesh, the drawing/silhouette tools, generate_mesh/export_mesh and edit baking all refuse them by name. Export to STL/OBJ/PLY/glTF from the viewer first.",
+      "3MF (.3mf), Collada (.dae) and AMF (.amf) are DISPLAY-ONLY mesh formats: they open and edit in the viewer (3MF: three's 3MFLoader plus a hand-rolled zip+XML writer; Collada: three's ColladaLoader, import-only, flat colours kept and textures ignored; AMF: three's AMFLoader, import-only, plain or zipped, flat colours kept), but the host has no triangle parser for them, so load_model reports them without an inventory and get_mass_properties, inspect, measure, compare_models, check_mesh_health, promote_mesh_to_brep, repair_mesh, the drawing/silhouette tools, generate_mesh/export_mesh and edit baking all refuse them by name. Export to STL/OBJ/PLY/glTF from the viewer first.",
       "screenshot_shape isolates the target entity by default: a face framed at its own scale usually puts the camera inside the parent solid, so an un-isolated shot shows interior geometry or an occluded face. Pass context:true to opt out.",
       "get_mass_properties is B-rep sources via OCCT BRepGProp (volume/area/length, center of mass, moments of inertia) and STL/OBJ/PLY/glTF sources via headless triangle integration (volume/area, centroid, watertight flag; no length, no moments of inertia). Other mesh formats compute the equivalent client-side in the webview.",
       "inspect (per-entity bbox/bbox-center/area/length/normal/surfaceType, plus surfaceParams: the analytic radius/axis/half-angle behind that classification) and measure (distance between two entities' bbox centers) are B-rep sources plus STL/OBJ/PLY/glTF sources headless (triangle-based facts in raw file coordinates with mesh-component-N / mesh-triangle-N / mesh-vertex-N ids from load_model; no analytic parameters). Note inspect's `center` is the bbox center, NOT get_mass_properties' mass-weighted centroid — they can differ for an asymmetric shape.",
@@ -439,7 +445,7 @@ export function describeCapabilities() {
       "render_snapshot/screenshot_shape/render_ops_prefix take tessellationQuality (draft|standard|fine) for the PICTURE only, and report the `tessellation` block actually used (quality + deflections + triangleCount) — nothing else about a render is tessellation-derived. Omitting it is indistinguishable from passing `standard`; it deliberately does NOT follow the cadPreview.tessellationQuality VS Code setting, which is an interactive-viewer default, so an agent's render is reproducible regardless of a user's editor preferences. It is most visible in wireframe, where the tessellation IS the picture; under shading, faceting is partly hidden either way. compare_models' includeSnapshots takes it too (both sides render at the same quality) and reports a per-side `tessellation` block.",
       "search_standard_parts/download_standard_part are network calls to the hosted step.parts API (api.step.parts) — the extension's only external network dependency. A network/API failure returns supported:false and is INCONCLUSIVE, never \"no matching parts\"/\"part unavailable\" — retry or report uncertainty, don't treat it as a negative result.",
       "run_parametric_script compiles {variables?, steps} (each step is one op, or one flat `repeat: {times, indexVar, body}` loop expanding a template op-list) into ops appended via the exact same path as apply_edit_ops — not a general scripting language, no code execution. Repeat-generated ops are fully baked (concrete numbers, exprs stripped) — for a value that should stay live/editable later, use a plain op step with exprs referencing a real document variable (set_variables) instead of the repeat construct.",
-      "compare_models (bounding-box-centroid + volume solid matching between two files) supports B-rep (STEP/IGES/BREP, edits baked in) and STL/OBJ/PLY/glTF (host-side parsers; pending mesh edits baked in first by the kernel worker's headless mesh-edit replay — the same three.js engine the viewer uses — compared as an STL side) sources, in any combination on either side; meshio-only formats and display-only mesh formats (3MF, Collada) have no host-side geometry to derive centroids/volumes from without a webview. Its optional includeSnapshots (default false) additionally renders each B-rep side's before/after PNGs via the same engine as render_snapshot — opt in only when you want to look at the geometry, not just the numeric diff; mesh-format sides never get a snapshot (render_snapshot is B-rep sources only) and degrade to a warning, never a failure.",
+      "compare_models (bounding-box-centroid + volume solid matching between two files) supports B-rep (STEP/IGES/BREP, edits baked in) and STL/OBJ/PLY/glTF (host-side parsers; pending mesh edits baked in first by the kernel worker's headless mesh-edit replay — the same three.js engine the viewer uses — compared as an STL side) sources, in any combination on either side; meshio-only formats and display-only mesh formats (3MF, Collada, AMF) have no host-side geometry to derive centroids/volumes from without a webview. Its optional includeSnapshots (default false) additionally renders each B-rep side's before/after PNGs via the same engine as render_snapshot — opt in only when you want to look at the geometry, not just the numeric diff; mesh-format sides never get a snapshot (render_snapshot is B-rep sources only) and degrade to a warning, never a failure.",
       "check_mesh_health (STL/OBJ/PLY/glTF sources only) is a READ-ONLY diagnostic — it reports per-connected-component free/non-manifold edge counts, degenerate face count, the sewing tolerance actually required to close the shape (or null if it never closed), and the healed area/volume delta, but it does NOT promote anything to a B-rep: there is still no path from a triangle mesh back into fillet/chamfer/measure_exact/get_mass_properties/export_brep (BREP_ONLY_OPS is unchanged). A null requiredTolerance or a large volumeDeltaPct/areaDeltaPct is a fact for you to judge, not a computed pass/fail.",
       "check_brep_health (B-rep/csg/scad sources only) is a READ-ONLY validity report over OCCT's BRepCheck_Analyzer — named per-subshape statuses, open-boundary edges, content counters. It repairs nothing, and a valid verdict does not guarantee Gmsh can mesh the model.",
       "promote_mesh_to_brep (STL/OBJ/PLY/glTF sources only) closes the gap check_mesh_health leaves open — but as a ONE-SHOT EXPORT to a NEW file (outputPath), not an in-place reclassification of the source document: the original mesh is untouched, and the ORIGINAL document still has no B-rep capabilities. The written file is an ordinary B-rep document from the moment it exists (load_model/measure_exact/get_mass_properties/further export_brep all work on it). A component that never closes is skipped (skippedComponents/warnings), never silently dropped; if none close, the call fails.",
@@ -479,7 +485,7 @@ function requireRoute(modelPath: string): FileRoute {
   const route = routeFile(modelPath);
   if (!route) {
     throw new Error(
-      `Unsupported file extension: ${path.basename(modelPath)} (supported: step/stp, iges/igs, brep, csg, scad, stl, obj, ply, gltf, glb, 3mf, dae, vtk, vtu, med, cgns, exo/e, xdmf, mdpa, foam, msh/msh2, inp, unv, su2, mesh, post.msh, bdf)`
+      `Unsupported file extension: ${path.basename(modelPath)} (supported: step/stp, iges/igs, brep, csg, scad, stl, obj, ply, gltf, glb, 3mf, dae, amf, vtk, vtu, med, cgns, exo/e, xdmf, mdpa, foam, msh/msh2, inp, unv, su2, mesh, post.msh, bdf)`
     );
   }
   return route;
@@ -2670,6 +2676,66 @@ export async function analyzePassagesTool(
     note:
       "Widths are exact (analytic faces); cells across is an ESTIMATE from the requested size — a real mesh confirms it. Only coaxial-cylinder annuli and facing-plane slots are recognized; a gap bounded by other surfaces is not reported. Apply a suggestion with set_part (meshSize on the face pair).",
     warnings,
+  };
+}
+
+/**
+ * Printability FACTS over the welded triangles every source reduces to (a
+ * B-rep at fine tessellation with its edits baked; a mesh with pending mesh
+ * edits baked): closure and body count, overhang area / plate contact /
+ * support-volume upper bound for the six axis orientations, SAMPLED wall
+ * thickness per body, build-plate fit, and the rules it cannot measure listed
+ * as `checked: false`. No pass/fail verdict — a process only adds counts.
+ */
+export async function checkPrintabilityTool(
+  ctx: ToolContext,
+  params: {
+    path: string;
+    process?: string | { name?: string; minWallMm?: number; maxOverhangDeg?: number; source?: string };
+    plate?: string | BuildPlate;
+    overhangLimitDeg?: number;
+    maxSamples?: number;
+  }
+) {
+  const modelPath = params.path;
+  const route = requireRoute(modelPath);
+  if (route.strategy !== "occt" && !COMPARABLE_MESH_FORMATS.has(route.format)) {
+    return {
+      format: route.format,
+      supported: false,
+      warnings: [
+        DISPLAY_ONLY_MESH_FORMATS.has(route.format)
+          ? displayOnlyMeshMessage(route.format, "a printability check")
+          : `${route.format} is a meshio-only format — it exposes no triangle array to the host, so there is nothing to measure. Export it to STL first.`,
+      ],
+    };
+  }
+  const library = await readBundledProcessLimits(ctx.extensionPath);
+  const process_ = resolveProcess(params.process, library);
+  const plate = resolvePlate(params.plate, library);
+  const warnings: string[] = [];
+  const { ops } = await readEditsResolved(modelPath);
+  let source: CompareSource;
+  if (route.strategy === "occt") {
+    const src = await readOcctSource(modelPath, route, warnings);
+    if (!src.ok) return { format: route.format, supported: false, warnings: [...warnings, src.reason] };
+    source = { kind: "brep", bytes: src.bytes, format: src.format as BRepFormat, ops };
+  } else {
+    source = await meshCompareSource(ctx, modelPath, route, ops, await readModelBytes(modelPath), warnings, "measuring the raw file only");
+  }
+  const { report } = await ctx.pipeline.checkPrintability(ctx.extensionPath, source, {
+    overhangLimitDeg: params.overhangLimitDeg,
+    maxSamples: params.maxSamples,
+    plate,
+    process: process_,
+  });
+  return {
+    format: route.format,
+    supported: true,
+    ...report,
+    warnings: [...warnings, ...report.warnings],
+    note:
+      "Facts, not a verdict: compare them to your own limits. Overhang uses the stated limit from vertical (a face exactly at the limit is not counted); supportVolumeUpperBound ignores the model under an overhang; wall thickness is SAMPLED at the stated resolution and can miss a feature smaller than the sample spacing. Rules in `notChecked` were not measured — they are not passed.",
   };
 }
 

@@ -209,6 +209,15 @@ function copyMeshPresets() {
   console.log(`Copied starter-presets.json → dist/mesh-presets/starter-presets.json (${(fs.statSync(dst).size / 1e3).toFixed(1)} KB)`);
 }
 
+/** Bundled process limits + build plates for `check_printability`, resolved via `bundledProcessLimitsPath`. */
+function copyProcessLimits() {
+  const src = path.join(__dirname, "process-limits", "starter-limits.json");
+  const dst = path.join(__dirname, "dist", "process-limits", "starter-limits.json");
+  fs.mkdirSync(path.dirname(dst), { recursive: true });
+  fs.copyFileSync(src, dst);
+  console.log(`Copied starter-limits.json → dist/process-limits/starter-limits.json (${(fs.statSync(dst).size / 1e3).toFixed(1)} KB)`);
+}
+
 // Same for the bundled drawing-sheet templates (roadmap "Drawing-sheet
 // settings and reusable templates"), resolved via `bundledSheetTemplatesPath`.
 function copySheetTemplates() {
@@ -258,6 +267,7 @@ if (watch) {
   copyWasm();
   copyMacros();
   copyMeshPresets();
+  copyProcessLimits();
   copySheetTemplates();
   copyDracoDecoders();
   console.log("esbuild: watching…");
@@ -271,6 +281,7 @@ if (watch) {
   copyWasm();
   copyMacros();
   copyMeshPresets();
+  copyProcessLimits();
   copySheetTemplates();
   copyDracoDecoders();
 }

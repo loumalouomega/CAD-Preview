@@ -3,7 +3,7 @@ import * as THREE from "three";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { MTLLoader } from "three/examples/jsm/loaders/MTLLoader.js";
-import { parseMeshObject, parseObjObject, tagMeshEntities, meshFromGeometry, convertColladaMaterials, applyDefaultMaterial } from "./meshObject";
+import { parseMeshObject, parseObjObject, tagMeshEntities, meshFromGeometry, convertAmfMaterials, convertColladaMaterials, applyDefaultMaterial } from "./meshObject";
 import { isNativeColor } from "./nativeColor";
 import { objMaterialLibraries } from "./meshLoaders";
 
@@ -143,5 +143,45 @@ describe("convertColladaMaterials", () => {
     expect(isNativeColor(mats[0])).toBe(true);
     expect(mats[1].color.getHex()).toBe(0xc0c4cc);
     expect(isNativeColor(mats[1])).toBe(false);
+  });
+});
+
+describe("convertAmfMaterials", () => {
+  const mesh = (m: THREE.Material) => new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), m);
+  const phong = (hex: number, name = "") => Object.assign(new THREE.MeshPhongMaterial({ color: hex }), { name });
+  const fallback = () => phong(0xaaaaff, THREE.Loader.DEFAULT_MATERIAL_NAME);
+
+  it("keeps a coloured file material as a native colour, dropping alpha", () => {
+    const src = Object.assign(phong(0xff0000, "red"), { transparent: true, opacity: 0.5 });
+    const g = new THREE.Group();
+    g.add(mesh(src));
+    convertAmfMaterials(g);
+    const m = (g.children[0] as THREE.Mesh).material as THREE.MeshStandardMaterial;
+    expect(m.isMeshStandardMaterial).toBe(true);
+    expect(m.color.getHex()).toBe(0xff0000);
+    expect(m.transparent).toBe(false);
+    expect(isNativeColor(m)).toBe(true);
+  });
+
+  it("clears the loader's 0xaaaaff fallback so the palette look (and any Part colour) applies", () => {
+    const g = new THREE.Group();
+    g.add(mesh(fallback()));
+    convertAmfMaterials(g);
+    expect((g.children[0] as THREE.Mesh).material).toBeUndefined();
+    applyDefaultMaterial(g);
+    const m = (g.children[0] as THREE.Mesh).material as THREE.MeshStandardMaterial;
+    expect(m.color.getHex()).toBe(0xc0c4cc);
+    expect(isNativeColor(m)).toBe(false);
+  });
+
+  it("keeps a mesh-level <color> (a clone of the fallback with another colour) — control for the name rule", () => {
+    const meshColour = fallback();
+    meshColour.color.setHex(0x00ff00);
+    const g = new THREE.Group();
+    g.add(mesh(meshColour));
+    convertAmfMaterials(g);
+    const m = (g.children[0] as THREE.Mesh).material as THREE.MeshStandardMaterial;
+    expect(m.color.getHex()).toBe(0x00ff00);
+    expect(isNativeColor(m)).toBe(true);
   });
 });

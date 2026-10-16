@@ -623,6 +623,21 @@
       "section": "Unify same-domain faces",
       "gap": "The Unify faces button's look in light and high-contrast themes, and the history row's skipped marking for a nothing-to-merge apply, in a real Extension Development Host session; the message flow is covered over the real bundle.",
       "status": "open"
+    },
+    {
+      "id": "mcp-vscode-registration",
+      "section": "Register the MCP server with VS Code (roadmap, closed)",
+      "gap": "the contributed mcpServerDefinitionProviders entry was never observed in a real VS Code MCP server list, and the pasted Claude Code snippet was never run in its client; the ELECTRON_RUN_AS_NODE launch (kernel-worker fork inheriting it) is reasoned from kernelClient.ts, not run under the real editor binary.",
+      "status": "open"
+    },
+    {
+      "id": "amf-real-webview",
+      "section": "AMF \u2014 a display-only, import-only mesh format (roadmap 2.1, AMF increment)",
+      "gap": "AMFLoader (DOMParser) under a real VS Code webview's CSP. test:webview sets no CSP; the integration loop (the AMF half of the compressed-glTF case) is written but has not been run because this environment cannot download VS Code.",
+      "status": "test-written",
+      "closedBy": [
+        "Compressed glTF (Draco and meshopt) loads under the real webview CSP"
+      ]
     }
   ]
 }

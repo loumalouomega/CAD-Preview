@@ -189,12 +189,12 @@ Two projects built for AI agents were read for this extension:
 | `expectedRevision` edits, HTTP 409 on conflict | ReOpenSCAD | Shipped as the MCP revision guard: `get_state` returns a `revisions` fingerprint per sidecar, eleven write tools accept an optional `expectedRevision` and return their new `revision`, and a stale one is refused with code `stale-revision` carrying `currentRevision` (serialised per model and sidecar in-process; not a cross-process lock) |
 | Highlighting AI-made edits | ReOpenSCAD | Shipped: appended rows carry a transient `external` badge and their faces flash once (webview memory only; pure appends only) |
 | Agent-readable busy errors ("retry, do not edit"); closed vocabularies | Both | Shipped as coded MCP errors: `isError` results carry `structuredContent {code, message, hint?, retryable}`, and an undeclared parameter produces a warning naming the nearest real key (warn-only; strict mode deferred) |
-| "Connect AI" setup snippets; one-install plugin | Both | [Register the MCP server with VS Code](#register-mcp-server-with-vscode) |
+| "Connect AI" setup snippets; one-install plugin | Both | Shipped: VS Code lists the server through an MCP server-definition provider, and **CAD Preview: Connect an agent…** copies a per-client snippet (Claude Code, `.mcp.json`, Claude Desktop, Cursor, VS Code, Windsurf, Codex) with the installed path filled in |
 | `ui://` MCP-App inline viewer | Both | [MCP App inline preview](#mcp-app-inline-preview) (probe) |
 | `cad_view` returns the user's selection as quotable refs | text-to-cad | Shipped: Copy reference quotes `file#id`, facts, the op count and a stored query (`CLAUDE.md`'s Selection bullet) |
 | Snapshot presets (xray, hidden-line) and section mode | text-to-cad | Shipped: `render_snapshot` / `screenshot_shape` take all five display modes and an optional section `clip` (the viewer's own clip plane, solid cap included) |
 | `mass_properties` with density | text-to-cad | Shipped: `Part.density` gives BOM mass and a per-solid `massGrams` (mass-weighted centre and density-weighted inertia remain out) |
-| dfam-check (overhangs, wall thickness, support, orientations, plate fit) | text-to-cad, ReOpenSCAD (plates) | [Printability facts report](#printability-facts-report) |
+| dfam-check (overhangs, wall thickness, support, orientations, plate fit) | text-to-cad, ReOpenSCAD (plates) | Shipped as `check_printability` (overhang area, sampled wall thickness, support-volume upper bound, plate fit; unmeasured rules listed as not checked) and the Advanced ▸ Analysis **Printability** panel with an overhang colour overlay |
 | dfm draft and undercuts | text-to-cad | [Draft and undercut analysis](#draft-and-undercut-analysis) |
 | Engineering-drawing hole callouts, CENTER layer | text-to-cad | [Hole callouts on drawing sheets](#hole-callouts-on-drawing-sheets); the sheet itself ships |
 | Byte-deterministic writers (mesh formats, manifest) | text-to-cad | Shipped — see `CLAUDE.md`'s "Reproducible exports" |
@@ -267,10 +267,11 @@ These are outcome groupings, not release numbers. Independent small items can sh
 
 - **Evidence:**
   - three ships loaders the viewer does not use: `AMFLoader`, `VRMLLoader`, `FBXLoader` and USD. (`3MFLoader` and `ColladaLoader` are now used — see below. In three 0.186 `USDZLoader` is a deprecated stub over `USDLoader`, so the USD increment should import `USDLoader`.)
+  - **AMF shipped (geometry, colour, declared unit).** `.amf` (plain or zipped) opens through `AMFLoader`, **import-only** and **display-only on the host**, like Collada. The loader already scales to millimetres from `<amf unit>`, so the viewer applies no scale; `amfDeclaredUnit` only seeds the Units dropdown. See `CLAUDE.md`'s 3MF/Collada bullet.
   - **Collada shipped (geometry, flat colour, unit and up-axis handling).** `.dae` opens through `ColladaLoader` and is **import-only** (three has no Collada writer) and **display-only on the host**, like 3MF. `ColladaLoader` scales by the raw `<unit meter>` and rotates `Z_UP`; both are replaced in `loadDae` (millimetres from `colladaMmPerUnit`, the viewer owns the root rotation). Textures are ignored. See `CLAUDE.md`'s 3MF/Collada bullet.
   - **3MF shipped (geometry, colour and unit seeding).** `.3mf` opens through `3MFLoader` and exports from every source through a small hand-rolled zip+XML writer on `fflate` (`src/threeMf.ts`) — not `three-3mf-exporter`, which would have added `jszip` and `fast-xml-parser` for a few dozen lines. It is **display-only on the host**: Compare Models, Mesh Health, Promote, Repair, drawings, headless meshing/baking and `save_model` refuse it by name. three's loader reads the `unit` attribute but never applies it, so the loader path scales to millimetres and the writer labels the unit it scaled to. See `CLAUDE.md`'s 3MF section.
 - **Remaining increments (S each):**
-  - The remaining loaders (AMF, VRML, FBX, USD) follow one at a time, each with a fixture, each stating its host-side status plainly (display-only unless a host parser is added). Needs by loader: AMF — `DOMParser` plus three's bundled `fflate` (zipped AMF) and a declared unit; VRML — 157 KB `chevrotain` bundle cost; FBX — large scene machinery, embedded textures through `Blob` URLs; USD — `USDLoader` with `fflate`.
+  - The remaining loaders (VRML, FBX, USD) follow one at a time, each with a fixture, each stating its host-side status plainly (display-only unless a host parser is added). Needs by loader: VRML — 157 KB `chevrotain` bundle cost; FBX — large scene machinery, embedded textures through `Blob` URLs; USD — `USDLoader` with `fflate`.
 - **Done when:** each remaining format has a committed fixture that opens, edits, exports back (to its own format where a writer exists, otherwise to a mesh format) and reopens with the same triangle count.
 
 #### 2.2 Shared UI design system with VSCode-MDPA-Preview {#shared-ui-design-system-with-vscode-mdpa-preview}
@@ -297,34 +298,7 @@ These are outcome groupings, not release numbers. Independent small items can sh
 - **What is left (S):** the cross-repository check — open the exported `.mdpa` in VSCode-MDPA-Preview and confirm both SubModelParts populate. It needs that extension and is not exercised from this repository.
 - **Done when:** that check passes, and KKSS's tutorial links to the page.
 
-#### 2.16 Register the MCP server with VS Code and offer client setup snippets {#register-mcp-server-with-vscode}
-
-*Area: Platform, Ecosystem. Effort: S–M.*
-
-- **Evidence:** using the bundled MCP server means finding the installed extension's path and writing `claude mcp add cad-preview -- node <path>/dist/mcp-server.js` by hand, with a Node on `PATH`. VS Code's own agent mode cannot see the server at all, although the extension targets `vscode ^1.140.0`, which has the MCP server-definition-provider API. ReOpenSCAD's "Connect AI" dialog shows a ready snippet per client (Claude Code, Claude Desktop, Cursor, VS Code, Windsurf, Codex), and text-to-cad installs its server with one command.
-- **First useful increment (S–M):**
-  - `contributes.mcpServerDefinitionProviders` plus a provider that launches `dist/mcp-server.js` with `process.execPath` and `ELECTRON_RUN_AS_NODE=1`, so no separate Node is needed (the Flatpak recipe in `doc/development.md` already relies on this).
-  - A **CAD Preview: Connect an agent…** command that shows copyable snippets for the common clients, filled with the installed extension's absolute path and the same environment.
-- **Done when:** in a real VS Code, the server appears in the MCP server list and `describe_capabilities` answers through it; and each snippet, pasted into its client, starts the server (checked at least for Claude Code).
-- **Out of scope:** an HTTP transport (see [Rejected scope](#rejected-scope)); publishing the server as a separate npm package.
-
-#### 2.17 Printability facts report {#printability-facts-report}
-
-*Area: Geometry. Effort: M.*
-
-- **Evidence:** nothing here answers "will this print". Mesh Health checks closure and B-rep Health checks validity, but neither measures overhangs or walls. text-to-cad's `dfam-check` reports, from a mesh: watertightness and body count; a units-suspect flag from the bounding box; down-facing area below a limit angle; ray-cast wall thickness (minimum, 5th percentile, median, per body); a support-volume upper bound; and the six axis orientations compared by support and build height. It compares these against a process-limits table (FDM, SLA, SLS, MJF, with sources) and reports what it cannot check as need-more-info. ReOpenSCAD adds a build-plate fit check per printer.
-- **First useful increment (M):** a `check_printability` MCP tool plus a section under Advanced ▸ Analysis, over the welded triangles every source already reduces to (fine tessellation for a B-rep, the baked edits for a mesh). All numbers are facts in the `verdictConventions` sense:
-  - closure and bodies from `meshTopology.ts`;
-  - overhang area below a caller-supplied angle (default 45°), for six orientations;
-  - wall thickness by casting rays inward from sampled surface points, using the `three-mesh-bvh` already bundled in the kernel worker;
-  - a support-volume upper bound per orientation;
-  - fit against a named or explicit build plate.
-
-  A bundled process-limits table, each row carrying its source, lets the report state where a measured value falls; rules it cannot measure (minimum hole, bridges, trapped powder) are listed as not checked. Overhang faces get a colour overlay through the colour-field path.
-- **Done when:** a fixture with a known 1 mm wall reports 1 mm within the sampling resolution; a box rotated onto its edge reports more overhang than one on its face; and an unmeasured rule is reported as not checked rather than passed.
-- **Out of scope:** slicing and support generation (see [Rejected scope](#rejected-scope)); choosing an orientation for the user.
-
-#### 2.18 Draft and undercut analysis for a pull direction {#draft-and-undercut-analysis}
+#### 2.16 Draft and undercut analysis for a pull direction {#draft-and-undercut-analysis}
 
 *Area: Geometry. Effort: M.*
 
@@ -333,7 +307,7 @@ These are outcome groupings, not release numbers. Independent small items can sh
 - **Done when:** a box reports its four side walls at exactly 0°, a tapered extrusion reports its taper angle, and a pocket under an overhang is reported as an undercut.
 - **Out of scope:** suggesting a parting line; adding draft (the `draft` op is the tool for that, and its kernel limitation is recorded in `CLAUDE.md`).
 
-#### 2.19 Hole callouts and centre lines on drawing sheets {#hole-callouts-on-drawing-sheets}
+#### 2.17 Hole callouts and centre lines on drawing sheets {#hole-callouts-on-drawing-sheets}
 
 *Area: Drawings. Effort: M.*
 

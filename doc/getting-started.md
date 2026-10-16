@@ -77,6 +77,7 @@ New Blank Model only ever creates new files: if you point it at a path that alre
 | glTF / GLB  | `.gltf`, `.glb` | Three.js `GLTFLoader`                      |
 | 3MF         | `.3mf`          | Three.js `3MFLoader` (display-only on the host) |
 | Collada     | `.dae`          | Three.js `ColladaLoader` (import-only; display-only on the host) |
+| AMF         | `.amf`          | Three.js `AMFLoader` (import-only; display-only on the host) |
 | VTK / VTU   | `.vtk`, `.vtu`  | meshio++ → STL boundary surface → Three.js |
 | MED         | `.med`          | meshio++ → STL boundary surface → Three.js |
 | CGNS        | `.cgns`         | meshio++ → STL boundary surface → Three.js |
@@ -118,7 +119,7 @@ Every section header reads chevron · icon · title, so a collapsed sidebar is s
 
 | Advanced ▸ | Sections |
 | --- | --- |
-| **Analysis** | Mass Properties, Clash, B-rep Health, Mesh Health, Region fit, Primitives, Passages |
+| **Analysis** | Mass Properties, Clash, B-rep Health, Mesh Health, Region fit, Primitives, Passages, Printability |
 | **Library** | Macros, Standard Parts |
 
 Advanced starts collapsed. Its header carries a badge counting how many of its nine sections apply to the current file (`7 of 9` on a STEP/IGES/BREP source; `5 of 9` on a native STL/OBJ/PLY/glTF source; `3 of 9` on a meshio-converted source), so you can tell whether opening it is worth the click without opening it. Each section inside keeps its own chevron and collapses independently, exactly as before — the group simply adds one more level.
@@ -129,7 +130,7 @@ Every sidebar section — and the Advanced group itself — has a chevron at the
 
 The collapsed/expanded layout is remembered **per document**, in the same `<model>.view.json` sidecar that already stores the camera, display mode and clip plane, so reopening a file restores the sidebar exactly as you left it. Merely opening a document never creates that file — only an actual change does.
 
-Sections that don't apply to the current file (Clash, B-rep Health, Primitives and Passages are shown only for a STEP/IGES/BREP source; Mesh Health and Region fit only for a native STL/OBJ/PLY/glTF source) are hidden entirely rather than collapsed, independently of this — the Advanced badge is what tells you how many were left out.
+Sections that don't apply to the current file (Clash, B-rep Health, Primitives and Passages are shown only for a STEP/IGES/BREP source, Printability for any source with host-measurable triangles (not 3MF, Collada or AMF); Mesh Health and Region fit only for a native STL/OBJ/PLY/glTF source) are hidden entirely rather than collapsed, independently of this — the Advanced badge is what tells you how many were left out.
 
 ### Resizing the Sidebar
 
@@ -706,6 +707,16 @@ The **Passages** panel (below Primitives, B-rep sources only) is a pre-meshing c
 
 Only gaps of empty space count — the two faces of a wall are never reported. Each row shows the width, roughly how many cells the current size puts across it (from the smallest Part size on either face, else the FE Mesh global size) and the size that would give your target; hovering a row highlights both faces. Under-resolved rows (warning colour) offer **Apply local size**, which creates or updates a Part named `Passage face-A/face-B` on the two faces with that mesh size — an ordinary Part, so it persists, rebinds, and shows in FE Mesh › Part sizes. These are estimates; generate a mesh to confirm. Headless: `analyze_passages`, then `set_part`.
 
+### Printability
+
+The **Printability** panel (below Passages; any source with triangles — a B-rep is measured through its fine tessellation, a mesh with its pending edits) reports **facts** about how a model would print; it never says "printable". Choose a build direction (**up**), optionally an **overhang limit** in degrees from vertical (blank uses the process limit, else 45), a bundled **process** (FDM, SLA, SLS, MJF — starter figures from typical design guides, each naming its source, not standards) and a **plate**, then click **Check**:
+
+- per body: closed or open (free and non-manifold edge counts), volume, and **sampled** wall thickness (minimum, 5th percentile, median; inward rays from deterministic surface samples — an estimate at that resolution that can miss a feature smaller than the spacing) with a count of samples under the process minimum wall;
+- for the chosen direction: overhang area (faces inclined more than the limit; exactly at the limit is not counted), flat plate-contact area, a support-volume **upper bound**, build height, footprint and whether it fits the plate; the other five directions list their overhang area;
+- rules it cannot measure (minimum hole size, bridge span, trapped powder or resin, warping, finish) are listed as **Not checked**, never as passed.
+
+The overhang faces of the chosen direction are coloured in the view (yellow); **Clear** removes the colouring, and so does an edit. The same report is available headless as the `check_printability` MCP tool.
+
 ### Primitives
 
 The **Primitives** panel (below Region fit, B-rep sources only) classifies each solid as a box, sphere, cylinder, cone, or torus — the interactive counterpart of the `recognize_primitives` / `decompose_to_primitives` MCP tools.
@@ -722,7 +733,7 @@ Pick **File ▸ Export…** (or press Ctrl+E) to convert the open model and save
 | You opened | You can export to |
 | --- | --- |
 | STEP, IGES, or BREP | its own format (**save in place**, see below) plus the other two B-rep formats, plus STL, OBJ, PLY, glTF, and 3MF |
-| STL, OBJ, PLY, glTF, 3MF, or Collada | the other mesh formats only (Collada is never an export target) |
+| STL, OBJ, PLY, glTF, 3MF, Collada, or AMF | the other mesh formats only (Collada and AMF are never export targets) |
 
 The format you opened is never offered as an export target — except as a same-format B-rep pick, which is a **save in place**, not an export. Picking your own format (STEP→STEP, IGES→IGES, BREP→BREP) asks for an explicit modal confirmation and then writes the edited model back to the open file itself: the op list is baked into the file (via a temp sibling + rename, with a one-deep `<model>.bak` written on the first save of the session), the sidecar keeps the full history with the baked prefix marked, and replay continues after it. A re-emitted file preserves assembly structure and part names but not entity numbering, authoring metadata, or per-part colour; it is saved at the file's own declared unit. Undo cannot cross the save point. Mesh sources (STL/OBJ/PLY) can also be saved in place this way; glTF and meshio/CAD-text sources cannot (no same-format writer). A save that is interrupted mid-way is recovered on the next open for mesh sources — see [Known Limitations](#known-limitations). Picking any target format opens a second quick-pick asking for an **export unit** — "Native (mm) — no conversion" is first and pre-highlighted, so pressing Enter immediately exports unchanged; picking cm/m/in/ft instead applies a real geometric scale to the exported file (not just a display change — the model reopens at the new size). This applies to **every** target, STEP and IGES included — both correctly relabel their own declared length unit to match the converted geometry, not just scale the numbers while leaving the header saying millimetres. Pressing Escape on this step also exports natively rather than cancelling. A native Save dialog then lets you choose the destination — it defaults to the source file's folder with the new extension. glTF export always produces a single binary `.glb` file (no separate `.bin`/texture references to manage). 3MF export writes geometry only (one object per solid, no colours or materials); the export unit is applied to the coordinates **and** written as the file's `unit`, so the part keeps its real-world size in a slicer.
 
@@ -779,6 +790,10 @@ The SVG output is a single self-contained `<path>` with no external references, 
 
 Run **CAD Preview: Batch Export…** from the Command Palette to export many files at once without opening them: pick the files, a target (STEP, IGES, BREP, a one-view SVG/DXF technical drawing, or an SVG/DXF drawing sheet), a destination folder, and what to do when an output already exists (skip, add a numeric suffix, or overwrite — an input file is never overwritten). Files run one at a time with a cancellable progress notification; a file that fails becomes a failed row and the rest still export. A report panel lists every file with its status, output, how many edits were baked in (B-rep sources bake their whole edit history; a mesh source's drawing bakes its pending edits through the same engine the viewer replays with), and any error or warning. The same batch is available headlessly as the `batch_export` MCP tool.
 
+### Connect an agent
+
+VS Code agent mode lists the bundled MCP server automatically. For another client, run **CAD Preview: Connect an agent…**, choose the client, and paste the copied snippet into its config (see [MCP Server](./mcp-server.md#registering-with-an-mcp-client)).
+
 ### Preparation report
 
 Run **CAD Preview: Preparation Report…** to write a one-stop summary of a model's preparation facts: `report.json` plus a self-contained `report.html` (no scripts, no network — safe to mail or archive). It uses the focused tab (saving its sidecars first), or asks for a file when none is focused, then asks for a destination folder. Sections cover source identity (file hash and edit fingerprint), the effective mesh options, edit replay, mass properties, BOM, hole table, mesh health, narrow passages, the budget estimate beside the actual generated mesh, and — through the `generate_prep_report` MCP tool — deviation, a handoff-manifest check and snapshots. Every section says whether it ran, and if not, why; nothing is silently left out. Mesh-format sources' inspection facts describe the raw file (their pending edits are not baked into them); the meshing sections bake those edits first.
@@ -800,6 +815,7 @@ This is a display-only report (no 3D view, no merge) — to actually look at bot
 - **No texture support for OBJ.** MTL material files are not loaded; a default grey material is applied.
 - **3MF is display-only on the host.** A `.3mf` opens, can be edited with the mesh-legal ops and exported (STL/OBJ/PLY/glTF), and a 3MF *export* is available from every source. But the host has no triangle parser for it, so Compare Models, Mesh Health, Promote to B-rep, Repair, silhouette/drawing export, headless meshing and headless edit baking refuse it by name (export it to STL/OBJ/PLY/glTF first), and it cannot be saved in place. The file's colours are shown (a Part colour replaces them) and written back on a 3MF export, and the Units dropdown is set from the file's declared unit (the geometry itself is scaled to millimetres on load).
 - **Collada (`.dae`) is display-only on the host and import-only.** It opens and can be edited with the mesh-legal ops and exported to STL/OBJ/PLY/glTF/3MF, but there is no Collada writer, and the host has no triangle parser for it, so Compare Models, Mesh Health, Promote to B-rep, Repair, drawings, headless meshing and headless edit baking refuse it by name. Flat material colours are shown (a Part colour replaces them); textures are ignored. The file's `<unit>` scales the geometry to millimetres and sets the Units dropdown, and the file's up axis is not applied (vertices are shown as authored, like STL/OBJ — use the Up axis setting if it appears lying down).
+- **AMF (`.amf`) is display-only on the host and import-only.** Like Collada it opens, can be edited with the mesh-legal ops and exported to STL/OBJ/PLY/glTF/3MF, but there is no AMF writer and the host has no triangle parser for it, so the host-side tools refuse it by name. Plain and zipped AMF both open. Material and mesh colours are shown (a Part colour replaces them); the file's `unit` already scales the geometry to millimetres and sets the Units dropdown (a micron or unknown unit leaves it on mm).
 - **No glTF animations.** Animation playback is not implemented — only the first frame (bind pose) is shown.
 - **No BRep-embedded geometry in glTF.** Only triangulated `mesh` primitives inside glTF are rendered.
 - **No Compare Models / Mesh Health support for the meshio-only formats.** STEP/IGES/BREP/STL/OBJ/PLY/glTF are all supported (any combination) — glTF included since a dedicated host-side parser shipped, cross-validated against three.js's own `GLTFLoader`. VTK/VTU/MED/CGNS/Exodus/XDMF/MDPA/Gmsh Mesh/Abaqus/I-DEAS Universal/SU2/INRIA Medit/Nastran remain excluded: meshio++'s WASM module converts them to a boundary surface for display but never hands a triangle array back to JS, so there's nothing for the host to match on (they still open and preview normally).

@@ -42,7 +42,8 @@ import {
   type SelectorSynthesizeResultEntry,
 } from "./protocol";
 import type { CadFormat, FileRoute, MeshParseFormat } from "./fileRouter";
-import { COMPARABLE_MESH_FORMATS, ambiguityCaveatFor, displayOnlyMeshMessage, matchExtension } from "./fileRouter";
+import { COMPARABLE_MESH_FORMATS, DISPLAY_ONLY_MESH_FORMATS, ambiguityCaveatFor, displayOnlyMeshMessage, matchExtension } from "./fileRouter";
+import { bundledProcessLimitsPath, parseProcessLimits, resolvePlate, resolveProcess, type ProcessLimitsLibrary } from "./processLimits";
 import { onScadDependencies, resolveEffectiveSource } from "./scadService";
 import { buildPartsFromCsgColors, csgColorPartsNote, type CsgColorGroup } from "./csgColorParts";
 import { readScadSettings } from "./scadSettings";
@@ -601,7 +602,7 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
         // the final dot-segment only, so GiD's compound `post.msh` is covered by
         // the plain `msh` entry — a separate "post.msh" entry would never match.
         "CAD / Mesh": [
-          "stl", "obj", "ply", "gltf", "glb", "3mf", "dae", "step", "stp", "iges", "igs", "brep", "csg", "scad",
+          "stl", "obj", "ply", "gltf", "glb", "3mf", "dae", "amf", "step", "stp", "iges", "igs", "brep", "csg", "scad",
           "vtk", "vtu", "med", "cgns", "exo", "e", "xdmf", "mdpa", "foam",
           "msh", "msh2", "inp", "unv", "su2", "mesh", "bdf",
         ],
@@ -3634,6 +3635,52 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
           post({ type: "passagesResult", requestId: msg.requestId, report, sizeMax });
         } catch (err) {
           post({ type: "passagesError", requestId: msg.requestId, message: (err as Error).message });
+        }
+        return;
+      }
+
+      if (msg.type === "printabilityRequest") {
+        try {
+          if (!route) throw new Error("Unsupported file type.");
+          let source: Parameters<KernelClient["checkPrintability"]>[1];
+          if (route.strategy === "occt") {
+            const scadWarnings: string[] = [];
+            const src = await this.readOcctSource(document.uri, route.format, scadWarnings);
+            for (const w of scadWarnings) post({ type: "status", text: w });
+            source = {
+              kind: "brep",
+              bytes: src.bytes,
+              format: src.format as Extract<CadFormat, "step" | "iges" | "brep" | "csg">,
+              ops: replayTail(currentEdits, currentBakedThrough),
+            };
+          } else {
+            if (DISPLAY_ONLY_MESH_FORMATS.has(route.format)) throw new Error(displayOnlyMeshMessage(route.format, "a printability check"));
+            // The webview serialises the DISPLAYED (edited) mesh, so pending mesh edits are already in it.
+            if (!msg.stl) throw new Error("No mesh geometry available: missing STL data.");
+            source = { kind: "stl", bytes: Buffer.from(msg.stl, "base64") };
+          }
+          let library: ProcessLimitsLibrary = { processes: {}, plates: {} };
+          try {
+            library = parseProcessLimits(Buffer.from(await vscode.workspace.fs.readFile(vscode.Uri.file(bundledProcessLimitsPath(this.context.extensionPath)))).toString("utf8"));
+          } catch {
+            /* a broken bundle degrades to "no starters" */
+          }
+          const result = await docPipeline.checkPrintability(this.context.extensionPath, source, {
+            overhangLimitDeg: msg.overhangLimitDeg,
+            process: resolveProcess(msg.process, library),
+            plate: resolvePlate(msg.plate, library),
+            overlayUp: msg.up,
+          });
+          post({
+            type: "printabilityResult",
+            requestId: msg.requestId,
+            report: result.report,
+            up: msg.up,
+            positions: encodeBuffer(result.overlay!.positions),
+            values: encodeBuffer(result.overlay!.values),
+          });
+        } catch (err) {
+          post({ type: "printabilityError", requestId: msg.requestId, message: (err as Error).message });
         }
         return;
       }

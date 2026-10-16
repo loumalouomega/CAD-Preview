@@ -54,6 +54,7 @@ import { PrimitivePanel } from "./primitivePanel";
 import { ScadCustomizerPanel } from "./scadCustomizerPanel";
 import type { ScadParameter, ScadValue } from "../scadParams";
 import { PassagesPanel } from "./passagesPanel";
+import { PrintabilityPanel } from "./printabilityPanel";
 import { emitPrimitiveOps } from "../primitiveEmit";
 import { fitConstructionPlane, fitOpForKind, fitStoreWarning } from "../fitMapping";
 import { validateEditOp, GUIDE_KINDS, COINCIDENT_CURVE_KINDS, curveEndpointSlots, getVec3Slot } from "../editOps";
@@ -2048,6 +2049,34 @@ const passagesPanel = new PassagesPanel(document.getElementById("passages-panel"
   },
 });
 
+// Printability panel (roadmap "Printability facts report"): facts-only host
+// report; the overhang flags colour the view through the colour-field overlay
+// slot (the deviation map's precedent), so Clear / a new field pick release it.
+let printabilityRequestId: string | null = null;
+let printabilityOverlayShown = false;
+let printabilityPanelEligible = false;
+const printabilityPanel = new PrintabilityPanel(document.getElementById("printability-panel")!, {
+  onCheck: async (params) => {
+    const requestId = `${Date.now()}-${Math.random()}`;
+    printabilityRequestId = requestId;
+    printabilityPanel.setBusy(true);
+    printabilityPanel.renderMessage("Measuring…");
+    post({
+      type: "printabilityRequest",
+      requestId,
+      up: params.up,
+      ...(params.process ? { process: params.process } : {}),
+      ...(params.plate ? { plate: params.plate } : {}),
+      ...(params.overhangLimitDeg !== undefined ? { overhangLimitDeg: params.overhangLimitDeg } : {}),
+      stl: await currentStlIfMeshSource(),
+    });
+  },
+  onClear: () => {
+    if (printabilityOverlayShown) viewer.setColorFieldOverlay(null);
+    printabilityOverlayShown = false;
+  },
+});
+
 function setPassagesEligible(eligible: boolean): void {
   passagesPanel.setEligible(eligible);
   if (!eligible) passagesRequestId = null;
@@ -2071,6 +2100,16 @@ const brepHealthPanel = new BrepHealthPanel(document.getElementById("brep-health
     else renderHighlight();
   },
 });
+
+/** Printability: any source with host-measurable triangles (a B-rep through its fine tessellation; STL/OBJ/PLY/glTF; a meshio boundary). Display-only formats (3MF/Collada/AMF) have none. */
+function setPrintabilityEligible(eligible: boolean): void {
+  printabilityPanel.setEligible(eligible);
+  if (!eligible) printabilityRequestId = null;
+  if (!eligible && printabilityOverlayShown) {
+    viewer.setColorFieldOverlay(null);
+    printabilityOverlayShown = false;
+  }
+}
 
 function setPrimitivesEligible(eligible: boolean): void {
   setPassagesEligible(eligible); // same gate: exact analytic surfaces exist only for B-rep
@@ -5584,6 +5623,14 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
         for (const id of msg.guideIds ?? []) guideEntityIds.add(id); // construction geometry: dimmed, refused as feature operands
         viewer.setGuideIds(msg.guideIds ?? []);
         setMeshHealthEligibility(null); // B-rep sources have nothing to heal
+        if (printabilityOverlayShown) {
+          viewer.setColorFieldOverlay(null); // the flags describe the geometry before this edit
+          printabilityOverlayShown = false;
+        }
+        if (!printabilityPanelEligible) {
+          printabilityPanelEligible = true;
+          setPrintabilityEligible(true); // a B-rep is measured through its fine tessellation (once: keep the last report on edits)
+        }
         meshingPanel.setMeshioOpsAvailable(false); // B-rep has exact geometry — no meshio mesh model
         clashPanel.setEligible(true); // exact booleans exist only for B-rep
         clearClashResults(); // re-tessellation may renumber the ids results name
@@ -5702,6 +5749,8 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
       break;
 
     case "loadUrl":
+      printabilityPanelEligible = COMPARABLE_MESH_FORMATS.has(msg.format);
+      setPrintabilityEligible(printabilityPanelEligible);
       setMeshHealthEligibility(COMPARABLE_MESH_FORMATS.has(msg.format) ? (msg.format as MeshParseFormat) : null);
       meshingPanel.setMeshioOpsAvailable(false); // native mesh has no meshio++ mesh model
       clashPanel.setEligible(false); // no exact boolean geometry for a mesh
@@ -5720,6 +5769,8 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
       // check_mesh_health's MCP tool would reject that source's real path
       // the same way, so the panel stays ineligible here too.
       setMeshHealthEligibility(null);
+      printabilityPanelEligible = true; // the converted boundary is a plain triangle mesh the webview can serialise
+      setPrintabilityEligible(true);
       // Mesh-ops needs a meshio++ mesh model — every loadMeshBytes source has
       // one except OpenFOAM (geometry-only case staging, no readMesh path).
       meshingPanel.setMeshioOpsAvailable(msg.sourceFormat !== "openfoam");
@@ -6293,6 +6344,24 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
       qualityGateRequestId = null;
       meshingPanel.renderGateMessage(msg.message);
       break;
+    case "printabilityResult": {
+      if (msg.requestId !== printabilityRequestId) break; // stale — a newer check/load superseded it
+      printabilityRequestId = null;
+      printabilityPanel.setBusy(false);
+      printabilityPanel.render(msg.report, msg.up);
+      // Overhang flags per corner (0/1) on the viridis ramp: yellow = needs support.
+      viewer.setColorFieldOverlay(buildColorFieldOverlay(decodeF32Local(msg.positions), msg.values, 0, 1));
+      printabilityOverlayShown = true;
+      deviationOverlayShown = false; // the colour-field slot now belongs to this overlay
+      break;
+    }
+    case "printabilityError":
+      if (msg.requestId !== printabilityRequestId) break;
+      printabilityRequestId = null;
+      printabilityPanel.setBusy(false);
+      printabilityPanel.renderMessage(msg.message, true);
+      break;
+
     case "passagesResult":
       if (msg.requestId !== passagesRequestId) break; // stale — a newer analysis/load superseded it
       passagesRequestId = null;
@@ -6370,6 +6439,7 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
     case "colorFieldResult": {
       if (msg.requestId !== colorFieldRequestId) break; // stale — a newer selection/Clear/edit superseded it
       deviationOverlayShown = false; // the field picker now owns the overlay slot
+      printabilityOverlayShown = false;
       const positions = pristineMeshPositions();
       if (!positions) break; // model was replaced/cleared while the request was in flight
       viewer.setColorFieldOverlay(buildColorFieldOverlay(positions, msg.values, msg.min, msg.max));
@@ -6493,7 +6563,7 @@ async function loadMeshObjectFromUrl(
     applyAvailableColorFields(undefined);
     let loadNote = ""; // e.g. an OBJ whose .mtl was not found — shown after the load clears the status line
     const object = await loadMeshFromUrl(url, loaderFormat, (note) => { loadNote = note; });
-    // A 3MF/Collada file declares its unit; the loader has already scaled the geometry to
+    // A 3MF/Collada/AMF file declares its unit; the loader has already scaled the geometry to
     // mm, so this only seeds the (presentation-only) Units dropdown.
     const declaredUnit = object.userData.declaredUnit as DisplayUnit | undefined;
     if (declaredUnit) setDisplayUnit(declaredUnit);

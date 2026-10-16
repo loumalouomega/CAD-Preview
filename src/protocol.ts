@@ -19,6 +19,7 @@ import type { MeshRegionFit } from "./fitMapping";
 import type { PrimitiveReport } from "./primitiveReport";
 import type { BrepHealthReport } from "./brepHealthReport";
 import type { PassageReport } from "./passageAnalysis";
+import type { Axis, PrintabilityReport } from "./printability";
 import type { DeviationReport } from "./meshDeviation";
 import type { MeshioOpSpec } from "./meshioOps";
 import type { BomRow } from "./bomExport";
@@ -736,6 +737,12 @@ export type HostToWebview =
    * report compared against (null = unbounded). */
   | { type: "passagesResult"; requestId: string; report: PassageReport; sizeMax: number | null }
   | { type: "passagesError"; requestId: string; message: string }
+  /** Printability (roadmap "Printability facts report"): the facts report plus the
+   * overhang overlay for the requested build direction as per-corner positions
+   * (base64 Float32, 9 per triangle) and per-corner flags (base64 Float32, 3 per
+   * triangle: 1 = needs support). */
+  | { type: "printabilityResult"; requestId: string; report: PrintabilityReport; up: Axis; positions: string; values: string }
+  | { type: "printabilityError"; requestId: string; message: string }
   /** FE Mesh quality gate (roadmap "meshio++ check_quality as a caller-supplied quality gate"):
    * meshio++'s `checkQuality` over the LAST generated mesh, against the
    * caller's threshold text. Facts only (see `QualityGateResult`); same
@@ -1021,6 +1028,10 @@ export type WebviewToHost =
    * mesh size and Parts. The host reads source, tail ops, Parts and the stored
    * mesh options itself. */
   | { type: "passagesRequest"; requestId: string; targetCells: number }
+  /** Printability panel: measure the open model. `process`/`plate` are bundled
+   * names (the host resolves them); `up` is the build direction the overlay
+   * shows; `stl` as for meshingGenerate (a mesh source's displayed, edited mesh). */
+  | { type: "printabilityRequest"; requestId: string; process?: string; plate?: string; up: Axis; overhangLimitDeg?: number; stl?: string }
   /** FE Mesh ▸ Quality gate: gate the last generated mesh (the host keeps its
    * MSH text per document) against `require`. The host answers with
    * `qualityGateError` when no mesh has been generated, or for a malformed

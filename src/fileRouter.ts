@@ -11,7 +11,7 @@
 export type RenderStrategy = "occt" | "three" | "meshio";
 
 export type CadFormat =
-  | "step" | "iges" | "brep" | "csg" | "scad" | "stl" | "obj" | "ply" | "gltf" | "3mf" | "dae"
+  | "step" | "iges" | "brep" | "csg" | "scad" | "stl" | "obj" | "ply" | "gltf" | "3mf" | "dae" | "amf"
   | "vtk" | "vtu" | "med" | "cgns" | "exodus" | "xdmf" | "mdpa"
   | "openfoam"
   | "gmsh" | "abaqus" | "unv" | "su2" | "medit"
@@ -106,7 +106,7 @@ export const COMPARABLE_MESH_FORMATS: ReadonlySet<CadFormat> = new Set<CadFormat
  * must cover every `strategy: "three"` entry in `EXTENSION_MAP` (pinned by a
  * drift-guard test).
  */
-export const DISPLAY_ONLY_MESH_FORMATS: ReadonlySet<CadFormat> = new Set<CadFormat>(["3mf", "dae"]);
+export const DISPLAY_ONLY_MESH_FORMATS: ReadonlySet<CadFormat> = new Set<CadFormat>(["3mf", "dae", "amf"]);
 
 /** Plain-language refusal naming a display-only format, for `what` the caller
  * cannot do with it. One builder so the host-side gates cannot drift. */
@@ -147,6 +147,9 @@ const EXTENSION_MAP: Record<string, FileRoute> = {
   // Collada: loaded by three's `ColladaLoader` in the webview only (DOM-
   // dependent); display-only on the host, import-only (no writer).
   dae: { strategy: "three", format: "dae" },
+  // AMF: loaded by three's `AMFLoader` in the webview only (DOM-dependent);
+  // display-only on the host, import-only (no writer).
+  amf: { strategy: "three", format: "amf" },
   vtk: { strategy: "meshio", format: "vtk" },
   vtu: { strategy: "meshio", format: "vtu" },
   med: { strategy: "meshio", format: "med" },
