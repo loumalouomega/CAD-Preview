@@ -55,6 +55,46 @@ const DEFAULT_UNIT = "millimeter";
 
 /** 2000-01-01 UTC: inside the zip DOS-date range. */
 const FIXED_MTIME = Date.UTC(2000, 0, 1);
+/** The DOS date/time fields that mean 2000-01-01 00:00 — year 1980+20, month 1, day 1, midnight. */
+const DOS_DATE_2000_01_01 = 0x2821;
+const DOS_TIME_MIDNIGHT = 0x0000;
+
+/**
+ * fflate encodes the `mtime` option through the Date's LOCAL-time getters, so
+ * the same fixed timestamp writes different DOS time bytes on machines in
+ * different timezones (0x0000 under UTC, 0x0800 one hour east, 0x1000 two —
+ * and a negative-UTC zone even moves the DATE to 1999-12-31), which made the
+ * writer's output — and the committed fixture's byte-equality — depend on the
+ * machine the test ran on. The DOS fields themselves are timezone-free, so
+ * after zipping every local-file-header and central-directory entry's
+ * time+date is overwritten with the 2000-01-01 00:00 value the option
+ * intends, and the output is byte-identical everywhere. Walks the archive
+ * header-by-header (signature, then the entry's own name/extra/comment
+ * lengths) rather than pattern-matching signatures, so a `PK\x01\x02` byte
+ * sequence inside a compressed stream can never be mistaken for a header.
+ */
+function normalizeZipTimestamps(bytes: Uint8Array): Uint8Array {
+  const u16 = (o: number) => bytes[o]! | (bytes[o + 1]! << 8);
+  const u32 = (o: number) => u16(o) | (u16(o + 2) << 16);
+  const writeTimeDate = (timeAt: number, dateAt: number) => {
+    bytes[timeAt] = DOS_TIME_MIDNIGHT & 0xff;
+    bytes[timeAt + 1] = DOS_TIME_MIDNIGHT >>> 8;
+    bytes[dateAt] = DOS_DATE_2000_01_01 & 0xff;
+    bytes[dateAt + 1] = DOS_DATE_2000_01_01 >>> 8;
+  };
+  let p = 0;
+  while (p + 4 <= bytes.length && bytes[p] === 0x50 && bytes[p + 1] === 0x4b) {
+    if (bytes[p + 2] === 0x03 && bytes[p + 3] === 0x04) {
+      if (u16(p + 6) & 8) break; // data-descriptor sizes — never fflate's zipSync layout; leave untouched
+      writeTimeDate(p + 10, p + 12);
+      p += 30 + u16(p + 26) + u16(p + 28) + u32(p + 18);
+    } else if (bytes[p + 2] === 0x01 && bytes[p + 3] === 0x02) {
+      writeTimeDate(p + 12, p + 14);
+      p += 46 + u16(p + 28) + u16(p + 30) + u16(p + 32);
+    } else break; // end of central directory (PK\x05\x06) — no more per-entry timestamps
+  }
+  return bytes;
+}
 
 const MAX_MODEL_PART_BYTES = 200 * 1024 * 1024;
 
@@ -157,14 +197,17 @@ export function build3mf(objects: readonly ThreeMfObject[], unit: DisplayUnit = 
     `<?xml version="1.0" encoding="UTF-8"?>\n` +
     `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">` +
     `<Relationship Target="/${MODEL_PATH}" Id="rel0" Type="http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel"/></Relationships>`;
-  // A fixed timestamp keeps the output (and the committed fixtures) byte-stable.
-  return zipSync(
-    {
-      "[Content_Types].xml": strToU8(contentTypes),
-      "_rels/.rels": strToU8(rels),
-      [MODEL_PATH]: strToU8(model),
-    },
-    { mtime: FIXED_MTIME }
+  // A fixed timestamp keeps the output (and the committed fixtures) byte-stable,
+  // on any machine: fflate's own local-time encoding is normalized afterwards.
+  return normalizeZipTimestamps(
+    zipSync(
+      {
+        "[Content_Types].xml": strToU8(contentTypes),
+        "_rels/.rels": strToU8(rels),
+        [MODEL_PATH]: strToU8(model),
+      },
+      { mtime: FIXED_MTIME }
+    )
   );
 }
 
