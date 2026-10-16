@@ -4948,6 +4948,21 @@ try {
     );
   }
 
+  // libMesh (meshio++ 17.2.0): the ASCII/XDR flavours and their gz/bz2
+  // compressed pairings (bzip2 is full-artifact-only) load through the
+  // bridge. Two tets sharing a face = 8 boundary triangles; every flavour
+  // was written AND read back by meshio++ itself at fixture generation
+  // (scripts/gen-libmesh-fixtures.mjs), and compat corpus rows load-libmesh-*
+  // pin them against the packaged server.
+  for (const flavour of ["xda", "xdr", "xda.gz", "xda.bz2"]) {
+    const libmeshFile = path.join(ROOT, "examples", "libMesh", `two-tets.${flavour}`);
+    const libmeshLoaded = await call("load_model", { path: libmeshFile });
+    assert(
+      libmeshLoaded.format === "libmesh" && libmeshLoaded.meshEntities?.triangleCount === 8,
+      `load_model(two-tets.${flavour}): the 2-tet libMesh deck is 8 boundary triangles (got ${JSON.stringify({ format: libmeshLoaded.format, t: libmeshLoaded.meshEntities?.triangleCount })})`
+    );
+  }
+
   // ── Embedded points and curves (roadmap "Embedded points and curves") ──────
   // A Part's FREE point/line — the wireframe an `addPoint`/`addLine` op appends
   // to the model — is not part of any face, so Gmsh's OCC importer drops it

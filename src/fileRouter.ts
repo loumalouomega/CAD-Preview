@@ -16,6 +16,7 @@ export type CadFormat =
   | "openfoam"
   | "gmsh" | "abaqus" | "unv" | "su2" | "medit"
   | "gid"
+  | "libmesh"
   | "nastran";
 
 /** `CadFormat` members routed through meshio++ — kept as one list so every
@@ -48,7 +49,7 @@ export type CadFormat =
  */
 export const MESHIO_FORMATS: readonly CadFormat[] = [
   "vtk", "vtu", "med", "cgns", "exodus", "xdmf", "mdpa", "openfoam",
-  "gmsh", "abaqus", "unv", "su2", "medit", "gid", "nastran",
+  "gmsh", "abaqus", "unv", "su2", "medit", "gid", "nastran", "libmesh",
 ];
 
 /**
@@ -185,6 +186,18 @@ const EXTENSION_MAP: Record<string, FileRoute> = {
   // codebase has no fixture verifying either, and CLAUDE.md's discipline is to
   // claim only what was actually checked.
   "post.msh": { strategy: "meshio", format: "gid" },
+  // libMesh equation-system output (meshio++ 17.2.0 write/read). Four flavours
+  // are routed: the ASCII `.xda` and XDR-binary `.xdr`, each optionally `.gz`
+  // (zlib — every artifact) or `.xda.bz2` (bzip2 — FULL artifact only, like
+  // every other bzip2 path). Verified against the 17.2.0 full artifact at
+  // fixture-generation time (scripts/gen-libmesh-fixtures.mjs writes and reads
+  // back every committed flavour) and pinned by `compat`/`mcp:smoke` on load.
+  // `.xdr.gz`/`.xdr.bz2` are NOT routed — no fixture covers the binary+
+  // compressed combination, and unclaimed-but-readable is this table's norm.
+  xda: { strategy: "meshio", format: "libmesh" },
+  xdr: { strategy: "meshio", format: "libmesh" },
+  "xda.gz": { strategy: "meshio", format: "libmesh" },
+  "xda.bz2": { strategy: "meshio", format: "libmesh" },
   // EnSight Gold is NOT routed, deliberately. The plumbing is all in place —
   // `meshioCompanions.ts` already carries `ensight: ["case", "geo"]` and
   // unit-tests it, and the format only became readable at all in meshio++

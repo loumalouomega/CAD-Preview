@@ -118,6 +118,18 @@
             "filenamePattern": "*.post.msh"
           },
           {
+            "filenamePattern": "*.xda"
+          },
+          {
+            "filenamePattern": "*.xdr"
+          },
+          {
+            "filenamePattern": "*.xda.gz"
+          },
+          {
+            "filenamePattern": "*.xda.bz2"
+          },
+          {
             "filenamePattern": "*.bdf"
           }
         ],
