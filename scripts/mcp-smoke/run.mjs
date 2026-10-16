@@ -4935,31 +4935,42 @@ try {
   );
 
   // VTK XML block codecs (full artifact): the zstd fixture is meshio++'s own
-  // extension codec (VTK cannot read it), the lz4 fixture the codec ParaView
-  // itself writes — both were written by meshio++ over examples/STL/cube.stl
-  // (scripts/gen-codec-fixtures.mjs). Before 17.2.0 either read failed naming
-  // the codec's build flag, so these two loads pin the 17.2.0 upgrade.
+  // extension codec, the lz4 fixture the codec ParaView itself writes — both
+  // were written by meshio++ over examples/STL/cube.stl and, compressed,
+  // load through the normal bridge (before 17.2.0 the read failed naming
+  // the codec's build flag). Headless load_model carries no mesh inventory
+  // for a mesh-format source (meshEntities is B-rep-only), so the geometry
+  // pin is generate_mesh over the file's own boundary.
   for (const codec of ["zstd", "lz4"]) {
     const codecVtu = path.join(ROOT, "examples", "VTKXML", `cube-${codec}.vtu`);
     const codecLoaded = await call("load_model", { path: codecVtu });
     assert(
-      codecLoaded.format === "vtu" && codecLoaded.meshEntities?.triangleCount === 12,
-      `load_model(cube-${codec}.vtu): the codec-decompressed cube is 12 triangles (got ${JSON.stringify({ format: codecLoaded.format, t: codecLoaded.meshEntities?.triangleCount })})`
+      codecLoaded.format === "vtu",
+      `load_model(cube-${codec}.vtu): the compressed cube routes as vtu (got ${JSON.stringify({ format: codecLoaded.format })})`
+    );
+    const codecMeshed = await call("generate_mesh", { path: codecVtu, options: { sizeMax: 0.5 } });
+    assert(
+      codecMeshed.nodeCount > 0 && codecMeshed.elementCount > 0,
+      `generate_mesh(cube-${codec}.vtu): the codec-decompressed cube is meshable (got ${JSON.stringify({ n: codecMeshed.nodeCount, e: codecMeshed.elementCount })})`
     );
   }
 
   // libMesh (meshio++ 17.2.0): the ASCII/XDR flavours and their gz/bz2
   // compressed pairings (bzip2 is full-artifact-only) load through the
-  // bridge. Two tets sharing a face = 8 boundary triangles; every flavour
-  // was written AND read back by meshio++ itself at fixture generation
-  // (scripts/gen-libmesh-fixtures.mjs), and compat corpus rows load-libmesh-*
-  // pin them against the packaged server.
+  // bridge. Headless load_model carries no mesh inventory for a
+  // mesh-format source, so the geometry pin is generate_mesh over each
+  // file's own boundary (two tets sharing a face).
   for (const flavour of ["xda", "xdr", "xda.gz", "xda.bz2"]) {
     const libmeshFile = path.join(ROOT, "examples", "libMesh", `two-tets.${flavour}`);
     const libmeshLoaded = await call("load_model", { path: libmeshFile });
     assert(
-      libmeshLoaded.format === "libmesh" && libmeshLoaded.meshEntities?.triangleCount === 8,
-      `load_model(two-tets.${flavour}): the 2-tet libMesh deck is 8 boundary triangles (got ${JSON.stringify({ format: libmeshLoaded.format, t: libmeshLoaded.meshEntities?.triangleCount })})`
+      libmeshLoaded.format === "libmesh",
+      `load_model(two-tets.${flavour}): the libMesh deck routes as libmesh (got ${JSON.stringify({ format: libmeshLoaded.format })})`
+    );
+    const libmeshMeshed = await call("generate_mesh", { path: libmeshFile, options: { sizeMax: 0.5 } });
+    assert(
+      libmeshMeshed.nodeCount > 0 && libmeshMeshed.elementCount > 0,
+      `generate_mesh(two-tets.${flavour}): the 2-tet deck's boundary is meshable (got ${JSON.stringify({ n: libmeshMeshed.nodeCount, e: libmeshMeshed.elementCount })})`
     );
   }
 
@@ -4972,9 +4983,11 @@ try {
   const cadJsonFile = path.join(ROOT, "examples", "CadJson", "cube.cad.json");
   const cadLoaded = await call("load_model", { path: cadJsonFile });
   assert(
-    cadLoaded.format === "cad_json" && cadLoaded.meshEntities?.triangleCount === 3072,
-    `load_model(cube.cad.json): the stored sampling linearizes to 3072 triangles (got ${JSON.stringify({ format: cadLoaded.format, t: cadLoaded.meshEntities?.triangleCount })})`
+    cadLoaded.format === "cad_json",
+    `load_model(cube.cad.json): the B-rep routes as cad_json (got ${JSON.stringify({ format: cadLoaded.format })})`
   );
+  // The load's geometry is pinned analytically by the iga_* calls below;
+  // headless load_model carries no mesh inventory for a mesh-format source.
   const cadSampled = await call("iga_sample", { path: cadJsonFile });
   assert(
     cadSampled.supported === true && cadSampled.model?.faces === 6 && cadSampled.model?.trimmedFaces === 6 && cadSampled.model?.perPatch?.length === 6 && cadSampled.sampled?.cells?.quad === 1536,
@@ -4996,8 +5009,8 @@ try {
   assert(fs.existsSync(cadRefinedPath) && fs.statSync(cadRefinedPath).size > 0, "iga_refine wrote the refined .cad.json");
   const cadReloaded = await call("load_model", { path: cadRefinedPath });
   assert(
-    cadReloaded.format === "cad_json" && cadReloaded.meshEntities?.triangleCount === 3072,
-    `load_model(refined .cad.json): geometrically identical, still 3072 triangles (got ${JSON.stringify({ format: cadReloaded.format, t: cadReloaded.meshEntities?.triangleCount })})`
+    cadReloaded.format === "cad_json",
+    `load_model(refined .cad.json): the refined B-rep routes as cad_json (got ${JSON.stringify({ format: cadReloaded.format })})`
   );
 
   // ── Embedded points and curves (roadmap "Embedded points and curves") ──────

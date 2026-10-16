@@ -257,7 +257,7 @@ async function runRow(row, seedPath) {
 }
 
 const EXTENSIONS = {
-  mdpaElements: "mdpa", mdpaGeometries: "mdpa", msh2: "msh2", mesh: "mesh", gid: "post.msh", avsucd: "avs", netgen: "vol", flac3d: "f3grid", flux: "pf3",
+  mdpaElements: "mdpa", mdpaGeometries: "mdpa", msh2: "msh2", mesh: "mesh", gid: "post.msh", avsucd: "avs", netgen: "vol", flac3d: "f3grid", flux: "pf3", libmesh: "xda",
 };
 function exportExtension(format) {
   return EXTENSIONS[format] ?? format;
