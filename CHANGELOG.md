@@ -6,6 +6,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/); thi
 
 ## [Unreleased]
 
+## [3.19.0] - 2026-10-16
+
 ### Added
 
 - **Kratos CAD JSON (`.cad.json`) opens, and three IGA MCP tools read its exact NURBS.** The format holds a trimmed NURBS B-rep; the view shows its stored sampling linearized in place (the one bridge format whose cells ARE the surface — `convertSurface`/`extractSurface` would end at free edges). **`iga_sample`** reports the B-rep inventory and re-samples every face at any density; **`iga_refine`** refines exactly (degree elevation + knot insertion, geometry provably unchanged via the response's before/after patch facts) writing a new `.cad.json`; **`iga_evaluate`** evaluates one face at (u, v) with derivatives, unit normals and the inside-of-trimming-loops flag. A STEP/IGES source carries the same side channel in the full artifact, so the tools accept B-rep sources too (refine always writes CAD JSON). Fixture `examples/CadJson/cube.cad.json` (meshio++'s own `fitCad` solid of the STL cube; `scripts/gen-cadjson-fixtures.mjs`); smoke and corpus row `load-cad-json` pin it.
