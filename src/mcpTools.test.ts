@@ -555,6 +555,31 @@ function fakePipeline(overrides: Partial<Pipeline> = {}): Pipeline {
       patches: [], adjacency: [], truncated: false, warnings: [],
     })),
     fitMeshToCad: vi.fn(async () => FAKE_FIT_RESULT),
+    igaSampleModel: vi.fn(async () => ({
+      model: {
+        format: "cad_json" as const, breps: 1, faces: 6, trimmedFaces: 6, rationalFaces: 0, edges: 12, vertices: 0,
+        perPatch: [{ degrees: [1, 1], knotSpans: [1, 1], controlPoints: 4, rational: false }],
+      },
+      sampled: {
+        dim: 3, points: 24, cells: { quad: 6 },
+        boundsMin: [-5, -5, -5], boundsMax: [5, 5, 5],
+      },
+      warnings: [],
+    })),
+    igaRefineModel: vi.fn(async () => ({
+      refinedBytes: new TextEncoder().encode("{}"),
+      report: {
+        format: "cad_json" as const,
+        before: { format: "cad_json" as const, breps: 1, faces: 6, trimmedFaces: 6, rationalFaces: 0, edges: 12, vertices: 0, perPatch: [{ degrees: [1, 1], knotSpans: [1, 1], controlPoints: 4, rational: false }] },
+        after: { format: "cad_json" as const, breps: 1, faces: 6, trimmedFaces: 6, rationalFaces: 0, edges: 12, vertices: 0, perPatch: [{ degrees: [2, 2], knotSpans: [2, 2], controlPoints: 9, rational: false }] },
+        sampled: { dim: 3, points: 24, cells: { quad9: 6 }, boundsMin: [-5, -5, -5], boundsMax: [5, 5, 5] },
+        warnings: [],
+      },
+    })),
+    igaEvaluateModel: vi.fn(async () => ({
+      format: "cad_json" as const, face: 0, spaceDim: 3, pointCount: 1,
+      points: [5, -0.5, 0.5], derivatives: [1, 0, 0, 0, 1, 0], normals: [1, 0, 0], inside: [1],      warnings: [],
+    })),
     promoteMeshToBrep: vi.fn(async () => FAKE_PROMOTE_RESULT),
     repairMesh: vi.fn(async () => FAKE_REPAIR_RESULT),
     convertToStlBoundary: vi.fn(async () => new TextEncoder().encode("solid x\nendsolid x\n")),

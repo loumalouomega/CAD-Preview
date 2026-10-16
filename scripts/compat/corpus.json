@@ -36,6 +36,7 @@
     { "id": "load-libmesh-xdr", "check": "load", "fixture": "libMesh/two-tets.xdr", "expect": { "format": "libmesh", "triangles": 8 } },
     { "id": "load-libmesh-xda-gz", "check": "load", "fixture": "libMesh/two-tets.xda.gz", "expect": { "format": "libmesh", "triangles": 8 } },
     { "id": "load-libmesh-xda-bz2", "check": "load", "fixture": "libMesh/two-tets.xda.bz2", "expect": { "format": "libmesh", "triangles": 8 } },
+    { "id": "load-cad-json", "check": "load", "fixture": "CadJson/cube.cad.json", "expect": { "format": "cad_json", "triangles": 3072 } },
     { "id": "load-gid-compound-extension", "check": "load", "fixture": "GiD/two-tets.post.msh", "siblings": ["GiD/two-tets.post.res"], "expect": { "format": "gid", "warningExcludes": "Assumed to be a Gmsh mesh", "warningIncludes": "cell_tags" } },
     { "id": "load-openfoam-case", "check": "load", "fixtureDir": "OpenFOAM/hex-case", "fixture": "case.foam", "expect": { "format": "openfoam", "remesh": true } },
     { "id": "load-bdf-gmsh-export", "check": "load", "fixture": "Nastran/block-tets.bdf", "expect": { "format": "nastran", "warningIncludes": "Nastran bulk-data", "remesh": true } },

@@ -69,6 +69,9 @@ import {
   fitMeshRegionTool,
   segmentMeshSurfaceTool,
   fitMeshToCadTool,
+  igaSampleTool,
+  igaRefineTool,
+  igaEvaluateTool,
   transformMeshTool,
   remeshMeshTool,
   inspectMeshioFieldsTool,
@@ -983,6 +986,57 @@ server.registerTool(
     },
   },
   wrap((args: Parameters<typeof fitMeshToCadTool>[1]) => fitMeshToCadTool(ctx, args))
+);
+
+server.registerTool(
+  "iga_sample",
+  {
+    description:
+      "Sample a NURBS model's every face into Lagrange cells (meshio++ iga_sample) and report the model's B-rep inventory plus the sampled cells, facts only. Sources: a Kratos CAD JSON model (.cad.json) or, since the full artifact attaches the same side channel to B-rep reads, a STEP/IGES file. The report: breps/faces/edges/vertices counts, per-face trim flags (trimmedFaces/rationalFaces), per-patch degrees + knot spans + control-net size, and the sampled inventory (points, cells by type, bounds). sampleSubdivisions sets the cells per knot span and direction (0 = automatic); trimSamples the points per span of a trimming curve; edges/trim control 3-D-curve edge sampling and trimming-loop clipping. Nothing is stored or written -- iga_refine changes the model's representation and writes it, iga_evaluate evaluates one face at explicit (u, v).",
+    inputSchema: {
+      path: modelPath,
+      sampleSubdivisions: z.number().optional().describe("Cells per knot span and direction of the sampling; 0 is automatic (default automatic)"),
+      trimSamples: z.number().optional().describe("Points per knot span a trimming curve is sampled at, 2..4096"),
+      edges: z.boolean().optional().describe("Also sample the edges that have a 3-D curve"),
+      trim: z.boolean().optional().describe("Keep only the cells inside the trimming loops"),
+    },
+  },
+  wrap((args: Parameters<typeof igaSampleTool>[1]) => igaSampleTool(ctx, args))
+);
+
+server.registerTool(
+  "iga_refine",
+  {
+    description:
+      "Refine a NURBS model EXACTLY (meshio++ iga_refine): degree elevation by elevate, then knot insertion splitting each knot span in subdivisions parts (a number, or one per direction), and write the refined model as a NEW .cad.json file at outputPath. Geometry, fields and a trimmed face's trimming loops do not change -- only the representation (degrees, knot vectors, control nets) grows, which is exactly what a finer isogeometric analysis or a denser exact sampling needs. The response states per-patch degrees/knot spans/control-net size BEFORE and AFTER plus the refined model's own sampled-cell inventory, so the shape-unchanged claim is checkable. Sources: .cad.json or STEP/IGES (a B-rep source refines into CAD JSON -- the representation the refined model serializes to; warned). One-shot export: the source file is untouched. Opens with load_model like any .cad.json.",
+    inputSchema: {
+      path: modelPath,
+      outputPath: z.string().describe("Absolute path to write the refined model to as .cad.json (must not be the source path)"),
+      subdivisions: z.union([z.number(), z.array(z.number())]).optional().describe("Knot-insertion splits per span -- one number, or one per parametric direction"),
+      elevate: z.union([z.number(), z.array(z.number())]).optional().describe("Degree elevation -- one number, or one per parametric direction"),
+      sampleSubdivisions: z.number().optional().describe("Cells per knot span and direction of the returned sampling; 0 is automatic"),
+      trimSamples: z.number().optional().describe("Points per knot span a trimming curve is sampled at, 2..4096"),
+      edges: z.boolean().optional().describe("Also sample the edges that have a 3-D curve"),
+      trim: z.boolean().optional().describe("Keep only the cells inside the trimming loops"),
+    },
+  },
+  wrap((args: Parameters<typeof igaRefineTool>[1]) => igaRefineTool(ctx, args))
+);
+
+server.registerTool(
+  "iga_evaluate",
+  {
+    description:
+      "Evaluate one NURBS face at explicit parametric coordinates (meshio++ iga_evaluate): the exact surface point(s), optionally with first derivatives (derivatives: 1 adds them plus the unit normals of a surface) and the inside flag (1 where the face's trimming loops contain the point). `face` is the 0-based face index (iga_sample reports the inventory); `params` is a flat array with 2 numbers (u, v) per point. An out-of-range (u, v) throws with the knot range named. Facts only, nothing written. Sources: .cad.json or STEP/IGES.",
+    inputSchema: {
+      path: modelPath,
+      face: z.number().describe("0-based face index to evaluate (iga_sample's inventory lists the faces)"),
+      params: z.array(z.number()).describe("Flat parametric-coordinate array: 2 numbers (u, v) per point"),
+      derivatives: z.number().optional().describe("1 also returns first derivatives and unit normals (default 0)"),
+      trimSamples: z.number().optional().describe("Points per knot span a trimming curve is sampled at, 2..4096 (affects `inside`)"),
+    },
+  },
+  wrap((args: Parameters<typeof igaEvaluateTool>[1]) => igaEvaluateTool(ctx, args))
 );
 
 server.registerTool(

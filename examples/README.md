@@ -14,6 +14,8 @@ Fixtures used for manual verification (see the "Verify a change" section of the 
 | [`AMF/`](AMF/) | AMF | `.amf` | Three.js `AMFLoader` (mesh; import-only, display-only on the host) |
 | [`MED/`](MED/) | MED | `.med` | meshio++ bridge (host-side, geometry + region/data-array-name visibility) |
 | [`VTKXML/`](VTKXML/) | VTK XML | `.vtu` | meshio++ bridge (host-side, geometry; exercises the zstd/lz4 block codecs) |
+| [`libMesh/`](libMesh/) | libMesh | `.xda`/`.xdr` (+`.gz`/`.bz2`) | meshio++ bridge (host-side, geometry) |
+| [`CadJson/`](CadJson/) | Kratos CAD JSON | `.cad.json` | meshio++ bridge (host-side, exact NURBS via the `iga_*` tools) |
 | [`Nastran/`](Nastran/) | Nastran bulk data | `.bdf` | meshio++ bridge (host-side, geometry only) |
 | [`OpenSCAD/`](OpenSCAD/) | OpenSCAD CSG | `.csg` | CSG parse → OCCT build → BRepMesh (B-rep, opaque base) |
 | [`OpenSCAD/`](OpenSCAD/) | OpenSCAD Source | `.scad` | openscad binary → `.csg` → same as above |
@@ -37,6 +39,10 @@ Each mesh directory contains a single `cube.*` fixture — a minimal triangulate
 ## libMesh
 
 `two-tets.{xda,xdr,xda.gz,xda.bz2}` are meshio++'s own libMesh writer output of a hand-built mesh (two tetrahedra sharing the face (1,2,3); 5 points, so the boundary conversion yields 8 triangles), written once per routed flavour by `scripts/gen-libmesh-fixtures.mjs`, which also reads every flavour straight back by extension sniffing to pin the read side at fixture-generation time. libMesh is the equation-system output format of the [libMesh](https://libmesh.github.io/) FEM library: `.xda` is the ASCII checkpoint, `.xdr` the XDR-binary one, and meshio++ (17.2.0+) also reads each compressed with gzip (`zlib` — every artifact) or bzip2 (FULL artifact only, like every bzip2 path — the `.bz2` fixture therefore pins the full-artifact requirement). `.xdr.gz`/`.xdr.bz2` are deliberately NOT routed — no fixture covers the binary+compressed combination. Asserted by `npm run mcp:smoke` (all four flavours load through the real bridge) and `compat` corpus rows `load-libmesh-*`; `load-libmesh-xda` also re-meshes the loaded geometry. libMesh is also an FE-mesh **export** target (plain `.xda`; see `doc/gmsh-integration.md`'s "The meshio++ bridge"). Regenerate with `node scripts/gen-libmesh-fixtures.mjs` after a meshio++ upgrade.
+
+## CadJson
+
+`cube.cad.json` is a Kratos CAD JSON NURBS B-rep of the STL cube, built entirely by meshio++: the FULL artifact's `fitCad` turns `STL/cube.stl`'s six plane patches into an exact analytic solid and the solid's `info` side channel is serialized back as CAD JSON — the input format of the `iga_sample`/`iga_refine`/`iga_evaluate` MCP tools. The file declares 6 trimmed plane faces over 6 patches (12 edges, 1 brep) and stores a 16×16-per-face quad sampling (1536 quads → 3072 boundary triangles through the bridge's in-place linearization). `scripts/gen-cadjson-fixtures.mjs` regenerates it and prints the sampled/refined/evaluated facts that `npm run mcp:smoke` and the `load-cad-json` corpus row pin (refine `elevate 1, subdivisions 1` → degrees 1→2, 4→9 control points per patch, `quad9` sampling, still 3072 triangles when reloaded — geometry unchanged). Run `node scripts/gen-cadjson-fixtures.mjs` after a meshio++ upgrade.
 
 ## Nastran
 

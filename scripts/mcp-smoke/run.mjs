@@ -318,8 +318,8 @@ try {
   assert(capsText.length > 100, "resources/read cad-preview://capabilities returns JSON text");
 
   const tools = (await request("tools/list", {})).tools.map((t) => t.name);
-  assert(tools.length === 78, `tools/list exposes 78 tools (got ${tools.length}: ${tools.join(", ")})`);
-  for (const t of ["check_printability", "list_workspace_models", "check_interference_all", "generate_bom", "generate_hole_table", "render_ops_prefix", "check_tolerance", "inspect_meshio_fields", "pin_annotation", "import_svg", "save_mesh_preset", "list_mesh_presets", "apply_mesh_preset", "compare_mesh_refinement", "export_tessellated_stl", "estimate_mesh_budget", "analyze_passages", "measure_mesh_deviation", "save_sheet_template", "list_sheet_templates", "batch_export", "check_handoff_manifest", "generate_prep_report", "job_status", "job_cancel", "check_brep_health", "list_scad_parameters", "convert_scad", "list_layers", "set_layer", "assign_layer", "segment_mesh_surface", "fit_mesh_to_cad", "check_mesh_quality"]) {
+  assert(tools.length === 81, `tools/list exposes 81 tools (got ${tools.length}: ${tools.join(", ")})`);
+  for (const t of ["check_printability", "list_workspace_models", "check_interference_all", "generate_bom", "generate_hole_table", "render_ops_prefix", "check_tolerance", "inspect_meshio_fields", "pin_annotation", "import_svg", "save_mesh_preset", "list_mesh_presets", "apply_mesh_preset", "compare_mesh_refinement", "export_tessellated_stl", "estimate_mesh_budget", "analyze_passages", "measure_mesh_deviation", "save_sheet_template", "list_sheet_templates", "batch_export", "check_handoff_manifest", "generate_prep_report", "job_status", "job_cancel", "check_brep_health", "list_scad_parameters", "convert_scad", "list_layers", "set_layer", "assign_layer", "segment_mesh_surface", "fit_mesh_to_cad", "iga_sample", "iga_refine", "iga_evaluate", "check_mesh_quality"]) {
     assert(tools.includes(t), `tools/list exposes ${t}`);
   }
 
@@ -4962,6 +4962,43 @@ try {
       `load_model(two-tets.${flavour}): the 2-tet libMesh deck is 8 boundary triangles (got ${JSON.stringify({ format: libmeshLoaded.format, t: libmeshLoaded.meshEntities?.triangleCount })})`
     );
   }
+
+  // Kratos CAD JSON (meshio++ 17.2.0): a NURBS B-rep the iga_* tools sample,
+  // refine and evaluate exactly. The fixture is meshio++'s own fitCad output
+  // over the STL cube (scripts/gen-cadjson-fixtures.mjs), so every number
+  // below is analytic — and the bridge needs its cad_json in-place
+  // linearization (the cells ARE the surface; extractSurface would return
+  // free edges).
+  const cadJsonFile = path.join(ROOT, "examples", "CadJson", "cube.cad.json");
+  const cadLoaded = await call("load_model", { path: cadJsonFile });
+  assert(
+    cadLoaded.format === "cad_json" && cadLoaded.meshEntities?.triangleCount === 3072,
+    `load_model(cube.cad.json): the stored sampling linearizes to 3072 triangles (got ${JSON.stringify({ format: cadLoaded.format, t: cadLoaded.meshEntities?.triangleCount })})`
+  );
+  const cadSampled = await call("iga_sample", { path: cadJsonFile });
+  assert(
+    cadSampled.supported === true && cadSampled.model?.faces === 6 && cadSampled.model?.trimmedFaces === 6 && cadSampled.model?.perPatch?.length === 6 && cadSampled.sampled?.cells?.quad === 1536,
+    `iga_sample(cube.cad.json): 6 trimmed faces over 6 patches, 1536 sampled quads (got ${JSON.stringify({ faces: cadSampled.model?.faces, cells: cadSampled.sampled?.cells })})`
+  );
+  const cadEval = await call("iga_evaluate", { path: cadJsonFile, face: 0, params: [0.5, 0.5], derivatives: 1 });
+  assert(
+    cadEval.supported === true && cadEval.pointCount === 1 && Math.abs(cadEval.points[0] - 5) < 1e-9 &&
+      Math.abs(cadEval.normals[0] - 1) < 1e-9 && Math.abs(cadEval.normals[1]) < 1e-9 && Math.abs(cadEval.normals[2]) < 1e-9 && cadEval.inside?.[0] === 1,
+    `iga_evaluate(face 0 @ uv 0.5,0.5): on the x=5 face with a unit +x normal, inside (got ${JSON.stringify({ p: cadEval.points, n: cadEval.normals, i: cadEval.inside })})`
+  );
+  const cadRefinedPath = path.join(dir, "cube-refined.cad.json");
+  const cadRefine = await call("iga_refine", { path: cadJsonFile, outputPath: cadRefinedPath, elevate: 1, subdivisions: 1 });
+  assert(
+    cadRefine.supported === true && cadRefine.before?.perPatch?.[0]?.degrees?.[0] === 1 && cadRefine.after?.perPatch?.[0]?.degrees?.[0] === 2 &&
+      cadRefine.after?.perPatch?.[0]?.controlPoints === 9 && cadRefine.sampled?.cells?.quad9 === 1536,
+    `iga_refine(cube.cad.json): degrees 1→2, 4→9 control points, quad9 sampling (got ${JSON.stringify({ b: cadRefine.before?.perPatch?.[0], a: cadRefine.after?.perPatch?.[0], s: cadRefine.sampled?.cells })})`
+  );
+  assert(fs.existsSync(cadRefinedPath) && fs.statSync(cadRefinedPath).size > 0, "iga_refine wrote the refined .cad.json");
+  const cadReloaded = await call("load_model", { path: cadRefinedPath });
+  assert(
+    cadReloaded.format === "cad_json" && cadReloaded.meshEntities?.triangleCount === 3072,
+    `load_model(refined .cad.json): geometrically identical, still 3072 triangles (got ${JSON.stringify({ format: cadReloaded.format, t: cadReloaded.meshEntities?.triangleCount })})`
+  );
 
   // ── Embedded points and curves (roadmap "Embedded points and curves") ──────
   // A Part's FREE point/line — the wireframe an `addPoint`/`addLine` op appends

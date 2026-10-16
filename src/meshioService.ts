@@ -319,14 +319,31 @@ export async function convertToStlBoundary(
     // `convertSurface` linearizes higher-order cells but does NOT split
     // multi-node boundary faces — a quad-only boundary yields zero facets.
     // Also use this path when the format's C++ surface reader is unsupported.
-    let boundary = m.extractSurface(sourceMesh, false);
-    assertCoversSource(boundary.points, boundary.dim);
+    // cad_json is the one format whose cells ARE the surface already (sampled
+    // quads + 1-D edge lines): `extractSurface` is boundary extraction —
+    // "faces of a volume, edges of a surface" — so on it the mesh would come
+    // back as 384 free edges and the STL empty (probed live). Its cells are
+    // linearized in place instead, and only the resulting triangle blocks are
+    // emitted (the edge lines must not reach the STL fan-triangulator, which
+    // refuses a 2-node block).
+    let boundary: { points: Float64Array; dim: number };
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    let blocks = boundary.cells as any[];
-    if (blocks.length > 0 && blocks.some((b) => b.type !== "triangle" || b.nodesPerCell !== 3)) {
-      boundary = m.convertCells(boundary, "simplexify", true);
+    let blocks: any[];
+    if (meshioFormat === "cad_json") {
+      boundary = m.convertCells(sourceMesh, "simplexify", true);
+      assertCoversSource(boundary.points, boundary.dim);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      blocks = (boundary.cells as any[]).filter((b) => b.type === "triangle");
+    } else {
+      boundary = m.extractSurface(sourceMesh, false);
+      assertCoversSource(boundary.points, boundary.dim);
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       blocks = boundary.cells as any[];
+      if (blocks.length > 0 && blocks.some((b) => b.type !== "triangle" || b.nodesPerCell !== 3)) {
+        boundary = m.convertCells(boundary, "simplexify", true);
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        blocks = boundary.cells as any[];
+      }
     }
     const stl = boundaryTrianglesToAsciiStl(boundary.points, boundary.dim, blocks, "meshio import");
     if (stl) return stl;

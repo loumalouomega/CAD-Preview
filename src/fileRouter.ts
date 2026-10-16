@@ -17,6 +17,7 @@ export type CadFormat =
   | "gmsh" | "abaqus" | "unv" | "su2" | "medit"
   | "gid"
   | "libmesh"
+  | "cad_json"
   | "nastran";
 
 /** `CadFormat` members routed through meshio++ — kept as one list so every
@@ -49,7 +50,7 @@ export type CadFormat =
  */
 export const MESHIO_FORMATS: readonly CadFormat[] = [
   "vtk", "vtu", "med", "cgns", "exodus", "xdmf", "mdpa", "openfoam",
-  "gmsh", "abaqus", "unv", "su2", "medit", "gid", "nastran", "libmesh",
+  "gmsh", "abaqus", "unv", "su2", "medit", "gid", "nastran", "libmesh", "cad_json",
 ];
 
 /**
@@ -198,6 +199,16 @@ const EXTENSION_MAP: Record<string, FileRoute> = {
   xdr: { strategy: "meshio", format: "libmesh" },
   "xda.gz": { strategy: "meshio", format: "libmesh" },
   "xda.bz2": { strategy: "meshio", format: "libmesh" },
+  // Kratos CAD JSON (meshio++ 17.2.0): a NURBS B-rep in JSON form — the
+  // exact surfaces the IGA tools (`iga_sample`/`iga_refine`/`iga_evaluate`)
+  // sample, refine and evaluate. A COMPOUND extension, like `.post.msh`:
+  // it ends in `.json`, which is not registered anywhere, so longest-suffix
+  // resolution is not strictly needed — registering the full `cad.json` keeps
+  // the format table one-to-one with the file names users actually have.
+  // The bridge's usual `convertSurface` path yields an empty boundary for it
+  // (the cells ARE the surface), so `convertToStlBoundary` linearizes its
+  // cells in place — see the cad_json branch there.
+  "cad.json": { strategy: "meshio", format: "cad_json" },
   // EnSight Gold is NOT routed, deliberately. The plumbing is all in place —
   // `meshioCompanions.ts` already carries `ensight: ["case", "geo"]` and
   // unit-tests it, and the format only became readable at all in meshio++
