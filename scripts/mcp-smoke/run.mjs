@@ -318,8 +318,8 @@ try {
   assert(capsText.length > 100, "resources/read cad-preview://capabilities returns JSON text");
 
   const tools = (await request("tools/list", {})).tools.map((t) => t.name);
-  assert(tools.length === 77, `tools/list exposes 77 tools (got ${tools.length}: ${tools.join(", ")})`);
-  for (const t of ["check_printability", "list_workspace_models", "check_interference_all", "generate_bom", "generate_hole_table", "render_ops_prefix", "check_tolerance", "inspect_meshio_fields", "pin_annotation", "import_svg", "save_mesh_preset", "list_mesh_presets", "apply_mesh_preset", "compare_mesh_refinement", "export_tessellated_stl", "estimate_mesh_budget", "analyze_passages", "measure_mesh_deviation", "save_sheet_template", "list_sheet_templates", "batch_export", "check_handoff_manifest", "generate_prep_report", "job_status", "job_cancel", "check_brep_health", "list_scad_parameters", "convert_scad", "list_layers", "set_layer", "assign_layer", "segment_mesh_surface", "check_mesh_quality"]) {
+  assert(tools.length === 78, `tools/list exposes 78 tools (got ${tools.length}: ${tools.join(", ")})`);
+  for (const t of ["check_printability", "list_workspace_models", "check_interference_all", "generate_bom", "generate_hole_table", "render_ops_prefix", "check_tolerance", "inspect_meshio_fields", "pin_annotation", "import_svg", "save_mesh_preset", "list_mesh_presets", "apply_mesh_preset", "compare_mesh_refinement", "export_tessellated_stl", "estimate_mesh_budget", "analyze_passages", "measure_mesh_deviation", "save_sheet_template", "list_sheet_templates", "batch_export", "check_handoff_manifest", "generate_prep_report", "job_status", "job_cancel", "check_brep_health", "list_scad_parameters", "convert_scad", "list_layers", "set_layer", "assign_layer", "segment_mesh_surface", "fit_mesh_to_cad", "check_mesh_quality"]) {
     assert(tools.includes(t), `tools/list exposes ${t}`);
   }
 
@@ -2794,6 +2794,27 @@ try {
   assert(
     sphereSeg.numPatches === 1 && sphereSeg.patches[0].fitType === "sphere" && Math.abs(sphereSeg.patches[0].params[6] - 10) < 0.05,
     `segment_mesh_surface(large-sphere-100k.stl): one sphere of radius ~10 expected (got ${JSON.stringify(sphereSeg.patches[0])})`
+  );
+  // fit_mesh_to_cad: the cube's six plane patches become ONE exact solid —
+  // a valid B-rep with six planar faces enclosing the same 10x10x10 = 1000
+  // volume (analytic expectations), plus the optional cad_json side channel.
+  const cubeStep = path.join(dir, "cube-fitted.step");
+  const cubeCadJson = path.join(dir, "cube-fitted.cad.json");
+  const cubeFit = await call("fit_mesh_to_cad", { path: cubeStl, outputPath: cubeStep, cadJsonPath: cubeCadJson });
+  assert(
+    cubeFit.supported === true && cubeFit.valid === true && cubeFit.numSolids === 1 && cubeFit.numPlane === 6,
+    `fit_mesh_to_cad(cube.stl): a valid 6-plane solid expected (got valid=${cubeFit.valid}, solids=${cubeFit.numSolids}, planes=${cubeFit.numPlane}, faces=${cubeFit.numFaces})`
+  );
+  assert(
+    Math.abs(cubeFit.volume - 1000) < 1 && Math.abs(cubeFit.volumeRatio - 1) < 1e-3,
+    `fit_mesh_to_cad(cube.stl): volume ~1000 at ratio ~1 expected (got ${cubeFit.volume}, ratio ${cubeFit.volumeRatio})`
+  );
+  assert(fs.existsSync(cubeStep) && fs.statSync(cubeStep).size > 0, "fit_mesh_to_cad wrote the STEP file");
+  assert(fs.existsSync(cubeCadJson) && fs.statSync(cubeCadJson).size > 0, "fit_mesh_to_cad wrote the cad_json side channel");
+  const badFitExtension = await callTolerant("fit_mesh_to_cad", { path: cubeStl, outputPath: path.join(dir, "cube-fitted.brep") });
+  assert(
+    badFitExtension.error && /\.step\/\.stp/.test(badFitExtension.error),
+    `fit_mesh_to_cad rejects a non-STEP outputPath (got: ${badFitExtension.error})`
   );
   const softSnap = await call("render_snapshot", { path: cubeStl });
   assert(

@@ -6,6 +6,14 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/); thi
 
 ## [Unreleased]
 
+### Added
+
+- **`fit_mesh_to_cad` MCP tool and a Mesh Health panel "Fit to CAD…" button.** Mesh → analytic CAD in one call: everything `segment_mesh_surface` runs (weld → `segment` → `fitPrimitives`) followed by meshio++'s `fitCad`, which replaces the patches with an exact B-rep — one trimmed plane/sphere/cylinder/cone/torus face per accepted patch plus rolling-ball fillets and blends, chamfers, vertex blends, threads (tapered and variable-pitch included) and freeform B-spline faces where no primitive fits — sewn and checked by the OpenCASCADE now linked into the full WASM artifact, written as a brand-new AP214 STEP file. The response is `fitCad`'s own report (valid B-rep check, volume/skin volume/ratio, Hausdorff deviation, face counts by kind and blend family, exact/approx edges) plus the segmentation's own fit counts; with `cadJsonPath` it also writes the solid's B-rep side channel for the IGA tools. Same gate as `segment_mesh_surface`; the skin must be closed and consistently wound (`check_mesh_health` reads the facts, `repair_mesh` rebuilds one). The panel button shares Promote's closed gate, saves via dialog (always STEP), and reports `N faces (…), volume ratio, max deviation` — flagging a solid that failed OpenCASCADE's own check even though it is written.
+
+### Changed
+
+- **meshio++ updated 16.42.0 → 17.2.0, staged and loaded as its FULL artifact** (`meshioplusplus_wasm_full`, sequential). The full pair is a strict superset of the lean one: OpenCASCADE 7.6.3 statically linked (STEP/IGES reading through meshio++ and the `fitCad` fit), the zstd and lz4 VTK XML block codecs, and bzip2 (libMesh `.xda.bz2`/`.xdr.bz2`). The lean pair and both threaded (`_mt`) flavours are deliberately not shipped (`scripts/runtimeAssets.mjs` + `compat/vsix-check` enforce it); the package's `THIRD_PARTY_NOTICES.md` ships beside the artifact and README's Licensing covers the `MIT AND (LGPL-2.1-only WITH OCCT-exception-1.0)` expression and the upstream relinking route.
+
 ## [3.18.0] - 2026-10-16
 
 ### Added

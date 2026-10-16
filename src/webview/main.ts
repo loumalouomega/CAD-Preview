@@ -1826,6 +1826,10 @@ const meshHealthPanel = new MeshHealthPanel(document.getElementById("mesh-health
     if (!meshHealthEligibleFormat) return;
     post({ type: "promoteToBrepButtonClicked" });
   },
+  onFitCad: () => {
+    if (!meshHealthEligibleFormat) return;
+    post({ type: "fitMeshToCadButtonClicked" });
+  },
   onRepair: () => {
     if (!meshHealthEligibleFormat) return;
     post({ type: "repairMeshButtonClicked" });

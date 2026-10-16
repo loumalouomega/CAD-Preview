@@ -135,6 +135,7 @@ import type { checkMeshHealth, MeshHealthReport, promoteMeshToBrep, PromoteMeshR
 import type { recognizePrimitives, PrimitiveReport } from "./primitiveReport";
 import type { fitMeshRegion } from "./meshRegionFit";
 import type { segmentMeshSurface, SegmentMeshOptions } from "./meshSegment";
+import type { fitMeshToCad, FitMeshToCadOptions } from "./meshFitCad";
 import type { renderMeshSoftware } from "./meshSoftwareRender";
 import type { MeshRegionFit } from "./fitMapping";
 import { fitConstructionPlane, fitOpForKind, fitStoreWarning, FIT_DERIVED_FROM } from "./fitMapping";
@@ -295,6 +296,7 @@ export interface Pipeline {
   recognizePrimitives: typeof recognizePrimitives;
   fitMeshRegion: typeof fitMeshRegion;
   segmentMeshSurface: typeof segmentMeshSurface;
+  fitMeshToCad: typeof fitMeshToCad;
   renderMeshSoftware: typeof renderMeshSoftware;
   promoteMeshToBrep: typeof promoteMeshToBrep;
   repairMesh: typeof repairMesh;
@@ -391,6 +393,12 @@ export function describeCapabilities() {
   }));
   return {
     ops,
+    kernels: {
+      versions: kernelVersions(),
+      notes: [
+        "The meshio++ kernel is loaded as its FULL sequential artifact since @meshioplusplus/wasm 17.2.0: the lean pair's whole core plus OpenCASCADE 7.6.3 (step/iges READING via meshio++ and the fit_cad mesh-to-analytic-CAD fit), the zstd and lz4 VTK XML block codecs (lz4 is a real VTK compressor; zstd a meshio++ extension), and bzip2 (libMesh .xda.bz2/.xdr.bz2). The lean pair and both threaded (_mt) flavours are deliberately not shipped — see README's Licensing for the full artifact's OpenCASCADE/LGPL note.",
+      ],
+    },
     opNotes: [
       "Pass ops as raw JSON objects with an `op` kind field; they are validated by the same tolerant gate the extension uses (malformed ops are rejected with a reason, never crash).",
       "Any numeric field may carry a parametric expression via `exprs`, e.g. {op: \"addBox\", size: [20,10,5], exprs: {\"size[0]\": \"L\"}} — see set_variables.",
@@ -2614,6 +2622,91 @@ export async function segmentMeshSurfaceTool(
   void _path;
   const report = await ctx.pipeline.segmentMeshSurface(bytes, format, options, external);
   return { format: route.format, supported: true, ...report };
+}
+
+// ---------------------------------------------------------------------------
+// fit_mesh_to_cad
+
+/**
+ * Mesh → analytic CAD in one call: segment the whole welded surface, fit one
+ * primitive per patch, then have meshio++'s `fitCad` trim an analytic face per
+ * accepted patch, add fillets/blends/chamfers/threads and freeform B-splines
+ * where no primitive fits, sew them and check the solid against the
+ * OpenCASCADE linked into the FULL WASM artifact — written as a brand-new
+ * STEP file at `outputPath`. One-shot export exactly like
+ * `promote_mesh_to_brep` (the source keeps its mesh identity; see CLAUDE.md's
+ * "Mesh → B-rep promotion"), one step further: PROMOTION sews the triangles
+ * themselves, this REPLACES them with exact surfaces. Same gate as
+ * `segment_mesh_surface` (mesh sources with a host-side triangle parser);
+ * needs the full artifact's OpenCASCADE. Facts only — `valid`, volumes, the
+ * Hausdorff deviation and every face count are upstream's own report.
+ */
+export async function fitMeshToCadTool(
+  ctx: ToolContext,
+  params: { path: string; outputPath: string; cadJsonPath?: string } & FitMeshToCadOptions
+) {
+  const modelPath = params.path;
+  const route = requireRoute(modelPath);
+  if (route.strategy === "occt") {
+    return {
+      format: route.format,
+      supported: false,
+      warnings: [`${route.format} is a B-rep source — its surfaces are already exact, so there is nothing to fit; use inspect/export_brep instead.`],
+    };
+  }
+  if (!COMPARABLE_MESH_FORMATS.has(route.format)) {
+    return {
+      format: route.format,
+      supported: false,
+      warnings: [`${route.format} has no host-side triangle-soup parser (only stl/obj/ply/gltf are supported) — cannot fit it headless.`],
+    };
+  }
+
+  const outputPath = path.resolve(params.outputPath);
+  if (!/\.(?:step|stp)$/i.test(outputPath)) {
+    throw new Error(`outputPath must be a .step/.stp file (got ${params.outputPath}) — fit_mesh_to_cad writes the fitted solid as STEP.`);
+  }
+  assertNotSourcePath(modelPath, outputPath);
+  let cadJsonPath: string | undefined;
+  if (params.cadJsonPath != null) {
+    cadJsonPath = path.resolve(params.cadJsonPath);
+    if (!/\.json$/i.test(cadJsonPath)) throw new Error(`cadJsonPath must be a .json file (got ${params.cadJsonPath}).`);
+    if (cadJsonPath === outputPath) throw new Error("cadJsonPath must differ from outputPath.");
+    assertNotSourcePath(modelPath, cadJsonPath);
+  }
+
+  const warnings: string[] = [];
+  const { ops } = await readEditsResolved(modelPath);
+  if (ops.length > 0) {
+    warnings.push(`${modelPath}: pending edits are NOT baked in — fit_mesh_to_cad reads the raw file; save_model (STL/OBJ/PLY) bakes them into the source first.`);
+  }
+
+  const bytes = await readModelBytes(modelPath);
+  const format = route.format as MeshParseFormat;
+  const external = format === "gltf" ? await resolveGltfBuffers(ctx, modelPath, bytes) : undefined;
+  const { path: _path, outputPath: _out, cadJsonPath: _cad, ...options } = params;
+  void _path;
+  void _out;
+  void _cad;
+  const result = await ctx.pipeline.fitMeshToCad(bytes, format, { ...options, cadJson: cadJsonPath !== undefined }, external);
+  await fs.writeFile(outputPath, result.stepBytes);
+  const cadJsonBytes = result.cadJsonBytes?.byteLength;
+  if (cadJsonPath) {
+    if (!result.cadJsonBytes) throw new Error("Internal error: cad_json output was requested but no bytes came back.");
+    await fs.writeFile(cadJsonPath, result.cadJsonBytes);
+  }
+
+  return {
+    format: route.format,
+    supported: true as const,
+    written: outputPath,
+    bytes: result.stepBytes.byteLength,
+    ...(cadJsonPath ? { cadJsonWritten: cadJsonPath, cadJsonBytes } : {}),
+    ...result.report,
+    warnings: [...warnings, ...result.report.warnings],
+    note:
+      "One-shot export: the source mesh is untouched and stays a mesh in the Models view; open the STEP with load_model to work with it as a B-rep (get_mass_properties, measure_exact, export_brep, compare_models...). An invalid fit is still written — `valid: false` means OpenCASCADE's B-rep check failed and the counters describe what was built. Faces count B-rep faces, not triangles; `volumeRatio` near 1 means the fit preserved the enclosed volume.",
+  };
 }
 
 // ---------------------------------------------------------------------------

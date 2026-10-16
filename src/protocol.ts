@@ -924,6 +924,13 @@ export type WebviewToHost =
   | { type: "meshPresetDelete"; name: string }
   | { type: "screenshotButtonClicked" }
   | { type: "promoteToBrepButtonClicked" }
+  /** Mesh Health panel: segment the mesh's whole surface, replace its patches
+   * with exact analytic faces (`fit_mesh_to_cad`) and save the fitted solid as
+   * a brand-new STEP file. Like `promoteToBrepButtonClicked`, the host owns
+   * the whole flow (save dialog → fit → write → summary status); the webview
+   * only gates the click on a report showing at least one component that
+   * closed. */
+  | { type: "fitMeshToCadButtonClicked" }
   | { type: "repairMeshButtonClicked" }
   /** Primitives panel (Tier 1 "Primitive-recognition panel"): one-shot
    * actions over the last recognized report. Like `promoteToBrepButtonClicked`,

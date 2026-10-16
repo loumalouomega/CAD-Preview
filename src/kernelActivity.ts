@@ -88,6 +88,7 @@ export const KERNELS_BY_FUNCTION: Record<keyof DocumentPipeline, readonly Kernel
   checkBrepHealth: O,
   recognizePrimitives: O,
   segmentMeshSurface: M,
+  fitMeshToCad: M,
   renderMeshSoftware: M,
   fitMeshRegion: NONE, // pure TypeScript over triangles — no WASM at all
   promoteMeshToBrep: O,
