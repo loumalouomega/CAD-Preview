@@ -3912,6 +3912,10 @@ test("printability: Check posts the typed options; the reply renders facts + not
   await sleep(200);
   const req = await page.evaluate(() => (window.__sent ?? []).filter((m) => m.type === "printabilityRequest").at(-1) ?? null);
   assert(req !== null && req.process === "fdm" && req.plate === "prusa-mk4" && req.up === "+Z" && req.overhangLimitDeg === 30, `Check posts the typed options (got ${JSON.stringify(req)})`);
+  // Check is disabled while a request is in flight: answer the first one with an error (which also proves the error path re-enables it).
+  await page.evaluate((id) => window.postMessage({ type: "printabilityError", requestId: id, message: "boom" }, "*"), req.requestId);
+  await sleep(200);
+  assert(/boom/.test(await page.evaluate(() => document.getElementById("printability-body").textContent)) && !(await page.evaluate(() => document.getElementById("printability-check").disabled)), "an error reply is shown and re-enables Check");
   await page.fill("#printability-limit", "95");
   await page.click("#printability-check");
   assert(/between 0 and 90/.test(await page.evaluate(() => document.getElementById("printability-body").textContent)), "an out-of-range limit is refused in the panel, not sent");
