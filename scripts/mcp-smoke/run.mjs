@@ -4934,6 +4934,20 @@ try {
     `generate_mesh on a gapped-id MDPA: ${gapMeshed.nodeCount} nodes, ${gapMeshed.elementCount} elements`
   );
 
+  // VTK XML block codecs (full artifact): the zstd fixture is meshio++'s own
+  // extension codec (VTK cannot read it), the lz4 fixture the codec ParaView
+  // itself writes — both were written by meshio++ over examples/STL/cube.stl
+  // (scripts/gen-codec-fixtures.mjs). Before 17.2.0 either read failed naming
+  // the codec's build flag, so these two loads pin the 17.2.0 upgrade.
+  for (const codec of ["zstd", "lz4"]) {
+    const codecVtu = path.join(ROOT, "examples", "VTKXML", `cube-${codec}.vtu`);
+    const codecLoaded = await call("load_model", { path: codecVtu });
+    assert(
+      codecLoaded.format === "vtu" && codecLoaded.meshEntities?.triangleCount === 12,
+      `load_model(cube-${codec}.vtu): the codec-decompressed cube is 12 triangles (got ${JSON.stringify({ format: codecLoaded.format, t: codecLoaded.meshEntities?.triangleCount })})`
+    );
+  }
+
   // ── Embedded points and curves (roadmap "Embedded points and curves") ──────
   // A Part's FREE point/line — the wireframe an `addPoint`/`addLine` op appends
   // to the model — is not part of any face, so Gmsh's OCC importer drops it

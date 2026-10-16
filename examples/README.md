@@ -13,6 +13,7 @@ Fixtures used for manual verification (see the "Verify a change" section of the 
 | [`Collada/`](Collada/) | Collada | `.dae` | Three.js `ColladaLoader` (mesh; import-only, display-only on the host) |
 | [`AMF/`](AMF/) | AMF | `.amf` | Three.js `AMFLoader` (mesh; import-only, display-only on the host) |
 | [`MED/`](MED/) | MED | `.med` | meshio++ bridge (host-side, geometry + region/data-array-name visibility) |
+| [`VTKXML/`](VTKXML/) | VTK XML | `.vtu` | meshio++ bridge (host-side, geometry; exercises the zstd/lz4 block codecs) |
 | [`Nastran/`](Nastran/) | Nastran bulk data | `.bdf` | meshio++ bridge (host-side, geometry only) |
 | [`OpenSCAD/`](OpenSCAD/) | OpenSCAD CSG | `.csg` | CSG parse → OCCT build → BRepMesh (B-rep, opaque base) |
 | [`OpenSCAD/`](OpenSCAD/) | OpenSCAD Source | `.scad` | openscad binary → `.csg` → same as above |
@@ -28,6 +29,10 @@ Each mesh directory contains a single `cube.*` fixture — a minimal triangulate
 ## MED
 
 `two-material-tets.med` is a synthetic (not real-world) fixture: two tetrahedra sharing a face, written by meshio++'s own MED writer from a hand-built mesh with two named cell regions (`MaterialA`/`MaterialB`) and a `Temperature` point-data field — used to verify (`npm run mcp:smoke`) that `load_model`/the viewer's meshio++ import surfaces those real names via `readMeshioMetadata()`. See CLAUDE.md's "meshio++ integration" section.
+
+## VTKXML
+
+`cube-zstd.vtu` and `cube-lz4.vtu` are meshio++'s own VTK XML writer output over `STL/cube.stl` (12 triangles, binary base64 encoding), written once per **block codec** by `scripts/gen-codec-fixtures.mjs` — the only project script that runs the WASM for fixture generation. Since @meshioplusplus/wasm 17.2.0 the staged **full** artifact links zstd 1.5.7 and lz4 1.10.0 alongside the ever-present zlib, so `.vtu` files whose 32 KiB blocks were compressed with either codec now open (previously a zstd/lz4 file failed with the codec's build-flag name, because the lean artifact has zlib only). The two codecs are not equivalent: **lz4 (`vtkLZ4DataCompressor`) is a real VTK/ParaView codec** — any ParaView reads it — while **zstd (`vtkZSTDDataCompressor`) is a meshio++ extension** VTK does not ship (see upstream `doc/codecs.md`), so the zstd fixture pins the meshio++-only path and the lz4 fixture pins the interop path. Both are asserted through the real `load_model` bridge in `npm run mcp:smoke` and as `compat` corpus rows `load-vtu-zstd`/`load-vtu-lz4`. Regenerate with `node scripts/gen-codec-fixtures.mjs` after a meshio++ upgrade.
 
 ## Nastran
 

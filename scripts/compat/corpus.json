@@ -30,6 +30,8 @@
     { "id": "load-med-two-region-hexes", "check": "load", "fixture": "MED/two-region-hexes.med", "expect": { "format": "med", "warningIncludes": "cell_tags" } },
     { "id": "load-med-single-hex-remesh", "check": "load", "fixture": "MED/single-hex.med", "expect": { "format": "med", "remesh": true } },
     { "id": "load-mdpa-gapped-ids", "check": "load", "fixture": "MDPA/gapped-ids.mdpa", "expect": { "format": "mdpa", "remesh": true } },
+    { "id": "load-vtu-zstd", "check": "load", "fixture": "VTKXML/cube-zstd.vtu", "expect": { "format": "vtu", "triangles": 12 } },
+    { "id": "load-vtu-lz4", "check": "load", "fixture": "VTKXML/cube-lz4.vtu", "expect": { "format": "vtu", "triangles": 12 } },
     { "id": "load-gid-compound-extension", "check": "load", "fixture": "GiD/two-tets.post.msh", "siblings": ["GiD/two-tets.post.res"], "expect": { "format": "gid", "warningExcludes": "Assumed to be a Gmsh mesh", "warningIncludes": "cell_tags" } },
     { "id": "load-openfoam-case", "check": "load", "fixtureDir": "OpenFOAM/hex-case", "fixture": "case.foam", "expect": { "format": "openfoam", "remesh": true } },
     { "id": "load-bdf-gmsh-export", "check": "load", "fixture": "Nastran/block-tets.bdf", "expect": { "format": "nastran", "warningIncludes": "Nastran bulk-data", "remesh": true } },

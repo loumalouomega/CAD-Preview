@@ -12,7 +12,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/); thi
 
 ### Changed
 
-- **meshio++ updated 16.42.0 → 17.2.0, staged and loaded as its FULL artifact** (`meshioplusplus_wasm_full`, sequential). The full pair is a strict superset of the lean one: OpenCASCADE 7.6.3 statically linked (STEP/IGES reading through meshio++ and the `fitCad` fit), the zstd and lz4 VTK XML block codecs, and bzip2 (libMesh `.xda.bz2`/`.xdr.bz2`). The lean pair and both threaded (`_mt`) flavours are deliberately not shipped (`scripts/runtimeAssets.mjs` + `compat/vsix-check` enforce it); the package's `THIRD_PARTY_NOTICES.md` ships beside the artifact and README's Licensing covers the `MIT AND (LGPL-2.1-only WITH OCCT-exception-1.0)` expression and the upstream relinking route.
+- **meshio++ updated 16.42.0 → 17.2.0, staged and loaded as its FULL artifact** (`meshioplusplus_wasm_full`, sequential). The full pair is a strict superset of the lean one: OpenCASCADE 7.6.3 statically linked (STEP/IGES reading through meshio++ and the `fitCad` fit), the zstd and lz4 VTK XML block codecs — so zstd- and lz4-compressed `.vtu` files now open where the lean build refused naming the codec's build flag (fixtures `examples/VTKXML/`, corpus rows `load-vtu-zstd`/`load-vtu-lz4`) — and bzip2 (libMesh `.xda.bz2`/`.xdr.bz2`). The lean pair and both threaded (`_mt`) flavours are deliberately not shipped (`scripts/runtimeAssets.mjs` + `compat/vsix-check` enforce it); the package's `THIRD_PARTY_NOTICES.md` ships beside the artifact and README's Licensing covers the `MIT AND (LGPL-2.1-only WITH OCCT-exception-1.0)` expression and the upstream relinking route.
 
 ## [3.18.0] - 2026-10-16
 
