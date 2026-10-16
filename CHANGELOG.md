@@ -8,6 +8,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/); thi
 
 ### Added
 
+- **AMF (`.amf`) opens as a display-only, import-only mesh format** (plain XML or the zipped container) through three's `AMFLoader`: geometry, material and mesh colours (a Part colour still wins) and the declared unit seed the Units dropdown. The loader already scales to millimetres, so no extra scale is applied. Like Collada it exports to STL/OBJ/PLY/glTF/3MF and is refused by name by host-side tools.
 - **VS Code registers the MCP server itself, and a snippet command covers other clients.** The extension contributes an MCP server-definition provider (launching `dist/mcp-server.js` with the editor's own Node, `ELECTRON_RUN_AS_NODE=1`), so VS Code agent mode lists it with no setup. **CAD Preview: Connect an agent…** copies a ready snippet for Claude Code, `.mcp.json`, Claude Desktop, Cursor, VS Code, Windsurf or Codex with the installed path filled in.
 - **Copy reference** appends a stored query (`— query {…}`) for a face produced by the last topology-changing edit, so a pasted reference survives renumbering (`resolve_selector`).
 - Curve ops (`addLine`, `addThreePointArc`, `addPolyline`, `addSpline`, `addBezier`) take `coincident: "reuse" | "independent"` for raw endpoints that land on an existing point: the coincidence is reported, **Collapse** shares the existing vertex (no twin `point-N`), and the Edits panel asks inline.

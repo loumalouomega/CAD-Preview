@@ -210,6 +210,48 @@ export function convertColladaMaterials(group: THREE.Object3D): void {
 }
 
 /**
+ * Re-expresses the materials an AMF produced (`MeshPhongMaterial`, flat
+ * shaded) as the viewer's standard material, marked native so the file's
+ * colour shows and a Part colour still wins. Alpha is dropped (the viewer
+ * composes opacity itself).
+ *
+ * The loader's fallback for a volume with no material is a clone of a material
+ * named `THREE.Loader.DEFAULT_MATERIAL_NAME` coloured 0xaaaaff; that is NOT a
+ * file colour and is cleared so `applyDefaultMaterial` gives it the palette
+ * look. A mesh-level `<color>` reuses that same name with a different colour,
+ * so the name alone cannot decide: only the fallback's exact colour is cleared.
+ */
+export function convertAmfMaterials(group: THREE.Object3D): void {
+  const converted = new Map<THREE.Material, THREE.MeshStandardMaterial>();
+  group.traverse((child) => {
+    if (!(child instanceof THREE.Mesh)) return;
+    const src = child.material as THREE.Material | undefined;
+    const phong = src as THREE.MeshPhongMaterial | undefined;
+    if (!phong || !phong.isMeshPhongMaterial) {
+      child.material = undefined as unknown as THREE.Material;
+      return;
+    }
+    if (phong.name === THREE.Loader.DEFAULT_MATERIAL_NAME && phong.color.getHex() === 0xaaaaff) {
+      child.material = undefined as unknown as THREE.Material;
+      return;
+    }
+    let out = converted.get(phong);
+    if (!out) {
+      out = new THREE.MeshStandardMaterial({
+        color: phong.color.getHex(),
+        metalness: 0.1,
+        roughness: 0.7,
+        side: THREE.DoubleSide,
+      });
+      out.name = phong.name;
+      markNativeColor(out);
+      converted.set(phong, out);
+    }
+    child.material = out;
+  });
+}
+
+/**
  * Parses OBJ text. With a loaded `.mtl` (`MTLLoader.parse(...)` result,
  * preloaded) the file's materials are applied natively; without one this is
  * exactly what the headless bake parses, so the object hierarchy — and every

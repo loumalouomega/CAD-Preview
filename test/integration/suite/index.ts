@@ -848,6 +848,33 @@ test("Compressed glTF (Draco and meshopt) loads under the real webview CSP", asy
     assert(Math.abs(max - min - edge) < 1e-3, `${name}: the cube measures ${edge} mm along x (got ${max - min})`);
     await closeAll();
   }
+
+  // AMF rides the same case too: `AMFLoader` needs `DOMParser`, and (unlike
+  // 3MF/Collada) it already scales to mm itself, so the inch file pins that the
+  // viewer does not scale a second time.
+  for (const [name, edge] of [["cube.amf", 10], ["cube-inch.amf", 25.4], ["cube-zip.amf", 10]] as const) {
+    const staged = stage(path.join(ROOT, "examples", "AMF", name));
+    const out = path.join(path.dirname(staged), "from-amf.stl");
+    assert(await openDocument(staged), `${name} opens`);
+    await withModals([pick("STL"), pick("Native"), save(out)], async () => {
+      await vscode.commands.executeCommand("cad-preview.export");
+      await waitForFile(out);
+    });
+    const buf = fs.readFileSync(out);
+    const count = buf.length >= 84 ? buf.readUInt32LE(80) : 0;
+    assert(count === 12, `${name}: the displayed model carries the cube's 12 triangles (got ${count})`);
+    let max = -Infinity;
+    let min = Infinity;
+    for (let i = 0; i < count; i++) {
+      for (let v = 0; v < 3; v++) {
+        const x = buf.readFloatLE(84 + i * 50 + 12 + v * 12);
+        max = Math.max(max, x);
+        min = Math.min(min, x);
+      }
+    }
+    assert(Math.abs(max - min - edge) < 1e-3, `${name}: the cube measures ${edge} mm along x (got ${max - min})`);
+    await closeAll();
+  }
 });
 
 test("Save in place bakes ops into the source with .bak + watermark", async () => {

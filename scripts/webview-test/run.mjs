@@ -7669,6 +7669,61 @@ test("Collada colour: a material colour renders, an unbound file stays the palet
   assert(restored.red > 3 * MIN_PX && restored.magenta < MAX_STRAY, `removing the Part restores the file colour (got ${JSON.stringify(restored)})`);
 });
 
+test("AMF: a committed cube (plain and zipped) opens, renders and exports to STL, and the export reopens with the same triangle count", async (page) => {
+  for (const file of ["cube.amf", "cube-zip.amf"]) {
+    await openColoured(page, `/examples/AMF/${file}`, "amf");
+    const status = await page.evaluate(() => document.getElementById("status").textContent);
+    assert(!/fail|error/i.test(status), `${file}: no load error is reported (status ${JSON.stringify(status)})`);
+    const stats = await viewportModelStats(page);
+    assert(stats.fraction > 0.01 && stats.centre > 0, `${file}: the model renders and is centred (fraction ${stats.fraction.toFixed(3)})`);
+    const first = await exportBytes(page, "stl");
+    const b = stlBounds(first);
+    assert(b.tris === 12, `${file}: exporting the loaded cube writes its 12 triangles (got ${b.tris})`);
+    assert(b.size.every((v) => Math.abs(v - 10) < 1e-3), `${file}: a unit="millimeter" cube measures 10 mm per side (got ${JSON.stringify(b.size)})`);
+    await post(page, { type: "loadUrl", url: `data:application/octet-stream;base64,${first.toString("base64")}`, format: "stl" });
+    await sleep(1200);
+    assert(stlBounds(await exportBytes(page, "stl")).tris === 12, `${file}: reopening the exported STL keeps the triangle count`);
+  }
+});
+
+test("AMF: the declared unit is applied once (the loader already scales to mm) and seeds the Units dropdown", async (page) => {
+  const unit = () => page.evaluate(() => document.getElementById("vc-unit").value);
+  for (const [file, wantSize, wantUnit] of [["cube-inch.amf", 25.4, "in"], ["cube.amf", 10, "mm"], ["cube-inch.amf", 25.4, "in"]]) {
+    await openColoured(page, `/examples/AMF/${file}`, "amf");
+    const b = stlBounds(await exportBytes(page, "stl"));
+    assert(b.size.every((v) => Math.abs(v - wantSize) < 1e-3), `${file} measures ${wantSize} mm per side, not double-scaled (got ${JSON.stringify(b.size)})`);
+    assert((await unit()) === wantUnit, `${file} selects ${wantUnit} (got ${await unit()})`);
+  }
+});
+
+test("AMF colour: a material colour renders, an unbound file stays the palette grey, and a Part colour wins and is undone", async (page) => {
+  await openColoured(page, "/examples/AMF/cube-colour.amf", "amf");
+  await lookFrom(page, ISO_FRONT);
+  const red = await hueCounts(page);
+  assert(red.red > 3 * MIN_PX, `the red material shows (got ${JSON.stringify(red)})`);
+  assert(red.green < MAX_STRAY && red.blue < MAX_STRAY, `with no stray hues (got ${JSON.stringify(red)})`);
+
+  // Control: the material-less fixture gets the loader's 0xaaaaff fallback,
+  // which must NOT show as a file colour (it is blue-ish).
+  await openColoured(page, "/examples/AMF/cube.amf", "amf");
+  await lookFrom(page, ISO_FRONT);
+  const plain = await hueCounts(page);
+  assert(plain.red < MAX_STRAY && plain.green < MAX_STRAY && plain.blue < MAX_STRAY, `an uncoloured AMF file shows no file colour (got ${JSON.stringify(plain)})`);
+
+  await openColoured(page, "/examples/AMF/cube-colour.amf", "amf");
+  await lookFrom(page, ISO_FRONT);
+  const ids = Array.from({ length: 8 }, (_, i) => `node-${i}`);
+  await post(page, { type: "parts", parts: [{ name: "Skin", color: "#ff00ff", volumes: ids, surfaces: [], lines: [], points: [] }] });
+  await sleep(600);
+  const painted = await hueCounts(page);
+  assert(painted.magenta > 3 * MIN_PX, `a Part colour covers the visible faces (got ${JSON.stringify(painted)})`);
+  assert(painted.red < MAX_STRAY, `and replaces the file colour rather than tinting it (got ${JSON.stringify(painted)})`);
+  await post(page, { type: "parts", parts: [] });
+  await sleep(600);
+  const restored = await hueCounts(page);
+  assert(restored.red > 3 * MIN_PX && restored.magenta < MAX_STRAY, `removing the Part restores the file colour (got ${JSON.stringify(restored)})`);
+});
+
 // Compressed glTF (roadmap "Compressed glTF"). This harness serves the repo
 // tree with NO Content-Security-Policy, so it proves the decoder logic and the
 // staged file paths (dist/draco/…, derived from the viewer.js script URL) but

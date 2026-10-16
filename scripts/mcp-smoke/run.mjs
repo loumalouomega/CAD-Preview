@@ -3037,6 +3037,24 @@ try {
     assert(/display-only mesh format/i.test(meshDae.error ?? ""), `generate_mesh refuses a Collada file by name (got: ${JSON.stringify(meshDae).slice(0, 240)})`);
   }
 
+  // AMF is DISPLAY-ONLY on the host exactly like 3MF: same refusals, by name.
+  {
+    const amf = path.join(ROOT, "examples", "AMF", "cube.amf");
+    const healthAmf = await call("check_mesh_health", { path: amf });
+    assert(
+      healthAmf.supported === false && /amf has no host-side triangle-soup parser/i.test(healthAmf.warnings?.[0] ?? ""),
+      `check_mesh_health refuses an AMF file by name (got: ${JSON.stringify(healthAmf)})`
+    );
+    const promoteAmf = await callTolerant("promote_mesh_to_brep", { path: amf, outputPath: path.join(dir, "from-amf.step") });
+    assert(/amf has no host-side triangle-soup parser/i.test(promoteAmf.error ?? ""), `promote_mesh_to_brep refuses an AMF file by name (got: ${JSON.stringify(promoteAmf)})`);
+    const compareAmf = await call("compare_models", { pathA: amf, pathB: path.join(ROOT, "examples", "STL", "cube.stl") });
+    assert(compareAmf.supported === false && /display-only/i.test((compareAmf.warnings ?? []).join(" ")), `compare_models refuses an AMF file and says display-only (got: ${JSON.stringify(compareAmf).slice(0, 240)})`);
+    const loadAmf = await call("load_model", { path: amf });
+    assert(loadAmf.format === "amf" && /AMF is display-only/.test((loadAmf.warnings ?? []).join(" ")), `load_model opens an AMF file with a display-only warning (got: ${JSON.stringify(loadAmf).slice(0, 240)})`);
+    const meshAmf = await callTolerant("generate_mesh", { path: amf });
+    assert(/display-only mesh format/i.test(meshAmf.error ?? ""), `generate_mesh refuses an AMF file by name (got: ${JSON.stringify(meshAmf).slice(0, 240)})`);
+  }
+
   // Tier 1 "Auto-decimate under MAX_HEALABLE_TRIANGLES" —
   // examples/STL/large-sphere-100k.stl is a real 99904-triangle mesh, over
   // the 50000-triangle ceiling the per-triangle sewing pipeline refuses.

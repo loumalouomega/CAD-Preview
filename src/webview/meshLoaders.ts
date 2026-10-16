@@ -4,11 +4,13 @@ import { DRACOLoader } from "three/examples/jsm/loaders/DRACOLoader.js";
 import { MTLLoader } from "three/examples/jsm/loaders/MTLLoader.js";
 import { ThreeMFLoader } from "three/examples/jsm/loaders/3MFLoader.js";
 import { ColladaLoader } from "three/examples/jsm/loaders/ColladaLoader.js";
+import { AMFLoader } from "three/examples/jsm/loaders/AMFLoader.js";
 import type { CadFormat } from "../fileRouter";
 import { isSafeRelativePath } from "../safeRelativePath";
-import { applyDefaultMaterial, convertColladaMaterials, convertThreeMfMaterials, parseMeshObject, parseObjObject } from "./meshObject";
+import { applyDefaultMaterial, convertAmfMaterials, convertColladaMaterials, convertThreeMfMaterials, parseMeshObject, parseObjObject } from "./meshObject";
 import { threeMfDeclaredUnit, threeMfMmPerUnit } from "../threeMf";
 import { colladaDeclaredUnit, colladaMmPerUnit } from "../colladaUnits";
+import { amfDeclaredUnit } from "../amfUnits";
 import { gltfUsesCompression } from "./gltfSniff";
 
 /**
@@ -133,6 +135,8 @@ export async function loadMeshFromUrl(
       return load3mf(url);
     case "dae":
       return loadDae(url);
+    case "amf":
+      return loadAmf(url);
     default:
       throw new Error(`Mesh loader for "${format}" is not implemented.`);
   }
@@ -243,6 +247,31 @@ async function loadDae(url: string): Promise<THREE.Object3D> {
   const mm = colladaMmPerUnit(text);
   if (mm !== 1) group.scale.multiplyScalar(mm);
   const unit = colladaDeclaredUnit(text);
+  if (unit) group.userData.declaredUnit = unit;
+  return group;
+}
+
+/**
+ * Loads an AMF `.amf` (plain or zipped). `AMFLoader` needs `DOMParser`, so it
+ * lives here and nowhere the kernel worker imports. The loader already scales
+ * the geometry to millimetres from the root `unit` attribute, so — unlike
+ * 3MF/Collada — NO scale is applied here (doing so would double-scale); the
+ * declared unit only seeds the presentation-only Units dropdown through
+ * `userData.declaredUnit`. `parse` returns `null` for a document whose root is
+ * not `<amf>`. Material and mesh colours are kept as native colours
+ * (`convertAmfMaterials`); textures and constellations are not supported.
+ */
+async function loadAmf(url: string): Promise<THREE.Object3D> {
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`Failed to fetch ${url}: ${res.status}`);
+  const data = await res.arrayBuffer();
+  const scene = new AMFLoader().parse(data);
+  if (!scene) throw new Error("Could not parse the AMF file (no <amf> document found).");
+  const group = new THREE.Group();
+  group.add(scene);
+  convertAmfMaterials(group);
+  applyDefaultMaterial(group);
+  const unit = amfDeclaredUnit(new Uint8Array(data));
   if (unit) group.userData.declaredUnit = unit;
   return group;
 }

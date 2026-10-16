@@ -133,6 +133,7 @@ let vtkModel: string;
 let scadModel: string;
 let threeMfModel: string;
 let daeModel: string;
+let amfModel: string;
 
 /** A real, closed unit-cube OBJ (quad faces) — matches `objSolidSignatures.test.ts`'s fixture, used wherever a test needs actual resolvable geometry rather than just a recognized extension. */
 const UNIT_CUBE_OBJ = `
@@ -586,6 +587,8 @@ beforeEach(async () => {
   await fs.writeFile(threeMfModel, new Uint8Array([0x50, 0x4b, 3, 4]));
   daeModel = path.join(dir, "model.dae");
   await fs.writeFile(daeModel, "<COLLADA/>", "utf8");
+  amfModel = path.join(dir, "model.amf");
+  await fs.writeFile(amfModel, "<amf/>", "utf8");
   await fs.writeFile(stpModel, "ISO-10303-21;", "utf8");
   await fs.writeFile(stpModel2, "ISO-10303-21;", "utf8");
   await fs.writeFile(stlModel, "solid x\nendsolid x\n", "utf8");
@@ -4929,7 +4932,7 @@ describe("list_workspace_models", () => {
 
     const result = await listWorkspaceModels({ root: dir });
     expect(result.truncated).toBe(false);
-    const expected = ["model.3mf", "model.dae", "model.gltf", "model.obj", "model.ply", "model.scad", "model.stl", "model.stp", "model.vtk", "model2.stp", "nested/b.step"];
+    const expected = ["model.3mf", "model.amf", "model.dae", "model.gltf", "model.obj", "model.ply", "model.scad", "model.stl", "model.stp", "model.vtk", "model2.stp", "nested/b.step"];
     expect(result.models.map((m) => path.relative(dir, m.path))).toEqual(expected);
     expect(result.models.some((m) => m.path.includes("ignored"))).toBe(false);
     expect(result.models.some((m) => m.path.endsWith("notes.txt"))).toBe(false);
@@ -5696,6 +5699,41 @@ describe("Collada is display-only on the host", () => {
     expect(r.warnings.join(" ")).toMatch(/DAE is display-only/);
     await expect(saveModelTool(c, { path: daeModel })).rejects.toThrow(/DAE is display-only/);
     await expect(generateMeshTool(c, { path: daeModel })).rejects.toThrow(/display-only mesh format/);
+    expect(c.pipeline.generateMesh).not.toHaveBeenCalled();
+  });
+});
+
+describe("AMF is display-only on the host", () => {
+  // The pipeline must never be touched: a .amf is refused BY NAME before any
+  // host-side parser (built for another format) sees it.
+  it("check_mesh_health returns supported:false", async () => {
+    const c = ctx();
+    const r = await checkMeshHealthTool(c, { path: amfModel });
+    expect(r.supported).toBe(false);
+    expect(r.warnings.join(" ")).toMatch(/amf has no host-side triangle-soup parser/i);
+    expect(c.pipeline.checkMeshHealth).not.toHaveBeenCalled();
+  });
+
+  it("promote_mesh_to_brep and repair_mesh throw", async () => {
+    const c = ctx();
+    await expect(promoteMeshToBrepTool(c, { path: amfModel, outputPath: path.join(dir, "x.step") })).rejects.toThrow(/amf has no host-side triangle-soup parser/i);
+    await expect(repairMeshTool(c, { path: amfModel, outputPath: path.join(dir, "x.stl") })).rejects.toThrow(/amf has no host-side triangle-soup parser/i);
+    expect(c.pipeline.promoteMeshToBrep).not.toHaveBeenCalled();
+    expect(c.pipeline.repairMesh).not.toHaveBeenCalled();
+  });
+
+  it("compare_models, load_model, save_model and headless meshing refuse it by name", async () => {
+    const c = ctx();
+    const cmp = await compareModelsTool(c, { pathA: amfModel, pathB: stlModel });
+    expect(cmp.supported).toBe(false);
+    expect(cmp.warnings.join(" ")).toMatch(/display-only/i);
+    expect(cmp.warnings.join(" ")).toMatch(/amf/);
+    expect(c.pipeline.compareModels).not.toHaveBeenCalled();
+    const r = await loadModel(c, { path: amfModel });
+    expect(r.format).toBe("amf");
+    expect(r.warnings.join(" ")).toMatch(/AMF is display-only/);
+    await expect(saveModelTool(c, { path: amfModel })).rejects.toThrow(/AMF is display-only/);
+    await expect(generateMeshTool(c, { path: amfModel })).rejects.toThrow(/display-only mesh format/);
     expect(c.pipeline.generateMesh).not.toHaveBeenCalled();
   });
 });

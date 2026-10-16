@@ -601,7 +601,7 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
         // the final dot-segment only, so GiD's compound `post.msh` is covered by
         // the plain `msh` entry — a separate "post.msh" entry would never match.
         "CAD / Mesh": [
-          "stl", "obj", "ply", "gltf", "glb", "3mf", "dae", "step", "stp", "iges", "igs", "brep", "csg", "scad",
+          "stl", "obj", "ply", "gltf", "glb", "3mf", "dae", "amf", "step", "stp", "iges", "igs", "brep", "csg", "scad",
           "vtk", "vtu", "med", "cgns", "exo", "e", "xdmf", "mdpa", "foam",
           "msh", "msh2", "inp", "unv", "su2", "mesh", "bdf",
         ],

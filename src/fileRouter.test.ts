@@ -28,6 +28,11 @@ describe("routeFile", () => {
     expect(routeFile("M.DAE")).toEqual({ strategy: "three", format: "dae" });
   });
 
+  it("routes .amf to the three strategy", () => {
+    expect(routeFile("m.amf")).toEqual({ strategy: "three", format: "amf" });
+    expect(routeFile("M.AMF")).toEqual({ strategy: "three", format: "amf" });
+  });
+
   it("is case-insensitive", () => {
     expect(routeFile("MODEL.STP")).toEqual({ strategy: "occt", format: "step" });
     expect(routeFile("Mesh.STL")).toEqual({ strategy: "three", format: "stl" });
@@ -182,6 +187,11 @@ describe("display-only mesh formats", () => {
   it("Collada is display-only and never host-comparable", () => {
     expect(DISPLAY_ONLY_MESH_FORMATS.has("dae")).toBe(true);
     expect(COMPARABLE_MESH_FORMATS.has("dae")).toBe(false);
+  });
+
+  it("AMF is display-only and never host-comparable", () => {
+    expect(DISPLAY_ONLY_MESH_FORMATS.has("amf")).toBe(true);
+    expect(COMPARABLE_MESH_FORMATS.has("amf")).toBe(false);
   });
 
   it("the refusal names the format and the action", () => {

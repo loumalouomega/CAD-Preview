@@ -111,6 +111,7 @@ The extension host is a Node.js process. These modules run there — never in th
 | `src/objSolidSignatures.ts` | Wires `objParser.ts` + `meshComponents.ts` into `SolidSignature[]` for Compare Models' OBJ side (pure, unit-tested) |
 | `src/plyParser.ts` | Pure host-side PLY parser (ASCII + both binary endiannesses, one shared header parser) into a flat indexed mesh (vscode/OCCT/THREE-free, unit-tested) |
 | `src/plySolidSignatures.ts` | Wires `plyParser.ts` + `meshComponents.ts` into `SolidSignature[]` for Compare Models' PLY side (pure, unit-tested) |
+| `src/amfUnits.ts` | AMF `unit` reader (`amfDeclaredUnit`, zip-aware) — pure; seeds the Units dropdown only, since three's `AMFLoader` already scales to millimetres |
 | `src/colladaUnits.ts` | Collada `<unit meter>` readers (`colladaMetresPerUnit`, `colladaMmPerUnit`, `colladaDeclaredUnit`) — pure; the loader itself is three's `ColladaLoader` in the webview only |
 | `src/threeMf.ts` | 3MF writer (`build3mf`, hand-rolled on `fflate`, byte-stable; optional per-triangle `colors` become one `<basematerials>`) and unit readers (`threeMfMmPerUnit`, `threeMfDeclaredUnit`) — pure; the loader itself is three's `3MFLoader` in the webview only |
 | `src/gltfParser.ts` | Pure host-side glTF 2.0 / GLB parser (geometry only — node world matrices applied, then welded) into a flat indexed mesh (vscode/OCCT/THREE-free, unit-tested **and cross-validated against three.js's own `GLTFLoader`**) |
@@ -777,6 +778,7 @@ Returns `undefined` for unrecognized extensions (the extension never opens those
 | `.gltf`, `.glb` | `three`  | `gltf`   |
 | `.3mf`          | `three`  | `3mf` (display-only on the host) |
 | `.dae`          | `three`  | `dae` (import-only; display-only on the host) |
+| `.amf`          | `three`  | `amf` (import-only; display-only on the host) |
 | `.vtk`          | `meshio` | `vtk`    |
 | `.vtu`          | `meshio` | `vtu`    |
 | `.med`          | `meshio` | `med`    |

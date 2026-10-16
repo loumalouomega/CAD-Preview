@@ -6493,7 +6493,7 @@ async function loadMeshObjectFromUrl(
     applyAvailableColorFields(undefined);
     let loadNote = ""; // e.g. an OBJ whose .mtl was not found — shown after the load clears the status line
     const object = await loadMeshFromUrl(url, loaderFormat, (note) => { loadNote = note; });
-    // A 3MF/Collada file declares its unit; the loader has already scaled the geometry to
+    // A 3MF/Collada/AMF file declares its unit; the loader has already scaled the geometry to
     // mm, so this only seeds the (presentation-only) Units dropdown.
     const declaredUnit = object.userData.declaredUnit as DisplayUnit | undefined;
     if (declaredUnit) setDisplayUnit(declaredUnit);
