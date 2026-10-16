@@ -5048,8 +5048,9 @@ test("mesh health: a native STL shows the panel, Check posts a request, the repo
   const shown = await page.evaluate(() => document.getElementById("mesh-health-panel")?.offsetParent !== null);
   assert(shown, "the Mesh Health section is genuinely rendered for a native STL source");
   const promote0 = await page.evaluate(() => document.getElementById("mesh-health-promote").disabled);
+  const fit0 = await page.evaluate(() => document.getElementById("mesh-health-fit").disabled);
   const repair0 = await page.evaluate(() => document.getElementById("mesh-health-repair").disabled);
-  assert(promote0 && repair0, "Promote and Repair both start disabled — no report yet");
+  assert(promote0 && fit0 && repair0, "Promote, Fit to CAD and Repair all start disabled — no report yet");
 
   await page.click("#mesh-health-check");
   const req = await lastSent(page, "meshHealRequest");
@@ -5063,10 +5064,14 @@ test("mesh health: a native STL shows the panel, Check posts a request, the repo
   assert(!text.includes("Component 0"), "a single-component report is not titled as a numbered component");
   const gates = await page.evaluate(() => ({
     promote: document.getElementById("mesh-health-promote").disabled,
+    fit: document.getElementById("mesh-health-fit").disabled,
     repair: document.getElementById("mesh-health-repair").disabled,
   }));
   assert(gates.promote === false, "a component that closed enables Promote to B-rep");
+  assert(gates.fit === false, "…and Fit to CAD, which shares the closed gate");
   assert(gates.repair === true, "…and leaves Repair disabled — there is nothing to repair");
+  await page.click("#mesh-health-fit");
+  assert((await lastSent(page, "fitMeshToCadButtonClicked")) !== null, "Fit to CAD posts fitMeshToCadButtonClicked");
 });
 
 test("mesh health: Repair and Promote are mirror-image gates; stale replies and the decimate flag", async (page) => {
@@ -5085,10 +5090,11 @@ test("mesh health: Repair and Promote are mirror-image gates; stale replies and 
   await sleep(150);
   const gates = await page.evaluate(() => ({
     promote: document.getElementById("mesh-health-promote").disabled,
+    fit: document.getElementById("mesh-health-fit").disabled,
     repair: document.getElementById("mesh-health-repair").disabled,
     text: document.getElementById("mesh-health-body").textContent,
   }));
-  assert(gates.repair === false && gates.promote === true, "a component that did NOT close enables Repair and disables Promote");
+  assert(gates.repair === false && gates.promote === true && gates.fit === true, "a component that did NOT close enables Repair and disables Promote and Fit");
   assert(gates.text.includes("did not close"), "the unclosed component says so rather than showing a tolerance");
   assert(gates.text.includes("99904") && gates.text.includes("auto-decimated"), "a decimated report names the resampling — never silent");
 
@@ -5111,10 +5117,11 @@ test("mesh health: Repair and Promote are mirror-image gates; stale replies and 
     cls: document.querySelector("#mesh-health-body .mesh-health-message")?.className ?? "",
     text: document.getElementById("mesh-health-body").textContent,
     promote: document.getElementById("mesh-health-promote").disabled,
+    fit: document.getElementById("mesh-health-fit").disabled,
     repair: document.getElementById("mesh-health-repair").disabled,
   }));
   assert(err.cls.includes("error") && err.text.includes("mesh too large"), "an error reply is shown as an error message");
-  assert(err.promote && err.repair, "an error reply disables both actions");
+  assert(err.promote && err.fit && err.repair, "an error reply disables all three actions");
 });
 
 // ── Region fit panel ──────────────────────────────────────────────────────

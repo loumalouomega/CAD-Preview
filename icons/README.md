@@ -4,7 +4,7 @@ This directory holds two TikZ-drawn icon sets and an SVG application mark for CA
 
 |  | `tikz/` (Edits panel) | `tikz-ui/` (toolbar/panels) | `../images/icon.svg` (extension icon) |
 | --- | --- | --- | --- |
-| Count | 46, one per `PanelOpId` | 41, one per toolbar/panel icon | 1 |
+| Count | 46, one per `PanelOpId` | 46, one per toolbar/panel icon | 1 |
 | Output format | inline SVG (`currentColor`-based) | inline SVG (`currentColor`-based) | PNG (fixed teal/white, 512x512) |
 | Wired into the running extension? | **Yes** — `src/webview/opIcons.ts` | **Yes** — replaces the emoji that used to be there | **Yes** — `package.json`'s `"icon"` field |
 | Theme-adaptive? | Yes (tracks VS Code light/dark via `currentColor`) | Yes (tracks VS Code light/dark via `currentColor`) | No (fixed teal-on-white/transparent) |
@@ -30,7 +30,7 @@ Three SVGs have no compilable `.tex` source: `draft.svg` and `edgeSlot.svg` (the
 - **Bare `\draw[gray]` strokes** (14 files: de-emphasized outlines, ghost/ reference lines) stayed literally mid-gray in every theme instead of tracking `currentColor`. Fixed the same way `tikz-ui/isolate.tex` already did: drop the stroke color, keep (or add) `dashed` for de-emphasis instead.
 - **`\fill[white]` "erase" hacks** (5 files — the three hole ops, the torus, and boolean subtract) used to punch a visual hole by painting literal white over a filled shape. Against this button's real (non-white, theme-dependent) background, that showed as a solid white blob instead of empty space. Fixed with a genuine even-odd compound path instead (`\fill[gray!N, even odd rule] (outer) (hole);`, tracing the hole as a single non-self-overlapping polygon when two sub-holes would otherwise overlap and double-cancel), which leaves the hole area transparent — for boolean subtract specifically (two circles that only partially overlap, not one fully containing the other), the same trick is applied to a *clip* instead of a fill: `\pgfseteorule` + `\clip (circleA) (circleB);` clips to "A xor B", and filling A inside that clip yields exactly the "A minus B" crescent with the excluded lens left genuinely transparent. (Note: `\clip[even odd rule] (...)` and `\path[clip, even odd rule] (...)` both error — `"Extra options not allowed for clipping path command"` — in this TikZ version; the low-level `\pgfseteorule` call before a plain `\clip` is what actually works.)
 
-## `tikz-ui/` — toolbar/panel icons (41, SVG, wired in)
+## `tikz-ui/` — toolbar/panel icons (46, SVG, wired in)
 
 One TikZ file per toolbar/panel icon (`tikz-ui/<id>.tex`), matching the `ToolbarIconId` keys in the **generated, committed** module [`../src/toolbarIcons.ts`](../src/toolbarIcons.ts) — which is what `provider.ts`, `partsPanel.ts`, and `meshingPanel.ts` actually import and render. These replaced every plain-color emoji and unicode-glyph placeholder the UI used to render (📤🔍🕸️🌳🔬🖱️📍🧊◼️📏▶ ▦ 📐 📷 ✎ ⊙ ＋ ↶ ↷, plus ⚠/✕) — see `docs/superpowers/specs/2026-07-06-toolbar-icons-design.md` for the original design rationale. Roughly by area:
 
@@ -43,6 +43,7 @@ One TikZ file per toolbar/panel icon (`tikz-ui/<id>.tex`), matching the `Toolbar
 | `measure` `distance` `edgeLength` `angle` `radius` | **Measure ▾** (trigger + tools) |
 | `markup` `freehand` `arrow` `rectangle` `circle` `eraser` | **Markup ▾** (trigger + tools; the Line tool reuses `line`) |
 | `shaded` `wireframe` `xray` `hiddenLines` `flat` | the view-controls **Display** group |
+| `fitCad` | the Mesh Health panel's **Fit to CAD…** button (meshio++ 17.2.0's `fitCad`) — a mesh facet, an arrow, and the analytic surface that replaces it |
 | `undo` `redo` `add` `isolate` `clear` `generate` `close` `warning` | Parts/Edits/FE&nbsp;Mesh panel buttons |
 
 **Only fills get the gray→`currentColor` treatment, never strokes** (see the pipeline notes below), so shade an icon with `fill=gray!N` — a `gray!N` *stroke* would survive into the SVG as a literal gray and stay that colour in both themes. Where an icon needs a de-emphasised outline, use `dashed` (as `isolate` does) rather than a lighter stroke colour.

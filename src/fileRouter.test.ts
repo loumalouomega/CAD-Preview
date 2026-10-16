@@ -151,7 +151,9 @@ describe("routeFile", () => {
 
   it("MESHIO_FORMATS lists exactly the formats EXTENSION_MAP routes to the meshio strategy, with no duplicates", () => {
     const formatsInMap = new Set<string>();
-    for (const ext of ["vtk", "vtu", "med", "cgns", "exo", "e", "xdmf", "mdpa", "foam", "msh", "msh2", "inp", "unv", "su2", "mesh", "post.msh", "bdf"]) {
+    // Probe every registered key, not a hand-copied subset: that list drifted
+    // the moment libMesh and Kratos CAD JSON were routed.
+    for (const ext of ROUTED_EXTENSIONS) {
       const route = routeFile(`x.${ext}`);
       if (route?.strategy === "meshio") formatsInMap.add(route.format);
     }

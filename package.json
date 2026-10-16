@@ -2,7 +2,7 @@
   "name": "cad-preview",
   "displayName": "CAD Preview",
   "description": "Interactive 3D preview, non-destructive editing, and FE mesh generation for CAD and mesh files (STEP, IGES, BREP, STL, OBJ, PLY, glTF, VTK, MED, CGNS, and more) inside VS Code, with an MCP server for AI agents.",
-  "version": "3.18.0",
+  "version": "3.19.0",
   "publisher": "kratos-multiphysics",
   "license": "GPL-3.0-or-later",
   "icon": "images/icon.png",
@@ -116,6 +116,21 @@
           },
           {
             "filenamePattern": "*.post.msh"
+          },
+          {
+            "filenamePattern": "*.xda"
+          },
+          {
+            "filenamePattern": "*.xdr"
+          },
+          {
+            "filenamePattern": "*.xda.gz"
+          },
+          {
+            "filenamePattern": "*.xda.bz2"
+          },
+          {
+            "filenamePattern": "*.cad.json"
           },
           {
             "filenamePattern": "*.bdf"
@@ -470,7 +485,7 @@
   "dependencies": {
     "@loumalouomega/gmsh-wasm": "^0.3.0",
     "@loumalouomega/mmg-wasm": "0.1.0",
-    "@meshioplusplus/wasm": "^16.42.0",
+    "@meshioplusplus/wasm": "^17.2.0",
     "@modelcontextprotocol/sdk": "^1.32.1",
     "draco3d": "^1.5.7",
     "fflate": "^0.8.3",

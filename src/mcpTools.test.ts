@@ -17,6 +17,7 @@ import {
   compareModelsTool,
   checkMeshHealthTool,
   promoteMeshToBrepTool,
+  fitMeshToCadTool,
   repairMeshTool,
   inspectMeshioFieldsTool,
   inspectEntity,
@@ -100,6 +101,7 @@ import { clearScadConversionCache } from "./scadService";
 import type { OpOutcome } from "./editOps";
 import type { ModelDiff } from "./modelDiff";
 import type { MeshHealthReport, PromoteMeshResult } from "./meshHeal";
+import type { FitMeshToCadResult } from "./meshFitCad";
 
 // The exact 6-triangle boundary `convertToStlBoundaryWithRegions` produces
 // for `examples/MED/two-material-tets.med` — see `meshioRegionParts.test.ts`
@@ -376,6 +378,20 @@ const FAKE_PROMOTE_RESULT: PromoteMeshResult = {
   warnings: [],
 };
 
+const FAKE_FIT_RESULT: FitMeshToCadResult = {
+  stepBytes: new TextEncoder().encode("ISO-10303-21;"),
+  report: {
+    valid: true, tolerance: 0.01, volume: 1, skinVolume: 1, volumeRatio: 1, maxDeviation: 0,
+    numFaces: 6, numPlane: 6, numSphere: 0, numCylinder: 0, numCone: 0, numTorus: 0,
+    numFacetedFaces: 0, numPatches: 6, numDemoted: 0, numExactEdges: 12, numApproxEdges: 0,
+    numSolids: 1, numBspline: 0, numSplitPatches: 0, numFillet: 0, numHelical: 0,
+    numVariableFillet: 0, numBlend: 0, numRoundedThread: 0, numVertexBlend: 0, numChamfer: 0,
+    numConicBlend: 0, numTaperedThread: 0, numVariablePitchThread: 0,
+    fitCounts: { plane: 6, sphere: 0, cylinder: 0, cone: 0, torus: 0, unfitted: 0, merged: 0 },
+    warnings: [],
+  },
+};
+
 const FAKE_QUALITY_GATE = {
   passed: true,
   numCells: 10,
@@ -537,6 +553,32 @@ function fakePipeline(overrides: Partial<Pipeline> = {}): Pipeline {
       numPatches: 0, numMerged: 0, numFeatureEdges: 0, numBoundaryEdges: 0, numNonManifoldEdges: 0,
       fitCounts: { plane: 0, sphere: 0, cylinder: 0, cone: 0, torus: 0, unfitted: 0 },
       patches: [], adjacency: [], truncated: false, warnings: [],
+    })),
+    fitMeshToCad: vi.fn(async () => FAKE_FIT_RESULT),
+    igaSampleModel: vi.fn(async () => ({
+      model: {
+        format: "cad_json" as const, breps: 1, faces: 6, trimmedFaces: 6, rationalFaces: 0, edges: 12, vertices: 0,
+        perPatch: [{ degrees: [1, 1], knotSpans: [1, 1], controlPoints: 4, rational: false }],
+      },
+      sampled: {
+        dim: 3, points: 24, cells: { quad: 6 },
+        boundsMin: [-5, -5, -5], boundsMax: [5, 5, 5],
+      },
+      warnings: [],
+    })),
+    igaRefineModel: vi.fn(async () => ({
+      refinedBytes: new TextEncoder().encode("{}"),
+      report: {
+        format: "cad_json" as const,
+        before: { format: "cad_json" as const, breps: 1, faces: 6, trimmedFaces: 6, rationalFaces: 0, edges: 12, vertices: 0, perPatch: [{ degrees: [1, 1], knotSpans: [1, 1], controlPoints: 4, rational: false }] },
+        after: { format: "cad_json" as const, breps: 1, faces: 6, trimmedFaces: 6, rationalFaces: 0, edges: 12, vertices: 0, perPatch: [{ degrees: [2, 2], knotSpans: [2, 2], controlPoints: 9, rational: false }] },
+        sampled: { dim: 3, points: 24, cells: { quad9: 6 }, boundsMin: [-5, -5, -5], boundsMax: [5, 5, 5] },
+        warnings: [],
+      },
+    })),
+    igaEvaluateModel: vi.fn(async () => ({
+      format: "cad_json" as const, face: 0, spaceDim: 3, pointCount: 1,
+      points: [5, -0.5, 0.5], derivatives: [1, 0, 0, 0, 1, 0], normals: [1, 0, 0], inside: [1],      warnings: [],
     })),
     promoteMeshToBrep: vi.fn(async () => FAKE_PROMOTE_RESULT),
     repairMesh: vi.fn(async () => FAKE_REPAIR_RESULT),
@@ -1998,6 +2040,66 @@ describe("promote_mesh_to_brep", () => {
       promoteMeshToBrepTool(ctx(pipeline), { path: stlModel, outputPath: path.join(dir, "x.step"), autoDecimate: true })
     ).rejects.toThrow(/catastrophically/);
     expect(pipeline.decimateStlBoundary).not.toHaveBeenCalled();
+  });
+});
+
+describe("fit_mesh_to_cad", () => {
+  it("fits an STL source and writes the pipeline's STEP bytes, spreading the report", async () => {
+    const c = ctx();
+    const outputPath = path.join(dir, "fitted.step");
+    const result = await fitMeshToCadTool(c, { path: stlModel, outputPath });
+    expect(c.pipeline.fitMeshToCad).toHaveBeenCalledWith(expect.any(Uint8Array), "stl", { cadJson: false }, undefined);
+    expect(result).toMatchObject({ written: outputPath, bytes: FAKE_FIT_RESULT.stepBytes.byteLength, valid: true, numPlane: 6, supported: true });
+    expect(await fs.readFile(outputPath, "utf8")).toContain("ISO-10303-21");
+  });
+
+  it("passes the fit/cad knobs through and requests cad_json only when asked, writing both files", async () => {
+    const c = ctx(fakePipeline({ fitMeshToCad: vi.fn(async () => ({ ...FAKE_FIT_RESULT, cadJsonBytes: new TextEncoder().encode("{}") })) }));
+    const outputPath = path.join(dir, "fitted.step");
+    const cadJsonPath = path.join(dir, "fitted.cad.json");
+    const result = await fitMeshToCadTool(c, {
+      path: stlModel, outputPath, cadJsonPath,
+      featureAngle: 12, cadTolerance: 0.05, cadTypes: ["plane"], threads: false,
+    });
+    expect(c.pipeline.fitMeshToCad).toHaveBeenCalledWith(
+      expect.any(Uint8Array),
+      "stl",
+      { featureAngle: 12, cadTolerance: 0.05, cadTypes: ["plane"], threads: false, cadJson: true },
+      undefined
+    );
+    expect(result).toMatchObject({ cadJsonWritten: cadJsonPath, cadJsonBytes: 2 });
+    expect(await fs.readFile(cadJsonPath, "utf8")).toBe("{}");
+  });
+
+  it("rejects an outputPath that is not .step/.stp, without touching the pipeline", async () => {
+    const c = ctx();
+    await expect(
+      fitMeshToCadTool(c, { path: stlModel, outputPath: path.join(dir, "fitted.brep") })
+    ).rejects.toThrow(/\.step\/\.stp/);
+    expect(c.pipeline.fitMeshToCad).not.toHaveBeenCalled();
+  });
+
+  it("rejects writing to the source path itself", async () => {
+    const c = ctx();
+    await expect(fitMeshToCadTool(c, { path: stlModel, outputPath: stlModel })).rejects.toThrow();
+    expect(c.pipeline.fitMeshToCad).not.toHaveBeenCalled();
+  });
+
+  it("returns supported:false for a B-rep source and for a meshio-only format", async () => {
+    const c = ctx();
+    const fromStep = await fitMeshToCadTool(c, { path: stpModel, outputPath: path.join(dir, "x.step") });
+    expect(fromStep).toMatchObject({ supported: false });
+    const fromVtk = await fitMeshToCadTool(c, { path: vtkModel, outputPath: path.join(dir, "x.step") });
+    expect(fromVtk).toMatchObject({ supported: false });
+    expect(c.pipeline.fitMeshToCad).not.toHaveBeenCalled();
+  });
+
+  it("warns (but still fits the raw file) when the mesh source has pending edits", async () => {
+    const c = ctx();
+    await applyEditOps(c, { path: stlModel, ops: [{ op: "translate", targets: ["node-0"], vec: [1, 0, 0] }] });
+    const result = await fitMeshToCadTool(c, { path: stlModel, outputPath: path.join(dir, "x.step") });
+    expect(result.warnings.some((w) => /not baked in/i.test(w))).toBe(true);
+    expect(c.pipeline.fitMeshToCad).toHaveBeenCalled();
   });
 });
 

@@ -1,0 +1,29 @@
+<?xml version="1.0"?>
+<VTKFile type="UnstructuredGrid" version="0.1" byte_order="LittleEndian" compressor="vtkZSTDDataCompressor">
+<!--Written by meshio++ v17.2.0-->
+<UnstructuredGrid>
+<Piece NumberOfPoints="8" NumberOfCells="12">
+<Points>
+<DataArray type="Float64" Name="Points" NumberOfComponents="3" format="binary">
+AQAAAACAAADAAAAAMgAAAA==KLUv/SDATQEAeAAAFEAAwEDAQMBAwEDAQAwAoBPQHVAYcAXUA44BV0A94PLKWnDDAlg=
+</DataArray>
+</Points>
+<Cells>
+<DataArray type="Int64" Name="connectivity" format="binary">
+AQAAAACAAAAgAQAAaQAAAA==KLUv/WAgAP0CACQCAAABAAIAAwIEBQYHBgQCBwUBBQMGBwEDBAMEAAAAAAAAAB4AoAvIB5nXQAyQAPlmkgAEQD6QMdAF5AOZgSwg304SgADQHegMZAHZgc5AFpAPZAayzCQADAwGHgAW
+</DataArray>
+<DataArray type="Int64" Name="offsets" format="binary">
+AQAAAACAAABgAAAALgAAAA==KLUv/SBgLQEA8AMABgAJAAwADwASABUAGAAbAB4AIQAkAAAAAAAAAAtUAgADAQ==
+</DataArray>
+<DataArray type="Int64" Name="types" format="binary">
+AQAAAACAAABgAAAAFwAAAA==KLUv/SBgdQAAIAUABQADAL2CAMB4AFg=
+</DataArray>
+</Cells>
+<CellData>
+<DataArray type="Float64" Name="facet_normals" NumberOfComponents="3" format="binary">
+AQAAAACAAAAgAQAALgAAAA==KLUv/WAgACUBAEgAAPA/AL8/8L8LAKAGAAKMMDAgDOZNYQUgYGDeziWAHxbAAg==
+</DataArray>
+</CellData>
+</Piece>
+</UnstructuredGrid>
+</VTKFile>

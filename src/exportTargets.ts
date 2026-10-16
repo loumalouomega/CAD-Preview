@@ -122,6 +122,13 @@ export const EXPORT_EXTENSION: Record<CadFormat, string> = {
   // Mesh panel's own registry (`meshExportFormats.ts`), which carries the
   // `.post.res` sibling handling this table has no way to express.
   gid: "post.msh",
+  // Compound suffix — the same longest-suffix rule `fileRouter.ts` matches on.
+  // Like GiD, libMesh's FE-mesh export runs through `meshExportFormats.ts`
+  // (`.xda`, plain ASCII decks), never through this table.
+  libmesh: "xda",
+  // Compound suffix. Import-only document format: the refined NURBS model is
+  // written by `iga_refine` (as .cad.json), never by this table's paths.
+  cad_json: "cad.json",
   nastran: "bdf",
 };
 
@@ -156,5 +163,7 @@ export const EXPORT_LABEL: Record<CadFormat, string> = {
   su2: "SU2",
   medit: "INRIA Medit",
   gid: "GiD Postprocess",
+  libmesh: "libMesh",
+  cad_json: "Kratos CAD JSON",
   nastran: "Nastran Bulk Data",
 };

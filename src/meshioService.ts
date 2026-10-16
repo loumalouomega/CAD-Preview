@@ -40,6 +40,17 @@ import { boundaryExtentMismatches, describeExtentMismatch, extentOf } from "./me
 // entirely; the sequential build is plenty fast for the file sizes this
 // feature deals with.
 //
+// Loaded with `{ full: true }` as well: the FULL artifact is the only one
+// staged (`scripts/runtimeAssets.mjs`) since 17.2.0 shipped it, because it is
+// a strict superset of the lean pair — the same core plus OpenCASCADE 7.6.3
+// (STEP/IGES reading, the `fitCad` mesh-to-analytic-CAD fit, `doc/fit_cad.md`
+// upstream), the zstd/lz4 VTK XML block codecs and bzip2 (libMesh
+// `.xda.bz2`/`.xdr.bz2`). The full glue self-locates its `.wasm` beside
+// itself exactly as the lean glue does, so the wrapper's default `fullGlue`
+// needs no override in either layout (installed package or staged
+// dist/meshio tree). See README's Licensing for the full artifact's
+// OpenCASCADE/LGPL note.
+//
 // Console output goes through `console.log`/`console.error` by default
 // (confirmed against the live package's built glue,
 // `dist/meshioplusplus_wasm.mjs`) — like OCCT, unlike gmsh 0.2.0's raw-fd
@@ -86,7 +97,7 @@ export function getMeshio(): Promise<MeshioApi> {
   if (!_meshioPromise) {
     _meshioPromise = (async () => {
       const { loadMeshioPlusPlus } = await importRuntimePackage("@meshioplusplus/wasm", "meshio", "src/index.mjs");
-      return loadMeshioPlusPlus({}, { variant: "seq" });
+      return loadMeshioPlusPlus({}, { variant: "seq", full: true });
     })().catch((err) => {
       _meshioPromise = null;
       throw err;
@@ -308,14 +319,31 @@ export async function convertToStlBoundary(
     // `convertSurface` linearizes higher-order cells but does NOT split
     // multi-node boundary faces — a quad-only boundary yields zero facets.
     // Also use this path when the format's C++ surface reader is unsupported.
-    let boundary = m.extractSurface(sourceMesh, false);
-    assertCoversSource(boundary.points, boundary.dim);
+    // cad_json is the one format whose cells ARE the surface already (sampled
+    // quads + 1-D edge lines): `extractSurface` is boundary extraction —
+    // "faces of a volume, edges of a surface" — so on it the mesh would come
+    // back as 384 free edges and the STL empty (probed live). Its cells are
+    // linearized in place instead, and only the resulting triangle blocks are
+    // emitted (the edge lines must not reach the STL fan-triangulator, which
+    // refuses a 2-node block).
+    let boundary: MeshioMesh;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    let blocks = boundary.cells as any[];
-    if (blocks.length > 0 && blocks.some((b) => b.type !== "triangle" || b.nodesPerCell !== 3)) {
-      boundary = m.convertCells(boundary, "simplexify", true);
+    let blocks: any[];
+    if (meshioFormat === "cad_json") {
+      boundary = m.convertCells(sourceMesh, "simplexify", true);
+      assertCoversSource(boundary.points, boundary.dim);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      blocks = (boundary.cells as any[]).filter((b) => b.type === "triangle");
+    } else {
+      boundary = m.extractSurface(sourceMesh, false);
+      assertCoversSource(boundary.points, boundary.dim);
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       blocks = boundary.cells as any[];
+      if (blocks.length > 0 && blocks.some((b) => b.type !== "triangle" || b.nodesPerCell !== 3)) {
+        boundary = m.convertCells(boundary, "simplexify", true);
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        blocks = boundary.cells as any[];
+      }
     }
     const stl = boundaryTrianglesToAsciiStl(boundary.points, boundary.dim, blocks, "meshio import");
     if (stl) return stl;

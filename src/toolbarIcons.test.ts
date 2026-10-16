@@ -17,6 +17,8 @@ const EXPECTED_IDS: ToolbarIconId[] = [
   "shaded", "xray", "hiddenLines", "flat",
   // Split-view layout picker (Phase 2: 1×1, 1×2, 2×1, 2×2).
   "layout1x1", "layout1x2", "layout2x1", "layout2x2",
+  // Mesh Health panel's Fit to CAD… (meshio++ 17.2.0's fitCad).
+  "fitCad",
 ];
 
 describe("TOOLBAR_ICONS", () => {

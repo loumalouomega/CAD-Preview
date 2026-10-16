@@ -1390,6 +1390,14 @@ Sent when the Mesh Health panel's **Repair (robust)…** button is clicked (road
 { "type": "repairMeshButtonClicked" }
 ```
 
+### `fitMeshToCadButtonClicked`
+
+Sent when the Mesh Health panel's **Fit to CAD…** button is clicked (meshio++ 17.2.0's `fitCad`) — reachable under the SAME gate as `promoteToBrepButtonClicked` (a report showing at least one component that closed), and the analytic counterpart of it: instead of sewing the triangles, it segments the surface, fits a primitive per patch and replaces them with exact faces (plus fillets/blends/chamfers/threads and freeform B-splines), sewn and checked by the OpenCASCADE linked into the full WASM artifact. Same shape as its siblings: the host runs the entire flow itself (a save dialog defaulting to `.step` — always STEP, since `fitCad` writes AP214 and takes the mesh's own coordinates, so there is no format/unit quick-pick — then `fitMeshToCad`) and reports through the generic `"status"`/`"error"` messages; the success status carries the fit's own facts (`N faces (… planes/cylinders/…), volume ratio, max deviation`), and an `valid: false` solid is reported as an ERROR while still having been written. Requires a closed, consistently wound skin — the fit's own refusal names the open edges.
+
+```json
+{ "type": "fitMeshToCadButtonClicked" }
+```
+
 ### `massPropertiesRequest`
 
 Sent when the Mass Properties panel's **Compute** button is clicked, for a B-rep source only (mesh sources never send this — see `massPropertiesResult` above). `entityId` is `null` for the whole model, or the current selection's single entity id (`solid-N` / `face-N` / `edge-N`) — the panel refuses to guess when 2+ entities are selected, showing a guidance message instead of sending a request.

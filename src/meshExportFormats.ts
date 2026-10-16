@@ -174,6 +174,19 @@ export const MESH_EXPORT_FORMATS = [
     via: "meshio",
     companion: { extension: "post.res", linkage: "sibling" },
   },
+  // libMesh (meshio++ 17.2.0). Plain ASCII `.xda` — the flavours this
+  // extension can WRITE are exactly the flavours it reads (see fileRouter's
+  // `xda` entry; the compressed `.gz`/`.bz2` pairings are read-only here and
+  // need no export row, since a solver wants plain decks). The fixture script
+  // (scripts/gen-libmesh-fixtures.mjs) wrote and re-read every flavour live;
+  // the corpus's export-libmesh row pins this export pipeline end to end.
+  {
+    id: "libmesh",
+    label: "libMesh (.xda)",
+    extension: "xda",
+    filterLabel: "libMesh Mesh",
+    via: "meshio",
+  },
 ] as const satisfies readonly MeshExportFormat[];
 
 export type MeshExportFormatId = (typeof MESH_EXPORT_FORMATS)[number]["id"];

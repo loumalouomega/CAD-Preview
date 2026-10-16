@@ -29,6 +29,7 @@ export interface MeshHealthDisplay {
 export interface MeshHealthPanelCallbacks {
   onCheck: () => void;
   onPromote: () => void;
+  onFitCad: () => void;
   onRepair: () => void;
 }
 
@@ -54,8 +55,15 @@ function formatTolerance(t: number): string {
  * comment for why promotion is a one-shot export, never an in-place
  * reclassification) — the host owns the whole format/unit/save-dialog flow
  * from there via a single parameter-free `promoteToBrepButtonClicked`
- * message. The **Repair (robust)** button (roadmap "Robust volumetric
- * meshing", Phase 3, closed) is the opposite gate — enabled only once a
+ * message. The **Fit to CAD…** button (meshio++ 17.2.0's `fitCad`) shares
+ * that gate and that one-shot shape, but replaces the triangles with EXACT
+ * analytic faces instead of sewing them — it needs a closed, CONSISTENTLY
+ * WOUND skin, which the report already surfaces separately (Inconsistently
+ * wound pairs); the click is still allowed once a component closed, and the
+ * host reports the fit's own refusal when it is not, naming the open edges.
+ * Always a STEP, no format/unit pickers. The **Repair (robust)** button
+ * (roadmap "Robust volumetric meshing", Phase 3, closed) is the opposite gate
+ * — enabled only once a
  * report shows at least one component that did NOT close
  * (`requiredTolerance === null`), since a mesh that already closes has
  * nothing to repair; it writes a NEW watertight STL via fTetWild
@@ -69,6 +77,7 @@ export class MeshHealthPanel {
   private readonly panel: HTMLElement;
   private readonly body: HTMLElement;
   private readonly promoteButton: HTMLButtonElement | null;
+  private readonly fitButton: HTMLButtonElement | null;
   private readonly repairButton: HTMLButtonElement | null;
   private readonly decimateCheckbox: HTMLInputElement | null;
 
@@ -76,10 +85,12 @@ export class MeshHealthPanel {
     this.panel = panel;
     this.body = panel.querySelector("#mesh-health-body")!;
     this.promoteButton = panel.querySelector("#mesh-health-promote");
+    this.fitButton = panel.querySelector("#mesh-health-fit");
     this.repairButton = panel.querySelector("#mesh-health-repair");
     this.decimateCheckbox = panel.querySelector("#mesh-health-decimate");
     panel.querySelector("#mesh-health-check")?.addEventListener("click", () => cb.onCheck());
     this.promoteButton?.addEventListener("click", () => cb.onPromote());
+    this.fitButton?.addEventListener("click", () => cb.onFitCad());
     this.repairButton?.addEventListener("click", () => cb.onRepair());
   }
 
@@ -95,6 +106,7 @@ export class MeshHealthPanel {
   setEligible(eligible: boolean): void {
     this.panel.hidden = !eligible;
     if (this.promoteButton) this.promoteButton.disabled = true; // no report yet (or a new document) — nothing to promote
+    if (this.fitButton) this.fitButton.disabled = true; // no report yet — nothing known to be fittable
     if (this.repairButton) this.repairButton.disabled = true; // no report yet — nothing known to need repair
     if (eligible) this.renderMessage("Click Check Healability to run the diagnostic.");
   }
@@ -102,6 +114,7 @@ export class MeshHealthPanel {
   renderMessage(text: string, isError = false): void {
     this.body.innerHTML = "";
     if (this.promoteButton) this.promoteButton.disabled = true;
+    if (this.fitButton) this.fitButton.disabled = true;
     if (this.repairButton) this.repairButton.disabled = true;
     const p = document.createElement("div");
     p.className = isError ? "mesh-health-message mesh-health-message-error" : "mesh-health-message";
@@ -112,6 +125,7 @@ export class MeshHealthPanel {
   render(report: MeshHealthDisplay): void {
     this.body.innerHTML = "";
     if (this.promoteButton) this.promoteButton.disabled = !report.components.some((c) => c.requiredTolerance != null);
+    if (this.fitButton) this.fitButton.disabled = !report.components.some((c) => c.requiredTolerance != null);
     if (this.repairButton) this.repairButton.disabled = !report.components.some((c) => c.requiredTolerance == null);
     if (report.decimated) {
       const note = document.createElement("div");

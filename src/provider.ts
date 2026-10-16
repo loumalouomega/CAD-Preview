@@ -2728,6 +2728,11 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
         return;
       }
 
+      if (msg.type === "fitMeshToCadButtonClicked") {
+        if (route) void this.handleFitMeshToCad(document.uri, route, post);
+        return;
+      }
+
       if (msg.type === "repairMeshButtonClicked") {
         if (route) void this.handleRepairMesh(document.uri, route, post);
         return;
@@ -4607,6 +4612,73 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
       },
       post
     );
+  }
+
+  /**
+   * meshio++ 17.2.0's `fitCad` — the Mesh Health panel's **Fit to CAD…**
+   * button, the *analytic* counterpart of `handlePromoteToBrep`: promotion
+   * SEWS the triangles into a B-rep, this REPLACES them with exact faces
+   * (planes/spheres/cylinders/cones/tori, fillets/blends/chamfers/threads,
+   * freeform B-splines where nothing else fits). Same one-shot-export shape
+   * (the source keeps its mesh identity) and same `COMPARABLE_MESH_FORMATS`
+   * gate; it additionally needs a closed, CONSISTENTLY WOUND skin and the
+   * FULL WASM artifact's OpenCASCADE (a mesh that fails to close throws
+   * upstream's own error, naming the open edges — the Mesh Health report
+   * already showed them). Deliberately always a STEP and no format/unit
+   * quick-picks: `fitCad` writes AP214 and takes the mesh's own coordinates
+   * as-is, so there is nothing to choose. Unlike `promptSaveAndWrite`'s
+   * generic "Exported to …" status, the final message carries the fit's own
+   * report — `valid` in particular is the one thing the user must not lose,
+   * since an invalid solid is still written and must be stated as such.
+   */
+  private async handleFitMeshToCad(uri: vscode.Uri, route: FileRoute, post: (msg: HostToWebview) => void): Promise<void> {
+    if (!COMPARABLE_MESH_FORMATS.has(route.format)) {
+      post({
+        type: "error",
+        message:
+          route.strategy === "three"
+            ? displayOnlyMeshMessage(route.format, "Fit to CAD")
+            : "Fit to CAD requires an STL/OBJ/PLY/glTF source.",
+      });
+      return;
+    }
+    const meshFormat = route.format as MeshParseFormat;
+
+    const baseName = uri.path.slice(uri.path.lastIndexOf("/") + 1).replace(/\.[^.]+$/, "");
+    const saveUri = await vscode.window.showSaveDialog({
+      defaultUri: vscode.Uri.joinPath(uri, "..", `${baseName}.step`),
+      filters: { STEP: ["step"] },
+    });
+    if (!saveUri) return;
+
+    try {
+      this.assertMeshingJobActive();
+      const sourceBytes = await vscode.workspace.fs.readFile(uri);
+      const result = await this.docPipeline(uri).fitMeshToCad(
+        sourceBytes,
+        meshFormat,
+        {},
+        await resolveGltfBuffersFor(uri, meshFormat, sourceBytes, this.decodeGltf)
+      );
+      this.assertMeshingJobActive();
+      await vscode.workspace.fs.writeFile(saveUri, result.stepBytes);
+
+      const r = result.report;
+      const summary =
+        `${r.numFaces} faces (${r.numPlane} plane, ${r.numCylinder} cylinder, ${r.numSphere} sphere, ` +
+        `${r.numCone} cone, ${r.numTorus} torus), volume ratio ${r.volumeRatio.toFixed(4)}, ` +
+        `max deviation ${r.maxDeviation.toExponential(2)}`;
+      if (r.valid) {
+        post({ type: "status", text: `Fitted to CAD: ${summary} — saved to ${saveUri.fsPath}` });
+      } else {
+        post({
+          type: "error",
+          message: `The fitted solid failed OpenCASCADE's B-rep check (${summary}) — written to ${saveUri.fsPath}, but inspect it before relying on it.`,
+        });
+      }
+    } catch (err) {
+      post({ type: "error", message: `Fit to CAD failed: ${(err as Error).message}` });
+    }
   }
 
   /**
