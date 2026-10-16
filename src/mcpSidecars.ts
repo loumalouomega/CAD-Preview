@@ -23,6 +23,7 @@ import { DEFAULT_MESH_OPTIONS, type MeshOptions } from "./meshOptions";
 import { parseMeshJson, serializeMeshJson, generateGeoScript } from "./meshOptionsSidecar";
 import { parseScriptLibraryJson, serializeScriptLibraryJson, type ScriptLibrary } from "./scriptLibrary";
 import { bundledMacrosPath } from "./starterMacros";
+import { bundledProcessLimitsPath, parseProcessLimits, type ProcessLimitsLibrary } from "./processLimits";
 import {
   bundledMeshPresetsPath,
   parseMeshPresetsJson,
@@ -310,6 +311,20 @@ export async function readBundledMeshPresetLibrary(extensionPath: string): Promi
     return parseMeshPresetsJson(text);
   } catch {
     return {};
+  }
+}
+
+/**
+ * The read-only bundled process limits and build plates — `dist/process-limits/
+ * starter-limits.json` beside the bundle. Missing/unreadable/corrupt yields an
+ * empty library (a named process then fails with the list of bundled names;
+ * explicit numbers keep working).
+ */
+export async function readBundledProcessLimits(extensionPath: string): Promise<ProcessLimitsLibrary> {
+  try {
+    return parseProcessLimits(await fs.readFile(bundledProcessLimitsPath(extensionPath), "utf8"));
+  } catch {
+    return { processes: {}, plates: {} };
   }
 }
 

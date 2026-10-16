@@ -102,6 +102,7 @@ import {
   estimateMeshBudgetTool,
   checkMeshQualityTool,
   analyzePassagesTool,
+  checkPrintabilityTool,
   measureMeshDeviationTool,
   saveSheetTemplate,
   listSheetTemplates,
@@ -1758,6 +1759,36 @@ server.registerTool(
     },
   },
   wrap((args: { path: string; targetCells?: number; sizeMax?: number; angleDeg?: number; maxFindings?: number }) => analyzePassagesTool(ctx, args))
+);
+
+server.registerTool(
+  "check_printability",
+  {
+    description:
+      "Facts-only printability report (see describe_capabilities' verdictConventions) over the welded triangles the model reduces to (B-rep: fine tessellation with edits baked; STL/OBJ/PLY/glTF: pending mesh edits baked). Returns: closure and body count (free/non-manifold edges, volume, bounds); a units-suspect flag; for each of the six build directions (+X…-Z) the overhang area (faces inclined more than `overhangLimitDeg` from vertical, default 45 or the process limit; a face exactly at the limit is not counted), the flat plate-contact area (not an overhang), a support-volume UPPER BOUND, build height, footprint and — with a `plate` — whether it fits (the plate may be turned about the vertical); and SAMPLED wall thickness per body (min / 5th percentile / median / rays that found no far wall) from deterministic inward rays — an estimate at the stated sampling resolution, never a minimum certificate. `process` (a bundled name — fdm, sla, sls, mjf — or {minWallMm, maxOverhangDeg, source}) adds a count of samples thinner than its minimum wall; bundled rows name their source and are starting points, not standards. Rules it cannot measure (minimum hole size, bridge span, trapped powder/resin, warping, finish) come back under `notChecked` with checked:false — not passed. Display-only formats (3MF/Collada/AMF) and meshio-only formats return supported:false.",
+    inputSchema: {
+      path: modelPath,
+      process: z
+        .union([
+          z.string().describe("A bundled process name: fdm, sla, sls or mjf"),
+          z.object({
+            name: z.string().optional(),
+            minWallMm: z.number().positive().optional(),
+            maxOverhangDeg: z.number().positive().max(89.999).optional(),
+            source: z.string().optional().describe("Where these numbers came from (default \"caller-supplied\")"),
+          }),
+        ])
+        .optional()
+        .describe("Process limits to count against — bundled name or explicit numbers"),
+      plate: z
+        .union([z.string().describe("A bundled build plate: ender-3, prusa-mk4, bambu-x1 or form-3"), z.object({ x: z.number().positive(), y: z.number().positive(), z: z.number().positive() })])
+        .optional()
+        .describe("Build plate size in mm (bundled name or {x, y, z})"),
+      overhangLimitDeg: z.number().positive().max(89.999).optional().describe("Overhang limit from vertical in degrees (default: the process limit, else 45)"),
+      maxSamples: z.number().int().min(0).optional().describe("Cap on wall-thickness rays across all bodies (default 2000, 0 skips wall thickness); at least 16 per body are always cast"),
+    },
+  },
+  wrap((args: Parameters<typeof checkPrintabilityTool>[1]) => checkPrintabilityTool(ctx, args))
 );
 
 server.registerTool(

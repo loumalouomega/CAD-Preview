@@ -48,6 +48,7 @@ import {
   estimateMeshBudgetTool,
   checkMeshQualityTool,
   analyzePassagesTool,
+  checkPrintabilityTool,
   measureMeshDeviationTool,
   saveModelTool,
   rewriteGeoMerge,
@@ -509,6 +510,13 @@ function fakePipeline(overrides: Partial<Pipeline> = {}): Pipeline {
       warnings: [],
     })),
     analyzePassages: vi.fn(async () => ({ findings: [], rejected: [], targetCells: 3, facesAnalyzed: 0, diagonal: 1 })),
+    checkPrintability: vi.fn(async () => ({
+      report: {
+        triangles: 12, vertices: 8, bodyCount: 1, bodies: [], bounds: null, unitsSuspect: { suspect: false, diagonal: 17 },
+        overhangLimitDeg: 45, orientations: [], sampling: { requested: 2000, used: 0, capped: false, note: "sampled" },
+        notChecked: [{ rule: "bridge span", checked: false as const, reason: "not measured" }], warnings: [],
+      },
+    })),
     exportTessellatedStl: vi.fn(async () => ({
       stl: new Uint8Array(84 + 50),
       triangleCount: 1,
@@ -4485,6 +4493,44 @@ describe("analyze_passages", () => {
     expect(r.warnings.join(" ")).toMatch(/No explicit sizeMax/);
     expect((await analyzePassagesTool(c, { path: stlModel })).supported).toBe(false);
     await expect(analyzePassagesTool(c, { path: stpModel, targetCells: 0 })).rejects.toThrow(/targetCells/);
+  });
+});
+
+describe("check_printability", () => {
+  const stageLimits = async () => {
+    await fs.mkdir(path.join(dir, "dist", "process-limits"), { recursive: true });
+    await fs.copyFile(path.join(__dirname, "..", "process-limits", "starter-limits.json"), path.join(dir, "dist", "process-limits", "starter-limits.json"));
+  };
+
+  it("hands a B-rep source (edits included) and the resolved process/plate to the kernel, and never writes", async () => {
+    await stageLimits();
+    const c = ctx();
+    const r = await checkPrintabilityTool(c, { path: stpModel, process: "fdm", plate: "prusa-mk4", maxSamples: 500 });
+    expect(r.supported).toBe(true);
+    const call = vi.mocked(c.pipeline.checkPrintability).mock.lastCall!;
+    expect(call[1]).toMatchObject({ kind: "brep", format: "step", ops: [] });
+    expect(call[2]).toMatchObject({ maxSamples: 500, plate: { x: 250, y: 210, z: 220 }, process: { name: "fdm", minWallMm: 0.8, maxOverhangDeg: 45 } });
+    expect((r as { notChecked: Array<{ checked: boolean }> }).notChecked[0].checked).toBe(false);
+  });
+
+  it("passes inline process numbers (stating a basis) and rejects an unknown bundled name", async () => {
+    const c = ctx();
+    await checkPrintabilityTool(c, { path: stlModel, process: { minWallMm: 1.2, source: "my printer" } });
+    expect(vi.mocked(c.pipeline.checkPrintability).mock.lastCall![2]).toMatchObject({ process: { name: "custom", minWallMm: 1.2, source: "my printer" } });
+    expect(vi.mocked(c.pipeline.checkPrintability).mock.lastCall![1]).toMatchObject({ kind: "stl" });
+    await expect(checkPrintabilityTool(c, { path: stpModel, process: "laser" })).rejects.toThrow(/Unknown process "laser"/);
+    await expect(checkPrintabilityTool(c, { path: stpModel, plate: { x: 0, y: 1, z: 1 } })).rejects.toThrow(/positive/);
+  });
+
+  it("refuses display-only and meshio-only formats with supported:false, never touching the kernel", async () => {
+    const c = ctx();
+    const dae = await checkPrintabilityTool(c, { path: daeModel });
+    expect(dae.supported).toBe(false);
+    expect(dae.warnings.join(" ")).toMatch(/display-only/);
+    const vtk = await checkPrintabilityTool(c, { path: vtkModel });
+    expect(vtk.supported).toBe(false);
+    expect(vtk.warnings.join(" ")).toMatch(/meshio-only/);
+    expect(c.pipeline.checkPrintability).not.toHaveBeenCalled();
   });
 });
 
