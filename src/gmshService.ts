@@ -350,7 +350,7 @@ async function loadGeometryAndApplyOptions(
         throw new Error(`Conformal fragment failed (${reason}) — no mesh was produced. Retry with conformal: false to mesh the unfragmented solids.`);
       }
     }
-    groupMaps = await applyPartsToGmshModel(extensionPath, gmsh, input.stepBytes, parts, warnings);
+    groupMaps = await applyPartsToGmshModel(extensionPath, gmsh, input.stepBytes, parts, warnings, options.periodic);
   } else {
     gmsh.merge(tmpPath);
     gmsh.model.mesh.classifySurfaces((options.stlAngle ?? 40) * (Math.PI / 180));

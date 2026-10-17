@@ -107,11 +107,43 @@ export interface MeshOptions {
    */
   conformal: boolean;
   /**
+   * Periodic node matching (roadmap "Periodic meshing"; representative-volume-
+   * element studies): each entry makes the `slave` Part's face mesh a copy of
+   * the `master` Part's, offset by `translation` (master position − slave
+   * position, native mm). Each Part must resolve to exactly one surface, B-rep
+   * sources only. Probed on block.stp: every node on the slave face has a
+   * partner at exactly the translation, for Delaunay, HXT and Frontal.
+   */
+  periodic?: PeriodicPair[];
+  /**
    * Advisory element budget (roadmap "Mesh size and memory budget preview"):
    * when the pre-generation estimate exceeds it the panel/tool WARNS — it
    * never blocks a generate. Optional: absent means no budget.
    */
   budgetElements?: number;
+}
+
+/** One periodic face pair, by Part name; see {@link MeshOptions.periodic}. */
+export interface PeriodicPair {
+  slave: string;
+  master: string;
+  translation: [number, number, number];
+}
+
+/** Tolerant parse: bad entries are dropped, never the whole list. */
+export function validatePeriodicPairs(raw: unknown): PeriodicPair[] {
+  if (!Array.isArray(raw)) return [];
+  const out: PeriodicPair[] = [];
+  for (const e of raw) {
+    if (!e || typeof e !== "object") continue;
+    const r = e as Record<string, unknown>;
+    const t = r.translation;
+    if (typeof r.slave !== "string" || !r.slave || typeof r.master !== "string" || !r.master || r.slave === r.master) continue;
+    if (!Array.isArray(t) || t.length !== 3 || !t.every(isFiniteNumber)) continue;
+    if (t[0] === 0 && t[1] === 0 && t[2] === 0) continue;
+    out.push({ slave: r.slave, master: r.master, translation: [t[0], t[1], t[2]] });
+  }
+  return out;
 }
 
 /**
@@ -332,6 +364,8 @@ export function validateMeshOptions(raw: unknown): MeshOptions | null {
   };
   // Optional and omitted when absent, so an untouched sidecar stays byte-stable.
   if (isFiniteNumber(o.budgetElements) && o.budgetElements >= 1) out.budgetElements = Math.round(o.budgetElements);
+  const periodic = validatePeriodicPairs(o.periodic);
+  if (periodic.length > 0) out.periodic = periodic;
   return out;
 }
 
@@ -376,6 +410,14 @@ export function scaleMeshOptionsForUnit(options: MeshOptions, factor: number): M
     ...options,
     sizeMin: options.sizeMin * factor,
     sizeMax: options.sizeMax === SIZE_MAX_SENTINEL ? SIZE_MAX_SENTINEL : options.sizeMax * factor,
+    ...(options.periodic
+      ? {
+          periodic: options.periodic.map((p) => ({
+            ...p,
+            translation: p.translation.map((v) => v * factor) as PeriodicPair["translation"],
+          })),
+        }
+      : {}),
   };
 }
 

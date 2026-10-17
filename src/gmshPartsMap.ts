@@ -1,5 +1,6 @@
 import type { Vec3 } from "./editOps";
 import type { Part } from "./protocol";
+import type { PeriodicPair } from "./meshOptions";
 import { getOcct, readShape, wrapOcctFault } from "./occtService";
 import { resetGmsh } from "./gmshService";
 import { collectFaces, collectSolids, collectVertices, bboxCenter } from "./occtOperations";
@@ -74,9 +75,13 @@ export async function applyPartsToGmshModel(
   gmsh: GmshApi,
   stepBytes: Uint8Array,
   parts: Part[],
-  warnings?: string[]
+  warnings?: string[],
+  periodic: PeriodicPair[] = []
 ): Promise<PartGroupMaps | null> {
-  if (parts.length === 0) return null;
+  if (parts.length === 0) {
+    if (periodic.length > 0) warnings?.push("Periodic pairs ignored: they are declared between Parts and the model has none.");
+    return null;
+  }
 
   const oc = await getOcct(extensionPath);
   oc.FS.writeFile(CORR_TMP_PATH, stepBytes);
@@ -194,6 +199,7 @@ export async function applyPartsToGmshModel(
       pointTagToPart: new Map(),
     };
     const sizeFieldTags: number[] = [];
+    const surfTagsByPart = new Map<string, number[]>();
 
     for (const part of parts) {
       const info: PartGroupInfo = { name: part.name, color: part.color };
@@ -201,6 +207,7 @@ export async function applyPartsToGmshModel(
       const surfTags = resolveTags(part.surfaces, faceIdToTag);
       const curveTags = resolveTags(part.lines, edgeIdToTag);
       const pointTags = resolveTags(part.points, pointIdToTag);
+      surfTagsByPart.set(part.name, surfTags);
 
       // Gmsh's own default sentinel for "auto-assign a new physical tag" is -1
       // (the JS binding's `tag?: number` mirrors the Python API's `tag=-1`).
@@ -239,6 +246,7 @@ export async function applyPartsToGmshModel(
     }
 
     setBackgroundMin(gmsh, sizeFieldTags);
+    applyPeriodicPairs(gmsh, periodic, surfTagsByPart, warnings);
 
     return maps;
   } catch (err) {
@@ -472,4 +480,37 @@ function solidIndex(id: string): number | null {
 function pointIndex(id: string): number | null {
   const m = /^point-(\d+)$/.exec(id);
   return m ? Number(m[1]) : null;
+}
+
+/**
+ * `gmsh.model.mesh.setPeriodic` for each declared pair. Gmsh's affine maps the
+ * MASTER onto the SLAVE, so the user's `translation` (master − slave) is
+ * negated. A pair that does not resolve to exactly one surface per Part is
+ * skipped with a warning (never guessed); a Gmsh refusal (surfaces that are
+ * not translates of each other) throws, since the requested mesh would not
+ * be the one produced.
+ */
+export function applyPeriodicPairs(
+  gmsh: GmshApi,
+  pairs: readonly PeriodicPair[],
+  surfTagsByPart: ReadonlyMap<string, number[]>,
+  warnings?: string[]
+): void {
+  for (const pair of pairs) {
+    const slave = surfTagsByPart.get(pair.slave) ?? [];
+    const master = surfTagsByPart.get(pair.master) ?? [];
+    if (slave.length !== 1 || master.length !== 1) {
+      warnings?.push(
+        `Periodic pair ${pair.slave} → ${pair.master} skipped: each Part must resolve to exactly one surface ` +
+          `(found ${slave.length} and ${master.length}).`
+      );
+      continue;
+    }
+    const [dx, dy, dz] = pair.translation;
+    try {
+      gmsh.model.mesh.setPeriodic(2, slave, master, [1, 0, 0, -dx, 0, 1, 0, -dy, 0, 0, 1, -dz, 0, 0, 0, 1]);
+    } catch (err) {
+      throw new Error(`Periodic pair ${pair.slave} → ${pair.master} failed: ${(err as Error).message}`);
+    }
+  }
 }

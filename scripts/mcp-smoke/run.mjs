@@ -3649,6 +3649,58 @@ try {
     structMdpa.includes("Begin Elements Element3D8N") && /Begin SubModelPart Block/.test(structMdpa),
     "structured MDPA carries Element3D8N cells with a populated Block SubModelPart"
   );
+  // Periodic meshing (roadmap "Periodic meshing"): the 3x4x5 box's x=0 / x=3 faces become
+  // Parts and `options.periodic` makes their face meshes node-for-node translates.
+  await call("set_part", { path: structStep, name: "Block", meshStructured: null });
+  let xMinFace = null, xMaxFace = null;
+  for (let i = 0; i < 6; i++) {
+    const f = await call("inspect", { path: structStep, entityId: `face-${i}` });
+    if (f.normal && Math.abs(Math.abs(f.normal[0]) - 1) < 1e-9 && f.center) {
+      if (Math.abs(f.center[0]) < 1e-9) xMinFace = `face-${i}`;
+      if (Math.abs(f.center[0] - 3) < 1e-9) xMaxFace = `face-${i}`;
+    }
+  }
+  assert(xMinFace && xMaxFace, `the box's x=0 and x=3 faces are found (${xMinFace}, ${xMaxFace})`);
+  await call("set_part", { path: structStep, name: "Left", surfaces: [xMinFace] });
+  await call("set_part", { path: structStep, name: "Right", surfaces: [xMaxFace] });
+  const periodicOut = path.join(dir, "periodic.mdpa");
+  const periodicOptions = { sizeMin: 0, sizeMax: 1.5, dimension: 3, periodic: [{ slave: "Left", master: "Right", translation: [3, 0, 0] }] };
+  await call("export_mesh", { path: structStep, format: "mdpaElements", outputPath: periodicOut, options: periodicOptions });
+  const faceNodeSets = (text) => {
+    const coords = new Map();
+    for (const line of (text.match(/Begin Nodes([\s\S]*?)End Nodes/)?.[1] ?? "").split("\n")) {
+      const m = line.trim().match(/^(\d+)\s+(\S+)\s+(\S+)\s+(\S+)/);
+      if (m) coords.set(Number(m[1]), [Number(m[2]), Number(m[3]), Number(m[4])]);
+    }
+    const sets = {};
+    for (const name of ["Left", "Right"]) {
+      const block = (text.match(new RegExp(`Begin SubModelPart ${name}\\b[\\s\\S]*?^End SubModelPart$`, "m")) ?? [""])[0];
+      const ids = (block.match(/Begin SubModelPartNodes([\s\S]*?)End SubModelPartNodes/)?.[1] ?? "").split("\n").map((l) => l.trim()).filter((l) => /^\d+$/.test(l)).map(Number);
+      sets[name] = ids.map((id) => coords.get(id));
+    }
+    return sets;
+  };
+  const periodicSets = faceNodeSets(fs.readFileSync(periodicOut, "utf8"));
+  const keyYZ = (c) => `${c[1].toFixed(6)},${c[2].toFixed(6)}`;
+  const rightKeys = new Set(periodicSets.Right.map(keyYZ));
+  const unpaired = periodicSets.Left.filter((c) => !rightKeys.has(keyYZ(c))).length;
+  assert(
+    periodicSets.Left.length > 4 && periodicSets.Left.length === periodicSets.Right.length && unpaired === 0,
+    `periodic Left/Right faces carry node-for-node translates (${periodicSets.Left.length} vs ${periodicSets.Right.length} nodes, ${unpaired} unpaired)`
+  );
+  // Control: the same options without `periodic` do not guarantee a pairing on this structured-free box? Both faces
+  // are identical rectangles, so assert the SETTING is what the option controls instead: a bogus translation fails loudly.
+  const badPeriodic = await request("tools/call", {
+    name: "export_mesh",
+    arguments: { path: structStep, format: "mdpaElements", outputPath: path.join(dir, "periodic-bad.mdpa"), options: { ...periodicOptions, periodic: [{ slave: "Left", master: "Right", translation: [2, 0, 0] }] } },
+  });
+  assert(
+    badPeriodic.isError === true && /Periodic pair Left/.test(badPeriodic.content?.[0]?.text ?? ""),
+    `a translation that does not map the faces onto each other fails loudly (got: ${(badPeriodic.content?.[0]?.text ?? "").slice(0, 140)})`
+  );
+  await call("set_part", { path: structStep, name: "Left", remove: true });
+  await call("set_part", { path: structStep, name: "Right", remove: true });
+
   // Non-regular target: a cylinder's side is one smooth face with a seam
   // edge pair, not four transfinite curves — the kernel must refuse it.
   // (A second disjoint box is NOT a negative: two mappable volumes mesh

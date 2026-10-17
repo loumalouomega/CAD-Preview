@@ -210,6 +210,7 @@ const GMSH_ONLY_FIELDS: readonly (keyof MeshOptions)[] = [
   "optimize",
   "stlAngle",
   "conformal",
+  "periodic",
 ];
 
 /**

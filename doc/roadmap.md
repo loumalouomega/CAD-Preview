@@ -582,10 +582,6 @@ None of these depends on another's result.
 | 4.2 | Manifold mesh booleans | `manifold-3d` installed for the probe | Replaces the one mesh operation that can produce non-manifold output |
 | 4.3 | Anisotropic boundary layers | a `$Elements` walker | The largest Gmsh probe, and the first live exercise of `dimension: 2` |
 | 4.4 | Metric-driven adaptive remeshing | verified MMG volume path | Reuses the shipped MMG volume path without assuming any quality guarantee; highest value of the MMG items but the most moving parts |
-| 4.5 | Pre-mesh healing | — | Worth measuring against fTetWild before building any UI |
-| 4.6 | Hex-dominant MDPA export | — | Closes a documented refusal; may end in Kernel-blocked |
-| 4.7 | Periodic meshing | — | Niche (representative-volume-element studies) |
-| 4.8 | JS mesh-size callback | — | Only needed if a sizing source outgrows Gmsh's declarative fields |
 | 4.9 | METIS partitioning for Kratos MPI export | — | Lowest value; no user has asked for partitioned output yet |
 
 The MMG core probe is complete; its working volume/surface paths and negative optimisation result are recorded in `CLAUDE.md`. MMG remeshing has shipped (shared `remeshMesh` service, `remesh_mesh` MCP tool and FE-panel action, with memory admission, documentation, real-pipeline screenshots and packaged-runtime verification). Conformal multi-body meshing has shipped as the default-on `conformal` mesh option with handoff-manifest recording, Gmsh mesh optimisation has shipped as the `optimize` enum, and structured meshing per Part has shipped as `Part.meshStructured` — probe numbers and findings are in `doc/gmsh-integration.md`. 4.4 can probe adaptation using that shipped volume path without assuming any quality guarantee; 4.1's meshio++ half stands alone. IDs in this section were made continuous on 2026-10-08 (see the header).
@@ -679,69 +675,6 @@ The MMG core probe is complete; its working volume/surface paths and negative op
 - **Out of scope:**
   - Level-set discretisation (MMG `-ls`, cutting a mesh along an isosurface into two materials). It is a separate workflow with its own reference rules (MMG reserves references 2/3), and it waits for a concrete request.
   - Solver coupling. Adaptation is a single, user-triggered pass, never a loop.
-
-##### 4.5 Pre-mesh healing {#pre-mesh-healing}
-
-*Area: Meshing.*
-
-- **Hypothesis:** `gmsh.model.occ.healShapes` and `removeAllDuplicates` (declared, never called) fix enough imported-geometry defects that a B-rep which fails to mesh today meshes afterwards.
-- **Evidence today:**
-  - `daratech.stp` fails 3D meshing with a Gmsh PLC error; the perf harness had to exclude it.
-  - fTetWild is the current answer for dirty input, but it applies only to triangle meshes and loses Part correlation.
-- **Probe (S):**
-  1. Mesh `daratech.stp` and `block.stp` with and without healing, and record which succeed.
-  2. For each success, record the change in face count and volume.
-- **Decision gate:**
-  - **Pass:** a previously failing model meshes with an unchanged volume.
-  - **Fail:** recorded. fTetWild remains the answer.
-- **If admitted (S):** an opt-in `heal` mesh option recorded in the handoff manifest.
-
-##### 4.6 Hex-dominant MDPA export {#hex-dominant-mdpa-export}
-
-*Area: Meshing.*
-
-- **Hypothesis:** the Gmsh type-140 elements that hex-dominant meshing emits can be split into existing Kratos element types, pyramids or tetrahedra, without breaking conformity. Kratos MDPA export would then accept hex-dominant meshes instead of refusing them.
-- **Evidence today:**
-  - `collectCells` in `gmshService.ts` refuses type 140 with an actionable message.
-  - `getElementProperties(140)` throws in this build, so the element's node layout has to be read from `getElements` output.
-- **Probe (S):**
-  1. Generate a hex-dominant mesh of `block.stp`.
-  2. Read the type-140 elements' node counts and positions, and determine their shape from the positions.
-  3. Attempt a split into pyramids or tetrahedra, and check that the total volume is conserved and no face is left unmatched.
-- **Decision gate:**
-  - **Pass:** conservative, conforming splits.
-  - **Fail:** the shape is ambiguous → Kernel-blocked, and the refusal stays.
-- **If admitted (S–M):** MDPA export splits type 140 and says so in its warnings and in the handoff manifest.
-
-##### 4.7 Periodic meshing {#periodic-meshing}
-
-*Area: Meshing.*
-
-- **Hypothesis:** `gmsh.model.mesh.setPeriodic`, declared and never called, produces matching node layouts on opposite faces of a box, as representative-volume-element homogenisation needs.
-- **Evidence today:** no periodic constraint exists, and matching opposite faces by hand is not possible.
-- **Probe (S):**
-  1. Mesh `block.stp` with the ±x faces periodic under a translation.
-  2. Assert that every node on one face has a partner on the other at exactly the translation.
-- **Decision gate:**
-  - **Pass:** exact pairs.
-  - **Fail:** recorded.
-- **If admitted (M):** a periodic-pair mesh option between two Parts, with the node pairs written to the MDPA as a SubModelPart pair.
-
-##### 4.8 JS mesh-size callback {#js-mesh-size-callback}
-
-*Area: Meshing.*
-
-- **Hypothesis:** the `setSizeCallback((dim, tag, x, y, z, lc) => number)` declared in gmsh-wasm 0.3.0 actually marshals a JS function into Gmsh's per-vertex sizing loop. `doc/gmsh-integration.md` records it as green in the manifest but never called.
-- **Evidence today:** field-based sizing (Constant, Distance+Threshold, Min) covers every shipped feature. A callback would let a *sampled* quantity drive sizing without translating it into fields — for example, the deviation map's per-vertex distances, or an error indicator on a previous mesh.
-- **Probe (S):**
-  1. Register a callback returning `lc = 0.1 + 0.2·(z − zmin)/(zmax − zmin)` on `block.stp`, and generate.
-  2. Check that edge lengths grow monotonically in z, within a 20 % band.
-  3. Measure how many callback invocations occur and their total cost, since each call crosses the WASM boundary.
-  4. Confirm `removeSizeCallback` restores field-only behaviour in the same singleton.
-- **Decision gate:**
-  - **Pass:** the gradient appears and the per-call overhead is tolerable at the smoke-test size.
-  - **Fail:** a throw, an abort or no effect → Kernel-blocked, with the finding recorded in `doc/gmsh-integration.md` too.
-- **If admitted:** no feature by itself. This probe is an enabler, recorded so a future sizing source can choose it knowingly. The known cost is stated: a callback is not declarative, so it cannot round-trip through `.geo`, `.geo_unrolled` or the `.mesh.json` sidecar.
 
 ##### 4.9 METIS partitioning for Kratos MPI export {#metis-partitioning-for-kratos-mpi-export}
 
@@ -1005,3 +938,7 @@ Three groups, three different revival rules. Each says what would change our min
 - **Slicing, printer hand-off, supplier ordering and robot-description export** — rejected. text-to-cad ships skills that slice with OrcaSlicer, open Bambu Studio, preflight a SendCutSend order and write URDF/SDF. These are manufacturing and robotics execution, outside a tool for previewing, inspecting and preparing models. What survives is the fact-only analysis these skills start from: the [printability facts report](#printability-facts-report) and [draft and undercut analysis](#draft-and-undercut-analysis). **Revive only** if a downstream tool needs a file format this extension cannot already export (3MF is tracked separately).
 
 - **An in-viewer OpenSCAD editor with live re-evaluation** — rejected. ReOpenSCAD's workbench is a text area with syntax highlighting and live preview; here, VS Code is the editor and the viewer opens beside it. What survives: the [Customizer panel](#openscad-customizer-panel), [include tracking](#openscad-include-tracking-and-cache) so a saved edit reloads promptly, and [structured diagnostics](#openscad-diagnostics). **Revive only** if the side-by-side workflow turns out to be unworkable in practice.
+
+- **Gmsh `occ.healShapes` as a pre-mesh repair for imported B-reps.** Probed live (gmsh-wasm 0.3.0, 2026-10-17): on `block.stp` it is harmless but changes the mesh (1 282 → 1 247 tets, same volume 60, 6 faces before and after); on `daratech.stp` — the model that fails 3D meshing with `PLC Error: A segment and a facet intersect` — `removeAllDuplicates` + `healShapes` **deletes the volume** (1 volume → 0, 175 faces unchanged), so "meshing succeeds" is an empty mesh (0 tets). fTetWild remains the answer for dirty input. **Revive only** with a newer Gmsh build where a healed `daratech.stp` meshes to its true volume.
+
+- **Hex-dominant (gmsh type 140) Kratos MDPA export.** Probed live (gmsh-wasm 0.3.0, 2026-10-17, `block.stp`, `Algorithm3D` 9 + `Recombine3DAll`, size 1): the mesh holds tet4 (26.22 volume), hex8 (33.31, all consistently oriented) and 4-node type-140 cells. The 140 cells' faces all mate with tet/140 faces and each hex quad is covered by exactly two of their triangles, so they look like tetrahedra — but no reading of them closes the volume to the model's 60: as tets with signed volume they sum to +1.20 (60.73 total), by absolute value 3.85 (63.4 total), and their orientations are mixed (2.52 positive, 1.33 negative). A conformal export (140 as tets, hexes cut into 12 tets about a centroid, quads split along the neighbours' diagonal) was built and measured at volume 63.48 with 384 faces shared by three or more cells, so it was reverted. `getElementProperties(140)` still throws, so the node layout cannot be confirmed. The explicit refusal in `collectCells` stays. **Revive only** with documented type-140 geometry (a newer Gmsh, or the element's node layout from upstream) that closes the volume.
