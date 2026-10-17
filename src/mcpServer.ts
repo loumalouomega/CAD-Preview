@@ -808,7 +808,7 @@ server.registerTool(
 );
 
 server.registerTool("remesh_mesh", {
-  description: "MMG remeshing of an existing triangle/tetra FE mesh or a generated mesh. Writes a NEW .med file and Parts sidecar; named cell regions survive, fields are dropped with warnings. Not an optim-only quality guarantee.",
+  description: "MMG remeshing of an existing triangle/tetra FE mesh or a generated mesh. Writes a NEW .med file and Parts sidecar; named cell regions survive, fields are dropped with warnings — except with options.adaptField, which adapts the mesh to a scalar point field of a tetrahedral file (sizes from the field's ZZ error indicator) and carries that one field over conservatively, reporting the achieved density and conservation error. Not an optim-only quality guarantee.",
   inputSchema: {
     path: modelPath, outputPath: z.string().describe("Unused absolute .med output path (the Parts sidecar must also be absent)"),
     source: z.enum(["file", "generated"]).optional().describe("file (default): original meshio FE file; generated: freshly mesh the current edited geometry/settings/Parts"),
@@ -818,6 +818,8 @@ server.registerTool("remesh_mesh", {
       hmin: z.number().positive().optional().describe("Minimum edge length in source units (generated CAD is mm)"),
       hmax: z.number().positive().optional().describe("Maximum edge length in source units (generated CAD is mm)"),
       hgrad: z.number().min(1).optional().describe("Dimensionless gradation, at least 1; omitted sizes/gradation retain MMG defaults"),
+      adaptField: z.string().optional().describe("File mode, linear tetrahedra: name of a scalar point_data array (see inspect_meshio_fields). Target sizes come from its ZZ error indicator — fine where the field varies, coarse (hmax, default 0.3 x bbox diagonal) where it does not, floor hmin (default 0.02 x diagonal) — and the field is carried to the new mesh with conservativeInterpolate. The result reports the achieved sizes, cell counts and conservation error; other data arrays are dropped."),
+      adaptStrength: z.number().positive().max(1000).optional().describe("With adaptField: alpha in h = hmax / (1 + alpha * e / mean(e)); default 6. Larger refines harder (and makes more cells)."),
     }).strict().optional(),
     meshOptions: z.record(z.string(), z.unknown()).optional().describe("generate_mesh options overrides, used only for source=generated"),
   },

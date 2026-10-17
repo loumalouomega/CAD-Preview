@@ -74,6 +74,8 @@ const required = [...new Set([
   "dist/draco/draco_decoder.wasm",
   "dist/draco/node/draco_decoder.wasm",
   "dist/draco/LICENSE",
+  "dist/manifold/manifold.wasm",
+  "dist/manifold/LICENSE",
   "media/viewer.js",
   "media/viewer.css",
   ...carveOuts,

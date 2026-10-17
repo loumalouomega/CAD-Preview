@@ -3649,6 +3649,58 @@ try {
     structMdpa.includes("Begin Elements Element3D8N") && /Begin SubModelPart Block/.test(structMdpa),
     "structured MDPA carries Element3D8N cells with a populated Block SubModelPart"
   );
+  // Periodic meshing (roadmap "Periodic meshing"): the 3x4x5 box's x=0 / x=3 faces become
+  // Parts and `options.periodic` makes their face meshes node-for-node translates.
+  await call("set_part", { path: structStep, name: "Block", meshStructured: null });
+  let xMinFace = null, xMaxFace = null;
+  for (let i = 0; i < 6; i++) {
+    const f = await call("inspect", { path: structStep, entityId: `face-${i}` });
+    if (f.normal && Math.abs(Math.abs(f.normal[0]) - 1) < 1e-9 && f.center) {
+      if (Math.abs(f.center[0]) < 1e-9) xMinFace = `face-${i}`;
+      if (Math.abs(f.center[0] - 3) < 1e-9) xMaxFace = `face-${i}`;
+    }
+  }
+  assert(xMinFace && xMaxFace, `the box's x=0 and x=3 faces are found (${xMinFace}, ${xMaxFace})`);
+  await call("set_part", { path: structStep, name: "Left", surfaces: [xMinFace] });
+  await call("set_part", { path: structStep, name: "Right", surfaces: [xMaxFace] });
+  const periodicOut = path.join(dir, "periodic.mdpa");
+  const periodicOptions = { sizeMin: 0, sizeMax: 1.5, dimension: 3, periodic: [{ slave: "Left", master: "Right", translation: [3, 0, 0] }] };
+  await call("export_mesh", { path: structStep, format: "mdpaElements", outputPath: periodicOut, options: periodicOptions });
+  const faceNodeSets = (text) => {
+    const coords = new Map();
+    for (const line of (text.match(/Begin Nodes([\s\S]*?)End Nodes/)?.[1] ?? "").split("\n")) {
+      const m = line.trim().match(/^(\d+)\s+(\S+)\s+(\S+)\s+(\S+)/);
+      if (m) coords.set(Number(m[1]), [Number(m[2]), Number(m[3]), Number(m[4])]);
+    }
+    const sets = {};
+    for (const name of ["Left", "Right"]) {
+      const block = (text.match(new RegExp(`Begin SubModelPart ${name}\\b[\\s\\S]*?^End SubModelPart$`, "m")) ?? [""])[0];
+      const ids = (block.match(/Begin SubModelPartNodes([\s\S]*?)End SubModelPartNodes/)?.[1] ?? "").split("\n").map((l) => l.trim()).filter((l) => /^\d+$/.test(l)).map(Number);
+      sets[name] = ids.map((id) => coords.get(id));
+    }
+    return sets;
+  };
+  const periodicSets = faceNodeSets(fs.readFileSync(periodicOut, "utf8"));
+  const keyYZ = (c) => `${c[1].toFixed(6)},${c[2].toFixed(6)}`;
+  const rightKeys = new Set(periodicSets.Right.map(keyYZ));
+  const unpaired = periodicSets.Left.filter((c) => !rightKeys.has(keyYZ(c))).length;
+  assert(
+    periodicSets.Left.length > 4 && periodicSets.Left.length === periodicSets.Right.length && unpaired === 0,
+    `periodic Left/Right faces carry node-for-node translates (${periodicSets.Left.length} vs ${periodicSets.Right.length} nodes, ${unpaired} unpaired)`
+  );
+  // Control: the same options without `periodic` do not guarantee a pairing on this structured-free box? Both faces
+  // are identical rectangles, so assert the SETTING is what the option controls instead: a bogus translation fails loudly.
+  const badPeriodic = await request("tools/call", {
+    name: "export_mesh",
+    arguments: { path: structStep, format: "mdpaElements", outputPath: path.join(dir, "periodic-bad.mdpa"), options: { ...periodicOptions, periodic: [{ slave: "Left", master: "Right", translation: [2, 0, 0] }] } },
+  });
+  assert(
+    badPeriodic.isError === true && /Periodic pair Left/.test(badPeriodic.content?.[0]?.text ?? ""),
+    `a translation that does not map the faces onto each other fails loudly (got: ${(badPeriodic.content?.[0]?.text ?? "").slice(0, 140)})`
+  );
+  await call("set_part", { path: structStep, name: "Left", remove: true });
+  await call("set_part", { path: structStep, name: "Right", remove: true });
+
   // Non-regular target: a cylinder's side is one smooth face with a seam
   // edge pair, not four transfinite curves — the kernel must refuse it.
   // (A second disjoint box is NOT a negative: two mappable volumes mesh
@@ -4868,6 +4920,38 @@ try {
   await call("set_part", { path: mmgCad, name: "Wall", surfaces: ["face-0"], color: "#ff0000" });
   const mmgGenerated = await call("remesh_mesh", { path: mmgCad, source: "generated", meshOptions: { sizeMax: 2 }, outputPath: path.join(dir, "mmg-generated.med"), options: { hmax: 1 } });
   assert(mmgGenerated.parts.some(p => p.name === "Wall" && p.color === "#ff0000" && p.surfaces.length > 0), "MMG generated mode preserves a physical boundary Part and colour");
+
+  // Field-driven adaptation (roadmap "Metric-driven adaptive remeshing from a field"): a Gmsh tet
+  // mesh of the 3x4x5 block with a Gaussian point field appended (VTK legacy POINT_DATA).
+  const adaptVtk = path.join(dir, "adapt-source.vtk");
+  await call("export_mesh", { path: mmgCad, format: "vtk", outputPath: adaptVtk, options: { sizeMax: 0.6, dimension: 3 } });
+  const vtkText = fs.readFileSync(adaptVtk, "utf8");
+  const pointsHeader = vtkText.match(/POINTS (\d+) \w+\n/);
+  assert(!!pointsHeader, "the VTK export has a POINTS block");
+  const pointCount = Number(pointsHeader[1]);
+  const pointNums = vtkText.slice(pointsHeader.index + pointsHeader[0].length).split(/\s+/).slice(0, pointCount * 3).map(Number);
+  const gauss = [];
+  for (let i = 0; i < pointCount; i++) {
+    const [x, y, z] = pointNums.slice(3 * i, 3 * i + 3);
+    gauss.push(Math.exp(-((x + 0.75) ** 2 + y ** 2 + z ** 2) / 0.72).toExponential(10));
+  }
+  fs.writeFileSync(adaptVtk, `${vtkText.trimEnd()}\nPOINT_DATA ${pointCount}\nSCALARS f double 1\nLOOKUP_TABLE default\n${gauss.join("\n")}\n`);
+  const adaptOut = path.join(dir, "adapted.med");
+  const adaptResult = await call("remesh_mesh", { path: adaptVtk, outputPath: adaptOut, options: { adaptField: "f", adaptStrength: 6 } });
+  assert(adaptResult.report.module === "mmg3d" && adaptResult.adapt?.field === "f", "remesh_mesh adapts a tetrahedral mesh to a point field");
+  assert(adaptResult.adapt.conservation.relError < 1e-6, `the adapted field is conserved (relative error ${adaptResult.adapt.conservation.relError})`);
+  assert(adaptResult.adapt.sizeRange[0] < adaptResult.adapt.sizeRange[1] / 3, `target sizes follow the field (${adaptResult.adapt.sizeRange.join(" … ")})`);
+  const adaptedFields = await call("inspect_meshio_fields", { path: adaptOut });
+  assert(adaptedFields.arrays.some((a) => a.name === "f"), "the adapted MED carries the transferred field");
+  const adaptGentle = await call("remesh_mesh", { path: adaptVtk, outputPath: path.join(dir, "adapted-gentle.med"), options: { adaptField: "f", adaptStrength: 1 } });
+  assert(
+    adaptResult.adapt.cellsAfter > adaptGentle.adapt.cellsAfter,
+    `a larger adaptStrength refines harder (${adaptGentle.adapt.cellsAfter} cells at 1, ${adaptResult.adapt.cellsAfter} at 6)`
+  );
+  const adaptMissing = await request("tools/call", { name: "remesh_mesh", arguments: { path: adaptVtk, outputPath: path.join(dir, "adapted-missing.med"), options: { adaptField: "nope" } } });
+  assert(adaptMissing.isError && /not a point_data array/.test(adaptMissing.content?.[0]?.text ?? ""), "an unknown adaptField is refused by name");
+  const adaptGenerated = await request("tools/call", { name: "remesh_mesh", arguments: { path: mmgCad, source: "generated", outputPath: path.join(dir, "adapted-gen.med"), options: { adaptField: "f" } } });
+  assert(adaptGenerated.isError && /source: file/.test(adaptGenerated.content?.[0]?.text ?? ""), "adaptField on a generated mesh is refused (no result fields)");
 
   // Still geometry-only for anything beyond regions (point/cell/field data
   // arrays) — the region→Parts correlation above is additive, not a

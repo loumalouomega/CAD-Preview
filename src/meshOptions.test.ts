@@ -229,6 +229,24 @@ describe("scalePartsMeshSizeForUnit", () => {
   });
 });
 
+describe("periodic pairs", () => {
+  const ok = { slave: "Left", master: "Right", translation: [3, 0, 0] };
+  it("keeps valid pairs and drops bad entries, never the list", () => {
+    const v = validateMeshOptions({
+      periodic: [ok, { slave: "A", master: "A", translation: [1, 0, 0] }, { slave: "A", master: "B", translation: [0, 0, 0] }, { slave: "A", master: "B", translation: [1, NaN, 0] }, "x"],
+    });
+    expect(v?.periodic).toEqual([ok]);
+  });
+  it("is absent (byte-stable sidecar) when none are given", () => {
+    expect("periodic" in (validateMeshOptions({}) ?? {})).toBe(false);
+    expect("periodic" in (validateMeshOptions({ periodic: [] }) ?? {})).toBe(false);
+  });
+  it("scales the translation with the unit factor", () => {
+    const v = validateMeshOptions({ periodic: [ok] })!;
+    expect(scaleMeshOptionsForUnit(v, 25.4).periodic![0].translation[0]).toBeCloseTo(76.2, 10);
+  });
+});
+
 describe("validateMeshGrading", () => {
   const valid = { sizeAtWall: 0.15, sizeFar: 1, distNear: 0.3, distFar: 1.5 };
 

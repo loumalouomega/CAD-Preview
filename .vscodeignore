@@ -26,6 +26,8 @@ third-party/**
 !dist/draco/draco_decoder.wasm
 !dist/draco/node/draco_decoder.wasm
 !dist/draco/LICENSE
+!dist/manifold/manifold.wasm
+!dist/manifold/LICENSE
 node_modules/**
 # @loumalouomega/gmsh-wasm must ship as real files, NOT bundled into
 # dist/extension.js — see the comment in gmshService.ts/esbuild.mjs (its

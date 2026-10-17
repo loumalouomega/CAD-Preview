@@ -21,6 +21,7 @@ import type * as THREE from "three";
 import type { EditOp, OpOutcome } from "./editOps";
 import type { GltfExternalBuffers } from "./gltfParser";
 import { applyEditsMesh } from "./webview/meshEdits";
+import { initManifoldNode } from "./webview/manifoldNode";
 import { parseMeshObject, parseGltfObject, tagMeshEntities } from "./webview/meshObject";
 import { exportModel } from "./webview/meshExporters";
 
@@ -58,6 +59,10 @@ export async function bakeMeshEdits(
   externalBuffers?: GltfExternalBuffers
 ): Promise<MeshEditBakeResult> {
   installNodePolyfills();
+  // Closed-manifold booleans/holes when manifold can start; else the viewer's own three-bvh-csg fallback.
+  if (ops.some((o) => o.op === "boolean" || o.op === "addHole" || o.op === "addCounterboreHole" || o.op === "addCountersinkHole")) {
+    await initManifoldNode();
+  }
   const root: THREE.Object3D =
     format === "gltf" ? await parseGltfObject(bytes, externalBuffers) : parseMeshObject(bytes, format);
   tagMeshEntities(root);

@@ -2,6 +2,7 @@ import * as THREE from "three";
 import { Evaluator, Brush, ADDITION, SUBTRACTION, INTERSECTION } from "three-bvh-csg";
 import { BREP_ONLY_OPS, type EditOp, type Vec3, type OpOutcome } from "../editOps";
 import { makeFaceMaterial } from "./geometryBuilder";
+import { manifoldCombine, manifoldReady, ManifoldRefused } from "./manifoldBoolean";
 
 /** Single shared CSG evaluator (cheap to keep; avoids re-alloc per boolean). */
 const csg = new Evaluator();
@@ -45,6 +46,11 @@ export function csgResultMaterial(source: THREE.Material | THREE.Material[], res
  * boolean/hole guard" note (CLAUDE.md) on why the threshold must come from
  * local timing. */
 export const MESH_CSG_MAX_TRIANGLES = 150_000;
+
+/** The same guard when `manifold-3d` does the work. Measured in Node on a sphere minus a box: 96k tris 0.6 s, 499k 2.7 s, 979k 4.9 s, 2M 13 s — so 500k keeps the main-thread stall near 3 s. Manifold is both exact and
+ * faster than three-bvh-csg on the probe's 100k-triangle case, but it also
+ * welds and rebuilds every operand, so it keeps a ceiling of its own. */
+export const MESH_MANIFOLD_MAX_TRIANGLES = 500_000;
 
 /** Triangle count of a mesh's geometry (indexed or non-indexed). 0 if none. */
 export function meshTriangleCount(mesh: THREE.Object3D | null | undefined): number {
@@ -189,6 +195,26 @@ function applyOneOpMesh(
 }
 
 /**
+ * Replaces `targets` with the CSG result `out`. A single-mesh source (an STL,
+ * PLY or OBJ with one object) has the mesh AS its root, which has no parent to
+ * remove it from: attaching `out` beside it left the original geometry in the
+ * scene and the splitter then kept only the root, so a hole or boolean on such
+ * a file silently showed (and exported) the unedited mesh. The root is edited in
+ * place instead, keeping its identity, id and place in the tree.
+ */
+function installCsgResult(root: THREE.Object3D, targets: THREE.Object3D[], out: THREE.Mesh): void {
+  const rootMesh = root as THREE.Mesh;
+  if (rootMesh.isMesh && targets.includes(root)) {
+    for (const o of targets) if (o !== root) o.parent?.remove(o);
+    rootMesh.geometry = out.geometry;
+    rootMesh.material = out.material;
+    return;
+  }
+  for (const o of targets) o.parent?.remove(o);
+  root.add(out);
+}
+
+/**
  * Mesh boolean via `three-bvh-csg`. Resolves operand A/B to their first mesh
  * (the typical 1-vs-1 case), evaluates the CSG, and replaces both operands in the
  * tree with the single result mesh (tagged with A's node id so it stays pickable
@@ -206,36 +232,45 @@ function applyMeshBoolean(
   const bMesh = firstMesh(resolveMeshTargets(root, op.b));
   if (!aMesh || !bMesh) return false;
   const denseTotal = meshTriangleCount(aMesh) + meshTriangleCount(bMesh);
-  if (denseTotal > MESH_CSG_MAX_TRIANGLES) {
-    const msg = "mesh too dense for a boolean here — try Promote to B-rep first";
-    fail?.(msg, "convert via Mesh Health → Promote to B-rep… and re-apply the boolean");
-    report?.(msg);
-    return false;
-  }
-
-  ensureUvForCsg(aMesh.geometry);
-  ensureUvForCsg(bMesh.geometry);
-  const brushA = new Brush(aMesh.geometry);
   aMesh.updateWorldMatrix(true, false);
-  brushA.matrix.copy(aMesh.matrixWorld);
-  brushA.matrixAutoUpdate = false;
-  const brushB = new Brush(bMesh.geometry);
   bMesh.updateWorldMatrix(true, false);
-  brushB.matrix.copy(bMesh.matrixWorld);
-  brushB.matrixAutoUpdate = false;
-
-  const operation =
-    op.kind === "union" ? ADDITION : op.kind === "subtract" ? SUBTRACTION : INTERSECTION;
-  const result = csg.evaluate(brushA, brushB, operation);
+  let geometry: THREE.BufferGeometry | null = null;
+  if (manifoldReady() && denseTotal <= MESH_MANIFOLD_MAX_TRIANGLES) {
+    try {
+      geometry = manifoldCombine(
+        { geometry: aMesh.geometry, matrix: aMesh.matrixWorld },
+        [{ geometry: bMesh.geometry, matrix: bMesh.matrixWorld }],
+        op.kind
+      );
+    } catch (error) {
+      if (!(error instanceof ManifoldRefused)) throw error;
+      report?.(`manifold boolean unavailable (${error.message}) — used the approximate mesh boolean; the result may not be closed`);
+    }
+  }
+  if (!geometry) {
+    if (denseTotal > MESH_CSG_MAX_TRIANGLES) {
+      const msg = "mesh too dense for a boolean here — try Promote to B-rep first";
+      fail?.(msg, "convert via Mesh Health → Promote to B-rep… and re-apply the boolean");
+      report?.(msg);
+      return false;
+    }
+    ensureUvForCsg(aMesh.geometry);
+    ensureUvForCsg(bMesh.geometry);
+    const brushA = new Brush(aMesh.geometry);
+    brushA.matrix.copy(aMesh.matrixWorld);
+    brushA.matrixAutoUpdate = false;
+    const brushB = new Brush(bMesh.geometry);
+    brushB.matrix.copy(bMesh.matrixWorld);
+    brushB.matrixAutoUpdate = false;
+    const operation = op.kind === "union" ? ADDITION : op.kind === "subtract" ? SUBTRACTION : INTERSECTION;
+    geometry = csg.evaluate(brushA, brushB, operation).geometry;
+  }
+  const result = { geometry };
 
   const out = new THREE.Mesh(result.geometry, csgResultMaterial(aMesh.material, result.geometry));
   out.userData.groupId = op.a[0]; // keep a stable id for tagging/colouring
 
-  // Remove both operands (and any extra resolved targets) then attach the result.
-  for (const o of [...resolveMeshTargets(root, op.a), ...resolveMeshTargets(root, op.b)]) {
-    o.parent?.remove(o);
-  }
-  root.add(out);
+  installCsgResult(root, [...resolveMeshTargets(root, op.a), ...resolveMeshTargets(root, op.b)], out);
   return true;
 }
 
@@ -257,47 +292,60 @@ function applyMeshHole(
 ): boolean {
   const targetMesh = firstMesh(resolveMeshTargets(root, op.targets));
   if (!targetMesh) return false;
-  // Holes subtract a small tool (32-segment cylinder/cone) from one target, so
-  // only the target's own density matters — the tool is negligible either way.
-  if (meshTriangleCount(targetMesh) > MESH_CSG_MAX_TRIANGLES) {
-    const msg = "mesh too dense for a hole here — try Promote to B-rep first";
-    fail?.(msg, "convert via Mesh Health → Promote to B-rep… and re-apply the hole");
-    report?.(msg);
-    return false;
-  }
-
-  const toolBrush = (geo: THREE.BufferGeometry, height: number): Brush => {
-    const b = new Brush(geo);
-    b.matrix.copy(baseAlignedMatrix(op.position, op.axis, height));
-    b.matrixAutoUpdate = false;
-    return b;
-  };
-  const tools: Brush[] = [
-    toolBrush(new THREE.CylinderGeometry(op.radius, op.radius, op.depth, 32), op.depth),
+  const toolSpecs: Array<{ geo: THREE.BufferGeometry; height: number }> = [
+    { geo: new THREE.CylinderGeometry(op.radius, op.radius, op.depth, 32), height: op.depth },
   ];
   if (op.op === "addCounterboreHole") {
-    tools.push(toolBrush(new THREE.CylinderGeometry(op.cbRadius, op.cbRadius, op.cbDepth, 32), op.cbDepth));
+    toolSpecs.push({ geo: new THREE.CylinderGeometry(op.cbRadius, op.cbRadius, op.cbDepth, 32), height: op.cbDepth });
   } else if (op.op === "addCountersinkHole") {
     // Cone from csRadius at the surface down to the hole radius; local +Y is
     // the TOP in CylinderGeometry(rTop, rBottom, …), and baseAlignedMatrix puts
     // the local −Y end (the wide csRadius base) at `position`.
     const coneDepth = (op.csRadius - op.radius) / Math.tan((op.csAngleDeg * Math.PI) / 360);
-    tools.push(toolBrush(new THREE.CylinderGeometry(op.radius, op.csRadius, coneDepth, 32), coneDepth));
+    toolSpecs.push({ geo: new THREE.CylinderGeometry(op.radius, op.csRadius, coneDepth, 32), height: coneDepth });
   }
-
-  ensureUvForCsg(targetMesh.geometry);
-  const targetBrush = new Brush(targetMesh.geometry);
   targetMesh.updateWorldMatrix(true, false);
-  targetBrush.matrix.copy(targetMesh.matrixWorld);
-  targetBrush.matrixAutoUpdate = false;
 
-  let result = targetBrush;
-  for (const tool of tools) result = csg.evaluate(result, tool, SUBTRACTION);
+  let holed: THREE.BufferGeometry | null = null;
+  if (manifoldReady() && meshTriangleCount(targetMesh) <= MESH_MANIFOLD_MAX_TRIANGLES) {
+    try {
+      holed = manifoldCombine(
+        { geometry: targetMesh.geometry, matrix: targetMesh.matrixWorld },
+        toolSpecs.map((t) => ({ geometry: t.geo, matrix: baseAlignedMatrix(op.position, op.axis, t.height) })),
+        "subtract"
+      );
+    } catch (error) {
+      if (!(error instanceof ManifoldRefused)) throw error;
+      report?.(`manifold hole unavailable (${error.message}) — used the approximate mesh boolean; the result may not be closed`);
+    }
+  }
+  if (!holed) {
+    // Holes subtract a small tool (32-segment cylinder/cone) from one target, so
+    // only the target's own density matters — the tool is negligible either way.
+    if (meshTriangleCount(targetMesh) > MESH_CSG_MAX_TRIANGLES) {
+      const msg = "mesh too dense for a hole here — try Promote to B-rep first";
+      fail?.(msg, "convert via Mesh Health → Promote to B-rep… and re-apply the hole");
+      report?.(msg);
+      return false;
+    }
+    ensureUvForCsg(targetMesh.geometry);
+    const targetBrush = new Brush(targetMesh.geometry);
+    targetBrush.matrix.copy(targetMesh.matrixWorld);
+    targetBrush.matrixAutoUpdate = false;
+    let current = targetBrush;
+    for (const t of toolSpecs) {
+      const b = new Brush(t.geo);
+      b.matrix.copy(baseAlignedMatrix(op.position, op.axis, t.height));
+      b.matrixAutoUpdate = false;
+      current = csg.evaluate(current, b, SUBTRACTION);
+    }
+    holed = current.geometry;
+  }
+  const result = { geometry: holed };
 
   const out = new THREE.Mesh(result.geometry, csgResultMaterial(targetMesh.material, result.geometry));
   out.userData.groupId = op.targets[0]; // keep a stable id for tagging/colouring
-  for (const o of resolveMeshTargets(root, op.targets)) o.parent?.remove(o);
-  root.add(out);
+  installCsgResult(root, resolveMeshTargets(root, op.targets), out);
   return true;
 }
 

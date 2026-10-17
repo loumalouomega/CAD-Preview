@@ -210,6 +210,37 @@ describe("applyEditsMesh booleans (three-bvh-csg)", () => {
   });
 });
 
+describe("holes and booleans on a single-mesh source (the mesh is the root)", () => {
+  // An STL/PLY/OBJ with one object loads as a Mesh that IS the root. The result
+  // used to be added as its child while the original geometry stayed, so the
+  // splitter kept the unedited root and the edit never showed.
+  function rootMesh(): THREE.Mesh {
+    const m = new THREE.Mesh(new THREE.BoxGeometry(10, 10, 10));
+    m.geometry.deleteAttribute("uv");
+    m.userData.groupId = "node-0";
+    return m;
+  }
+  const triangles = (m: THREE.Mesh): number => {
+    let n = 0;
+    m.traverse((o) => { const g = (o as THREE.Mesh).geometry; if (g && (o as THREE.Mesh).isMesh) n += (g.index ? g.index.count : g.attributes.position.count) / 3; });
+    return n;
+  };
+
+  it("addHole edits the root mesh in place instead of stacking a second mesh", () => {
+    const m = rootMesh();
+    const before = triangles(m);
+    const outcomes: OpOutcome[] = [];
+    const out = applyEditsMesh(m, [{ op: "addHole", targets: ["node-0"], position: [0, 0, 5], axis: [0, 0, -1], radius: 1, depth: 12 }], outcomes);
+    expect(out).toBe(m);
+    expect(outcomes[0].applied).toBe(true);
+    expect(m.children).toHaveLength(0);
+    expect(m.userData.groupId).toBe("node-0");
+    expect(triangles(m)).toBeGreaterThan(before); // the bore adds facets and the old 12 are gone, not kept beside them
+    const box = new THREE.Box3().setFromObject(m);
+    expect(box.max.x).toBeCloseTo(5, 5);
+  });
+});
+
 describe("booleans/holes on uv-less meshes (loader/B-rep output)", () => {
   // No loader or tessellator here writes `uv` — only three.js primitives
   // carry it — while three-bvh-csg's shared Evaluator interpolates

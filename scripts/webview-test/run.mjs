@@ -574,6 +574,49 @@ test("mesh export: every target serializes real geometry from the live scene", a
   }
 });
 
+test("manifold: a hole in a mesh source replays through manifold and exports a closed, smaller solid", async (page) => {
+  await populate(page);
+  await post(page, { type: "loadUrl", url: "/examples/STL/cube.stl", format: "stl" });
+  await sleep(2500); // manifold.wasm is fetched before the first mesh load
+  await post(page, {
+    type: "edits",
+    variables: [],
+    ops: [{ op: "addHole", targets: ["node-0"], position: [0, 0, 5], axis: [0, 0, -1], radius: 1, depth: 12 }],
+  });
+  await sleep(1500);
+  await post(page, { type: "exportMesh", requestId: "t-manifold", format: "stl" });
+  const result = await page
+    .waitForFunction(() => window.__sent?.find((m) => m.requestId === "t-manifold" && m.type === "exportResult") ?? null, null, { timeout: 30000 })
+    .then((h) => h.jsonValue())
+    .catch(() => null);
+  assert(result?.type === "exportResult", "the edited cube exports");
+  if (result?.type !== "exportResult") return;
+  const buf = Buffer.from(result.data, "base64");
+  const tris = buf.readUInt32LE(80);
+  const verts = new Map();
+  const edges = new Map();
+  let volume = 0;
+  for (let t = 0; t < tris; t++) {
+    const o = 84 + t * 50 + 12;
+    const p = [0, 1, 2].map((v) => [0, 1, 2].map((c) => buf.readFloatLE(o + v * 12 + c * 4)));
+    const ids = p.map((q) => {
+      const k = q.map((x) => x.toFixed(3)).join(",");
+      if (!verts.has(k)) verts.set(k, verts.size);
+      return verts.get(k);
+    });
+    for (let e = 0; e < 3; e++) {
+      const a = ids[e], b = ids[(e + 1) % 3];
+      const k = a < b ? `${a}-${b}` : `${b}-${a}`;
+      edges.set(k, (edges.get(k) ?? 0) + 1);
+    }
+    volume += (p[0][0] * (p[1][1] * p[2][2] - p[1][2] * p[2][1]) - p[0][1] * (p[1][0] * p[2][2] - p[1][2] * p[2][0]) + p[0][2] * (p[1][0] * p[2][1] - p[1][1] * p[2][0])) / 6;
+  }
+  const open = [...edges.values()].filter((n) => n !== 2).length;
+  // 1000 minus a radius-1, 10-deep, 32-gon bore: area = 0.5*32*sin(2π/32) = 3.1214 -> 31.214
+  assert(open === 0, `the holed cube has no free or over-used edges (got ${open})`);
+  assert(Math.abs(Math.abs(volume) - (1000 - 31.2145)) < 0.05, `the holed cube's volume is the analytic one (got ${Math.abs(volume)})`);
+});
+
 /**
  * H2. Mesh-ops section — the interactive half of the mesh-operations-panel item.
  *
@@ -610,16 +653,37 @@ test("MMG remesh: validated options, source eligibility, guarded replies and own
   await page.waitForFunction(() => document.getElementById("meshing-remesh-status")?.textContent.includes("no file written"));
   assert(!(await page.locator("#meshing-remesh-run").isDisabled()), "MMG cancelled result releases its Run button");
   assert((await page.locator("#meshing-remesh-status").textContent()).includes("no file written"), "MMG reports cancellation rather than success");
-  await post(page, { type: "loadMeshBytes", sourceFormat: "med", dataBase64: fs.readFileSync(path.join(ROOT, "examples/STL/cube.stl")).toString("base64") });
+  await post(page, {
+    type: "loadMeshBytes", sourceFormat: "med", dataBase64: fs.readFileSync(path.join(ROOT, "examples/STL/cube.stl")).toString("base64"),
+    meshioMetadata: {
+      pointDataNames: ["Temperature", "Velocity"], cellDataNames: ["Material"],
+      arrays: [
+        { name: "Temperature", location: "point", numComponents: 1, min: 0, max: 1, numNan: 0, consistent: true },
+        { name: "Velocity", location: "point", numComponents: 3, min: 0, max: 1, numNan: 0, consistent: true },
+      ],
+    },
+  });
   await sleep(800);
   assert(!(await fileDisabled()), "MMG file mode is available for a meshio source");
+  const adaptOptions = await page.locator("#meshing-remesh-adapt-field option").evaluateAll(els => els.map(e => e.textContent));
+  assert(adaptOptions.length === 2 && adaptOptions.includes("Temperature") && !adaptOptions.includes("Velocity") && !adaptOptions.includes("Material"), `Adapt to field offers scalar point arrays only (got ${JSON.stringify(adaptOptions)})`);
   await page.click("#meshing-remesh-run");
   const raw = await page.waitForFunction(id => window.__sent.findLast(m => m.type === "remeshRequest" && m.requestId !== id), request.requestId).then(h => h.jsonValue());
   assert(raw.source === "file" && !raw.stl, "MMG file mode uses the original FE file, not a displayed STL skin");
+  assert(raw.options.adaptField === undefined && raw.options.adaptStrength === undefined, "no field chosen: the request carries no adaptation");
   await post(page, { type: "remeshError", requestId: raw.requestId, message: "MMG does not accept hexahedron" });
   await post(page, { type: "meshingJobSettled", requestId: raw.requestId });
   await page.waitForFunction(() => document.getElementById("meshing-remesh-status")?.textContent.includes("hexahedron"));
   assert((await page.locator("#meshing-remesh-status").textContent()).includes("hexahedron"), "MMG surfaces unsupported-cell errors inline");
+  await page.selectOption("#meshing-remesh-adapt-field", "Temperature");
+  await page.fill("#meshing-remesh-adapt-strength", "3");
+  await page.click("#meshing-remesh-run");
+  const adapted = await page.waitForFunction(id => window.__sent.findLast(m => m.type === "remeshRequest" && m.requestId !== id), raw.requestId).then(h => h.jsonValue());
+  assert(adapted.options.adaptField === "Temperature" && adapted.options.adaptStrength === 3, "the chosen field and strength ride the remesh request");
+  await post(page, { type: "remeshResult", requestId: adapted.requestId, report: { module: "mmg3d", inputCells: 10, outputCells: 40 }, adapt: { field: "Temperature", sizeRange: [0.1, 2], conservation: { relError: 1e-15 } }, written: "/w/a.med", warnings: [] });
+  await post(page, { type: "meshingJobSettled", requestId: adapted.requestId });
+  await page.waitForFunction(() => document.getElementById("meshing-remesh-status")?.textContent.includes("Adapted to Temperature"));
+  assert((await page.locator("#meshing-remesh-status").textContent()).includes("conservation error 1.0e-15"), "the adapt result reports its achieved sizes and conservation error");
 });
 
 test("mesh ops: section tracks source kind and posts a guarded request", async (page) => {

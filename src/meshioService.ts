@@ -3,6 +3,7 @@ import { normalizeQualityGate } from "./meshQualityGate";
 import type { QualityGateResult } from "./meshQualityGate";
 import { remeshMmg } from "./mmgService";
 import { prepareMmgMesh, harvestMmgMesh } from "./mmgMesh";
+import { ADAPT_DEFAULT_STRENGTH, sizeMapFromIndicator, lumpedIntegral } from "./adaptSizing";
 import type { MmgOptions } from "./mmgOptions";
 import { explicitTriangleRegions, triangleCoordinateKey } from "./meshioTriangleRegions";
 import { boundaryExtentMismatches, describeExtentMismatch, extentOf } from "./meshioBoundary";
@@ -498,8 +499,28 @@ export interface MeshioOpsResult {
   warnings: string[];
 }
 
+/** What field adaptation did, reported next to the MMG report (facts, not a verdict). */
+export interface AdaptReport {
+  field: string;
+  strength: number;
+  /** Target edge length where the indicator is average or below, and the floor. */
+  base: number;
+  min: number;
+  /** Smallest and largest per-vertex target size assigned. */
+  sizeRange: [number, number];
+  /** meshio++'s ZZ global error of the source field. */
+  globalError: number;
+  cellsBefore: number;
+  cellsAfter: number;
+  /** ∑ field·volume on both meshes; `relError` is what `conservativeInterpolate` lost. */
+  conservation: { source: number; target: number; relError: number };
+}
+
 /** MMG writes a new, region-bearing MED mesh. Never overwrites the source,
- * converts unsupported cells, or claims an optim-only quality improvement. */
+ * converts unsupported cells, or claims an optim-only quality improvement.
+ * With `options.adaptField` the target sizes come from that point field's ZZ
+ * error indicator (linear tetrahedra) and the field is carried onto the new
+ * mesh with `conservativeInterpolate`. */
 export async function remeshMesh(
   extensionPath: string, sourceBytes: Uint8Array, meshioFormat: string,
   options: MmgOptions = {}, sourceName?: string, companions?: readonly MeshioCompanion[]
@@ -510,10 +531,62 @@ export async function remeshMesh(
   try {
     const mesh = m.readMesh(staged.primaryPath, meshioFormat);
     const bridge = prepareMmgMesh(mesh);
+    let adapt: { field: string; strength: number; base: number; min: number; sizeRange: [number, number]; globalError: number; sourceIntegral: number; tets: Int32Array; values: Float64Array } | undefined;
+    if (options.adaptField) {
+      const field = options.adaptField;
+      const raw = mesh.point_data?.[field];
+      const np = mesh.points.length / mesh.dim;
+      if (!raw) throw new Error(`adaptField "${field}" is not a point_data array of this mesh (available: ${Object.keys(mesh.point_data ?? {}).join(", ") || "none"})`);
+      if ((mesh.point_data_components?.[field] ?? 1) !== 1 || raw.length !== np) throw new Error(`adaptField "${field}" must be a scalar point_data array`);
+      if (bridge.input.tetrahedra.length === 0) throw new Error("adaptField needs a tetrahedral mesh");
+      const estimate = m.estimateError(mesh, field, "zz", "none");
+      const blocks = estimate.mesh.cell_data?.["error:zz"] as unknown as ArrayLike<number>[] | undefined;
+      if (!blocks) throw new Error("meshio++ returned no error indicator");
+      const indicator: number[] = [];
+      mesh.cells.forEach((block: { type: string }, i: number) => {
+        if (block.type !== "tetra") return;
+        for (let k = 0; k < blocks[i].length; k++) indicator.push(Number(blocks[i][k]));
+      });
+      const zero = Int32Array.from(bridge.input.tetrahedra, (v) => v - 1);
+      const lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
+      for (let i = 0; i < bridge.input.positions.length; i++) { lo[i % 3] = Math.min(lo[i % 3], bridge.input.positions[i]); hi[i % 3] = Math.max(hi[i % 3], bridge.input.positions[i]); }
+      const diagonal = Math.hypot(hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]);
+      const base = options.hmax ?? 0.3 * diagonal;
+      const min = Math.min(options.hmin ?? 0.02 * diagonal, base);
+      const strength = options.adaptStrength ?? ADAPT_DEFAULT_STRENGTH;
+      const map = sizeMapFromIndicator({ positions: bridge.input.positions, tetrahedra: zero, indicator, base, min, strength });
+      bridge.input.vertexSizes = map.sizes;
+      const values = Float64Array.from(raw as ArrayLike<number>);
+      adapt = { field, strength, base, min, sizeRange: map.range, globalError: estimate.globalError,
+        sourceIntegral: lumpedIntegral(bridge.input.positions, zero, values), tets: zero, values };
+      // prepareMmgMesh's generic "data was dropped" line would contradict the field carried over below.
+      for (let i = bridge.warnings.length - 1; i >= 0; i--) if (/^Point\/cell\/field data was dropped/.test(bridge.warnings[i])) bridge.warnings.splice(i, 1);
+      bridge.warnings.push(`Adapting to "${field}": other point/cell/field data is dropped; only "${field}" is carried over.`);
+    }
     const output = await remeshMmg(extensionPath, bridge.input, options);
     const result = harvestMmgMesh(output, bridge);
+    let adaptReport: AdaptReport | undefined;
+    if (adapt) {
+      // Tetrahedra only on both sides: boundary triangles / lines / vertices in the same mesh would
+      // otherwise take part in the overlap-measure weighting and the transfer would not conserve
+      // the volume integral (measured 2.6 % off on a Gmsh mesh that still carried its skin).
+      const bare = { regions: [], cell_data: {}, cell_data_components: {}, field_data: {}, field_data_components: {}, point_data_components: {} };
+      const source = { ...mesh, ...bare, cells: mesh.cells.filter((b: { type: string }) => b.type === "tetra"), point_data: { [adapt.field]: adapt.values } };
+      const targetTetsOnly = { ...result, ...bare, cells: result.cells.filter((b: { type: string }) => b.type === "tetra"), point_data: {} };
+      const transferred = m.conservativeInterpolate(source, targetTetsOnly, [adapt.field]);
+      const carried = transferred.point_data?.[adapt.field] as Float64Array | undefined;
+      if (!carried) throw new Error("conservativeInterpolate returned no point data for the adapted field");
+      result.point_data = { [adapt.field]: carried };
+      const targetTets = Int32Array.from(output.tetrahedra, (v) => v - 1);
+      const target = lumpedIntegral(output.positions, targetTets, carried);
+      adaptReport = {
+        field: adapt.field, strength: adapt.strength, base: adapt.base, min: adapt.min, sizeRange: adapt.sizeRange,
+        globalError: adapt.globalError, cellsBefore: adapt.tets.length / 4, cellsAfter: output.tetrahedra.length / 4,
+        conservation: { source: adapt.sourceIntegral, target, relError: Math.abs(target - adapt.sourceIntegral) / (Math.abs(adapt.sourceIntegral) || 1) },
+      };
+    }
     m.writeMesh(outPath, result);
-    return { bytes: m.FS.readFile(outPath) as Uint8Array, report: output.report,
+    return { bytes: m.FS.readFile(outPath) as Uint8Array, report: output.report, ...(adaptReport ? { adapt: adaptReport } : {}),
       regionNames: (result.regions ?? []).map(r => r.name), warnings: [...bridge.warnings,
         ...(output.report.lowFailure ? ["MMG returned LOWFAILURE: the output is usable but remeshing did not fully converge."] : [])] };
   } catch (error) { throw wrapMeshioFault(error); }

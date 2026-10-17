@@ -64,6 +64,11 @@ export function generateGeoScript(sourceName: string, options: MeshOptions): str
     options.conformal
       ? "// conformal: fragment all volumes before meshing (touching solids share nodes)."
       : "// conformal: off — touching solids mesh independently (duplicate interface nodes).",
+    ...(options.periodic ?? []).map(
+      (p) =>
+        `// periodic: Part "${p.slave}" copies Part "${p.master}" offset by (${p.translation.join(", ")}) — ` +
+        "set through model.mesh.setPeriodic, which has no equivalent in this script's Merge-based reproduction."
+    ),
     `Mesh.MeshSizeMin = ${options.sizeMin};`,
     `Mesh.MeshSizeMax = ${options.sizeMax};`,
     `Mesh.Algorithm = ${options.algorithm2D};`,

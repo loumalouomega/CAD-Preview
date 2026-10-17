@@ -711,7 +711,7 @@ export type HostToWebview =
    * written to a new file via the shared save flow. Mirrors
    * `meshHealRequest`'s requestId + stale-response-guard idiom. */
   | { type: "meshioOpsResult"; requestId: string; steps: Array<{ op: string; applied: boolean; detail: string }>; warnings: string[] }
-  | { type: "remeshResult"; requestId: string; report?: Awaited<ReturnType<typeof import("./meshioService").remeshMesh>>["report"]; written?: string; warnings: string[]; cancelled?: boolean }
+  | { type: "remeshResult"; requestId: string; report?: Awaited<ReturnType<typeof import("./meshioService").remeshMesh>>["report"]; adapt?: import("./meshioService").AdaptReport; written?: string; warnings: string[]; cancelled?: boolean }
   | { type: "remeshError"; requestId: string; message: string }
   | { type: "meshioOpsError"; requestId: string; message: string }
   | { type: "fitRegionResult"; requestId: string; fit: MeshRegionFit }

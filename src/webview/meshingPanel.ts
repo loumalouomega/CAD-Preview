@@ -128,6 +128,9 @@ const ALGORITHM_3D: Array<[number, string]> = [
  * no `prompt()`/`alert()` (VS Code webviews block them; see `partsPanel.ts`
  * for the established inline-`<input>` convention this codebase uses instead).
  */
+/** "Adapt to field" select value meaning no adaptation (a blank value reads as an unresolved select). */
+const ADAPT_NONE = "__no_adapt__";
+
 export class MeshingPanel {
   private readonly body: HTMLElement;
   private readonly statusEl: HTMLElement;
@@ -181,6 +184,7 @@ export class MeshingPanel {
   private readonly remeshSource: HTMLSelectElement;
   private readonly remeshRun: HTMLButtonElement;
   private readonly remeshStatus: HTMLElement;
+  private readonly remeshAdaptField: HTMLSelectElement;
   private readonly sweepSizes: HTMLInputElement;
   private readonly sweepWrite: HTMLInputElement;
   private readonly sweepRun: HTMLButtonElement;
@@ -853,6 +857,12 @@ export class MeshingPanel {
     hmax.value = "";
     const hgrad = this.numberField(mmgForm, "Gradation", 1.3);
     hgrad.id = "meshing-remesh-hgrad";
+    this.remeshAdaptField = this.select(mmgForm, "Adapt to field", [[ADAPT_NONE, "None (uniform)"]]);
+    this.remeshAdaptField.id = "meshing-remesh-adapt-field";
+    this.remeshAdaptField.title = "Original FE mesh file with linear tetrahedra: refine where the chosen scalar point field varies (its ZZ error indicator) and carry that field to the new mesh conservatively. Other data arrays are dropped.";
+    const adaptStrength = this.numberField(mmgForm, "Adapt strength", 6);
+    adaptStrength.id = "meshing-remesh-adapt-strength";
+    adaptStrength.min = "0.1";
     this.remeshRun = document.createElement("button");
     this.remeshRun.id = "meshing-remesh-run";
     this.remeshRun.type = "button";
@@ -861,7 +871,9 @@ export class MeshingPanel {
     this.remeshRun.addEventListener("click", () => {
       try {
         const options = validateMmgOptions({ hausd: Number(hausd.value), hgrad: Number(hgrad.value),
-          ...(hmin.value.trim() ? { hmin: Number(hmin.value) } : {}), ...(hmax.value.trim() ? { hmax: Number(hmax.value) } : {}) });
+          ...(hmin.value.trim() ? { hmin: Number(hmin.value) } : {}), ...(hmax.value.trim() ? { hmax: Number(hmax.value) } : {}),
+          ...(this.remeshAdaptField.value !== ADAPT_NONE ? { adaptField: this.remeshAdaptField.value, adaptStrength: Number(adaptStrength.value) } : {}) });
+        if (options.adaptField && this.remeshSource.value !== "file") throw new Error("Adapting to a field needs the original FE mesh file as input.");
         this.remeshRun.disabled = true;
         this.renderRemeshStatus("Remeshing… (Cancel in the FE toolbar)");
         cb.onRemesh(this.remeshSource.value as "file" | "generated", options);
@@ -1187,6 +1199,23 @@ export class MeshingPanel {
       this.meshOpsStatus.textContent = "";
       this.meshOpsStatus.classList.remove("meshing-status-error");
     }
+  }
+
+  /** Scalar point-data arrays of the opened FE mesh offered by "Adapt to field". */
+  setAdaptFields(names: string[]): void {
+    const previous = this.remeshAdaptField.value;
+    this.remeshAdaptField.innerHTML = "";
+    const none = document.createElement("option");
+    none.value = ADAPT_NONE;
+    none.textContent = "None (uniform)";
+    this.remeshAdaptField.appendChild(none);
+    for (const name of names) {
+      const opt = document.createElement("option");
+      opt.value = name;
+      opt.textContent = name;
+      this.remeshAdaptField.appendChild(opt);
+    }
+    this.remeshAdaptField.value = names.includes(previous) ? previous : ADAPT_NONE;
   }
 
   renderRemeshStatus(text: string, error = false): void {
