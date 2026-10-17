@@ -47,7 +47,27 @@ colours and flat mesh sizes. Interior-only/overlapping groups may remain in
 the mesh without their own selectable boundary Part (reported explicitly).
 Manually assigned Parts with no named cell region are refused. Old CAD
 selectors/grading are not copied. Point/side regions and point/cell/field data
-are dropped with warnings; field transfer is deferred to adaptive remeshing.
+are dropped with warnings, except for the one field named by **Adapt to field**
+(below).
+
+### Adapting to a field {#adapting-to-a-field}
+
+For an original FE file with linear tetrahedra and a scalar point field,
+**Adapt to field** (panel) / `options.adaptField` (MCP) refines where that field
+varies. The Zienkiewicz–Zhu indicator `estimateError` gives one value per cell;
+a vertex's target edge length is the smallest `max(hmin, hmax / (1 + α·e/ē))`
+over its cells, passed to mmg3d as a scalar metric (`setSolSize` Vertex/Scalar +
+`setScalarSols`), and the field is transferred with `conservativeInterpolate`.
+
+**Probed live (2026-10-17, meshio++ / MMG 0.1.0):** a Gaussian peak on a 2 492-tet
+Gmsh mesh of `block.stp`. Strength 0.5 → 6 gave a near/far element density ratio
+of 6.4×–29× (12.6× at the default 6, 82 k tets), and ∑f·volume was conserved to
+≤ 5e-15 relative against a 1e-6 gate. A tensor metric (fine along the gradient,
+3× coarser across) also worked and conserved, with ratios 4.9×–10×, but at
+matched interpolation error it needed only about 13 % fewer cells than the scalar
+metric — not enough to ship, so the scalar path is the product. The documented
+fixture `two-material-tets.med` has two tets, whose ZZ indicator is uniform, so
+the probe used the larger mesh.
 
 MMG loads lazily, in the existing serialized, cancellable kernel worker. Its
 `IPARAM_mem=128` allocation target is set **before** `setMeshSize`; this avoids

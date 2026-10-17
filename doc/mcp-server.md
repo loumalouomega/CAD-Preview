@@ -144,6 +144,19 @@ remesh that result. Native STL/OBJ/PLY/glTF and CAD sources need generated mode.
 Only linear triangles/tetrahedra are accepted; hex/quad/pyramid/prism/quadratic
 input is refused, not silently converted. OpenFOAM raw-file mode is unavailable.
 
+**Adapting to a field.** `options.adaptField` names a scalar `point_data` array
+of a linear-tetrahedron file (`inspect_meshio_fields` lists them; file mode
+only, since a generated mesh carries no fields). meshio++'s Zienkiewicz–Zhu
+estimator turns it into a per-cell error indicator, which becomes a per-vertex
+target size `h = hmax / (1 + adaptStrength · e / mean(e))` (floor `hmin`;
+`hmax` defaults to 0.3 × the bbox diagonal, `hmin` to 0.02 ×, `adaptStrength`
+to 6), handed to mmg3d as an isotropic scalar metric. That one field is carried
+to the new mesh with `conservativeInterpolate`; other arrays are dropped. The
+result gains an `adapt` block: the field, strength, base/min, the achieved
+`sizeRange`, the source field's ZZ `globalError`, `cellsBefore`/`cellsAfter`,
+and `conservation` (∑ field·volume on both meshes and the relative error).
+Facts only: a larger `adaptStrength` refines harder and makes more cells.
+
 `hausd` defaults to `0.005` **of the bbox diagonal**; `hausdRelative: false`
 makes it absolute. `hmin`/`hmax` are lengths in source coordinate units (`mm`
 for generated B-rep geometry); `hgrad` is dimensionless and must be `>=1`.

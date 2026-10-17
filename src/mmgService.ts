@@ -37,6 +37,8 @@ export interface MmgMesh {
   triangleRefs: Int32Array;
   tetrahedra: Int32Array;
   tetraRefs: Int32Array;
+  /** Optional per-vertex target edge length (isotropic scalar metric; tetrahedral input only). */
+  vertexSizes?: Float64Array;
 }
 
 /** Stateless worker-side operation. References, not renumbered ids, carry
@@ -78,6 +80,12 @@ export async function remeshMmg(extensionPath: string, input: MmgMesh, requested
     if (volume) mmg.mmg3d.setTetrahedra(mesh, input.tetrahedra, input.tetraRefs);
     if (input.triangles.length) api.setTriangles(mesh, input.triangles, input.triangleRefs);
     api.setDparameter(mesh, met, api.DPARAM_hausd, hausd);
+    if (input.vertexSizes) {
+      if (!volume) throw new Error("MMG field adaptation needs a tetrahedral mesh");
+      if (input.vertexSizes.length !== np) throw new Error("MMG vertex sizes must have one value per vertex");
+      api.setSolSize(mesh, met, mmg.MMG5_Vertex, np, mmg.MMG5_Scalar);
+      api.setScalarSols(met, input.vertexSizes);
+    }
     for (const [key, parameter] of [["hmin", api.DPARAM_hmin], ["hmax", api.DPARAM_hmax], ["hgrad", api.DPARAM_hgrad]] as const) {
       if (options[key] !== undefined) api.setDparameter(mesh, met, parameter, options[key]!);
     }

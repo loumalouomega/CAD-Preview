@@ -215,7 +215,7 @@ CAD-Preview moved from `GPL-2.0-or-later` to `GPL-3.0-or-later` on 2026-09-24. B
 
 | Dependency | Licence | Use | Item |
 | --- | --- | --- | --- |
-| [`manifold-3d`](https://www.npmjs.com/package/manifold-3d) 3.5.3 | Apache-2.0 | Mesh booleans whose output is guaranteed manifold, unlike `three-bvh-csg`'s | [Manifold mesh booleans](#manifold-mesh-booleans) |
+| [`manifold-3d`](https://www.npmjs.com/package/manifold-3d) 3.5.3 | Apache-2.0 | Mesh booleans and holes whose output is guaranteed manifold, unlike `three-bvh-csg`'s (shipped; `three-bvh-csg` remains the fallback) | — |
 
 It does **not** admit AGPL code, so TetGen stays rejected. Every new bundled dependency still gets the licence check the Definition of done asks for.
 
@@ -227,7 +227,7 @@ It does **not** admit AGPL code, so TetGen stays rejected. Every new bundled dep
 | --- | --- | --- | --- |
 | Upkeep | The base stays current and trustworthy | Done: the dependency watch, "Verify the dependency watch on GitHub", has run — it published issue #84 and re-dispatching reported `unchanged`. The verification-debt gate has shipped and ten claims are closed; the host-side halves (1.1) are next | The verification debt count keeps falling by closure |
 | Parity | Everything an agent can do, a user can do, and the reverse | Done: headless mesh-edit replay closed the last listed gap (as did the hole-table, refinement-sweep, free-text-note and mesh-source FE-export gaps). Justified remainders: mesh `inspect`/mass facts, `promote_mesh_to_brep` and `repair_mesh` read the raw file (their ids and outputs are defined over it; `save_model` bakes first), and glTF has no own-format save (its exporter emits only `.glb`) | Headless tools see the same edited mesh the viewer shows, or each remaining difference is justified |
-| Meshing probes | Decide on remeshing and on conformal assemblies | MMG core probe is closed with a partial outcome: volume/surface/transport work, unconditional optimisation failed. MMG remeshing has shipped: shared service, MCP tool and panel with real-pipeline screenshots and packaged-runtime verification. Conformal multi-body meshing and Gmsh mesh optimisation have shipped, each with probe-measured results and a decision. Manifold mesh booleans (4.2) probed passing (migration pending). Structured meshing per Part has shipped as `Part.meshStructured` with exact-count smoke coverage. Metric-driven adaptive remeshing (4.4), then pre-mesh healing (4.5), can proceed independently | Each probe filed with measured results and a decision |
+| Meshing probes | Decide on remeshing and on conformal assemblies | MMG core probe is closed with a partial outcome: volume/surface/transport work, unconditional optimisation failed. MMG remeshing has shipped: shared service, MCP tool and panel with real-pipeline screenshots and packaged-runtime verification. Conformal multi-body meshing and Gmsh mesh optimisation have shipped, each with probe-measured results and a decision. Manifold mesh booleans have shipped, and so have periodic face pairs; pre-mesh healing and the hex-dominant MDPA split were probed and rejected (see Non-goals), and the size callback works but nothing ships on it. Structured meshing per Part has shipped as `Part.meshStructured` with exact-count smoke coverage. Metric-driven adaptive remeshing has shipped as **Adapt to field** on remesh (scalar metric; the tensor metric was probed and not worth shipping) | Each probe filed with measured results and a decision |
 | Geometry probes | Decide which never-called OCCT capabilities become ops | Imprint and split faces (3.1), then B-rep repair (3.2) | Each probe filed with measured results and a decision |
 | Agent ergonomics | An agent can tell a retryable failure from a model error, and two writers cannot silently clobber each other | Done: OpenSCAD diagnostics (document-derived OpenSCAD text now reaches an agent only inside untrusted-text markers), coded MCP errors (a failure carries a code and `retryable`; an undeclared parameter is warned about) and the MCP revision guard (a stale `expectedRevision` is refused with `stale-revision`). Mark agent-made edits has shipped too. Next: the Upkeep items (1.1, 1.2) and the remaining Ready product work | An agent's change is visible and refusable |
 | Strategic | Remove the kernel ceiling | The self-built OCCT WASM probe (6.1) | The existing test suites pass unchanged against the new build |
@@ -579,12 +579,10 @@ None of these depends on another's result.
 | ID | Item | Needs | Why here |
 | --- | --- | --- | --- |
 | 4.1 | Hausdorff-bounded surface coarsening | the MMG core loader; meshio++ already bundled | Fixes a known defect (a degenerate heal after auto-decimate), and may need no new dependency at all |
-| 4.2 | Manifold mesh booleans | `manifold-3d` installed for the probe | Replaces the one mesh operation that can produce non-manifold output |
 | 4.3 | Anisotropic boundary layers | a `$Elements` walker | The largest Gmsh probe, and the first live exercise of `dimension: 2` |
-| 4.4 | Metric-driven adaptive remeshing | verified MMG volume path | Reuses the shipped MMG volume path without assuming any quality guarantee; highest value of the MMG items but the most moving parts |
 | 4.9 | METIS partitioning for Kratos MPI export | — | Lowest value; no user has asked for partitioned output yet |
 
-The MMG core probe is complete; its working volume/surface paths and negative optimisation result are recorded in `CLAUDE.md`. MMG remeshing has shipped (shared `remeshMesh` service, `remesh_mesh` MCP tool and FE-panel action, with memory admission, documentation, real-pipeline screenshots and packaged-runtime verification). Conformal multi-body meshing has shipped as the default-on `conformal` mesh option with handoff-manifest recording, Gmsh mesh optimisation has shipped as the `optimize` enum, and structured meshing per Part has shipped as `Part.meshStructured` — probe numbers and findings are in `doc/gmsh-integration.md`. 4.4 can probe adaptation using that shipped volume path without assuming any quality guarantee; 4.1's meshio++ half stands alone. IDs in this section were made continuous on 2026-10-08 (see the header).
+The MMG core probe is complete; its working volume/surface paths and negative optimisation result are recorded in `CLAUDE.md`. MMG remeshing has shipped (shared `remeshMesh` service, `remesh_mesh` MCP tool and FE-panel action, with memory admission, documentation, real-pipeline screenshots and packaged-runtime verification). Conformal multi-body meshing has shipped as the default-on `conformal` mesh option with handoff-manifest recording, Gmsh mesh optimisation has shipped as the `optimize` enum, and structured meshing per Part has shipped as `Part.meshStructured` — probe numbers and findings are in `doc/gmsh-integration.md`. Field-driven adaptation has shipped on that same volume path (the **Adapt to field** option of remesh); 4.1's meshio++ half stands alone. IDs in this section were made continuous on 2026-10-08 (see the header).
 
 ##### 4.1 Hausdorff-bounded surface coarsening for the heal ceiling {#hausdorff-bounded-surface-coarsening-for-the-heal-ceiling}
 
@@ -610,29 +608,6 @@ The MMG core probe is complete; its working volume/surface paths and negative op
 - **Probe result (negative, 2026-10-07, meshio++ 16.27.0 / MMG 0.1.0):** all three candidates fail the gate, so the pinned degenerate-heal refusal stays. Measured through the unchanged `checkMeshHealth`: decimate at ratio 0.01 (exactly 1000 tris) closes at 1e-6 with 4 non-manifold edges but heals to volume exactly 0, reproducing the known finding; meshio++ `remesh` isotropic at numClusters 500 → 958 tris plus a `line:26` boundary-dual block, 40 free edges in an equatorial band, never closes (preserveBoundary=false: 960 tris, 38 free, never closes — the openness is not the boundary seeding); mmgs at hausd 0.01 (absolute 0.346 on the 34.64 diagonal) → 391 tris, 25 free edges, never closes. Two corrections to the sketch above: `remesh`'s numClusters counts *vertices* (F ≈ 2V — 500 clusters → 958 tris, 1000 → 1941), and hausd is an upper deviation bound, not a triangle target. The 5k repeat was not run: no candidate met the 1k gate, and decimate-at-5k is already recorded past the 300 s watchdog. Do not re-run without a new candidate or a new meshio++/MMG version.
 - **Out of scope:** raising `MAX_HEALABLE_TRIANGLES`; the per-triangle sewing cost is the real limit.
 
-##### 4.2 Manifold mesh booleans {#manifold-mesh-booleans}
-
-*Area: Meshing.*
-
-- **Hypothesis:** [`manifold-3d`](https://www.npmjs.com/package/manifold-3d) (Apache-2.0, now licence-compatible) performs mesh booleans and holes on STL/OBJ/PLY/glTF sources, with output that is always closed and manifold. It does this at speeds comparable to `three-bvh-csg`.
-- **Evidence today:**
-  - Mesh booleans and holes use `three-bvh-csg` in the webview, which makes no manifold guarantee.
-  - A 150 000-triangle guard refuses dense inputs.
-  - Non-manifold output is what later breaks Mesh Health and Promote to B-rep.
-- **Probe (S):**
-  1. Subtract a cylinder from `cube.stl` with both engines.
-  2. Run `check_mesh_health` on each result: free edges, non-manifold edges, and whether it closes at the tightest sewing tolerance.
-  3. Time both on `large-sphere-100k.stl` minus a box.
-  4. Confirm `manifold-3d` loads in the webview under the CSP and bundles without a build change. It is a WASM module, so it might instead belong in the kernel worker.
-- **Decision gate:**
-  - **Pass:** manifold output, and time at most twice `three-bvh-csg`'s.
-  - **Fail:** recorded.
-- **Probe result (pass, 2026-10-07, manifold-3d 3.5.3):** all three gates clear, each twice-measured. Cube-minus-through-cylinder: manifold closes at 1e-6 with 0 free / 0 non-manifold edges (272 tris, 9 ms) and heals to 874.54 against the analytic 874.34 (0.02% — the cylinder's 14 units vs the 10 inside the cube is accounted, not assumed). Sphere-minus-box at 100k: manifold 94,530 tris in 190 ms with 0 free / 0 non-manifold; three-bvh-csg 95,350 tris in 422 ms with 1191 free + 4 non-manifold. Manifold is both exact and faster (0.45×), so the time gate is moot. Three corrections to the sketch above: `new Manifold()` **throws** `"Not manifold"` on non-manifold soup (a clean input contract — refuse by name, never silently proceed); the raw `await Module()` factory resolves *before* embind finishes, leaving a `Manifold` stub with no statics and no `getMesh` — init must go through the package's own `instantiateManifold()` (which calls `module.setup()`); and the glue self-locates `manifold.wasm` via `import.meta.url`, which breaks under bundling (ENOENT beside the bundle) — product use needs `setWasmUrl` plus a shipped `.wasm`, the meshio++ precedent. The three-bvh-csg baseline needs one honest qualification: its subtract output is systematically *open* (34–907 free edges across box/cylinder/notch/blind configurations, both mesh-bvh 0.9.7 and 0.9.15, product-identical call shape; closed only for contained/disjoint operands), so the comparison flatters manifold — and separately, the shipped path **throws** an uncaught `TypeError` on uv-less meshes (every loader and tessellator output; only three.js primitives carry uv, which is all the unit tests ever built with). That throw is fixed in the same pass (`ensureUvForCsg` in `meshEdits.ts`, pinned by two bug-injected unit tests), not left for the migration.
-- **If admitted (M):**
-  - `manifold-3d` becomes the mesh boolean engine, with `three-bvh-csg` as the fallback.
-  - The dense-mesh guard is re-measured.
-  - README Licensing gains the Apache-2.0 attribution.
-
 ##### 4.3 Anisotropic boundary layers for 2D Gmsh meshes {#anisotropic-boundary-layers-for-2d-gmsh-meshes}
 
 *Area: Meshing.*
@@ -651,30 +626,6 @@ The MMG core probe is complete; its working volume/surface paths and negative op
 - **If admitted:** Phase 1 (**M**) — `Part.meshBoundaryLayer { wallSize, growthRatio, thickness, quads }` for curve-scoped Parts on 2D generates: a third `if (part.meshBoundaryLayer != null)` branch in `applyPartsToGmshModel` beside `meshSize` and `meshGrading`, a `validateMeshBoundaryLayer` gate, every length scaled by `scalePartsMeshSizeForUnit`, a `set_part` parameter, a panel row, and a `.geo` script comment. Phase 2 (**L**, its own probe, only if step 4 passes) — 3D layers through `extrudeBoundaryLayer`.
 - **Out of scope:** 3D layers on OCC-imported solids unless step 4 proves the route; STL sources (no entity correlation, the same rule physical groups follow).
 - **Not a substitute:** MMG's per-reference local sizes (shipped MMG remeshing, see `doc/gmsh-integration.md#mmg-remeshing`) refine isotropically near a wall. They do not build stacked, ratio-graded layers, so a passed MMG probe does not close this item.
-
-##### 4.4 Metric-driven adaptive remeshing from a field {#metric-driven-adaptive-remeshing-from-a-field}
-
-*Area: Meshing.*
-
-- **Hypothesis:** a remesh driven by a size map derived from a field — an error estimate, or a user-picked colour-by-field scalar — refines where the field varies and coarsens where it does not. Point/cell data can then be carried onto the new mesh with a measured conservation error.
-- **Evidence today:**
-  - **Error estimate:** meshio++ `estimateError` (the Zienkiewicz–Zhu estimator, with `none`/`absolute`/`fraction`/`dorfler` marking) is bundled and uncalled.
-  - **Field transfer:** `conservativeInterpolate` keeps ∑value·measure equal over the shared region, a property plain `interpolate` lacks.
-  - **Metrics:** MMG accepts scalar (`setScalarSols`) and tensor (`setTensorSols`, 6 doubles per node) metrics. VSCode-MDPA-Preview builds tensors from a field's Hessian.
-  - **Field plumbing:** already exists for display: `readMeshioDataInfo` and `readMeshioFieldValues` feed colour-by-field.
-- **Probe (S, reuses the completed core probe's verified volume path):**
-  1. On `examples/MED/two-material-tets.med`, attach a synthetic point field f = exp(−|x − c|²/σ²).
-  2. Build a scalar size map h = clamp(h₀ / (1 + α·|∇f|)) from `estimateError`'s cell indicator, then remesh through mmg3d.
-  3. Assert that element density near `c` is at least 3× density far from it.
-  4. Transfer f with `conservativeInterpolate`, and assert ∑f·measure is preserved to 1e-6 relative.
-  5. Repeat with a tensor metric, and record whether anisotropy measurably lowers the element count at equal interpolation error.
-- **Decision gate:**
-  - **Pass:** the density ratio holds and the conservation check holds.
-  - **Partial:** scalar metrics work but tensor metrics do not. Admit the scalar path only.
-- **If admitted (M):** an `adapt_mesh` MCP tool plus a panel action. The metric source is `estimateError`, a named scalar field or a Part's region. Fields are transferred conservatively, and the achieved density and conservation error are reported. The result is a new file.
-- **Out of scope:**
-  - Level-set discretisation (MMG `-ls`, cutting a mesh along an isosurface into two materials). It is a separate workflow with its own reference rules (MMG reserves references 2/3), and it waits for a concrete request.
-  - Solver coupling. Adaptation is a single, user-triggered pass, never a loop.
 
 ##### 4.9 METIS partitioning for Kratos MPI export {#metis-partitioning-for-kratos-mpi-export}
 

@@ -67,6 +67,7 @@ import { targetSizeForPreset } from "./meshSizeHeuristics";
 import { SIZE_MAX_SENTINEL } from "../meshOptions";
 import type { MeshSizePreset } from "../viewerDefaults";
 import { applyEditsMesh } from "./meshEdits";
+import { initManifoldBrowser } from "./manifoldBrowser";
 import { SelectionSet, type SelectedEntity } from "./selection";
 import { VisibilityState } from "./visibilityState";
 import { collectTargets } from "./picking";
@@ -1542,6 +1543,10 @@ function applyAvailableColorFields(
   fields: { pointDataNames: string[]; cellDataNames: string[]; arrays?: ColorFieldArrayInfo[] } | undefined
 ): void {
   availableColorFields = fields && fields.pointDataNames.length + fields.cellDataNames.length > 0 ? fields : null;
+  // Scalar point arrays can also drive MMG field adaptation (Mesh ops · Remesh).
+  meshingPanel.setAdaptFields(
+    (fields?.pointDataNames ?? []).filter((n) => (fields?.arrays?.find((a) => a.name === n && a.location === "point")?.numComponents ?? 1) === 1)
+  );
   const group = document.getElementById("vc-colorfield-group");
   const sel = document.getElementById("vc-colorfield-select") as HTMLSelectElement | null;
   if (!group || !sel) return;
@@ -5753,6 +5758,7 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
       break;
 
     case "loadUrl":
+      await initManifoldBrowser(); // booleans/holes replay synchronously; see loadMeshBytes
       printabilityPanelEligible = COMPARABLE_MESH_FORMATS.has(msg.format);
       setPrintabilityEligible(printabilityPanelEligible);
       setMeshHealthEligibility(COMPARABLE_MESH_FORMATS.has(msg.format) ? (msg.format as MeshParseFormat) : null);
@@ -5768,6 +5774,8 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
       break;
 
     case "loadMeshBytes":
+      // Boolean/hole replays are synchronous, so manifold must be ready before the first one.
+      await initManifoldBrowser();
       // A meshio-converted STL boundary is not itself a real .stl/.obj/.ply
       // file on disk (the actual source is VTK/MED/CGNS/Exodus/XDMF/MDPA) —
       // check_mesh_health's MCP tool would reject that source's real path
@@ -6278,7 +6286,11 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
       if (msg.requestId !== remeshRequestId) break;
       remeshRequestId = null;
       meshingPanel.finishRemesh(msg.cancelled ? "Remesh cancelled — no file written." :
-        `${msg.report?.module}: ${msg.report?.inputCells} → ${msg.report?.outputCells} cells. Saved ${msg.written}. ${msg.warnings.join(" · ")}`);
+        `${msg.report?.module}: ${msg.report?.inputCells} → ${msg.report?.outputCells} cells. ` +
+        (msg.adapt
+          ? `Adapted to ${msg.adapt.field}: sizes ${msg.adapt.sizeRange[0].toPrecision(3)}–${msg.adapt.sizeRange[1].toPrecision(3)}, conservation error ${msg.adapt.conservation.relError.toExponential(1)}. `
+          : "") +
+        `Saved ${msg.written}. ${msg.warnings.join(" · ")}`);
       break;
     case "remeshError":
       if (msg.requestId !== remeshRequestId) break;

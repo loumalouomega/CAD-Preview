@@ -2353,6 +2353,7 @@ export async function remeshMeshTool(
     throw new Error(`MMG always writes new files; choose an unused output path. Already exists: ${target}`);
   }
   if (params.source !== undefined && params.source !== "file" && params.source !== "generated") throw new Error("remesh_mesh source must be file or generated");
+  if (options.adaptField && params.source === "generated") throw new Error("remesh_mesh adaptField needs source: file — a freshly generated mesh carries no result fields");
   const warnings: string[] = [];
   let bytes: Uint8Array, format: string, sourceName: string | undefined;
   let companions: Awaited<ReturnType<typeof resolveMeshioCompanions>> | undefined;
@@ -2380,7 +2381,7 @@ export async function remeshMeshTool(
   const rebound = remeshedParts(built, original, result.regionNames);
   await fs.writeFile(outputPath, result.bytes, { flag: "wx" });
   await fs.writeFile(partsSidecarPath(outputPath), serializePartsJson(path.basename(outputPath), rebound.parts), { flag: "wx" });
-  return { written: outputPath, partsPath: `${outputPath}.parts.json`, report: result.report, regionNames: result.regionNames,
+  return { written: outputPath, partsPath: `${outputPath}.parts.json`, report: result.report, ...("adapt" in result && result.adapt ? { adapt: result.adapt } : {}), regionNames: result.regionNames,
     parts: rebound.parts, warnings: [...warnings, ...result.warnings, ...rebound.warnings] };
 }
 

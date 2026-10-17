@@ -4921,6 +4921,38 @@ try {
   const mmgGenerated = await call("remesh_mesh", { path: mmgCad, source: "generated", meshOptions: { sizeMax: 2 }, outputPath: path.join(dir, "mmg-generated.med"), options: { hmax: 1 } });
   assert(mmgGenerated.parts.some(p => p.name === "Wall" && p.color === "#ff0000" && p.surfaces.length > 0), "MMG generated mode preserves a physical boundary Part and colour");
 
+  // Field-driven adaptation (roadmap "Metric-driven adaptive remeshing from a field"): a Gmsh tet
+  // mesh of the 3x4x5 block with a Gaussian point field appended (VTK legacy POINT_DATA).
+  const adaptVtk = path.join(dir, "adapt-source.vtk");
+  await call("export_mesh", { path: mmgCad, format: "vtk", outputPath: adaptVtk, options: { sizeMax: 0.6, dimension: 3 } });
+  const vtkText = fs.readFileSync(adaptVtk, "utf8");
+  const pointsHeader = vtkText.match(/POINTS (\d+) \w+\n/);
+  assert(!!pointsHeader, "the VTK export has a POINTS block");
+  const pointCount = Number(pointsHeader[1]);
+  const pointNums = vtkText.slice(pointsHeader.index + pointsHeader[0].length).split(/\s+/).slice(0, pointCount * 3).map(Number);
+  const gauss = [];
+  for (let i = 0; i < pointCount; i++) {
+    const [x, y, z] = pointNums.slice(3 * i, 3 * i + 3);
+    gauss.push(Math.exp(-((x + 0.75) ** 2 + y ** 2 + z ** 2) / 0.72).toExponential(10));
+  }
+  fs.writeFileSync(adaptVtk, `${vtkText.trimEnd()}\nPOINT_DATA ${pointCount}\nSCALARS f double 1\nLOOKUP_TABLE default\n${gauss.join("\n")}\n`);
+  const adaptOut = path.join(dir, "adapted.med");
+  const adaptResult = await call("remesh_mesh", { path: adaptVtk, outputPath: adaptOut, options: { adaptField: "f", adaptStrength: 6 } });
+  assert(adaptResult.report.module === "mmg3d" && adaptResult.adapt?.field === "f", "remesh_mesh adapts a tetrahedral mesh to a point field");
+  assert(adaptResult.adapt.conservation.relError < 1e-6, `the adapted field is conserved (relative error ${adaptResult.adapt.conservation.relError})`);
+  assert(adaptResult.adapt.sizeRange[0] < adaptResult.adapt.sizeRange[1] / 3, `target sizes follow the field (${adaptResult.adapt.sizeRange.join(" … ")})`);
+  const adaptedFields = await call("inspect_meshio_fields", { path: adaptOut });
+  assert(adaptedFields.arrays.some((a) => a.name === "f"), "the adapted MED carries the transferred field");
+  const adaptGentle = await call("remesh_mesh", { path: adaptVtk, outputPath: path.join(dir, "adapted-gentle.med"), options: { adaptField: "f", adaptStrength: 1 } });
+  assert(
+    adaptResult.adapt.cellsAfter > adaptGentle.adapt.cellsAfter,
+    `a larger adaptStrength refines harder (${adaptGentle.adapt.cellsAfter} cells at 1, ${adaptResult.adapt.cellsAfter} at 6)`
+  );
+  const adaptMissing = await request("tools/call", { name: "remesh_mesh", arguments: { path: adaptVtk, outputPath: path.join(dir, "adapted-missing.med"), options: { adaptField: "nope" } } });
+  assert(adaptMissing.isError && /not a point_data array/.test(adaptMissing.content?.[0]?.text ?? ""), "an unknown adaptField is refused by name");
+  const adaptGenerated = await request("tools/call", { name: "remesh_mesh", arguments: { path: mmgCad, source: "generated", outputPath: path.join(dir, "adapted-gen.med"), options: { adaptField: "f" } } });
+  assert(adaptGenerated.isError && /source: file/.test(adaptGenerated.content?.[0]?.text ?? ""), "adaptField on a generated mesh is refused (no result fields)");
+
   // Still geometry-only for anything beyond regions (point/cell/field data
   // arrays) — the region→Parts correlation above is additive, not a
   // replacement for the existing STL-boundary mesh path.

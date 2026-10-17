@@ -149,6 +149,9 @@ const webviewConfig = {
   // The default is never used: `meshLoaders.ts` always calls `setDecoderPath`.
   // (Not the Node `IMPORT_META_URL_DEFINE` above, which is `require("url")`.)
   define: { "import.meta.url": JSON.stringify("https://decoder.invalid/") },
+  // manifold-3d's glue imports `node:module` only inside its Node branch, which
+  // never runs in a webview; keep it as an unresolved dynamic import.
+  external: ["node:module"],
   sourcemap: true,
   logLevel: "info",
 };
@@ -258,6 +261,22 @@ function copyDracoDecoders() {
   console.log(`Copied Draco decoders → dist/draco/ (${files.length} files)`);
 }
 
+/**
+ * Stage `manifold.wasm` (roadmap "Manifold mesh booleans"): fetched by the
+ * webview (`manifoldBrowser.ts`, URL derived from the bundle's own script URL)
+ * and read as `wasmBinary` by the kernel worker (`manifoldNode.ts`). A real
+ * file for the same reason as the other WASM binaries; Apache-2.0 text beside it.
+ */
+function copyManifold() {
+  const dist = path.join(__dirname, "dist", "manifold");
+  fs.rmSync(dist, { recursive: true, force: true });
+  fs.mkdirSync(dist, { recursive: true });
+  const pkg = path.join(__dirname, "node_modules", "manifold-3d");
+  fs.copyFileSync(path.join(pkg, "manifold.wasm"), path.join(dist, "manifold.wasm"));
+  fs.copyFileSync(path.join(pkg, "LICENSE"), path.join(dist, "LICENSE"));
+  console.log("Copied manifold.wasm → dist/manifold/ (2 files)");
+}
+
 if (watch) {
   const ctxExt = await esbuild.context(extensionConfig);
   const ctxMcp = await esbuild.context(mcpConfig);
@@ -270,6 +289,7 @@ if (watch) {
   copyProcessLimits();
   copySheetTemplates();
   copyDracoDecoders();
+  copyManifold();
   console.log("esbuild: watching…");
 } else {
   await Promise.all([
@@ -284,4 +304,5 @@ if (watch) {
   copyProcessLimits();
   copySheetTemplates();
   copyDracoDecoders();
+  copyManifold();
 }

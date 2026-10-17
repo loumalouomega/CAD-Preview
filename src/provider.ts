@@ -3495,6 +3495,7 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
             let companions: Awaited<ReturnType<typeof resolveMeshioCompanionsFor>> | undefined;
             const warnings: string[] = [];
             const pipeline = this.docPipeline(document.uri);
+            if (options.adaptField && msg.source === "generated") throw new Error("Adapting to a field needs the original FE mesh file — a freshly generated mesh carries no result fields");
             if (msg.source === "generated") {
               const input = await this.resolveMeshInput(document.uri, route, currentEdits, msg.stl, "mm", currentBakedThrough);
               if (!input) throw new Error("No geometry to generate a mesh from");
@@ -3526,7 +3527,7 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
             }
             await vscode.workspace.fs.writeFile(saveUri, result.bytes);
             await writeParts(saveUri, rebound.parts);
-            post({ type: "remeshResult", requestId: msg.requestId, report: result.report, written: saveUri.fsPath,
+            post({ type: "remeshResult", requestId: msg.requestId, report: result.report, adapt: "adapt" in result ? result.adapt : undefined, written: saveUri.fsPath,
               warnings: [...warnings, ...result.warnings, ...rebound.warnings] });
           });
         } catch (error) {
