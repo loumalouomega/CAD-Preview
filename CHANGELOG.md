@@ -6,6 +6,18 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/); thi
 
 ## [Unreleased]
 
+## [3.21.0] - 2026-10-17
+
+### Added
+
+- **Periodic meshing.** `MeshOptions.periodic` takes Part-name pairs (`slave`, `master`, `translation` in native mm) so the slave face's mesh is a copy of the master's, offset by the translation — for representative-volume-element studies. Each Part must resolve to exactly one surface, B-rep sources only; malformed entries are dropped, never the whole list. Probed live on block.stp (every slave node matched at exactly the translation for Delaunay, HXT and Frontal) with smoke coverage and docs.
+- **Mesh booleans and holes run through manifold-3d.** Mesh `boolean`/`hole` edit ops now evaluate with manifold-3d (closed, manifold output), falling back to three-bvh-csg; initialized in the webview and the kernel worker, with `manifold.wasm` staged to `dist/manifold` and carved into the VSIX.
+- **Field-driven adaptive remeshing.** `remesh_mesh` / FE Mesh → Remesh (MMG) gain `adaptField` + `adaptStrength`: the named scalar `point_data` array's ZZ error indicator drives a per-vertex target-size map (`h = base / (1 + α·e/ē)`) fed to mmg3d as a scalar metric, and the field is carried onto the new mesh with `conservativeInterpolate`. The response reports the adaptation facts (field, strength, base/min sizes, size range, ZZ global error, cells before/after, source/target conservation integrals and relative error). Linear tetrahedra only; other point/cell/field data is dropped with a warning.
+
+### Fixed
+
+- **Hole/boolean on a single-mesh source left the unedited mesh displayed and exported.** When the mesh is the document root, it is now edited in place instead of leaving the original on screen and in exports.
+
 ## [3.20.0] - 2026-10-16
 
 ### Added
