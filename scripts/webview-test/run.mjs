@@ -5149,7 +5149,7 @@ test("mesh health: Repair and Promote are mirror-image gates; stale replies and 
   const open = healComp({ freeEdgeCount: 3, requiredTolerance: null, areaDeltaPct: null, volumeDeltaPct: null });
   await post(page, {
     type: "meshHealResult", requestId: req.requestId,
-    report: { ...healReport([open]), decimated: { fromTriangles: 99904, toTriangles: 1000, ratio: 0.01 } },
+    report: { ...healReport([open]), decimated: { fromTriangles: 99904, toTriangles: 1000, ratio: 0.01, method: "mmgs", hausd: 0.15, hausdFraction: 0.0043, volumeDeltaPct: -1.5 } },
   });
   await sleep(150);
   const gates = await page.evaluate(() => ({
@@ -5160,7 +5160,7 @@ test("mesh health: Repair and Promote are mirror-image gates; stale replies and 
   }));
   assert(gates.repair === false && gates.promote === true && gates.fit === true, "a component that did NOT close enables Repair and disables Promote and Fit");
   assert(gates.text.includes("did not close"), "the unclosed component says so rather than showing a tolerance");
-  assert(gates.text.includes("99904") && gates.text.includes("auto-decimated"), "a decimated report names the resampling — never silent");
+  assert(gates.text.includes("99904") && gates.text.includes("auto-decimated") && gates.text.includes("mmgs") && gates.text.includes("-1.50%"), "a decimated report names the resampling, its bound and the volume change — never silent");
 
   // The two buttons post the parameter-free messages.
   await page.click("#mesh-health-repair");
