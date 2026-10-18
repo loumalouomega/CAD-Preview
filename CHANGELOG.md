@@ -12,7 +12,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/); thi
 
 ### Documented
 
-- **METIS partitioning probe (mechanism passes).** `gmsh.model.mesh.partition(n)` on `bull.stp` splits 2 735 tets into 2, 4 and 8 partitions in under 110 ms with every element in exactly one partition, max/mean balance ≤ 1.0033, and `unpartition` restoring the serial mesh (`scripts/probe/examples/gmsh-partition.ts`). Nothing ships on it: no demand for per-rank MDPA export, and interface-node identification is unprobed. Boundary layers stay blocked on a new Gmsh build (`@loumalouomega/gmsh-wasm` is still 0.3.0).
+- **Partitioning probe, re-pointed at KaHIP in meshio++.** The roadmap item is now "KaHIP partitioning for Kratos MPI export". meshio++ 17.3.0's `partition` works with its SFC method (balance ≤ 1.14, but 5.7 % / 28.7 % / 38.5 % of nodes on the interface for 2 / 4 / 8 parts of `bull.stp`) and refuses `method: "kahip"` because the published build is not compiled with `-DMESHIOPLUSPLUS_WITH_KAHIP=ON`; those SFC numbers are the baseline KaHIP must beat (`scripts/probe/examples/meshio-partition.ts`). Gmsh's METIS `partition` also passes its mechanism probe (`gmsh-partition.ts`) and is kept as the fallback. Nothing ships. Boundary layers stay blocked on a new Gmsh build (`@loumalouomega/gmsh-wasm` is still 0.3.0); the roadmap now lists what that build must supply.
 
 ## [3.21.0] - 2026-10-17
 
