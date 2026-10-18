@@ -23,7 +23,15 @@ export interface MeshHealthDisplay {
   componentCount: number;
   components: ComponentHealthDisplay[];
   /** Present only when the report was computed over an auto-decimated mesh. */
-  decimated?: { fromTriangles: number; toTriangles: number; ratio: number };
+  decimated?: {
+    fromTriangles: number;
+    toTriangles: number;
+    ratio: number;
+    method: string;
+    hausd: number;
+    hausdFraction: number;
+    volumeDeltaPct: number | null;
+  };
 }
 
 export interface MeshHealthPanelCallbacks {
@@ -131,7 +139,9 @@ export class MeshHealthPanel {
       const note = document.createElement("div");
       note.className = "mesh-health-message";
       note.textContent =
-        `Computed over an auto-decimated mesh (${report.decimated.fromTriangles} → ${report.decimated.toTriangles} triangles) — not the raw file.`;
+        `Computed over an auto-decimated mesh (${report.decimated.fromTriangles} → ${report.decimated.toTriangles} triangles, ${report.decimated.method}, Hausdorff bound ${report.decimated.hausd.toPrecision(3)}` +
+        (report.decimated.volumeDeltaPct == null ? "" : `, volume ${report.decimated.volumeDeltaPct >= 0 ? "+" : ""}${report.decimated.volumeDeltaPct.toFixed(2)}%`) +
+        `) — not the raw file.`;
       this.body.appendChild(note);
     }
     if (report.components.length === 0) {

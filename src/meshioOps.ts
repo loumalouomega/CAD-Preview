@@ -49,7 +49,7 @@ export const MESHIO_OP_LABELS: Record<MeshioOpId, string> = {
  * Validates an untrusted op spec (panel draft or protocol payload). Returns
  * the clean spec, or `null` when the op id is unknown. Numeric params are
  * range-checked only where `runMeshioOps` would otherwise throw unconditionally
- * (`decimateStlBoundary`'s `(0,1]` rule for `ratio`); everything else degrades
+ * (the `(0,1]` rule for decimate's `ratio`); everything else degrades
  * gracefully kernel-side per that function's own per-step report, so this
  * stays a shape gate, not a second executor.
  */

@@ -77,7 +77,7 @@ export const KERNELS_BY_FUNCTION: Record<keyof DocumentPipeline, readonly Kernel
   checkMeshQuality: M,
   readMeshioDataInfo: M,
   readMeshioProvenance: M,
-  decimateStlBoundary: M,
+  coarsenStlBoundary: ["mmg"],
   runMeshioOps: M,
   remeshMesh: ["meshio", "mmg"],
   loadBRepCachedForDocument: O,

@@ -6,6 +6,14 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/); thi
 
 ## [Unreleased]
 
+### Changed
+
+- **Auto-decimate now coarsens with mmgs under a Hausdorff bound, and the coarsened mesh heals.** `check_mesh_health` / `promote_mesh_to_brep` `autoDecimate` and the Mesh Health panel's **Auto-decimate** used meshio++'s quadric `decimate`, which closed `examples/STL/large-sphere-100k.stl` at 1 000 triangles but healed it to volume exactly 0, so promotion was refused. They now run mmgs (surface remeshing, already bundled for remeshing) with `hausd` bisected in log space until the triangle count reaches ~1 000: the sphere (99 904 → 810–870 triangles) closes at 1e-6, has no non-manifold edge and heals to within 1.7 % of 4/3·π·10³; a refined cube keeps its edges (24 triangles, volume exact); `bull.stp` tessellated (9 022 → ~850) heals closed. The `decimated` block of the report is now `{fromTriangles, toTriangles, ratio, method: "mmgs", hausd, hausdFraction, volumeDeltaPct}` (new fields: the Hausdorff bound in source units and as a fraction of the bounding-box diagonal, and the signed volume change against the raw mesh) and the panel and warnings state them. Pipeline function `decimateStlBoundary` is replaced by `coarsenStlBoundary`. The earlier "all three candidates fail" probe result was a mis-scaled input: mmgs `hausd` is absolute source units, and 1 % of the bounding-box diagonal (0.346 on the 34.6 diagonal) over-coarsens to 391 open triangles; meshio++ clustering `remesh` (17.3.0, isotropic/quadric/anisotropic, with extra repair passes) still never closes (38–40 free edges) and QEM `decimate` still heals to 0 (placement `endpoint` heals but keeps 18 non-manifold edges and drifts −2.5 %). Probes: `scripts/probe/examples/heal-coarsen.ts` (candidates) and `heal-coarsen-product.ts` (the shipped path).
+
+### Documented
+
+- **Partitioning probe, re-pointed at KaHIP in meshio++.** The roadmap item is now "KaHIP partitioning for Kratos MPI export". meshio++ 17.3.0's `partition` works with its SFC method (balance ≤ 1.14, but 5.7 % / 28.7 % / 38.5 % of nodes on the interface for 2 / 4 / 8 parts of `bull.stp`) and refuses `method: "kahip"` because the published build is not compiled with `-DMESHIOPLUSPLUS_WITH_KAHIP=ON`; those SFC numbers are the baseline KaHIP must beat (`scripts/probe/examples/meshio-partition.ts`). Gmsh's METIS `partition` also passes its mechanism probe (`gmsh-partition.ts`) and is kept as the fallback. Nothing ships. Boundary layers stay blocked on a new Gmsh build (`@loumalouomega/gmsh-wasm` is still 0.3.0); the roadmap now lists what that build must supply.
+
 ## [3.21.0] - 2026-10-17
 
 ### Added

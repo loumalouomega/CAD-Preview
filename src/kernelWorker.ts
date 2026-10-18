@@ -42,12 +42,12 @@ import {
   checkMeshQuality,
   readMeshioDataInfo,
   readMeshioProvenance,
-  decimateStlBoundary,
   runMeshioOps,
   remeshMesh,
   readMeshioFieldValues,
 } from "./meshioService";
 import { checkMeshHealth, promoteMeshToBrep } from "./meshHeal";
+import { coarsenStlBoundary } from "./mmgCoarsen";
 import { checkBrepHealth } from "./brepHealth";
 import { recognizePrimitives } from "./primitiveReport";
 import { fitMeshRegion } from "./meshRegionFit";
@@ -168,7 +168,7 @@ const handlers: Record<keyof DocumentPipeline, Handler> = {
   checkMeshQuality: checkMeshQuality as Handler,
   readMeshioDataInfo: readMeshioDataInfo as Handler,
   readMeshioProvenance: readMeshioProvenance as Handler,
-  decimateStlBoundary: decimateStlBoundary as Handler,
+  coarsenStlBoundary: coarsenStlBoundary as Handler,
   runMeshioOps: runMeshioOps as Handler,
   remeshMesh: remeshMesh as Handler,
   loadBRepCachedForDocument: loadBRepCachedForDocument as Handler,

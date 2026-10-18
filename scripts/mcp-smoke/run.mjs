@@ -3086,37 +3086,41 @@ try {
     overCeiling.error && /triangle ceiling/.test(overCeiling.error),
     `check_mesh_health refuses an over-ceiling mesh with the actionable error (got: ${overCeiling.error})`
   );
+  const SPHERE_VOLUME = (4 / 3) * Math.PI * 1000;
   const decHealth = await call("check_mesh_health", { path: bigSphereStl, autoDecimate: true });
   assert(
-    decHealth.decimated && decHealth.decimated.fromTriangles === 99904 &&
-      Math.abs(decHealth.decimated.toTriangles - 1000) / 1000 < 0.1,
+    decHealth.decimated && decHealth.decimated.fromTriangles === 99904 && decHealth.decimated.method === "mmgs" &&
+      decHealth.decimated.toTriangles >= 300 && decHealth.decimated.toTriangles <= 1000,
     `check_mesh_health{autoDecimate} reports the resampling actually applied (got: ${JSON.stringify(decHealth.decimated)})`
   );
   assert(
-    decHealth.components[0].requiredTolerance === 1e-6,
-    `the decimated sphere still closes at the tightest rung (got: ${JSON.stringify(decHealth.components[0])})`
+    decHealth.decimated.hausd > 0 && decHealth.decimated.hausdFraction > 0 && Math.abs(decHealth.decimated.volumeDeltaPct) < 3,
+    `the coarsening reports its Hausdorff bound and the volume change it caused (got: ${JSON.stringify(decHealth.decimated)})`
   );
   assert(
-    decHealth.warnings.some((w) => /auto-decimated mesh.*99904 → 1000/.test(w)),
-    "the report warns it describes the decimated mesh, never silently"
+    decHealth.warnings.some((w) => /auto-decimated mesh.*99904 → \d+ triangles \(mmgs, Hausdorff bound/.test(w)),
+    "the report warns it describes the coarsened mesh, never silently"
   );
-  // Decimation introduces non-manifold/sliver artifacts that break the
-  // per-triangle solidify (verified live: closes at 1e-6 yet heals to
-  // volume exactly 0) — the report must show the degenerate heal honestly,
-  // and promote must refuse to write it rather than emit a wrong solid. If
-  // a future meshio++ decimates cleanly, these fail: revisit, don't delete.
+  // The shipped QEM decimation healed this sphere to volume exactly 0 (non-manifold
+  // slivers). mmgs coarsening (Hausdorff-bounded) closes at the tightest rung, has no
+  // non-manifold edge and heals to a positive volume near the analytic one.
   const decComponent = decHealth.components[0];
   assert(
-    decComponent.nonManifoldEdgeCount > 0 && decComponent.healedVolume === 0 && decComponent.volumeDeltaPct === -100,
-    `the degenerate heal is reported as facts, not a fabricated volume (got: ${JSON.stringify(decComponent)})`
+    decComponent.requiredTolerance === 1e-6 && decComponent.freeEdgeCount === 0 && decComponent.nonManifoldEdgeCount === 0 &&
+      Math.abs(decComponent.healedVolume - SPHERE_VOLUME) / SPHERE_VOLUME < 0.02,
+    `the coarsened sphere closes at 1e-6, has no non-manifold edge and heals within 2% of 4/3*pi*10^3 (got: ${JSON.stringify(decComponent)})`
   );
   const decPromotedStep = path.join(dir, "dec-promoted.step");
-  const decPromoted = await callTolerant("promote_mesh_to_brep", { path: bigSphereStl, outputPath: decPromotedStep, autoDecimate: true });
+  const decPromoted = await call("promote_mesh_to_brep", { path: bigSphereStl, outputPath: decPromotedStep, autoDecimate: true });
   assert(
-    decPromoted.error && /degenerate/.test(decPromoted.error),
-    `promote_mesh_to_brep{autoDecimate} refuses a degenerately-healed mesh instead of writing a wrong solid (got: ${decPromoted.error})`
+    decPromoted.promotedComponents.length === 1 && decPromoted.skippedComponents.length === 0 && decPromoted.decimated?.method === "mmgs",
+    `promote_mesh_to_brep{autoDecimate} promotes the coarsened sphere (got: ${JSON.stringify(decPromoted)})`
   );
-  assert(!fs.existsSync(decPromotedStep), "no output file is written for the refused promotion");
+  const decMass = await call("get_mass_properties", { path: decPromotedStep });
+  assert(
+    decMass.supported === true && Math.abs(decMass.volume - SPHERE_VOLUME) / SPHERE_VOLUME < 0.02,
+    `the promoted file's own volume is within 2% of the analytic sphere (got: ${JSON.stringify(decMass)})`
+  );
 
   // promote_mesh_to_brep (roadmap "Mesh -> B-rep promotion", Phase 2 — a
   // one-shot EXPORT to a NEW file, never an in-place reclassification).
