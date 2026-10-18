@@ -6,6 +6,14 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/); thi
 
 ## [Unreleased]
 
+### Changed
+
+- **Auto-decimate now coarsens with mmgs under a Hausdorff bound, and the coarsened mesh heals.** `check_mesh_health` / `promote_mesh_to_brep` `autoDecimate` and the Mesh Health panel's **Auto-decimate** used meshio++'s quadric `decimate`, which closed `examples/STL/large-sphere-100k.stl` at 1 000 triangles but healed it to volume exactly 0, so promotion was refused. They now run mmgs (surface remeshing, already bundled for remeshing) with `hausd` bisected in log space until the triangle count reaches ~1 000: the sphere (99 904 → 810–870 triangles) closes at 1e-6, has no non-manifold edge and heals to within 1.7 % of 4/3·π·10³; a refined cube keeps its edges (24 triangles, volume exact); `bull.stp` tessellated (9 022 → ~850) heals closed. The `decimated` block of the report is now `{fromTriangles, toTriangles, ratio, method: "mmgs", hausd, hausdFraction, volumeDeltaPct}` (new fields: the Hausdorff bound in source units and as a fraction of the bounding-box diagonal, and the signed volume change against the raw mesh) and the panel and warnings state them. Pipeline function `decimateStlBoundary` is replaced by `coarsenStlBoundary`. The earlier "all three candidates fail" probe result was a mis-scaled input: mmgs `hausd` is absolute source units, and 1 % of the bounding-box diagonal (0.346 on the 34.6 diagonal) over-coarsens to 391 open triangles; meshio++ clustering `remesh` (17.3.0, isotropic/quadric/anisotropic, with extra repair passes) still never closes (38–40 free edges) and QEM `decimate` still heals to 0 (placement `endpoint` heals but keeps 18 non-manifold edges and drifts −2.5 %). Probes: `scripts/probe/examples/heal-coarsen.ts` (candidates) and `heal-coarsen-product.ts` (the shipped path).
+
+### Documented
+
+- **METIS partitioning probe (mechanism passes).** `gmsh.model.mesh.partition(n)` on `bull.stp` splits 2 735 tets into 2, 4 and 8 partitions in under 110 ms with every element in exactly one partition, max/mean balance ≤ 1.0033, and `unpartition` restoring the serial mesh (`scripts/probe/examples/gmsh-partition.ts`). Nothing ships on it: no demand for per-rank MDPA export, and interface-node identification is unprobed. Boundary layers stay blocked on a new Gmsh build (`@loumalouomega/gmsh-wasm` is still 0.3.0).
+
 ## [3.21.0] - 2026-10-17
 
 ### Added

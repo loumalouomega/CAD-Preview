@@ -5,6 +5,8 @@ import { remeshMmg } from "./mmgService";
 import { prepareMmgMesh, harvestMmgMesh } from "./mmgMesh";
 import { ADAPT_DEFAULT_STRENGTH, sizeMapFromIndicator, lumpedIntegral } from "./adaptSizing";
 import type { MmgOptions } from "./mmgOptions";
+import type { CoarsenStlResult } from "./mmgCoarsen";
+import type { DecimatedInfo } from "./meshHeal";
 import { explicitTriangleRegions, triangleCoordinateKey } from "./meshioTriangleRegions";
 import { boundaryExtentMismatches, describeExtentMismatch, extentOf } from "./meshioBoundary";
 
@@ -690,55 +692,6 @@ export async function runMeshioOps(
 }
 
 /**
- * Decimates an STL triangle soup to `ratio` (fraction of faces to KEEP, in
- * (0, 1]) via meshio++'s quadric edge-collapse — the `autoDecimate` answer
- * to `meshHeal.ts`'s `MAX_HEALABLE_TRIANGLES` ceiling (Tier 1 item
- * "Auto-decimate under MAX_HEALABLE_TRIANGLES"). Takes STL bytes specifically
- * (not a meshio format): the tool layer funnels OBJ/PLY/glTF through
- * `weldedMeshToStlBytes` first, so this function sees one uniform shape and
- * meshio++ only ever parses the format it was built around. Returns the
- * decimated STL bytes plus before/after triangle counts so the caller can
- * report the resampling actually applied — never silent.
- */
-export interface DecimateStlResult {
-  bytes: Uint8Array;
-  fromTriangles: number;
-  toTriangles: number;
-}
-
-export async function decimateStlBoundary(stlBytes: Uint8Array, ratio: number): Promise<DecimateStlResult> {
-  if (!(ratio > 0 && ratio <= 1)) {
-    throw new Error(`decimate ratio must be in (0, 1] (got ${ratio})`);
-  }
-  const m = await getMeshio();
-  const inPath = "/dec-in.stl";
-  const outPath = "/dec-out.stl";
-  m.FS.writeFile(inPath, Buffer.from(stlBytes));
-  try {
-    const mesh = m.readMesh(inPath, "stl");
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const blocks = (mesh.cells ?? []) as Array<{ type: string; data: ArrayLike<number> }>;
-    const countTriangles = (cells: Array<{ type: string; data: ArrayLike<number> }>): number =>
-      cells.reduce((n, b) => n + (b.type === "triangle" ? Math.floor(b.data.length / 3) : 0), 0);
-    const fromTriangles = countTriangles(blocks);
-    if (fromTriangles === 0) {
-      throw new Error("decimate: meshio++ read no triangle cells from the STL input — refusing to resample an empty mesh.");
-    }
-    const r = m.decimate(mesh, ratio);
-    m.writeMesh(outPath, r.mesh);
-    const bytes = m.FS.readFile(outPath);
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const toTriangles = countTriangles((r.mesh.cells ?? []) as Array<{ type: string; data: ArrayLike<number> }>);
-    return { bytes, fromTriangles, toTriangles };
-  } catch (err) {
-    throw wrapMeshioFault(err);
-  } finally {
-    try { m.FS.unlink(inPath); } catch { /* ignore */ }
-    try { m.FS.unlink(outPath); } catch { /* ignore */ }
-  }
-}
-
-/**
  * Decimation target for the `autoDecimate` opt-in (`check_mesh_health`/
  * `promote_mesh_to_brep`, Tier 1 item "Auto-decimate under
  * MAX_HEALABLE_TRIANGLES") — deliberately ~2% of the ceiling, not just under
@@ -746,9 +699,11 @@ export async function decimateStlBoundary(stlBytes: Uint8Array, ratio: number): 
  * scales steeply (one OCCT face per triangle plus a `Sewing.Perform` over
  * all of them) — 1k triangles checks in ~16s, while 5k already hangs past
  * the kernel worker's 300s watchdog, so a target merely under the ceiling
- * would still be unusable. A 100:1 resampling is coarse, but the opt-in
- * reports the ratio actually applied and warns that the result describes
- * the decimated mesh — a coarse-but-honest answer beats a refusal.
+ * would still be unusable (live: an mmgs-coarsened 1.8k-triangle sphere
+ * sews in ~7 s, 12k in ~49 s, 46k in ~186 s). The backend is mmgs with a
+ * bisected Hausdorff bound (`mmgCoarsen.ts`). The opt-in reports the counts
+ * and the bound actually applied and warns that the result describes the
+ * coarsened mesh — a coarse-but-honest answer beats a refusal.
  * Lives here (not in `meshHeal.ts`, where the ceiling itself lives) because
  * BOTH consumers — `mcpTools.ts` and `provider.ts` — must import it as a
  * value, and `meshHeal.ts`'s own module graph pulls in OCCT (bundled, not
@@ -757,6 +712,25 @@ export async function decimateStlBoundary(stlBytes: Uint8Array, ratio: number): 
  * `meshHeal.ts` documents the pairing from its side.
  */
 export const AUTO_DECIMATE_TARGET_TRIANGLES = 1_000;
+
+/** The `decimated` report block for a coarsening result (shared by `mcpTools.ts` and `provider.ts`). */
+export function decimatedInfo(result: CoarsenStlResult, fromTriangles: number): DecimatedInfo {
+  return {
+    fromTriangles: result.fromTriangles || fromTriangles,
+    toTriangles: result.toTriangles,
+    ratio: result.toTriangles / (result.fromTriangles || fromTriangles),
+    method: result.method,
+    hausd: result.hausd,
+    hausdFraction: result.hausdFraction,
+    volumeDeltaPct: result.volumeDeltaPct,
+  };
+}
+
+/** One-sentence statement of the resampling applied, for the `warnings` of both tools. */
+export function decimatedSentence(info: DecimatedInfo): string {
+  const drift = info.volumeDeltaPct == null ? "" : `, volume ${info.volumeDeltaPct >= 0 ? "+" : ""}${info.volumeDeltaPct.toFixed(2)}% vs the raw mesh`;
+  return `${info.fromTriangles} → ${info.toTriangles} triangles (mmgs, Hausdorff bound ${info.hausd.toPrecision(3)} = ${(info.hausdFraction * 100).toPrecision(3)}% of the bounding-box diagonal${drift})`;
+}
 
 /**
  * Whether an error is `meshHeal.ts`'s over-ceiling refusal (as opposed to a
@@ -775,7 +749,7 @@ export function isHealableSizeError(err: unknown): boolean {
  * triangle count, for the `autoDecimate` opt-in — STL passes through
  * untouched (no pointless re-serialization); OBJ/PLY/glTF go through the
  * same pure parse+weld+serialize the repair path already uses. Pure JS, no
- * WASM: the actual resampling happens in `decimateStlBoundary` (meshio++).
+ * WASM: the actual resampling happens in `coarsenStlBoundary` (mmgs).
  */
 export function stlBytesForHeal(
   bytes: Uint8Array,

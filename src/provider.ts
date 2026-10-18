@@ -50,7 +50,7 @@ import { readScadSettings } from "./scadSettings";
 import { parseScadParameters, validateScadOverrides } from "./scadParams";
 import type { ScadValue } from "./scadParams";
 import { connectSpaceMouse, disconnectSpaceMouse } from "./spaceMouse";
-import { isMeshioFieldFailure, describeMeshioFieldFailure, isHealableSizeError, AUTO_DECIMATE_TARGET_TRIANGLES, stlBytesForHeal } from "./meshioService";
+import { isMeshioFieldFailure, describeMeshioFieldFailure, isHealableSizeError, AUTO_DECIMATE_TARGET_TRIANGLES, stlBytesForHeal, decimatedInfo } from "./meshioService";
 import { validateMeshioOpSpec } from "./meshioOps";
 import { SVG_VIEWS } from "./svgSilhouette";
 import type { CompareSource } from "./modelDiffHost";
@@ -3433,15 +3433,14 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
             // rather than `meshHeal.ts` — see `AUTO_DECIMATE_TARGET_TRIANGLES`.
             if (!msg.autoDecimate || !isHealableSizeError(err)) throw err;
             const forHeal = stlBytesForHeal(bytes, sourceFormat, external);
-            const ratio = Math.min(1, AUTO_DECIMATE_TARGET_TRIANGLES / forHeal.fromTriangles);
-            const decimated = await docPipeline.decimateStlBoundary(forHeal.stlBytes, ratio);
+            const decimated = await docPipeline.coarsenStlBoundary(this.context.extensionPath, forHeal.stlBytes, AUTO_DECIMATE_TARGET_TRIANGLES);
             const report = await docPipeline.checkMeshHealth(this.context.extensionPath, decimated.bytes, "stl");
             post({
               type: "meshHealResult",
               requestId: msg.requestId,
               report: {
                 ...report,
-                decimated: { fromTriangles: decimated.fromTriangles, toTriangles: decimated.toTriangles, ratio },
+                decimated: decimatedInfo(decimated, forHeal.fromTriangles),
               },
             });
           }

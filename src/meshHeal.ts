@@ -130,11 +130,14 @@ export interface MeshHealthReport {
   /**
    * Present only when the report was computed over an auto-decimated mesh
    * (the `autoDecimate` opt-in): the resampling actually applied, so a
-   * caller can see the report describes a decimated mesh, not the raw file.
-   * Counts are triangle counts before/after; `ratio` is the fraction of
-   * faces asked to keep.
+   * caller can see the report describes a coarsened mesh, not the raw file.
+   * Counts are triangle counts before/after; `ratio` is toTriangles /
+   * fromTriangles; `hausd` is the Hausdorff bound mmgs ran with (source
+   * units) and `hausdFraction` the same as a fraction of the bbox diagonal;
+   * `volumeDeltaPct` is the signed volume change of the coarse mesh against
+   * the input (a fact the caller judges, `null` when undefined).
    */
-  decimated?: { fromTriangles: number; toTriangles: number; ratio: number };
+  decimated?: DecimatedInfo;
 }
 
 /**
@@ -153,6 +156,17 @@ export interface MeshHealthReport {
  * present but far less likely to be hit.
  */
 export const MAX_HEALABLE_TRIANGLES = 50_000;
+
+/** What the `autoDecimate` opt-in reports about the resampling it applied. */
+export interface DecimatedInfo {
+  fromTriangles: number;
+  toTriangles: number;
+  ratio: number;
+  method: "mmgs";
+  hausd: number;
+  hausdFraction: number;
+  volumeDeltaPct: number | null;
+}
 // (The `autoDecimate` opt-in's target, predicate, and STL funnel live in
 // `meshioService.ts` — `AUTO_DECIMATE_TARGET_TRIANGLES`/
 // `isHealableSizeError`/`stlBytesForHeal` — because both of its consumers

@@ -361,7 +361,12 @@ interface ComponentHealthReport {   // src/meshHeal.ts — one per connected com
 interface MeshHealthReport {
   componentCount: number
   components: ComponentHealthReport[]
-  decimated?: { fromTriangles: number; toTriangles: number; ratio: number }   // only over an auto-decimated mesh
+  decimated?: {                      // only over an auto-coarsened mesh
+    fromTriangles: number; toTriangles: number; ratio: number
+    method: "mmgs"; hausd: number      // Hausdorff bound mmgs ran with, source units
+    hausdFraction: number              // hausd / bounding-box diagonal
+    volumeDeltaPct: number | null      // signed volume change vs the raw mesh
+  }
 }
 
 interface MeshRegionFit {              // src/fitMapping.ts
@@ -899,7 +904,7 @@ Sent in reply to `brepHealthRequest` (webview → host, below) — roadmap "B-re
 
 ### `meshHealResult` / `meshHealError`
 
-Sent in reply to `meshHealRequest` (webview → host, below) — roadmap "Mesh → B-rep promotion, diagnostic-first", Phase 1 (read-only report, no promotion). `report` is a `MeshHealthReport` (`src/meshHeal.ts`): one `ComponentHealthReport` per connected component, each carrying free/non-manifold edge counts, degenerate face count, the sewing-tolerance-ladder rung actually required to close (`null` if it never closed), and the healed area/volume delta if it did. **STL/OBJ/PLY/glTF sources only** — a B-rep source has nothing to heal and a meshio-converted document has no matching host-side parser; the panel hides itself rather than ever sending this request in either case (see `src/webview/meshHealthPanel.ts`). A mesh above 50,000 triangles is refused with an actionable error (the pipeline builds one OCCT face per triangle) — most likely to come up for glTF. The request carries the panel's session-only `autoDecimate` flag; when set and the ceiling refuses, the host decimates first (meshio++ quadric edge-collapse, target ~1000 triangles) and the report carries a `decimated: {fromTriangles, toTriangles, ratio}` field plus the resampling stated in the panel — never silently.
+Sent in reply to `meshHealRequest` (webview → host, below) — roadmap "Mesh → B-rep promotion, diagnostic-first", Phase 1 (read-only report, no promotion). `report` is a `MeshHealthReport` (`src/meshHeal.ts`): one `ComponentHealthReport` per connected component, each carrying free/non-manifold edge counts, degenerate face count, the sewing-tolerance-ladder rung actually required to close (`null` if it never closed), and the healed area/volume delta if it did. **STL/OBJ/PLY/glTF sources only** — a B-rep source has nothing to heal and a meshio-converted document has no matching host-side parser; the panel hides itself rather than ever sending this request in either case (see `src/webview/meshHealthPanel.ts`). A mesh above 50,000 triangles is refused with an actionable error (the pipeline builds one OCCT face per triangle) — most likely to come up for glTF. The request carries the panel's session-only `autoDecimate` flag; when set and the ceiling refuses, the host coarsens first (mmgs surface remeshing with a bisected Hausdorff bound, target ~1000 triangles) and the report carries a `decimated: {fromTriangles, toTriangles, ratio, method, hausd, hausdFraction, volumeDeltaPct}` field plus the resampling stated in the panel — never silently.
 
 ```json
 { "type": "meshHealResult", "requestId": "1234-0.56", "report": { "componentCount": 1, "components": [{ "index": 0, "triangleCount": 12, "freeEdgeCount": 0, "nonManifoldEdgeCount": 0, "degenerateFaceCount": 0, "rawArea": 600, "rawVolume": 1000, "requiredTolerance": 0.000001, "healedArea": 600, "healedVolume": 1000, "areaDeltaPct": 0, "volumeDeltaPct": 0 }] } }

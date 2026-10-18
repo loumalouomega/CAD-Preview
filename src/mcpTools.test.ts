@@ -590,7 +590,7 @@ function fakePipeline(overrides: Partial<Pipeline> = {}): Pipeline {
     readMeshioDataInfo: vi.fn(async () => []),
     readMeshioProvenance: vi.fn(async () => null),
     runMeshioOps: vi.fn(async () => ({ bytes: new Uint8Array([1, 2, 3]), steps: [], warnings: [] })),
-    decimateStlBoundary: vi.fn(async (bytes: Uint8Array) => ({ bytes, fromTriangles: 99904, toTriangles: 996 })),
+    coarsenStlBoundary: vi.fn(async (_ext: string, bytes: Uint8Array) => ({ bytes, fromTriangles: 99904, toTriangles: 996, method: "mmgs" as const, hausd: 0.15, hausdFraction: 0.0043, iterations: 3, volumeDeltaPct: -1.5 })),
     rebindPartsAcrossOps: vi.fn(async (_ext, _bytes, _format, _opsBefore, _newOps, parts, annotations = [], layers = []) => ({
       parts, // identity pass-through by default — matches the real "nothing to rebind" no-op contract
       annotations,
@@ -1898,26 +1898,26 @@ describe("check_mesh_health", () => {
     });
     const c = ctx(pipeline);
     const result = await checkMeshHealthTool(c, { path: stlModel, autoDecimate: true });
-    expect(pipeline.decimateStlBoundary).toHaveBeenCalledOnce();
+    expect(pipeline.coarsenStlBoundary).toHaveBeenCalledOnce();
     // Second call runs against the decimated STL bytes as "stl".
     expect(vi.mocked(pipeline.checkMeshHealth).mock.calls[1]).toEqual([dir, expect.any(Uint8Array), "stl"]);
     expect(result.supported).toBe(true);
-    expect(result.decimated).toEqual({ fromTriangles: 99904, toTriangles: 996, ratio: expect.any(Number) });
-    expect(result.warnings.join(" ")).toMatch(/auto-decimated mesh.*99904 → 996/);
+    expect(result.decimated).toEqual({ fromTriangles: 99904, toTriangles: 996, ratio: 996 / 99904, method: "mmgs", hausd: 0.15, hausdFraction: 0.0043, volumeDeltaPct: -1.5 });
+    expect(result.warnings.join(" ")).toMatch(/auto-decimated mesh.*99904 → 996 triangles \(mmgs, Hausdorff bound 0\.150.*volume -1\.50%/);
   });
 
   it("autoDecimate: a non-ceiling error rethrows even with the flag set", async () => {
     const corrupt = new Error("not an STL file at all");
     const pipeline = fakePipeline({ checkMeshHealth: vi.fn().mockRejectedValue(corrupt) });
     await expect(checkMeshHealthTool(ctx(pipeline), { path: stlModel, autoDecimate: true })).rejects.toThrow(/not an STL file/);
-    expect(pipeline.decimateStlBoundary).not.toHaveBeenCalled();
+    expect(pipeline.coarsenStlBoundary).not.toHaveBeenCalled();
   });
 
   it("without autoDecimate, a ceiling refusal propagates unchanged", async () => {
     const ceiling = new Error("Mesh has 99904 triangles, above the 50000-triangle ceiling for the per-triangle sewing pipeline.");
     const pipeline = fakePipeline({ checkMeshHealth: vi.fn().mockRejectedValue(ceiling) });
     await expect(checkMeshHealthTool(ctx(pipeline), { path: stlModel })).rejects.toThrow(/triangle ceiling/);
-    expect(pipeline.decimateStlBoundary).not.toHaveBeenCalled();
+    expect(pipeline.coarsenStlBoundary).not.toHaveBeenCalled();
   });
 });
 
@@ -2026,10 +2026,10 @@ describe("promote_mesh_to_brep", () => {
     const c = ctx(pipeline);
     const outputPath = path.join(dir, "decimated.step");
     const result = await promoteMeshToBrepTool(c, { path: stlModel, outputPath, autoDecimate: true });
-    expect(pipeline.decimateStlBoundary).toHaveBeenCalledOnce();
+    expect(pipeline.coarsenStlBoundary).toHaveBeenCalledOnce();
     expect(vi.mocked(pipeline.promoteMeshToBrep).mock.calls[1].slice(2, 4)).toEqual(["stl", "step"]);
-    expect(result.decimated).toEqual({ fromTriangles: 99904, toTriangles: 996, ratio: expect.any(Number) });
-    expect(result.warnings.join(" ")).toMatch(/promoted from an auto-decimated mesh.*99904 → 996/);
+    expect(result.decimated).toEqual({ fromTriangles: 99904, toTriangles: 996, ratio: 996 / 99904, method: "mmgs", hausd: 0.15, hausdFraction: 0.0043, volumeDeltaPct: -1.5 });
+    expect(result.warnings.join(" ")).toMatch(/promoted from an auto-decimated mesh.*99904 → 996 triangles \(mmgs/);
     expect(await fs.readFile(outputPath, "utf8")).toContain("PROMOTED");
   });
 
@@ -2039,7 +2039,7 @@ describe("promote_mesh_to_brep", () => {
     await expect(
       promoteMeshToBrepTool(ctx(pipeline), { path: stlModel, outputPath: path.join(dir, "x.step"), autoDecimate: true })
     ).rejects.toThrow(/catastrophically/);
-    expect(pipeline.decimateStlBoundary).not.toHaveBeenCalled();
+    expect(pipeline.coarsenStlBoundary).not.toHaveBeenCalled();
   });
 });
 
