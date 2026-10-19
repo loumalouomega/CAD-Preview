@@ -6,6 +6,17 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/); thi
 
 ## [Unreleased]
 
+## [3.25.0] - 2026-10-19
+
+### Added
+
+- **`splitFace` edit op: split one face into two regions for boundary conditions.** A B-rep-only, topology-changing op taking a `face-N` plus exactly one splitting form — connected `edgeIds` on the face, or a straight `[p1, p2]` segment built with `BRepBuilderAPI_MakeEdge_3` — applied through `BRepFeat_SplitShape_2` + `Add_3(edge, face)` + `Build()` + `Shape()`. Verified call shape on `examples/STP/block.stp` (3×4×5, top face z = 2.5, area 12, split along y = 0): 6 → 7 faces, 1 solid, volume 60 and surface area 94 unchanged, halves 6 + 6. An edge that misses the face or stops short of its boundary skips with a diagnostic (face-count guard, like `unifySameDomain`); `face-N`/`edge-N` renumbering goes through the existing rebind. Ships with the panel form (P1/P2), `buildOpForPanel`/`tintForPanelOp` wiring, `opCatalog.ts` button, `OP_PARAM_DOCS` entry, TikZ icon, command-bar support (`splitFace {"face":$sel,"points":[...]}`) and headless raw ops; each split half is a `face-N` a Part can name and the FE mesh carries as a physical group with no meshing change.
+- **`MeshOptions.sizeField`: view-driven mesh sizing for B-rep sources.** A list of `{point, size}` samples steering the background mesh through a list-based `SP` view + `PostView` field joined into the shared `Min` background (`addPostViewField` in `gmshSizingFields.ts`), with the view removed after `generate()` so no view is left behind. Headless `generate_mesh`/`export_mesh` input; the FE Mesh panel round-trips it through the stored `.mesh.json` (no editor yet — the first driver is a caller loop over `measure_mesh_deviation`). Verified live on gmsh-wasm 0.4.0 (`examples/STP/bull.stp` at `sizeMax` = diagonal/20 = 9.13): control 2 735 tets, one pass with 400 samples at `sizeMax`/3 over the worst-deviation region 31 957 tets (11.7× growth, reported), forward worst 1.057 → 0.324 (3.3× down), p95 0.370 → 0.082 (4.5× down); a Part on `face-1` keeps its physical group and `getTags()` is empty after the run. Tolerant per-entry validation with a 20 000-sample cap (first N win); sizes follow the export unit like every other mesh length; `Mesh.SearchSizeFromPoints`/`ExtendFromBoundary`/`FromCurvature` are set explicitly every run (1/1/0 without a view, 0/0/0 with one) so a refined run cannot poison the next uniform one. Mesh sources and `engine: "ftetwild"` ignore it with a warning.
+
+### Documented
+
+- **Roadmap**: 2.18 (View-driven mesh sizing) and 2.19 (Split a face into regions) closed as shipped; the wave table now records both as shipped with the `sizeField`/`splitFace` numbers above. `doc/mcp-server.md` gains the `sizeField` sentence on `generate_mesh` and a `splitFace` bullet beside `unifySameDomain`.
+
 ## [3.24.0] - 2026-10-19
 
 ### Added
@@ -929,6 +940,7 @@ This release republishes v1.9.0's full changelog (below) unchanged; v1.9.0 itsel
 
 - Initial release: read-only 3D preview for CAD and mesh files (STEP, IGES, BREP, STL, OBJ, PLY, glTF) inside a VS Code custom editor, using OpenCascade.js (OCCT WASM) in the extension host for B-rep formats and Three.js in the webview for rendering.
 
+[3.25.0]: https://github.com/loumalouomega/CAD-Preview/compare/v3.24.0...v3.25.0
 [3.24.0]: https://github.com/loumalouomega/CAD-Preview/compare/v3.23.0...v3.24.0
 [3.23.0]: https://github.com/loumalouomega/CAD-Preview/compare/v3.22.0...v3.23.0
 [3.22.0]: https://github.com/loumalouomega/CAD-Preview/compare/v3.21.0...v3.22.0
