@@ -21,7 +21,10 @@
       "id": "phase-2",
       "section": "Phase 2 \u2014 actual promotion (a one-shot export)",
       "gap": "the actual button click \u2192 quick-picks \u2192 save dialog \u2192 write flow has NOT been exercised in a real Extension Development Host session. See \"Verify a change\" below.",
-      "status": "open"
+      "status": "closed",
+      "closedBy": [
+        "Promote to B-rep writes a new STEP file and leaves the source alone"
+      ]
     },
     {
       "id": "auto-decimate-checkbox",
@@ -36,13 +39,22 @@
       "id": "sidecar-and-source-external-change-reconci",
       "section": "Sidecar and source external-change reconciliation (roadmap item, closed)",
       "gap": "`provider.ts` has zero existing unit-test coverage anywhere in this codebase (it's `vscode`-API-dependent throughout, and `vscode` isn't a real importable module outside ",
-      "status": "open"
+      "status": "closed",
+      "closedBy": [
+        "A clean-tail external source rewrite reloads silently",
+        "a parts conflict prompts, and 'Keep mine' overwrites the disk version",
+        "an edits conflict prompts, and 'Reload from disk' adopts the disk version without overwriting it",
+        "replacing the source while unsaved edits exist asks instead of silently reloading"
+      ]
     },
     {
       "id": "view-state-persistence",
       "section": "View-state persistence (roadmap item, closed)",
       "gap": "`provider.ts`/`main.ts`'s webview wiring have no unit-test coverage path (`vscode`-API-dependent / DOM-dependent respectively). Verified via `tsc`/`npx vitest run`/`npm r",
-      "status": "open"
+      "status": "closed",
+      "closedBy": [
+        "View state persists to .view.json and replays on reopen"
+      ]
     },
     {
       "id": "per-band-operation-preview-colouring",
@@ -289,19 +301,28 @@
       "id": "tier-0-phase-1",
       "section": "Tier 0 Phase 1 \u2014 same-format save-in-place (roadmap Tier 0, all three phases closed; Phase 3 below)",
       "gap": "the interactive click-through (Export \u2192 own format \u2192 modal \u2192 save dialog \u2192 reload, `.bak` on disk, watcher silence) has NOT been exercised in a real Extension Development",
-      "status": "open"
+      "status": "closed",
+      "closedBy": [
+        "Empty-tail Export save-in-place still confirms and stays consistent"
+      ]
     },
     {
       "id": "tier-0-phase-2",
       "section": "Tier 0 Phase 2 \u2014 genuinely editable document (roadmap Tier 0, Phase 2 closed; Phase 3 closed below)",
       "gap": "no live Extension Development Host session here \u2014 the five API members, dirty-dot feel, Ctrl+S bake + clear, `File: Revert File`, Save-As copy, and hot-exit restore need ",
-      "status": "open"
+      "status": "closed",
+      "closedBy": [
+        "The tab dirties on an op and the chip clears on save"
+      ]
     },
     {
       "id": "tier-0-phase-3",
       "section": "Tier 0 Phase 3 \u2014 mesh save-in-place + headless save_model (roadmap Tier 0, closed)",
       "gap": "no live Extension Development Host session here \u2014 the Export-own-format modal \u2192 `.bak` \u2192 reload, Ctrl+S mesh bake + clear, and glTF-exclusion need the F5 checklist below.",
-      "status": "open"
+      "status": "closed",
+      "closedBy": [
+        "A glTF source is never written by save"
+      ]
     },
     {
       "id": "save-reopen-and-recovery-regression-covera",
@@ -313,7 +334,11 @@
       "id": "parity-gaps",
       "section": "Parity gaps (roadmap Tier 1, closed \u2014 all four)",
       "gap": "the host halves of the hole-table copy and the sweep (`provider.ts` handlers) and the feel of the inline note field are F5-only; the sweep's folder dialog is not exercise",
-      "status": "open"
+      "status": "closed",
+      "closedBy": [
+        "Hole-table copy data comes from the host pipeline",
+        "Refinement sweep with outputs asks for a folder and writes one mesh per size"
+      ]
     },
     {
       "id": "primitive-recognition-panel",
@@ -361,13 +386,20 @@
       "id": "simulation-handoff-manifest-and-boundary-c",
       "section": "Simulation handoff manifest and boundary coverage (roadmap Tier 1, closed)",
       "gap": "the checkbox's status line in a live session (the message is covered by `test:webview`).",
-      "status": "open"
+      "status": "closed",
+      "closedBy": [
+        "FE-mesh export with a handoff manifest records Parts and coverage"
+      ]
     },
     {
       "id": "preparation-report-bundle",
       "section": "Preparation report bundle (roadmap Tier 1, closed)",
       "gap": "opening the HTML from the notification.",
-      "status": "open"
+      "status": "closed",
+      "closedBy": [
+        "Preparation Report covers a mesh source end to end",
+        "Preparation Report\u2026 writes report.json and a self-contained report.html with a status per section"
+      ]
     },
     {
       "id": "recoverable-mesh-save-in-place",
@@ -379,7 +411,10 @@
       "id": "meshio-16-22-0-16-27-0",
       "section": "meshio++ 16.22.0 \u2192 16.27.0 \u2014 five releases, and the one assertion that was pinning a fix rather than a bug",
       "gap": "the Nastran **viewer** open is still",
-      "status": "open"
+      "status": "closed",
+      "closedBy": [
+        "A Nastran .bdf opens through the meshio bridge with the right extents"
+      ]
     },
     {
       "id": "macros-panel-run-delete",
