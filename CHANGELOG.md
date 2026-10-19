@@ -6,6 +6,27 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/); thi
 
 ## [Unreleased]
 
+## [3.23.0] - 2026-10-19
+
+### Added
+
+- **`Part.meshBoundaryLayer`: anisotropic boundary layers on 2-D Gmsh meshes.** A Part's `edge-N` walls can now carry `{wallSize, growthRatio, thickness, quads}`: a Gmsh `BoundaryLayer` field registered through its own `setAsBoundaryLayer` (never in the shared Min background list), on `dimension: 2` B-rep generates. `set_part`, the FE Mesh panel (Layer row with the analytic row-count plan), the parts sidecar and the unit-scaled export all carry it. The roadmap's recorded blocker ("a background size field voids the layer") does not reproduce: on gmsh-wasm 0.3.0 and 0.4.0 alike a layer coexists with a Distance+Threshold+Min background in either call order (`scripts/probe/examples/gmsh-boundary-layer.ts`). Measured on a 10×4 rectangle (wall 0.05, ratio 1.2, thickness 0.5): rows at y = 0.05, 0.11, 0.182, 0.268, 0.372, 0.4965 (exact 1.2 growth, the analytic 6 rows), 54 quads. Algorithm matrix: 2/5/6/8 grade the wall (1 only without recombination); MeshAdapt+recombine and Packing of Parallelograms abort the WASM module, BAMG throws, 3/11 silently drop the layer — those are refused up front. A 3-D generate ignores the layer with a warning.
+- **`mergeFacets` on `promote_mesh_to_brep`: one planar face per near-coplanar facet.** Promotion built one OCCT face per triangle and sewed them, so cost scaled with triangle count (49.9 s for a 19 200-triangle faceted cube) and anything above 50 000 triangles was refused. With `mergeFacets` (MCP param, and the Mesh Health panel's **Merge facets** checkbox) near-coplanar triangles are grouped into facets (`meshFacetMerge.ts`) and built as one planar face each: outer loop plus holes through MakeFace + Add. Probe (`scripts/probe/examples/promote-merge-facets.ts`, identical volumes in every row): cube 12 triangles → 6 faces, 730 → 25 ms; 32-gon prism 34 faces at its analytic 780.3613; plate with a through-hole 10 faces, 336; 19 200-triangle cube 49 870 → ~700 ms; 270 000 triangles (above the old ceiling) 5.5 s. The angle alone is not the guard: a facet is merged only if every vertex is within 1e-5 × bbox diagonal of its best-fit plane AND its boundary is one CCW outer loop plus CW simple holes; anything else keeps its triangles, so a curved surface is never flattened (bug-injected: removing the planarity check turns the curved-chain test red). The 50 000 ceiling then applies to the faces left.
+- **CHEXA, CPENTA and shell Nastran decks open.** Hand-authored `box-hex.bdf` (two CHEXA), `box-wedge.bdf` (two CPENTA) and `plate-shell.bdf` (two CQUAD4 + a CTRIA3, area 15) join the probe (`nastran-deck.ts`, now also pinning area), the `mcp:smoke` volume pins and the compat corpus (76/76 rows pass). They are the "right counts, wrong mesh" class the roadmap feared — and they found the two import defects below.
+
+### Fixed
+
+- **Two silent-geometry meshio import defects, found by the Nastran decks and affecting every meshio format, not only Nastran.** Native `convertSurface` writes only the TRIANGULAR boundary faces and silently drops quad ones: the two-wedge box read as volume 8 instead of 24 (4 facets instead of 12), and the extent guard cannot see it because the triangular end caps already touch every vertex — a mesh holding a hexahedron/wedge/pyramid/polyhedron cell now takes the extractSurface + simplexify route (`hasQuadFaceVolumeCells`). And `extractSurface` on a SHELL-ONLY mesh returns its free edges, so the plate was refused as "lost part of the geometry": shell-only meshes (`isSurfaceOnlyMesh`) are linearized in place like cad_json, and a convertSurface fragment that fails the extent check is discarded, not refused.
+
+### Changed
+
+- **`@loumalouomega/gmsh-wasm` bumped to 0.4.0** — the same Gmsh commit as 0.3.0 (29726e7, OCC 7.8.1; General.BuildInfo now names it) plus a `gmsh.view.*` namespace. The wasm filename and the `.cjs` entries are unchanged, so esbuild, `.vscodeignore` and `compat:vsix` need no change. Every Gmsh-gated roadmap item was re-run against 0.4.0 rather than assumed (see Documented): Relocate3D is still a no-op on the worst element (bull.stp minSICN 0.0104 before and after; the Netgen control moves it to 0.0398), healShapes still collapses daratech.stp from 1 volume to 0, and the new view namespace passed its probe — a list-based view (`addListData 'SS'`) attached through a PostView field steers a regeneration from CAD (21.0 / 3.2 / 2.1 tets per unit volume across three distance bands, near/far 10.0×, 76 ms, no abort, composing with a Constant field in the Min list); a model-based view is refused by Gmsh itself.
+- **The Layer toggle appears only for parts that list edges.** A boundary layer grows along a part's wall edges, so its toggle (and the extra button that squeezed part names, "Contact faces" reading "Contac…") now appears only on a part with `edge-N` ids or one that already carries a layer so it can still be cleared. The webview case asserts exactly one toggle (on "Feature edges"); bug-injecting an always-on toggle turns it red (3 checks). `mesh-health.png` is regenerated for the new Merge facets checkbox.
+
+### Documented
+
+- **The gmsh-wasm 0.4.0 re-gate is recorded.** The roadmap closes planar-facet merging, boundary layers and the Nastran decks, queues two new Ready items (View-driven mesh sizing; Split a face into regions — the latter probed: BRepFeat_SplitShape_2 + Add and BRepAlgoAPI_Splitter with an edge tool take block.stp's top face 6 → 7 faces at unchanged volume 60 and area 94, halves 6 + 6) and renumbers the upstream checklist with dated results; KaHIP remains never compiled into meshio++ 17.6.0's published declarations. CLAUDE.md gains the verified view/PostView and face-split call shapes, the boundary-layer and meshio boundary traps, and the mergeFacets guard.
+
 ## [3.22.0] - 2026-10-18
 
 ### Changed
@@ -894,6 +915,7 @@ This release republishes v1.9.0's full changelog (below) unchanged; v1.9.0 itsel
 
 - Initial release: read-only 3D preview for CAD and mesh files (STEP, IGES, BREP, STL, OBJ, PLY, glTF) inside a VS Code custom editor, using OpenCascade.js (OCCT WASM) in the extension host for B-rep formats and Three.js in the webview for rendering.
 
+[3.23.0]: https://github.com/loumalouomega/CAD-Preview/compare/v3.22.0...v3.23.0
 [3.22.0]: https://github.com/loumalouomega/CAD-Preview/compare/v3.21.0...v3.22.0
 [3.17.0]: https://github.com/loumalouomega/CAD-Preview/compare/v3.16.0...v3.17.0
 [3.16.0]: https://github.com/loumalouomega/CAD-Preview/compare/v3.15.0...v3.16.0
