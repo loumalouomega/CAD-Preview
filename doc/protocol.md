@@ -218,6 +218,7 @@ type EditOp =
   | { op: 'unifySameDomain' }   // parameter-free, whole model: merges same-surface faces/edges
   | { op: 'addEdgeSlot'; edge: string; width: number }               // stadium slot face around an existing edge
   | { op: 'splitByPlane'; targets: string[]; planePoint?: Vec3; planeNormal?: Vec3; planeId?: string; midplaneFaces?: [string, string]; keep: 'both' | 'positive' | 'negative' }
+  | { op: 'splitFace'; face: string; edgeIds?: string[]; points?: [Vec3, Vec3] }   // exactly one of edgeIds/points: splits one face into two regions along a splitting edge on it (boundary-condition regions); an edge that misses the face or stops short is skipped with a diagnostic
   | { op: 'section'; targets: string[]; planePoint?: Vec3; planeNormal?: Vec3; planeId?: string; midplaneFaces?: [string, string] }
   | { op: 'drill'; targets: string[]; profile?: string; profileEdges?: string[]; pick?: 'outer' | 'all' | number[]; dir: Vec3; length: number }  // region prism(s) cut from the targets; explicit length only
   | { op: 'addBox'; center: Vec3; size: Vec3 }

@@ -288,7 +288,7 @@ async function loadGeometryAndApplyOptions(
   input: MeshGenerationInput,
   options: MeshOptions,
   parts: Part[]
-): Promise<{ tmpPath: string; groupMaps: PartGroupMaps | null; warnings: string[]; conformalApplied: boolean }> {
+): Promise<{ tmpPath: string; groupMaps: PartGroupMaps | null; warnings: string[]; conformalApplied: boolean; viewTag: number | null }> {
   // A boundary layer is refused up front on an algorithm that cannot carry it (some
   // abort the WASM module, some silently drop the layer) — see
   // `boundaryLayerAlgorithmProblem`. 2-D B-rep generates only: elsewhere the layer is
@@ -311,6 +311,7 @@ async function loadGeometryAndApplyOptions(
   let conformalApplied = false;
 
   let groupMaps: PartGroupMaps | null = null;
+  let viewTag: number | null = null;
   if (input.kind === "brep") {
     gmsh.model.occ.importShapes(tmpPath);
     gmsh.model.occ.synchronize();
@@ -359,8 +360,13 @@ async function loadGeometryAndApplyOptions(
         throw new Error(`Conformal fragment failed (${reason}) — no mesh was produced. Retry with conformal: false to mesh the unfragmented solids.`);
       }
     }
-    groupMaps = await applyPartsToGmshModel(extensionPath, gmsh, input.stepBytes, parts, warnings, options.periodic, options.dimension);
+    const applied = await applyPartsToGmshModel(extensionPath, gmsh, input.stepBytes, parts, warnings, options.periodic, options.dimension, options.sizeField ?? []);
+    groupMaps = applied.maps;
+    viewTag = applied.viewTag;
   } else {
+    if ((options.sizeField?.length ?? 0) > 0) {
+      warnings.push("sizeField was ignored — view-driven sizing applies to B-rep sources only (this is a mesh source with no entity correlation).");
+    }
     gmsh.merge(tmpPath);
     gmsh.model.mesh.classifySurfaces((options.stlAngle ?? 40) * (Math.PI / 180));
     gmsh.model.mesh.createGeometry();
@@ -407,8 +413,16 @@ async function loadGeometryAndApplyOptions(
   // purely an additional tag on top of the full mesh, never a filter, so this
   // must always be 1 regardless of whether `parts` is empty.
   gmsh.option.setNumber("Mesh.SaveAll", 1);
+  // View steering needs point/boundary seeding off (the probe's steering
+  // result holds with these at 0). Set explicitly on EVERY run — the Gmsh
+  // singleton persists options across clear(), so a refined run must not
+  // poison the next uniform one (or vice versa). Non-view values are Gmsh's
+  // own defaults (1, 1, 0), verified live, so uniform output is unchanged.
+  gmsh.option.setNumber("Mesh.MeshSizeFromPoints", viewTag !== null ? 0 : 1);
+  gmsh.option.setNumber("Mesh.MeshSizeExtendFromBoundary", viewTag !== null ? 0 : 1);
+  gmsh.option.setNumber("Mesh.MeshSizeFromCurvature", 0);
 
-  return { tmpPath, groupMaps, warnings, conformalApplied };
+  return { tmpPath, groupMaps, warnings, conformalApplied, viewTag };
 }
 
 /**
@@ -492,8 +506,22 @@ async function populateMeshedModel(
 
   if (engine === "gmsh") {
     const loaded = await loadGeometryAndApplyOptions(extensionPath, gmsh, input, options, parts);
-    runMeshGenerate(gmsh, options);
-    runMeshOptimizePostPass(gmsh, options, warnings);
+    try {
+      runMeshGenerate(gmsh, options);
+      runMeshOptimizePostPass(gmsh, options, warnings);
+    } finally {
+      // The view steered the background mesh; it must not survive the generate
+      // (roadmap "no view is left behind"). Removal after generate keeps the
+      // read-back below view-free, and a WASM abort already reset the
+      // singleton — so a failing remove is swallowed, never rethrown.
+      if (loaded.viewTag !== null) {
+        try {
+          gmsh.view.remove(loaded.viewTag);
+        } catch {
+          /* already reset or already removed */
+        }
+      }
+    }
     return {
       tmpPath: loaded.tmpPath,
       groupMaps: loaded.groupMaps,
@@ -501,6 +529,10 @@ async function populateMeshedModel(
       warnings: [...warnings, ...loaded.warnings],
       conformalApplied: loaded.conformalApplied,
     };
+  }
+
+  if ((options.sizeField?.length ?? 0) > 0) {
+    warnings.push('sizeField was ignored — engine "ftetwild" never runs Gmsh\'s field pipeline (mesh-format 3D only); switch to engine "gmsh" for view-driven sizing.');
   }
 
   // engine === "ftetwild" — effectiveEngine only returns this for input.kind
@@ -712,6 +744,14 @@ export async function exportGeoUnrolled(
 
     gmsh.write(outPath);
     const text = gmsh.FS.readFile(outPath, { encoding: "utf8" }) as string;
+
+    if (loaded.viewTag !== null) {
+      try {
+        gmsh.view.remove(loaded.viewTag);
+      } catch {
+        /* already reset or already removed */
+      }
+    }
 
     let xao: Uint8Array | null = null;
     try {

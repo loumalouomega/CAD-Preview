@@ -4,6 +4,8 @@ import {
   validateMeshGrading,
   validateMeshStructured,
   validateMeshBoundaryLayer,
+  validateSizeField,
+  MAX_SIZE_FIELD_SAMPLES,
   boundaryLayerPlan,
   boundaryLayerAlgorithmProblem,
   applyStlPartSizeOverride,
@@ -247,6 +249,51 @@ describe("periodic pairs", () => {
   it("scales the translation with the unit factor", () => {
     const v = validateMeshOptions({ periodic: [ok] })!;
     expect(scaleMeshOptionsForUnit(v, 25.4).periodic![0].translation[0]).toBeCloseTo(76.2, 10);
+  });
+});
+
+describe("validateSizeField", () => {
+  it("accepts well-formed samples unchanged", () => {
+    expect(validateSizeField([{ point: [1, 2, 3], size: 0.5 }])).toEqual([{ point: [1, 2, 3], size: 0.5 }]);
+  });
+
+  it("returns undefined for non-arrays and drops malformed entries, never the list", () => {
+    for (const bad of [undefined, null, "x", 42, {}, { point: [0, 0, 0], size: 1 }]) {
+      expect(validateSizeField(bad)).toBeUndefined();
+    }
+    expect(validateSizeField([])).toBeUndefined();
+    expect(
+      validateSizeField([
+        { point: [0, 0, 0], size: 0.5 },
+        { point: [0, 0], size: 0.5 },
+        { point: [0, 0, 0], size: 0 },
+        { point: [0, 0, NaN], size: 0.5 },
+        "x",
+        { point: [1, 1, 1], size: 1 },
+      ])
+    ).toEqual([
+      { point: [0, 0, 0], size: 0.5 },
+      { point: [1, 1, 1], size: 1 },
+    ]);
+  });
+
+  it("is absent (byte-stable sidecar) when none are given", () => {
+    expect("sizeField" in (validateMeshOptions({}) ?? {})).toBe(false);
+    expect("sizeField" in (validateMeshOptions({ sizeField: [] }) ?? {})).toBe(false);
+  });
+
+  it("round-trips through validateMeshOptions and scales with the unit factor", () => {
+    const v = validateMeshOptions({ sizeField: [{ point: [25.4, 0, 0], size: 2.54 }] })!;
+    expect(v.sizeField).toEqual([{ point: [25.4, 0, 0], size: 2.54 }]);
+    const scaled = scaleMeshOptionsForUnit(v, 1 / 25.4);
+    expect(scaled.sizeField![0].point[0]).toBeCloseTo(1, 12);
+    expect(scaled.sizeField![0].size).toBeCloseTo(0.1, 12);
+    expect(v.sizeField![0].point[0]).toBe(25.4); // original untouched
+  });
+
+  it("truncates to the documented cap instead of rejecting the list", () => {
+    const many = Array.from({ length: MAX_SIZE_FIELD_SAMPLES + 5 }, (_, i) => ({ point: [i, 0, 0], size: 1 }));
+    expect(validateSizeField(many)!.length).toBe(MAX_SIZE_FIELD_SAMPLES);
   });
 });
 

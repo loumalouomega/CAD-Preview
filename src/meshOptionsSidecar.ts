@@ -69,6 +69,12 @@ export function generateGeoScript(sourceName: string, options: MeshOptions): str
         `// periodic: Part "${p.slave}" copies Part "${p.master}" offset by (${p.translation.join(", ")}) — ` +
         "set through model.mesh.setPeriodic, which has no equivalent in this script's Merge-based reproduction."
     ),
+    ...((options.sizeField?.length ?? 0) > 0
+      ? [
+          `// sizeField: ${options.sizeField!.length} view-driven sizing sample(s) — applied through a list-based SP view + PostView background field,`,
+          "// which has no equivalent in this script's Merge-based reproduction. Running this script reproduces the uniform mesh only, not the refinement.",
+        ]
+      : []),
     `Mesh.MeshSizeMin = ${options.sizeMin};`,
     `Mesh.MeshSizeMax = ${options.sizeMax};`,
     `Mesh.Algorithm = ${options.algorithm2D};`,

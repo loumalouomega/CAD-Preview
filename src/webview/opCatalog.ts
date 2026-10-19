@@ -23,7 +23,7 @@ export type PanelOpId =
   // EDIT — features
   | "extrude" | "revolve" | "sweep" | "loft" | "rib" | "wrap"
   // EDIT — modify
-  | "shell" | "draft" | "defeature" | "unifySameDomain" | "splitByPlane" | "section" | "drill"
+  | "shell" | "draft" | "defeature" | "unifySameDomain" | "splitByPlane" | "splitFace" | "section" | "drill"
   // EDIT — assembly
   | "explode" | "mate" | "align" | "patternLinear" | "patternCircular"
   // GEOMETRY 2D — wireframe
@@ -176,6 +176,7 @@ export const OP_CATALOG: {
         entry("defeature", "Defeature", ["defeature"]),
         entry("unifySameDomain", "Unify faces", ["unifySameDomain"]),
         entry("splitByPlane", "Split", ["splitByPlane"]),
+        entry("splitFace", "Split face", ["splitFace"]),
         entry("section", "Section", ["section"]),
         entry("drill", "Drill", ["drill"]),
       ],
@@ -274,6 +275,7 @@ function describeOpBase(op: EditOp): string {
     case "defeature": return `⬔ Defeature ${op.faces.length} faces`;
     case "unifySameDomain": return "⬔ Unify same-domain faces";
     case "splitByPlane": return `⧄ Split ${op.targets.length} (${op.keep})`;
+    case "splitFace": return `⧄ Split ${op.face}${op.edgeIds ? ` ×${op.edgeIds.length}` : " (2 pts)"}`;
     case "section": return `⊟ Section ${op.targets.length}`;
     case "drill": return `⦿ Drill ${op.targets.length} ${profileLabel(op)} ×${op.length}`;
     case "addBox": return `+ Box ${op.size.join("×")}`;
@@ -350,6 +352,12 @@ export function referencedEntities(op: EditOp): string[] {
       const refs = [...(op as any).targets as string[]];
       if ((op as any).midplaneFaces) refs.push(...(op as any).midplaneFaces as string[]);
       if ((op as any).planeId) refs.push((op as any).planeId as string);
+      return refs;
+    }
+    case "splitFace": {
+      const refs = [(op as Extract<EditOp, { op: "splitFace" }>).face];
+      const ids = (op as Extract<EditOp, { op: "splitFace" }>).edgeIds;
+      if (ids) refs.push(...ids);
       return refs;
     }
     case "boolean":

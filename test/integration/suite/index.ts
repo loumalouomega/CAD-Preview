@@ -2127,6 +2127,37 @@ test("replacing the source while unsaved edits exist asks instead of silently re
   await closeAll();
 });
 
+test("a splitFace op pushed through the provider replays in the host, persists, and renumbers face ids", async () => {
+  const api = await saveTestApi();
+  if (!api?.simulateWebviewMessage || !api.onDidPostMessage) return;
+  const staged = stage(STEP_FIXTURE); // block.stp: one 3x4x5 box; face-0 is the top (z = 2.5)
+  assert(await openDocument(staged), "the STEP fixture opens for the splitFace replay");
+  await sleep(1500);
+  let geometryPosts = 0;
+  const errors: string[] = [];
+  const sub = api.onDidPostMessage((m) => {
+    if (m.type === "geometry") geometryPosts++;
+    if (m.type === "error") errors.push((m as { message?: string }).message ?? "error");
+  });
+  try {
+    const before = geometryPosts;
+    await api.simulateWebviewMessage!(vscode.Uri.file(staged), {
+      type: "editsChanged",
+      ops: [{ op: "splitFace", face: "face-0", points: [[-1.5, 0, 2.5], [1.5, 0, 2.5]] }],
+      variables: [],
+    });
+    assert(await waitFor(() => geometryPosts > before, 30000), "the host replay reposts geometry");
+    assert(errors.length === 0, `no error is posted for the split (saw ${JSON.stringify(errors)})`);
+    await sleep(1500); // past the edits autosave debounce
+    const onDisk = readSidecarJson(`${staged}.edits.json`).ops ?? [];
+    assert(onDisk.length === 1 && (onDisk[0] as { op?: string }).op === "splitFace", `the splitFace op persists to the sidecar (found ${JSON.stringify(onDisk)})`);
+  } finally {
+    sub.dispose();
+  }
+  await api.revertDocument?.(vscode.Uri.file(staged));
+  await closeAll();
+});
+
 /**
  * Roadmap "OpenSCAD include tracking and conversion cache": a `.scad` model that
  * `use`s another file must reload when THAT file changes. Driven with the

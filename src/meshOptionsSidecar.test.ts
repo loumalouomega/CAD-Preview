@@ -150,6 +150,15 @@ describe("generateGeoScript", () => {
     expect(script).toContain("model.mesh.optimize()");
   });
 
+  it("notes view-driven sizing samples a .geo script cannot reproduce", () => {
+    const script = generateGeoScript("bull.stp", {
+      ...DEFAULT_MESH_OPTIONS,
+      sizeField: [{ point: [0, 0, 0], size: 1 }],
+    });
+    expect(script).toContain("sizeField");
+    expect(script).toContain("PostView");
+  });
+
   it("uses the given dimension in the trailing Mesh command", () => {
     const script3d = generateGeoScript("cube.stl", { ...DEFAULT_MESH_OPTIONS, dimension: 3 });
     expect(script3d.trim().endsWith("Mesh 3;")).toBe(true);

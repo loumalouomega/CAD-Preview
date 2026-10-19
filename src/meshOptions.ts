@@ -116,6 +116,14 @@ export interface MeshOptions {
    */
   periodic?: PeriodicPair[];
   /**
+   * View-driven sizing (roadmap "View-driven mesh sizing"): per-point target
+   * sizes steering the background mesh through a list-based `SP` view +
+   * `PostView` field, joined into the shared `Min` background. B-rep sources
+   * only; mesh sources and the fTetWild engine ignore it with a warning.
+   * Optional: absent means no view (byte-stable sidecar when unused).
+   */
+  sizeField?: SizeFieldSample[];
+  /**
    * Advisory element budget (roadmap "Mesh size and memory budget preview"):
    * when the pre-generation estimate exceeds it the panel/tool WARNS — it
    * never blocks a generate. Optional: absent means no budget.
@@ -128,6 +136,42 @@ export interface PeriodicPair {
   slave: string;
   master: string;
   translation: [number, number, number];
+}
+
+/** One view-driven sizing sample (roadmap "View-driven mesh sizing"): a target
+ * element size at a model-space point. The mesher interpolates between samples
+ * through a Gmsh list-based `SP` view + `PostView` background field, so a
+ * caller can refine where `measure_mesh_deviation` reported the worst error
+ * without touching Parts. Lengths are in the model's own unit (scaled by
+ * {@link scaleMeshOptionsForUnit} for unit-converted exports, like every other
+ * mesh length); `size` is a target edge length, not a certified bound. */
+export interface SizeFieldSample {
+  point: [number, number, number];
+  size: number;
+}
+
+/** Maximum samples kept per generate — bounds the list-view payload
+ * (`SP` carries 4 doubles per sample). Pure truncation (first N win) keeps
+ * `validateMeshOptions` total: callers building a dense per-vertex field
+ * should downsample first. */
+export const MAX_SIZE_FIELD_SAMPLES = 20000;
+
+/** Tolerant parse: non-objects and malformed entries are dropped, never the
+ * whole list; an empty result is `undefined` (absent, byte-stable sidecar). */
+export function validateSizeField(raw: unknown): SizeFieldSample[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const out: SizeFieldSample[] = [];
+  for (const e of raw) {
+    if (out.length >= MAX_SIZE_FIELD_SAMPLES) break;
+    if (!e || typeof e !== "object" || Array.isArray(e)) continue;
+    const r = e as Record<string, unknown>;
+    const p = r.point;
+    const s = r.size;
+    if (!Array.isArray(p) || p.length !== 3 || !p.every(isFiniteNumber)) continue;
+    if (!isFiniteNumber(s) || s <= 0) continue;
+    out.push({ point: [p[0], p[1], p[2]], size: s });
+  }
+  return out.length > 0 ? out : undefined;
 }
 
 /** Tolerant parse: bad entries are dropped, never the whole list. */
@@ -443,6 +487,8 @@ export function validateMeshOptions(raw: unknown): MeshOptions | null {
   if (isFiniteNumber(o.budgetElements) && o.budgetElements >= 1) out.budgetElements = Math.round(o.budgetElements);
   const periodic = validatePeriodicPairs(o.periodic);
   if (periodic.length > 0) out.periodic = periodic;
+  const sizeField = validateSizeField(o.sizeField);
+  if (sizeField !== undefined) out.sizeField = sizeField;
   return out;
 }
 
@@ -492,6 +538,14 @@ export function scaleMeshOptionsForUnit(options: MeshOptions, factor: number): M
           periodic: options.periodic.map((p) => ({
             ...p,
             translation: p.translation.map((v) => v * factor) as PeriodicPair["translation"],
+          })),
+        }
+      : {}),
+    ...(options.sizeField
+      ? {
+          sizeField: options.sizeField.map((s) => ({
+            point: s.point.map((v) => v * factor) as SizeFieldSample["point"],
+            size: s.size * factor,
           })),
         }
       : {}),

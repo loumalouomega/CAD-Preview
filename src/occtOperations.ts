@@ -467,6 +467,8 @@ export function applyOneOp(oc: any, shape: any, op: EditOp, cleanup: Array<{ del
       return unifySameDomainShape(oc, shape, cleanup, fail);
     case "splitByPlane":
       return splitSolidsByPlane(oc, shape, op as any, cleanup, fail);
+    case "splitFace":
+      return splitFaceByEdge(oc, shape, op as Extract<EditOp, { op: "splitFace" }>, cleanup, fail);
     case "section":
       return sectionSolids(oc, shape, op as any, cleanup, fail);
     case "addBox":
@@ -4560,6 +4562,100 @@ function unifySameDomainShape(oc: any, shape: any, cleanup: Array<{ delete(): vo
     return res;
   } catch {
     fail?.("unifySameDomain builder threw");
+    return shape;
+  }
+}
+
+/**
+ * Splits one face into two regions along a splitting edge that lies on it —
+ * the boundary-condition primitive (a Part can then target one half, and a
+ * Gmsh physical group carries just that half's triangles). VERIFIED call
+ * shape (live WASM, roadmap "Split a face into regions for boundary
+ * conditions", probe `scripts/probe/examples/occt-split-face.ts`):
+ * `new BRepFeat_SplitShape_2(shape)` + `Add_3(edge, face)` per splitting edge
+ * + `Build()` (0 args) + `IsDone()` + `Shape()`. `Add_1` takes an unbound
+ * sequence, `Add_2` a wire and `Add_4` a compound — all refused, so wires
+ * and multi-edge sets are out of scope for this op. Splitting edges arrive
+ * either as `edge-N` ids resolved against the CURRENT shape, or as a straight
+ * segment built from two points via the already-verified
+ * `BRepBuilderAPI_MakeEdge_3(pnt, pnt)`. The face count decides, like
+ * `unifySameDomainShape`: the kernel hands back a shape even when it split
+ * nothing, so an unchanged count fails gracefully (the edge may not lie on
+ * the face, or may not reach the face boundary) rather than certifying a
+ * no-op split.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function splitFaceByEdge(oc: any, shape: any, op: Extract<EditOp, { op: "splitFace" }>, cleanup: Array<{ delete(): void }>, fail?: OutcomeFail): any {
+  const keep = <T extends { delete(): void }>(h: T): T => { cleanup.push(h); return h; };
+  try {
+    const faces = collectFaces(oc, shape, cleanup);
+    const target = faces[faceIndex(op.face)] ?? null;
+    if (!target) {
+      fail?.(
+        `face ${op.face} did not resolve`,
+        "re-check face-N ids after topology-changing ops — load_model re-lists them"
+      );
+      return shape;
+    }
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let edges: any[];
+    if (op.edgeIds !== undefined) {
+      const all = collectEdges(oc, shape, cleanup);
+      edges = [];
+      for (const id of op.edgeIds) {
+        const e = all[edgeIndex(id)] ?? null;
+        if (!e) {
+          fail?.(
+            `edge ${id} did not resolve`,
+            "re-check edge-N ids after topology-changing ops — load_model re-lists them"
+          );
+          return shape;
+        }
+        edges.push(e);
+      }
+    } else if (op.points !== undefined) {
+      const [p1, p2] = op.points;
+      const mk = keep(new oc.BRepBuilderAPI_MakeEdge_3(keep(pnt(oc, p1)), keep(pnt(oc, p2))));
+      try {
+        if (!mk.IsDone()) {
+          fail?.("the splitting segment could not be built from the two points");
+          return shape;
+        }
+      } catch {
+        fail?.("the splitting segment could not be built from the two points");
+        return shape;
+      }
+      edges = [keep(mk.Edge())];
+    } else {
+      fail?.("splitFace needs edgeIds or points — one splitting edge, exactly one form");
+      return shape;
+    }
+    const before = faces.length;
+    const split = keep(new oc.BRepFeat_SplitShape_2(shape));
+    try {
+      for (const e of edges) split.Add_3(e, target);
+      split.Build();
+    } catch {
+      fail?.("the face split builder threw", "the splitting edge may not lie on the face — check it crosses the face");
+      return shape;
+    }
+    if (!split.IsDone()) {
+      fail?.("the face split did not complete (IsDone() false)", "the splitting edge may not lie on the face — check it crosses the face");
+      return shape;
+    }
+    const res = split.Shape();
+    cleanup.push(res);
+    const after = collectFaces(oc, res, cleanup).length;
+    if (after <= before) {
+      fail?.(
+        "the face was not split (face count unchanged)",
+        "the splitting edge may not lie on the face, or it may stop short of the face boundary"
+      );
+      return shape;
+    }
+    return res;
+  } catch {
+    fail?.("the face split builder threw");
     return shape;
   }
 }

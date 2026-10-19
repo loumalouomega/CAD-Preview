@@ -1,0 +1,10 @@
+% Op icon: split face — one face divided into two regions along a splitting edge.
+\documentclass[tikz,border=2mm]{standalone}
+\usetikzlibrary{arrows.meta,calc,shapes.geometric}
+\begin{document}
+\begin{tikzpicture}[line width=1.3pt, line cap=round, line join=round, >=Stealth, x=1mm,y=1mm]
+  \draw[thick] (-10,-8) rectangle (10,8);
+  \draw[thick, fill=gray!25] (-10,-8) rectangle (0,8);
+  \draw[thick] (0,-8) -- (0,8);
+\end{tikzpicture}
+\end{document}

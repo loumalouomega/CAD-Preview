@@ -1229,8 +1229,9 @@ const editsPanel = new EditsPanel(document.getElementById("edits-panel")!, {
     setStatus("");
   },
   onApplyModify: (draft) => {
-    // Shell takes its opening faces from the Surf selection; split/section take
-    // their target volumes from the Vol selection. B-rep only.
+    // Shell takes its opening faces from the Surf selection, splitFace its
+    // face (Surf) plus splitting edges (Line); split/section take their
+    // target volumes from the Vol selection. B-rep only.
     const resolved = buildOpForPanel(draft.kind, draft);
     if (resolved.error || !resolved.op) { setStatus(resolved.error ?? "Cannot apply this modify op.", true); return; }
     cancelOpPreview();
@@ -2501,6 +2502,8 @@ function tintForPanelOp(id: PanelOpId, wrapVariant?: "emboss" | "engrave" | "sta
     case "defeature":
     case "splitByPlane":
       return "cut";
+    case "splitFace":
+      return "cut";
     case "addCircleProfile":
     case "addRectangleProfile":
     case "addPolygonProfile":
@@ -3034,6 +3037,15 @@ function buildOpForPanelCore(id: PanelOpId, rawDraft: Record<string, unknown>): 
       const op: any = { op: "splitByPlane", targets: selVolumes, planePoint: d.planePoint, planeNormal: d.planeNormal, keep: d.keep };
       if (d.planeId) op.planeId = d.planeId;
       return { op: withExprs(op) };
+    }
+    case "splitFace": {
+      if (selFaces.length !== 1) return { error: "Select exactly one face (Surf mode) to split." };
+      if (selEdges.length > 0) return { op: withExprs({ op: "splitFace", face: selFaces[0], edgeIds: selEdges }) };
+      if (!d.p1 || !d.p2 || (d.p1.every((v: number) => v === 0) && d.p2.every((v: number) => v === 0))) {
+        return { error: "Select one or more splitting edges (Line mode), or enter two distinct points P1 and P2 on the face." };
+      }
+      if (d.p1.every((v: number, i: number) => v === d.p2[i])) return { error: "P1 and P2 must be distinct points." };
+      return { op: withExprs({ op: "splitFace", face: selFaces[0], points: [d.p1, d.p2] }) };
     }
     case "section": {
       if (selVolumes.length === 0) return { error: "Select one or more volumes (Vol mode) to section." };

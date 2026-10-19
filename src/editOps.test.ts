@@ -193,6 +193,10 @@ describe("validateEditOp", () => {
     })).not.toBeNull();
     expect(validateEditOp({ op: "defeature", faces: ["face-2"] }))
       .toEqual({ op: "defeature", faces: ["face-2"] });
+    expect(validateEditOp({ op: "splitFace", face: "face-0", edgeIds: ["edge-1", "edge-2"] }))
+      .toEqual({ op: "splitFace", face: "face-0", edgeIds: ["edge-1", "edge-2"] });
+    expect(validateEditOp({ op: "splitFace", face: "face-0", points: [[-1.5, 0, 2.5], [1.5, 0, 2.5]] }))
+      .toEqual({ op: "splitFace", face: "face-0", points: [[-1.5, 0, 2.5], [1.5, 0, 2.5]] });
   });
 
   it("rejects malformed modify ops", () => {
@@ -223,10 +227,19 @@ describe("validateEditOp", () => {
     // defeature: empty/missing face list
     expect(validateEditOp({ op: "defeature", faces: [] })).toBeNull();
     expect(validateEditOp({ op: "defeature" })).toBeNull();
+    // splitFace: bad face id / neither or both splitting forms / empty edges /
+    // non-distinct or non-finite points
+    expect(validateEditOp({ op: "splitFace", face: "face-x", edgeIds: ["edge-1"] })).toBeNull();
+    expect(validateEditOp({ op: "splitFace", face: "face-0" })).toBeNull();
+    expect(validateEditOp({ op: "splitFace", face: "face-0", edgeIds: ["edge-1"], points: [[0, 0, 0], [1, 0, 0]] })).toBeNull();
+    expect(validateEditOp({ op: "splitFace", face: "face-0", edgeIds: [] })).toBeNull();
+    expect(validateEditOp({ op: "splitFace", face: "face-0", edgeIds: ["edge-x"] })).toBeNull();
+    expect(validateEditOp({ op: "splitFace", face: "face-0", points: [[0, 0, 0], [0, 0, 0]] })).toBeNull();
+    expect(validateEditOp({ op: "splitFace", face: "face-0", points: [[0, 0, 0]] })).toBeNull();
   });
 
   it("modify ops are topology-changing, B-rep only", () => {
-    for (const kind of ["shell", "defeature", "unifySameDomain", "splitByPlane", "section", "rib", "wrap"] as const) {
+    for (const kind of ["shell", "defeature", "unifySameDomain", "splitByPlane", "splitFace", "section", "rib", "wrap"] as const) {
       expect(TOPOLOGY_CHANGING_OPS.has(kind)).toBe(true);
       expect(BREP_ONLY_OPS.has(kind)).toBe(true);
     }
