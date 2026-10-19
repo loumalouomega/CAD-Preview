@@ -6,6 +6,20 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/); thi
 
 ## [Unreleased]
 
+## [3.24.0] - 2026-10-19
+
+### Added
+
+- **Nastran OP2 results (`.op2`) opens, and is a new FE-mesh export target.** meshio++ 17.4.0's result writer (PR #164, CVISC dampers in #165), adopted with the 17.7.0 bump and reversing the earlier "no consumer here" triage — at 17.2.0 the writer did not exist, and the adoption's real gate was that this build now also **reads** OP2, so an exported file re-opens. Verified live to the same two-step bar as the 17.3.0 result writers (probe `scripts/probe/examples/op2-writer.ts`): this pipeline's own SaveAll-shaped MSH 4.1 (vertex/line/triangle/tetra blocks) wrote 95 KB and read back through the build's own OP2 reader with every cell class intact — blocks merged per type (the results-file convention) with `nastran:card/eid/pid/c1/c2` cell data attached. Fixture `examples/Nastran/two-tets.op2` (meshio++'s own writer; `scripts/gen-1740-fixtures.mjs`, which also pins the read-back shape and the reader's cell-data columns); compat rows `export-nastran-op2` + `load-op2-fixture` (78/78). `lsdyna_binout` from the same PR stays unadopted — no consumer workflow.
+
+### Changed
+
+- **Kernel and dev packages bumped: meshio++ 17.3.0 → 17.7.0, manifold-3d 3.5.3 → 3.5.4 (the exact pin lifted), draco3d 1.5.7 → 1.5.9, playwright 1.64.1, vitest 5.0.5.** The meshio++ 17.4–17.7 delta is writer-side only: the type declarations and the loader are byte-identical from 17.3.0 through 17.7.0 (verified by tarball diff), so esbuild, `.vscodeignore`, `runtimeAssets.mjs` and `compat:vsix` need no change — only the WASM grew (FULL artifact +537 KB, +2.0 %). Verified against the new lockfile: `npm test` (204 files), `mcp:smoke` end to end, the webview suite's 1 081 checks (which exercise manifold-in-webview under the real CSP and the Draco decoders the glTF path uses) and the compat corpus 78/78 with `verifiedAt` refreshed to 17.7.0. manifold-3d 3.5.4's one change is upstream #1851 — WASM bindings under a Content-Security-Policy without `'unsafe-eval'` — exactly this webview's situation (`manifoldBrowser.ts` initializes under `'wasm-unsafe-eval'`-only CSP; any failure keeps the three-bvh-csg fallback). KaHIP remains uncompiled into every published build (the declarations are identical throughout; the roadmap's KaHIP blockers are re-checked on 17.7.0), and 17.6.0's marc_t19/xplt *series* writes are recorded as not adopted (this exporter writes single-increment meshes).
+
+### Documented
+
+- **Roadmap**: the 16.43–17.2 triage's OP2 entry points at its reversal; a new 17.4–17.7 triage paragraph records the adoption with the probe's numbers, the `lsdyna_binout`/series non-adoptions and the byte-identical-declarations fact; the KaHIP item is re-checked on 17.7.0. The format tables (README, `doc/index.md`, `doc/getting-started.md`, `doc/file-formats.md`, `doc/mcp-server.md`) gain the OP2 rows and the results-file family's layout facts.
+
 ## [3.23.0] - 2026-10-19
 
 ### Added
@@ -915,6 +929,7 @@ This release republishes v1.9.0's full changelog (below) unchanged; v1.9.0 itsel
 
 - Initial release: read-only 3D preview for CAD and mesh files (STEP, IGES, BREP, STL, OBJ, PLY, glTF) inside a VS Code custom editor, using OpenCascade.js (OCCT WASM) in the extension host for B-rep formats and Three.js in the webview for rendering.
 
+[3.24.0]: https://github.com/loumalouomega/CAD-Preview/compare/v3.23.0...v3.24.0
 [3.23.0]: https://github.com/loumalouomega/CAD-Preview/compare/v3.22.0...v3.23.0
 [3.22.0]: https://github.com/loumalouomega/CAD-Preview/compare/v3.21.0...v3.22.0
 [3.17.0]: https://github.com/loumalouomega/CAD-Preview/compare/v3.16.0...v3.17.0
