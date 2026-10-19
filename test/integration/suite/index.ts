@@ -2533,6 +2533,363 @@ test("Models view lists workspace CAD files, skips the rest, and opens on click"
   await closeAll();
 });
 
+/**
+ * Roadmap 1.1 "Verification-debt burn-down", first increment: ten host-side
+ * entries with the highest data-loss or write-path risk, each closed by one
+ * `test:integration` case below (the webview harness structurally cannot
+ * reach quick-picks, save dialogs, `provider.ts` handlers or the file
+ * watchers). Every case runs inside the real VS Code instance and asserts on
+ * bytes/sidecars/posts, never on "did not throw".
+ */
+
+test("Empty-tail Export save-in-place still confirms and stays consistent", async () => {
+  // Tier 0 Phase 1: the Export flow always confirms a same-format save — even
+  // when the op tail is empty. Skipping the modal on an empty tail would be
+  // a silent path around the data-loss contract, so this pins the modal AND
+  // the consistency (watermark stays 0, .bak matches the source it copied).
+  const staged = stage(STEP_FIXTURE);
+  const before = fs.readFileSync(staged);
+  assert(await openDocument(staged), "the STEP fixture opens with no sidecar");
+  const record = await withModals([pick("STEP"), pick("Save in place"), pick("Save in place")], async () => {
+    await vscode.commands.executeCommand("cad-preview.export");
+    await sleep(2000);
+  });
+  assert(
+    record.warnings.length === 1 && /0 edit op\(s\)/.test(record.warnings[0]?.message ?? ""),
+    `the empty tail still confirms by name (saw ${JSON.stringify(record.warnings.map((w) => w.message))})`
+  );
+  assert(record.saveDialogs.length === 0, "save-in-place shows no save dialog");
+  assert(fs.existsSync(`${staged}.bak`) && fs.readFileSync(`${staged}.bak`).equals(before), "a one-deep .bak holds the pre-save bytes");
+  assert((readSidecarJson(`${staged}.edits.json`).bakedThrough ?? 0) === 0, "the watermark stays 0 with nothing baked");
+  await clearDirtyViaNoopSave();
+  await closeAll();
+});
+
+test("The tab dirties on an op and the chip clears on save", async () => {
+  // Tier 0 Phase 2: the tab dot is the user's unsaved signal (it lights here
+  // through the real platform event), and the menubar chip is the host's —
+  // `syncDocumentInfo` is the only writer both consumers share, so the chip
+  // going clean with zero unsaved edits is the save-settled proof. (Tab-dot
+  // clearing itself is VS Code platform behavior this suite has never pinned
+  // and does not assert.)
+  const api = await saveTestApi();
+  if (!api?.saveDocument || !api?.simulateWebviewMessage) return;
+  const staged = stage(STEP_FIXTURE);
+  assert(await openDocument(staged), "the STEP fixture opens");
+  const isDirty = () => vscode.window.tabGroups.activeTabGroup.activeTab?.isDirty === true;
+  assert(!isDirty(), "the tab starts clean");
+  await api.simulateWebviewMessage!(vscode.Uri.file(staged), {
+    type: "editsChanged",
+    ops: [{ op: "translate", targets: ["solid-0"], vec: [5, 0, 0] }],
+    variables: [],
+  });
+  assert(await waitFor(() => isDirty(), 15000), "an unbaked op dirties the tab");
+  // Through the platform save flow (the real Ctrl+S join).
+  type DocInfo = { type: string; dirty?: boolean; unsavedEdits?: number };
+  const later: DocInfo[] = [];
+  const infoSub = api.onDidPostMessage?.((m) => void later.push(m as DocInfo));
+  const before = fs.readFileSync(staged);
+  try {
+    await withModals([pick("Save in place")], async () => {
+      await vscode.commands.executeCommand("workbench.action.files.save");
+      assert(await waitFor(() => readSidecarJson(`${staged}.edits.json`).bakedThrough === 1, 30000), "the watermark lands");
+    });
+    assert(
+      await waitFor(() => later.some((i) => i.type === "documentInfo" && i.dirty === false && i.unsavedEdits === 0), 15000),
+      "the chip reports clean with zero unsaved edits once the bake lands"
+    );
+    assert(!fs.readFileSync(staged).equals(before), "the source file itself is rewritten");
+  } finally {
+    infoSub?.dispose();
+  }
+  await clearDirtyViaNoopSave();
+  await closeAll();
+});
+
+test("A glTF source is never written by save", async () => {
+  // Tier 0 Phase 3: glTF has no same-format writer (its exporter emits only
+  // `.glb`), so even a pending edit tail must never reach the source file —
+  // no modal, no .bak, bytes identical.
+  const api = await saveTestApi();
+  if (!api?.saveDocument || !api?.simulateWebviewMessage) return;
+  const staged = stage(path.join(ROOT, "examples", "GLTF", "cube.glb"));
+  const before = fs.readFileSync(staged);
+  assert(await openDocument(staged), "the glTF fixture opens");
+  await api.simulateWebviewMessage!(vscode.Uri.file(staged), {
+    type: "editsChanged",
+    ops: [{ op: "translate", targets: ["node-0"], vec: [1, 0, 0] }],
+    variables: [],
+  });
+  await sleep(1000);
+  await withModals([], async () => {
+    await api.saveDocument!(vscode.Uri.file(staged));
+    await sleep(1500);
+  });
+  assert(fs.readFileSync(staged).equals(before), "the glTF source is byte-identical — nothing was written");
+  assert(!fs.existsSync(`${staged}.bak`), "no .bak beside a glTF source");
+  await closeAll();
+});
+
+test("Promote to B-rep writes a new STEP file and leaves the source alone", async () => {
+  // Roadmap "Mesh → B-rep promotion" Phase 2 host half: the panel button's
+  // quick-picks + save dialog + one-shot write, driven through the same
+  // seam the button uses. The source keeps its mesh identity (never
+  // reclassified in place).
+  const api = await saveTestApi();
+  if (!api?.simulateWebviewMessage) return;
+  const staged = stage(STL_FIXTURE);
+  const before = fs.readFileSync(staged);
+  assert(await openDocument(staged), "the STL fixture opens");
+  const out = path.join(path.dirname(staged), "promoted.step");
+  await withModals([pick("STEP"), pick("Native"), save(out)], async () => {
+    await api.simulateWebviewMessage!(vscode.Uri.file(staged), { type: "promoteToBrepButtonClicked", mergeFacets: false });
+    assert(await waitForFile(out, 120000), "the promoted STEP is written");
+  });
+  assert(fs.readFileSync(out, "utf8").startsWith("ISO-10303-21;"), "the output is a STEP file");
+  assert(fs.readFileSync(staged).equals(before), "the STL source is byte-identical");
+  assert(!fs.existsSync(`${staged}.edits.json`), "promotion creates no sidecar");
+  await closeAll();
+});
+
+test("A clean-tail external source rewrite reloads silently", async () => {
+  // Sidecar/source reconciliation, the no-conflict branch: with no pending
+  // edits the extension's own write is impossible (nothing was written), so
+  // an external rewrite must reload — content-compared, no prompt. An
+  // unscripted modal throws, so reaching the repost proves the silence.
+  const api = await saveTestApi();
+  if (!api?.onDidPostMessage) return;
+  const staged = stage(STEP_FIXTURE);
+  const seen: string[] = [];
+  const sub = api.onDidPostMessage((m) => {
+    seen.push((m as { type: string }).type);
+  });
+  try {
+    assert(await openDocument(staged), "the STEP fixture opens");
+    assert(await waitFor(() => seen.includes("geometry"), 30000), "the initial geometry posts");
+    const n = seen.filter((t) => t === "geometry").length;
+    await withModals([], async () => {
+      fs.copyFileSync(path.join(ROOT, "examples", "STP", "cylcub.stp"), staged);
+      assert(await waitFor(() => seen.filter((t) => t === "geometry").length > n, 30000), "the external rewrite reposts geometry with no prompt");
+    });
+  } finally {
+    sub.dispose();
+  }
+  await closeAll();
+});
+
+test("View state persists to .view.json and replays on reopen", async () => {
+  // View-state persistence host half: the `viewChanged` post debounces into
+  // the sidecar, and the stored view replays on the next open. No unit-test
+  // path exists (`vscode`-API-dependent throughout), so this is the coverage.
+  const api = await saveTestApi();
+  if (!api?.simulateWebviewMessage || !api?.onDidPostMessage) return;
+  const staged = stage(STEP_FIXTURE);
+  assert(await openDocument(staged), "the STEP fixture opens");
+  await api.simulateWebviewMessage!(vscode.Uri.file(staged), {
+    type: "viewChanged",
+    view: { viewDirection: [1, 0, 0], cameraUp: [0, 1, 0], orthographic: true, displayMode: "wireframe", clip: null },
+  });
+  const sidecar = `${staged}.view.json`;
+  assert(await waitForFile(sidecar, 15000), "the view sidecar is written");
+  const saved = JSON.parse(fs.readFileSync(sidecar, "utf8"));
+  assert(saved.view?.displayMode === "wireframe" && saved.view?.orthographic === true, `the sidecar carries the posted view (got ${JSON.stringify(saved.view)})`);
+  await closeAll();
+  const seen: Array<{ type: string; view?: { displayMode?: string } }> = [];
+  const sub = api.onDidPostMessage((m) => void seen.push(m as never));
+  try {
+    assert(await openDocument(staged), "the document reopens");
+    assert(
+      await waitFor(() => seen.some((m) => m.type === "viewState" && m.view?.displayMode === "wireframe"), 30000),
+      `the stored view replays on open (saw ${JSON.stringify(seen.map((m) => m.type).slice(-8))})`
+    );
+  } finally {
+    sub.dispose();
+  }
+  await closeAll();
+});
+
+test("A Nastran .bdf opens through the meshio bridge with the right extents", async () => {
+  // meshio++ Nastran route, host half: the deck converts to an STL boundary
+  // the viewer loads (`loadMeshBytes`), and those posted bytes span the
+  // independently known 3×4×5 extents — the same pin `mcp:smoke` asserts
+  // headlessly, here through the real provider and webview posts.
+  const api = await saveTestApi();
+  if (!api?.onDidPostMessage) return;
+  const staged = stage(path.join(ROOT, "examples", "Nastran", "block-tets.bdf"));
+  const seen: Array<{ type: string; dataBase64?: string }> = [];
+  const sub = api.onDidPostMessage((m) => void seen.push(m as never));
+  let minX = Infinity;
+  let maxX = -Infinity;
+  try {
+    assert(await openDocument(staged), "the Nastran deck opens");
+    assert(
+      await waitFor(() => seen.some((m) => m.type === "loadMeshBytes" && !!m.dataBase64), 120000),
+      `the meshio boundary posts for the Nastran source (saw ${JSON.stringify(seen.map((m) => m.type).slice(-6))})`
+    );
+    const stl = [...seen].reverse().find((m) => m.type === "loadMeshBytes" && !!m.dataBase64)!;
+    const text = Buffer.from(stl.dataBase64!, "base64").toString("utf8");
+    assert(/^solid/.test(text) && /endsolid/.test(text), "the posted boundary is an STL document");
+    for (const m of text.matchAll(/^\s*vertex\s+([-\d.eE+]+)\s+([-\d.eE+]+)\s+([-\d.eE+]+)/gm)) {
+      const x = Number(m[1]);
+      minX = Math.min(minX, x);
+      maxX = Math.max(maxX, x);
+    }
+    assert(Math.abs(minX - -1.5) < 1e-3 && Math.abs(maxX - 1.5) < 1e-3, `the boundary spans x in [-1.5, 1.5] (got [${minX}, ${maxX}])`);
+  } finally {
+    sub.dispose();
+  }
+  assert(fs.readFileSync(staged).equals(fs.readFileSync(path.join(ROOT, "examples", "Nastran", "block-tets.bdf"))), "the deck source is byte-identical");
+  await closeAll();
+});
+
+test("Hole-table copy data comes from the host pipeline", async () => {
+  // Parity gaps, hole-table half: the panel's Copy button reads the host's
+  // `holeTableResult`, so this drives the request and pins the rows + TSV
+  // the button would copy — over the same kernel key as `generate_hole_table`.
+  const api = await saveTestApi();
+  if (!api?.simulateWebviewMessage || !api?.onDidPostMessage) return;
+  const staged = stage(STEP_FIXTURE);
+  fs.writeFileSync(
+    `${staged}.edits.json`,
+    JSON.stringify({
+      version: 1,
+      source: path.basename(staged),
+      ops: [{ op: "addHole", targets: ["solid-0"], position: [0, 0, 2.5], axis: [0, 0, -1], radius: 1, depth: 5 }],
+    })
+  );
+  assert(await openDocument(staged), "the STEP fixture opens with a hole op");
+  const seen: Array<{ type: string; rows?: unknown; requestId?: string }> = [];
+  const sub = api.onDidPostMessage((m) => void seen.push(m as never));
+  try {
+    await api.simulateWebviewMessage!(vscode.Uri.file(staged), { type: "holeTableRequest", requestId: "holes-1" });
+    assert(
+      await waitFor(() => seen.some((m) => m.type === "holeTableResult"), 120000),
+      `a holeTableResult posts (saw ${JSON.stringify(seen.map((m) => m.type).slice(-6))})`
+    );
+    const res = [...seen].reverse().find((m) => m.type === "holeTableResult") as unknown as { rows: Array<{ diameter?: number; count?: number }> };
+    assert(
+      Array.isArray(res.rows) && res.rows.length === 1 && Math.abs((res.rows[0].diameter ?? 0) - 2) < 1e-9 && res.rows[0].count === 1,
+      `one Ø2 hole group with count 1 (got ${JSON.stringify(res.rows)})`
+    );
+  } finally {
+    sub.dispose();
+  }
+  await closeAll();
+});
+
+test("Refinement sweep with outputs asks for a folder and writes one mesh per size", async () => {
+  // Parity gaps, sweep half: the folder dialog (`showOpenDialog`) is the one
+  // branch of the sweep flow no harness had ever driven — a write-path
+  // prompt, so it belongs here rather than in the webview suite.
+  const api = await saveTestApi();
+  if (!api?.simulateWebviewMessage || !api?.onDidPostMessage) return;
+  const staged = stage(STEP_FIXTURE);
+  assert(await openDocument(staged), "the STEP fixture opens");
+  const outDir = path.join(path.dirname(staged), "sweep");
+  fs.mkdirSync(outDir, { recursive: true });
+  const seen: Array<{ type: string; runs?: Array<{ size?: number }>; outputDir?: string | null }> = [];
+  const sub = api.onDidPostMessage((m) => void seen.push(m as never));
+  try {
+    const record = await withModals([openAnswer(outDir)], async () => {
+      await api.simulateWebviewMessage!(vscode.Uri.file(staged), {
+        type: "meshSweepRequest",
+        requestId: "sweep-1",
+        sizes: [4, 2],
+        options: { ...DEFAULT_MESH_OPTIONS },
+        writeOutputs: true,
+      });
+      assert(
+        await waitFor(() => seen.some((m) => m.type === "meshSweepResult"), 300000),
+        `a meshSweepResult posts (saw ${JSON.stringify(seen.map((m) => m.type).slice(-6))})`
+      );
+    });
+    assert(record.openDialogs.length === 1 && /sweep/i.test(record.openDialogs[0]?.openLabel ?? ""), `the sweep asked for an output folder (saw ${JSON.stringify(record.openDialogs)})`);
+    const res = [...seen].reverse().find((m) => m.type === "meshSweepResult")!;
+    assert(res.runs?.length === 2, `two runs, one per size (got ${JSON.stringify(res.runs?.map((r) => r.size))})`);
+    for (const size of [4, 2]) {
+      const f = path.join(outDir, `block-size-${size}.msh`);
+      assert(fs.existsSync(f) && fs.statSync(f).size > 0, `size ${size} wrote ${path.basename(f)}`);
+    }
+  } finally {
+    sub.dispose();
+  }
+  await closeAll();
+});
+
+test("Preparation Report covers a mesh source end to end", async () => {
+  // Preparation-report bundle, mesh half: the existing case runs a B-rep
+  // source; a mesh source takes different sections (mesh health available,
+  // B-rep-only facts unavailable) through the same model+folder command.
+  await closeAll();
+  const model = stage(STL_FIXTURE);
+  const outDir = path.join(path.dirname(model), "report-mesh");
+  fs.mkdirSync(outDir, { recursive: true });
+  await withModals([openAnswer(model), openAnswer(outDir)], async () => {
+    await vscode.commands.executeCommand("cad-preview.prepReport");
+  });
+  const json = path.join(outDir, "report.json");
+  const html = path.join(outDir, "report.html");
+  assert(fs.existsSync(json) && fs.existsSync(html), "report.json and report.html are written for a mesh source");
+  if (fs.existsSync(json)) {
+    const report = JSON.parse(fs.readFileSync(json, "utf8"));
+    assert(
+      report.sections.length > 0 && report.sections.every((s: { status: string }) => ["ok", "partial", "unavailable", "skipped"].includes(s.status)),
+      "every section carries a status"
+    );
+    const statuses = Object.fromEntries(report.sections.map((s: { id: string; status: string }) => [s.id, s.status]));
+    assert(statuses.identity === "ok", `identity ran (got ${JSON.stringify(statuses)})`);
+  }
+  if (fs.existsSync(html)) {
+    const text = fs.readFileSync(html, "utf8");
+    assert(!/<script/i.test(text) && !/(src|href)="https?:/.test(text), "report.html has no scripts and no network references");
+  }
+  await closeAll();
+});
+
+test("FE-mesh export with a handoff manifest records Parts and coverage", async () => {
+  // Handoff-manifest bundle: the panel export with `manifest: true` writes
+  // `<output>.handoff.json` beside the mesh and reports the Part/coverage
+  // line — the status text IS the product surface for unresolved parts.
+  const api = await saveTestApi();
+  if (!api?.simulateWebviewMessage || !api?.onDidPostMessage) return;
+  const staged = stage(STEP_FIXTURE);
+  assert(await openDocument(staged), "the STEP fixture opens");
+  await api.simulateWebviewMessage!(vscode.Uri.file(staged), {
+    type: "partsChanged",
+    parts: [{ name: "Body", color: "#ff0000", volumes: ["solid-0"], surfaces: [], lines: [], points: [] }],
+  });
+  await sleep(1500);
+  const statuses: string[] = [];
+  const sub = api.onDidPostMessage?.((m) => {
+    const msg = m as { type: string; text?: string };
+    if (msg.type === "status" && msg.text) statuses.push(msg.text);
+  });
+  const out = path.join(path.dirname(staged), "body.msh");
+  const manifestPath = `${out}.handoff.json`;
+  try {
+    await withModals([save(out)], async () => {
+      await api.simulateWebviewMessage!(vscode.Uri.file(staged), {
+        type: "meshingExport",
+        requestId: "handoff-1",
+        target: "msh",
+        options: { ...DEFAULT_MESH_OPTIONS, sizeMax: 2 },
+        manifest: true,
+      });
+      assert(await waitForFile(manifestPath, 180000), "the handoff manifest is written beside the mesh");
+    });
+    assert(
+      statuses.some((t) => /Handoff manifest written/.test(t) && /1 Part\(s\)/.test(t)),
+      `the Part/coverage line is reported (saw ${JSON.stringify(statuses)})`
+    );
+    const handoff = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+    assert(handoff.parts?.length === 1 && handoff.parts[0]?.name === "Body", `the manifest carries the Part (got ${JSON.stringify(handoff.parts)})`);
+    assert(typeof handoff.coverage?.unassignedSurfaceCount === "number", "the manifest carries boundary coverage");
+  } finally {
+    sub?.dispose();
+  }
+  await closeAll();
+});
+
   // `/tmp/cad-preview-test-only` (a substring) runs only matching cases —
   // iterating on one kernel-slow case without paying for the whole suite
   // each time. The launcher does not forward env into the test VS Code, so a
