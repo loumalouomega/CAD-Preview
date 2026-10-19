@@ -5450,6 +5450,10 @@ try {
     { name: "box-fixed-field.bdf (hand-authored, 10-node CTETRA + continuation)", file: "box-fixed-field.bdf", extent: [2, 3, 4], volume: 24 },
     { name: "box-free-field.bdf (hand-authored, comma-separated)", file: "box-free-field.bdf", extent: [2, 3, 4], volume: 24 },
     { name: "box-large-field.bdf (hand-authored, GRID* 16-column fields)", file: "box-large-field.bdf", extent: [2, 3, 4], volume: 24 },
+    { name: "box-hex.bdf (hand-authored, two 8-node CHEXA)", file: "box-hex.bdf", extent: [2, 3, 4], volume: 24 },
+    // Two CPENTA wedges: the native convertSurface keeps only the triangular end caps (volume 8), so this
+    // pins the extractSurface + simplexify route taken for any quad-faced volume cell.
+    { name: "box-wedge.bdf (hand-authored, two 6-node CPENTA)", file: "box-wedge.bdf", extent: [2, 3, 4], volume: 24 },
   ];
   for (const chk of bdfChecks) {
     const src = path.join(dir, `geom-${chk.file}`);

@@ -40,7 +40,7 @@ CAD Preview supports two classes of 3D files: **B-rep** (boundary representation
 | SU2 | `.su2` | meshio++ → STL boundary → Three.js STLLoader | — |
 | INRIA Medit | `.mesh` | meshio++ → STL boundary → Three.js STLLoader | — |
 | GiD Postprocess | `.post.msh` (+ its `.post.res` sibling) | meshio++ → STL boundary → Three.js STLLoader | — |
-| Nastran Bulk Data | `.bdf` | routed as Nastran; a bulk-data deck this extension's own Gmsh export writes, and hand-authored fixed-, free- and large-field decks, open and mesh (see the caveat below) | — |
+| Nastran Bulk Data | `.bdf` | routed as Nastran; a bulk-data deck this extension's own Gmsh export writes, and hand-authored fixed-, free- and large-field decks (tetrahedra, hexahedra, wedges and shell-only `CQUAD4`/`CTRIA3` decks), open and mesh (see the caveat below); a shell-only deck displays but has no volume to mesh | — |
 
 ## B-rep Formats (OCCT Pipeline)
 

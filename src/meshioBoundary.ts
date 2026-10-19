@@ -113,3 +113,32 @@ export function describeExtentMismatch(
     `reader or its surface extraction, not in the file.`
   );
 }
+
+/** Cell types that are at most surfaces: vertices, lines, triangles, quads and polygons (any order). */
+const SURFACE_OR_LOWER = /^(vertex|line\d*|triangle\d*|quad\d*|polygon\d*)$/;
+const SURFACE_CELL = /^(triangle\d*|quad\d*|polygon\d*)$/;
+
+/**
+ * True when a mesh holds surface cells (triangles, quads, polygons) and **no volume cell** — a shell
+ * deck such as a Nastran `CQUAD4`/`CTRIA3` file. `extractSurface` is boundary extraction ("faces of
+ * a volume, edges of a surface"), so on such a mesh it returns the free *edges* and the displayed
+ * model is empty or an outline; its cells already ARE the surface and are linearized in place
+ * instead. Any unknown cell type counts as a volume, so a mesh is only treated as a shell when every
+ * block is positively recognised.
+ */
+export function isSurfaceOnlyMesh(cellTypes: readonly string[]): boolean {
+  return cellTypes.some((t) => SURFACE_CELL.test(t)) && cellTypes.every((t) => SURFACE_OR_LOWER.test(t));
+}
+
+/**
+ * True when a mesh holds a volume cell with a NON-triangular face: hexahedra, wedges (prisms),
+ * pyramids and general polyhedra, in any order. The native `convertSurface` writes only the
+ * triangular boundary faces and **silently drops the quad ones** — probed on a Nastran deck of two
+ * `CPENTA` wedges forming a 2 x 3 x 4 box: 4 facets, volume 8 instead of 12 facets, volume 24, and
+ * the extent check cannot see it because the triangular end caps already touch every vertex. A
+ * hex-only mesh happens to yield zero facets and so reaches the fallback; a wedge, pyramid or
+ * hex-plus-tet mesh does not. Such a mesh must take the `extractSurface` + `simplexify` route.
+ */
+export function hasQuadFaceVolumeCells(cellTypes: readonly string[]): boolean {
+  return cellTypes.some((t) => /^(hexahedron|wedge|pyramid|polyhedron)/.test(t));
+}
