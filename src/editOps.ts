@@ -280,6 +280,16 @@ export interface UnifySameDomainOp { op: "unifySameDomain"; }
 export interface AddEdgeSlotOp { op: "addEdgeSlot"; edge: string; width: number; }
 /** Split the target solids by the plane (`planePoint`, `planeNormal`), the saved construction plane `planeId` (`plane-N`), or the midplane of two planar `midplaneFaces`, keeping the half on the normal side ("positive"), the other half ("negative"), or both pieces. `planePoint`/`planeNormal` may ride alongside `planeId` as the resolved cache. */
 export interface SplitByPlaneOp { op: "splitByPlane"; targets: string[]; planePoint?: Vec3; planeNormal?: Vec3; planeId?: string; midplaneFaces?: [string, string]; keep: "both" | "positive" | "negative"; }
+/**
+ * Split one face into two regions along a splitting edge that lies on it —
+ * the boundary-condition primitive (a Part can then target one half). Either
+ * `edgeIds` (one or more connected `edge-N` ids on the face) or a straight
+ * segment through `points` (`[p1, p2]`), exactly one of the two. B-rep only,
+ * topology-changing: `face-N`/`edge-N` ids are renumbered and Parts/annotations
+ * rebind through the existing path (a Part on a split half is dropped with a
+ * warning when its centroid no longer matches, never repointed).
+ */
+export interface SplitFaceOp { op: "splitFace"; face: string; edgeIds?: string[]; points?: [Vec3, Vec3]; }
 /** Append the planar cross-section of the target solids with the plane (`planePoint`, `planeNormal`), the saved construction plane `planeId` (`plane-N`), or the midplane of `midplaneFaces` as a standalone face (under "Sketches"), leaving the solids untouched. `planePoint`/`planeNormal` may ride alongside `planeId` as the resolved cache. */
 export interface SectionOp { op: "section"; targets: string[]; planePoint?: Vec3; planeNormal?: Vec3; planeId?: string; midplaneFaces?: [string, string]; }
 /** Build a standalone flat face from the wire formed by the selected edges — they must connect into a closed loop. */
@@ -308,7 +318,7 @@ export type EditOp = (
   | BooleanOp | FilletOp | ChamferOp
   | ExtrudeOp | RevolveOp | SweepOp | LoftOp
   | ExplodeOp | MateOp
-   | ShellOp | DraftOp | DefeatureOp | UnifySameDomainOp | SplitByPlaneOp | SectionOp | RibOp | WrapOp
+   | ShellOp | DraftOp | DefeatureOp | UnifySameDomainOp | SplitByPlaneOp | SplitFaceOp | SectionOp | RibOp | WrapOp
   | AddBoxOp | AddSphereOp | AddCylinderOp | AddConeOp | AddTorusOp | AddPrismOp
   | AddWedgeOp | AddHoleOp | AddCounterboreHoleOp | AddCountersinkHoleOp
   | AddCircleProfileOp | AddRectangleProfileOp | AddPolygonProfileOp
@@ -441,7 +451,7 @@ export const QUERYABLE_OPERAND_FIELDS: Record<EditOpKind, readonly string[]> = {
   extrude: ["profile", "profileEdges", "upToFace"], revolve: ["profile", "profileEdges"],
   sweep: ["profile", "profileEdges", "path"], loft: ["profiles", "profileEdgeSets", "guides"],
   explode: [], mate: ["faceA", "faceB"],
-  shell: ["openingFaces"], draft: ["faces"], defeature: ["faces"], unifySameDomain: [], splitByPlane: ["targets"], section: ["targets"],
+  shell: ["openingFaces"], draft: ["faces"], defeature: ["faces"], unifySameDomain: [], splitByPlane: ["targets"], splitFace: ["face", "edgeIds"], section: ["targets"],
   rib: ["spineEdges", "upTo"],
   wrap: ["profile", "targets"],
   addBox: [], addSphere: [], addCylinder: [], addCone: [], addTorus: [], addPrism: [],
@@ -507,7 +517,7 @@ export type OutcomeFail = ((diagnostic: string, hint?: string) => void) & {
 /** Ops that change topology and therefore reassign `face-N`/`edge-N` ids on reload. */
 export const TOPOLOGY_CHANGING_OPS: ReadonlySet<EditOpKind> = new Set([
   "boolean", "fillet", "chamfer", "extrude", "revolve", "sweep", "loft",
-  "shell", "draft", "defeature", "unifySameDomain", "splitByPlane", "section", "rib", "wrap",
+  "shell", "draft", "defeature", "unifySameDomain", "splitByPlane", "splitFace", "section", "rib", "wrap",
   "addBox", "addSphere", "addCylinder", "addCone", "addTorus", "addPrism",
   "addWedge", "addHole", "addCounterboreHole", "addCountersinkHole",
   "addCircleProfile", "addRectangleProfile", "addPolygonProfile",
@@ -522,7 +532,7 @@ export const TOPOLOGY_CHANGING_OPS: ReadonlySet<EditOpKind> = new Set([
  * The hole family is deliberately NOT here — the mesh engine cuts holes via CSG. */
 export const BREP_ONLY_OPS: ReadonlySet<EditOpKind> = new Set([
   "fillet", "chamfer", "extrude", "revolve", "sweep", "loft", "mate",
-  "shell", "draft", "defeature", "unifySameDomain", "splitByPlane", "section", "rib", "wrap",
+  "shell", "draft", "defeature", "unifySameDomain", "splitByPlane", "splitFace", "section", "rib", "wrap",
   "addWedge",
   "addCircleProfile", "addRectangleProfile", "addPolygonProfile",
   "addEllipseProfile", "addRoundedRectangleProfile", "addSlotProfile", "addTrapezoidProfile",
@@ -1204,6 +1214,21 @@ function validateEditOpCore(raw: unknown): EditOp | null {
       const planePoint = asVec3(o.planePoint);
       const planeNormal = asNonZeroVec3(o.planeNormal);
       return planePoint && planeNormal ? { op: "splitByPlane", targets, planePoint, planeNormal, keep } : null;
+    }
+    case "splitFace": {
+      const face = asFaceId(o.face);
+      if (!face) return null;
+      const hasEdges = o.edgeIds !== undefined;
+      const hasPoints = o.points !== undefined;
+      if (hasEdges === hasPoints) return null; // exactly one of the two forms
+      if (hasEdges) {
+        const edgeIds = asEdgeIdArray(o.edgeIds);
+        if (!edgeIds) return null;
+        return { op: "splitFace", face, edgeIds };
+      }
+      const points = asVec3Array(o.points, 2);
+      if (!points || points.length !== 2 || vecEqual(points[0], points[1])) return null;
+      return { op: "splitFace", face, points: [points[0], points[1]] };
     }
     case "section": {
       const targets = asIdArray(o.targets);

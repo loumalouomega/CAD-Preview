@@ -11,11 +11,11 @@ const NO_SEL: SelectionIds = { solid: [], face: [], edge: [], point: [] };
 const sel = (over: Partial<SelectionIds>): SelectionIds => ({ ...NO_SEL, ...over });
 
 describe("command table", () => {
-  it("has exactly one command per panel button (56), in catalog order", () => {
+  it("has exactly one command per panel button (57), in catalog order", () => {
     const entries = allCatalogEntries();
     expect(COMMAND_TABLE).toHaveLength(entries.length);
     expect(COMMAND_TABLE.map((r) => r.panelId)).toEqual(entries.map((e) => e.id));
-    expect(entries.length).toBe(56);
+    expect(entries.length).toBe(57);
   });
 
   it("every command maps to a documented op kind and is reachable by its own name", () => {

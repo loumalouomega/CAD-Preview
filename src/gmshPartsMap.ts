@@ -1,11 +1,11 @@
 import type { Vec3 } from "./editOps";
 import type { Part } from "./protocol";
-import { boundaryLayerPlan, type PeriodicPair } from "./meshOptions";
+import { boundaryLayerPlan, type PeriodicPair, type SizeFieldSample } from "./meshOptions";
 import { getOcct, readShape, wrapOcctFault } from "./occtService";
 import { resetGmsh } from "./gmshService";
 import { collectFaces, collectSolids, collectVertices, bboxCenter } from "./occtOperations";
 import { enumerateEdges } from "./edgeEnumeration";
-import { addBoundaryLayerField, addConstantField, addDistanceThresholdField, setBackgroundMin } from "./gmshSizingFields";
+import { addBoundaryLayerField, addConstantField, addDistanceThresholdField, addPostViewField, setBackgroundMin } from "./gmshSizingFields";
 import { addFreeEntitiesToGmshModel, type FreeEntitySpec } from "./gmshEmbed";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -77,11 +77,12 @@ export async function applyPartsToGmshModel(
   parts: Part[],
   warnings?: string[],
   periodic: PeriodicPair[] = [],
-  dimension: 1 | 2 | 3 = 3
-): Promise<PartGroupMaps | null> {
-  if (parts.length === 0) {
+  dimension: 1 | 2 | 3 = 3,
+  sizeField: readonly SizeFieldSample[] = []
+): Promise<{ maps: PartGroupMaps | null; viewTag: number | null }> {
+  if (parts.length === 0 && sizeField.length === 0) {
     if (periodic.length > 0) warnings?.push("Periodic pairs ignored: they are declared between Parts and the model has none.");
-    return null;
+    return { maps: null, viewTag: null };
   }
 
   const oc = await getOcct(extensionPath);
@@ -261,10 +262,19 @@ export async function applyPartsToGmshModel(
       }
     }
 
+    let viewTag: number | null = null;
+    if (sizeField.length > 0) {
+      const created = addPostViewField(gmsh, sizeField);
+      if (created !== null) {
+        viewTag = created.viewTag;
+        sizeFieldTags.push(created.fieldTag);
+      }
+    }
+
     setBackgroundMin(gmsh, sizeFieldTags);
     applyPeriodicPairs(gmsh, periodic, surfTagsByPart, warnings);
 
-    return maps;
+    return { maps, viewTag };
   } catch (err) {
     // This function touches both kernels (OCCT via `oc`, Gmsh via `gmsh.model.*`
     // above), so a WASM abort here could equally be either's fault with no

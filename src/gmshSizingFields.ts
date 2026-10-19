@@ -1,4 +1,4 @@
-import type { MeshBoundaryLayer, MeshGrading } from "./meshOptions";
+import type { MeshBoundaryLayer, MeshGrading, SizeFieldSample } from "./meshOptions";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type GmshApi = any;
@@ -148,6 +148,37 @@ function boundaryFacesOfVolumes(gmsh: GmshApi, volTags: number[]): number[] {
 
 function mergeUnique(a: number[], b: number[]): number[] {
   return Array.from(new Set([...a, ...b]));
+}
+
+/**
+ * View-driven sizing (roadmap "View-driven mesh sizing"): a list-based `SP`
+ * (scalar-point) view carrying one target size per sample, plus a `PostView`
+ * field reading it. Verified live on gmsh-wasm 0.4.0
+ * (`scripts/probe/examples/gmsh-view-sizing.ts` for the `SS` shape,
+ * `scripts/probe/scratch/sp-view-test.ts` for this `SP` shape): a 125-point
+ * grid over block.stp steers a sizeMax-10 regenerate from the uniform result
+ * to a near/far count ratio of 1.6x, `ViewTag` is accepted (with a `ViewIndex`
+ * fallback), and `view.remove(tag)` drops it cleanly.
+ *
+ * The caller joins the returned `fieldTag` into the shared `Min` background
+ * list (never a second `setAsBackgroundMesh`) and removes `viewTag` after
+ * `generate()` — a `gmsh.clear()` would also drop it, but an explicit remove
+ * keeps "no view is left behind" true even within one model lifetime. Returns
+ * `null` when there are no samples (nothing to steer with).
+ */
+export function addPostViewField(gmsh: GmshApi, samples: readonly SizeFieldSample[]): { viewTag: number; fieldTag: number } | null {
+  if (samples.length === 0) return null;
+  const data: number[] = [];
+  for (const s of samples) data.push(s.point[0], s.point[1], s.point[2], s.size);
+  const viewTag = gmsh.view.add("size-field") as number;
+  gmsh.view.addListData(viewTag, "SP", samples.length, data);
+  const fieldTag = gmsh.model.mesh.field.add("PostView") as number;
+  try {
+    gmsh.model.mesh.field.setNumber(fieldTag, "ViewTag", viewTag);
+  } catch {
+    gmsh.model.mesh.field.setNumber(fieldTag, "ViewIndex", gmsh.view.getIndex(viewTag));
+  }
+  return { viewTag, fieldTag };
 }
 
 /**

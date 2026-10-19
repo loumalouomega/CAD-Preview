@@ -94,14 +94,16 @@ export type WireframeDraft = (
 ) & { exprs?: ExprMap; guide?: boolean; /** `point-N` references standing in for coordinate slots (their `at` already fills the slot's Vec3). */ pointRefs?: PointRefs };
 
 /** A modify-op draft minus its selection operands: shell's `openingFaces` and
- * defeature's `faces` come from the selected surfaces, split/section
- * `targets` from the selected volumes (the wiring injects both). B-rep only. */
+ * defeature's `faces` come from the selected surfaces, splitFace's `face` (plus
+ * its `edgeIds`) likewise, and split/section `targets` from the selected volumes
+ * (the wiring injects both). B-rep only. */
 export type ModifyDraft = (
   | { kind: "shell"; thickness: number }
   | { kind: "draft"; angleDeg: number; planePoint?: Vec3; planeNormal?: Vec3; planeId?: string }
   | { kind: "defeature" }
   | { kind: "unifySameDomain" }
   | { kind: "splitByPlane"; planePoint: Vec3; planeNormal: Vec3; planeId?: string; keep: "both" | "positive" | "negative" }
+  | { kind: "splitFace"; p1: Vec3; p2: Vec3 }
   | { kind: "section"; planePoint: Vec3; planeNormal: Vec3; planeId?: string }
   | { kind: "drill"; dir: Vec3; length: number }
 ) & { exprs?: ExprMap; pickRaw?: string };
@@ -1167,6 +1169,13 @@ export class EditsPanel {
             if (planeId) (draft as any).planeId = planeId;
             return draft;
           }, (d) => this.cb.onApplyModify(d));
+        break;
+      case "splitFace":
+        f.appendChild(this.hint("Splits the selected face (Surf mode) along the selected splitting edges (Line mode) — or the straight segment between the two points below"));
+        f.appendChild(this.vecField("p1", "P1", [0, 0, 0]));
+        f.appendChild(this.vecField("p2", "P2", [0, 0, 0]));
+        f.appendChild(this.hint("Selected edges win over the points: clear the Line selection to use P1→P2"));
+        this.applyButtonDraft("Apply", "Split the selected face into two regions", (): ModifyDraft => ({ kind: "splitFace", p1: this.readVec("p1"), p2: this.readVec("p2") }), (d) => this.cb.onApplyModify(d));
         break;
       case "section":
         f.appendChild(this.hint("Adds the planar cross-section of the selected volumes (Vol mode) as a sketch face"));

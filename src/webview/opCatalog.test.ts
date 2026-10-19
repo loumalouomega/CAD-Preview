@@ -23,6 +23,7 @@ const REPRESENTATIVE_OPS: Record<EditOpKind, EditOp> = {
   defeature: { op: "defeature", faces: ["face-0"] },
   unifySameDomain: { op: "unifySameDomain" },
   splitByPlane: { op: "splitByPlane", targets: ["solid-0"], planePoint: [0, 0, 0], planeNormal: [0, 0, 1], keep: "both" },
+  splitFace: { op: "splitFace", face: "face-0", edgeIds: ["edge-1"] },
   section: { op: "section", targets: ["solid-0"], planePoint: [0, 0, 0], planeNormal: [0, 0, 1] },
   rib: { op: "rib", spineEdges: ["edge-0", "edge-1"], dir: [0, 0, 1], thin: 2, upTo: "face-0" },
   wrap: { op: "wrap", profile: "face-0", target: "cylinder", axisPoint: [0, 0, 0], axisDir: [0, 0, 1], radius: 10, thickness: 2, variant: "standalone" },
@@ -208,6 +209,10 @@ describe("referencedEntities", () => {
       .toEqual(["face-7", "edge-3"]);
     expect(referencedEntities({ op: "mate", faceA: "face-1", faceB: "face-2" }))
       .toEqual(["face-1", "face-2"]);
+    expect(referencedEntities({ op: "splitFace", face: "face-3", edgeIds: ["edge-8"] }))
+      .toEqual(["face-3", "edge-8"]);
+    expect(referencedEntities({ op: "splitFace", face: "face-3", points: [[0, 0, 0], [1, 1, 1]] }))
+      .toEqual(["face-3"]);
   });
 
   it("reads the wire form of a profile operand", () => {

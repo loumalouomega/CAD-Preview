@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { addBoundaryLayerField, addConstantField, addDistanceThresholdField, setBackgroundMin } from "./gmshSizingFields";
+import { addBoundaryLayerField, addConstantField, addDistanceThresholdField, addPostViewField, setBackgroundMin } from "./gmshSizingFields";
 
 /** A recording fake `mesh.field.*`/`getBoundary` surface — records every
  * call so a test can assert the exact sequence of option names/values
@@ -13,7 +13,25 @@ function fakeGmsh(opts: { boundaryOf?: (dimTagsIn: number[]) => number[] } = {})
   const calls: string[] = [];
   const fields = new Map<number, { type: string; numbers: Record<string, number>; lists: Record<string, number[]> }>();
   let nextTag = 1;
+  let nextViewTag = 100;
   const gmsh = {
+    view: {
+      add: (name: string) => {
+        const tag = nextViewTag++;
+        calls.push(`view.add(${name}) -> ${tag}`);
+        return tag;
+      },
+      addListData: (tag: number, dataType: string, numEle: number, data: number[]) => {
+        calls.push(`view.addListData(${tag}, ${dataType}, ${numEle}, len=${data.length})`);
+      },
+      getIndex: (tag: number) => {
+        calls.push(`view.getIndex(${tag})`);
+        return tag;
+      },
+      remove: (tag: number) => {
+        calls.push(`view.remove(${tag})`);
+      },
+    },
     model: {
       getBoundary: (dimTagsIn: number[]) => {
         calls.push(`getBoundary(${JSON.stringify(dimTagsIn)})`);
@@ -168,6 +186,40 @@ describe("Constant + Distance/Threshold composing on the same part", () => {
     setBackgroundMin(gmsh, [constTag, threshTag]);
     const minTag = [...fields.entries()].find(([, f]) => f.type === "Min")![0];
     expect(fields.get(minTag)!.lists.FieldsList).toEqual([constTag, threshTag]);
+  });
+});
+
+describe("addPostViewField", () => {
+  it("returns null and touches nothing when there are no samples", () => {
+    const { gmsh, calls } = fakeGmsh();
+    expect(addPostViewField(gmsh, [])).toBeNull();
+    expect(calls).toEqual([]);
+  });
+
+  it("builds an SP list view plus a PostView field reading it via ViewTag", () => {
+    const { gmsh, fields, calls } = fakeGmsh();
+    const created = addPostViewField(gmsh, [
+      { point: [0, 0, 0], size: 0.35 },
+      { point: [1, 2, 3], size: 1.2 },
+    ])!;
+    expect(created).not.toBeNull();
+    expect(calls).toContain(`view.addListData(${created.viewTag}, SP, 2, len=8)`);
+    const f = fields.get(created.fieldTag)!;
+    expect(f.type).toBe("PostView");
+    expect(f.numbers.ViewTag).toBe(created.viewTag);
+    // Not a boundary-layer registration, and not set as background here —
+    // the caller joins fieldTag into the shared Min list.
+    expect(calls.some((c) => c.startsWith("setAsBackgroundMesh"))).toBe(false);
+    expect(calls.some((c) => c.startsWith("setAsBoundaryLayer"))).toBe(false);
+  });
+
+  it("lands in the Min list the caller passes to setBackgroundMin", () => {
+    const { gmsh, fields } = fakeGmsh();
+    const created = addPostViewField(gmsh, [{ point: [0, 0, 0], size: 0.5 }])!;
+    const constTag = addConstantField(gmsh, { volTags: [], surfTags: [1], curveTags: [], pointTags: [] }, 1)!;
+    setBackgroundMin(gmsh, [constTag, created.fieldTag]);
+    const minTag = [...fields.entries()].find(([, f]) => f.type === "Min")![0];
+    expect(fields.get(minTag)!.lists.FieldsList).toEqual([constTag, created.fieldTag]);
   });
 });
 

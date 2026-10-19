@@ -28,6 +28,7 @@ export type OpRole =
   | "inner"
   | "wall"
   | "cutFace"
+  | "splitRegion"
   | "sectionFace"
   | "copies"
   | "body"
@@ -61,6 +62,7 @@ export const PRODUCED_ROLE: Record<string, string> = {
   addCountersinkHole: "wall",
   drill: "wall",
   splitByPlane: "cutFace",
+  splitFace: "splitRegion",
   section: "sectionFace",
   patternLinear: "copies",
   patternCircular: "copies",
@@ -105,6 +107,7 @@ export const ROLE_LABELS: Record<string, string> = {
   inner: "inner faces",
   wall: "hole wall",
   cutFace: "cut face",
+  splitRegion: "split regions",
   sectionFace: "section face",
   copies: "pattern copies",
   body: "new body",

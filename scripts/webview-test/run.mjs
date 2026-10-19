@@ -3042,6 +3042,53 @@ test("Unify faces: the Modify button applies a parameter-free unifySameDomain op
   assert(JSON.stringify(await lastOp(page)) === JSON.stringify(panelOp), "the typed op equals the panel op");
 });
 
+test("Split face form renders P1/P2 fields; Apply with one face + points posts a splitFace op, and refuses an empty selection", async (page) => {
+  await populate(page);
+  await page.evaluate(() => {
+    [...document.querySelectorAll(".op-btn")].find((b) => b.querySelector(".op-name")?.textContent === "Split face")?.click();
+  });
+  await sleep(200);
+  const names = await page.evaluate(() => [...document.querySelectorAll("#edits-params [data-name]")].map((el) => el.dataset.name));
+  for (const f of ["p1", "p2"]) {
+    assert(names.includes(f), `the Split face form has a ${f} field (got ${JSON.stringify(names)})`);
+  }
+  const before = await sentCount(page, "editsChanged");
+  const clickApply = () =>
+    page.evaluate(() => {
+      const a = [...document.querySelectorAll("#edits-params .compose-apply")].find((x) => x.textContent === "Apply");
+      if (!a) return false;
+      a.click();
+      return true;
+    });
+  assert(await clickApply(), "the Split face form renders an Apply button");
+  await sleep(300);
+  assert((await sentCount(page, "editsChanged")) === before, "Apply with nothing selected posts no editsChanged");
+
+  // One face + two distinct points posts the op.
+  await enablePicking(page, "surface");
+  const box = await viewportBox(page);
+  await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+  await sleep(300);
+  await page.fill('input.compose-num[data-name="p2"][data-i="0"]', "1");
+  assert(await clickApply(), "Apply is still offered after picking a face");
+  await sleep(300);
+  assert((await sentCount(page, "editsChanged")) === before + 1, "Apply posts exactly one editsChanged");
+  const panelOp = await lastOp(page);
+  assert(
+    panelOp?.op === "splitFace" && /^face-\d+$/.test(panelOp?.face ?? "") && JSON.stringify(panelOp?.points) === JSON.stringify([[0, 0, 0], [1, 0, 0]]),
+    `the panel op is splitFace with the picked face and P1→P2 (got ${JSON.stringify(panelOp)})`
+  );
+
+  // The typed command with $sel posts the same shape.
+  await typeCommand(page, 'splitFace {"face":$sel,"points":[[-1,0,0],[1,0,0]]}');
+  assert((await sentCount(page, "editsChanged")) === before + 2, `the typed command posts one more editsChanged (message: ${JSON.stringify(await cmdMessage(page))})`);
+  const typedOp = await lastOp(page);
+  assert(
+    typedOp?.op === "splitFace" && typedOp?.face === panelOp?.face && JSON.stringify(typedOp?.points) === JSON.stringify([[-1, 0, 0], [1, 0, 0]]),
+    `the typed op carries the selected face and the typed points (got ${JSON.stringify(typedOp)})`
+  );
+});
+
 test("command bar: $sel expands to the selection by field type; wrong kinds explain themselves", async (page) => {
   await populate(page);
   const none = await sentCount(page, "editsChanged");
