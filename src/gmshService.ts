@@ -34,7 +34,7 @@ import * as path from "path";
 // the "cjs" output, which Node resolves at actual runtime (honoring the
 // package's "require" export condition), sidestepping both problems above.
 import initialize from "@loumalouomega/gmsh-wasm";
-import { gmshShapeOptions, SIZE_MAX_SENTINEL, DEFAULT_MESH_OPTIONS, type MeshOptions, type MeshEngine } from "./meshOptions";
+import { boundaryLayerAlgorithmProblem, gmshShapeOptions, SIZE_MAX_SENTINEL, DEFAULT_MESH_OPTIONS, type MeshOptions, type MeshEngine } from "./meshOptions";
 import { summarizeQuality, type QualitySummary } from "./meshQuality";
 import type { Part, MeshElementGroup } from "./protocol";
 import { applyPartsToGmshModel, type PartGroupInfo, type PartGroupMaps } from "./gmshPartsMap";
@@ -289,6 +289,15 @@ async function loadGeometryAndApplyOptions(
   options: MeshOptions,
   parts: Part[]
 ): Promise<{ tmpPath: string; groupMaps: PartGroupMaps | null; warnings: string[]; conformalApplied: boolean }> {
+  // A boundary layer is refused up front on an algorithm that cannot carry it (some
+  // abort the WASM module, some silently drop the layer) — see
+  // `boundaryLayerAlgorithmProblem`. 2-D B-rep generates only: elsewhere the layer is
+  // ignored with a warning in `applyPartsToGmshModel`.
+  if (input.kind === "brep" && options.dimension === 2 && parts.some((p) => p.meshBoundaryLayer != null)) {
+    const problem = boundaryLayerAlgorithmProblem(options.algorithm2D, gmshShapeOptions(options.elementShape, 2).recombineAll === 1);
+    if (problem) throw new Error(`Boundary layer: ${problem}`);
+  }
+
   gmsh.clear();
   gmsh.model.add(`model-${++_modelCounter}`);
 
@@ -350,7 +359,7 @@ async function loadGeometryAndApplyOptions(
         throw new Error(`Conformal fragment failed (${reason}) — no mesh was produced. Retry with conformal: false to mesh the unfragmented solids.`);
       }
     }
-    groupMaps = await applyPartsToGmshModel(extensionPath, gmsh, input.stepBytes, parts, warnings, options.periodic);
+    groupMaps = await applyPartsToGmshModel(extensionPath, gmsh, input.stepBytes, parts, warnings, options.periodic, options.dimension);
   } else {
     gmsh.merge(tmpPath);
     gmsh.model.mesh.classifySurfaces((options.stlAngle ?? 40) * (Math.PI / 180));

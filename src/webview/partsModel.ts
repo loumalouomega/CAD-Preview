@@ -1,5 +1,5 @@
 import type { Part } from "../protocol";
-import type { MeshGrading, MeshStructured } from "../meshOptions";
+import type { MeshBoundaryLayer, MeshGrading, MeshStructured } from "../meshOptions";
 import type { SelectedEntity } from "./selection";
 import type { EntityColorMap } from "./viewer";
 
@@ -93,6 +93,13 @@ export class PartsModel {
     this.onChange();
   }
 
+  setMeshBoundaryLayer(index: number, layer: MeshBoundaryLayer | undefined): void {
+    const p = this.parts[index];
+    if (!p) return;
+    p.meshBoundaryLayer = layer;
+    this.onChange();
+  }
+
   remove(index: number): void {
     if (index < 0 || index >= this.parts.length) return;
     this.parts.splice(index, 1);
@@ -171,6 +178,7 @@ function clone(p: Part): Part {
     // already names for `selector`.
     meshGrading: p.meshGrading,
     meshStructured: p.meshStructured,
+    meshBoundaryLayer: p.meshBoundaryLayer,
     // A stored selector is data, not derived state — dropping it here would
     // silently unpersist the query on the next autosave (the exact
     // `AnnotationsModel.clone`-omitted-`tolerance` defect class). The query

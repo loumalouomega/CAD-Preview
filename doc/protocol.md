@@ -73,6 +73,7 @@ interface Part {
   density?: number    // optional material density, g/cm³ (BOM mass, get_mass_properties mass)
   meshGrading?: MeshGrading   // optional distance-graded sizing around the part (B-rep only)
   meshStructured?: MeshStructured   // optional transfinite divisions per meshed edge (B-rep only)
+  meshBoundaryLayer?: MeshBoundaryLayer   // optional anisotropic boundary layer along the part's edges (2-D meshes, B-rep only)
   selector?: SelectorQuery   // re-executable query naming surfaces; host re-resolves it (annotation+cache)
   selectorOpKind?: string    // producing op's kind at synthesis time (stale-index guard)
 }

@@ -3501,6 +3501,23 @@ describe("set_part", () => {
     expect((await readParts(stpModel))[0].meshStructured).toBeUndefined();
   });
 
+  it("sets, updates, clears, and rejects invalid meshBoundaryLayer values", async () => {
+    await setPart({ path: stpModel, name: "P", lines: ["edge-0"], meshBoundaryLayer: { wallSize: 0.05, growthRatio: 1.2, thickness: 0.5 } });
+    expect((await readParts(stpModel))[0].meshBoundaryLayer).toEqual({ wallSize: 0.05, growthRatio: 1.2, thickness: 0.5, quads: true });
+    await setPart({ path: stpModel, name: "P", meshBoundaryLayer: { wallSize: 0.1, growthRatio: 1.5, thickness: 1, quads: false } });
+    expect((await readParts(stpModel))[0].meshBoundaryLayer).toEqual({ wallSize: 0.1, growthRatio: 1.5, thickness: 1, quads: false });
+
+    // Invalid layers keep the existing value and warn, rather than clobbering it.
+    for (const bad of [{ wallSize: 0, growthRatio: 1.2, thickness: 1 }, { wallSize: 0.1, growthRatio: 0.9, thickness: 1 }, { wallSize: 0.5, growthRatio: 1.2, thickness: 0.1 }]) {
+      const result = await setPart({ path: stpModel, name: "P", meshBoundaryLayer: bad });
+      expect((await readParts(stpModel))[0].meshBoundaryLayer).toEqual({ wallSize: 0.1, growthRatio: 1.5, thickness: 1, quads: false }); // unchanged
+      expect(result.warnings.some((w) => /meshBoundaryLayer/.test(w))).toBe(true);
+    }
+
+    await setPart({ path: stpModel, name: "P", meshBoundaryLayer: null });
+    expect((await readParts(stpModel))[0].meshBoundaryLayer).toBeUndefined();
+  });
+
   it("warns that meshGrading is ignored entirely for a mesh-format source", async () => {
     const result = await setPart({ path: stlModel, name: "P", volumes: ["node-0"], meshGrading: {
       sizeAtWall: 0.1, sizeFar: 1, distNear: 0.2, distFar: 1,

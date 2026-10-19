@@ -1,4 +1,4 @@
-import type { MeshGrading } from "./meshOptions";
+import type { MeshBoundaryLayer, MeshGrading } from "./meshOptions";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type GmshApi = any;
@@ -88,6 +88,47 @@ export function addDistanceThresholdField(gmsh: GmshApi, tags: EntityTagsByDim, 
   gmsh.model.mesh.field.setNumber(threshTag, "DistMin", grading.distNear);
   gmsh.model.mesh.field.setNumber(threshTag, "DistMax", grading.distFar);
   return threshTag;
+}
+
+/**
+ * `Part.meshBoundaryLayer`: a Gmsh `BoundaryLayer` field along the part's wall
+ * curves — rows of thin elements whose height starts at `wallSize` and grows by
+ * `growthRatio` until `thickness` is spent (`Size` / `Ratio` / `Thickness` /
+ * `Quads` are the canonical option names; the legacy `hwall_n` / `ratio` /
+ * `thickness` aliases behave identically, measured on gmsh-wasm 0.3.0 and 0.4.0).
+ *
+ * **Unlike the sizing fields above it is NOT added to the shared `Min`
+ * background list.** It is registered through its own `setAsBoundaryLayer`
+ * call (any number of them may be active), and it coexists with the `Min`
+ * background in either call order — measured on `occ.addRectangle`: a layer on
+ * one wall plus a `Distance`+`Threshold`+`Min` background on the opposite wall
+ * keeps the wall rows (0.05, 0.11, 0.182 for wall 0.05 / ratio 1.2) AND refines
+ * the far wall (see `scripts/probe/examples/gmsh-boundary-layer.ts`).
+ *
+ * `FanPointsList` is the set of free ends of the wall chain: the unsigned end
+ * points of `getBoundary(curves, combined: true)`, so a wall that Gmsh split into
+ * several consecutive curves (a rebuilt profile edge arrives as two) does not
+ * fan at its interior joint, and a closed wall loop gets none. Returns the new
+ * field's tag, or `null` when no wall curve resolved.
+ */
+export function addBoundaryLayerField(gmsh: GmshApi, curveTags: number[], layer: MeshBoundaryLayer): number | null {
+  if (curveTags.length === 0) return null;
+  const dimTagsIn: number[] = [];
+  for (const t of curveTags) dimTagsIn.push(1, t);
+  const boundary = gmsh.model.getBoundary(dimTagsIn, true, false, false) as { outDimTags: number[] };
+  const fanPoints: number[] = [];
+  for (let i = 0; i < boundary.outDimTags.length; i += 2) {
+    if (boundary.outDimTags[i] === 0) fanPoints.push(Math.abs(boundary.outDimTags[i + 1]));
+  }
+  const fieldTag = gmsh.model.mesh.field.add("BoundaryLayer");
+  gmsh.model.mesh.field.setNumbers(fieldTag, "CurvesList", curveTags);
+  if (fanPoints.length > 0) gmsh.model.mesh.field.setNumbers(fieldTag, "FanPointsList", mergeUnique(fanPoints, []));
+  gmsh.model.mesh.field.setNumber(fieldTag, "Size", layer.wallSize);
+  gmsh.model.mesh.field.setNumber(fieldTag, "Ratio", layer.growthRatio);
+  gmsh.model.mesh.field.setNumber(fieldTag, "Thickness", layer.thickness);
+  gmsh.model.mesh.field.setNumber(fieldTag, "Quads", layer.quads ? 1 : 0);
+  gmsh.model.mesh.field.setAsBoundaryLayer(fieldTag);
+  return fieldTag;
 }
 
 /** `gmsh.model.getBoundary` on a set of volume tags, returning the unique

@@ -170,6 +170,83 @@ export function validateMeshStructured(raw: unknown): MeshStructured | undefined
 }
 
 /**
+ * Anisotropic boundary layer hugging a `Part`'s wall curves on a **2-D** mesh
+ * (roadmap "Anisotropic boundary layers"): a Gmsh `BoundaryLayer` field — rows
+ * of thin elements whose height grows geometrically from `wallSize` by
+ * `growthRatio` until `thickness` is spent. All three lengths are in the
+ * model's own unit (see {@link scalePartsMeshSizeForUnit}); `growthRatio` is
+ * dimensionless. `quads` (default on) recombines the layer rows into
+ * quadrilaterals, the usual wall treatment.
+ */
+export interface MeshBoundaryLayer {
+  wallSize: number;
+  growthRatio: number;
+  thickness: number;
+  quads: boolean;
+}
+
+/**
+ * Validates one raw value into a clean {@link MeshBoundaryLayer}, or
+ * `undefined` — all-or-nothing like {@link validateMeshGrading}. A
+ * `thickness` below `wallSize` would leave zero layers, and a `growthRatio`
+ * below 1 would shrink them, so neither has a sensible reading.
+ */
+export function validateMeshBoundaryLayer(raw: unknown): MeshBoundaryLayer | undefined {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
+  const o = raw as Record<string, unknown>;
+  const { wallSize, growthRatio, thickness } = o;
+  if (
+    !isFiniteNumber(wallSize) ||
+    !isFiniteNumber(growthRatio) ||
+    !isFiniteNumber(thickness) ||
+    wallSize <= 0 ||
+    growthRatio < 1 ||
+    thickness < wallSize
+  ) {
+    return undefined;
+  }
+  return { wallSize, growthRatio, thickness, quads: o.quads !== false };
+}
+
+/**
+ * Why a 2-D algorithm cannot carry a boundary layer, or `null` when it can.
+ * Measured on gmsh-wasm 0.3.0 and 0.4.0 (`scripts/probe/examples/gmsh-boundary-layer.ts`'s
+ * algorithm matrix): Automatic (2), Delaunay (5), Frontal-Delaunay (6) and
+ * Frontal-Delaunay for Quads (8) grade the wall with or without recombination, and MeshAdapt (1)
+ * does without it; but MeshAdapt **with** `Mesh.RecombineAll` aborts the WASM module ("table
+ * index is out of bounds"), Packing of Parallelograms (9) aborts it on every run, BAMG (7) throws,
+ * and "Initial mesh only" (3) / Quasi-structured quad (11) silently ignore the layer. So the
+ * generate is refused up front rather than produced without the requested layer or left to abort.
+ */
+export function boundaryLayerAlgorithmProblem(algorithm2D: number, recombineAll: boolean): string | null {
+  if (algorithm2D === 2 || algorithm2D === 5 || algorithm2D === 6 || algorithm2D === 8) return null;
+  if (algorithm2D === 1) {
+    return recombineAll
+      ? "MeshAdapt (1) with quadrilateral recombination aborts the mesher when a boundary layer is present — pick Frontal-Delaunay (6), Delaunay (5), Automatic (2) or Frontal-Delaunay for Quads (8)."
+      : null;
+  }
+  return `Mesh algorithm ${algorithm2D} cannot carry a boundary layer (BAMG fails, Packing of Parallelograms aborts, and Initial-mesh / Quasi-structured ignore it) — pick Frontal-Delaunay (6), Delaunay (5), Automatic (2) or Frontal-Delaunay for Quads (8).`;
+}
+
+/**
+ * The geometric-series plan of a boundary layer: how many rows fit in
+ * `thickness`, the height of the last row and the thickness they actually add
+ * up to. Row k (from 0) is `wallSize * growthRatio^k` high, so n rows total
+ * `wallSize * (r^n - 1) / (r - 1)` (or `n * wallSize` when `r === 1`). Pure
+ * and analytic — the preflight number a caller sees before meshing, and the
+ * figure a generate's achieved row count is compared against.
+ */
+export function boundaryLayerPlan(bl: MeshBoundaryLayer): { layers: number; lastHeight: number; totalThickness: number } {
+  const { wallSize: h, growthRatio: r, thickness: t } = bl;
+  // The tiny epsilon keeps an exact fit (e.g. 0.05 * (1.2^3 - 1) / 0.2 = 0.182) from
+  // dropping a row to floating-point noise.
+  const layers =
+    r === 1 ? Math.floor(t / h + 1e-9) : Math.floor(Math.log(1 + (t * (r - 1)) / h) / Math.log(r) + 1e-9);
+  const total = r === 1 ? layers * h : (h * (Math.pow(r, layers) - 1)) / (r - 1);
+  return { layers, lastHeight: h * Math.pow(r, Math.max(0, layers - 1)), totalThickness: total };
+}
+
+/**
  * Distance-graded sizing anchored on a `Part` (roadmap "Boundary-layer and
  * distance-threshold mesh sizing", Phase 1) — a Gmsh `Distance` + `Threshold`
  * field pair (`gmshSizingFields.ts`'s `addDistanceThresholdField`): elements
@@ -423,18 +500,24 @@ export function scaleMeshOptionsForUnit(options: MeshOptions, factor: number): M
 
 /**
  * The `Part[]`-side sibling of {@link scaleMeshOptionsForUnit} — rescales
- * every part's own `meshSize` (mm) AND every length in its `meshGrading`
- * band (all four fields are lengths in the same unit) by the same `factor`,
+ * every part's own `meshSize` (mm), every length in its `meshGrading`
+ * band (all four fields are lengths in the same unit) and the `wallSize` /
+ * `thickness` of its `meshBoundaryLayer` (the growth ratio is dimensionless)
+ * by the same `factor`,
  * for the same unit-converted-export-only, never-persisted reason. A part
  * with neither set is left untouched.
  */
 export function scalePartsMeshSizeForUnit(parts: Part[], factor: number): Part[] {
   if (factor === 1) return parts;
   return parts.map((p) => {
-    if (p.meshSize == null && p.meshGrading == null) return p;
+    if (p.meshSize == null && p.meshGrading == null && p.meshBoundaryLayer == null) return p;
     return {
       ...p,
       meshSize: p.meshSize != null ? p.meshSize * factor : p.meshSize,
+      meshBoundaryLayer:
+        p.meshBoundaryLayer != null
+          ? { ...p.meshBoundaryLayer, wallSize: p.meshBoundaryLayer.wallSize * factor, thickness: p.meshBoundaryLayer.thickness * factor }
+          : p.meshBoundaryLayer,
       meshGrading:
         p.meshGrading != null
           ? {

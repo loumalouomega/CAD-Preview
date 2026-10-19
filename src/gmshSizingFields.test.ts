@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { addConstantField, addDistanceThresholdField, setBackgroundMin } from "./gmshSizingFields";
+import { addBoundaryLayerField, addConstantField, addDistanceThresholdField, setBackgroundMin } from "./gmshSizingFields";
 
 /** A recording fake `mesh.field.*`/`getBoundary` surface — records every
  * call so a test can assert the exact sequence of option names/values
@@ -37,6 +37,9 @@ function fakeGmsh(opts: { boundaryOf?: (dimTagsIn: number[]) => number[] } = {})
           },
           setAsBackgroundMesh: (tag: number) => {
             calls.push(`setAsBackgroundMesh(${tag})`);
+          },
+          setAsBoundaryLayer: (tag: number) => {
+            calls.push(`setAsBoundaryLayer(${tag})`);
           },
         },
       },
@@ -165,5 +168,42 @@ describe("Constant + Distance/Threshold composing on the same part", () => {
     setBackgroundMin(gmsh, [constTag, threshTag]);
     const minTag = [...fields.entries()].find(([, f]) => f.type === "Min")![0];
     expect(fields.get(minTag)!.lists.FieldsList).toEqual([constTag, threshTag]);
+  });
+});
+
+describe("addBoundaryLayerField", () => {
+  const layer = { wallSize: 0.05, growthRatio: 1.2, thickness: 0.5, quads: true };
+
+  it("returns null and touches nothing when no wall curve resolved", () => {
+    const { gmsh, calls } = fakeGmsh();
+    expect(addBoundaryLayerField(gmsh, [], layer)).toBeNull();
+    expect(calls).toEqual([]);
+  });
+
+  it("sets the canonical options, fans at the combined chain's free ends and registers it as a boundary layer — not in the Min list", () => {
+    // Two consecutive curves of one wall: combined getBoundary returns only the chain's two end points.
+    const { gmsh, fields, calls } = fakeGmsh({ boundaryOf: () => [0, -1, 0, 3] });
+    const tag = addBoundaryLayerField(gmsh, [1, 2], layer)!;
+    const f = fields.get(tag)!;
+    expect(f.type).toBe("BoundaryLayer");
+    expect(f.lists.CurvesList).toEqual([1, 2]);
+    expect(f.lists.FanPointsList).toEqual([1, 3]); // unsigned
+    expect(f.numbers).toEqual({ Size: 0.05, Ratio: 1.2, Thickness: 0.5, Quads: 1 });
+    expect(calls).toContain("getBoundary([1,1,1,2])");
+    expect(calls).toContain(`setAsBoundaryLayer(${tag})`);
+    expect(calls.some((c) => c.startsWith("setAsBackgroundMesh"))).toBe(false);
+  });
+
+  it("omits FanPointsList for a closed wall loop and writes Quads 0 when quads is off", () => {
+    const { gmsh, fields } = fakeGmsh({ boundaryOf: () => [] });
+    const tag = addBoundaryLayerField(gmsh, [4], { ...layer, quads: false })!;
+    expect(fields.get(tag)!.lists.FanPointsList).toBeUndefined();
+    expect(fields.get(tag)!.numbers.Quads).toBe(0);
+  });
+
+  it("ignores non-point boundary entries", () => {
+    const { gmsh, fields } = fakeGmsh({ boundaryOf: () => [1, 9, 0, 2] });
+    const tag = addBoundaryLayerField(gmsh, [1], layer)!;
+    expect(fields.get(tag)!.lists.FanPointsList).toEqual([2]);
   });
 });

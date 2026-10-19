@@ -1,11 +1,11 @@
 import type { Vec3 } from "./editOps";
 import type { Part } from "./protocol";
-import type { PeriodicPair } from "./meshOptions";
+import { boundaryLayerPlan, type PeriodicPair } from "./meshOptions";
 import { getOcct, readShape, wrapOcctFault } from "./occtService";
 import { resetGmsh } from "./gmshService";
 import { collectFaces, collectSolids, collectVertices, bboxCenter } from "./occtOperations";
 import { enumerateEdges } from "./edgeEnumeration";
-import { addConstantField, addDistanceThresholdField, setBackgroundMin } from "./gmshSizingFields";
+import { addBoundaryLayerField, addConstantField, addDistanceThresholdField, setBackgroundMin } from "./gmshSizingFields";
 import { addFreeEntitiesToGmshModel, type FreeEntitySpec } from "./gmshEmbed";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -76,7 +76,8 @@ export async function applyPartsToGmshModel(
   stepBytes: Uint8Array,
   parts: Part[],
   warnings?: string[],
-  periodic: PeriodicPair[] = []
+  periodic: PeriodicPair[] = [],
+  dimension: 1 | 2 | 3 = 3
 ): Promise<PartGroupMaps | null> {
   if (parts.length === 0) {
     if (periodic.length > 0) warnings?.push("Periodic pairs ignored: they are declared between Parts and the model has none.");
@@ -242,6 +243,21 @@ export async function applyPartsToGmshModel(
       }
       if (part.meshStructured != null) {
         applyTransfiniteForPart(gmsh, part.name, resolvedTags, part.meshStructured.divisions);
+      }
+      if (part.meshBoundaryLayer != null) {
+        // Boundary layers are a 2-D Gmsh field and are NOT composed into the `Min`
+        // background (see `addBoundaryLayerField`).
+        if (dimension !== 2) {
+          warnings?.push(`Part "${part.name}": the boundary layer was ignored — boundary layers apply to 2-D meshes only (this is a ${dimension}-D generate).`);
+        } else if (curveTags.length === 0) {
+          warnings?.push(`Part "${part.name}": the boundary layer was ignored — none of its edges resolved (it needs edge-N ids on the wall).`);
+        } else {
+          addBoundaryLayerField(gmsh, curveTags, part.meshBoundaryLayer);
+          const plan = boundaryLayerPlan(part.meshBoundaryLayer);
+          if (plan.layers > 40) {
+            warnings?.push(`Part "${part.name}": the boundary layer stacks ${plan.layers} rows (wall ${part.meshBoundaryLayer.wallSize}, ratio ${part.meshBoundaryLayer.growthRatio}, thickness ${part.meshBoundaryLayer.thickness}) — consider a larger ratio or a thinner stack.`);
+          }
+        }
       }
     }
 

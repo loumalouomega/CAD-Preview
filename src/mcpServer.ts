@@ -1506,7 +1506,7 @@ server.registerTool(
   "set_part",
   {
     description:
-      "Create, update, or remove a named part (FEM sub-model-part) grouping entity ids from load_model's inventory. Parts drive per-part colours, Gmsh physical groups in mesh exports (B-rep sources), optional per-part meshSize refinement (a flat size confined to the part's own entities), and optional meshGrading (a distance-graded size AROUND the part — sizeAtWall within distNear, growing to sizeFar at distFar; B-rep sources only, same as physical groups and meshSize), and optional meshStructured (transfinite node count per meshed edge for an exact mapped grid on regular regions; B-rep sources only). Optional density (g/cm3) or material name gives the part a mass: generate_bom adds Density/Mass columns and a total, get_mass_properties on a solid-N inside the part reports massGrams; a part with no density is reported as missing, never zero. Omitted fields keep their current values; meshSize/meshGrading/meshStructured/density: null clears them. Optional selector stores a re-executable SelectorQuery beside the raw surfaces cache (same shape resolve_selector takes) — the host re-resolves it against the current op list and overwrites surfaces on an oracle-clean result; null clears a stored one.",
+      "Create, update, or remove a named part (FEM sub-model-part) grouping entity ids from load_model's inventory. Parts drive per-part colours, Gmsh physical groups in mesh exports (B-rep sources), optional per-part meshSize refinement (a flat size confined to the part's own entities), and optional meshGrading (a distance-graded size AROUND the part — sizeAtWall within distNear, growing to sizeFar at distFar; B-rep sources only, same as physical groups and meshSize), and optional meshStructured (transfinite node count per meshed edge for an exact mapped grid on regular regions; B-rep sources only), and optional meshBoundaryLayer (an anisotropic boundary layer along the part's edge-N walls: wallSize, growthRatio, thickness, quads; 2-D meshes only). Optional density (g/cm3) or material name gives the part a mass: generate_bom adds Density/Mass columns and a total, get_mass_properties on a solid-N inside the part reports massGrams; a part with no density is reported as missing, never zero. Omitted fields keep their current values; meshSize/meshGrading/meshStructured/meshBoundaryLayer/density: null clears them. Optional selector stores a re-executable SelectorQuery beside the raw surfaces cache (same shape resolve_selector takes) — the host re-resolves it against the current op list and overwrites surfaces on an oracle-clean result; null clears a stored one.",
     inputSchema: {
       path: modelPath,
       name: z.string().describe("Part name (the upsert key)"),
@@ -1536,6 +1536,16 @@ server.registerTool(
         .nullable()
         .optional()
         .describe("Structured (transfinite) meshing for this part — exact mapped grid on regular regions; B-rep sources only; null clears"),
+      meshBoundaryLayer: z
+        .object({
+          wallSize: z.number().describe("Height of the first row at the wall (> 0, model units)"),
+          growthRatio: z.number().describe("Growth ratio between successive rows (>= 1)"),
+          thickness: z.number().describe("Total thickness of the layer stack (>= wallSize, model units)"),
+          quads: z.boolean().optional().describe("Recombine the layer rows into quadrilaterals (default true)"),
+        })
+        .nullable()
+        .optional()
+        .describe("Anisotropic boundary layer along this part's edge-N walls — rows grow geometrically from wallSize; 2-D meshes (generate_mesh dimension 2), B-rep sources only; null clears"),
       selector: z.looseObject({}).nullable().optional().describe("SelectorQuery to store (validated structurally); null clears a stored one"),
     },
   },
@@ -1554,6 +1564,7 @@ server.registerTool(
       material?: string;
       meshGrading?: { sizeAtWall: number; sizeFar: number; distNear: number; distFar: number } | null;
       meshStructured?: { divisions: number } | null;
+      meshBoundaryLayer?: { wallSize: number; growthRatio: number; thickness: number; quads?: boolean } | null;
       selector?: unknown;
     }) => setPart(args)
   )

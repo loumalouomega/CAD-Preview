@@ -3723,6 +3723,73 @@ try {
   );
   await call("set_part", { path: structStep, name: "Bad", remove: true });
 
+  // Anisotropic boundary layers (Part.meshBoundaryLayer): a 10x4 rectangle sketch face; the
+  // wall Part is its y=0 edge(s). Rows must start at the requested wall size and grow by the ratio,
+  // the plain mesh must not have them (control), and an algorithm that cannot carry a layer is refused.
+  const layerSeed = path.join(dir, "layer-seed.brep");
+  fs.copyFileSync(path.join(ROOT, "examples", "BREP", "blank.brep"), layerSeed);
+  await call("apply_edit_ops", { path: layerSeed, ops: [{ op: "addRectangleProfile", center: [5, 2, 0], normal: [0, 0, 1], up: [1, 0, 0], width: 10, height: 4 }] });
+  const layerStep = path.join(dir, "layer.stp");
+  await call("export_brep", { path: layerSeed, targetFormat: "step", outputPath: layerStep });
+  const wallEdges = [];
+  for (let i = 0; i < 8; i++) {
+    const e = await callTolerant("inspect", { path: layerStep, entityId: `edge-${i}` });
+    if (e.value?.center && Math.abs(e.value.center[1]) < 1e-6 && Math.abs(e.value.length - 10) < 1e-6) wallEdges.push(`edge-${i}`);
+  }
+  assert(wallEdges.length >= 1, `the rectangle's y=0 wall edge(s) are found (${wallEdges.join(",")})`);
+  const layerOptions = { dimension: 2, sizeMin: 0, sizeMax: 1.5 };
+  const mshNodes = (text) => {
+    const body = text.match(/\$Nodes\n([\s\S]*?)\$EndNodes/)?.[1].split("\n") ?? [];
+    const [blocks] = body[0].split(/\s+/).map(Number);
+    const ys = [];
+    let at = 1;
+    for (let b = 0; b < blocks; b++) {
+      const n = Number(body[at].split(/\s+/)[3]);
+      for (let k = 0; k < n; k++) ys.push(Number(body[at + 1 + n + k].split(/\s+/)[1]));
+      at += 1 + 2 * n;
+    }
+    return ys;
+  };
+  const mshQuads = (text) => {
+    const body = text.match(/\$Elements\n([\s\S]*?)\$EndElements/)?.[1].split("\n") ?? [];
+    const [blocks] = body[0].split(/\s+/).map(Number);
+    let quads = 0, at = 1;
+    for (let b = 0; b < blocks; b++) {
+      const [, , type, n] = body[at].split(/\s+/).map(Number);
+      if (type === 3) quads += n;
+      at += 1 + n;
+    }
+    return quads;
+  };
+  const layerMesh = async (name, options) => {
+    const out = path.join(dir, `${name}.msh`);
+    await call("export_mesh", { path: layerStep, format: "msh", outputPath: out, options });
+    const text = fs.readFileSync(out, "utf8");
+    return { ys: [...new Set(mshNodes(text).map((y) => Math.round(y * 1e5) / 1e5))].sort((a, b) => a - b), quads: mshQuads(text) };
+  };
+  const plainRows = await layerMesh("layer-plain", layerOptions);
+  assert(plainRows.quads === 0 && plainRows.ys[1] > 0.3, `control: the plain 2-D rectangle mesh has no quads and no thin first row (rows ${plainRows.ys.slice(0, 3)})`);
+  await call("set_part", { path: layerStep, name: "Wall", lines: wallEdges, meshBoundaryLayer: { wallSize: 0.05, growthRatio: 1.2, thickness: 0.5 } });
+  const layered = await layerMesh("layer-on", layerOptions);
+  const rowsInStack = layered.ys.filter((y) => y > 1e-6 && y <= 0.5 + 1e-6);
+  assert(layered.quads > 0, `meshBoundaryLayer produces quad rows (got ${layered.quads})`);
+  assert(
+    Math.abs(layered.ys[1] - 0.05) < 1e-4 && Math.abs(layered.ys[2] - 0.11) < 1e-4 && Math.abs(layered.ys[3] - 0.182) < 1e-4,
+    `boundary layer rows start at the wall size and grow by 1.2: 0.05, 0.11, 0.182 (got ${layered.ys.slice(1, 4)})`
+  );
+  assert(rowsInStack.length === 6, `the stack holds exactly the analytic 6 rows within 0.5 (got ${rowsInStack.length}: ${rowsInStack})`);
+  const layerAlgo = await request("tools/call", { name: "generate_mesh", arguments: { path: layerStep, options: { ...layerOptions, algorithm2D: 9 } } });
+  assert(
+    layerAlgo.isError === true && /cannot carry a boundary layer/.test(layerAlgo.content?.[0]?.text ?? ""),
+    `a boundary layer on Packing of Parallelograms is refused up front (got: ${(layerAlgo.content?.[0]?.text ?? "").slice(0, 120)})`
+  );
+  const layer3d = await call("generate_mesh", { path: layerStep, options: { sizeMin: 0, sizeMax: 1.5, dimension: 3 } });
+  assert(
+    (layer3d.warnings ?? []).some((w) => /boundary layer was ignored.*2-D meshes only/.test(w)),
+    `a 3-D generate ignores the layer with a warning (got ${JSON.stringify(layer3d.warnings)})`
+  );
+  await call("set_part", { path: layerStep, name: "Wall", remove: true });
+
   // Hex-dominant (RTree, elementShape:"hexDominant") always mixes in an
   // unmapped gmsh element type (140, "trihedron") alongside tets/hexes —
   // confirms generation + the overlay/quality pipeline tolerate it (graceful
