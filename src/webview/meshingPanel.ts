@@ -1428,6 +1428,9 @@ export class MeshingPanel {
       structToggle.classList.toggle("active", part.meshStructured != null);
       row.appendChild(structToggle);
 
+      // A boundary layer grows along a part's wall EDGES, so its toggle only exists for a part that lists some
+      // (or already carries a layer, so it can still be cleared) — everyone else keeps the two-button row.
+      const hasLayerTarget = part.lines.length > 0 || part.meshBoundaryLayer != null;
       const layerToggle = document.createElement("button");
       layerToggle.type = "button";
       layerToggle.className = "meshing-part-layer-toggle";
@@ -1435,7 +1438,7 @@ export class MeshingPanel {
       layerToggle.title = "Anisotropic boundary layer along this part's edges: thin rows growing from the wall (B-rep sources, 2-D meshes only)";
       layerToggle.setAttribute("aria-expanded", "false");
       layerToggle.classList.toggle("active", part.meshBoundaryLayer != null);
-      row.appendChild(layerToggle);
+      if (hasLayerTarget) row.appendChild(layerToggle);
 
       this.partsBody.appendChild(row);
 
@@ -1459,15 +1462,17 @@ export class MeshingPanel {
         structToggle.setAttribute("aria-expanded", String(!nowHidden));
       });
 
-      const layerRow = this.buildPartBoundaryLayerRow(index, part.meshBoundaryLayer);
-      layerRow.hidden = true;
-      this.partsBody.appendChild(layerRow);
+      if (hasLayerTarget) {
+        const layerRow = this.buildPartBoundaryLayerRow(index, part.meshBoundaryLayer);
+        layerRow.hidden = true;
+        this.partsBody.appendChild(layerRow);
 
-      layerToggle.addEventListener("click", () => {
-        const nowHidden = !layerRow.hidden;
-        layerRow.hidden = nowHidden;
-        layerToggle.setAttribute("aria-expanded", String(!nowHidden));
-      });
+        layerToggle.addEventListener("click", () => {
+          const nowHidden = !layerRow.hidden;
+          layerRow.hidden = nowHidden;
+          layerToggle.setAttribute("aria-expanded", String(!nowHidden));
+        });
+      }
     });
   }
 

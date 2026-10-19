@@ -6636,35 +6636,33 @@ test("FE Mesh Part sizes: Struct toggle expands, commits divisions, rejects, and
   assert(clearedStruct == null, `clearing the field removes the structuring (got ${JSON.stringify(clearedStruct)})`);
 });
 
-test("FE Mesh Part sizes: Layer toggle expands, commits a boundary layer with its plan, rejects, and clears", async (page) => {
+test("FE Mesh Part sizes: Layer toggle (edge parts only) expands, commits a boundary layer with its plan, rejects, and clears", async (page) => {
   await populate(page);
 
-  // Rows are [part row, grading, structured, layer]; every Layer row starts collapsed and the toggles inactive.
+  // A layer grows along a part's wall EDGES: only the fixture part that lists edges ("Feature edges") has the toggle.
   const initial = await page.evaluate(() => {
     const rows = [...document.querySelectorAll("#meshing-part-sizes .meshing-part-row")];
     const layerRows = [...document.querySelectorAll("#meshing-part-sizes .meshing-part-layer")];
     return {
-      toggles: rows.map((r) => {
-        const t = r.querySelector(".meshing-part-layer-toggle");
-        return { present: !!t, active: t?.classList.contains("active") ?? false, ariaExpanded: t?.getAttribute("aria-expanded") ?? null };
-      }),
+      names: rows.map((r) => r.querySelector(".meshing-part-name")?.textContent),
+      withToggle: rows.map((r) => !!r.querySelector(".meshing-part-layer-toggle")),
+      toggle: (() => { const t = document.querySelector(".meshing-part-layer-toggle"); return { active: t?.classList.contains("active"), ariaExpanded: t?.getAttribute("aria-expanded") }; })(),
       layerRowCount: layerRows.length,
       allHiddenAndInvisible: layerRows.every((r) => r.hidden && r.offsetParent === null),
     };
   });
   assert(
-    initial.toggles.length === 3 && initial.toggles.every((t) => t.present && t.active === false && t.ariaExpanded === "false"),
-    `every Layer toggle starts present, inactive and collapsed (got ${JSON.stringify(initial.toggles)})`
+    initial.withToggle.filter(Boolean).length === 1 && initial.names[initial.withToggle.indexOf(true)] === "Feature edges",
+    `only the part that lists edges has a Layer toggle (got ${JSON.stringify({ names: initial.names, withToggle: initial.withToggle })})`
   );
-  assert(initial.layerRowCount === 3 && initial.allHiddenAndInvisible, `every Layer row starts genuinely invisible (got ${JSON.stringify(initial)})`);
+  assert(initial.toggle.active === false && initial.toggle.ariaExpanded === "false", `the Layer toggle starts inactive and collapsed (got ${JSON.stringify(initial.toggle)})`);
+  assert(initial.layerRowCount === 1 && initial.allHiddenAndInvisible, `its Layer row starts genuinely invisible (got ${JSON.stringify(initial)})`);
 
   const layerRowOf = `(() => {
-    const row = [...document.querySelectorAll("#meshing-part-sizes .meshing-part-row")][0];
+    const row = document.querySelector(".meshing-part-layer-toggle").closest(".meshing-part-row");
     return row.nextElementSibling.nextElementSibling.nextElementSibling;
   })()`;
-  await page.evaluate(() => {
-    document.querySelectorAll("#meshing-part-sizes .meshing-part-row")[0].querySelector(".meshing-part-layer-toggle").click();
-  });
+  await page.click(".meshing-part-layer-toggle");
   await sleep(150);
   const expanded = await page.evaluate((expr) => {
     const layerRow = eval(expr);
@@ -6678,20 +6676,21 @@ test("FE Mesh Part sizes: Layer toggle expands, commits a boundary layer with it
     for (const [inp, v] of [[w, wall], [r, ratio], [t, thick]]) inp.value = v;
     t.dispatchEvent(new Event("change", { bubbles: true }));
   }, { expr: layerRowOf, wall, ratio, thick });
+  const layerOfPart = () => page.evaluate(() => {
+    const parts = (window.__sent || []).findLast((x) => x.type === "partsChanged")?.parts ?? [];
+    return parts.find((p) => p.name === "Feature edges");
+  });
 
   await page.evaluate(() => (window.__sent.length = 0));
   await fill("0.05", "1.2", "0.5");
   await sleep(150);
-  const committed = await page.evaluate((expr) => {
-    const parts = (window.__sent || []).findLast((x) => x.type === "partsChanged")?.parts ?? [];
-    const firstName = document.querySelectorAll("#meshing-part-sizes .meshing-part-row")[0].querySelector(".meshing-part-name")?.textContent;
-    return { layer: parts.find((p) => p.name === firstName)?.meshBoundaryLayer ?? null, plan: eval(expr).querySelector(".meshing-part-layer-plan")?.textContent ?? "" };
-  }, layerRowOf);
+  const committed = await layerOfPart();
+  const plan = await page.evaluate((expr) => eval(expr).querySelector(".meshing-part-layer-plan")?.textContent ?? "", layerRowOf);
   assert(
-    committed.layer?.wallSize === 0.05 && committed.layer?.growthRatio === 1.2 && committed.layer?.thickness === 0.5 && committed.layer?.quads === true,
-    `a valid layer posts partsChanged (got ${JSON.stringify(committed.layer)})`
+    committed?.meshBoundaryLayer?.wallSize === 0.05 && committed.meshBoundaryLayer.growthRatio === 1.2 && committed.meshBoundaryLayer.thickness === 0.5 && committed.meshBoundaryLayer.quads === true,
+    `a valid layer posts partsChanged (got ${JSON.stringify(committed?.meshBoundaryLayer)})`
   );
-  assert(/^6 rows, last 0\.12\d*, total 0\.49\d*/.test(committed.plan), `the plan line shows the analytic 6 rows (got "${committed.plan}")`);
+  assert(/^6 rows, last 0\.12\d*, total 0\.49\d*/.test(plan), `the plan line shows the analytic 6 rows (got "${plan}")`);
 
   // Invalid layers (ratio below 1, thickness below the wall) post nothing and show an inline error.
   for (const [wall, ratio, thick] of [["0.05", "0.5", "0.5"], ["0.5", "1.2", "0.1"]]) {
@@ -6709,15 +6708,9 @@ test("FE Mesh Part sizes: Layer toggle expands, commits a boundary layer with it
   await page.evaluate(() => (window.__sent.length = 0));
   await fill("", "", "");
   await sleep(150);
-  const cleared = await page.evaluate(() => {
-    const parts = (window.__sent || []).findLast((x) => x.type === "partsChanged")?.parts ?? [];
-    const firstName = document.querySelectorAll("#meshing-part-sizes .meshing-part-row")[0].querySelector(".meshing-part-name")?.textContent;
-    const p = parts.find((p) => p.name === firstName);
-    return p ? p.meshBoundaryLayer : "no-such-part";
-  });
-  assert(cleared == null, `clearing every field removes the layer (got ${JSON.stringify(cleared)})`);
+  const cleared = await layerOfPart();
+  assert(cleared && cleared.meshBoundaryLayer == null, `clearing every field removes the layer (got ${JSON.stringify(cleared?.meshBoundaryLayer)})`);
 });
-
 
 /**
  * Standard-parts thumbnails (the "Standard-parts thumbnails" feature). Search stays text-first: rows
