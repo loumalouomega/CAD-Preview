@@ -1090,7 +1090,7 @@ type WebviewToHost =
   | { type: 'meshPresetSaveCurrent' }
   | { type: 'meshPresetDelete'; name: string }
   | { type: 'screenshotButtonClicked' }
-  | { type: 'promoteToBrepButtonClicked' }
+  | { type: 'promoteToBrepButtonClicked'; mergeFacets?: boolean }
   | { type: 'repairMeshButtonClicked' }
   | { type: 'screenshotResult'; requestId: string; data: string }
   | { type: 'screenshotError'; requestId: string; message: string }
@@ -1374,10 +1374,12 @@ Sent in reply to `screenshotRequest`. `data` is always base64 PNG bytes (no `bin
 
 ### `promoteToBrepButtonClicked`
 
+`mergeFacets` mirrors the panel's **Merge facets** checkbox (absent = false): promote with one planar face per near-coplanar facet (`meshFacetMerge.ts`) instead of one per triangle.
+
 Sent when the Mesh Health panel's **Promote to B-rep…** button is clicked ("Mesh → B-rep promotion" Phase 2) — only reachable once a report shows at least one component that closed. Unlike `screenshotButtonClicked`, there is no follow-up request message: the host runs the ENTIRE flow itself (a format quick-pick over STEP/IGES/BREP, the existing export-unit quick-pick, a save dialog, then `promoteMeshToBrep`) and reports success/failure through the plain, already-existing generic `"status"`/`"error"` messages — no new result type was needed.
 
 ```json
-{ "type": "promoteToBrepButtonClicked" }
+{ "type": "promoteToBrepButtonClicked", "mergeFacets": false }
 ```
 
 ```json

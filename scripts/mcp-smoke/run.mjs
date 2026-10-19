@@ -3203,6 +3203,48 @@ try {
     `the promoted multi-solid file's combined volume is 1000 + 125 = 1125 (got ${promotedMultiMass.volume})`
   );
 
+  // Planar-facet merging (promote_mesh_to_brep mergeFacets): ONE planar face per near-coplanar facet instead of
+  // one per triangle. cube.stl is 12 triangles / 6 square facets; the merged file must keep the exact volume with
+  // 6 faces (control: the per-triangle promotion above sews 12 faces, so the count is the discriminating fact).
+  const mergedStep = path.join(dir, "promoted-merged.step");
+  const mergedResult = await call("promote_mesh_to_brep", { path: cubeStl, outputPath: mergedStep, mergeFacets: true });
+  assert(
+    mergedResult.merge && mergedResult.merge.triangles === 12 && mergedResult.merge.mergedFacets === 6 && mergedResult.merge.faces === 6 && mergedResult.merge.keptAsTriangles === 0,
+    `mergeFacets sews 6 planar faces from the cube's 12 triangles (got ${JSON.stringify(mergedResult.merge)})`
+  );
+  assert(promoteStepResult.merge === undefined, "a plain promotion reports no merge block (the per-triangle path is unchanged)");
+  const mergedMass = await call("get_mass_properties", { path: mergedStep });
+  assert(Math.abs(mergedMass.volume - 1000) < 1e-3, `the merged promotion keeps the exact volume (got ${mergedMass.volume})`);
+  const mergedInventory = await call("load_model", { path: mergedStep });
+  const countFaces = (r) => (r.solids ?? []).reduce((n, sol) => n + (sol.faceIds ?? []).length, 0);
+  const plainInventory = await call("load_model", { path: promotedStep });
+  assert(
+    countFaces(mergedInventory) === 6 && countFaces(plainInventory) === 12,
+    `the merged STEP has 6 faces against the per-triangle STEP's 12 (got ${countFaces(mergedInventory)} vs ${countFaces(plainInventory)})`
+  );
+  // A curved prism must never be flattened: a 24-gon prism (radius 5, height 10) merges its caps and sides, and the
+  // volume equals the analytic polygon prism, not a smaller or larger flattened shape.
+  const prismStl = path.join(dir, "prism24.stl");
+  {
+    const n = 24, r = 5, h = 10, ring = (z) => Array.from({ length: n }, (_, i) => [r * Math.cos((2 * Math.PI * i) / n), r * Math.sin((2 * Math.PI * i) / n), z]);
+    const lo = ring(0), hi = ring(h), lines = ["solid prism"];
+    const tri = (a, b, c) => lines.push("facet normal 0 0 0", "outer loop", ...[a, b, c].map((p) => `vertex ${p[0]} ${p[1]} ${p[2]}`), "endloop", "endfacet");
+    for (let i = 0; i < n; i++) {
+      const j = (i + 1) % n;
+      tri([0, 0, 0], lo[j], lo[i]); tri([0, 0, h], hi[i], hi[j]); tri(lo[i], lo[j], hi[j]); tri(lo[i], hi[j], hi[i]);
+    }
+    lines.push("endsolid prism");
+    fs.writeFileSync(prismStl, lines.join("\n"));
+  }
+  const prismStep = path.join(dir, "prism24.step");
+  const prismResult = await call("promote_mesh_to_brep", { path: prismStl, outputPath: prismStep, mergeFacets: true });
+  const prismVolume = 0.5 * 24 * 25 * Math.sin((2 * Math.PI) / 24) * 10;
+  const prismMass = await call("get_mass_properties", { path: prismStep });
+  assert(
+    prismResult.merge.faces === 26 && Math.abs(prismMass.volume - prismVolume) < 1e-3,
+    `a 24-gon prism merges to 26 faces (2 caps + 24 sides) at its analytic volume ${prismVolume.toFixed(4)} (got ${prismResult.merge.faces} faces, volume ${prismMass.volume})`
+  );
+
   // B-rep sources / glTF: same rejection convention as check_mesh_health,
   // via a thrown tool error rather than a supported:false response (this
   // tool has no destination to route a graceful "nothing to promote" reply

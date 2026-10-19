@@ -1830,7 +1830,7 @@ const meshHealthPanel = new MeshHealthPanel(document.getElementById("mesh-health
   },
   onPromote: () => {
     if (!meshHealthEligibleFormat) return;
-    post({ type: "promoteToBrepButtonClicked" });
+    post({ type: "promoteToBrepButtonClicked", mergeFacets: meshHealthPanel.mergeFacets });
   },
   onFitCad: () => {
     if (!meshHealthEligibleFormat) return;

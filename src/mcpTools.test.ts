@@ -1931,6 +1931,32 @@ describe("promote_mesh_to_brep", () => {
     expect(await fs.readFile(outputPath)).toEqual(Buffer.from(FAKE_PROMOTE_RESULT.bytes));
   });
 
+  it("passes mergeFacets through as a validated option, and reports the merge block", async () => {
+    const c = ctx();
+    const merge = { triangles: 12, faces: 6, mergedFacets: 6, keptAsTriangles: 0 };
+    (c.pipeline.promoteMeshToBrep as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ ...FAKE_PROMOTE_RESULT, merge });
+    const result = await promoteMeshToBrepTool(c, { path: stlModel, outputPath: path.join(dir, "merged.step"), mergeFacets: true });
+    expect(c.pipeline.promoteMeshToBrep).toHaveBeenLastCalledWith(dir, expect.any(Uint8Array), "stl", "step", "mm", undefined, { mergeFacets: { angleToleranceDeg: 1 } });
+    expect(result.merge).toEqual(merge);
+
+    await promoteMeshToBrepTool(c, { path: stlModel, outputPath: path.join(dir, "merged2.step"), mergeFacets: { angleToleranceDeg: 4 } });
+    expect(c.pipeline.promoteMeshToBrep).toHaveBeenLastCalledWith(dir, expect.any(Uint8Array), "stl", "step", "mm", undefined, { mergeFacets: { angleToleranceDeg: 4 } });
+  });
+
+  it("does not append an options argument (or a merge block) when mergeFacets is absent or false", async () => {
+    const c = ctx();
+    const result = await promoteMeshToBrepTool(c, { path: stlModel, outputPath: path.join(dir, "plain.step"), mergeFacets: false });
+    expect(c.pipeline.promoteMeshToBrep).toHaveBeenLastCalledWith(dir, expect.any(Uint8Array), "stl", "step", "mm", undefined);
+    expect(result).not.toHaveProperty("merge");
+  });
+
+  it("warns and promotes per triangle for a malformed mergeFacets value", async () => {
+    const c = ctx();
+    const result = await promoteMeshToBrepTool(c, { path: stlModel, outputPath: path.join(dir, "bad.step"), mergeFacets: 3 as unknown as boolean });
+    expect(c.pipeline.promoteMeshToBrep).toHaveBeenLastCalledWith(dir, expect.any(Uint8Array), "stl", "step", "mm", undefined);
+    expect(result.warnings.some((w) => /mergeFacets must be/.test(w))).toBe(true);
+  });
+
   it("promotes OBJ/PLY sources too", async () => {
     const c = ctx();
     const objOut = path.join(dir, "promoted-obj.step");

@@ -135,6 +135,7 @@ import { evaluateToleranceBand } from "./toleranceBand";
 import { meshioCompanionCandidates } from "./meshioCompanions";
 import type { MeshioCompanion } from "./meshioService";
 import type { checkMeshHealth, MeshHealthReport, promoteMeshToBrep, PromoteMeshResult, DecimatedInfo } from "./meshHeal";
+import { validateMergeFacets } from "./meshFacetMerge";
 import type { recognizePrimitives, PrimitiveReport } from "./primitiveReport";
 import type { fitMeshRegion } from "./meshRegionFit";
 import type { segmentMeshSurface, SegmentMeshOptions } from "./meshSegment";
@@ -3160,8 +3161,8 @@ export async function decomposeToPrimitivesTool(
  */
 export async function promoteMeshToBrepTool(
   ctx: ToolContext,
-  params: { path: string; outputPath: string; targetFormat?: string; unit?: string; autoDecimate?: boolean }
-): Promise<{ written: string; bytes: number; promotedComponents: number[]; skippedComponents: number[]; warnings: string[]; decimated?: DecimatedInfo }> {
+  params: { path: string; outputPath: string; targetFormat?: string; unit?: string; autoDecimate?: boolean; mergeFacets?: boolean | { angleToleranceDeg?: number } }
+): Promise<{ written: string; bytes: number; promotedComponents: number[]; skippedComponents: number[]; warnings: string[]; decimated?: DecimatedInfo; merge?: NonNullable<PromoteMeshResult["merge"]> }> {
   const modelPath = params.path;
   const route = requireRoute(modelPath);
 
@@ -3195,11 +3196,18 @@ export async function promoteMeshToBrepTool(
     warnings.push(`${modelPath}: pending edits are NOT baked in — promote_mesh_to_brep reads the raw file; save_model (STL/OBJ/PLY) bakes them into the source first.`);
   }
 
+  const mergeFacets = validateMergeFacets(params.mergeFacets);
+  if (params.mergeFacets && !mergeFacets) warnings.push("mergeFacets must be true or { angleToleranceDeg } — ignored.");
+  const promoteOptions = mergeFacets ? { mergeFacets } : undefined;
+
   const bytes = await readModelBytes(modelPath);
   const sourceFormat = route.format as MeshParseFormat;
   const external = sourceFormat === "gltf" ? await resolveGltfBuffers(ctx, modelPath, bytes) : undefined;
   try {
-    const result = await ctx.pipeline.promoteMeshToBrep(ctx.extensionPath, bytes, sourceFormat, targetFormat, unit, external);
+    // The options argument is only appended when merging, so a plain call is byte-identical to before.
+    const result = promoteOptions
+      ? await ctx.pipeline.promoteMeshToBrep(ctx.extensionPath, bytes, sourceFormat, targetFormat, unit, external, promoteOptions)
+      : await ctx.pipeline.promoteMeshToBrep(ctx.extensionPath, bytes, sourceFormat, targetFormat, unit, external);
     await fs.writeFile(outputPath, result.bytes);
 
     return {
@@ -3208,11 +3216,14 @@ export async function promoteMeshToBrepTool(
       promotedComponents: result.promotedComponents,
       skippedComponents: result.skippedComponents,
       warnings: [...warnings, ...result.warnings],
+      ...(result.merge ? { merge: result.merge } : {}),
     };
   } catch (err) {
     if (!params.autoDecimate || !isHealableSizeError(err)) throw err;
     const decimated = await decimateForHeal(ctx, bytes, sourceFormat, external);
-    const result = await ctx.pipeline.promoteMeshToBrep(ctx.extensionPath, decimated.stlBytes, "stl", targetFormat, unit);
+    const result = promoteOptions
+      ? await ctx.pipeline.promoteMeshToBrep(ctx.extensionPath, decimated.stlBytes, "stl", targetFormat, unit, undefined, promoteOptions)
+      : await ctx.pipeline.promoteMeshToBrep(ctx.extensionPath, decimated.stlBytes, "stl", targetFormat, unit);
     await fs.writeFile(outputPath, result.bytes);
 
     return {
@@ -3226,6 +3237,7 @@ export async function promoteMeshToBrepTool(
         ...result.warnings,
       ],
       decimated: decimated.info,
+      ...(result.merge ? { merge: result.merge } : {}),
     };
   }
 }

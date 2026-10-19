@@ -930,7 +930,9 @@ export type WebviewToHost =
   | { type: "meshPresetSaveCurrent" }
   | { type: "meshPresetDelete"; name: string }
   | { type: "screenshotButtonClicked" }
-  | { type: "promoteToBrepButtonClicked" }
+  /** `mergeFacets` is the Mesh Health panel's "Merge facets" checkbox: promote with one planar face per
+   * near-coplanar facet (`meshFacetMerge.ts`) instead of one per triangle. Absent/false = per triangle. */
+  | { type: "promoteToBrepButtonClicked"; mergeFacets?: boolean }
   /** Mesh Health panel: segment the mesh's whole surface, replace its patches
    * with exact analytic faces (`fit_mesh_to_cad`) and save the fitted solid as
    * a brand-new STEP file. Like `promoteToBrepButtonClicked`, the host owns

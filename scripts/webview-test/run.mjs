@@ -5136,6 +5136,20 @@ test("mesh health: a native STL shows the panel, Check posts a request, the repo
   assert(gates.repair === true, "…and leaves Repair disabled — there is nothing to repair");
   await page.click("#mesh-health-fit");
   assert((await lastSent(page, "fitMeshToCadButtonClicked")) !== null, "Fit to CAD posts fitMeshToCadButtonClicked");
+
+  // Merge facets: a session-only checkbox, off by default, whose state rides the promote message.
+  const mergeBox = await page.evaluate(() => {
+    const el = document.getElementById("mesh-health-merge");
+    return { present: !!el, checked: el?.checked, visible: el?.offsetParent !== null };
+  });
+  assert(mergeBox.present && mergeBox.checked === false && mergeBox.visible, `Merge facets is a visible, unticked checkbox by default (got ${JSON.stringify(mergeBox)})`);
+  await page.evaluate(() => (window.__sent.length = 0));
+  await page.click("#mesh-health-promote");
+  assert((await lastSent(page, "promoteToBrepButtonClicked"))?.mergeFacets === false, "Promote posts mergeFacets:false while the box is unticked");
+  await page.check("#mesh-health-merge");
+  await page.evaluate(() => (window.__sent.length = 0));
+  await page.click("#mesh-health-promote");
+  assert((await lastSent(page, "promoteToBrepButtonClicked"))?.mergeFacets === true, "ticking Merge facets makes Promote post mergeFacets:true");
 });
 
 test("mesh health: Repair and Promote are mirror-image gates; stale replies and the decimate flag", async (page) => {
