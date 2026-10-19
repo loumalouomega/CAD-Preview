@@ -249,6 +249,23 @@ export const MESH_EXPORT_FORMATS = [
     filterLabel: "LS-DYNA d3plot Mesh",
     via: "meshio",
   },
+  // meshio++ 17.4.0's Nastran OP2 result writer (PR #164, CVISC dampers in
+  // #165), adopted with the 17.7.0 bump. Reverses this file's earlier triage
+  // of the `nastran_op2` writer as "no consumer here": unlike at 17.2.0, the
+  // build now also READS OP2, so an exported file re-opens — the full
+  // round-trip bar above passes on the 17.7.0 FULL artifact (the
+  // SaveAll-shaped pipeline mesh keeps every cell class through write+read;
+  // blocks merge per type like the other results-file writers, with
+  // `nastran:card/eid/pid/c1/c2` cell data attached on read). Probe:
+  // scripts/probe/examples/op2-writer.ts; fixture: gen-1740-fixtures.mjs.
+  // `lsdyna_binout` (same PR) stays unadopted — still no consumer.
+  {
+    id: "nastran_op2",
+    label: "Nastran OP2 results (.op2)",
+    extension: "op2",
+    filterLabel: "Nastran OP2 Results",
+    via: "meshio",
+  },
 ] as const satisfies readonly MeshExportFormat[];
 
 export type MeshExportFormatId = (typeof MESH_EXPORT_FORMATS)[number]["id"];

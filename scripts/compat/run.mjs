@@ -260,6 +260,8 @@ const EXTENSIONS = {
   mdpaElements: "mdpa", mdpaGeometries: "mdpa", msh2: "msh2", mesh: "mesh", gid: "post.msh", avsucd: "avs", netgen: "vol", flac3d: "f3grid", flux: "pf3", libmesh: "xda",
   // meshio++ 17.3.0's writers: registry id ≠ file extension (meshExportFormats.ts carries the distinct ids so `convert`'s outFormat names the exact writer; the FILE extension is what routeFile matches on reload).
   tecplot: "plt", medit: "meshb", marc_t19: "t19", abaqus_fil: "fil", ansys_rst: "rst", lsdyna_d3plot: "d3plot",
+  // meshio++ 17.4.0's Nastran OP2 result writer (same id ≠ extension rule).
+  nastran_op2: "op2",
 };
 function exportExtension(format) {
   return EXTENSIONS[format] ?? format;

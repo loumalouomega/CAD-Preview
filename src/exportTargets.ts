@@ -140,6 +140,7 @@ export const EXPORT_EXTENSION: Record<CadFormat, string> = {
   abaqus_fil: "fil",
   ansys_rst: "rst",
   lsdyna_d3plot: "d3plot",
+  nastran_op2: "op2",
 };
 
 /** Human-readable label for a format, used in the export quick-pick. */
@@ -184,4 +185,5 @@ export const EXPORT_LABEL: Record<CadFormat, string> = {
   abaqus_fil: "Abaqus Results",
   ansys_rst: "Ansys MAPDL Results",
   lsdyna_d3plot: "LS-DYNA d3plot",
+  nastran_op2: "Nastran OP2 Results",
 };

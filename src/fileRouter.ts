@@ -19,7 +19,7 @@ export type CadFormat =
   | "libmesh"
   | "cad_json"
   | "nastran"
-  | "tecplot" | "xplt" | "marc_t19" | "abaqus_fil" | "ansys_rst" | "lsdyna_d3plot";
+  | "tecplot" | "xplt" | "marc_t19" | "abaqus_fil" | "ansys_rst" | "lsdyna_d3plot" | "nastran_op2";
 
 /** `CadFormat` members routed through meshio++ — kept as one list so every
  * place that needs to enumerate them (package.json's generation, docs) has a
@@ -55,6 +55,11 @@ export const MESHIO_FORMATS: readonly CadFormat[] = [
   // meshio++ 17.3.0's new binary writers — each adopted only after the live
   // round-trip check below (see EXTENSION_MAP).
   "tecplot", "xplt", "marc_t19", "abaqus_fil", "ansys_rst", "lsdyna_d3plot",
+  // meshio++ 17.4.0's Nastran OP2 result writer (PR #164), adopted with the
+  // 17.7.0 bump: the same live round-trip check passed, and this build's
+  // OP2 READER read the writer's own output back with every cell class
+  // intact (see EXTENSION_MAP's `op2` entry).
+  "nastran_op2",
 ];
 
 /**
@@ -248,6 +253,17 @@ const EXTENSION_MAP: Record<string, FileRoute> = {
   "fil": { strategy: "meshio", format: "abaqus_fil" },
   rst: { strategy: "meshio", format: "ansys_rst" },
   d3plot: { strategy: "meshio", format: "lsdyna_d3plot" },
+  // meshio++ 17.4.0's Nastran OP2 result writer (PR #164, CVISC dampers in
+  // #165), adopted with the 17.7.0 bump — reversing the earlier triage's
+  // "no consumer here" for `nastran_op2`. Verified live against the 17.7.0
+  // FULL artifact to the same two-step bar as the results-file writers
+  // above: the SaveAll-shaped pipeline mesh (vertex/line/triangle/tetra)
+  // wrote and read back through this build's OWN OP2 reader with every cell
+  // class intact — blocks merged per type like the others, plus `nastran:
+  // card/eid/pid/c1/c2` cell data the reader attaches. Probed in
+  // `scripts/probe/examples/op2-writer.ts`; fixture via
+  // `scripts/gen-1740-fixtures.mjs`.
+  op2: { strategy: "meshio", format: "nastran_op2" },
   // EnSight Gold is NOT routed, deliberately. The plumbing is all in place —
   // `meshioCompanions.ts` already carries `ensight: ["case", "geo"]` and
   // unit-tests it, and the format only became readable at all in meshio++

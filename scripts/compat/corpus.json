@@ -4,9 +4,9 @@
     "date": "2026-10-19",
     "opencascade.js": "1.1.1",
     "@loumalouomega/gmsh-wasm": "0.4.0",
-    "@meshioplusplus/wasm": "17.3.0",
+    "@meshioplusplus/wasm": "17.7.0",
     "float-tetwild-wasm": "0.2.0",
-    "result": "76 pass"
+    "result": "78 pass"
   },
   "seed": "STP/block.stp",
   "seedVolume": 60,
@@ -53,6 +53,7 @@
     { "id": "load-fil-fixture", "check": "load", "fixture": "AbaqusFIL/two-tets.fil", "expect": { "format": "abaqus_fil", "remesh": true } },
     { "id": "load-rst-fixture", "check": "load", "fixture": "AnsysRST/two-tets.rst", "expect": { "format": "ansys_rst", "warningIncludes": "ReStructuredText", "remesh": true } },
     { "id": "load-d3plot-fixture", "check": "load", "fixture": "LsDyna/two-tets.d3plot", "expect": { "format": "lsdyna_d3plot", "remesh": true } },
+    { "id": "load-op2-fixture", "check": "load", "fixture": "Nastran/two-tets.op2", "expect": { "format": "nastran_op2", "remesh": true } },
 
     { "id": "export-msh", "check": "export", "format": "msh", "reload": true, "remesh": true },
     { "id": "export-msh2", "check": "export", "format": "msh2", "reload": false },
@@ -75,6 +76,7 @@
     { "id": "export-abaqus-fil", "check": "export", "format": "abaqus_fil", "reload": true, "remesh": true },
     { "id": "export-ansys-rst", "check": "export", "format": "ansys_rst", "reload": true, "remesh": true },
     { "id": "export-lsdyna-d3plot", "check": "export", "format": "lsdyna_d3plot", "reload": true, "remesh": true },
+    { "id": "export-nastran-op2", "check": "export", "format": "nastran_op2", "reload": true, "remesh": true },
     { "id": "export-xdmf", "check": "export", "format": "xdmf", "reload": true, "companion": ".h5", "remesh": true },
     { "id": "export-hmf", "check": "export", "format": "hmf", "reload": false },
     { "id": "export-avsucd", "check": "export", "format": "avsucd", "reload": false },
