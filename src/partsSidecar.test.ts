@@ -165,6 +165,21 @@ describe("serializePartsJson", () => {
     expect(parsePartsJson(text)).toEqual(parts);
   });
 
+  it("round-trips a part's meshBoundaryLayer and drops an invalid one on parse", () => {
+    const layer = { wallSize: 0.05, growthRatio: 1.2, thickness: 0.5, quads: true };
+    const parts: Part[] = [{
+      name: "P", color: "#123456", volumes: [], surfaces: [], lines: ["edge-0"], points: [],
+      meshBoundaryLayer: layer,
+    }];
+    expect(parsePartsJson(serializePartsJson("model.step", parts))).toEqual(parts);
+    const base = { name: "P", color: "#123456", volumes: [], surfaces: [], lines: ["edge-0"], points: [] };
+    for (const bad of [{ wallSize: 0.5, growthRatio: 1.2, thickness: 0.1 }, { wallSize: 0.05, growthRatio: 0.5, thickness: 1 }, "x", 7]) {
+      const parsed = parsePartsJson(JSON.stringify({ parts: [{ ...base, meshBoundaryLayer: bad }] }))[0];
+      expect(parsed.meshBoundaryLayer).toBeUndefined();
+      expect(parsed.name).toBe("P"); // the part survives
+    }
+  });
+
   it("round-trips a part's stored selector query", () => {
     const parts: Part[] = [{
       name: "P", color: "#123456", volumes: [], surfaces: ["face-0"], lines: [], points: [],

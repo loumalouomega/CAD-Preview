@@ -8,7 +8,7 @@ import type { MmgOptions } from "./mmgOptions";
 import type { CoarsenStlResult } from "./mmgCoarsen";
 import type { DecimatedInfo } from "./meshHeal";
 import { explicitTriangleRegions, triangleCoordinateKey } from "./meshioTriangleRegions";
-import { boundaryExtentMismatches, describeExtentMismatch, extentOf } from "./meshioBoundary";
+import { boundaryExtentMismatches, describeExtentMismatch, extentOf, hasQuadFaceVolumeCells, isSurfaceOnlyMesh } from "./meshioBoundary";
 
 // meshio++ WASM module (`@meshioplusplus/wasm`) — the third host-side WASM
 // singleton alongside OCCT (occtService.ts) and Gmsh (gmshService.ts), used to
@@ -292,18 +292,28 @@ export async function convertToStlBoundary(
     // across every committed meshio fixture, a correct extraction is exactly
     // 1.000 on all three axes; see meshioBoundary.ts for the defect that
     // motivated this, and why counts cannot catch it.
-    const assertCoversSource = (positions: ArrayLike<number>, dim: number) => {
+    const extentMismatches = (positions: ArrayLike<number>, dim: number) => {
       const got = extentOf(positions, dim);
-      if (!sourceExtent || !got) return;
-      const mismatches = boundaryExtentMismatches(sourceExtent, got);
+      return sourceExtent && got ? boundaryExtentMismatches(sourceExtent, got) : [];
+    };
+    const assertCoversSource = (positions: ArrayLike<number>, dim: number) => {
+      const mismatches = extentMismatches(positions, dim);
       if (mismatches.length) throw new Error(describeExtentMismatch(meshioFormat, mismatches));
     };
+    // A shell-only source (no volume cell): see the in-place route below.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const sourceCellTypes: string[] = (sourceMesh.cells as any[]).map((b) => b.type);
+    const surfaceOnly = isSurfaceOnlyMesh(sourceCellTypes);
+    // `convertSurface` drops quad faces: a wedge/pyramid/hex-plus-tet boundary must not use it.
+    const quadFaces = hasQuadFaceVolumeCells(sourceCellTypes);
     let convertError: unknown;
     let converted: Uint8Array | undefined;
     try {
-      m.convertSurface(primaryPath, outPath, { inFormat: meshioFormat, outFormat: "stl" });
-      const bytes: Uint8Array = m.FS.readFile(outPath);
-      if (parseStl(bytes).length > 0) converted = bytes;
+      if (!quadFaces) {
+        m.convertSurface(primaryPath, outPath, { inFormat: meshioFormat, outFormat: "stl" });
+        const bytes: Uint8Array = m.FS.readFile(outPath);
+        if (parseStl(bytes).length > 0) converted = bytes;
+      }
     } catch (err) {
       // Some format readers support a deck that the C++ surface converter
       // rejects (Nastran is one). A plain reader + surface extraction handles
@@ -316,8 +326,15 @@ export async function convertToStlBoundary(
     // mistaken for the converter declining the deck and fall through to the
     // fallback, which would reintroduce the same wrong geometry.
     if (converted) {
-      assertCoversSource(parseStl(converted), 3);
-      return converted;
+      const soup = parseStl(converted);
+      // On a shell-only mesh the native converter can "succeed" with a fragment of the surface
+      // (a Nastran CQUAD4/CTRIA3 deck came back as one facet, extent 2 of 6). Its cells already
+      // are the surface, so discard the fragment and linearize them in place below.
+      if (surfaceOnly && extentMismatches(soup, 3).length > 0) converted = undefined;
+      else {
+        assertCoversSource(soup, 3);
+        return converted;
+      }
     }
     // `convertSurface` linearizes higher-order cells but does NOT split
     // multi-node boundary faces — a quad-only boundary yields zero facets.
@@ -328,11 +345,13 @@ export async function convertToStlBoundary(
     // back as 384 free edges and the STL empty (probed live). Its cells are
     // linearized in place instead, and only the resulting triangle blocks are
     // emitted (the edge lines must not reach the STL fan-triangulator, which
-    // refuses a 2-node block).
+    // refuses a 2-node block). A SHELL-ONLY source of any format (a Nastran deck of
+    // CQUAD4/CTRIA3, probed: `extractSurface` returned the plate's 7 free edges and the import
+    // was refused as "lost part of the geometry") takes the same in-place route.
     let boundary: MeshioMesh;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     let blocks: any[];
-    if (meshioFormat === "cad_json") {
+    if (meshioFormat === "cad_json" || surfaceOnly) {
       boundary = m.convertCells(sourceMesh, "simplexify", true);
       assertCoversSource(boundary.points, boundary.dim);
       // eslint-disable-next-line @typescript-eslint/no-explicit-any

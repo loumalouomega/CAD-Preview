@@ -2238,7 +2238,8 @@ input[type="range"].meshing-slider:focus {
 }
 
 .meshing-part-grade-toggle,
-.meshing-part-struct-toggle {
+.meshing-part-struct-toggle,
+.meshing-part-layer-toggle {
   flex-shrink: 0;
   font: inherit;
   font-size: var(--ui-fs-micro);
@@ -2250,11 +2251,13 @@ input[type="range"].meshing-slider:focus {
   cursor: pointer;
 }
 .meshing-part-grade-toggle:hover,
-.meshing-part-struct-toggle:hover {
+.meshing-part-struct-toggle:hover,
+.meshing-part-layer-toggle:hover {
   background: var(--vscode-button-secondaryHoverBackground, #45494e);
 }
 .meshing-part-grade-toggle.active,
-.meshing-part-struct-toggle.active {
+.meshing-part-struct-toggle.active,
+.meshing-part-layer-toggle.active {
   color: var(--vscode-button-foreground, #fff);
   background: var(--vscode-button-background, #0e70c0);
 }
@@ -2292,6 +2295,15 @@ input[type="range"].meshing-slider:focus {
 }
 .meshing-part-grading-field input {
   width: 56px;
+}
+
+.meshing-part-layer-plan {
+  flex-basis: 100%;
+  font-size: var(--ui-fs-micro);
+  opacity: 0.7;
+}
+.meshing-part-layer-plan:empty {
+  display: none;
 }
 
 .meshing-part-grading-error {

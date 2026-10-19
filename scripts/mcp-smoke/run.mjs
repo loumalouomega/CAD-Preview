@@ -3203,6 +3203,48 @@ try {
     `the promoted multi-solid file's combined volume is 1000 + 125 = 1125 (got ${promotedMultiMass.volume})`
   );
 
+  // Planar-facet merging (promote_mesh_to_brep mergeFacets): ONE planar face per near-coplanar facet instead of
+  // one per triangle. cube.stl is 12 triangles / 6 square facets; the merged file must keep the exact volume with
+  // 6 faces (control: the per-triangle promotion above sews 12 faces, so the count is the discriminating fact).
+  const mergedStep = path.join(dir, "promoted-merged.step");
+  const mergedResult = await call("promote_mesh_to_brep", { path: cubeStl, outputPath: mergedStep, mergeFacets: true });
+  assert(
+    mergedResult.merge && mergedResult.merge.triangles === 12 && mergedResult.merge.mergedFacets === 6 && mergedResult.merge.faces === 6 && mergedResult.merge.keptAsTriangles === 0,
+    `mergeFacets sews 6 planar faces from the cube's 12 triangles (got ${JSON.stringify(mergedResult.merge)})`
+  );
+  assert(promoteStepResult.merge === undefined, "a plain promotion reports no merge block (the per-triangle path is unchanged)");
+  const mergedMass = await call("get_mass_properties", { path: mergedStep });
+  assert(Math.abs(mergedMass.volume - 1000) < 1e-3, `the merged promotion keeps the exact volume (got ${mergedMass.volume})`);
+  const mergedInventory = await call("load_model", { path: mergedStep });
+  const countFaces = (r) => (r.solids ?? []).reduce((n, sol) => n + (sol.faceIds ?? []).length, 0);
+  const plainInventory = await call("load_model", { path: promotedStep });
+  assert(
+    countFaces(mergedInventory) === 6 && countFaces(plainInventory) === 12,
+    `the merged STEP has 6 faces against the per-triangle STEP's 12 (got ${countFaces(mergedInventory)} vs ${countFaces(plainInventory)})`
+  );
+  // A curved prism must never be flattened: a 24-gon prism (radius 5, height 10) merges its caps and sides, and the
+  // volume equals the analytic polygon prism, not a smaller or larger flattened shape.
+  const prismStl = path.join(dir, "prism24.stl");
+  {
+    const n = 24, r = 5, h = 10, ring = (z) => Array.from({ length: n }, (_, i) => [r * Math.cos((2 * Math.PI * i) / n), r * Math.sin((2 * Math.PI * i) / n), z]);
+    const lo = ring(0), hi = ring(h), lines = ["solid prism"];
+    const tri = (a, b, c) => lines.push("facet normal 0 0 0", "outer loop", ...[a, b, c].map((p) => `vertex ${p[0]} ${p[1]} ${p[2]}`), "endloop", "endfacet");
+    for (let i = 0; i < n; i++) {
+      const j = (i + 1) % n;
+      tri([0, 0, 0], lo[j], lo[i]); tri([0, 0, h], hi[i], hi[j]); tri(lo[i], lo[j], hi[j]); tri(lo[i], hi[j], hi[i]);
+    }
+    lines.push("endsolid prism");
+    fs.writeFileSync(prismStl, lines.join("\n"));
+  }
+  const prismStep = path.join(dir, "prism24.step");
+  const prismResult = await call("promote_mesh_to_brep", { path: prismStl, outputPath: prismStep, mergeFacets: true });
+  const prismVolume = 0.5 * 24 * 25 * Math.sin((2 * Math.PI) / 24) * 10;
+  const prismMass = await call("get_mass_properties", { path: prismStep });
+  assert(
+    prismResult.merge.faces === 26 && Math.abs(prismMass.volume - prismVolume) < 1e-3,
+    `a 24-gon prism merges to 26 faces (2 caps + 24 sides) at its analytic volume ${prismVolume.toFixed(4)} (got ${prismResult.merge.faces} faces, volume ${prismMass.volume})`
+  );
+
   // B-rep sources / glTF: same rejection convention as check_mesh_health,
   // via a thrown tool error rather than a supported:false response (this
   // tool has no destination to route a graceful "nothing to promote" reply
@@ -3722,6 +3764,73 @@ try {
     `generate_mesh fails loudly (not silently unstructured) when a structured region is not regular (got: ${badText.slice(0, 160)})`
   );
   await call("set_part", { path: structStep, name: "Bad", remove: true });
+
+  // Anisotropic boundary layers (Part.meshBoundaryLayer): a 10x4 rectangle sketch face; the
+  // wall Part is its y=0 edge(s). Rows must start at the requested wall size and grow by the ratio,
+  // the plain mesh must not have them (control), and an algorithm that cannot carry a layer is refused.
+  const layerSeed = path.join(dir, "layer-seed.brep");
+  fs.copyFileSync(path.join(ROOT, "examples", "BREP", "blank.brep"), layerSeed);
+  await call("apply_edit_ops", { path: layerSeed, ops: [{ op: "addRectangleProfile", center: [5, 2, 0], normal: [0, 0, 1], up: [1, 0, 0], width: 10, height: 4 }] });
+  const layerStep = path.join(dir, "layer.stp");
+  await call("export_brep", { path: layerSeed, targetFormat: "step", outputPath: layerStep });
+  const wallEdges = [];
+  for (let i = 0; i < 8; i++) {
+    const e = await callTolerant("inspect", { path: layerStep, entityId: `edge-${i}` });
+    if (e.value?.center && Math.abs(e.value.center[1]) < 1e-6 && Math.abs(e.value.length - 10) < 1e-6) wallEdges.push(`edge-${i}`);
+  }
+  assert(wallEdges.length >= 1, `the rectangle's y=0 wall edge(s) are found (${wallEdges.join(",")})`);
+  const layerOptions = { dimension: 2, sizeMin: 0, sizeMax: 1.5 };
+  const mshNodes = (text) => {
+    const body = text.match(/\$Nodes\n([\s\S]*?)\$EndNodes/)?.[1].split("\n") ?? [];
+    const [blocks] = body[0].split(/\s+/).map(Number);
+    const ys = [];
+    let at = 1;
+    for (let b = 0; b < blocks; b++) {
+      const n = Number(body[at].split(/\s+/)[3]);
+      for (let k = 0; k < n; k++) ys.push(Number(body[at + 1 + n + k].split(/\s+/)[1]));
+      at += 1 + 2 * n;
+    }
+    return ys;
+  };
+  const mshQuads = (text) => {
+    const body = text.match(/\$Elements\n([\s\S]*?)\$EndElements/)?.[1].split("\n") ?? [];
+    const [blocks] = body[0].split(/\s+/).map(Number);
+    let quads = 0, at = 1;
+    for (let b = 0; b < blocks; b++) {
+      const [, , type, n] = body[at].split(/\s+/).map(Number);
+      if (type === 3) quads += n;
+      at += 1 + n;
+    }
+    return quads;
+  };
+  const layerMesh = async (name, options) => {
+    const out = path.join(dir, `${name}.msh`);
+    await call("export_mesh", { path: layerStep, format: "msh", outputPath: out, options });
+    const text = fs.readFileSync(out, "utf8");
+    return { ys: [...new Set(mshNodes(text).map((y) => Math.round(y * 1e5) / 1e5))].sort((a, b) => a - b), quads: mshQuads(text) };
+  };
+  const plainRows = await layerMesh("layer-plain", layerOptions);
+  assert(plainRows.quads === 0 && plainRows.ys[1] > 0.3, `control: the plain 2-D rectangle mesh has no quads and no thin first row (rows ${plainRows.ys.slice(0, 3)})`);
+  await call("set_part", { path: layerStep, name: "Wall", lines: wallEdges, meshBoundaryLayer: { wallSize: 0.05, growthRatio: 1.2, thickness: 0.5 } });
+  const layered = await layerMesh("layer-on", layerOptions);
+  const rowsInStack = layered.ys.filter((y) => y > 1e-6 && y <= 0.5 + 1e-6);
+  assert(layered.quads > 0, `meshBoundaryLayer produces quad rows (got ${layered.quads})`);
+  assert(
+    Math.abs(layered.ys[1] - 0.05) < 1e-4 && Math.abs(layered.ys[2] - 0.11) < 1e-4 && Math.abs(layered.ys[3] - 0.182) < 1e-4,
+    `boundary layer rows start at the wall size and grow by 1.2: 0.05, 0.11, 0.182 (got ${layered.ys.slice(1, 4)})`
+  );
+  assert(rowsInStack.length === 6, `the stack holds exactly the analytic 6 rows within 0.5 (got ${rowsInStack.length}: ${rowsInStack})`);
+  const layerAlgo = await request("tools/call", { name: "generate_mesh", arguments: { path: layerStep, options: { ...layerOptions, algorithm2D: 9 } } });
+  assert(
+    layerAlgo.isError === true && /cannot carry a boundary layer/.test(layerAlgo.content?.[0]?.text ?? ""),
+    `a boundary layer on Packing of Parallelograms is refused up front (got: ${(layerAlgo.content?.[0]?.text ?? "").slice(0, 120)})`
+  );
+  const layer3d = await call("generate_mesh", { path: layerStep, options: { sizeMin: 0, sizeMax: 1.5, dimension: 3 } });
+  assert(
+    (layer3d.warnings ?? []).some((w) => /boundary layer was ignored.*2-D meshes only/.test(w)),
+    `a 3-D generate ignores the layer with a warning (got ${JSON.stringify(layer3d.warnings)})`
+  );
+  await call("set_part", { path: layerStep, name: "Wall", remove: true });
 
   // Hex-dominant (RTree, elementShape:"hexDominant") always mixes in an
   // unmapped gmsh element type (140, "trihedron") alongside tets/hexes —
@@ -5383,6 +5492,10 @@ try {
     { name: "box-fixed-field.bdf (hand-authored, 10-node CTETRA + continuation)", file: "box-fixed-field.bdf", extent: [2, 3, 4], volume: 24 },
     { name: "box-free-field.bdf (hand-authored, comma-separated)", file: "box-free-field.bdf", extent: [2, 3, 4], volume: 24 },
     { name: "box-large-field.bdf (hand-authored, GRID* 16-column fields)", file: "box-large-field.bdf", extent: [2, 3, 4], volume: 24 },
+    { name: "box-hex.bdf (hand-authored, two 8-node CHEXA)", file: "box-hex.bdf", extent: [2, 3, 4], volume: 24 },
+    // Two CPENTA wedges: the native convertSurface keeps only the triangular end caps (volume 8), so this
+    // pins the extractSurface + simplexify route taken for any quad-faced volume cell.
+    { name: "box-wedge.bdf (hand-authored, two 6-node CPENTA)", file: "box-wedge.bdf", extent: [2, 3, 4], volume: 24 },
   ];
   for (const chk of bdfChecks) {
     const src = path.join(dir, `geom-${chk.file}`);

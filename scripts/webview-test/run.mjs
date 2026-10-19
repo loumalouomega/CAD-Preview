@@ -5136,6 +5136,20 @@ test("mesh health: a native STL shows the panel, Check posts a request, the repo
   assert(gates.repair === true, "…and leaves Repair disabled — there is nothing to repair");
   await page.click("#mesh-health-fit");
   assert((await lastSent(page, "fitMeshToCadButtonClicked")) !== null, "Fit to CAD posts fitMeshToCadButtonClicked");
+
+  // Merge facets: a session-only checkbox, off by default, whose state rides the promote message.
+  const mergeBox = await page.evaluate(() => {
+    const el = document.getElementById("mesh-health-merge");
+    return { present: !!el, checked: el?.checked, visible: el?.offsetParent !== null };
+  });
+  assert(mergeBox.present && mergeBox.checked === false && mergeBox.visible, `Merge facets is a visible, unticked checkbox by default (got ${JSON.stringify(mergeBox)})`);
+  await page.evaluate(() => (window.__sent.length = 0));
+  await page.click("#mesh-health-promote");
+  assert((await lastSent(page, "promoteToBrepButtonClicked"))?.mergeFacets === false, "Promote posts mergeFacets:false while the box is unticked");
+  await page.check("#mesh-health-merge");
+  await page.evaluate(() => (window.__sent.length = 0));
+  await page.click("#mesh-health-promote");
+  assert((await lastSent(page, "promoteToBrepButtonClicked"))?.mergeFacets === true, "ticking Merge facets makes Promote post mergeFacets:true");
 });
 
 test("mesh health: Repair and Promote are mirror-image gates; stale replies and the decimate flag", async (page) => {
@@ -6418,7 +6432,7 @@ test("FE Mesh Part sizes: Grade toggle starts collapsed, expands, commits, and c
     const rows = [...document.querySelectorAll("#meshing-part-sizes .meshing-part-row")];
     // Struct rows share the grading row's layout classes (same collapse
     // hazard) but carry their own marker — exclude them here.
-    const gradingRows = [...document.querySelectorAll("#meshing-part-sizes .meshing-part-grading:not(.meshing-part-structured)")];
+    const gradingRows = [...document.querySelectorAll("#meshing-part-sizes .meshing-part-grading:not(.meshing-part-structured):not(.meshing-part-layer)")];
     const structRows = [...document.querySelectorAll("#meshing-part-sizes .meshing-part-structured")];
     return {
       rowCount: rows.length,
@@ -6622,6 +6636,81 @@ test("FE Mesh Part sizes: Struct toggle expands, commits divisions, rejects, and
   assert(clearedStruct == null, `clearing the field removes the structuring (got ${JSON.stringify(clearedStruct)})`);
 });
 
+test("FE Mesh Part sizes: Layer toggle (edge parts only) expands, commits a boundary layer with its plan, rejects, and clears", async (page) => {
+  await populate(page);
+
+  // A layer grows along a part's wall EDGES: only the fixture part that lists edges ("Feature edges") has the toggle.
+  const initial = await page.evaluate(() => {
+    const rows = [...document.querySelectorAll("#meshing-part-sizes .meshing-part-row")];
+    const layerRows = [...document.querySelectorAll("#meshing-part-sizes .meshing-part-layer")];
+    return {
+      names: rows.map((r) => r.querySelector(".meshing-part-name")?.textContent),
+      withToggle: rows.map((r) => !!r.querySelector(".meshing-part-layer-toggle")),
+      toggle: (() => { const t = document.querySelector(".meshing-part-layer-toggle"); return { active: t?.classList.contains("active"), ariaExpanded: t?.getAttribute("aria-expanded") }; })(),
+      layerRowCount: layerRows.length,
+      allHiddenAndInvisible: layerRows.every((r) => r.hidden && r.offsetParent === null),
+    };
+  });
+  assert(
+    initial.withToggle.filter(Boolean).length === 1 && initial.names[initial.withToggle.indexOf(true)] === "Feature edges",
+    `only the part that lists edges has a Layer toggle (got ${JSON.stringify({ names: initial.names, withToggle: initial.withToggle })})`
+  );
+  assert(initial.toggle.active === false && initial.toggle.ariaExpanded === "false", `the Layer toggle starts inactive and collapsed (got ${JSON.stringify(initial.toggle)})`);
+  assert(initial.layerRowCount === 1 && initial.allHiddenAndInvisible, `its Layer row starts genuinely invisible (got ${JSON.stringify(initial)})`);
+
+  const layerRowOf = `(() => {
+    const row = document.querySelector(".meshing-part-layer-toggle").closest(".meshing-part-row");
+    return row.nextElementSibling.nextElementSibling.nextElementSibling;
+  })()`;
+  await page.click(".meshing-part-layer-toggle");
+  await sleep(150);
+  const expanded = await page.evaluate((expr) => {
+    const layerRow = eval(expr);
+    return { isLayer: layerRow.classList.contains("meshing-part-layer"), visible: layerRow.offsetParent !== null, inputs: layerRow.querySelectorAll("input").length };
+  }, layerRowOf);
+  assert(expanded.isLayer && expanded.visible && expanded.inputs === 4, `clicking Layer reveals the row with wall/ratio/thickness/quads inputs (got ${JSON.stringify(expanded)})`);
+
+  const fill = (wall, ratio, thick) => page.evaluate(({ expr, wall, ratio, thick }) => {
+    const layerRow = eval(expr);
+    const [w, r, t] = [...layerRow.querySelectorAll("input[type=number]")];
+    for (const [inp, v] of [[w, wall], [r, ratio], [t, thick]]) inp.value = v;
+    t.dispatchEvent(new Event("change", { bubbles: true }));
+  }, { expr: layerRowOf, wall, ratio, thick });
+  const layerOfPart = () => page.evaluate(() => {
+    const parts = (window.__sent || []).findLast((x) => x.type === "partsChanged")?.parts ?? [];
+    return parts.find((p) => p.name === "Feature edges");
+  });
+
+  await page.evaluate(() => (window.__sent.length = 0));
+  await fill("0.05", "1.2", "0.5");
+  await sleep(150);
+  const committed = await layerOfPart();
+  const plan = await page.evaluate((expr) => eval(expr).querySelector(".meshing-part-layer-plan")?.textContent ?? "", layerRowOf);
+  assert(
+    committed?.meshBoundaryLayer?.wallSize === 0.05 && committed.meshBoundaryLayer.growthRatio === 1.2 && committed.meshBoundaryLayer.thickness === 0.5 && committed.meshBoundaryLayer.quads === true,
+    `a valid layer posts partsChanged (got ${JSON.stringify(committed?.meshBoundaryLayer)})`
+  );
+  assert(/^6 rows, last 0\.12\d*, total 0\.49\d*/.test(plan), `the plan line shows the analytic 6 rows (got "${plan}")`);
+
+  // Invalid layers (ratio below 1, thickness below the wall) post nothing and show an inline error.
+  for (const [wall, ratio, thick] of [["0.05", "0.5", "0.5"], ["0.5", "1.2", "0.1"]]) {
+    await page.evaluate(() => (window.__sent.length = 0));
+    await fill(wall, ratio, thick);
+    await sleep(150);
+    const rejected = await page.evaluate((expr) => ({
+      posted: (window.__sent || []).some((x) => x.type === "partsChanged"),
+      errorText: eval(expr).querySelector(".meshing-part-grading-error")?.textContent ?? "",
+    }), layerRowOf);
+    assert(rejected.posted === false && rejected.errorText.length > 0, `layer ${wall}/${ratio}/${thick} posts nothing and shows an inline error (got ${JSON.stringify(rejected)})`);
+  }
+
+  // Clearing all three removes the layer.
+  await page.evaluate(() => (window.__sent.length = 0));
+  await fill("", "", "");
+  await sleep(150);
+  const cleared = await layerOfPart();
+  assert(cleared && cleared.meshBoundaryLayer == null, `clearing every field removes the layer (got ${JSON.stringify(cleared?.meshBoundaryLayer)})`);
+});
 
 /**
  * Standard-parts thumbnails (the "Standard-parts thumbnails" feature). Search stays text-first: rows

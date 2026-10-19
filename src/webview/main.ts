@@ -1386,6 +1386,7 @@ const meshingPanel = new MeshingPanel(document.getElementById("meshing-panel")!,
   onPartMeshSize: (index, size) => partsModel.setMeshSize(index, size),
   onPartMeshGrading: (index, grading) => partsModel.setMeshGrading(index, grading),
   onPartMeshStructured: (index, structured) => partsModel.setMeshStructured(index, structured),
+  onPartMeshBoundaryLayer: (index, layer) => partsModel.setMeshBoundaryLayer(index, layer),
   onDeviation: async (tolerance) => {
     const requestId = `${Date.now()}-${Math.random()}`;
     meshDeviationRequestId = requestId;
@@ -1829,7 +1830,7 @@ const meshHealthPanel = new MeshHealthPanel(document.getElementById("mesh-health
   },
   onPromote: () => {
     if (!meshHealthEligibleFormat) return;
-    post({ type: "promoteToBrepButtonClicked" });
+    post({ type: "promoteToBrepButtonClicked", mergeFacets: meshHealthPanel.mergeFacets });
   },
   onFitCad: () => {
     if (!meshHealthEligibleFormat) return;

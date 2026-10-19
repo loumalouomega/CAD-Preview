@@ -3,6 +3,9 @@ import {
   validateMeshOptions,
   validateMeshGrading,
   validateMeshStructured,
+  validateMeshBoundaryLayer,
+  boundaryLayerPlan,
+  boundaryLayerAlgorithmProblem,
   applyStlPartSizeOverride,
   gmshShapeOptions,
   scaleMeshOptionsForUnit,
@@ -387,5 +390,73 @@ describe("DEFAULT_MESH_OPTIONS", () => {
   it("round-trips a seeded (finite, non-sentinel) sizeMax untouched", () => {
     const seeded = { ...DEFAULT_MESH_OPTIONS, sizeMax: 4.21 };
     expect(validateMeshOptions(seeded)).toEqual(seeded);
+  });
+});
+
+describe("validateMeshBoundaryLayer", () => {
+  it("accepts a well-formed layer and defaults quads to true", () => {
+    expect(validateMeshBoundaryLayer({ wallSize: 0.05, growthRatio: 1.2, thickness: 0.5 })).toEqual({ wallSize: 0.05, growthRatio: 1.2, thickness: 0.5, quads: true });
+    expect(validateMeshBoundaryLayer({ wallSize: 0.05, growthRatio: 1, thickness: 0.05, quads: false })).toEqual({ wallSize: 0.05, growthRatio: 1, thickness: 0.05, quads: false });
+  });
+
+  it("rejects non-objects, non-positive walls, shrinking ratios and a thickness below the wall", () => {
+    for (const bad of [null, undefined, 3, "x", [], {}, { wallSize: 0, growthRatio: 1.2, thickness: 1 }, { wallSize: -1, growthRatio: 1.2, thickness: 1 },
+      { wallSize: 0.1, growthRatio: 0.9, thickness: 1 }, { wallSize: 0.1, growthRatio: 1.2, thickness: 0.05 },
+      { wallSize: NaN, growthRatio: 1.2, thickness: 1 }, { wallSize: 0.1, growthRatio: 1.2 }]) {
+      expect(validateMeshBoundaryLayer(bad)).toBeUndefined();
+    }
+  });
+});
+
+describe("boundaryLayerPlan", () => {
+  // Analytic: row k is h*r^k high, so n rows total h*(r^n - 1)/(r - 1).
+  it("fits 6 rows of 0.05 x 1.2 into 0.5 (total 0.4966, last 0.1244)", () => {
+    const p = boundaryLayerPlan({ wallSize: 0.05, growthRatio: 1.2, thickness: 0.5, quads: true });
+    expect(p.layers).toBe(6);
+    expect(p.totalThickness).toBeCloseTo((0.05 * (Math.pow(1.2, 6) - 1)) / 0.2, 12);
+    expect(p.lastHeight).toBeCloseTo(0.05 * Math.pow(1.2, 5), 12);
+    expect(p.totalThickness).toBeLessThanOrEqual(0.5);
+  });
+
+  it("keeps an exact fit instead of dropping a row to floating-point noise", () => {
+    expect(boundaryLayerPlan({ wallSize: 0.05, growthRatio: 1.2, thickness: 0.182, quads: true }).layers).toBe(3);
+    // Without the epsilon these floor one row short (log ratio evaluates to 4.999999999999999 / 3.9999999999999996).
+    expect(boundaryLayerPlan({ wallSize: 0.01, growthRatio: 1.1, thickness: 0.061051, quads: true }).layers).toBe(5);
+    expect(boundaryLayerPlan({ wallSize: 0.01, growthRatio: 1.2, thickness: 0.07441599999999998, quads: true }).layers).toBe(5);
+  });
+
+  it("handles a unit ratio as equal rows", () => {
+    const p = boundaryLayerPlan({ wallSize: 0.1, growthRatio: 1, thickness: 0.55, quads: true });
+    expect(p.layers).toBe(5);
+    expect(p.totalThickness).toBeCloseTo(0.5, 12);
+    expect(p.lastHeight).toBeCloseTo(0.1, 12);
+  });
+
+  it("is a single row when the thickness equals the wall", () => {
+    expect(boundaryLayerPlan({ wallSize: 0.2, growthRatio: 1.5, thickness: 0.2, quads: true }).layers).toBe(1);
+  });
+});
+
+describe("boundaryLayerAlgorithmProblem", () => {
+  it("accepts the algorithms measured to grade the wall", () => {
+    for (const a of [2, 5, 6, 8]) {
+      expect(boundaryLayerAlgorithmProblem(a, false)).toBeNull();
+      expect(boundaryLayerAlgorithmProblem(a, true)).toBeNull();
+    }
+    expect(boundaryLayerAlgorithmProblem(1, false)).toBeNull();
+  });
+
+  it("refuses MeshAdapt with recombination (it aborts the WASM module) and the algorithms that fail or ignore the layer", () => {
+    expect(boundaryLayerAlgorithmProblem(1, true)).toMatch(/aborts the mesher/);
+    for (const a of [3, 7, 9, 11, 42]) expect(boundaryLayerAlgorithmProblem(a, false)).toMatch(/cannot carry a boundary layer/);
+  });
+});
+
+describe("scalePartsMeshSizeForUnit boundary layers", () => {
+  it("scales wallSize and thickness but never the dimensionless ratio", () => {
+    const parts = [part({ name: "A", meshBoundaryLayer: { wallSize: 0.05, growthRatio: 1.2, thickness: 0.5, quads: true } })];
+    const result = scalePartsMeshSizeForUnit(parts, 2);
+    expect(result[0].meshBoundaryLayer).toEqual({ wallSize: 0.1, growthRatio: 1.2, thickness: 1, quads: true });
+    expect(parts[0].meshBoundaryLayer!.wallSize).toBe(0.05); // original untouched
   });
 });

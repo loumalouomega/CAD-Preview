@@ -18,6 +18,10 @@
  *                             volume 24.
  *   - `box-free-field.bdf`  — the same model, comma-separated free field.
  *   - `box-large-field.bdf` — the same model, 16-column `GRID*` large field.
+ *   - `box-hex.bdf`         — the same box as two 8-node CHEXA (volume 24).
+ *   - `box-wedge.bdf`       — the same box as two 6-node CPENTA (volume 24).
+ *   - `plate-shell.bdf`     — a flat shell of two CQUAD4 and one CTRIA3: extent 6 x 3 x 0,
+ *                             surface area 15, no volume.
  *
  * Exits 1 on any mismatch. (A count-only check would pass a unit box.)
  */
@@ -34,6 +38,8 @@ interface Expectation {
   volume: number;
   /** Exact boundary facet count, when the fixture pins one. */
   facets?: number;
+  /** Total surface area, for a deck with no volume cells (volume then reads 0). */
+  area?: number;
 }
 
 const EXPECTED: Expectation[] = [
@@ -41,6 +47,9 @@ const EXPECTED: Expectation[] = [
   { file: "box-fixed-field.bdf", extent: [2, 3, 4], volume: 24 },
   { file: "box-free-field.bdf", extent: [2, 3, 4], volume: 24 },
   { file: "box-large-field.bdf", extent: [2, 3, 4], volume: 24 },
+  { file: "box-hex.bdf", extent: [2, 3, 4], volume: 24 },
+  { file: "box-wedge.bdf", extent: [2, 3, 4], volume: 24 },
+  { file: "plate-shell.bdf", extent: [6, 3, 0], volume: 0, area: 15 },
 ];
 
 const TOL = 1e-6;
@@ -70,9 +79,17 @@ async function main(): Promise<void> {
     });
     if (Math.abs(mp.volume - exp.volume) > TOL * Math.max(1, exp.volume)) problems.push(`volume ${mp.volume} != ${exp.volume}`);
     if (exp.facets !== undefined && facets !== exp.facets) problems.push(`facets ${facets} != ${exp.facets}`);
-    if (!mp.watertight) problems.push("boundary is not watertight");
+    let area = 0;
+    for (let i = 0; i < soup.length; i += 9) {
+      const ux = soup[i + 3] - soup[i], uy = soup[i + 4] - soup[i + 1], uz = soup[i + 5] - soup[i + 2];
+      const vx = soup[i + 6] - soup[i], vy = soup[i + 7] - soup[i + 1], vz = soup[i + 8] - soup[i + 2];
+      area += 0.5 * Math.hypot(uy * vz - uz * vy, uz * vx - ux * vz, ux * vy - uy * vx);
+    }
+    if (exp.area !== undefined) {
+      if (Math.abs(area - exp.area) > TOL * Math.max(1, exp.area)) problems.push(`area ${area} != ${exp.area}`);
+    } else if (!mp.watertight) problems.push("boundary is not watertight");
     if (problems.length) failed = true;
-    results.push({ file: exp.file, extent, volume: mp.volume, facets, watertight: mp.watertight, problems });
+    results.push({ file: exp.file, extent, volume: mp.volume, area, facets, watertight: mp.watertight, problems });
   }
   console.log(JSON.stringify({ versions: kernelVersions(), results }, null, 2));
   if (failed) {

@@ -51,6 +51,7 @@ import { parseScadParameters, validateScadOverrides } from "./scadParams";
 import type { ScadValue } from "./scadParams";
 import { connectSpaceMouse, disconnectSpaceMouse } from "./spaceMouse";
 import { isMeshioFieldFailure, describeMeshioFieldFailure, isHealableSizeError, AUTO_DECIMATE_TARGET_TRIANGLES, stlBytesForHeal, decimatedInfo } from "./meshioService";
+import { validateMergeFacets } from "./meshFacetMerge";
 import { validateMeshioOpSpec } from "./meshioOps";
 import { SVG_VIEWS } from "./svgSilhouette";
 import type { CompareSource } from "./modelDiffHost";
@@ -2724,7 +2725,7 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
       }
 
       if (msg.type === "promoteToBrepButtonClicked") {
-        if (route) void this.handlePromoteToBrep(document.uri, route, post);
+        if (route) void this.handlePromoteToBrep(document.uri, route, post, msg.mergeFacets === true);
         return;
       }
 
@@ -4569,7 +4570,7 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
    * fields remain the authoritative, always-surfaced signal for headless
    * callers.
    */
-  private async handlePromoteToBrep(uri: vscode.Uri, route: FileRoute, post: (msg: HostToWebview) => void): Promise<void> {
+  private async handlePromoteToBrep(uri: vscode.Uri, route: FileRoute, post: (msg: HostToWebview) => void, mergeFacets = false): Promise<void> {
     if (!COMPARABLE_MESH_FORMATS.has(route.format)) {
       post({
         type: "error",
@@ -4600,14 +4601,12 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
       EXPORT_LABEL[picked.format],
       async (_saveUri) => {
         const sourceBytes = await vscode.workspace.fs.readFile(uri);
-        const result = await this.docPipeline(uri).promoteMeshToBrep(
-          this.context.extensionPath,
-          sourceBytes,
-          meshFormat,
-          picked.format,
-          unit,
-          await resolveGltfBuffersFor(uri, meshFormat, sourceBytes, this.decodeGltf)
-        );
+        const external = await resolveGltfBuffersFor(uri, meshFormat, sourceBytes, this.decodeGltf);
+        const pipeline = this.docPipeline(uri);
+        // The options argument is only passed when merging, so a plain promote is byte-identical to before.
+        const result = mergeFacets
+          ? await pipeline.promoteMeshToBrep(this.context.extensionPath, sourceBytes, meshFormat, picked.format, unit, external, { mergeFacets: validateMergeFacets(true) })
+          : await pipeline.promoteMeshToBrep(this.context.extensionPath, sourceBytes, meshFormat, picked.format, unit, external);
         return result.bytes;
       },
       post

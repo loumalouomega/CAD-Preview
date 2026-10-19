@@ -2,7 +2,7 @@ import type { CadFormat } from "./fileRouter";
 import type { QualityGateResult } from "./meshQualityGate";
 import type { EditOp } from "./editOps";
 import type { ParamVariable } from "./editVariables";
-import type { MeshOptions, MeshGrading, MeshStructured, MeshEngine } from "./meshOptions";
+import type { MeshOptions, MeshGrading, MeshStructured, MeshBoundaryLayer, MeshEngine } from "./meshOptions";
 import type { MeshExportFormatId } from "./meshExportFormats";
 import type { ViewerDefaults } from "./viewerDefaults";
 import type { MassProperties } from "./massProperties";
@@ -100,6 +100,13 @@ export interface Part {
    * gate as physical groups and `meshSize`); a count, never unit-converted.
    */
   meshStructured?: MeshStructured;
+  /**
+   * Optional anisotropic boundary layer (roadmap "Anisotropic boundary layers"): rows of thin,
+   * geometrically growing elements along this part's wall **curves** (`lines`) on a
+   * 2-D mesh — a Gmsh `BoundaryLayer` field. B-rep sources and `dimension: 2` only;
+   * ignored (with a warning) on a 3-D generate. Lengths follow the model unit.
+   */
+  meshBoundaryLayer?: MeshBoundaryLayer;
   /**
    * Optional re-executable selector (roadmap "Selector synthesis") naming
    * this part's surfaces without baking in positional ids. The `surfaces`
@@ -923,7 +930,9 @@ export type WebviewToHost =
   | { type: "meshPresetSaveCurrent" }
   | { type: "meshPresetDelete"; name: string }
   | { type: "screenshotButtonClicked" }
-  | { type: "promoteToBrepButtonClicked" }
+  /** `mergeFacets` is the Mesh Health panel's "Merge facets" checkbox: promote with one planar face per
+   * near-coplanar facet (`meshFacetMerge.ts`) instead of one per triangle. Absent/false = per triangle. */
+  | { type: "promoteToBrepButtonClicked"; mergeFacets?: boolean }
   /** Mesh Health panel: segment the mesh's whole surface, replace its patches
    * with exact analytic faces (`fit_mesh_to_cad`) and save the fitted solid as
    * a brand-new STEP file. Like `promoteToBrepButtonClicked`, the host owns

@@ -17,6 +17,6 @@ export function remeshedParts(built: Part[], original: Part[], regionNames: stri
     return { ...part, color: old.color, ...(old.meshSize !== undefined ? { meshSize: old.meshSize } : {}) };
   });
   for (const name of names) if (!parts.some(p => p.name === name)) warnings.push(`Region ${envelope(name, "region")} survives in the mesh but has no selectable boundary facet Part (interior-only, overlap or facet-count limit).`);
-  if (original.some(p => p.selector || p.meshGrading)) warnings.push("CAD selectors and distance-grading metadata were not copied: the output has new mesh topology.");
+  if (original.some(p => p.selector || p.meshGrading || p.meshBoundaryLayer)) warnings.push("CAD selectors and distance-grading / boundary-layer metadata were not copied: the output has new mesh topology.");
   return { parts, warnings };
 }

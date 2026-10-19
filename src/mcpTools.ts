@@ -71,12 +71,14 @@ import {
   validateMeshOptions,
   validateMeshGrading,
   validateMeshStructured,
+  validateMeshBoundaryLayer,
   applyStlPartSizeOverride,
   scaleMeshOptionsForUnit,
   scalePartsMeshSizeForUnit,
   type MeshOptions,
   type MeshGrading,
   type MeshStructured,
+  type MeshBoundaryLayer,
 } from "./meshOptions";
 import { scaleStlBytes } from "./stlParser";
 import { convertScadToCsg, csgWarningDiagnostic, resolveEffectiveSource, ScadUnavailableError, type ScadDiagnostic, type ScadDiagnosticCollector } from "./scadService";
@@ -133,6 +135,7 @@ import { evaluateToleranceBand } from "./toleranceBand";
 import { meshioCompanionCandidates } from "./meshioCompanions";
 import type { MeshioCompanion } from "./meshioService";
 import type { checkMeshHealth, MeshHealthReport, promoteMeshToBrep, PromoteMeshResult, DecimatedInfo } from "./meshHeal";
+import { validateMergeFacets } from "./meshFacetMerge";
 import type { recognizePrimitives, PrimitiveReport } from "./primitiveReport";
 import type { fitMeshRegion } from "./meshRegionFit";
 import type { segmentMeshSurface, SegmentMeshOptions } from "./meshSegment";
@@ -449,7 +452,7 @@ export function describeCapabilities() {
         'elementShape "simplex" = triangles/tetrahedra, "subdivided" = all-quad/all-hex, "hexDominant" = mixed tet/hex (3D only, RTree recombiner) — NOT exportable to Kratos MDPA (export_mesh throws a clear error; other formats like msh/vtk are unaffected). elementOrder 2 adds mid-side nodes (quadratic).',
         "algorithm3D defaults to 1 (Delaunay, Gmsh's own default) — a wasm32 stack-overflow that used to make it hang/produce an empty mesh on re-imported CAD was fixed upstream in gmsh-wasm 0.3.0. Frontal (4) and HXT (10) remain valid alternatives.",
         'optimize is "none" (no generate-time optimization either), "default" (generate-time Mesh.Optimize only), "netgen" (plus model.mesh.optimize("Netgen") — repeatable min/mean gain, but it refines the mesh and linearizes quadratic meshes to tet4, both warned, never silent), or "highOrder" (plus optimize("HighOrderElastic"), order-2 only — it halves invalid curved elements on the probe fixture rather than clearing them, and a linear mesh warns and runs the default instead). Pre-enum booleans still parse (true → "default", false → "none").',
-        "A part's meshSize gives local refinement (B-rep sources only). A part's meshGrading grades the mesh AROUND the part with distance — sizeAtWall within distNear, growing linearly to sizeFar at distFar (set_part; B-rep sources only, same as physical groups and meshSize; ignored on a mesh-format source). A part's meshStructured sets transfinite divisions (nodes per meshed edge) for an exact mapped grid on regular regions (set_part; B-rep sources only; a non-regular region fails loudly at generate, never silently unstructured).",
+        "A part's meshSize gives local refinement (B-rep sources only). A part's meshGrading grades the mesh AROUND the part with distance — sizeAtWall within distNear, growing linearly to sizeFar at distFar (set_part; B-rep sources only, same as physical groups and meshSize; ignored on a mesh-format source). A part's meshStructured sets transfinite divisions (nodes per meshed edge) for an exact mapped grid on regular regions (set_part; B-rep sources only; a non-regular region fails loudly at generate, never silently unstructured). A part's meshBoundaryLayer {wallSize, growthRatio, thickness, quads} grows an anisotropic boundary layer along the part's edge-N walls on a 2-D mesh (set_part; generate_mesh dimension 2; B-rep sources only; the mesh algorithm must be Automatic/Delaunay/Frontal-Delaunay/Frontal-Delaunay for Quads — others are refused up front; a 3-D generate ignores it with a warning).",
         'periodic (optional, B-rep sources, gmsh engine) is a list of {slave, master, translation:[x,y,z]} between two Parts that each resolve to exactly one surface: the slave face\'s mesh becomes a node-for-node copy of the master face\'s, with translation = master position − slave position in mm (representative-volume-element studies). Gmsh refuses faces that are not translates of each other (the generate fails); a pair whose Parts do not each resolve to one surface is skipped with a warning.',
         "conformal (default true) fragments every imported solid (gmsh.model.occ.fragment over all volumes) before meshing, so touching solids share interface nodes — Parts resolve after the renumbering, so physical groups and Kratos SubModelParts survive per body. Single-solid output is identical with and without it; mesh sources ignore it. generate_mesh reports conformalApplied; the handoff manifest records meshOptions.conformal plus the applied fact.",
         'engine "gmsh" (default) is the classifySurfaces/createGeometry/addSurfaceLoop/addVolume path — fast, but needs a watertight/manifold/well-oriented boundary. engine "ftetwild" is an alternative volume mesher (fTetWild) for a dirty mesh-format 3D source that Gmsh rejects or silently produces no elements for (holes, self-intersections, non-manifold edges) — meaningless for a B-rep source (exact geometry already) or dimension !== 3, both of which silently fall back to "gmsh" with a warning rather than erroring. Only dimension/sizeMax (mapped to fTetWild\'s own target-edge-length fraction), ftetwildEpsRel (its envelope size, also a bbox-diagonal fraction), ftetwildManifoldSurface (force a manifold boundary), ftetwildCoarsen (fewer, larger tets), and ftetwildDisableFiltering (skip interior filtering — returns a hull fill, NOT the part interior; inspection only) apply under "ftetwild" — sizeMin/algorithm2D/algorithm3D/elementOrder/elementShape/stlAngle are all ignored. repair_mesh honors the stored options (still forcing engine/dimension). generate_mesh\'s response reports engineUsed and any fallback warnings.',
@@ -3158,8 +3161,8 @@ export async function decomposeToPrimitivesTool(
  */
 export async function promoteMeshToBrepTool(
   ctx: ToolContext,
-  params: { path: string; outputPath: string; targetFormat?: string; unit?: string; autoDecimate?: boolean }
-): Promise<{ written: string; bytes: number; promotedComponents: number[]; skippedComponents: number[]; warnings: string[]; decimated?: DecimatedInfo }> {
+  params: { path: string; outputPath: string; targetFormat?: string; unit?: string; autoDecimate?: boolean; mergeFacets?: boolean | { angleToleranceDeg?: number } }
+): Promise<{ written: string; bytes: number; promotedComponents: number[]; skippedComponents: number[]; warnings: string[]; decimated?: DecimatedInfo; merge?: NonNullable<PromoteMeshResult["merge"]> }> {
   const modelPath = params.path;
   const route = requireRoute(modelPath);
 
@@ -3193,11 +3196,18 @@ export async function promoteMeshToBrepTool(
     warnings.push(`${modelPath}: pending edits are NOT baked in — promote_mesh_to_brep reads the raw file; save_model (STL/OBJ/PLY) bakes them into the source first.`);
   }
 
+  const mergeFacets = validateMergeFacets(params.mergeFacets);
+  if (params.mergeFacets && !mergeFacets) warnings.push("mergeFacets must be true or { angleToleranceDeg } — ignored.");
+  const promoteOptions = mergeFacets ? { mergeFacets } : undefined;
+
   const bytes = await readModelBytes(modelPath);
   const sourceFormat = route.format as MeshParseFormat;
   const external = sourceFormat === "gltf" ? await resolveGltfBuffers(ctx, modelPath, bytes) : undefined;
   try {
-    const result = await ctx.pipeline.promoteMeshToBrep(ctx.extensionPath, bytes, sourceFormat, targetFormat, unit, external);
+    // The options argument is only appended when merging, so a plain call is byte-identical to before.
+    const result = promoteOptions
+      ? await ctx.pipeline.promoteMeshToBrep(ctx.extensionPath, bytes, sourceFormat, targetFormat, unit, external, promoteOptions)
+      : await ctx.pipeline.promoteMeshToBrep(ctx.extensionPath, bytes, sourceFormat, targetFormat, unit, external);
     await fs.writeFile(outputPath, result.bytes);
 
     return {
@@ -3206,11 +3216,14 @@ export async function promoteMeshToBrepTool(
       promotedComponents: result.promotedComponents,
       skippedComponents: result.skippedComponents,
       warnings: [...warnings, ...result.warnings],
+      ...(result.merge ? { merge: result.merge } : {}),
     };
   } catch (err) {
     if (!params.autoDecimate || !isHealableSizeError(err)) throw err;
     const decimated = await decimateForHeal(ctx, bytes, sourceFormat, external);
-    const result = await ctx.pipeline.promoteMeshToBrep(ctx.extensionPath, decimated.stlBytes, "stl", targetFormat, unit);
+    const result = promoteOptions
+      ? await ctx.pipeline.promoteMeshToBrep(ctx.extensionPath, decimated.stlBytes, "stl", targetFormat, unit, undefined, promoteOptions)
+      : await ctx.pipeline.promoteMeshToBrep(ctx.extensionPath, decimated.stlBytes, "stl", targetFormat, unit);
     await fs.writeFile(outputPath, result.bytes);
 
     return {
@@ -3224,6 +3237,7 @@ export async function promoteMeshToBrepTool(
         ...result.warnings,
       ],
       decimated: decimated.info,
+      ...(result.merge ? { merge: result.merge } : {}),
     };
   }
 }
@@ -4479,6 +4493,7 @@ export async function setPart(params: {
   material?: string;
   meshGrading?: MeshGrading | null;
   meshStructured?: MeshStructured | null;
+  meshBoundaryLayer?: (Omit<MeshBoundaryLayer, "quads"> & { quads?: boolean }) | null;
   /**
    * Optional re-executable selector (roadmap "Selector synthesis") stored
    * beside the raw ids as annotation+cache: the host re-resolves it against
@@ -4569,6 +4584,12 @@ export async function setPart(params: {
         : params.meshStructured !== undefined
           ? validateMeshStructured(params.meshStructured) ?? existing?.meshStructured
           : existing?.meshStructured,
+    meshBoundaryLayer:
+      params.meshBoundaryLayer === null
+        ? undefined
+        : params.meshBoundaryLayer !== undefined
+          ? validateMeshBoundaryLayer(params.meshBoundaryLayer) ?? existing?.meshBoundaryLayer
+          : existing?.meshBoundaryLayer,
     ...(selector && selectorOpKind ? { selector, selectorOpKind } : {}),
   };
   if (typeof params.meshSize === "number" && !(Number.isFinite(params.meshSize) && params.meshSize > 0)) {
@@ -4582,6 +4603,9 @@ export async function setPart(params: {
   if (params.meshStructured !== undefined && params.meshStructured !== null && !validateMeshStructured(params.meshStructured)) {
     warnings.push("meshStructured must have an integer divisions >= 2 — ignored.");
   }
+  if (params.meshBoundaryLayer !== undefined && params.meshBoundaryLayer !== null && !validateMeshBoundaryLayer(params.meshBoundaryLayer)) {
+    warnings.push("meshBoundaryLayer must have wallSize > 0, growthRatio >= 1 and thickness >= wallSize — ignored.");
+  }
   if (index === -1) parts.push(part);
   else parts[index] = part;
   await writeParts(modelPath, parts);
@@ -4591,11 +4615,11 @@ export async function setPart(params: {
   );
   if (route.strategy === "three") {
     warnings.push(
-      "Mesh-format source: parts cannot become Gmsh physical groups; a single part's meshSize acts as a one-off global size override when meshing. meshGrading is ignored entirely (no per-entity correlation for mesh sources)."
+      "Mesh-format source: parts cannot become Gmsh physical groups; a single part's meshSize acts as a one-off global size override when meshing. meshGrading is ignored entirely (no per-entity correlation for mesh sources), and so is meshBoundaryLayer."
     );
   }
   return {
-    parts: parts.map((p) => ({ name: p.name, color: p.color, density: p.density ?? null, meshSize: p.meshSize ?? null, meshGrading: p.meshGrading ?? null })),
+    parts: parts.map((p) => ({ name: p.name, color: p.color, density: p.density ?? null, meshSize: p.meshSize ?? null, meshGrading: p.meshGrading ?? null, meshBoundaryLayer: p.meshBoundaryLayer ?? null })),
     warnings,
   };
 }
@@ -5440,7 +5464,7 @@ function budgetFor(
     elementOrder: options.elementOrder,
     elementShape: options.elementShape,
     engine: options.engine,
-    localSizing: parts.some((p) => p.meshSize != null || p.meshGrading != null),
+    localSizing: parts.some((p) => p.meshSize != null || p.meshGrading != null || p.meshBoundaryLayer != null),
   });
 }
 

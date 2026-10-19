@@ -58,7 +58,8 @@ import { volumePropertiesAdaptive, surfacePropertiesAdaptive } from "./brepGProp
 import type { GltfExternalBuffers } from "./gltfParser";
 import { parseToWeldedMesh } from "./meshParse";
 import type { MeshParseFormat } from "./fileRouter";
-import { weldTriangleSoup, connectedComponents, areaOfTriangles, volumeOfTriangles, type WeldedMesh } from "./meshComponents";
+import { weldTriangleSoup, connectedComponents, areaOfTriangles, volumeOfTriangles, boundsOfTriangles, boundsDiagonal, type WeldedMesh } from "./meshComponents";
+import { planFacetMerge, MAX_MERGE_TRIANGLES, type MergeFacetsOptions, type MergedFacet } from "./meshFacetMerge";
 import { analyzeMeshTopology } from "./meshTopology";
 import { analyzeMeshioSurfaces } from "./meshioService";
 import type { QualitySummary } from "./meshQuality";
@@ -177,9 +178,19 @@ export interface DecimatedInfo {
 // re-exported so every existing importer keeps working.
 export { parseToWeldedMesh } from "./meshParse";
 
-/** Throws the shared, actionable over-budget error both entry points use. */
-function assertHealableSize(indices: Uint32Array): void {
+/** Throws the shared, actionable over-budget error both entry points use. With `merging`, the
+ * per-triangle ceiling is replaced by {@link MAX_MERGE_TRIANGLES} here and re-applied to the number of
+ * FACES the merge leaves (see `promoteMeshToBrep`). */
+function assertHealableSize(indices: Uint32Array, merging = false): void {
   const triangleCount = Math.floor(indices.length / 3);
+  if (merging) {
+    if (triangleCount > MAX_MERGE_TRIANGLES) {
+      throw new Error(
+        `Mesh has ${triangleCount} triangles, above the ${MAX_MERGE_TRIANGLES}-triangle ceiling for merging coplanar facets before sewing. Decimate the mesh first (promote_mesh_to_brep accepts autoDecimate:true to do this automatically).`
+      );
+    }
+    return;
+  }
   if (triangleCount > MAX_HEALABLE_TRIANGLES) {
     throw new Error(
       `Mesh has ${triangleCount} triangles, above the ${MAX_HEALABLE_TRIANGLES}-triangle ceiling for the per-triangle sewing pipeline (it builds one OCCT face per triangle). Decimate the mesh before healing or promoting it (check_mesh_health/promote_mesh_to_brep accept autoDecimate:true to do this automatically).`
@@ -213,6 +224,40 @@ function buildFaceFromTriangle(oc: any, positions: Float32Array, indices: Uint32
   cleanup.push(wire);
   const face = new oc.BRepBuilderAPI_MakeFace_15(wire, true).Face();
   return face;
+}
+
+/** A closed polygon wire through welded vertices, one `MakeEdge_3` per segment. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function polygonWire(oc: any, positions: Float32Array, loop: number[], cleanup: Array<{ delete(): void }>): unknown {
+  const wireMaker = new oc.BRepBuilderAPI_MakeWire_1();
+  cleanup.push(wireMaker);
+  const pnts = loop.map((vi) => {
+    const p = new oc.gp_Pnt_3(positions[vi * 3], positions[vi * 3 + 1], positions[vi * 3 + 2]);
+    cleanup.push(p);
+    return p;
+  });
+  for (let i = 0; i < pnts.length; i++) {
+    const edge = new oc.BRepBuilderAPI_MakeEdge_3(pnts[i], pnts[(i + 1) % pnts.length]).Edge();
+    cleanup.push(edge);
+    wireMaker.Add_1(edge);
+  }
+  const wire = wireMaker.Wire();
+  cleanup.push(wire);
+  return wire;
+}
+
+/**
+ * ONE planar face for a merged facet: the outer loop through `MakeFace_15(wire, onlyPlane)`, each hole loop
+ * added with `MakeFace.Add` (probed: `plate-with-hole` → 10 faces, volume 336 exact). Returns `null` when OCCT
+ * will not build it, so the caller falls back to the facet's per-triangle faces. The caller owns the face.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function buildFaceFromFacet(oc: any, positions: Float32Array, facet: MergedFacet, cleanup: Array<{ delete(): void }>): unknown | null {
+  const maker = new oc.BRepBuilderAPI_MakeFace_15(polygonWire(oc, positions, facet.outer, cleanup), true);
+  cleanup.push(maker);
+  if (!maker.IsDone()) return null;
+  for (const hole of facet.holes) maker.Add(polygonWire(oc, positions, hole, cleanup));
+  return maker.IsDone() ? maker.Face() : null;
 }
 
 /**
@@ -381,6 +426,13 @@ export interface PromoteMeshResult {
    * file entirely — never silently dropped without explanation. */
   skippedComponents: number[];
   warnings: string[];
+  /**
+   * Present only when `mergeFacets` was requested: what the merge did. `faces` is what was sewn
+   * (`mergedFacets` planar faces plus `triangles - mergedTriangles` single-triangle faces);
+   * `keptAsTriangles` counts multi-triangle facets that failed a flatness or loop check, or that
+   * OCCT would not build as a face, and stayed per-triangle.
+   */
+  merge?: { triangles: number; faces: number; mergedFacets: number; keptAsTriangles: number };
 }
 
 /**
@@ -413,12 +465,33 @@ export async function promoteMeshToBrep(
   sourceFormat: MeshParseFormat,
   targetFormat: BRepFormat,
   unit: DisplayUnit = "mm",
-  external?: GltfExternalBuffers
+  external?: GltfExternalBuffers,
+  options: { mergeFacets?: MergeFacetsOptions } = {}
 ): Promise<PromoteMeshResult> {
   const oc = await getOcct(extensionPath);
-  const { positions, indices } = parseToWeldedMesh(bytes, sourceFormat, external);
-  assertHealableSize(indices);
+  const mesh = parseToWeldedMesh(bytes, sourceFormat, external);
+  const { positions, indices } = mesh;
+  const merging = options.mergeFacets !== undefined;
+  assertHealableSize(indices, merging);
   const componentTriangles = connectedComponents(indices);
+  // Facet merging (pure, before any OCCT handle exists): one planar face per near-coplanar facet instead of one
+  // per triangle, so the per-triangle sewing ceiling applies to the faces left, not the triangles read.
+  const plans = options.mergeFacets
+    ? componentTriangles.map((triangles) => {
+        const bounds = boundsOfTriangles(positions, indices, triangles);
+        const planarity = Math.max(1e-9, (bounds ? boundsDiagonal(bounds) : 0) * 1e-5);
+        return planFacetMerge(mesh, triangles, options.mergeFacets!.angleToleranceDeg, planarity);
+      })
+    : null;
+  if (plans) {
+    const faceCount = plans.reduce((n, p) => n + p.merged.length + p.singles.length, 0);
+    if (faceCount > MAX_HEALABLE_TRIANGLES) {
+      throw new Error(
+        `Mesh still needs ${faceCount} faces after merging coplanar facets, above the ${MAX_HEALABLE_TRIANGLES}-triangle ceiling for the per-face sewing pipeline. Decimate the mesh before promoting it (promote_mesh_to_brep accepts autoDecimate:true to do this automatically).`
+      );
+    }
+  }
+  const mergeStats = { triangles: Math.floor(indices.length / 3), faces: 0, mergedFacets: 0, keptAsTriangles: 0 };
   // Short path — this OCCT WASM build has an undocumented MEMFS path-length
   // cliff (roughly 11+ characters starts failing, per this codebase's own
   // prior findings for STEP/IGES export elsewhere); a live-WASM integration
@@ -437,8 +510,38 @@ export async function promoteMeshToBrep(
     const warnings: string[] = [];
 
     componentTriangles.forEach((triangles, index) => {
-      const faces = triangles.map((t) => buildFaceFromTriangle(oc, positions, indices, t, cleanup));
-      for (const f of faces) cleanup.push(f as { delete(): void });
+      let faces: unknown[];
+      const plan = plans?.[index];
+      if (plan) {
+        faces = [];
+        let singles = plan.singles;
+        mergeStats.keptAsTriangles += plan.rejectedFacets;
+        for (const facet of plan.merged) {
+          let face: unknown | null = null;
+          try {
+            face = buildFaceFromFacet(oc, positions, facet, cleanup);
+          } catch {
+            face = null; // a recoverable OCCT exception: this facet keeps its triangles
+          }
+          if (face) {
+            cleanup.push(face as { delete(): void });
+            faces.push(face);
+            mergeStats.mergedFacets++;
+          } else {
+            mergeStats.keptAsTriangles++;
+            singles = singles.concat(facet.triangles);
+          }
+        }
+        for (const t of singles) {
+          const f = buildFaceFromTriangle(oc, positions, indices, t, cleanup);
+          cleanup.push(f as { delete(): void });
+          faces.push(f);
+        }
+        mergeStats.faces += faces.length;
+      } else {
+        faces = triangles.map((t) => buildFaceFromTriangle(oc, positions, indices, t, cleanup));
+        for (const f of faces) cleanup.push(f as { delete(): void });
+      }
 
       const sewn = sewComponent(oc, faces, cleanup);
       const solid = sewn ? buildSolidFromSewedShape(oc, sewn.shape, cleanup) : null;
@@ -492,7 +595,7 @@ export async function promoteMeshToBrep(
       outBytes = new TextEncoder().encode(patchStepUnitDeclaration(text, unit));
     }
 
-    return { bytes: outBytes, promotedComponents, skippedComponents, warnings };
+    return { bytes: outBytes, promotedComponents, skippedComponents, warnings, ...(plans ? { merge: mergeStats } : {}) };
   } catch (err) {
     throw wrapOcctFault(err);
   } finally {

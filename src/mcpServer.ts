@@ -1045,16 +1045,20 @@ server.registerTool(
   "promote_mesh_to_brep",
   {
     description:
-      "Mesh -> B-rep promotion, Phase 2: sews a healed STL/OBJ/PLY/glTF mesh into a brand-new STEP/IGES/BREP file at outputPath (default targetFormat 'step') via the same writer pipeline export_brep uses. This is a ONE-SHOT EXPORT, not an in-place reclassification -- the original mesh source is left completely untouched; the written file is an ordinary, fully-editable B-rep document from the moment it exists (fillet/chamfer/measure_exact/get_mass_properties/further export_brep all just work on it -- open it with load_model to confirm). A component that never closes (even at the loosest sewing tolerance) is skipped and reported in skippedComponents/warnings, never silently dropped or forced into an invalid solid; if NO component closes, the call fails -- run check_mesh_health first to see why. Never requires a prior check_mesh_health call (fully standalone), but running one first is recommended. Optional unit (mm/cm/m/in/ft, default mm) applies the same real geometric scale export_brep's unit param does. Meshes above 50000 triangles are refused unless autoDecimate:true is passed (same coarsened-mesh semantics as check_mesh_health -- the written file derives from the coarsened mesh, stated in the response). B-rep sources return an error (nothing to promote); meshio-only formats return an error (no host-side triangle-soup parser).",
+      "Mesh -> B-rep promotion, Phase 2: sews a healed STL/OBJ/PLY/glTF mesh into a brand-new STEP/IGES/BREP file at outputPath (default targetFormat 'step') via the same writer pipeline export_brep uses. This is a ONE-SHOT EXPORT, not an in-place reclassification -- the original mesh source is left completely untouched; the written file is an ordinary, fully-editable B-rep document from the moment it exists (fillet/chamfer/measure_exact/get_mass_properties/further export_brep all just work on it -- open it with load_model to confirm). A component that never closes (even at the loosest sewing tolerance) is skipped and reported in skippedComponents/warnings, never silently dropped or forced into an invalid solid; if NO component closes, the call fails -- run check_mesh_health first to see why. Never requires a prior check_mesh_health call (fully standalone), but running one first is recommended. Optional unit (mm/cm/m/in/ft, default mm) applies the same real geometric scale export_brep's unit param does. Meshes above 50000 triangles are refused unless autoDecimate:true is passed (same coarsened-mesh semantics as check_mesh_health -- the written file derives from the coarsened mesh, stated in the response) or mergeFacets is set (one planar face per near-coplanar facet; accepted up to 300000 triangles, with the 50000 ceiling then applying to the faces left). B-rep sources return an error (nothing to promote); meshio-only formats return an error (no host-side triangle-soup parser).",
     inputSchema: {
       path: modelPath,
       outputPath: z.string().describe("Absolute path to write the new B-rep file to (must not be the source path)"),
       targetFormat: z.enum(["step", "iges", "brep"]).optional().describe("Output format (default: step)"),
       unit: z.string().optional().describe("Export unit: mm | cm | m | in | ft (default mm, no conversion)"),
       autoDecimate: z.boolean().optional().describe("When true and the mesh exceeds the 50000-triangle ceiling, promote from an mmgs-coarsened mesh instead (target ~1000 triangles; the written file derives from the coarsened mesh, stated in the response)"),
+      mergeFacets: z
+        .union([z.boolean(), z.object({ angleToleranceDeg: z.number().optional().describe("Max angle between a triangle and its facet's seed normal, degrees (0, 10]; default 1") })])
+        .optional()
+        .describe("Build ONE planar face per near-coplanar facet instead of one per triangle: a 19200-triangle faceted cube promotes in about 1 s instead of 50 s, and meshes up to 300000 triangles are accepted (the 50000 ceiling then applies to the faces left). A facet is merged only when every vertex lies within 1e-5 of the bounding-box diagonal of its best-fit plane and its boundary is one outer loop plus holes; anything else keeps its per-triangle faces, so a curved surface is never flattened. The response's merge block reports triangles, faces sewn, merged facets and facets kept per-triangle."),
     },
   },
-  wrap((args: { path: string; outputPath: string; targetFormat?: string; unit?: string; autoDecimate?: boolean }) => promoteMeshToBrepTool(ctx, args))
+  wrap((args: { path: string; outputPath: string; targetFormat?: string; unit?: string; autoDecimate?: boolean; mergeFacets?: boolean | { angleToleranceDeg?: number } }) => promoteMeshToBrepTool(ctx, args))
 );
 
 server.registerTool(
@@ -1506,7 +1510,7 @@ server.registerTool(
   "set_part",
   {
     description:
-      "Create, update, or remove a named part (FEM sub-model-part) grouping entity ids from load_model's inventory. Parts drive per-part colours, Gmsh physical groups in mesh exports (B-rep sources), optional per-part meshSize refinement (a flat size confined to the part's own entities), and optional meshGrading (a distance-graded size AROUND the part — sizeAtWall within distNear, growing to sizeFar at distFar; B-rep sources only, same as physical groups and meshSize), and optional meshStructured (transfinite node count per meshed edge for an exact mapped grid on regular regions; B-rep sources only). Optional density (g/cm3) or material name gives the part a mass: generate_bom adds Density/Mass columns and a total, get_mass_properties on a solid-N inside the part reports massGrams; a part with no density is reported as missing, never zero. Omitted fields keep their current values; meshSize/meshGrading/meshStructured/density: null clears them. Optional selector stores a re-executable SelectorQuery beside the raw surfaces cache (same shape resolve_selector takes) — the host re-resolves it against the current op list and overwrites surfaces on an oracle-clean result; null clears a stored one.",
+      "Create, update, or remove a named part (FEM sub-model-part) grouping entity ids from load_model's inventory. Parts drive per-part colours, Gmsh physical groups in mesh exports (B-rep sources), optional per-part meshSize refinement (a flat size confined to the part's own entities), and optional meshGrading (a distance-graded size AROUND the part — sizeAtWall within distNear, growing to sizeFar at distFar; B-rep sources only, same as physical groups and meshSize), and optional meshStructured (transfinite node count per meshed edge for an exact mapped grid on regular regions; B-rep sources only), and optional meshBoundaryLayer (an anisotropic boundary layer along the part's edge-N walls: wallSize, growthRatio, thickness, quads; 2-D meshes only). Optional density (g/cm3) or material name gives the part a mass: generate_bom adds Density/Mass columns and a total, get_mass_properties on a solid-N inside the part reports massGrams; a part with no density is reported as missing, never zero. Omitted fields keep their current values; meshSize/meshGrading/meshStructured/meshBoundaryLayer/density: null clears them. Optional selector stores a re-executable SelectorQuery beside the raw surfaces cache (same shape resolve_selector takes) — the host re-resolves it against the current op list and overwrites surfaces on an oracle-clean result; null clears a stored one.",
     inputSchema: {
       path: modelPath,
       name: z.string().describe("Part name (the upsert key)"),
@@ -1536,6 +1540,16 @@ server.registerTool(
         .nullable()
         .optional()
         .describe("Structured (transfinite) meshing for this part — exact mapped grid on regular regions; B-rep sources only; null clears"),
+      meshBoundaryLayer: z
+        .object({
+          wallSize: z.number().describe("Height of the first row at the wall (> 0, model units)"),
+          growthRatio: z.number().describe("Growth ratio between successive rows (>= 1)"),
+          thickness: z.number().describe("Total thickness of the layer stack (>= wallSize, model units)"),
+          quads: z.boolean().optional().describe("Recombine the layer rows into quadrilaterals (default true)"),
+        })
+        .nullable()
+        .optional()
+        .describe("Anisotropic boundary layer along this part's edge-N walls — rows grow geometrically from wallSize; 2-D meshes (generate_mesh dimension 2), B-rep sources only; null clears"),
       selector: z.looseObject({}).nullable().optional().describe("SelectorQuery to store (validated structurally); null clears a stored one"),
     },
   },
@@ -1554,6 +1568,7 @@ server.registerTool(
       material?: string;
       meshGrading?: { sizeAtWall: number; sizeFar: number; distNear: number; distFar: number } | null;
       meshStructured?: { divisions: number } | null;
+      meshBoundaryLayer?: { wallSize: number; growthRatio: number; thickness: number; quads?: boolean } | null;
       selector?: unknown;
     }) => setPart(args)
   )

@@ -13,6 +13,8 @@ import {
   boundaryExtentMismatches,
   describeExtentMismatch,
   extentOf,
+  hasQuadFaceVolumeCells,
+  isSurfaceOnlyMesh,
 } from "./meshioBoundary";
 
 /** Box corners as a flat row-major array: min then max per axis. */
@@ -122,5 +124,39 @@ describe("describeExtentMismatch", () => {
     ]);
     expect(msg).toContain("x:");
     expect(msg).toContain("z:");
+  });
+});
+
+describe("isSurfaceOnlyMesh", () => {
+  it("recognises a shell deck: triangles and quads, in any order, with or without line/vertex blocks", () => {
+    expect(isSurfaceOnlyMesh(["quad", "triangle"])).toBe(true);
+    expect(isSurfaceOnlyMesh(["triangle6", "quad8", "quad9", "line3", "vertex"])).toBe(true);
+    expect(isSurfaceOnlyMesh(["polygon"])).toBe(true);
+  });
+
+  // Each rejection is the control for the case above: one volume block anywhere means the mesh is a
+  // solid, whose faces extractSurface must keep selecting — treating it as a shell would show every
+  // internal face.
+  it("rejects any mesh that holds a volume cell, or no surface cell at all", () => {
+    for (const types of [["tetra"], ["triangle", "tetra"], ["quad", "hexahedron"], ["triangle", "wedge"], ["triangle", "pyramid"],
+      ["quad", "tetra10"], ["polygon", "polyhedron"], ["triangle", "someFutureCell"], ["line"], ["line", "vertex"], []]) {
+      expect(isSurfaceOnlyMesh(types), JSON.stringify(types)).toBe(false);
+    }
+  });
+});
+
+describe("hasQuadFaceVolumeCells", () => {
+  it("flags every volume cell whose boundary can hold a quad, in any order", () => {
+    for (const types of [["hexahedron"], ["wedge"], ["pyramid"], ["polyhedron"], ["tetra", "hexahedron"], ["triangle", "wedge15"],
+      ["hexahedron20"], ["pyramid13"], ["hexahedron27", "line"]]) {
+      expect(hasQuadFaceVolumeCells(types), JSON.stringify(types)).toBe(true);
+    }
+  });
+
+  // The controls: a pure simplex mesh (and a shell) keeps the native converter, whose triangles are complete.
+  it("leaves tetra-only, shell-only and empty meshes alone", () => {
+    for (const types of [["tetra"], ["tetra10", "triangle", "line"], ["triangle", "quad"], ["quad8"], []]) {
+      expect(hasQuadFaceVolumeCells(types), JSON.stringify(types)).toBe(false);
+    }
   });
 });

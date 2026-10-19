@@ -1,0 +1,24 @@
+$ Hand-authored to the MSC Nastran Quick Reference Guide card layout (fixed field, 8 columns).
+$ NOT emitted by a Nastran tool. Geometry: a flat shell in z = 0 — two 2 x 3 CQUAD4 (area 12) plus one
+$ CTRIA3 flap (area 3), total area 15, extent 6 x 3 x 0. No volume cells.
+ID EXAMPLE,PLATESHELL
+SOL 101
+CEND
+TITLE = FLAT PLATE OF QUADS AND A TRIANGLE
+SUBCASE 1
+  LOAD = 1
+BEGIN BULK
+MAT1    1       2.1+5           0.3     7.8-9
+PSHELL  1       1       0.1
+GRID    1       0       0.0     0.0     0.0
+GRID    2       0       2.0     0.0     0.0
+GRID    3       0       4.0     0.0     0.0
+GRID    4       0       0.0     3.0     0.0
+GRID    5       0       2.0     3.0     0.0
+GRID    6       0       4.0     3.0     0.0
+GRID    7       0       6.0     0.0     0.0
+CQUAD4  1       1       1       2       5       4
+CQUAD4  2       1       2       3       6       5
+CTRIA3  3       1       3       7       6
+SPC1    1       123456  1       4
+ENDDATA

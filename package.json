@@ -483,7 +483,7 @@
     "docs:screenshots": "npm run build && node scripts/screenshots/make-fixtures.mjs && node scripts/screenshots/capture.mjs"
   },
   "dependencies": {
-    "@loumalouomega/gmsh-wasm": "^0.3.0",
+    "@loumalouomega/gmsh-wasm": "^0.4.0",
     "@loumalouomega/mmg-wasm": "0.1.0",
     "@meshioplusplus/wasm": "^17.3.0",
     "@modelcontextprotocol/sdk": "^1.32.1",

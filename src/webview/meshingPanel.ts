@@ -1,4 +1,4 @@
-import { SIZE_MAX_SENTINEL, DEFAULT_MESH_OPTIONS, validateMeshGrading, validateMeshStructured, type MeshOptions, type MeshGrading, type MeshStructured } from "../meshOptions";
+import { SIZE_MAX_SENTINEL, DEFAULT_MESH_OPTIONS, boundaryLayerPlan, validateMeshBoundaryLayer, validateMeshGrading, validateMeshStructured, type MeshOptions, type MeshGrading, type MeshStructured, type MeshBoundaryLayer } from "../meshOptions";
 import type { QualitySummary } from "../meshQuality";
 import { describeGateCheck, type QualityGateResult } from "../meshQualityGate";
 import { TOOLBAR_ICONS } from "../toolbarIcons";
@@ -57,6 +57,8 @@ export interface MeshingPanelCallbacks {
    * `{divisions}` or `undefined` — anything else shows inline, never
    * forwarded (same contract as `onPartMeshGrading`). */
   onPartMeshStructured: (index: number, structured: MeshStructured | undefined) => void;
+  /** A Part's anisotropic boundary layer was committed (`undefined` = cleared); forwarded only when valid. */
+  onPartMeshBoundaryLayer: (index: number, layer: MeshBoundaryLayer | undefined) => void;
   onGenerate: () => void;
   /** Cancel a running meshing job by its request id. Used by the toolbar Cancel
    * AND by the refinement sweep's own Cancel button (roadmap "Cancel a mesh
@@ -1354,7 +1356,7 @@ export class MeshingPanel {
    * meshing controls. Hidden while no parts exist.
    */
   renderParts(parts: Part[]): void {
-    const local = parts.some((p) => p.meshSize != null || p.meshGrading != null || p.meshStructured != null);
+    const local = parts.some((p) => p.meshSize != null || p.meshGrading != null || p.meshStructured != null || p.meshBoundaryLayer != null);
     if (local !== this.partsHaveLocalSizing) {
       this.partsHaveLocalSizing = local;
       this.syncSlider();
@@ -1426,6 +1428,18 @@ export class MeshingPanel {
       structToggle.classList.toggle("active", part.meshStructured != null);
       row.appendChild(structToggle);
 
+      // A boundary layer grows along a part's wall EDGES, so its toggle only exists for a part that lists some
+      // (or already carries a layer, so it can still be cleared) — everyone else keeps the two-button row.
+      const hasLayerTarget = part.lines.length > 0 || part.meshBoundaryLayer != null;
+      const layerToggle = document.createElement("button");
+      layerToggle.type = "button";
+      layerToggle.className = "meshing-part-layer-toggle";
+      layerToggle.textContent = "Layer";
+      layerToggle.title = "Anisotropic boundary layer along this part's edges: thin rows growing from the wall (B-rep sources, 2-D meshes only)";
+      layerToggle.setAttribute("aria-expanded", "false");
+      layerToggle.classList.toggle("active", part.meshBoundaryLayer != null);
+      if (hasLayerTarget) row.appendChild(layerToggle);
+
       this.partsBody.appendChild(row);
 
       const gradingRow = this.buildPartGradingRow(index, part.meshGrading);
@@ -1447,6 +1461,18 @@ export class MeshingPanel {
         structRow.hidden = nowHidden;
         structToggle.setAttribute("aria-expanded", String(!nowHidden));
       });
+
+      if (hasLayerTarget) {
+        const layerRow = this.buildPartBoundaryLayerRow(index, part.meshBoundaryLayer);
+        layerRow.hidden = true;
+        this.partsBody.appendChild(layerRow);
+
+        layerToggle.addEventListener("click", () => {
+          const nowHidden = !layerRow.hidden;
+          layerRow.hidden = nowHidden;
+          layerToggle.setAttribute("aria-expanded", String(!nowHidden));
+        });
+      }
     });
   }
 
@@ -1563,6 +1589,96 @@ export class MeshingPanel {
       error.textContent = "";
       this.cb.onPartMeshStructured(index, valid);
     });
+
+    return row;
+  }
+
+  /**
+   * Builds the (initially hidden) boundary-layer row for one part: wall size,
+   * growth ratio and total thickness, plus a quads checkbox, an inline error
+   * line and a read-only plan line ("6 rows, last 0.15, total 0.497") from
+   * {@link boundaryLayerPlan}. Same contract as the grading row: all three
+   * blank clears, a valid set commits, anything else shows inline and never
+   * forwards.
+   */
+  private buildPartBoundaryLayerRow(index: number, initial: MeshBoundaryLayer | undefined): HTMLDivElement {
+    const row = document.createElement("div");
+    row.className = "meshing-part-grading meshing-part-layer";
+
+    const field = (label: string, title: string, value: number | undefined, min: string) => {
+      const wrap = document.createElement("label");
+      wrap.className = "meshing-part-grading-field";
+      const span = document.createElement("span");
+      span.textContent = label;
+      wrap.appendChild(span);
+      const inp = document.createElement("input");
+      inp.type = "number";
+      inp.className = "meshing-num";
+      inp.title = title;
+      inp.min = min;
+      inp.step = "any";
+      inp.value = value != null ? String(value) : "";
+      wrap.appendChild(inp);
+      row.appendChild(wrap);
+      return inp;
+    };
+    const wallInput = field("Wall", "Height of the first row at the wall", initial?.wallSize, "0");
+    const ratioInput = field("Ratio", "Growth ratio between successive rows (≥ 1)", initial?.growthRatio, "1");
+    const thickInput = field("Thickness", "Total thickness of the layer stack", initial?.thickness, "0");
+
+    const quadsWrap = document.createElement("label");
+    quadsWrap.className = "meshing-part-grading-field";
+    const quadsSpan = document.createElement("span");
+    quadsSpan.textContent = "Quads";
+    quadsWrap.appendChild(quadsSpan);
+    const quadsInput = document.createElement("input");
+    quadsInput.type = "checkbox";
+    quadsInput.title = "Recombine the layer rows into quadrilaterals";
+    quadsInput.checked = initial?.quads ?? true;
+    quadsWrap.appendChild(quadsInput);
+    row.appendChild(quadsWrap);
+
+    const plan = document.createElement("span");
+    plan.className = "meshing-part-layer-plan";
+    row.appendChild(plan);
+    const error = document.createElement("span");
+    error.className = "meshing-part-grading-error";
+    row.appendChild(error);
+
+    const showPlan = (layer: MeshBoundaryLayer | undefined): void => {
+      if (!layer) {
+        plan.textContent = "";
+        return;
+      }
+      const p = boundaryLayerPlan(layer);
+      plan.textContent = `${p.layers} row${p.layers === 1 ? "" : "s"}, last ${formatSize(p.lastHeight)}, total ${formatSize(p.totalThickness)}`;
+    };
+    showPlan(initial);
+
+    const commit = () => {
+      const raws = [wallInput.value.trim(), ratioInput.value.trim(), thickInput.value.trim()];
+      if (raws.every((r) => r === "")) {
+        error.textContent = "";
+        showPlan(undefined);
+        this.cb.onPartMeshBoundaryLayer(index, undefined);
+        return;
+      }
+      const valid = validateMeshBoundaryLayer({
+        wallSize: Number(raws[0]),
+        growthRatio: Number(raws[1]),
+        thickness: Number(raws[2]),
+        quads: quadsInput.checked,
+      });
+      if (!valid) {
+        error.textContent = "Needs wall > 0, ratio ≥ 1, thickness ≥ wall.";
+        showPlan(undefined);
+        return;
+      }
+      error.textContent = "";
+      showPlan(valid);
+      this.cb.onPartMeshBoundaryLayer(index, valid);
+    };
+    for (const inp of [wallInput, ratioInput, thickInput, quadsInput]) inp.addEventListener("change", commit);
 
     return row;
   }

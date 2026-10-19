@@ -1,0 +1,29 @@
+$ Hand-authored to the MSC Nastran Quick Reference Guide card layout (fixed field, 8 columns).
+$ NOT emitted by a Nastran tool. Geometry: a 2 x 3 x 4 box (volume 24) as two 8-node CHEXA stacked in z.
+ID EXAMPLE,BOXHEX
+SOL 101
+CEND
+TITLE = TWO BY THREE BY FOUR BOX AS TWO HEXAHEDRA
+SUBCASE 1
+  LOAD = 1
+BEGIN BULK
+MAT1    1       2.1+5           0.3     7.8-9
+PSOLID  1       1
+GRID    1       0       0.0     0.0     0.0
+GRID    2       0       2.0     0.0     0.0
+GRID    3       0       2.0     3.0     0.0
+GRID    4       0       0.0     3.0     0.0
+GRID    5       0       0.0     0.0     2.0
+GRID    6       0       2.0     0.0     2.0
+GRID    7       0       2.0     3.0     2.0
+GRID    8       0       0.0     3.0     2.0
+GRID    9       0       0.0     0.0     4.0
+GRID    10      0       2.0     0.0     4.0
+GRID    11      0       2.0     3.0     4.0
+GRID    12      0       0.0     3.0     4.0
+CHEXA   1       1       1       2       3       4       5       6       +H1
++H1     7       8
+CHEXA   2       1       5       6       7       8       9       10      +H2
++H2     11      12
+SPC1    1       123     1       2       3       4
+ENDDATA

@@ -88,6 +88,7 @@ export class MeshHealthPanel {
   private readonly fitButton: HTMLButtonElement | null;
   private readonly repairButton: HTMLButtonElement | null;
   private readonly decimateCheckbox: HTMLInputElement | null;
+  private readonly mergeCheckbox: HTMLInputElement | null;
 
   constructor(panel: HTMLElement, cb: MeshHealthPanelCallbacks) {
     this.panel = panel;
@@ -96,6 +97,7 @@ export class MeshHealthPanel {
     this.fitButton = panel.querySelector("#mesh-health-fit");
     this.repairButton = panel.querySelector("#mesh-health-repair");
     this.decimateCheckbox = panel.querySelector("#mesh-health-decimate");
+    this.mergeCheckbox = panel.querySelector("#mesh-health-merge");
     panel.querySelector("#mesh-health-check")?.addEventListener("click", () => cb.onCheck());
     this.promoteButton?.addEventListener("click", () => cb.onPromote());
     this.fitButton?.addEventListener("click", () => cb.onFitCad());
@@ -105,6 +107,11 @@ export class MeshHealthPanel {
   /** Session-only opt-in (default off): decimate an oversized mesh before checking. */
   get autoDecimate(): boolean {
     return this.decimateCheckbox?.checked ?? false;
+  }
+
+  /** Session-only opt-in (default off): promote with one planar face per near-coplanar facet. */
+  get mergeFacets(): boolean {
+    return this.mergeCheckbox?.checked ?? false;
   }
 
   /** Shows or hides the whole panel — only a native STL/OBJ/PLY source has a

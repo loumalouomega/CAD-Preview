@@ -1,0 +1,24 @@
+$ Hand-authored to the MSC Nastran Quick Reference Guide card layout (fixed field, 8 columns).
+$ NOT emitted by a Nastran tool. Geometry: a 2 x 3 x 4 box (volume 24) as two 6-node CPENTA wedges,
+$ the 2 x 3 base split along its diagonal and extruded through z = 0..4 (each wedge: 3 * 4 = 12).
+ID EXAMPLE,BOXWEDGE
+SOL 101
+CEND
+TITLE = TWO BY THREE BY FOUR BOX AS TWO WEDGES
+SUBCASE 1
+  LOAD = 1
+BEGIN BULK
+MAT1    1       2.1+5           0.3     7.8-9
+PSOLID  1       1
+GRID    1       0       0.0     0.0     0.0
+GRID    2       0       2.0     0.0     0.0
+GRID    3       0       2.0     3.0     0.0
+GRID    4       0       0.0     3.0     0.0
+GRID    5       0       0.0     0.0     4.0
+GRID    6       0       2.0     0.0     4.0
+GRID    7       0       2.0     3.0     4.0
+GRID    8       0       0.0     3.0     4.0
+CPENTA  1       1       1       2       3       5       6       7
+CPENTA  2       1       1       3       4       5       7       8
+SPC1    1       123     1       2       3       4
+ENDDATA
