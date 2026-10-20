@@ -237,10 +237,9 @@ CAD-Preview bundles [`@loumalouomega/gmsh-wasm`](https://github.com/loumalouomeg
 
 CAD-Preview itself is distributed under the **GPL-3.0-or-later** — see [LICENSE](LICENSE).
 It was GPL-2.0-or-later until 2026-09-24, when the project committed to the
-[OpenSCAD WASM port](doc/roadmap.md#build-and-bundle-an-openscad-wasm-port): its
-CGAL/Manifold backends require GPLv3-compatible terms. That dependency has now
-landed as [`@loumalouomega/openscad-wasm`](https://github.com/loumalouomega/openscad-wasm)
-(see below). The now-bundled LGPL-3.0-or-later MMG runtime is also
+OpenSCAD WASM port: its CGAL/Manifold backends require GPLv3-compatible terms.
+That dependency has now landed as [`@loumalouomega/openscad-wasm`](https://github.com/loumalouomega/openscad-wasm)
+(see below; shipped in 3.26.0). The now-bundled LGPL-3.0-or-later MMG runtime is also
 compatible with the GPLv3 combined work and independently requires
 GPLv3-compatible terms for that combination.
 
