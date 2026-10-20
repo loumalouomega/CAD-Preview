@@ -1084,20 +1084,34 @@ describe("get_mass_properties", () => {
   });
 
   it("computes triangle-based mass for a meshio-only source from its extracted boundary", async () => {
+    // A closed, consistently-wound unit tetrahedron: volume 1/6, area
+    // 3 right faces (1/2 each) plus the √2-edged equilateral face (√3/2).
+    // (The shared TWO_TET boundary fixture has mixed winding, so its signed
+    // volume cancels to 0 — right for conformity, wrong for a volume read.)
+    const tetra = [
+      "solid tet",
+      "facet normal 0 0 -1", "outer loop", "vertex 0 0 0", "vertex 0 1 0", "vertex 1 0 0", "endloop", "endfacet",
+      "facet normal 0 -1 0", "outer loop", "vertex 0 0 0", "vertex 1 0 0", "vertex 0 0 1", "endloop", "endfacet",
+      "facet normal -1 0 0", "outer loop", "vertex 0 0 0", "vertex 0 0 1", "vertex 0 1 0", "endloop", "endfacet",
+      "facet normal 0.5773502691896258 0.5773502691896258 0.5773502691896258",
+      "outer loop", "vertex 1 0 0", "vertex 0 1 0", "vertex 0 0 1", "endloop", "endfacet",
+      "endsolid tet",
+    ].join("\n");
     const c = ctx(fakePipeline({
       convertToStlBoundaryWithRegions: vi.fn(async () => ({
-        stlBytes: TWO_TET_BOUNDARY_STL,
-        regions: { regionNames: ["MaterialA", "MaterialB"], triangleRegion: Int32Array.from([0, 0, 0, 1, 1, 1]) },
+        stlBytes: new TextEncoder().encode(tetra),
+        regions: { regionNames: ["MaterialA"], triangleRegion: Int32Array.from([0, 0, 0, 0]) },
       })),
     }));
     const result = await getMassProperties(c, { path: vtkModel });
     expect(c.pipeline.computeMassProperties).not.toHaveBeenCalled();
     expect(result.supported).toBe(true);
     expect(result.surfaceDerived).toBe(true);
-    expect(result.regionCount).toBe(2);
+    expect(result.regionCount).toBe(1);
     expect(result.watertight).toBe(true);
-    expect(result.volume).toBeCloseTo(1 / 3, 9);
-    expect(result.bbox).toMatchObject({ min: [0, 0, -1], max: [1, 1, 1] });
+    expect(result.volume).toBeCloseTo(1 / 6, 9);
+    expect(result.area).toBeCloseTo((3 + Math.sqrt(3)) / 2, 9);
+    expect(result.bbox).toMatchObject({ min: [0, 0, 0], max: [1, 1, 1] });
     expect(result.warnings.join(" ")).toMatch(/surface-derived/i);
   });
 
@@ -1623,7 +1637,7 @@ describe("compare_models", () => {
       { kind: "brep", bytes: expect.any(Uint8Array), format: "step", ops: [] },
       { kind: "brep", bytes: expect.any(Uint8Array), format: "step", ops: [] }
     );
-    expect(result).toEqual({ formatA: "step", formatB: "step", supported: true, warnings: [], diff: FAKE_MODEL_DIFF });
+    expect(result).toEqual({ formatA: "step", formatB: "step", supported: true, warnings: [], diff: FAKE_MODEL_DIFF, sides: { A: { kind: "brep", surfaceDerived: false }, B: { kind: "brep", surfaceDerived: false } } });
   });
 
   it("replays each side's sidecar ops before comparing", async () => {
@@ -1643,7 +1657,7 @@ describe("compare_models", () => {
       { kind: "brep", bytes: expect.any(Uint8Array), format: "step", ops: [] },
       { kind: "stl", bytes: expect.any(Uint8Array) }
     );
-    expect(result).toEqual({ formatA: "step", formatB: "stl", supported: true, warnings: [], diff: FAKE_MODEL_DIFF });
+    expect(result).toEqual({ formatA: "step", formatB: "stl", supported: true, warnings: [], diff: FAKE_MODEL_DIFF, sides: { A: { kind: "brep", surfaceDerived: false }, B: { kind: "mesh", surfaceDerived: false } } });
   });
 
   it("diffs two STL sources", async () => {
@@ -1691,7 +1705,7 @@ describe("compare_models", () => {
       { kind: "brep", bytes: expect.any(Uint8Array), format: "step", ops: [] },
       { kind: "obj", bytes: expect.any(Uint8Array) }
     );
-    expect(result).toEqual({ formatA: "step", formatB: "obj", supported: true, warnings: [], diff: FAKE_MODEL_DIFF });
+    expect(result).toEqual({ formatA: "step", formatB: "obj", supported: true, warnings: [], diff: FAKE_MODEL_DIFF, sides: { A: { kind: "brep", surfaceDerived: false }, B: { kind: "mesh", surfaceDerived: false } } });
   });
 
   it("diffs a B-rep source against a PLY source, as raw PLY bytes with no edits baked", async () => {
@@ -1702,7 +1716,7 @@ describe("compare_models", () => {
       { kind: "brep", bytes: expect.any(Uint8Array), format: "step", ops: [] },
       { kind: "ply", bytes: expect.any(Uint8Array) }
     );
-    expect(result).toEqual({ formatA: "step", formatB: "ply", supported: true, warnings: [], diff: FAKE_MODEL_DIFF });
+    expect(result).toEqual({ formatA: "step", formatB: "ply", supported: true, warnings: [], diff: FAKE_MODEL_DIFF, sides: { A: { kind: "brep", surfaceDerived: false }, B: { kind: "mesh", surfaceDerived: false } } });
   });
 
   it("diffs OBJ against PLY directly", async () => {

@@ -31,7 +31,7 @@ describe("meshioBoundarySide", () => {
     expect(side.watertight).toBe(true);
     const mass = side.inspection.mass("whole-model");
     expect(mass.volume).toBeCloseTo(1 / 6, 9);
-    expect(mass.area).toBeCloseTo((6 + Math.sqrt(3)) / 4, 9);
+    expect(mass.area).toBeCloseTo((3 + Math.sqrt(3)) / 2, 9);
   });
 
   it("keeps an open surface open instead of inventing a volume", () => {

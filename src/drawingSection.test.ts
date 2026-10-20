@@ -70,7 +70,10 @@ describe("cuttingPlaneMark", () => {
   const bounds = { minX: 0, minY: 0, maxX: 10, maxY: 10 };
 
   it("draws an edge-on plane as a line with two arrowheads and a label", async () => {
-    const mark = cuttingPlaneMark({ origin: [0, 5, 0], normal: [0, 1, 0] }, front, bounds, "A—A");
+    // The mark is extended to the parent drawing's bounds, so the bounds
+    // must contain the projected cutting line (world y = 5 reads as
+    // screen y = -5 in the Y-down frame).
+    const mark = cuttingPlaneMark({ origin: [0, 5, 0], normal: [0, 1, 0] }, front, { minX: 0, minY: -10, maxX: 10, maxY: 10 }, "A—A");
     expect(mark).not.toBeNull();
     expect(mark!.segments).toHaveLength(1);
     expect(mark!.arrows).toHaveLength(4);
