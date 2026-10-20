@@ -351,6 +351,28 @@ export interface ScadConvertOptions {
   libraryPaths?: string[];
   /** Customizer overrides, each passed as `-D name=value` (validate with `validateScadOverrides` first). */
   defines?: Record<string, ScadValue>;
+  /**
+   * WASM-first conversion (roadmap "Build and bundle an OpenSCAD WASM port"):
+   * when present, `convertScadToCsg` tries the kernel-worker's
+   * `convertScadViaWasm` before spawning the user-installed binary, and falls
+   * back to the binary on any WASM failure (unavailable, abort, or a
+   * construct the WASM path declines). Structural type (not `Pipeline`) so
+   * this vscode-free module never imports the tool surface.
+   */
+  wasm?: {
+    extensionPath: string;
+    convertScadViaWasm: (
+      extensionPath: string,
+      modelPath: string,
+      opts: { backend?: string; defines?: Record<string, ScadValue>; libraryPaths?: string[] }
+    ) => Promise<{
+      csgBytes: Uint8Array;
+      warnings: string[];
+      diagnostics: ScadDiagnostic[];
+      droppedCount: number;
+      dependencies: string[];
+    }>;
+  };
 }
 
 export interface ScadConvertResult {
@@ -488,6 +510,74 @@ async function entryStillValid(entry: ScadCacheEntry): Promise<boolean> {
 /** `include`/`use` of a file that does not exist is NOT in the dependency list (openscad only warns), so creating it later cannot invalidate an entry — such a result is never cached. */
 const MISSING_INCLUDE_DIAGNOSTIC = /Can't open (include file|library)/i;
 
+function scadWasmStaticKey(opts: {
+  absSource: string;
+  backend: ScadBackend | undefined;
+  defines: Record<string, ScadValue> | undefined;
+  libraryPaths: readonly string[] | undefined;
+}): string {
+  const defines = Object.entries(opts.defines ?? {})
+    .map(([k, v]) => [k, formatScadValue(v)] as const)
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+  const libs = (opts.libraryPaths ?? []).map((p) => p.trim()).filter((p) => p !== "");
+  return JSON.stringify(["wasm", opts.absSource, opts.backend ?? "manifold", defines, libs]);
+}
+
+/**
+ * WASM-first conversion with the same cache/watcher contract as the binary
+ * path. Returns `undefined` when the caller passed no `wasm` (binary-only
+ * call sites and unit tests with stub binaries). Throws on WASM failure so
+ * the caller falls back to the binary — a WASM miss is never cached and never
+ * notifies watchers (the binary run that follows does both).
+ */
+async function convertScadViaWasmCached(
+  absSource: string,
+  opts: ScadConvertOptions
+): Promise<ScadConvertResult | undefined> {
+  if (!opts.wasm) return undefined;
+  const backend = resolveScadBackend(opts.backend);
+  const staticKey = scadWasmStaticKey({ absSource, backend, defines: opts.defines, libraryPaths: opts.libraryPaths });
+  const idx = scadCache.findIndex((e) => e.staticKey === staticKey);
+  if (idx >= 0) {
+    const entry = scadCache[idx];
+    if (await entryStillValid(entry)) {
+      scadCache.splice(idx, 1);
+      scadCache.unshift(entry);
+      notifyDependencies(absSource, entry.dependencies);
+      return {
+        csgBytes: entry.csgBytes.slice(),
+        warnings: [...entry.warnings],
+        diagnostics: entry.diagnostics.map((d) => ({ ...d })),
+        droppedCount: entry.droppedCount,
+        dependencies: [...entry.dependencies],
+        cached: true,
+      };
+    }
+    scadCache.splice(idx, 1);
+  }
+  const result = await opts.wasm.convertScadViaWasm(opts.wasm.extensionPath, absSource, {
+    backend: opts.backend,
+    defines: opts.defines,
+    libraryPaths: opts.libraryPaths,
+  });
+  const files = [absSource, ...result.dependencies];
+  const hashes = await Promise.all(files.map(async (file) => ({ file, sha256: await hashFileOrAbsent(file) })));
+  if (hashes[0].sha256 !== "absent") {
+    scadCache.unshift({
+      staticKey,
+      hashes,
+      csgBytes: result.csgBytes.slice(),
+      warnings: [...result.warnings],
+      diagnostics: result.diagnostics.map((d) => ({ ...d })),
+      droppedCount: result.droppedCount,
+      dependencies: [...result.dependencies],
+    });
+    if (scadCache.length > SCAD_CACHE_MAX_ENTRIES) scadCache.length = SCAD_CACHE_MAX_ENTRIES;
+  }
+  notifyDependencies(absSource, result.dependencies);
+  return result;
+}
+
 /**
  * Converts a `.scad` source to `.csg` bytes, through a small in-memory cache.
  *
@@ -504,6 +594,24 @@ const MISSING_INCLUDE_DIAGNOSTIC = /Can't open (include file|library)/i;
  */
 export async function convertScadToCsg(sourcePath: string, opts: ScadConvertOptions = {}): Promise<ScadConvertResult> {
   const absSource = path.resolve(sourcePath);
+  // WASM-first (roadmap "Build and bundle an OpenSCAD WASM port"): the
+  // kernel-worker's bundled module needs no install and is byte-identical to
+  // the binary on every committed fixture. Only a `ScadWasmFallbackError`
+  // (unavailable, or a construct the WASM path declines: missing include,
+  // import()/surface(), caps) falls back to the binary below. Any other WASM
+  // failure (syntax error, stack overflow, empty output) is a genuine
+  // conversion failure and surfaces — a binary retry would fail the same way
+  // (or hang to the 120 s timeout on recursion).
+  if (opts.wasm) {
+    try {
+      const wasmResult = await convertScadViaWasmCached(absSource, opts);
+      if (wasmResult) return wasmResult;
+    } catch (err) {
+      if ((err as Error)?.name !== "ScadWasmFallbackError") throw err;
+      if (process.env.CAD_PREVIEW_KERNEL_TRACE) console.error(`[scad-wasm-fallback] ${(err as Error).message}`);
+      // fall through to the binary path
+    }
+  }
   const binary = resolveOpenscadBinary(opts.binary);
   const backend = resolveScadBackend(opts.backend);
   const binaryId = await binaryIdentity(binary);
@@ -654,6 +762,8 @@ export interface EffectiveSourceOptions {
    * interactive panel persists them in `<model>.scad-params.json` and replays them here; headless `convert_scad`
    * passes per-call `parameters` the same way). Validate with `validateScadOverrides` first. */
   defines?: Record<string, ScadValue>;
+  /** WASM-first conversion (see {@link ScadConvertOptions.wasm}); when present `.scad` prefers the bundled WASM. */
+  wasm?: ScadConvertOptions["wasm"];
 }
 
 /**
@@ -680,6 +790,8 @@ export async function resolveEffectiveSource(opts: {
   libraryPaths?: string[];
   /** Customizer overrides for a `.scad` source (see {@link EffectiveSourceOptions.defines}). */
   defines?: Record<string, ScadValue>;
+  /** WASM-first conversion (see {@link ScadConvertOptions.wasm}); when present `.scad` prefers the bundled WASM. */
+  wasm?: ScadConvertOptions["wasm"];
 }): Promise<{ bytes: Uint8Array; format: CadFormat }> {
   if (opts.format !== "scad") {
     return { bytes: await opts.readBytes(), format: opts.format };
@@ -690,6 +802,7 @@ export async function resolveEffectiveSource(opts: {
     backend: opts.backend,
     libraryPaths: opts.libraryPaths,
     defines: opts.defines,
+    ...(opts.wasm ? { wasm: opts.wasm } : {}),
   });
   opts.warnings.push(...warnings);
   if (opts.diagnostics) {

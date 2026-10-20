@@ -1,7 +1,7 @@
 import * as vscode from "vscode";
 import { routeFile, COMPARABLE_MESH_FORMATS, DISPLAY_ONLY_MESH_FORMATS, displayOnlyMeshMessage, type CadFormat, type MeshParseFormat } from "./fileRouter";
 import { resolveExternalBuffers, type GltfExternalBuffers } from "./gltfParser";
-import { resolveEffectiveSource, ScadUnavailableError } from "./scadService";
+import { resolveEffectiveSource, ScadUnavailableError, type ScadConvertOptions } from "./scadService";
 import { readScadSettings } from "./scadSettings";
 import { readEdits } from "./editsStore";
 import { replayTail } from "./editsSidecar";
@@ -33,7 +33,7 @@ async function pickCompareFile(title: string): Promise<vscode.Uri | undefined> {
  * converts via the user-installed openscad binary first, and a missing
  * binary degrades to the same `{source: undefined}` shape with the install
  * hint as its warning). */
-async function resolveCompareSource(uri: vscode.Uri, decodeGltf: (bytes: Uint8Array, external: GltfExternalBuffers) => Promise<GltfExternalBuffers>): Promise<{ source: CompareSource; warning?: string } | { source: undefined; warning: string }> {
+async function resolveCompareSource(uri: vscode.Uri, decodeGltf: (bytes: Uint8Array, external: GltfExternalBuffers) => Promise<GltfExternalBuffers>, wasm?: ScadConvertOptions["wasm"]): Promise<{ source: CompareSource; warning?: string } | { source: undefined; warning: string }> {
   const route = routeFile(uri.fsPath);
   const name = vscode.workspace.asRelativePath(uri);
   const meshFormat = route?.strategy === "three" && COMPARABLE_MESH_FORMATS.has(route.format) ? (route.format as MeshParseFormat) : null;
@@ -58,6 +58,7 @@ async function resolveCompareSource(uri: vscode.Uri, decodeGltf: (bytes: Uint8Ar
         readBytes: async () => rawBytes,
         warnings,
         ...readScadSettings(),
+        ...(wasm ? { wasm } : {}),
       });
       bytes = src.bytes;
       format = src.format;
@@ -118,12 +119,16 @@ export async function runCompareModelsCommand(
   try {
     // Compressed (Draco/meshopt) glTF is expanded by the kernel worker.
     const decodeGltf = (bytes: Uint8Array, external: GltfExternalBuffers) => pipeline.decodeGltfGeometry(context.extensionPath, bytes, external);
+    const wasm: ScadConvertOptions["wasm"] = {
+      extensionPath: context.extensionPath,
+      convertScadViaWasm: (...args) => pipeline.convertScadViaWasm(...args),
+    };
     const uriA = defaultUri ?? (await pickCompareFile("Select model A"));
     if (!uriA) return;
     const uriB = await pickCompareFile("Select model B");
     if (!uriB) return;
 
-    const [resolvedA, resolvedB] = await Promise.all([resolveCompareSource(uriA, decodeGltf), resolveCompareSource(uriB, decodeGltf)]);
+    const [resolvedA, resolvedB] = await Promise.all([resolveCompareSource(uriA, decodeGltf, wasm), resolveCompareSource(uriB, decodeGltf, wasm)]);
     if (!resolvedA.source || !resolvedB.source) {
       const message = [resolvedA.warning, resolvedB.warning].filter(Boolean).join(" ");
       void vscode.window.showErrorMessage(`Compare Models: ${message}`);

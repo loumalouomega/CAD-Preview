@@ -21,7 +21,7 @@
 
 import type { DocumentPipeline } from "./kernelClient";
 
-export type Kernel = "occt" | "gmsh" | "meshio" | "ftetwild" | "mmg";
+export type Kernel = "occt" | "gmsh" | "meshio" | "ftetwild" | "mmg" | "openscad";
 export type KernelPhase = "idle" | "loading" | "ready";
 export type KernelState = Record<Kernel, KernelPhase>;
 
@@ -31,10 +31,11 @@ export const KERNEL_LABELS: Record<Kernel, string> = {
   meshio: "meshio++",
   ftetwild: "fTetWild",
   mmg: "MMG",
+  openscad: "OpenSCAD",
 };
 
 /** Display order: the two everyday kernels first. */
-export const KERNEL_ORDER: readonly Kernel[] = ["occt", "gmsh", "meshio", "ftetwild", "mmg"];
+export const KERNEL_ORDER: readonly Kernel[] = ["occt", "gmsh", "meshio", "ftetwild", "mmg", "openscad"];
 
 const O: Kernel[] = ["occt"];
 const G: Kernel[] = ["gmsh"];
@@ -105,6 +106,7 @@ export const KERNELS_BY_FUNCTION: Record<keyof DocumentPipeline, readonly Kernel
   measureMeshDeviation: G, // OCCT only for a B-rep reference — listed by what it DEFINITELY touches
   bakeMeshEdits: NONE, // pure three.js mesh-edit replay (headless mesh-edit replay)
   decodeGltfGeometry: NONE, // Draco / meshopt decoders: their own WASM, not one of the four tracked kernels
+  convertScadViaWasm: ["openscad"],
 };
 
 export function kernelsFor(fn: string): readonly Kernel[] {
@@ -112,7 +114,7 @@ export function kernelsFor(fn: string): readonly Kernel[] {
 }
 
 export function initialKernelState(): KernelState {
-  return { occt: "idle", gmsh: "idle", meshio: "idle", ftetwild: "idle", mmg: "idle" };
+  return { occt: "idle", gmsh: "idle", meshio: "idle", ftetwild: "idle", mmg: "idle", openscad: "idle" };
 }
 
 export type KernelEvent =

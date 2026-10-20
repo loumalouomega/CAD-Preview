@@ -249,7 +249,11 @@ export function createKernelClient(extensionPath: string, options?: { timeoutMs?
       // A response for a request we've already given up on (timeout/cancel) — ignore.
       if (!job || job.requestId !== msg.id || job.proc !== spawned) return;
       if (msg.ok) settle(job, { ok: true, value: unmarshal(msg.result) });
-      else settle(job, { ok: false, error: new Error(msg.error.message) });
+      else {
+        const err = new Error(msg.error.message);
+        if (msg.error.name) err.name = msg.error.name;
+        settle(job, { ok: false, error: err });
+      }
     });
     let gone = false;
     const onGone = (err: Error) => {

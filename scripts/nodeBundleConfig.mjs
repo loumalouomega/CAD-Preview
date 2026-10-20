@@ -38,6 +38,7 @@ export const WASM_EXTERNALS = Object.freeze([
   "vscode",
   "@loumalouomega/gmsh-wasm",
   "@loumalouomega/mmg-wasm",
+  "@loumalouomega/openscad-wasm",
   "@meshioplusplus/wasm",
   "float-tetwild-wasm",
   "playwright",
@@ -82,6 +83,7 @@ export function kernelVersions() {
     "opencascade.js": read("opencascade.js"),
     "@loumalouomega/gmsh-wasm": read("@loumalouomega/gmsh-wasm"),
     "@loumalouomega/mmg-wasm": read("@loumalouomega/mmg-wasm"),
+    "@loumalouomega/openscad-wasm": read("@loumalouomega/openscad-wasm"),
     "@meshioplusplus/wasm": read("@meshioplusplus/wasm"),
     "float-tetwild-wasm": read("float-tetwild-wasm"),
   };

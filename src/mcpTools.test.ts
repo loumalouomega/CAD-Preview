@@ -616,6 +616,15 @@ function fakePipeline(overrides: Partial<Pipeline> = {}): Pipeline {
       frozen: 0,
       warnings: [],
     })),
+    convertScadViaWasm: vi.fn(async () => {
+      // WASM declines by default so the binary-path tests exercise the stub
+      // binary; WASM-first tests override this to return a fake conversion.
+      // Name must be ScadWasmFallbackError — the host only falls back on that
+      // name, any other WASM error surfaces.
+      const err = new Error("WASM declined");
+      err.name = "ScadWasmFallbackError";
+      throw err;
+    }),
     ...overrides,
   } as Pipeline;
 }
@@ -6009,6 +6018,26 @@ describe("OpenSCAD Customizer tools", () => {
     await fs.writeFile(out, "old");
     await expect(convertScadTool({ path: scadPath, outputPath: out })).rejects.toThrow(/already exists/);
     expect((await convertScadTool({ path: scadPath, outputPath: out, overwrite: true })).supported).toBe(true);
+  });
+
+  it("convert_scad prefers WASM when ctx is present and never needs a binary", async () => {
+    process.env.OPENSCAD_BINARY = "definitely-not-a-real-binary-xyz";
+    const out = path.join(dir, "wasm.csg");
+    const c = ctx(
+      fakePipeline({
+        convertScadViaWasm: vi.fn(async () => ({
+          csgBytes: new TextEncoder().encode("// wasm csg\n"),
+          warnings: [],
+          diagnostics: [],
+          droppedCount: 0,
+          dependencies: [],
+        })),
+      })
+    );
+    const r = await convertScadTool({ path: scadPath, outputPath: out, overwrite: true }, c);
+    expect(r.supported).toBe(true);
+    expect(await fs.readFile(out, "utf8")).toBe("// wasm csg\n");
+    expect(c.pipeline.convertScadViaWasm).toHaveBeenCalled();
   });
 });
 

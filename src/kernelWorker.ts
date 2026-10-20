@@ -63,6 +63,7 @@ import { checkPrintability } from "./printabilityHost";
 import { measureMeshDeviation } from "./meshDeviationHost";
 import { bakeMeshEdits } from "./meshEditBake";
 import { decodeGltfGeometry } from "./gltfDecode";
+import { convertScadViaWasm } from "./scadWasmService";
 import { marshal, unmarshal, type KernelRequest, type KernelResponse } from "./kernelIpc";
 import type { DocumentPipeline } from "./kernelClient";
 import { hitTest } from "./hitTestService";
@@ -196,6 +197,7 @@ const handlers: Record<keyof DocumentPipeline, Handler> = {
   measureMeshDeviation: measureMeshDeviation as Handler,
   bakeMeshEdits: bakeMeshEdits as Handler,
   decodeGltfGeometry: decodeGltfGeometry as Handler,
+  convertScadViaWasm: convertScadViaWasm as Handler,
 };
 
 function isOcctReset(err: unknown): boolean {
@@ -233,7 +235,10 @@ process.on("message", (msg: KernelRequest) => {
       const response: KernelResponse = {
         id,
         ok: false,
-        error: { message: err instanceof Error ? err.message : String(err) },
+        error: {
+          message: err instanceof Error ? err.message : String(err),
+          ...(err instanceof Error && err.name && err.name !== "Error" ? { name: err.name } : {}),
+        },
       };
       process.send?.(response);
     }

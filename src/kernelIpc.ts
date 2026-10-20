@@ -191,7 +191,10 @@ export interface KernelRequest {
   args: unknown[];
 }
 
-/** Child → parent. `result`/`error` carry already-`marshal()`ed payloads. */
+/** Child → parent. `result`/`error` carry already-`marshal()`ed payloads. `name`
+ * is the error's class name (`Error`, `ScadWasmFallbackError`, …) so the host
+ * can distinguish a decline-to-fallback from a genuine failure — without it
+ * every worker error arrives as a plain `Error`. */
 export type KernelResponse =
   | { id: number; ok: true; result: unknown }
-  | { id: number; ok: false; error: { message: string } };
+  | { id: number; ok: false; error: { message: string; name?: string } };
