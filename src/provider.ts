@@ -56,7 +56,7 @@ import { validateMeshioOpSpec } from "./meshioOps";
 import { SVG_VIEWS } from "./svgSilhouette";
 import type { CompareSource } from "./modelDiffHost";
 import { resolveExternalBuffers, type GltfExternalBuffers } from "./gltfParser";
-import { exportTargetsFor, EXPORT_EXTENSION, EXPORT_LABEL, UNIT_CONVERTIBLE_FORMATS, MESH_SAVE_IN_PLACE_FORMATS } from "./exportTargets";
+import { exportTargetsFor, EXPORT_EXTENSION, EXPORT_LABEL, UNIT_CONVERTIBLE_FORMATS, MESH_SAVE_IN_PLACE_FORMATS, SAVE_IN_PLACE_FORMATS } from "./exportTargets";
 import { readParts, writeParts, sidecarUri } from "./partsStore";
 import { readLayers, writeLayers, layersSidecarUri } from "./layersStore";
 import { readAnnotations, writeAnnotations, annotationsSidecarUri } from "./annotationsStore";
@@ -65,13 +65,13 @@ import { readScadOverrides, writeScadOverrides, scadOverridesSidecarUri } from "
 import { readEdits, writeEdits, editsSidecarUri } from "./editsStore";
 import { assertNotDirty } from "./dirtyGuard";
 import {
-  beginMeshSave,
-  endMeshSave,
-  meshSavePaths,
-  recoverInterruptedMeshSave,
-  type MeshSaveRecoveryDeps,
-  type MeshSaveRecoveryResult,
-} from "./meshSaveRecovery";
+  beginSave,
+  endSave,
+  savePaths,
+  recoverInterruptedSave,
+  type SaveRecoveryDeps,
+  type SaveRecoveryResult,
+} from "./saveRecovery";
 import type { EditOp, EditOpKind } from "./editOps";
 import { validateEditOp } from "./editOps";
 import type { ParamVariable } from "./editVariables";
@@ -1022,16 +1022,16 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
     };
 
     /**
-     * Roadmap 1.5, "Recoverable mesh source saves" — the `vscode.workspace.fs`
-     * adapter for `meshSaveRecovery.ts`, plus the recovery call itself. All the
-     * decision logic lives in that module (pure, unit-tested); this is the
-     * half that needs `vscode.window` and this document's watcher state.
+     * The recoverable save-in-place transaction's `vscode.workspace.fs`
+     * adapter (`saveRecovery.ts`), plus the recovery call itself. All the decision logic
+     * lives in that module (pure, unit-tested); this is the half that needs
+     * `vscode.window` and this document's watcher state.
      *
-     * Gated on `MESH_SAVE_IN_PLACE_FORMATS` — the one set of formats with a
-     * same-format writer, which the save paths already gate on — so glTF,
-     * meshio and B-rep sources are never touched.
+     * Gated on `SAVE_IN_PLACE_FORMATS` — the one set of formats with a
+     * same-format writer, which both save paths already gate on — so glTF,
+     * meshio and CAD-text sources are never touched.
      */
-    const meshRecoveryDeps = (): MeshSaveRecoveryDeps => {
+    const saveRecoveryDeps = (): SaveRecoveryDeps => {
       const sibling = (name: string): vscode.Uri => vscode.Uri.joinPath(document.uri, "..", name);
       return {
         readBytes: async (name) => vscode.workspace.fs.readFile(sibling(name)),
@@ -1082,10 +1082,10 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
     };
 
     /**
-     * Repairs an interrupted mesh save-in-place, if one is pending. Called
-     * from the `ready` hydration BEFORE `readEdits`, so the normal read picks
-     * up whatever watermark recovery landed, and again at the top of a save so
-     * a new transaction never stacks on a stale one.
+     * Repairs an interrupted save-in-place, if one is pending — mesh or B-rep.
+     * Called from the `ready` hydration BEFORE `readEdits`, so the normal read
+     * picks up whatever watermark recovery landed, and again at the top of a
+     * save so a new transaction never stacks on a stale one.
      *
      * Two ordering requirements this function exists to satisfy:
      * - after a `finish` wrote the edits sidecar, `revisions.noteSynced` MUST
@@ -1095,12 +1095,12 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
      * - a `sourceChanged` result means the file the webview is about to load is
      *   the pre-save one, so the caller re-reads rather than reusing anything.
      */
-    const recoverMeshSave = async (): Promise<MeshSaveRecoveryResult> => {
-      if (!route || !MESH_SAVE_IN_PLACE_FORMATS.has(route.format)) {
+    const recoverSave = async (): Promise<SaveRecoveryResult> => {
+      if (!route || !SAVE_IN_PLACE_FORMATS.has(route.format)) {
         return { action: "none", reason: "not-savable", bakedThrough: 0, message: null, sidecarChanged: false, sourceChanged: false };
       }
       const fileName = path.basename(document.uri.path);
-      const result = await recoverInterruptedMeshSave(meshSavePaths(fileName, EXPORT_EXTENSION[route.format as CadFormat]), fileName, meshRecoveryDeps());
+      const result = await recoverInterruptedSave(savePaths(fileName, EXPORT_EXTENSION[route.format as CadFormat]), fileName, saveRecoveryDeps());
       if (result.sidecarChanged) revisions.noteSynced("edits", await diskFingerprint("edits"));
       if (result.message) {
         // The unrecognised branch is the one case the user must see as an
@@ -1140,6 +1140,18 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
       if (route.format !== "step" && route.format !== "iges" && route.format !== "brep") {
         post({ type: "error", message: `Saving ${fileName} in place is only supported STEP→STEP, IGES→IGES and BREP→BREP in this version.` });
         return false;
+      }
+      // Settle any transaction a previous session left in flight BEFORE the
+      // op-list check: a `finish` advances the watermark, and a `restore`
+      // rewrites the source the read below would otherwise trust.
+      const recovered = await recoverSave();
+      if (recovered.sidecarChanged || recovered.sourceChanged) {
+        const settled = await readEdits(document.uri);
+        currentEdits = resolvePlaneRefs(settled.ops, await readPlanes(document.uri)).ops;
+        currentVariables = settled.variables;
+        currentBakedThrough = settled.bakedThrough;
+        postEdits();
+        if (recovered.sourceChanged) loadModel(true);
       }
       if (currentEdits.length < currentBakedThrough) {
         post({ type: "error", message: "The op list changed below the save point — close and reopen the file to work from the saved state." });
@@ -1184,12 +1196,26 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
           true,
           currentParts
         );
-        if (!madeSourceBackupThisSession) {
-          await vscode.workspace.fs.copy(document.uri, document.uri.with({ path: `${document.uri.path}.bak` }), { overwrite: true });
-          madeSourceBackupThisSession = true;
-        }
-        const baseName = fileName.replace(/\.[^.]+$/, "");
-        const tmpUri = vscode.Uri.joinPath(document.uri, "..", `${baseName}.save-tmp.${EXPORT_EXTENSION[route.format as CadFormat]}`);
+        const txnPaths = savePaths(fileName, EXPORT_EXTENSION[route.format as CadFormat]);
+        const firstSaveOfSession = !madeSourceBackupThisSession;
+        // Open the transaction BEFORE touching the source. `src.bytes` is the
+        // exact file as read; `baked` is what the rename will put in its place.
+        // The journal also refreshes the one-deep `.bak` on the session's first
+        // save, replacing the old inline copy.
+        const journal = await beginSave(
+          {
+            paths: txnPaths,
+            fileName,
+            format: route.format,
+            bakedThrough: currentEdits.length,
+            preSaveBytes: src.bytes,
+            bakedBytes: baked,
+            writeBackup: firstSaveOfSession,
+          },
+          saveRecoveryDeps()
+        );
+        if (firstSaveOfSession) madeSourceBackupThisSession = true;
+        const tmpUri = vscode.Uri.joinPath(document.uri, "..", txnPaths.temp);
         try {
           await vscode.workspace.fs.writeFile(tmpUri, baked);
           expectOwnSourceSave = true;
@@ -1197,6 +1223,9 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
         } catch (err) {
           expectOwnSourceSave = false;
           await vscode.workspace.fs.delete(tmpUri).then(undefined, () => undefined);
+          // The source never moved, so the journal describes a save that did
+          // not happen: close it rather than leaving a marker for a later open.
+          await endSave(txnPaths, journal, saveRecoveryDeps()).catch(() => undefined);
           throw err;
         }
         if (editsSaveTimer) clearTimeout(editsSaveTimer);
@@ -1219,12 +1248,21 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
           } catch {
             expectOwnSourceSave = false;
           }
+          // The rollback put the source back to its pre-save bytes, so the
+          // journal's pre-save hash is true again and the next open's `discard`
+          // branch is the right resolution. Closing it here is equivalent and
+          // keeps the pair settled immediately.
+          await endSave(txnPaths, journal, saveRecoveryDeps()).catch(() => undefined);
           post({
             type: "error",
             message: `Save in place failed: the watermark write failed (${(wmErr as Error).message}) — the source file was restored to its pre-save bytes; close any dirty sidecar tab and save again.`,
           });
           return false;
         }
+        // The pair agrees: source baked, watermark advanced. Closing the
+        // transaction is a compare-before-delete, so a concurrent editor's
+        // newer marker is never removed by this save.
+        await endSave(txnPaths, journal, saveRecoveryDeps()).catch(() => undefined);
         // Two-byte save-time rebind: pre-save bytes + full op list vs the
         // freshly-baked bytes + (now empty) tail. On a real change persist +
         // post exactly like `rebindPartsOnChange`; on failure say so loudly
@@ -1326,7 +1364,7 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
       // "Recoverable mesh source saves"). A `finish` here moves the watermark,
       // so re-read the sidecar and adopt it; a `restore` rewrote the source, so
       // the webview's copy is stale.
-      const recovered = await recoverMeshSave();
+      const recovered = await recoverSave();
       if (recovered.sidecarChanged || recovered.sourceChanged) {
         const settled = await readEdits(document.uri);
         currentEdits = resolvePlaneRefs(settled.ops, await readPlanes(document.uri)).ops;
@@ -1378,13 +1416,13 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
         // Roadmap 1.5: open the recoverable transaction BEFORE touching the
         // source, so a process death at any point after this is repairable on
         // the next open. Both hashes are computable right now from bytes
-        // already in hand. `beginMeshSave` also refreshes the one-deep `.bak`
+        // already in hand. `beginSave` also refreshes the one-deep `.bak`
         // on the session's first save, replacing the inline copy below.
-        const savePaths = meshSavePaths(fileName, EXPORT_EXTENSION[route.format as CadFormat]);
+        const txnPaths = savePaths(fileName, EXPORT_EXTENSION[route.format as CadFormat]);
         const firstSaveOfSession = !madeSourceBackupThisSession;
-        const journal = await beginMeshSave(
+        const journal = await beginSave(
           {
-            paths: savePaths,
+            paths: txnPaths,
             fileName,
             format: route.format,
             bakedThrough: currentEdits.length,
@@ -1392,10 +1430,10 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
             bakedBytes: bytes,
             writeBackup: firstSaveOfSession,
           },
-          meshRecoveryDeps()
+          saveRecoveryDeps()
         );
         if (firstSaveOfSession) madeSourceBackupThisSession = true;
-        const tmpUri = vscode.Uri.joinPath(document.uri, "..", savePaths.temp);
+        const tmpUri = vscode.Uri.joinPath(document.uri, "..", txnPaths.temp);
         try {
           await vscode.workspace.fs.writeFile(tmpUri, bytes);
           expectOwnSourceSave = true;
@@ -1406,7 +1444,7 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
           // The source never moved, so the journal is stale: close the
           // transaction rather than leaving a marker a later open must reason
           // about for a save that demonstrably did not happen.
-          await endMeshSave(savePaths, journal, meshRecoveryDeps()).catch(() => undefined);
+          await endSave(txnPaths, journal, saveRecoveryDeps()).catch(() => undefined);
           throw err;
         }
         if (editsSaveTimer) clearTimeout(editsSaveTimer);
@@ -1429,7 +1467,7 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
           // journal's preSave hash is true again and the next open's `discard`
           // branch is the right resolution. Closing it here is equivalent and
           // keeps the pair settled immediately.
-          await endMeshSave(savePaths, journal, meshRecoveryDeps()).catch(() => undefined);
+          await endSave(txnPaths, journal, saveRecoveryDeps()).catch(() => undefined);
           post({
             type: "error",
             message: `Save in place failed: the watermark write failed (${(wmErr as Error).message}) — the source file was restored to its pre-save bytes; close any dirty sidecar tab and save again.`,
@@ -1439,7 +1477,7 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
         // The pair agrees: source baked, watermark advanced. Closing the
         // transaction is a compare-before-delete, so a concurrent editor's
         // newer marker is never removed by this save.
-        await endMeshSave(savePaths, journal, meshRecoveryDeps()).catch(() => undefined);
+        await endSave(txnPaths, journal, saveRecoveryDeps()).catch(() => undefined);
         postEdits();
         post({ type: "status", text: `Saved in place to ${fileName} (${tailLength} op(s) baked)` });
         loadModel(true);
@@ -2202,13 +2240,13 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
           post({ type: "error", message: `Unsupported file type: ${document.uri.fsPath}` });
           return;
         }
-        // Roadmap 1.5, "Recoverable mesh source saves": repair an interrupted
-        // mesh save-in-place FIRST, so the hydration below reads whatever
-        // watermark recovery landed. A `finish` here is the difference between
-        // the pending edits applying once and being replayed over geometry that
-        // already contains them. A `restore` rewrote the source, which
-        // `loadModel(true)` below then picks up.
-        await recoverMeshSave();
+        // Repair an interrupted save-in-place FIRST — mesh or B-rep — so the
+        // hydration below reads whatever watermark recovery
+        // landed. A `finish` here is the difference between the pending edits
+        // applying once and being replayed over geometry that already contains
+        // them. A `restore` rewrote the source, which `loadModel(true)` below
+        // then picks up.
+        await recoverSave();
         // Load edits before the model so a B-rep source is tessellated already-edited.
         // Planes are loaded alongside edits so any `planeId` can be resolved
         // before the first tessellation (otherwise a `planeId`-only op would
@@ -2570,6 +2608,7 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
                 shownCount: result.worstElements.shownCount,
                 belowThresholdCount: result.worstElements.belowThresholdCount,
               },
+              boundaryLayers: result.boundaryLayers,
             });
           });
         } catch (err) {
@@ -5120,7 +5159,11 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
               ? { kind: "gltf", bytes, externalBuffers: await resolveGltfBuffersFor(uri, route.format, bytes, this.decodeGltf) }
               : { kind: route.format as "stl" | "obj" | "ply", bytes };
         const result = await this.docPipeline(uri).exportDrawingSheet(this.context.extensionPath, source, {
-          views: settings.views,
+          views: settings.views.map((view) => {
+            const cut = settings.viewSections.find((s) => s.view === view.name);
+            return cut ? { ...view, sectionPlane: { origin: cut.origin, normal: cut.normal, flip: cut.flip } } : view;
+          }),
+          sections: settings.sections,
           format,
           paper: settings.paper,
           projection: settings.projection,

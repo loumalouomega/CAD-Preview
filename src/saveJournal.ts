@@ -1,19 +1,19 @@
 import { sha256Hex } from "./hash";
 
 /**
- * The recoverable save transaction (roadmap 1.5, "Recoverable mesh source
- * saves") — pure (vscode-free, DOM-free) so the decision rules unit-test like
+ * The recoverable save transaction, shared by mesh and B-rep save-in-place —
+ * pure (vscode-free, DOM-free) so the decision rules unit-test like
  * `sidecarRevision.ts`, which shares the `sha256Hex` helper.
  *
  * ## The hazard
  *
  * A save-in-place writes the CAD source and then advances the `.edits.json`
  * `bakedThrough` watermark, in that order. Both interactive
- * (`bakeMeshToSource`) and headless (`saveMeshModel`) paths already roll the
- * source back when the watermark write *throws* — but a process that simply
- * stops between the two writes leaves the pair disagreeing: the file on disk is
- * baked while the sidecar still says otherwise, so reopening replays the same
- * edit over already-baked geometry.
+ * (`bakeMeshToSource` / `bakeTailToSource`) and headless (`saveMeshModel` /
+ * `saveModelTool`) paths already roll the source back when the watermark write
+ * *throws* — but a process that simply stops between the two writes leaves the
+ * pair disagreeing: the file on disk is baked while the sidecar still says
+ * otherwise, so reopening replays the same edit over already-baked geometry.
  *
  * ## The mechanism
  *
@@ -51,7 +51,7 @@ export interface SaveJournal {
   saveId: string;
   /** ISO timestamp of the write that opened the transaction. */
   startedAt: string;
-  /** The source's own format id (stl/obj/ply in the first increment). */
+  /** The source's own format id (stl/obj/ply, or step/iges/brep). */
   format: string;
   /** The watermark this transaction intends to advance to. */
   bakedThrough: number;

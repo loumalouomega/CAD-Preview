@@ -40,11 +40,42 @@ describe("resolveSheetSettings", () => {
   it('treats scale "auto" as the automatic choice', () => {
     expect(resolveSheetSettings({ scale: "auto" }, { scale: "1:2" }, { title: "x" }).scale).toBeUndefined();
   });
+  it("resolves sections against the sheet's own views and skips the bad ones with warnings", () => {
+    const s = resolveSheetSettings(
+      {
+        views: ["front", "top"],
+        sections: [
+          { id: "A-A", label: "A—A", view: "FRONT", origin: [0, 0, 0], normal: [0, 1, 0] },
+          { id: "A-A", view: "front", origin: [0, 0, 0], normal: [0, 1, 0] },
+          { id: "B-B", view: "right", origin: [0, 0, 0], normal: [0, 1, 0] },
+          { id: "", view: "front", origin: [0, 0, 0], normal: [0, 1, 0] },
+          { id: "C-C", view: "front", origin: [0, 0] as unknown as [number, number, number], normal: [0, 1, 0] },
+          { id: "D-D", view: "front", origin: [0, 0, 0], normal: [0, 0, 0] },
+        ],
+        viewSections: { top: { origin: [0, 0, 0], normal: [0, 0, 1] }, nope: { origin: [0, 0, 0], normal: [1, 0, 0] } },
+      },
+      undefined,
+      { title: "x" }
+    );
+    expect(s.sections).toEqual([{ id: "A-A", label: "A—A", view: "front", origin: [0, 0, 0], normal: [0, 1, 0] }]);
+    expect(s.viewSections).toEqual([{ view: "top", origin: [0, 0, 0], normal: [0, 0, 1], flip: false }]);
+    expect(s.warnings.join(" ")).toMatch(/repeated.*names view "right".*non-empty id.*3-number origin.*non-zero normal.*matches no sheet view/s);
+  });
 });
 
 describe("sheet templates", () => {
   it("round-trips and drops malformed entries/fields", () => {
-    const lib: SheetTemplateLibrary = { a: { name: "a", views: ["front"], paper: "A3", scale: "1:5", fields: { author: "X" } } };
+    const lib: SheetTemplateLibrary = {
+      a: {
+        name: "a",
+        views: ["front"],
+        paper: "A3",
+        scale: "1:5",
+        fields: { author: "X" },
+        sections: [{ id: "A-A", view: "front", origin: [0, 0, 0], normal: [0, 1, 0] }],
+        viewSections: { top: { origin: [0, 0, 0], normal: [0, 0, 1] } },
+      },
+    };
     expect(parseSheetTemplatesJson(serializeSheetTemplatesJson(lib))).toEqual(lib);
     const parsed = parseSheetTemplatesJson(JSON.stringify({ templates: { b: { views: [1, 2] }, c: 7, "": { name: "" } } }));
     expect(Object.keys(parsed)).toEqual(["b"]);

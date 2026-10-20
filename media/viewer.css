@@ -950,9 +950,17 @@ body.sidebar-resizing {
   right: 8px;
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
   gap: var(--ui-s-0);
   padding: var(--ui-s-0);
   z-index: 15;
+  /* Right-anchored over the CANVAS, not the editor pane: `right: 8px` alone
+   * lets a wide bar extend left past the sidebar at narrow editor widths.
+   * Capping at `100% - side-width - margins` keeps the left edge clear of
+   * #side (same var #side{width} and #view-controls read); overflow wraps
+   * onto a second row inside the cap, like #vc-body does. */
+  max-width: calc(100% - var(--side-width, 272px) - 24px);
   /* Explicit, because `#toolbar` never had one: it inherited whatever the page
    * default was. Real VS Code injects a sans body font, so nobody saw it there —
    * but the screenshot harness does not, and every toolbar image in the docs
@@ -963,6 +971,11 @@ body.sidebar-resizing {
   border: 1px solid var(--vscode-editorWidget-border, #454545);
   border-radius: var(--ui-r-md);
   box-shadow: var(--ui-elev-2);
+}
+/* `:has` only: when the sidebar is NOT visible it occupies no layout, so the
+ * cap reverts to the whole-body width. Mirrors the #view-controls fallback. */
+body:not(:has(#side.visible)) #toolbar {
+  max-width: calc(100% - 24px);
 }
 
 /* Ghost. NOTE the specificity: this is (1,0,1,1) and paints EVERY descendant
@@ -2304,6 +2317,10 @@ input[type="range"].meshing-slider:focus {
 }
 .meshing-part-layer-plan:empty {
   display: none;
+}
+.meshing-part-layer-plan.is-warning {
+  color: var(--vscode-editorWarning-foreground, #cca700);
+  opacity: 1;
 }
 
 .meshing-part-grading-error {

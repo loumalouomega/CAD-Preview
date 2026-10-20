@@ -2732,14 +2732,90 @@ try {
     );
   }
 
-  // meshio-only formats are now the ONLY unsupported family — confirm that
-  // path still degrades to a clear supported:false, not a tool error.
+  // meshio-only sources now expose their meshio++ boundary surface to the
+  // headless facts tools (roadmap 2.21). The boundary is a real closed cube;
+  // compare it with the unit OBJ cube, read its mass/bbox, and confirm the
+  // tools that still require the source's own triangle soup keep refusing it.
+  const vtkCube = path.join(ROOT, "examples", "VTK", "cube.vtk");
+  const vtkVsObj = await call("compare_models", { pathA: vtkCube, pathB: cubeObj });
+  assert(
+    vtkVsObj.supported === true && vtkVsObj.sides?.A?.kind === "meshio" && vtkVsObj.sides.A.surfaceDerived === true,
+    `compare_models reads a meshio source's boundary side and marks it surfaceDerived (got: ${JSON.stringify(vtkVsObj).slice(0, 260)})`
+  );
+  assert(
+    vtkVsObj.sides.A.watertight === true && vtkVsObj.sides.A.regionCount === 0,
+    `the VTK cube's boundary is reported watertight with its region count (got: ${JSON.stringify(vtkVsObj.sides.A)})`
+  );
+  assert(
+    vtkVsObj.diff.matched.length === 1 && vtkVsObj.diff.added.length === 0 && vtkVsObj.diff.removed.length === 0 &&
+      Math.abs(vtkVsObj.diff.matched[0].volumeDeltaPct) < 1e-4,
+    `compare_models(.vtk, .obj) matches the same unit cube (got: ${JSON.stringify(vtkVsObj.diff.matched[0])})`
+  );
+  const vtkMass = await call("get_mass_properties", { path: vtkCube });
+  assert(
+    vtkMass.supported === true && vtkMass.surfaceDerived === true && vtkMass.watertight === true &&
+      Math.abs(vtkMass.volume - 1) < 1e-6 && Math.abs(vtkMass.area - 6) < 1e-6,
+    `get_mass_properties reads the VTK boundary's volume/area (got: ${JSON.stringify(vtkMass).slice(0, 260)})`
+  );
+  assert(
+    vtkMass.bbox?.min?.[0] === 0 && vtkMass.bbox?.max?.[0] === 1,
+    `get_mass_properties reports the VTK boundary's bbox (got: ${JSON.stringify(vtkMass.bbox)})`
+  );
+  const vtkMeas = await call("measure", { path: vtkCube, from: "whole-model", to: "mesh-component-0" });
+  assert(
+    vtkMeas.supported === true && vtkMeas.surfaceDerived === true && vtkMeas.distance === 0,
+    `measure reads the meshio boundary side (got: ${JSON.stringify(vtkMeas)})`
+  );
+  const vtkInspect = await call("inspect", { path: vtkCube, entityId: "whole-model" });
+  assert(vtkInspect.supported === false, "inspect stays unsupported for a meshio-only source");
+  const vtkHealth = await call("check_mesh_health", { path: vtkCube });
+  assert(vtkHealth.supported === false, "check_mesh_health stays unsupported for a meshio-only source");
+
+  // An open surface must report area/bbox but withhold volume.
+  const openVtk = path.join(dir, "open-surface.vtk");
+  fs.writeFileSync(
+    openVtk,
+    [
+      "# vtk DataFile Version 3.0",
+      "open square",
+      "ASCII",
+      "DATASET UNSTRUCTURED_GRID",
+      "POINTS 4 float",
+      "0 0 0", "1 0 0", "1 1 0", "0 1 0",
+      "CELLS 2 8",
+      "3 0 1 2", "3 0 2 3",
+      "CELL_TYPES 2",
+      "5", "5",
+      "",
+    ].join("\n")
+  );
+  const openMass = await call("get_mass_properties", { path: openVtk });
+  assert(
+    openMass.supported === true && openMass.surfaceDerived === true && openMass.watertight === false &&
+      openMass.volume === null && Math.abs(openMass.area - 1) < 1e-6,
+    `an open meshio boundary reports area/bbox with volume withheld (got: ${JSON.stringify(openMass).slice(0, 260)})`
+  );
+  assert(
+    openMass.bbox?.min?.[2] === 0 && openMass.bbox?.max?.[2] === 0,
+    `the open boundary still reports its bbox (got: ${JSON.stringify(openMass.bbox)})`
+  );
+
+  // A .med volume mesh reports the boundary's volume headlessly.
+  const medForFacts = path.join(ROOT, "examples", "MED", "single-hex.med");
+  const medMass = await call("get_mass_properties", { path: medForFacts });
+  assert(
+    medMass.supported === true && medMass.surfaceDerived === true && medMass.volume !== null && Math.abs(medMass.volume) > 0,
+    `get_mass_properties reads a .med volume's boundary (got: ${JSON.stringify(medMass).slice(0, 260)})`
+  );
+
+  // meshio-only formats that cannot produce a boundary still degrade to
+  // supported:false with a clear message, not a tool error.
   const vtkForCompare = path.join(dir, "compare.vtk");
   fs.writeFileSync(vtkForCompare, "# vtk DataFile Version 3.0\ncompare\nASCII\nDATASET UNSTRUCTURED_GRID\nPOINTS 0 float\n");
   const vtkRejected = await call("compare_models", { pathA: model, pathB: vtkForCompare });
   assert(
-    vtkRejected.supported === false && /STEP\/IGES\/BREP\/CSG\/STL\/OBJ\/PLY\/glTF/i.test(vtkRejected.warnings?.[0] ?? ""),
-    `compare_models rejects a meshio-only source with a clear message, not a crash (got: ${JSON.stringify(vtkRejected)})`
+    vtkRejected.supported === false && /boundary/i.test(vtkRejected.warnings?.[0] ?? ""),
+    `compare_models turns an empty meshio boundary into a clear supported:false result (got: ${JSON.stringify(vtkRejected)})`
   );
 
   // check_brep_health (roadmap "B-rep validity report"). Probe-verified
@@ -3820,6 +3896,24 @@ try {
     `boundary layer rows start at the wall size and grow by 1.2: 0.05, 0.11, 0.182 (got ${layered.ys.slice(1, 4)})`
   );
   assert(rowsInStack.length === 6, `the stack holds exactly the analytic 6 rows within 0.5 (got ${rowsInStack.length}: ${rowsInStack})`);
+  const layeredGenerate = await call("generate_mesh", { path: layerStep, options: layerOptions });
+  const achieved = (layeredGenerate.boundaryLayers ?? []).find((r) => r.part === "Wall");
+  assert(
+    achieved?.plannedRows === 6 && achieved.achievedMin === 6 && achieved.achievedMedian === 6 && achieved.coverage === 1,
+    `generate_mesh reads back the planned boundary-layer rows (got ${JSON.stringify(layeredGenerate.boundaryLayers)})`
+  );
+  assert(
+    !(layeredGenerate.warnings ?? []).some((w) => /boundary layer achieved/i.test(w)),
+    `the achieved rows match the plan, so no shortfall warning is emitted (got ${JSON.stringify(layeredGenerate.warnings)})`
+  );
+  await call("set_part", { path: layerStep, name: "Wall", meshBoundaryLayer: { wallSize: 0.05, growthRatio: 1.2, thickness: 0.25 } });
+  const thinner = await call("generate_mesh", { path: layerStep, options: layerOptions });
+  const thinnerAchieved = (thinner.boundaryLayers ?? []).find((r) => r.part === "Wall");
+  assert(
+    thinnerAchieved?.plannedRows === 3 && thinnerAchieved.achievedMin === 3 && thinnerAchieved.achievedMedian === 3,
+    `a thinner stack reports the fewer rows Gmsh actually produced (got ${JSON.stringify(thinner.boundaryLayers)})`
+  );
+  await call("set_part", { path: layerStep, name: "Wall", meshBoundaryLayer: { wallSize: 0.05, growthRatio: 1.2, thickness: 0.5 } });
   const layerAlgo = await request("tools/call", { name: "generate_mesh", arguments: { path: layerStep, options: { ...layerOptions, algorithm2D: 9 } } });
   assert(
     layerAlgo.isError === true && /cannot carry a boundary layer/.test(layerAlgo.content?.[0]?.text ?? ""),
@@ -5773,6 +5867,94 @@ try {
       projection: "third",
     });
     assert(thirdSheet.projection === "third", "projection:'third' is honoured");
+
+    // Section views (roadmap 2.20): a box with a through pocket, cut
+    // mid-pocket. The report names the section, its parent and its loop
+    // count; the SVG draws the hatched cut plus the parent mark.
+    const sectionModel = path.join(dir, "sheet-section.stp");
+    fs.copyFileSync(path.join(ROOT, "examples", "STP", "block.stp"), sectionModel);
+    const pocketed = await call("apply_edit_ops", {
+      path: sectionModel,
+      ops: [
+        { op: "addBox", center: [0, 0, 0], size: [4, 2, 2] },
+        { op: "boolean", kind: "subtract", a: ["solid-0"], b: ["solid-1"] },
+      ],
+    });
+    assert(pocketed.applied === 2, `the through pocket cuts cleanly (got ${JSON.stringify(pocketed)})`);
+    const sectioned = await call("export_drawing_sheet", {
+      path: sectionModel,
+      outputPath: path.join(dir, "sheet-section.svg"),
+      views: ["front", "right"],
+      sections: [{ id: "A-A", view: "front", origin: [0, 0, 0], normal: [1, 0, 0] }],
+    });
+    assert(
+      sectioned.sections.length === 1 &&
+        sectioned.sections[0].id === "A-A" &&
+        sectioned.sections[0].parentView === "front" &&
+        sectioned.sections[0].loopCount === 2 &&
+        sectioned.sections[0].hatchLineCount > 0,
+      `the section reports its parent and its outer+pocket loops, hatched (got ${JSON.stringify(sectioned.sections)})`
+    );
+    assert(
+      sectioned.views.some((v) => v.name === "section-A-A" && v.sectionLoopCount === 2),
+      `the section ships as its own view (got ${JSON.stringify(sectioned.views)})`
+    );
+    const sectionSvgText = fs.readFileSync(path.join(dir, "sheet-section.svg"), "utf8");
+    assert(sectionSvgText.includes('class="SECTION"') && sectionSvgText.includes('class="SECTION-MARK"'), "the SVG draws the hatched cut and the parent cutting-plane mark");
+    assert(sectionSvgText.includes("A—A") && !/NaN|Infinity/.test(sectionSvgText), "the section label is drawn with finite coordinates");
+    const sectionDxf = await call("export_drawing_sheet", {
+      path: sectionModel,
+      outputPath: path.join(dir, "sheet-section.dxf"),
+      views: ["front", "right"],
+      format: "dxf",
+      sections: [{ id: "A-A", view: "front", origin: [0, 0, 0], normal: [1, 0, 0] }],
+    });
+    assert(sectionDxf.sections[0].loopCount === 2, "DXF carries the same section");
+    const sectionDxfText = fs.readFileSync(path.join(dir, "sheet-section.dxf"), "utf8");
+    assert(sectionDxfText.includes("\nSECTION\n"), "DXF carries the SECTION layer");
+
+    // An STL tessellated from the same B-rep produces the same section.
+    const sectionStl = await call("export_tessellated_stl", { path: sectionModel, outputPath: path.join(dir, "sheet-section.stl"), targetCellSize: 0.5 });
+    assert(sectionStl.triangleCount > 0, "the STL tessellation is real geometry");
+    const sectionedStl = await call("export_drawing_sheet", {
+      path: path.join(dir, "sheet-section.stl"),
+      outputPath: path.join(dir, "sheet-section-stl.svg"),
+      views: ["front", "right"],
+      sections: [{ id: "A-A", view: "front", origin: [0, 0, 0], normal: [1, 0, 0] }],
+    });
+    assert(
+      sectionedStl.sections[0].loopCount === sectioned.sections[0].loopCount && sectionedStl.sections[0].hatchLineCount > 0,
+      `STL and B-rep agree on the section's loops (stl: ${JSON.stringify(sectionedStl.sections)}, brep: ${JSON.stringify(sectioned.sections)})`
+    );
+
+    // An in-place cut draws the clipped half-space in the view itself.
+    const inPlace = await call("export_drawing_sheet", {
+      path: sectionModel,
+      outputPath: path.join(dir, "sheet-inplace.svg"),
+      views: ["front"],
+      viewSections: { front: { origin: [0, 0, 0], normal: [0, 0, 1] } },
+    });
+    assert(
+      inPlace.views.length === 1 && (inPlace.views[0].sectionLoopCount ?? 0) >= 1,
+      `an in-place cut hatches the view's own cut loops (got ${JSON.stringify(inPlace.views)})`
+    );
+
+    // A section whose plane misses the part is refused by name, not drawn empty.
+    const missed = await callTolerant("export_drawing_sheet", {
+      path: sectionModel,
+      outputPath: path.join(dir, "sheet-miss.svg"),
+      views: ["front"],
+      sections: [{ id: "Z-Z", view: "front", origin: [100, 0, 0], normal: [1, 0, 0] }],
+    });
+    assert(missed.error && /Section "Z-Z" misses the model/i.test(missed.error), `a missing plane is refused by name (got ${JSON.stringify(missed)})`);
+
+    // A sheet with no sections still writes byte-identical output.
+    await call("export_drawing_sheet", { path: sheetModel, outputPath: path.join(dir, "sheet-plain-a.svg"), deterministic: true });
+    await call("export_drawing_sheet", { path: sheetModel, outputPath: path.join(dir, "sheet-plain-b.svg"), deterministic: true });
+    assert(
+      fs.readFileSync(path.join(dir, "sheet-plain-a.svg"), "utf8") === fs.readFileSync(path.join(dir, "sheet-plain-b.svg"), "utf8"),
+      "a no-section sheet is byte-identical across exports"
+    );
 
     // An unknown view is skipped with a warning, not a hard failure; an
     // all-unknown request is a caller error.

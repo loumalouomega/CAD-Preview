@@ -64,7 +64,7 @@ async function readEditsResolved(modelPath: string): Promise<{ ops: EditOp[]; fu
 import { compileParametricScript } from "./parametricScript";
 import { routeFile, COMPARABLE_MESH_FORMATS, DISPLAY_ONLY_MESH_FORMATS, displayOnlyMeshMessage, MESHIO_FORMATS, ambiguityCaveatFor, type CadFormat, type FileRoute, type MeshParseFormat } from "./fileRouter";
 import { resolveExternalBuffers, type GltfExternalBuffers } from "./gltfParser";
-import { exportTargetsFor, EXPORT_EXTENSION, MESH_SAVE_IN_PLACE_FORMATS } from "./exportTargets";
+import { exportTargetsFor, EXPORT_EXTENSION, MESH_SAVE_IN_PLACE_FORMATS, SAVE_IN_PLACE_FORMATS } from "./exportTargets";
 import {
   DEFAULT_MESH_OPTIONS,
   SIZE_MAX_SENTINEL,
@@ -172,6 +172,7 @@ import { parseStl as parseStlForBudget } from "./stlParser";
 import { parseToWeldedMesh } from "./meshHeal";
 import { isMeshSourceRoute, resolveMeshSourceInput, bakeMeshSourceEdits, bakeWarnings } from "./meshSourceInput";
 import { meshInspection } from "./meshInspection";
+import { meshioBoundarySide, MeshioBoundaryUnavailableError, type MeshioBoundarySide } from "./meshioBoundarySide";
 import { MAX_HEALABLE_TRIANGLES } from "./meshHeal";
 import { AUTO_DECIMATE_TARGET_TRIANGLES, isHealableSizeError, stlBytesForHeal, decimatedInfo, decimatedSentence } from "./meshioService";
 import { weldedMeshToStlBytes } from "./meshComponents";
@@ -232,13 +233,13 @@ import {
 } from "./mcpSidecars";
 import { revisionsOf } from "./mcpRevision";
 import {
-  beginMeshSave,
-  endMeshSave,
-  meshSavePaths,
-  recoverInterruptedMeshSave,
-  type MeshSaveRecoveryDeps,
-  type MeshSaveRecoveryResult,
-} from "./meshSaveRecovery";
+  beginSave,
+  endSave,
+  savePaths,
+  recoverInterruptedSave,
+  type SaveRecoveryDeps,
+  type SaveRecoveryResult,
+} from "./saveRecovery";
 import { buildPreprocessZip, readPreprocessZip } from "./preprocessArchive";
 import { bomTsv, type BomRow } from "./bomExport";
 import { densityForMaterial, totalMass, validateDensity } from "./materialDensity";
@@ -470,7 +471,7 @@ export function describeCapabilities() {
       "render_snapshot/screenshot_shape/render_ops_prefix take tessellationQuality (draft|standard|fine) for the PICTURE only, and report the `tessellation` block actually used (quality + deflections + triangleCount) — nothing else about a render is tessellation-derived. Omitting it is indistinguishable from passing `standard`; it deliberately does NOT follow the cadPreview.tessellationQuality VS Code setting, which is an interactive-viewer default, so an agent's render is reproducible regardless of a user's editor preferences. It is most visible in wireframe, where the tessellation IS the picture; under shading, faceting is partly hidden either way. compare_models' includeSnapshots takes it too (both sides render at the same quality) and reports a per-side `tessellation` block.",
       "search_standard_parts/download_standard_part are network calls to the hosted step.parts API (api.step.parts) — the extension's only external network dependency. A network/API failure returns supported:false and is INCONCLUSIVE, never \"no matching parts\"/\"part unavailable\" — retry or report uncertainty, don't treat it as a negative result.",
       "run_parametric_script compiles {variables?, steps} (each step is one op, or one flat `repeat: {times, indexVar, body}` loop expanding a template op-list) into ops appended via the exact same path as apply_edit_ops — not a general scripting language, no code execution. Repeat-generated ops are fully baked (concrete numbers, exprs stripped) — for a value that should stay live/editable later, use a plain op step with exprs referencing a real document variable (set_variables) instead of the repeat construct.",
-      "compare_models (bounding-box-centroid + volume solid matching between two files) supports B-rep (STEP/IGES/BREP, edits baked in) and STL/OBJ/PLY/glTF (host-side parsers; pending mesh edits baked in first by the kernel worker's headless mesh-edit replay — the same three.js engine the viewer uses — compared as an STL side) sources, in any combination on either side; meshio-only formats and display-only mesh formats (3MF, Collada, AMF) have no host-side geometry to derive centroids/volumes from without a webview. Its optional includeSnapshots (default false) additionally renders each B-rep side's before/after PNGs via the same engine as render_snapshot — opt in only when you want to look at the geometry, not just the numeric diff; mesh-format sides never get a snapshot (render_snapshot is B-rep sources only) and degrade to a warning, never a failure.",
+      "compare_models (bounding-box-centroid + volume solid matching between two files) supports B-rep (STEP/IGES/BREP, edits baked in), STL/OBJ/PLY/glTF (host-side parsers; pending mesh edits baked in first by the kernel worker's headless mesh-edit replay — the same three.js engine the viewer uses — compared as an STL side), and meshio-only formats (compared as the boundary surface meshio++ extracts; the response marks that side surfaceDerived and reports its region count and watertight flag), in any combination on either side; display-only mesh formats (3MF, Collada, AMF) have no host-side geometry to derive centroids/volumes from without a webview. Its optional includeSnapshots (default false) additionally renders each B-rep side's before/after PNGs via the same engine as render_snapshot — opt in only when you want to look at the geometry, not just the numeric diff; mesh-format sides never get a snapshot (render_snapshot is B-rep sources only) and degrade to a warning, never a failure.",
       "check_mesh_health (STL/OBJ/PLY/glTF sources only) is a READ-ONLY diagnostic — it reports per-connected-component free/non-manifold edge counts, degenerate face count, the sewing tolerance actually required to close the shape (or null if it never closed), and the healed area/volume delta, but it does NOT promote anything to a B-rep: there is still no path from a triangle mesh back into fillet/chamfer/measure_exact/get_mass_properties/export_brep (BREP_ONLY_OPS is unchanged). A null requiredTolerance or a large volumeDeltaPct/areaDeltaPct is a fact for you to judge, not a computed pass/fail.",
       "check_brep_health (B-rep/csg/scad sources only) is a READ-ONLY validity report over OCCT's BRepCheck_Analyzer — named per-subshape statuses, open-boundary edges, content counters. It repairs nothing, and a valid verdict does not guarantee Gmsh can mesh the model.",
       "promote_mesh_to_brep (STL/OBJ/PLY/glTF sources only) closes the gap check_mesh_health leaves open — but as a ONE-SHOT EXPORT to a NEW file (outputPath), not an in-place reclassification of the source document: the original mesh is untouched, and the ORIGINAL document still has no B-rep capabilities. The written file is an ordinary B-rep document from the moment it exists (load_model/measure_exact/get_mass_properties/further export_brep all work on it). A component that never closes is skipped (skippedComponents/warnings), never silently dropped; if none close, the call fails.",
@@ -484,7 +485,7 @@ export function describeCapabilities() {
       "render_ops_prefix replays ops[0..throughIndex] purely to LOOK at an earlier model state and persists nothing — each prefix length pays a full replay (no incremental reuse across differing prefix lengths), so treat it as a click-to-jump bisection tool, not a scrubber.",
       "list_workspace_models is pure on-disk discovery over the same routing rules load_model uses — depth-capped walk, .git/node_modules never scanned, caps reported via truncated/warnings rather than a quietly-partial list. This server holds no open-document/session state anywhere, so there is nothing else to discover.",
       "export_svg_silhouette writes an OUTLINE only — no hidden-line removal, so it is NOT a dimensioned 2D technical drawing: back-facing geometry isn't drawn, but neither are interior feature edges off the silhouette. OCCT's HLRBRep_* hidden-line classes are entirely unavailable in this WASM build, and HLRAppli_ReflectLines (the one green alternative) was probed and produced a strictly worse drawing, so the outline is derived from triangle adjacency instead — which is also why it works for STL/OBJ/PLY/glTF sources, not just B-rep. Treat the result as a review/illustration artifact; use measure/measure_exact for any dimension you need to be sure of. For a drawing WITH hidden-line removal — interior feature edges, occluded runs dashed — use export_technical_drawing, which gets there on the same triangle adjacency rather than through the unavailable kernel API.",
-      "export_drawing_sheet places several views (default front/top/right/iso) on ONE sheet at a shared scale with a title block, orthographically aligned per first-angle (default) or third-angle projection. It is the one drawing tool with dimension logic beyond baking a pin verbatim: each pinned annotation is drawn exactly once, in the orthographic view where its measured line reads at true length (never foreshortened, never repeated). paper:'fit' (default) sizes the sheet to the content at 1:1 or an explicit scale; a named ISO paper size picks the largest ISO 5455 standard scale that fits and reports if none does, rather than silently clipping. No unit conversion — a sheet's scale ratio is only meaningful against the model's native millimetres.",
+      "export_drawing_sheet places several views (default front/top/right/iso) on ONE sheet at a shared scale with a title block, orthographically aligned per first-angle (default) or third-angle projection. It is the one drawing tool with dimension logic beyond baking a pin verbatim: each pinned annotation is drawn exactly once, in the orthographic view where its measured line reads at true length (never foreshortened, never repeated). paper:'fit' (default) sizes the sheet to the content at 1:1 or an explicit scale; a named ISO paper size picks the largest ISO 5455 standard scale that fits and reports if none does, rather than silently clipping. No unit conversion — a sheet's scale ratio is only meaningful against the model's native millimetres. Optional sections add full section views cut from the same tessellation: each names its parent view, is drawn looking along the plane normal with 45°-hatched cut loops on a SECTION layer/group, and marks the cutting plane with arrows and the label in the parent; viewSections cuts a view in place instead. A section whose plane misses the model is refused by name.",
       "B-rep sources (.step/.stp/.iges/.igs/.brep/.csg): full pipeline — load, edit, mesh, export. `.scad` converts to `.csg` first via a user-installed openscad binary (see below); without one every .scad tool returns supported:false.",
       ".scad sources: identical to .csg once converted — which needs the openscad binary (cadPreview.openscadBinary setting, OPENSCAD_BINARY env override, else PATH). Absent binary → supported:false with an install hint on every .scad call, never a throw. Conversion runs `openscad -o <tmp>/model.csg <real path>` with cwd = the source directory (relative use/include/import keep working), capped at a 2-minute kill; openscad's own stderr chatter surfaces as warnings. OPENSCAD_BACKEND (cgal|manifold; manifold needs a 2025+ OpenSCAD) selects the engine and OPENSCADPATH (or cadPreview.openscadLibraryPaths interactively) supplies library folders such as BOSL2. list_scad_parameters reads a file's Customizer parameters from its text (no binary needed); convert_scad re-evaluates it with `-D` overrides and writes a new .csg, leaving the .scad untouched.",
       ".stl sources: meshable headless; pending edit ops ARE baked into the meshed geometry by the kernel worker's headless mesh-edit replay (the same three.js engine and ids the viewer uses; a skipped op is reported by index), and parts cannot become physical groups.",
@@ -728,12 +729,12 @@ async function maybeAutoCreateCsgParts(modelPath: string, groups: readonly CsgCo
 }
 
 /**
- * The `node:fs` adapter for `meshSaveRecovery.ts` — the headless half of the
+ * The `node:fs` adapter for `saveRecovery.ts` — the headless half of the
  * interactive path's identical adapter. `askUnrecognised` is a stub returning
  * `null`: this server has no UI, so the unrecognised branch degrades to a
  * warning and changes nothing (see `loadModel`, which reports it).
  */
-function headlessMeshRecoveryDeps(modelPath: string): MeshSaveRecoveryDeps {
+function headlessSaveRecoveryDeps(modelPath: string): SaveRecoveryDeps {
   const sibling = (name: string): string => path.join(path.dirname(modelPath), name);
   return {
     readBytes: (name) => fs.readFile(sibling(name)),
@@ -757,8 +758,9 @@ function headlessMeshRecoveryDeps(modelPath: string): MeshSaveRecoveryDeps {
 }
 
 /**
- * Roadmap 1.5, "Recoverable mesh source saves" — repairs an interrupted
- * save-in-place before the source is read or a new save is opened.
+ * Repairs an interrupted save-in-place before the source is read or a new save
+ * is opened. Covers both mesh and B-rep sources; the gate is the same
+ * `SAVE_IN_PLACE_FORMATS` set the save paths use.
  *
  * Headless reaches the same two resolvable outcomes as the extension: a source
  * that provably holds the baked bytes gets its watermark advanced (so the
@@ -771,13 +773,13 @@ function headlessMeshRecoveryDeps(modelPath: string): MeshSaveRecoveryDeps {
  * Non-fatal by construction: every failure returns `action: "none"` so the
  * model still opens, exactly as before this existed.
  */
-export async function recoverInterruptedMeshSaveHeadless(modelPath: string, format: string): Promise<MeshSaveRecoveryResult> {
-  if (!MESH_SAVE_IN_PLACE_FORMATS.has(format as CadFormat)) {
+export async function recoverInterruptedSaveHeadless(modelPath: string, format: string): Promise<SaveRecoveryResult> {
+  if (!SAVE_IN_PLACE_FORMATS.has(format as CadFormat)) {
     return { action: "none", reason: "not-savable", bakedThrough: 0, message: null, sidecarChanged: false, sourceChanged: false };
   }
   const fileName = path.basename(modelPath);
   try {
-    return await recoverInterruptedMeshSave(meshSavePaths(fileName, EXPORT_EXTENSION[format as CadFormat]), fileName, headlessMeshRecoveryDeps(modelPath));
+    return await recoverInterruptedSave(savePaths(fileName, EXPORT_EXTENSION[format as CadFormat]), fileName, headlessSaveRecoveryDeps(modelPath));
   } catch {
     return { action: "none", reason: "recovery-failed", bakedThrough: 0, message: null, sidecarChanged: false, sourceChanged: false };
   }
@@ -786,11 +788,13 @@ export async function recoverInterruptedMeshSaveHeadless(modelPath: string, form
 export async function loadModel(ctx: ToolContext, params: { path: string }) {
   const modelPath = params.path;
   const route = requireRoute(modelPath);
+  // Repair an interrupted save-in-place BEFORE reading the source or its edit
+  // history, so every fact below describes a consistent pair. This covers
+  // B-rep as well as mesh sources; the gate lives in the recovery wrapper,
+  // and a no-op for every other format.
+  const recovered = await recoverInterruptedSaveHeadless(modelPath, route.format);
 
   if (COMPARABLE_MESH_FORMATS.has(route.format)) {
-    // Recover an interrupted save-in-place BEFORE reading the source, so the
-    // facts below describe a consistent source/history pair.
-    const recovered = await recoverInterruptedMeshSaveHeadless(modelPath, route.format);
     const { inspection, warnings } = await readMeshInspection(ctx, modelPath, route.format as MeshParseFormat);
     if (recovered.message) warnings.unshift(recovered.message);
     return {format: route.format, strategy: route.strategy, meshEntities: inspection.inventory,
@@ -895,7 +899,7 @@ export async function loadModel(ctx: ToolContext, params: { path: string }) {
 
   const sidecars = await sidecarSummary(modelPath);
   const { ops } = await readEditsResolved(modelPath);
-  const warnings: string[] = [];
+  const warnings: string[] = recovered.message ? [recovered.message] : [];
   const scadDiag: ScadDiagnosticCollector = { diagnostics: [], droppedCount: 0 };
   const src = await readOcctSource(modelPath, route, warnings, scadDiag);
   if (!src.ok) {
@@ -972,10 +976,40 @@ async function readMeshInspection(ctx: ToolContext, modelPath: string, format: M
   return {inspection, warnings};
 }
 
+/**
+ * The meshio-only counterpart of `readMeshInspection`: meshio++ never exposes
+ * volume cells to JS, but its extracted boundary is an ordinary triangle
+ * surface. The facts are therefore real host-side geometry and explicitly
+ * `surfaceDerived` — volume is the boundary's divergence-theorem volume, only
+ * meaningful when `watertight`, and no cell/field data is claimed.
+ */
+async function readMeshioBoundarySide(
+  ctx: ToolContext,
+  modelPath: string,
+  route: FileRoute,
+  warnings: string[]
+): Promise<MeshioBoundarySide> {
+  const bytes = await readModelBytes(modelPath);
+  const companions = await resolveMeshioCompanions(modelPath, route.format, bytes);
+  const side = await meshioBoundarySide(
+    bytes,
+    route.format,
+    path.basename(modelPath),
+    companions,
+    (b, f, name, comps) => ctx.pipeline.convertToStlBoundaryWithRegions(b, f, name, comps)
+  );
+  warnings.push(
+    `${route.format} is a meshio-only source: these facts come from the ${side.triangleCount}-triangle boundary surface meshio++ extracted (surface-derived; ` +
+      `${side.regionCount} cell region(s) correlated; boundary ${side.watertight ? "watertight" : "open"}), not from the source's volume cells.` +
+      (side.watertight ? "" : " Volume is withheld because the boundary is open.")
+  );
+  return side;
+}
+
 export async function getMassProperties(
   ctx: ToolContext,
   params: { path: string; entityId?: string }
-): Promise<{ format: CadFormat; entityId: string; supported: boolean; warnings: string[]; watertight?: boolean; massGrams?: number; densityGcm3?: number; densityPart?: string } & Partial<MassProperties>> {
+): Promise<{ format: CadFormat; entityId: string; supported: boolean; warnings: string[]; watertight?: boolean; massGrams?: number; densityGcm3?: number; densityPart?: string; surfaceDerived?: boolean; regionCount?: number } & Partial<MassProperties>> {
   const modelPath = params.path;
   const route = requireRoute(modelPath);
   const entityId = params.entityId ?? null;
@@ -985,6 +1019,49 @@ export async function getMassProperties(
     const properties = inspection.mass(entityId ?? "whole-model");
     if (properties.volume !== null && !properties.watertight) warnings.push("Not watertight — volume may not be meaningful; centerOfMass is the area centroid.");
     return {format: route.format, entityId: entityId ?? "whole-model", supported: true, ...properties, warnings};
+  }
+
+  if (route.strategy === "meshio") {
+    const warnings: string[] = [];
+    let side: MeshioBoundarySide;
+    try {
+      side = await readMeshioBoundarySide(ctx, modelPath, route, warnings);
+    } catch (err) {
+      return {
+        format: route.format,
+        entityId: entityId ?? "whole-model",
+        supported: false,
+        warnings: [...warnings, (err as Error).message],
+      };
+    }
+    const properties = side.inspection.mass(entityId ?? "whole-model");
+    // The whole boundary's closure is the meaningful gate, not a single
+    // component's: a component can be closed while the source leaks.
+    if (properties.volume !== null && !side.watertight) {
+      properties.volume = null;
+      warnings.push("Not watertight — volume is withheld; centerOfMass is the area centroid.");
+    }
+    if (properties.volume !== null && !properties.watertight) {
+      properties.volume = null;
+      warnings.push("This component is not watertight — volume is withheld.");
+    }
+    let bbox: { min: [number, number, number]; max: [number, number, number] } | undefined;
+    try {
+      const facts = side.inspection.inspect(entityId ?? "whole-model");
+      bbox = facts.bbox ?? undefined;
+    } catch {
+      /* a point entity has no bbox; mass already resolved the id */
+    }
+    return {
+      format: route.format,
+      entityId: entityId ?? "whole-model",
+      supported: true,
+      ...properties,
+      ...(bbox ? { bbox } : {}),
+      surfaceDerived: true,
+      regionCount: side.regionCount,
+      warnings,
+    };
   }
 
   if (route.strategy !== "occt") {
@@ -1220,13 +1297,32 @@ export async function inspectEntity(
 export async function measureTool(
   ctx: ToolContext,
   params: { path: string; from: string; to: string; axis?: [number, number, number] }
-): Promise<{ format: CadFormat; supported: boolean; warnings: string[] } & Partial<MeasureResult>> {
+): Promise<{ format: CadFormat; supported: boolean; warnings: string[]; surfaceDerived?: boolean; regionCount?: number } & Partial<MeasureResult>> {
   const modelPath = params.path;
   const route = requireRoute(modelPath);
 
   if (COMPARABLE_MESH_FORMATS.has(route.format)) {
     const {inspection, warnings} = await readMeshInspection(ctx, modelPath, route.format as MeshParseFormat);
     return {format: route.format, supported: true, ...inspection.measure(params.from, params.to, params.axis), warnings};
+  }
+
+  if (route.strategy === "meshio") {
+    const warnings: string[] = [];
+    let side: MeshioBoundarySide;
+    try {
+      side = await readMeshioBoundarySide(ctx, modelPath, route, warnings);
+    } catch (err) {
+      return { format: route.format, supported: false, warnings: [...warnings, (err as Error).message] };
+    }
+    warnings.push("Mesh entity ids are the boundary-side mesh-component-N / mesh-triangle-N / mesh-vertex-N ids; use whole-model for the whole boundary.");
+    return {
+      format: route.format,
+      supported: true,
+      ...side.inspection.measure(params.from, params.to, params.axis),
+      surfaceDerived: true,
+      regionCount: side.regionCount,
+      warnings,
+    };
   }
 
   if (route.strategy !== "occt") {
@@ -2133,13 +2229,11 @@ async function resolveGltfBuffers(ctx: ToolContext, modelPath: string, bytes: Ui
  * Diffs two models solid-by-solid via `modelDiffHost.ts`'s `compareModels()`
  * — bounding-box-centroid + volume matching, the same heuristic
  * `explodeSolids`/`gmshPartsMap.ts` already use elsewhere. STEP/IGES/BREP
- * (edits baked in via the live OCCT shape) and STL/OBJ/PLY/glTF (raw file
- * bytes — no host-side mesh edit engine to bake edits with, same accepted
- * limitation `generate_mesh`'s STL path already has) are supported, in any
- * combination. Only meshio-only formats return `supported: false` with a
- * warning rather than throwing, mirroring `get_mass_properties`'s
- * graceful-skip convention: they never expose a triangle array to JS, so
- * there is nothing to re-derive centroids/volumes from without a webview.
+ * (edits baked in via the live OCCT shape), STL/OBJ/PLY/glTF (raw file
+ * bytes), and meshio-only formats (their meshio++ boundary surface, marked
+ * `surfaceDerived` and only volume-bearing when watertight) are supported, in
+ * any combination. Only the display-only formats that never reach the host
+ * (3MF/Collada/AMF) return `supported: false`.
  *
  * **`params.includeSnapshots` (roadmap "Visual diff for Compare Models",
  * closed) — opt-in, default `false`.** Pairing the numeric diff above with
@@ -2150,10 +2244,20 @@ async function resolveGltfBuffers(ctx: ToolContext, modelPath: string, bytes: Ui
  * 8 image content blocks in the response, real token cost an agent should
  * choose, not have imposed on every call. `isRenderAvailable()` is probed
  * ONCE (not per side) and only when at least one side is a B-rep source;
- * mesh (STL/OBJ/PLY) sides degrade to a `warnings` entry, same as every
- * other `supported: false`-shaped gap in this tool — a skipped/failed
- * snapshot never blocks or fails the numeric diff.
+ * mesh (STL/OBJ/PLY/glTF or meshio-boundary) sides degrade to a `warnings`
+ * entry, same as every other `supported: false`-shaped gap in this tool — a
+ * skipped/failed snapshot never blocks or fails the numeric diff.
  */
+export interface CompareSideFacts {
+  kind: "brep" | "mesh" | "meshio";
+  /** True for a meshio-only source: the geometry is its extracted boundary. */
+  surfaceDerived: boolean;
+  /** Meshio only: `kind: "cell"` regions that correlated to boundary triangles. */
+  regionCount?: number;
+  /** Meshio only: whether the extracted boundary is closed. */
+  watertight?: boolean;
+}
+
 export async function compareModelsTool(
   ctx: ToolContext,
   params: { pathA: string; pathB: string; includeSnapshots?: boolean; tessellationQuality?: string }
@@ -2163,6 +2267,8 @@ export async function compareModelsTool(
   supported: boolean;
   warnings: string[];
   diff?: ModelDiff;
+  /** Per side, what geometry the diff actually read. */
+  sides?: { A: CompareSideFacts; B: CompareSideFacts };
   images?: RenderImage[];
   /** Per side, the tessellation actually rendered (present only for a side that produced images). */
   tessellation?: { A?: RenderTessellation; B?: RenderTessellation };
@@ -2170,46 +2276,64 @@ export async function compareModelsTool(
   const routeA = requireRoute(params.pathA);
   const routeB = requireRoute(params.pathB);
 
-  const compareable = (route: typeof routeA) => route.strategy === "occt" || COMPARABLE_MESH_FORMATS.has(route.format);
+  const compareable = (route: typeof routeA) => route.strategy === "occt" || route.strategy === "meshio" || COMPARABLE_MESH_FORMATS.has(route.format);
   if (!compareable(routeA) || !compareable(routeB)) {
     return {
       formatA: routeA.format,
       formatB: routeB.format,
       supported: false,
       warnings: [
-        // Built from MESHIO_FORMATS, not a hardcoded list — the format set has
-        // already drifted once (openfoam joined at @meshioplusplus/wasm 10.x).
-        `compare_models only supports STEP/IGES/BREP/CSG/STL/OBJ/PLY/glTF sources headlessly — meshio-only formats (${MESHIO_FORMATS.join("/")}) have no host-side geometry to independently derive solid centroids/volumes from without a webview. Display-only mesh formats (${[...DISPLAY_ONLY_MESH_FORMATS].join("/")}) open in the viewer but have no host-side parser either — export them to STL/OBJ/PLY/glTF first.`,
+        `compare_models supports STEP/IGES/BREP/CSG/SCAD, STL/OBJ/PLY/glTF, and meshio-only formats (compared as their meshio++ boundary surface). Display-only mesh formats (${[...DISPLAY_ONLY_MESH_FORMATS].join("/")}) open in the viewer but have no host-side parser — export them to STL/OBJ/PLY/glTF first.`,
       ],
     };
   }
 
   const warnings: string[] = [];
-  const resolveSource = async (modelPath: string, route: typeof routeA): Promise<CompareSource> => {
+  const resolveSource = async (modelPath: string, route: typeof routeA): Promise<{ source: CompareSource; side: CompareSideFacts }> => {
     if (route.strategy === "occt") {
       const { ops } = await readEditsResolved(modelPath);
       const src = await readOcctSource(modelPath, route, warnings);
       if (!src.ok) throw new ScadUnavailableError(src.reason);
-      return { kind: "brep", bytes: src.bytes, format: src.format as BRepFormat, ops };
+      return { source: { kind: "brep", bytes: src.bytes, format: src.format as BRepFormat, ops }, side: { kind: "brep", surfaceDerived: false } };
+    }
+    if (route.strategy === "meshio") {
+      const side = await readMeshioBoundarySide(ctx, modelPath, route, warnings);
+      return {
+        // The boundary STL is the same triangle side the native STL path
+        // compares, so modelDiffHost needs no meshio-specific branch.
+        source: { kind: "stl", bytes: side.stlBytes },
+        side: { kind: "meshio", surfaceDerived: true, regionCount: side.regionCount, watertight: side.watertight },
+      };
     }
     const [{ ops }, bytes] = await Promise.all([readEditsResolved(modelPath), readModelBytes(modelPath)]);
-    return meshCompareSource(ctx, modelPath, route, ops, bytes, warnings, "comparing the raw file only");
+    const source = await meshCompareSource(ctx, modelPath, route, ops, bytes, warnings, "comparing the raw file only");
+    return { source, side: { kind: "mesh", surfaceDerived: false } };
   };
 
   let sourceA: CompareSource;
   let sourceB: CompareSource;
+  let sideA: CompareSideFacts;
+  let sideB: CompareSideFacts;
   try {
-    [sourceA, sourceB] = await Promise.all([resolveSource(params.pathA, routeA), resolveSource(params.pathB, routeB)]);
+    const [a, b] = await Promise.all([resolveSource(params.pathA, routeA), resolveSource(params.pathB, routeB)]);
+    sourceA = a.source;
+    sourceB = b.source;
+    sideA = a.side;
+    sideB = b.side;
   } catch (err) {
     if (err instanceof ScadUnavailableError) {
       return { formatA: routeA.format, formatB: routeB.format, supported: false, warnings: [...warnings, err.reason] };
     }
+    if (err instanceof MeshioBoundaryUnavailableError) {
+      return { formatA: routeA.format, formatB: routeB.format, supported: false, warnings: [...warnings, err.message] };
+    }
     throw err;
   }
   const diff = await ctx.pipeline.compareModels(ctx.extensionPath, sourceA, sourceB);
+  const sides = { A: sideA, B: sideB };
 
   if (!params.includeSnapshots) {
-    return { formatA: routeA.format, formatB: routeB.format, supported: true, warnings, diff };
+    return { formatA: routeA.format, formatB: routeB.format, supported: true, warnings, diff, sides };
   }
 
   const needsRender = sourceA.kind === "brep" || sourceB.kind === "brep";
@@ -2253,6 +2377,7 @@ export async function compareModelsTool(
     supported: true,
     warnings,
     diff,
+    sides,
     images: [...imagesA, ...imagesB],
     ...(tessellation.A || tessellation.B ? { tessellation } : {}),
   };
@@ -5386,6 +5511,10 @@ export async function generateMeshTool(
     // "gmsh" — the reason is in `warnings` above, never a silent surprise).
     engineUsed: result.engineUsed,
     conformalApplied: result.conformalApplied,
+    // Read back from the generated nodes for a 2-D B-rep generate with a
+    // Part.meshBoundaryLayer: the plan is what was requested, these are the
+    // rows the mesh actually contains.
+    boundaryLayers: result.boundaryLayers ?? [],
     // Counts only — the triangle-index buffer itself is display geometry an
     // agent has no renderer for; the counts are the actionable fact ("N
     // elements need attention"), same rationale as `render_snapshot`'s
@@ -6413,8 +6542,12 @@ export async function exportTessellatedStlTool(
  * (history preserved, not cleared), a one-deep `<model>.bak` is written
  * beside the source first, and Part/annotation ids are rebound across the
  * save via the pipeline's two-byte `rebindPartsAcrossSave` (failures warn
- * loudly rather than claiming verified highlights). An up-to-date document
- * (empty tail) succeeds with `baked: 0` and no rewrite.
+ * loudly rather than claiming verified highlights). The write is wrapped in
+ * the same `<model>.save-journal.json` transaction as the interactive path
+ * ("Recoverable B-rep source saves"), so a process death before the watermark
+ * lands is completed on the next open instead of replaying the tail over
+ * already-baked geometry. An
+ * up-to-date document (empty tail) succeeds with `baked: 0` and no rewrite.
  *
  * Cross-process caveat (the documented cross-process `dirtyGuard` gap): this
  * server cannot see whether a human has the file open in VS Code. Callers
@@ -6438,6 +6571,16 @@ export async function saveModelTool(ctx: ToolContext, params: { path: string }) 
     );
   }
   const warnings: string[] = [];
+  // Roadmap 1.4: settle any transaction a previous run left in flight before
+  // reading the history. A `finish` advances the watermark to the saved bytes,
+  // so the pending tail below is empty rather than replayed.
+  const recovered = await recoverInterruptedSaveHeadless(modelPath, route.format);
+  if (recovered.message) warnings.push(recovered.message);
+  if (recovered.action === "ask") {
+    throw new Error(
+      `${recovered.message} Refusing to save over a source that matches neither the pre-save nor the baked bytes; restore ${path.basename(modelPath)}.bak or resolve the marker first.`
+    );
+  }
   const { ops, fullOps, variables } = await readEditsResolved(modelPath);
   if (ops.length === 0) {
     return { written: path.resolve(modelPath), baked: 0, editsBaked: fullOps.length, warnings };
@@ -6465,9 +6608,50 @@ export async function saveModelTool(ctx: ToolContext, params: { path: string }) 
     parts
   );
   const resolved = path.resolve(modelPath);
-  await fs.writeFile(`${resolved}.bak`, await readModelBytes(modelPath));
-  await fs.writeFile(resolved, bytes);
-  await writeEdits(modelPath, fullOps, variables, fullOps.length);
+  const fileName = path.basename(resolved);
+  const paths = savePaths(fileName, EXPORT_EXTENSION[route.format]);
+  const deps = headlessSaveRecoveryDeps(resolved);
+  // Open the journal BEFORE the source write. Both hashes are already in hand
+  // (`src.bytes` is the file as read; `bytes` is what exportBRep will write),
+  // so this costs one small file write. The headless path keeps its direct
+  // write — the marker makes a torn result recoverable but does not pretend
+  // the write itself is atomic.
+  const journal = await beginSave(
+    {
+      paths,
+      fileName,
+      format: route.format,
+      bakedThrough: fullOps.length,
+      preSaveBytes: src.bytes,
+      bakedBytes: bytes,
+      writeBackup: true,
+    },
+    deps
+  );
+  try {
+    await fs.writeFile(resolved, bytes);
+  } catch (err) {
+    // Leave the journal in place: a direct write may have left the source
+    // unchanged or torn, and only recovery can tell which. Closing it here
+    // would hide exactly the state it exists to describe.
+    throw new Error(
+      `${(err as Error).message} — the save journal and ${paths.backup} remain beside the source; re-open the file to resolve the interrupted save.`
+    );
+  }
+  try {
+    await writeEdits(modelPath, fullOps, variables, fullOps.length);
+  } catch (err) {
+    // The source is baked but the watermark did not land. Leaving the journal
+    // is exactly right here: the next open finds the source holding the baked
+    // bytes and FINISHES the save. Rolling the source back instead would need
+    // the pre-save bytes re-read, and the transaction marker already carries
+    // everything recovery needs.
+    throw new Error(
+      `${(err as Error).message} — the geometry was written but the edit history's save marker did not advance; ` +
+        `re-run save_model (or open the file) to complete the save. The pre-save geometry is in ${paths.backup}.`
+    );
+  }
+  await endSave(paths, journal, deps).catch(() => undefined);
   try {
     const newBytes = await readModelBytes(modelPath);
     const newFormat = route.format;
@@ -6529,7 +6713,7 @@ async function saveMeshModel(ctx: ToolContext, modelPath: string, format: "stl" 
   const warnings: string[] = [];
   // Settle any transaction a previous run left in flight before opening a new
   // one, and report it: a `finish` here is a save the caller never saw land.
-  const recovered = await recoverInterruptedMeshSaveHeadless(modelPath, format);
+  const recovered = await recoverInterruptedSaveHeadless(modelPath, format);
   if (recovered.message) warnings.push(recovered.message);
   const { ops, fullOps, variables } = await readEditsResolved(modelPath);
   if (ops.length === 0) {
@@ -6540,10 +6724,10 @@ async function saveMeshModel(ctx: ToolContext, modelPath: string, format: "stl" 
   warnings.push(...bakeWarnings(result.outcomes, result.messages, ops.length));
   const resolved = path.resolve(modelPath);
   const fileName = path.basename(resolved);
-  const paths = meshSavePaths(fileName, EXPORT_EXTENSION[format]);
-  const deps = headlessMeshRecoveryDeps(resolved);
+  const paths = savePaths(fileName, EXPORT_EXTENSION[format]);
+  const deps = headlessSaveRecoveryDeps(resolved);
   const sibling = (name: string): string => path.join(path.dirname(resolved), name);
-  const journal = await beginMeshSave(
+  const journal = await beginSave(
     { paths, fileName, format, bakedThrough: fullOps.length, preSaveBytes: original, bakedBytes: result.bytes, writeBackup: true },
     deps
   );
@@ -6553,7 +6737,7 @@ async function saveMeshModel(ctx: ToolContext, modelPath: string, format: "stl" 
   } catch (err) {
     // The source never moved, so the marker describes a save that did not
     // happen: close it rather than leaving a later open to reason about it.
-    await endMeshSave(paths, journal, deps).catch(() => undefined);
+    await endSave(paths, journal, deps).catch(() => undefined);
     await fs.rm(sibling(paths.temp), { force: true }).catch(() => undefined);
     throw err;
   }
@@ -6570,7 +6754,7 @@ async function saveMeshModel(ctx: ToolContext, modelPath: string, format: "stl" 
         `re-run save_model (or open the file) to complete the save. The pre-save geometry is in ${paths.backup}.`
     );
   }
-  await endMeshSave(paths, journal, deps).catch(() => undefined);
+  await endSave(paths, journal, deps).catch(() => undefined);
   warnings.push(
     "This server cannot see whether the file is open in VS Code — save (or close) the editor session first so its autosave does not race this write."
   );
@@ -6737,6 +6921,17 @@ export async function exportDrawingSheetTool(
     libraryPath?: string;
     /** Layer names/ids to restrict every view to (one group per layer in each view). Absent = every layer. B-rep sources only. */
     layers?: string[];
+    /**
+     * Named section views (roadmap "Section views on drawing sheets"): each is
+     * drawn looking along its plane normal from the clipped half-space, with
+     * its cutting-plane mark in the parent `view`.
+     */
+    sections?: Array<{ id: string; label?: string; view: string; origin: [number, number, number]; normal: [number, number, number]; flip?: boolean }>;
+    /**
+     * In-place cuts keyed by view name: this view draws the clipped half-space
+     * instead of gaining a separate section view.
+     */
+    viewSections?: Record<string, { origin: [number, number, number]; normal: [number, number, number]; flip?: boolean }>;
     /** Title-block date, `YYYY-MM-DD`. Default: today, or none when `deterministic`. */
     date?: string;
     /** Omit the export-day date from the title block (unless `date` is given) so repeat exports are byte-identical across days. */
@@ -6760,7 +6955,7 @@ export async function exportDrawingSheetTool(
   }
   // One resolver for this tool AND the extension's Export Drawing Sheet form.
   const settings = resolveSheetSettings(
-    { views: params.views, format: params.format, paper: params.paper, projection: params.projection, scale: params.scale, title: params.title, fields: params.fields, layers: params.layers },
+    { views: params.views, format: params.format, paper: params.paper, projection: params.projection, scale: params.scale, title: params.title, fields: params.fields, layers: params.layers, sections: params.sections, viewSections: params.viewSections },
     template,
     { title: path.basename(modelPath) }
   );
@@ -6769,8 +6964,13 @@ export async function exportDrawingSheetTool(
 
   const { source, annotations } = await resolveDrawingSource(ctx, modelPath, warnings);
   const layerFilter = await resolveLayerFilterParam(modelPath, route, settings.layers, warnings);
+  const sheetViews = views.map((view) => {
+    const cut = settings.viewSections.find((s) => s.view === view.name);
+    return cut ? { ...view, sectionPlane: { origin: cut.origin, normal: cut.normal, flip: cut.flip } } : view;
+  });
   const result = await ctx.pipeline.exportDrawingSheet(ctx.extensionPath, source, {
-    views,
+    views: sheetViews,
+    sections: settings.sections,
     quality: normalizeTessellationQuality(params.tessellationQuality ?? "fine"),
     format,
     annotations,
@@ -6796,6 +6996,7 @@ export async function exportDrawingSheetTool(
     sheetSize: [result.width, result.height],
     scale: result.scaleLabel,
     views: result.views,
+    sections: result.sections,
     triangleCount: result.triangleCount,
     ...(annotations.length > 0 ? { dimensionCount: drawnDimensions } : {}),
     ...(layerFilter ? { layers: layerFilter.map((s) => ({ id: s.id, name: s.name })) } : {}),
@@ -6825,6 +7026,8 @@ export async function saveSheetTemplate(params: {
   title?: string;
   fields?: TitleBlockFields;
   layers?: string[];
+  sections?: Array<{ id: string; label?: string; view: string; origin: [number, number, number]; normal: [number, number, number]; flip?: boolean }>;
+  viewSections?: Record<string, { origin: [number, number, number]; normal: [number, number, number]; flip?: boolean }>;
   overwrite?: boolean;
 }) {
   const name = params.name.trim();

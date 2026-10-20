@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { exportTargetsFor, EXPORT_EXTENSION, EXPORT_LABEL, MESH_SAVE_IN_PLACE_FORMATS, UNIT_CONVERTIBLE_FORMATS } from "./exportTargets";
+import { exportTargetsFor, EXPORT_EXTENSION, EXPORT_LABEL, MESH_SAVE_IN_PLACE_FORMATS, BREP_SAVE_IN_PLACE_FORMATS, SAVE_IN_PLACE_FORMATS, UNIT_CONVERTIBLE_FORMATS } from "./exportTargets";
 
 describe("exportTargetsFor", () => {
   it("offers the other B-rep formats plus all mesh formats for a STEP source", () => {
@@ -113,6 +113,19 @@ describe("Collada as an import-only, display-only mesh format", () => {
       expect(exportTargetsFor(route, true)).not.toContain("dae");
     }
     expect(UNIT_CONVERTIBLE_FORMATS.has("dae")).toBe(false);
+  });
+});
+
+describe("SAVE_IN_PLACE_FORMATS", () => {
+  it("covers exactly the formats with a same-format writer", () => {
+    expect([...SAVE_IN_PLACE_FORMATS].sort()).toEqual(["brep", "iges", "obj", "ply", "step", "stl"]);
+    expect([...BREP_SAVE_IN_PLACE_FORMATS].sort()).toEqual(["brep", "iges", "step"]);
+  });
+
+  it("excludes glTF, meshio, 3MF and CAD-text sources", () => {
+    for (const format of ["gltf", "3mf", "vtk", "med", "csg", "scad"] as const) {
+      expect(SAVE_IN_PLACE_FORMATS.has(format)).toBe(false);
+    }
   });
 });
 

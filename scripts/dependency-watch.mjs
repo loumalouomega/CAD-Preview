@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 export const watched = ['opencascade.js', '@loumalouomega/gmsh-wasm', '@loumalouomega/mmg-wasm', '@meshioplusplus/wasm',
   'float-tetwild-wasm', 'three', '@modelcontextprotocol/sdk'];
 const marker = '<!-- cad-preview-dependency-watch -->';
-const title = 'Runtime dependency updates available';
+export const issueTitle = 'Runtime dependency updates available';
 
 export function outdatedRows(result, manifest, root) {
   if (result.error || ![0, 1].includes(result.status)) {
@@ -31,13 +31,22 @@ export function issueBody(rows) {
     '\n\nValidate kernel loading, metadata, `npm run compat`, `npm run mcp:smoke`, and VSIX packaging after updates.\n';
 }
 
+export function currentComment(date = new Date()) {
+  return `All watched runtime dependencies are current as of ${date.toISOString().slice(0, 10)}. Closing this issue; the weekly watch will open a new one if a dependency falls behind.`;
+}
+
 export async function publishReport(rows, api) {
-  if (!rows.length) return 'current';
+  const existing = (await api.list()).find(issue => !issue.pull_request && issue.title === issueTitle && issue.body?.includes(marker));
+  if (!rows.length) {
+    if (!existing) return 'current';
+    await api.comment(existing.number, currentComment());
+    await api.close(existing.number, { state: 'closed', state_reason: 'completed' });
+    return 'closed';
+  }
   const body = issueBody(rows);
-  const existing = (await api.list()).find(issue => !issue.pull_request && issue.body?.includes(marker));
-  if (!existing) { await api.create({ title, body }); return 'created'; }
+  if (!existing) { await api.create({ title: issueTitle, body }); return 'created'; }
   if (existing.body === body) return 'unchanged';
-  await api.update(existing.number, { title, body });
+  await api.update(existing.number, { title: issueTitle, body });
   return 'updated';
 }
 
@@ -70,6 +79,8 @@ async function main() {
     },
     create: body => request('issues', 'POST', body),
     update: (number, body) => request(`issues/${number}`, 'PATCH', body),
+    close: (number, body) => request(`issues/${number}`, 'PATCH', body),
+    comment: (number, body) => request(`issues/${number}/comments`, 'POST', { body }),
   }));
 }
 if (process.argv[1] === fileURLToPath(import.meta.url)) {

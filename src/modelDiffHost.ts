@@ -13,9 +13,10 @@ import type { GltfExternalBuffers } from "./gltfParser";
 /** One side of a `compareModels()` call — B-rep (baked through the live
  * OCCT shape, edits included) or raw mesh bytes (STL/OBJ/PLY/glTF; edits NOT
  * baked — mesh documents have no host-side edit engine, same accepted
- * limitation `generate_mesh`'s STL path already documents). Only the
- * meshio-only formats remain unsupported here: they never expose a triangle
- * array to JS, so there is nothing to derive centroids/volumes from.
+ * limitation `generate_mesh`'s STL path already documents). A meshio-only
+ * source never appears here directly: `mcpTools.ts` converts its meshio++
+ * boundary surface to STL bytes first, so this half sees an ordinary STL
+ * side and the caller reports it as `surfaceDerived`.
  *
  * `externalBuffers` is glTF-only: a `.gltf` may reference sibling `.bin`
  * files, which `gltfParser.ts` deliberately cannot read itself (it stays

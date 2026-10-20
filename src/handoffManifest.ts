@@ -13,6 +13,7 @@
  * call, not this file's.
  */
 import { sha256Hex } from "./hash";
+import type { BoundaryLayerAchieved } from "./boundaryLayerMeasurement";
 import type { HandoffFacts } from "./gmshService";
 import type { KernelVersions } from "./kernelVersions";
 import type { MeshOptions } from "./meshOptions";
@@ -46,6 +47,10 @@ export interface HandoffManifest {
   kernels: KernelVersions;
   outputs: Array<{ path: string; format: string; sha256: string }>;
   mesh: { nodeCount: number; elementCount: number };
+  /** Achieved boundary-layer rows per wall Part, for a 2-D generate that
+   * requested one. Absent when no layer was measured, so older manifests and
+   * non-layer exports keep their shape. */
+  boundaryLayers?: BoundaryLayerAchieved[];
   parts: ManifestPart[];
   coverage: {
     emptyParts: string[];
@@ -121,6 +126,7 @@ export function buildHandoffManifest(input: ManifestInput): HandoffManifest {
     kernels: input.kernels,
     outputs: input.outputs.map((o) => ({ path: o.path, format: o.format, sha256: sha256Hex(o.bytes) })),
     mesh: { nodeCount: facts.nodeCount, elementCount: facts.elementCount },
+    ...(facts.boundaryLayers && facts.boundaryLayers.length > 0 ? { boundaryLayers: facts.boundaryLayers } : {}),
     parts,
     coverage: {
       emptyParts: parts.filter((p) => p.status === "empty").map((p) => p.name),

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { outdatedRows, issueBody, publishReport } from './dependency-watch.mjs';
+import { outdatedRows, issueBody, publishReport, issueTitle } from './dependency-watch.mjs';
 const manifest = { dependencies: { three: '^0.185.0' } };
 const rows = [{ name: 'three', declared: '^0.185.0', current: '0.185.0', latest: '0.186.0' }];
 describe('dependency watch', () => {
@@ -26,12 +26,36 @@ describe('dependency watch', () => {
   it('creates, updates, and deduplicates a single tracking issue', async () => {
     const api = { list: vi.fn().mockResolvedValue([]), create: vi.fn(), update: vi.fn() };
     expect(await publishReport(rows, api)).toBe('created');
-    api.list.mockResolvedValue([{ number: 12, body: issueBody(rows) }]);
+    api.list.mockResolvedValue([{ number: 12, title: issueTitle, body: issueBody(rows) }]);
     expect(await publishReport(rows, api)).toBe('unchanged');
     expect(await publishReport([{ ...rows[0], latest: '0.187.0' }], api)).toBe('updated');
     expect(api.update).toHaveBeenCalledWith(12, expect.objectContaining({ body: expect.stringContaining('0.187.0') }));
-    api.list.mockClear();
+    api.list.mockResolvedValue([]);
     expect(await publishReport([], api)).toBe('current');
-    expect(api.list).not.toHaveBeenCalled();
+  });
+  it('closes the tracking issue when the tree is current', async () => {
+    const api = {
+      list: vi.fn().mockResolvedValue([{ number: 92, title: issueTitle, body: issueBody(rows) }]),
+      create: vi.fn(), update: vi.fn(),
+      close: vi.fn().mockResolvedValue({}),
+      comment: vi.fn().mockResolvedValue({}),
+    };
+    expect(await publishReport([], api)).toBe('closed');
+    expect(api.comment).toHaveBeenCalledWith(92, expect.stringContaining('All watched runtime dependencies are current'));
+    expect(api.close).toHaveBeenCalledWith(92, { state: 'closed', state_reason: 'completed' });
+    expect(api.create).not.toHaveBeenCalled();
+    expect(api.update).not.toHaveBeenCalled();
+  });
+  it('leaves unrelated issues open', async () => {
+    const api = {
+      list: vi.fn().mockResolvedValue([
+        { number: 1, title: 'Not the watch', body: issueBody(rows) },
+        { number: 2, title: issueTitle, body: 'no marker' },
+      ]),
+      create: vi.fn(), update: vi.fn(), close: vi.fn(), comment: vi.fn(),
+    };
+    expect(await publishReport([], api)).toBe('current');
+    expect(api.comment).not.toHaveBeenCalled();
+    expect(api.close).not.toHaveBeenCalled();
   });
 });

@@ -1,14 +1,14 @@
 import { describe, expect, it, vi } from "vitest";
 import { hashBytes, parseSaveJournal, serializeSaveJournal, type SaveJournal } from "./saveJournal";
 import {
-  beginMeshSave,
-  endMeshSave,
-  meshSavePaths,
-  recoverInterruptedMeshSave,
-  type MeshSavePaths,
-} from "./meshSaveRecovery";
+  beginSave,
+  endSave,
+  savePaths,
+  recoverInterruptedSave,
+  type SavePaths,
+} from "./saveRecovery";
 import type { ParsedEdits } from "./editsSidecar";
-import type { MeshSaveRecoveryDeps } from "./meshSaveRecovery";
+import type { SaveRecoveryDeps } from "./saveRecovery";
 import type { EditOp } from "./editOps";
 import type { ParamVariable } from "./editVariables";
 
@@ -20,7 +20,7 @@ const TORN = Buffer.from("baked-geometry-1111", "utf8");
 const OP: EditOp = { op: "translate", targets: ["node-0"], vec: [100, 0, 0] };
 
 /** The argument the recovery asks its caller about an unrecognised source. */
-type AskInfo = Parameters<MeshSaveRecoveryDeps["askUnrecognised"]>[0];
+type AskInfo = Parameters<SaveRecoveryDeps["askUnrecognised"]>[0];
 
 interface Fs {
   files: Map<string, Uint8Array>;
@@ -30,7 +30,7 @@ function makeFs(): Fs {
   return { files: new Map() };
 }
 
-const PATHS: MeshSavePaths = meshSavePaths("cube.stl", "stl");
+const PATHS: SavePaths = savePaths("cube.stl", "stl");
 
 /**
  * An in-memory filesystem plus a fake sidecar. `sourceWriteCount` records how
@@ -39,13 +39,13 @@ const PATHS: MeshSavePaths = meshSavePaths("cube.stl", "stl");
  */
 function makeDeps(
   fs: Fs,
-  opts: { bakedThrough?: number; ops?: EditOp[]; ask?: MeshSaveRecoveryDeps["askUnrecognised"]; failWriteEdits?: boolean } = {}
+  opts: { bakedThrough?: number; ops?: EditOp[]; ask?: SaveRecoveryDeps["askUnrecognised"]; failWriteEdits?: boolean } = {}
 ) {
   const state = {
     sidecar: { ops: opts.ops ?? [OP], variables: [] as ParamVariable[], bakedThrough: opts.bakedThrough ?? 0 } satisfies ParsedEdits,
     sourceWrites: 0,
   };
-  const deps: MeshSaveRecoveryDeps = {
+  const deps: SaveRecoveryDeps = {
     readBytes: async (p) => {
       const b = fs.files.get(p);
       if (!b) throw new Error(`ENOENT ${p}`);
@@ -103,7 +103,7 @@ function stageCrashPoint(point: "before-source" | "after-source" | "after-waterm
   return fs;
 }
 
-describe("meshSavePaths", () => {
+describe("savePaths", () => {
   it("derives all four names as siblings of the source", () => {
     expect(PATHS).toEqual({
       source: "cube.stl",
@@ -114,15 +114,15 @@ describe("meshSavePaths", () => {
   });
 
   it("keeps a compound extension's stem in the temp name", () => {
-    expect(meshSavePaths("beam.post.msh", "msh").temp).toBe("beam.post.save-tmp.msh");
+    expect(savePaths("beam.post.msh", "msh").temp).toBe("beam.post.save-tmp.msh");
   });
 });
 
-describe("recoverInterruptedMeshSave — every crash boundary", () => {
+describe("recoverInterruptedSave — every crash boundary", () => {
   it("finishes the save when the source holds the baked bytes and the watermark never landed", async () => {
     const fs = stageCrashPoint("after-source");
     const { deps, state } = makeDeps(fs);
-    const result = await recoverInterruptedMeshSave(PATHS, "cube.stl", deps);
+    const result = await recoverInterruptedSave(PATHS, "cube.stl", deps);
 
     expect(result.action).toBe("finish");
     expect(result.sidecarChanged).toBe(true);
@@ -137,7 +137,7 @@ describe("recoverInterruptedMeshSave — every crash boundary", () => {
   it("discards the journal when the source was never rewritten", async () => {
     const fs = stageCrashPoint("before-source");
     const { deps, state } = makeDeps(fs);
-    const result = await recoverInterruptedMeshSave(PATHS, "cube.stl", deps);
+    const result = await recoverInterruptedSave(PATHS, "cube.stl", deps);
 
     expect(result.action).toBe("discard");
     expect(result.bakedThrough).toBe(0);
@@ -153,7 +153,7 @@ describe("recoverInterruptedMeshSave — every crash boundary", () => {
   it("does nothing when the watermark already landed (only the journal removal was lost)", async () => {
     const fs = stageCrashPoint("after-watermark");
     const { deps, state } = makeDeps(fs, { bakedThrough: 1 });
-    const result = await recoverInterruptedMeshSave(PATHS, "cube.stl", deps);
+    const result = await recoverInterruptedSave(PATHS, "cube.stl", deps);
 
     expect(result).toMatchObject({ action: "none", reason: "already-advanced", message: null });
     expect(state.sidecar.bakedThrough).toBe(1);
@@ -165,7 +165,7 @@ describe("recoverInterruptedMeshSave — every crash boundary", () => {
     const fs = makeFs();
     fs.files.set(PATHS.source, BAKED);
     const { deps, state } = makeDeps(fs);
-    const result = await recoverInterruptedMeshSave(PATHS, "cube.stl", deps);
+    const result = await recoverInterruptedSave(PATHS, "cube.stl", deps);
     expect(result).toMatchObject({ action: "none", reason: "no-journal" });
     expect(state.sidecar.bakedThrough).toBe(0);
   });
@@ -174,7 +174,7 @@ describe("recoverInterruptedMeshSave — every crash boundary", () => {
     for (const point of ["before-source", "after-source", "after-watermark"] as const) {
       const fs = stageCrashPoint(point);
       const { deps, state } = makeDeps(fs, { bakedThrough: point === "after-watermark" ? 1 : 0 });
-      await recoverInterruptedMeshSave(PATHS, "cube.stl", deps);
+      await recoverInterruptedSave(PATHS, "cube.stl", deps);
       // The invariant: the on-disk source is EITHER the original OR the fully
       // baked file, and the watermark agrees about which.
       const onDisk = fs.files.get(PATHS.source)!;
@@ -186,9 +186,9 @@ describe("recoverInterruptedMeshSave — every crash boundary", () => {
   it("is idempotent: a second recovery of the same crash changes nothing", async () => {
     const fs = stageCrashPoint("after-source");
     const { deps, state } = makeDeps(fs);
-    const first = await recoverInterruptedMeshSave(PATHS, "cube.stl", deps);
+    const first = await recoverInterruptedSave(PATHS, "cube.stl", deps);
     const sourceAfterFirst = fs.files.get(PATHS.source);
-    const second = await recoverInterruptedMeshSave(PATHS, "cube.stl", deps);
+    const second = await recoverInterruptedSave(PATHS, "cube.stl", deps);
 
     expect(first.action).toBe("finish");
     expect(second).toMatchObject({ action: "none", reason: "no-journal" });
@@ -197,7 +197,7 @@ describe("recoverInterruptedMeshSave — every crash boundary", () => {
   });
 });
 
-describe("recoverInterruptedMeshSave — the unrecognised source", () => {
+describe("recoverInterruptedSave — the unrecognised source", () => {
   function stageTorn() {
     const fs = stageCrashPoint("after-source");
     fs.files.set(PATHS.source, TORN);
@@ -208,7 +208,7 @@ describe("recoverInterruptedMeshSave — the unrecognised source", () => {
     const fs = stageTorn();
     const ask = vi.fn(async (_info: AskInfo) => "keep" as const);
     const { deps, state } = makeDeps(fs, { ask });
-    const result = await recoverInterruptedMeshSave(PATHS, "cube.stl", deps);
+    const result = await recoverInterruptedSave(PATHS, "cube.stl", deps);
 
     expect(ask).toHaveBeenCalledOnce();
     expect(ask.mock.calls[0][0]).toMatchObject({ fileName: "cube.stl", canRestoreBackup: true });
@@ -225,7 +225,7 @@ describe("recoverInterruptedMeshSave — the unrecognised source", () => {
   it("restores the pre-save backup through the watcher's suppression when offered", async () => {
     const fs = stageTorn();
     const { deps, state } = makeDeps(fs, { ask: async () => "restore" });
-    const result = await recoverInterruptedMeshSave(PATHS, "cube.stl", deps);
+    const result = await recoverInterruptedSave(PATHS, "cube.stl", deps);
 
     expect(result.action).toBe("ask");
     expect(result.sourceChanged).toBe(true);
@@ -243,7 +243,7 @@ describe("recoverInterruptedMeshSave — the unrecognised source", () => {
     fs.files.set(PATHS.backup, TORN);
     const ask = vi.fn(async (_info: AskInfo) => "restore" as const);
     const { deps } = makeDeps(fs, { ask });
-    const result = await recoverInterruptedMeshSave(PATHS, "cube.stl", deps);
+    const result = await recoverInterruptedSave(PATHS, "cube.stl", deps);
 
     expect(ask.mock.calls[0][0]).toMatchObject({ canRestoreBackup: false });
     expect(result.sourceChanged).toBe(false);
@@ -253,7 +253,7 @@ describe("recoverInterruptedMeshSave — the unrecognised source", () => {
   it("treats a dismissed prompt as a decision, never as a repair", async () => {
     const fs = stageTorn();
     const { deps, state } = makeDeps(fs, { ask: async () => null });
-    const result = await recoverInterruptedMeshSave(PATHS, "cube.stl", deps);
+    const result = await recoverInterruptedSave(PATHS, "cube.stl", deps);
 
     expect(result.sourceChanged).toBe(false);
     expect(state.sourceWrites).toBe(0);
@@ -266,8 +266,8 @@ describe("recoverInterruptedMeshSave — the unrecognised source", () => {
     const fs = stageTorn();
     const ask = vi.fn(async (_info: AskInfo) => "keep" as const);
     const { deps } = makeDeps(fs, { ask });
-    await recoverInterruptedMeshSave(PATHS, "cube.stl", deps);
-    const second = await recoverInterruptedMeshSave(PATHS, "cube.stl", deps);
+    await recoverInterruptedSave(PATHS, "cube.stl", deps);
+    const second = await recoverInterruptedSave(PATHS, "cube.stl", deps);
 
     expect(ask).toHaveBeenCalledOnce();
     expect(second).toMatchObject({ action: "none", reason: "already-resolved" });
@@ -276,7 +276,7 @@ describe("recoverInterruptedMeshSave — the unrecognised source", () => {
   it("still opens (and changes nothing) when the sidecar write is refused", async () => {
     const fs = stageCrashPoint("after-source");
     const { deps, state } = makeDeps(fs, { failWriteEdits: true });
-    const result = await recoverInterruptedMeshSave(PATHS, "cube.stl", deps);
+    const result = await recoverInterruptedSave(PATHS, "cube.stl", deps);
 
     expect(result.sidecarChanged).toBe(false);
     expect(state.sidecar.bakedThrough).toBe(0);
@@ -289,7 +289,7 @@ describe("recoverInterruptedMeshSave — the unrecognised source", () => {
     const fs = makeFs();
     fs.files.set(PATHS.journal, Buffer.from(journalOnDisk(), "utf8"));
     const { deps, state } = makeDeps(fs);
-    const result = await recoverInterruptedMeshSave(PATHS, "cube.stl", deps);
+    const result = await recoverInterruptedSave(PATHS, "cube.stl", deps);
     expect(result).toMatchObject({ action: "none", reason: "unreadable" });
     expect(state.sidecar.bakedThrough).toBe(0);
     expect(fs.files.has(PATHS.journal)).toBe(true);
@@ -299,19 +299,19 @@ describe("recoverInterruptedMeshSave — the unrecognised source", () => {
     const fs = stageCrashPoint("after-source");
     fs.files.set(PATHS.journal, Buffer.from("{ truncated", "utf8"));
     const { deps, state } = makeDeps(fs);
-    const result = await recoverInterruptedMeshSave(PATHS, "cube.stl", deps);
+    const result = await recoverInterruptedSave(PATHS, "cube.stl", deps);
     expect(result).toMatchObject({ action: "none", reason: "no-journal" });
     expect(state.sidecar.bakedThrough).toBe(0);
   });
 });
 
-describe("beginMeshSave / endMeshSave", () => {
+describe("beginSave / endSave", () => {
   it("opens a transaction whose journal carries both real hashes, then closes it", async () => {
     const fs = makeFs();
     fs.files.set(PATHS.source, ORIGINAL);
     const { deps } = makeDeps(fs);
 
-    const journal = await beginMeshSave(
+    const journal = await beginSave(
       { paths: PATHS, fileName: "cube.stl", format: "stl", bakedThrough: 1, preSaveBytes: ORIGINAL, bakedBytes: BAKED, writeBackup: true },
       deps
     );
@@ -321,7 +321,7 @@ describe("beginMeshSave / endMeshSave", () => {
     expect(fs.files.get(PATHS.journal)).toBeDefined();
     expect(fs.files.get(PATHS.backup)).toEqual(ORIGINAL);
 
-    await endMeshSave(PATHS, journal, deps);
+    await endSave(PATHS, journal, deps);
     expect(fs.files.has(PATHS.journal)).toBe(false);
   });
 
@@ -330,7 +330,7 @@ describe("beginMeshSave / endMeshSave", () => {
     fs.files.set(PATHS.source, BAKED);
     fs.files.set(PATHS.backup, ORIGINAL);
     const { deps } = makeDeps(fs);
-    await beginMeshSave(
+    await beginSave(
       { paths: PATHS, fileName: "cube.stl", format: "stl", bakedThrough: 2, preSaveBytes: BAKED, bakedBytes: BAKED, writeBackup: false },
       deps
     );
@@ -340,33 +340,33 @@ describe("beginMeshSave / endMeshSave", () => {
   it("never deletes a NEWER transaction's journal (two editors, same source)", async () => {
     const fs = makeFs();
     const { deps } = makeDeps(fs);
-    const first = await beginMeshSave(
+    const first = await beginSave(
       { paths: PATHS, fileName: "cube.stl", format: "stl", bakedThrough: 1, preSaveBytes: ORIGINAL, bakedBytes: BAKED, writeBackup: false },
       deps
     );
     // A second save opens its own transaction before the first one settles.
-    const second = await beginMeshSave(
+    const second = await beginSave(
       { paths: PATHS, fileName: "cube.stl", format: "stl", bakedThrough: 2, preSaveBytes: BAKED, bakedBytes: BAKED, writeBackup: false },
       deps
     );
     expect(second.saveId).not.toBe(first.saveId);
 
-    await endMeshSave(PATHS, first, deps);
+    await endSave(PATHS, first, deps);
     const still = parseSaveJournal(Buffer.from(fs.files.get(PATHS.journal)!).toString("utf8"));
     expect(still?.saveId).toBe(second.saveId);
 
-    await endMeshSave(PATHS, second, deps);
+    await endSave(PATHS, second, deps);
     expect(fs.files.has(PATHS.journal)).toBe(false);
   });
 
   it("tolerates a journal that vanished before the close", async () => {
     const fs = makeFs();
     const { deps } = makeDeps(fs);
-    const journal = await beginMeshSave(
+    const journal = await beginSave(
       { paths: PATHS, fileName: "cube.stl", format: "stl", bakedThrough: 1, preSaveBytes: ORIGINAL, bakedBytes: BAKED, writeBackup: false },
       deps
     );
     fs.files.delete(PATHS.journal);
-    await expect(endMeshSave(PATHS, journal, deps)).resolves.toBeUndefined();
+    await expect(endSave(PATHS, journal, deps)).resolves.toBeUndefined();
   });
 });

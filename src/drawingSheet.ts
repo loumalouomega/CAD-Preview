@@ -22,6 +22,7 @@
  */
 
 import { drawingBounds, viewBasis, type DimensionDrawing, type DimensionSource, type Vec3 } from "./svgSilhouette";
+import { hatchLoops, loopArea, type SectionMark } from "./drawingSection";
 
 export type Pt2 = [number, number];
 export type Segment2 = [Pt2, Pt2];
@@ -31,14 +32,32 @@ export interface DimensionsPayload {
   textHeight: number;
 }
 
+/** A section's cut loops, already projected into its view's 2D frame. */
+export interface SectionCutInput {
+  id: string;
+  label: string;
+  /**
+   * Closed cut loops only — open chains (a section through an open shell)
+   * join the section view's visible runs instead, so hatching never fills an
+   * unclosed boundary.
+   */
+  loops: Pt2[][];
+}
+
 export interface SheetViewInput {
   /** Canonical view name (e.g. `"front"`, `"iso-ftr"`). Drives slot placement. */
   name: string;
+  /** Text drawn under the view; defaults to `name`. */
+  labelText?: string;
   /** View direction (model → camera). Ortho detection uses it, not the name. */
   direction: Vec3;
   visible: Segment2[];
   hidden: Segment2[];
   dimensions?: DimensionsPayload;
+  /** A section cut projected into this view (section views only). */
+  section?: SectionCutInput;
+  /** Cutting-plane lines/arrows/labels drawn in a parent view. */
+  sectionMarks?: SectionMark[];
   /**
    * Per-layer geometry (roadmap "Layers, distinct from Parts"): when present,
    * `visible`/`hidden` above are empty and each entry carries that layer's
@@ -134,6 +153,15 @@ export interface PlacedView {
   visible: Segment2[];
   hidden: Segment2[];
   dimensions?: DimensionsPayload;
+  /** Section cut in SHEET coordinates, hatched at a constant sheet spacing. */
+  section?: {
+    id: string;
+    label: string;
+    loops: Pt2[][];
+    hatch: Segment2[];
+    loopCount: number;
+  };
+  sectionMarks?: SectionMark[];
   /** Per-layer runs, transformed into sheet space (present iff the input had them). */
   layerGroups?: Array<{ id: string; name: string; color: string; visible: Segment2[]; hidden: Segment2[] }>;
   label: SheetText;
@@ -293,8 +321,14 @@ export function layoutSheet(inputs: ReadonlyArray<SheetViewInput>, options: Shee
   const measured: Measured[] = [];
   inputs.forEach((input, i) => {
     const grouped = input.layerGroups ?? [];
+    const sectionLoops: Segment2[] = (input.section?.loops ?? []).flatMap((loop) =>
+      loop.length >= 2
+        ? loop.map((p, j) => [p, loop[(j + 1) % loop.length]] as Segment2)
+        : []
+    );
+    const markSegments = (input.sectionMarks ?? []).flatMap((m) => [...m.segments, ...m.arrows]);
     const b = drawingBounds(
-      [...input.visible, ...grouped.flatMap((g) => g.visible)],
+      [...input.visible, ...grouped.flatMap((g) => g.visible), ...sectionLoops, ...markSegments],
       [...input.hidden, ...grouped.flatMap((g) => g.hidden)],
       input.dimensions?.drawings ?? []
     );
@@ -401,10 +435,38 @@ export function layoutSheet(inputs: ReadonlyArray<SheetViewInput>, options: Shee
     const ts = (s: Segment2): Segment2 => [tp(s[0]), tp(s[1])];
     const halfH = ((m.bounds.maxY - m.bounds.minY) * scale) / 2;
     const dims = m.input.dimensions;
+    const section = m.input.section
+      ? (() => {
+          const loops = m.input.section.loops.map((loop) => loop.map(tp));
+          // Hatch only loops with real area: a cut viewed edge-on projects
+          // its loops to lines, and hatching those would scribble along the
+          // cut instead of filling material. The boundary itself still draws.
+          const maxArea = Math.max(0, ...loops.map(loopArea));
+          const fill = maxArea > 0 ? loops.filter((loop) => loopArea(loop) / maxArea > 1e-6) : [];
+          return {
+            id: m.input.section.id,
+            label: m.input.section.label,
+            loops,
+            // Hatch spacing is SHEET millimetres, not model units: the whole
+            // point of a drafting hatch is that it reads the same on an A4
+            // sheet whether the part is 10 mm or 10 m.
+            hatch: hatchLoops(fill, { angleDeg: 45, spacing: 1.5 }),
+            loopCount: loops.filter((loop) => loop.length >= 3).length,
+          };
+        })()
+      : undefined;
+    const sectionMarks = m.input.sectionMarks?.map((mark) => ({
+      label: mark.label,
+      segments: mark.segments.map(ts),
+      arrows: mark.arrows.map(ts),
+      labelAt: tp(mark.labelAt),
+    }));
     return {
       name: m.input.name,
       visible: m.input.visible.map(ts),
       hidden: m.input.hidden.map(ts),
+      ...(section ? { section } : {}),
+      ...(sectionMarks && sectionMarks.length > 0 ? { sectionMarks } : {}),
       ...(m.input.layerGroups && m.input.layerGroups.length > 0
         ? {
             layerGroups: m.input.layerGroups.map((g) => ({
@@ -434,7 +496,7 @@ export function layoutSheet(inputs: ReadonlyArray<SheetViewInput>, options: Shee
       label: {
         x: cx,
         y: cy + halfH + SHEET.labelBand * 0.75,
-        text: m.input.name.toUpperCase(),
+        text: (m.input.labelText ?? m.input.name).toUpperCase(),
         height: SHEET.labelHeight,
         anchor: "middle" as const,
       },

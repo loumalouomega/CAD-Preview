@@ -655,30 +655,115 @@ test("Recovery is a no-op when the watermark already landed, and still cleans up
   await closeAll();
 });
 
-test("A B-rep source is never touched by mesh-save recovery", async () => {
-  const staged = stage(STEP_FIXTURE);
-  // A mesh-only marker planted on a STEP document must be ignored outright.
+/** Stages an interrupted B-rep save whose source already holds the baked bytes. */
+function stageBRepInterruptedSave(modelPath: string, format: "step" | "iges" | "brep"): Buffer {
+  const before = fs.readFileSync(modelPath);
+  // The pre-save variant only needs to be byte-distinct so the two hashes
+  // identify different states; recovery never reads it in the `finish` branch.
+  const preSave = Buffer.concat([before, Buffer.from("\n", "utf8")]);
+  fs.writeFileSync(`${modelPath}.bak`, preSave);
   fs.writeFileSync(
-    `${staged}.save-journal.json`,
+    `${modelPath}.edits.json`,
+    serializeEditsJson(
+      path.basename(modelPath),
+      [{ op: "translate", targets: ["solid-0"], vec: [100, 0, 0] }],
+      [],
+      0
+    )
+  );
+  fs.writeFileSync(
+    `${modelPath}.save-journal.json`,
     serializeSaveJournal({
       version: 1,
-      source: path.basename(staged),
-      saveId: "save-1",
+      source: path.basename(modelPath),
+      saveId: `save-${format}-1`,
       startedAt: "2026-09-26T00:00:00.000Z",
-      format: "step",
+      format,
       bakedThrough: 1,
-      preSaveSha256: hashBytes(fs.readFileSync(STEP_FIXTURE)),
-      bakedSha256: hashBytes(fs.readFileSync(staged)),
+      preSaveSha256: hashBytes(preSave),
+      bakedSha256: hashBytes(before),
     })
   );
-  const before = fs.readFileSync(staged);
-  const record = await withModals([], async () => {
-    assert(await openDocument(staged), "the STEP fixture opens");
+  return before;
+}
+
+/** Exports the STEP fixture to IGES or BREP, for the recovery loop below. */
+async function exportBRepFixture(label: "IGES" | "BREP", ext: string): Promise<string> {
+  const staged = stage(STEP_FIXTURE);
+  const out = path.join(path.dirname(staged), `recover-source.${ext}`);
+  assert(await openDocument(staged), "the STEP fixture opens for export");
+  await withModals([pick(label), pick("Native"), save(out)], async () => {
+    await vscode.commands.executeCommand("cad-preview.export");
+    await waitForFile(out);
   });
-  assert(!record.warnings.some((w) => /interrupted save/i.test(w.message)), "a STEP document is not a mesh-save subject");
-  assert(fs.existsSync(`${staged}.save-journal.json`), "the marker is left for a human to look at");
-  assert(Buffer.compare(before, fs.readFileSync(staged)) === 0, "the STEP source is untouched");
   await closeAll();
+  return out;
+}
+
+test("An interrupted B-rep save is completed on open, not replayed over the baked geometry", async () => {
+  const staged = stage(STEP_FIXTURE);
+  const before = stageBRepInterruptedSave(staged, "step");
+  const api = await saveTestApi();
+  const statuses: string[] = [];
+  const sub = api?.onDidPostMessage?.((m) => {
+    const msg = m as { type: string; text?: string; message?: string };
+    if (msg.type === "status" || msg.type === "error") statuses.push(msg.text ?? msg.message ?? "");
+  });
+  let record: Awaited<ReturnType<typeof withModals>> | undefined;
+  try {
+    record = await withModals([], async () => {
+      assert(await openDocument(staged), "the STEP fixture opens");
+    });
+  } finally {
+    sub?.dispose();
+  }
+  assert(
+    !record?.warnings.some((w) => /interrupted save/i.test(w.message)),
+    `a recoverable B-rep save does not ask the user to guess (saw ${JSON.stringify(record?.warnings)})`
+  );
+  assert(
+    statuses.some((t) => /interrupted save/i.test(t) && /completed/i.test(t)),
+    `the user is told the B-rep save was completed (saw ${JSON.stringify(statuses)})`
+  );
+  assert(
+    statuses.some((t) => /verify them/i.test(t)),
+    `the B-rep id-rebind caveat is surfaced (saw ${JSON.stringify(statuses)})`
+  );
+  assert(!fs.existsSync(`${staged}.save-journal.json`), "the transaction marker is cleared");
+  assert(Buffer.compare(before, fs.readFileSync(staged)) === 0, "recovery never rewrites the source");
+  await closeAll();
+});
+
+test("An interrupted B-rep save is completed for IGES and BREP too", async () => {
+  for (const [label, ext, format] of [["IGES", "iges", "iges"], ["BREP", "brep", "brep"]] as const) {
+    const staged = await exportBRepFixture(label, ext);
+    const before = stageBRepInterruptedSave(staged, format);
+    const api = await saveTestApi();
+    const statuses: string[] = [];
+    const sub = api?.onDidPostMessage?.((m) => {
+      const msg = m as { type: string; text?: string; message?: string };
+      if (msg.type === "status" || msg.type === "error") statuses.push(msg.text ?? msg.message ?? "");
+    });
+    let record: Awaited<ReturnType<typeof withModals>> | undefined;
+    try {
+      record = await withModals([], async () => {
+        assert(await openDocument(staged), `the exported ${label} fixture opens`);
+      });
+    } finally {
+      sub?.dispose();
+    }
+    assert(
+      !record?.warnings.some((w) => /interrupted save/i.test(w.message)),
+      `${label}: recovery does not prompt (saw ${JSON.stringify(record?.warnings)})`
+    );
+    assert(
+      statuses.some((t) => /interrupted save/i.test(t) && /completed/i.test(t)),
+      `${label}: the save is completed (saw ${JSON.stringify(statuses)})`
+    );
+    assert(!fs.existsSync(`${staged}.save-journal.json`), `${label}: the transaction marker is cleared`);
+    assert(Buffer.compare(before, fs.readFileSync(staged)) === 0, `${label}: recovery never rewrites the source`);
+    await closeAll();
+  }
 });
 
 test("Export… offers the real export targets and writes the chosen one", async () => {

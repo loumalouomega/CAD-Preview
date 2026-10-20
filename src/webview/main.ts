@@ -6541,6 +6541,7 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
         elapsedMs: msg.elapsedMs,
         quality: msg.quality,
         worstElements: msg.worstElements,
+        boundaryLayers: msg.boundaryLayers,
       });
       break;
 

@@ -66,7 +66,7 @@ function dot(a: Vec3, b: Vec3): number {
  * name collides with one of these is written with a prefix (roadmap
  * "Layers, distinct from Parts") — silently merging it into `0` or `HIDDEN`
  * would misattribute the geometry. */
-const RESERVED_DXF_LAYERS = new Set(["0", "HIDDEN", "DIMENSIONS", "BORDER", "TITLE"]);
+const RESERVED_DXF_LAYERS = new Set(["0", "HIDDEN", "DIMENSIONS", "BORDER", "TITLE", "SECTION"]);
 
 /**
  * Sanitizes a user layer name for DXF: characters DXF forbids in symbol names
@@ -384,6 +384,23 @@ export function sheetDxf(layout: SheetLayout, options: { title?: string } = {}):
       const hid = w.segments("HIDDEN", view.hidden);
       chainCount += vis.chainCount + hid.chainCount;
       lineCount += vis.lineCount + hid.lineCount;
+    }
+    if (view.section) {
+      const loops: Array<[[number, number], [number, number]]> = [];
+      for (const loop of view.section.loops) {
+        for (let i = 0; i < loop.length; i++) loops.push([loop[i], loop[(i + 1) % loop.length]]);
+      }
+      const cut = w.segments("SECTION", loops);
+      const hatch = w.segments("SECTION", view.section.hatch);
+      chainCount += cut.chainCount + hatch.chainCount;
+      lineCount += cut.lineCount + hatch.lineCount;
+    }
+    for (const mark of view.sectionMarks ?? []) {
+      const line = w.segments("SECTION", mark.segments);
+      const arrows = w.segments("SECTION", mark.arrows);
+      chainCount += line.chainCount + arrows.chainCount;
+      lineCount += line.lineCount + arrows.lineCount;
+      w.text("SECTION", mark.labelAt[0], mark.labelAt[1], 3.5, mark.label, "middle");
     }
     if (view.dimensions && view.dimensions.drawings.length > 0) w.dimensions(view.dimensions);
     w.text("TITLE", view.label.x, view.label.y, view.label.height, view.label.text, view.label.anchor);

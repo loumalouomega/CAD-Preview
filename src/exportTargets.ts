@@ -12,6 +12,21 @@ const MESH_FORMATS: CadFormat[] = ["stl", "obj", "ply", "gltf", "3mf"];
  */
 export const MESH_SAVE_IN_PLACE_FORMATS: ReadonlySet<CadFormat> = new Set(["stl", "obj", "ply"]);
 /**
+ * B-rep formats that can be saved back to their own file in place (Tier 0
+ * Phase 1). Every one is re-emitted by OCCT through `exportBRep`; `csg`/`scad`
+ * are import-only and have no writer for their own representation.
+ */
+export const BREP_SAVE_IN_PLACE_FORMATS: ReadonlySet<CadFormat> = new Set(["step", "iges", "brep"]);
+/**
+ * Every format with a same-format writer, and therefore every format a
+ * save-in-place transaction can cover. Recovery gates on this one set so its
+ * subjects cannot drift from the save paths' own gates.
+ */
+export const SAVE_IN_PLACE_FORMATS: ReadonlySet<CadFormat> = new Set([
+  ...MESH_SAVE_IN_PLACE_FORMATS,
+  ...BREP_SAVE_IN_PLACE_FORMATS,
+]);
+/**
  * The formats a loaded document can be exported to, excluding its own format
  * by default.
  *

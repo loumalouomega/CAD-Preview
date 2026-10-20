@@ -1,13 +1,18 @@
 /**
- * The recoverable mesh save-in-place transaction (roadmap 1.5, "Recoverable
- * mesh source saves") — vscode-free and DOM-free, with all file I/O injected,
- * so the whole open-and-recover path is unit-testable headlessly. Follows
+ * The recoverable save-in-place transaction shared by mesh and B-rep sources —
+ * vscode-free and DOM-free, with all file I/O injected, so the whole
+ * open-and-recover path is unit-testable headlessly. Follows
  * `meshSourceInput.ts`'s exact shape: one implementation, two consumers.
  *
  * `provider.ts` passes `vscode.workspace.fs` readers plus the ask/user-decision
  * and watcher-suppression callbacks; `mcpTools.ts` passes `node:fs` and turns
  * the ask into a `load_model` warning (headless has no UI to ask with, so it
  * never acts on the unrecognised branch).
+ *
+ * The same transaction serves mesh saves (STL/OBJ/PLY, where the displayed
+ * model is serialized) and B-rep saves (STEP/IGES/BREP, where the kernel
+ * re-emits the source). The format set lives in `exportTargets.ts`; this
+ * module deliberately holds none of its own.
  *
  * See `saveJournal.ts` for the hazard and the pure decision rules. This module
  * is the I/O choreography around them:
@@ -39,7 +44,7 @@ import type { ParsedEdits } from "./editsSidecar";
 import type { EditOp } from "./editOps";
 import type { ParamVariable } from "./editVariables";
 
-export interface MeshSaveRecoveryDeps {
+export interface SaveRecoveryDeps {
   /** Reads a sibling file's bytes, by name; throws when it does not exist. */
   readBytes: (fileName: string) => Promise<Uint8Array>;
   /** Reads a sibling file's bytes, by name, or `null` when absent/unreadable. */
@@ -80,7 +85,7 @@ export interface MeshSaveRecoveryDeps {
  * addresses a `vscode.Uri`, `node:fs` a string), so no path-separator or URI
  * scheme question ever leaks into this module.
  */
-export interface MeshSavePaths {
+export interface SavePaths {
   /** The source file's own name. */
   source: string;
   /** The transaction marker. */
@@ -92,7 +97,7 @@ export interface MeshSavePaths {
 }
 
 /** Derives all four names from the source's own file name. */
-export function meshSavePaths(fileName: string, exportExt: string): MeshSavePaths {
+export function savePaths(fileName: string, exportExt: string): SavePaths {
   return {
     source: fileName,
     journal: saveJournalFileName(fileName),
@@ -111,8 +116,8 @@ function newSaveId(): string {
   return `${Date.now().toString(36)}-${saveCounter.toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
-export interface BeginMeshSaveInput {
-  paths: MeshSavePaths;
+export interface BeginSaveInput {
+  paths: SavePaths;
   fileName: string;
   format: string;
   /** The watermark this save intends to advance to. */
@@ -129,12 +134,12 @@ export interface BeginMeshSaveInput {
 /**
  * Opens a transaction: writes the journal (both hashes are computable right
  * now from bytes the caller already holds) and, when `writeBackup`, refreshes
- * the one-deep `.bak`. Returns the journal to hand back to {@link endMeshSave}.
+ * the one-deep `.bak`. Returns the journal to hand back to {@link endSave}.
  *
  * The journal is written BEFORE the backup, so a crash at every point after
  * this call is recoverable; a crash before it changed nothing at all.
  */
-export async function beginMeshSave(input: BeginMeshSaveInput, deps: Pick<MeshSaveRecoveryDeps, "writeBytes">): Promise<SaveJournal> {
+export async function beginSave(input: BeginSaveInput, deps: Pick<SaveRecoveryDeps, "writeBytes">): Promise<SaveJournal> {
   const journal: SaveJournal = {
     version: 1,
     source: input.fileName,
@@ -158,10 +163,10 @@ export async function beginMeshSave(input: BeginMeshSaveInput, deps: Pick<MeshSa
  * racing a save that is genuinely in flight: that is the documented
  * cross-process gap `save_model` already states.)
  */
-export async function endMeshSave(
-  paths: MeshSavePaths,
+export async function endSave(
+  paths: SavePaths,
   journal: SaveJournal,
-  deps: Pick<MeshSaveRecoveryDeps, "readBytesOrNull" | "deleteFile">
+  deps: Pick<SaveRecoveryDeps, "readBytesOrNull" | "deleteFile">
 ): Promise<void> {
   const onDisk = await deps.readBytesOrNull(paths.journal);
   if (!onDisk) return;
@@ -172,7 +177,7 @@ export async function endMeshSave(
 
 // --- read side --------------------------------------------------------------
 
-export interface MeshSaveRecoveryResult {
+export interface SaveRecoveryResult {
   /** The plan that was carried out. */
   action: RecoveryAction;
   /** Why, for the caller's own messaging. */
@@ -187,7 +192,7 @@ export interface MeshSaveRecoveryResult {
   sourceChanged: boolean;
 }
 
-const NO_RECOVERY: MeshSaveRecoveryResult = {
+const NO_RECOVERY: SaveRecoveryResult = {
   action: "none",
   reason: "no-journal",
   bakedThrough: 0,
@@ -199,10 +204,10 @@ const NO_RECOVERY: MeshSaveRecoveryResult = {
 /**
  * Repairs an interrupted save-in-place, if there was one. Call this before the
  * source is read and before a new save is opened. The caller gates on
- * `MESH_SAVE_IN_PLACE_FORMATS` — this module deliberately holds no format set
- * of its own, since a second, drifting copy of that list is exactly the hazard
- * this codebase keeps recording — so a B-rep, glTF or meshio source never
- * reaches the journal machinery at all.
+ * `SAVE_IN_PLACE_FORMATS` — this module deliberately holds no format set of
+ * its own, since a second, drifting copy of that list is exactly the hazard
+ * this codebase keeps recording — so glTF, meshio and CAD-text sources never
+ * reach the journal machinery at all.
  *
  * Four outcomes, and only two of them write anything:
  *
@@ -221,11 +226,11 @@ const NO_RECOVERY: MeshSaveRecoveryResult = {
  * and reports the message, because a recovery problem must never be the reason
  * a model refuses to open.
  */
-export async function recoverInterruptedMeshSave(
-  paths: MeshSavePaths,
+export async function recoverInterruptedSave(
+  paths: SavePaths,
   fileName: string,
-  deps: MeshSaveRecoveryDeps
-): Promise<MeshSaveRecoveryResult> {
+  deps: SaveRecoveryDeps
+): Promise<SaveRecoveryResult> {
   let journal: SaveJournal | null = null;
   try {
     const raw = await deps.readBytesOrNull(paths.journal);
@@ -264,7 +269,16 @@ export async function recoverInterruptedMeshSave(
     sourceSha256: sourceSha,
     backupSha256: backupSha,
   });
-  const message = recoveryMessage(plan, fileName, `${fileName}.bak`);
+  const baseMessage = recoveryMessage(plan, fileName, `${fileName}.bak`);
+  // A B-rep re-emission renumbers entities, and the save-time rebind runs
+  // after the watermark. A crash in this window therefore leaves the history
+  // consistent but Part/annotation/layer highlights pointing at pre-save ids;
+  // the watermark repair is still the safe outcome, so say what remains rather
+  // than silently presenting stale highlights as verified.
+  const isBRep = journal.format === "step" || journal.format === "iges" || journal.format === "brep";
+  const message = plan.action === "finish" && isBRep && baseMessage
+    ? `${baseMessage} Part/annotation/layer highlights were assigned before the interrupted save; verify them.`
+    : baseMessage;
 
   /** Removes the journal only when it is still THIS transaction's, so a
    *  completing save/recovery never deletes a newer transaction's marker. */
@@ -359,6 +373,6 @@ export async function recoverInterruptedMeshSave(
 }
 
 /** Deletes a file, tolerating its absence — every caller is best-effort cleanup. */
-async function deleteIfPresent(path: string, deps: Pick<MeshSaveRecoveryDeps, "deleteFile">): Promise<void> {
+async function deleteIfPresent(path: string, deps: Pick<SaveRecoveryDeps, "deleteFile">): Promise<void> {
   await deps.deleteFile(path).catch(() => undefined);
 }

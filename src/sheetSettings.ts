@@ -24,6 +24,21 @@ type Vec3 = [number, number, number];
 
 export const DEFAULT_SHEET_VIEWS: readonly string[] = ["front", "top", "right", "iso"];
 
+export interface SheetSectionInput {
+  id: string;
+  label?: string;
+  view: string;
+  origin: [number, number, number];
+  normal: [number, number, number];
+  flip?: boolean;
+}
+
+export interface SheetViewSectionInput {
+  origin: [number, number, number];
+  normal: [number, number, number];
+  flip?: boolean;
+}
+
 export interface SheetSettingsInput {
   views?: string[];
   format?: string;
@@ -35,6 +50,18 @@ export interface SheetSettingsInput {
   fields?: TitleBlockFields;
   /** Layer names/ids to restrict every view to. Absent = every layer. */
   layers?: string[];
+  /**
+   * Named section views (roadmap "Section views on drawing sheets"): each is
+   * drawn looking along its plane normal from the clipped half-space, and its
+   * cutting-plane mark is drawn in the parent `view`. Absent = no sections,
+   * exactly as before.
+   */
+  sections?: SheetSectionInput[];
+  /**
+   * In-place cuts keyed by requested view name: the view draws the clipped
+   * half-space instead of gaining a separate section view.
+   */
+  viewSections?: Record<string, SheetViewSectionInput>;
 }
 
 export interface ResolvedSheetSettings {
@@ -47,6 +74,10 @@ export interface ResolvedSheetSettings {
   fields: TitleBlockFields | undefined;
   /** Layer names/ids, carried through verbatim for the caller to resolve against the sidecar. */
   layers: string[] | undefined;
+  /** Validated sections; a section whose parent view is absent is skipped with a warning. */
+  sections: SheetSectionInput[];
+  /** Validated in-place cuts, keyed by canonical view name. */
+  viewSections: Array<{ view: string; origin: [number, number, number]; normal: [number, number, number]; flip: boolean }>;
   warnings: string[];
 }
 
@@ -131,5 +162,102 @@ export function resolveSheetSettings(
   if (rawLayers !== undefined && layers === undefined) {
     warnings.push("layers must be an array of layer names/ids — drawing every layer.");
   }
-  return { views, format, paper, projection, scale, title, fields, layers, warnings };
+  const sections = resolveSections(pick("sections"), views, warnings);
+  const viewSections = resolveViewSections(pick("viewSections"), views, warnings);
+  return { views, format, paper, projection, scale, title, fields, layers, sections, viewSections, warnings };
+}
+
+function resolveSections(
+  raw: SheetSectionInput[] | undefined,
+  views: ResolvedSheetSettings["views"],
+  warnings: string[]
+): SheetSectionInput[] {
+  if (raw === undefined) return [];
+  if (!Array.isArray(raw)) {
+    warnings.push("sections must be an array of { id, view, origin, normal } — drawing no sections.");
+    return [];
+  }
+  const seen = new Set<string>();
+  const out: SheetSectionInput[] = [];
+  raw.forEach((entry, i) => {
+    const where = `sections[${i}]`;
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+      warnings.push(`${where} is not a section object — skipped.`);
+      return;
+    }
+    const id = typeof entry.id === "string" ? entry.id.trim().slice(0, 120) : "";
+    if (!id) {
+      warnings.push(`${where} needs a non-empty id — skipped.`);
+      return;
+    }
+    if (seen.has(id)) {
+      warnings.push(`Section "${id}" is repeated — drawn once.`);
+      return;
+    }
+    const named = typeof entry.view === "string" ? resolveNamedView(entry.view) : undefined;
+    const parent = named ? views.find((v) => v.name === named.canonical) : undefined;
+    if (!parent) {
+      warnings.push(`Section "${id}" names view "${typeof entry.view === "string" ? entry.view : ""}" — valid: ${views.map((v) => v.name).join(", ")}. Skipped.`);
+      return;
+    }
+    const origin = vec3(entry.origin);
+    const normal = vec3(entry.normal);
+    if (!origin || !normal) {
+      warnings.push(`Section "${id}" needs a 3-number origin and normal — skipped.`);
+      return;
+    }
+    if (normal.every((v) => v === 0)) {
+      warnings.push(`Section "${id}" needs a non-zero normal — skipped.`);
+      return;
+    }
+    seen.add(id);
+    out.push({
+      id,
+      ...(typeof entry.label === "string" && entry.label.trim() !== "" ? { label: entry.label.trim().slice(0, 120) } : {}),
+      view: parent.name,
+      origin,
+      normal,
+      ...(entry.flip === true ? { flip: true } : {}),
+    });
+  });
+  return out;
+}
+
+function vec3(raw: unknown): [number, number, number] | undefined {
+  if (!Array.isArray(raw) || raw.length !== 3) return undefined;
+  const v = raw.map(Number);
+  return v.every((n) => Number.isFinite(n)) ? [v[0], v[1], v[2]] : undefined;
+}
+
+function resolveViewSections(
+  raw: Record<string, SheetViewSectionInput> | undefined,
+  views: ResolvedSheetSettings["views"],
+  warnings: string[]
+): ResolvedSheetSettings["viewSections"] {
+  if (raw === undefined) return [];
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    warnings.push("viewSections must be an object keyed by view name — drawing every view uncut.");
+    return [];
+  }
+  const out: ResolvedSheetSettings["viewSections"] = [];
+  for (const [key, entry] of Object.entries(raw)) {
+    const named = resolveNamedView(key);
+    const match = named ? views.find((v) => v.name === named.canonical) : undefined;
+    if (!match) {
+      warnings.push(`In-place section "${key}" matches no sheet view — valid: ${views.map((v) => v.name).join(", ")}. Drawn uncut.`);
+      continue;
+    }
+    if (out.some((s) => s.view === match.name)) {
+      warnings.push(`In-place section "${key}" repeats view "${match.name}" — kept once.`);
+      continue;
+    }
+    const origin = vec3((entry as { origin?: unknown } | undefined)?.origin);
+    const normal = vec3((entry as { normal?: unknown } | undefined)?.normal);
+    if (!origin || !normal || normal.every((v) => v === 0)) {
+      warnings.push(`In-place section "${key}" needs a 3-number origin and a non-zero normal — drawn uncut.`);
+      continue;
+    }
+    out.push({ view: match.name, origin, normal, flip: (entry as { flip?: unknown }).flip === true });
+  }
+  return out;
 }
