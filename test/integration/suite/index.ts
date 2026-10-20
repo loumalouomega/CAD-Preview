@@ -2245,14 +2245,22 @@ test("a splitFace op pushed through the provider replays in the host, persists, 
 
 /**
  * Roadmap "OpenSCAD include tracking and conversion cache": a `.scad` model that
- * `use`s another file must reload when THAT file changes. Driven with the
- * committed counting stub (`openscad-deps-stub.sh`) because no real openscad
- * exists on CI; the stub writes the same Make-style dependency list real
- * OpenSCAD 2021.01 does. The spawn count is the second assertion: the edit's
- * reload must really re-evaluate (a cache hit would show the stale geometry),
- * and the open itself must have spawned exactly once.
+ * `use`s another file must reload when THAT file changes. Two tests, one per
+ * conversion path (roadmap "Build and bundle an OpenSCAD WASM port"):
+ *
+ * - WASM-first: no binary configured at all (a nonexistent path) — the model
+ *   must still open and must repost geometry when the include changes, with
+ *   the watcher fed by the WASM path's own dependency list. This is the
+ *   no-install headline; it needs no stub.
+ * - Binary fallback: a model with `import()` (which the WASM path declines)
+ *   converts through the committed counting stub (`openscad-deps-stub.sh`)
+ *   because no real openscad exists on CI; the stub writes the same Make-style
+ *   dependency list real OpenSCAD 2021.01 does. The spawn count is the second
+ *   assertion: the edit's reload must really re-evaluate (a cache hit would
+ *   show the stale geometry), and the open itself must have spawned exactly
+ *   once.
  */
-test("editing an included .scad file reloads the open document", async () => {
+test("a .scad model opens with no binary and editing an include reloads it (WASM-first)", async () => {
   const api = await saveTestApi();
   const hook = (vscode.extensions.getExtension(EXTENSION_ID)?.exports as { onDidPostMessage?: vscode.Event<{ type: string }> } | undefined)
     ?.onDidPostMessage;
@@ -2260,14 +2268,47 @@ test("editing an included .scad file reloads the open document", async () => {
   const dir = tempDir();
   const model = path.join(dir, "model.scad");
   const lib = path.join(dir, "lib.scad");
-  const count = path.join(dir, "count.txt");
   fs.writeFileSync(lib, "module m() { cube(1); }\n");
   fs.writeFileSync(model, "include <lib.scad>\nm();\n");
+  const config = vscode.workspace.getConfiguration("cadPreview");
+  const previous = config.inspect<string>("openscadBinary")?.globalValue;
+  await config.update("openscadBinary", "/nonexistent-openscad-binary-for-tests", vscode.ConfigurationTarget.Global);
+  let geometryPosts = 0;
+  const sub = hook((m) => {
+    if (m.type === "geometry") geometryPosts++;
+  });
+  try {
+    assert(await openDocument(model), "the .scad model opens through the bundled WASM with no binary installed");
+    assert(await waitFor(() => geometryPosts >= 1, 30000), "the open posts geometry");
+    const before = geometryPosts;
+    fs.writeFileSync(lib, "module m() { cube(2); }\n");
+    assert(await waitFor(() => geometryPosts > before, 30000), "editing the included file reposts geometry (the WASM dependency watcher fired)");
+  } finally {
+    sub.dispose();
+    await config.update("openscadBinary", previous, vscode.ConfigurationTarget.Global);
+  }
+  await closeAll();
+});
+
+test("editing an included .scad file reloads the open document (binary fallback)", async () => {
+  const api = await saveTestApi();
+  const hook = (vscode.extensions.getExtension(EXTENSION_ID)?.exports as { onDidPostMessage?: vscode.Event<{ type: string }> } | undefined)
+    ?.onDidPostMessage;
+  if (!hook || !api) return;
+  const dir = tempDir();
+  const model = path.join(dir, "model.scad");
+  const lib = path.join(dir, "lib.scad");
+  fs.writeFileSync(lib, "module m() { cube(1); }\n");
+  // import() is declined by the WASM path, so this model converts through the
+  // stub binary below — exercising the fallback, its depfile-driven watcher
+  // and the spawn-counted cache assertions.
+  fs.writeFileSync(model, "import(\"mesh.stl\");\ninclude <lib.scad>\nm();\n");
   const stub = path.join(ROOT, "src", "test-fixtures", "openscad-deps-stub.sh");
   fs.chmodSync(stub, 0o755);
   const config = vscode.workspace.getConfiguration("cadPreview");
   const previous = config.inspect<string>("openscadBinary")?.globalValue;
   const savedEnv = { STUB_COUNT: process.env.STUB_COUNT, STUB_DEPS: process.env.STUB_DEPS };
+  const count = path.join(dir, "count.txt");
   process.env.STUB_COUNT = count;
   process.env.STUB_DEPS = lib;
   await config.update("openscadBinary", stub, vscode.ConfigurationTarget.Global);

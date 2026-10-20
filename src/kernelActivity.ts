@@ -21,7 +21,7 @@
 
 import type { DocumentPipeline } from "./kernelClient";
 
-export type Kernel = "occt" | "gmsh" | "meshio" | "ftetwild" | "mmg";
+export type Kernel = "occt" | "gmsh" | "meshio" | "ftetwild" | "mmg" | "openscad";
 export type KernelPhase = "idle" | "loading" | "ready";
 export type KernelState = Record<Kernel, KernelPhase>;
 
@@ -31,10 +31,11 @@ export const KERNEL_LABELS: Record<Kernel, string> = {
   meshio: "meshio++",
   ftetwild: "fTetWild",
   mmg: "MMG",
+  openscad: "OpenSCAD",
 };
 
 /** Display order: the two everyday kernels first. */
-export const KERNEL_ORDER: readonly Kernel[] = ["occt", "gmsh", "meshio", "ftetwild", "mmg"];
+export const KERNEL_ORDER: readonly Kernel[] = ["occt", "gmsh", "meshio", "ftetwild", "mmg", "openscad"];
 
 const O: Kernel[] = ["occt"];
 const G: Kernel[] = ["gmsh"];
@@ -105,6 +106,7 @@ export const KERNELS_BY_FUNCTION: Record<keyof DocumentPipeline, readonly Kernel
   measureMeshDeviation: G, // OCCT only for a B-rep reference — listed by what it DEFINITELY touches
   bakeMeshEdits: NONE, // pure three.js mesh-edit replay (headless mesh-edit replay)
   decodeGltfGeometry: NONE, // Draco / meshopt decoders: their own WASM, not one of the four tracked kernels
+  convertScadViaWasm: ["openscad"],
 };
 
 export function kernelsFor(fn: string): readonly Kernel[] {
@@ -112,7 +114,7 @@ export function kernelsFor(fn: string): readonly Kernel[] {
 }
 
 export function initialKernelState(): KernelState {
-  return { occt: "idle", gmsh: "idle", meshio: "idle", ftetwild: "idle", mmg: "idle" };
+  return { occt: "idle", gmsh: "idle", meshio: "idle", ftetwild: "idle", mmg: "idle", openscad: "idle" };
 }
 
 export type KernelEvent =
@@ -128,12 +130,13 @@ export type KernelEvent =
  */
 export function reduceKernelState(prev: KernelState, ev: KernelEvent): KernelState {
   if (ev.type === "reset") {
-    return KERNEL_ORDER.every((k) => prev[k] === "idle") ? prev : initialKernelState();
+    // Missing keys (a stripped-down harness state) read as idle, never active.
+    return KERNEL_ORDER.every((k) => (prev[k] ?? "idle") === "idle") ? prev : initialKernelState();
   }
   const touched = kernelsFor(ev.fn);
   let next: KernelState | null = null;
   for (const k of touched) {
-    let phase: KernelPhase = prev[k];
+    let phase: KernelPhase = prev[k] ?? "idle";
     if (ev.type === "start") {
       // Never demote a kernel that is already warm just because another call started.
       if (prev[k] === "idle") phase = "loading";
@@ -154,7 +157,9 @@ export function reduceKernelState(prev: KernelState, ev: KernelEvent): KernelSta
  *   - otherwise "OCCT ready · Gmsh loading…", listing only the non-idle kernels
  */
 export function describeKernelState(state: KernelState): { text: string; tone: "idle" | "loading" | "ready" } {
-  const active = KERNEL_ORDER.filter((k) => state[k] !== "idle");
+  // A missing key (an older host or a stripped-down harness posting a
+  // five-kernel state) reads as idle — never as a phantom "X loading…".
+  const active = KERNEL_ORDER.filter((k) => (state[k] ?? "idle") !== "idle");
   if (active.length === 0) return { text: "Kernels idle", tone: "idle" };
   const text = active.map((k) => `${KERNEL_LABELS[k]} ${state[k] === "ready" ? "ready" : "loading…"}`).join(" · ");
   return { text, tone: active.some((k) => state[k] === "loading") ? "loading" : "ready" };

@@ -689,3 +689,83 @@ describe("convertScadToCsg cache", () => {
     expect(b.format).toBe("csg");
   });
 });
+
+describe("convertScadToCsg WASM-first", () => {
+  const makeWasm = (impl: (ext: string, model: string, opts: Record<string, unknown>) => Promise<Record<string, unknown>>) => ({
+    extensionPath: "/ext",
+    convertScadViaWasm: impl as never,
+  });
+
+  const wasmResult = (csg = "// wasm\n", dependencies: string[] = []) => ({
+    csgBytes: new TextEncoder().encode(csg),
+    warnings: ["wasm warning"],
+    diagnostics: [],
+    droppedCount: 0,
+    dependencies,
+  });
+
+  it("prefers WASM and never spawns the binary on success", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "scad-wasm-"));
+    try {
+      const model = path.join(dir, "model.scad");
+      fs.writeFileSync(model, "cube(1);\n");
+      let wasmCalls = 0;
+      const wasm = makeWasm(async () => {
+        wasmCalls++;
+        return wasmResult();
+      });
+      const countFile = path.join(dir, "count.txt");
+      process.env.STUB_COUNT = countFile;
+      const a = await convertScadToCsg(model, { binary: DEPS_STUB, wasm });
+      const b = await convertScadToCsg(model, { binary: DEPS_STUB, wasm });
+      expect(wasmCalls).toBe(1);
+      expect(a.cached).toBeUndefined();
+      expect(b.cached).toBe(true);
+      expect(Buffer.from(b.csgBytes).toString()).toBe("// wasm\n");
+      const spawns = fs.existsSync(countFile) ? fs.readFileSync(countFile, "utf8").split("\n").filter(Boolean).length : 0;
+      expect(spawns).toBe(0);
+    } finally {
+      delete process.env.STUB_COUNT;
+      fs.rmSync(dir, { recursive: true, force: true });
+      clearScadConversionCache();
+    }
+  });
+
+  it("falls back to the binary only on ScadWasmFallbackError", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "scad-wasm-"));
+    try {
+      const model = path.join(dir, "model.scad");
+      fs.writeFileSync(model, "cube(1);\n");
+      const fallback = new Error("declined");
+      fallback.name = "ScadWasmFallbackError";
+      const wasm = makeWasm(async () => {
+        throw fallback;
+      });
+      const r = await convertScadToCsg(model, { binary: STUB, wasm });
+      expect(Buffer.from(r.csgBytes).toString()).toContain("stub-generated");
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+      clearScadConversionCache();
+    }
+  });
+
+  it("surfaces a non-fallback WASM failure without touching the binary", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "scad-wasm-"));
+    try {
+      const model = path.join(dir, "model.scad");
+      fs.writeFileSync(model, "cube(1);\n");
+      const countFile = path.join(dir, "count.txt");
+      process.env.STUB_COUNT = countFile;
+      const wasm = makeWasm(async () => {
+        throw new Error("syntax error at line 1");
+      });
+      await expect(convertScadToCsg(model, { binary: DEPS_STUB, wasm })).rejects.toThrow("syntax error");
+      const spawns = fs.existsSync(countFile) ? fs.readFileSync(countFile, "utf8").split("\n").filter(Boolean).length : 0;
+      expect(spawns).toBe(0);
+    } finally {
+      delete process.env.STUB_COUNT;
+      fs.rmSync(dir, { recursive: true, force: true });
+      clearScadConversionCache();
+    }
+  });
+});

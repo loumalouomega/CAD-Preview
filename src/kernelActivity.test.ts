@@ -86,6 +86,13 @@ describe("describeKernelState", () => {
     expect(describeKernelState(initialKernelState())).toEqual({ text: "Kernels idle", tone: "idle" });
   });
 
+  it("reads a missing kernel key as idle, never as a phantom loading entry", () => {
+    // A stripped-down harness (or an older host) posting a five-kernel state
+    // must not render "OpenSCAD loading…".
+    const legacy = { occt: "idle", gmsh: "idle", meshio: "idle", ftetwild: "idle", mmg: "idle" } as ReturnType<typeof initialKernelState>;
+    expect(describeKernelState(legacy)).toEqual({ text: "Kernels idle", tone: "idle" });
+  });
+
   it("lists only non-idle kernels, in a fixed order, with a loading tone while one loads", () => {
     let s = step(step(initialKernelState(), "start", "loadBRep"), "success", "loadBRep");
     s = step(s, "start", "generateMesh");

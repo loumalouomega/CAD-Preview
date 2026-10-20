@@ -47,7 +47,7 @@ async function heroChrome(page, { gmsh }) {
   await post(page, { type: "documentInfo", name: "bull.stp", path: "/work/bull.stp", format: "step", dirty: true, unsavedEdits: 3 });
   await post(page, {
     type: "kernelStatus",
-    state: { occt: "ready", gmsh: gmsh ? "ready" : "idle", meshio: "idle", ftetwild: "idle", mmg: "idle" },
+    state: { occt: "ready", gmsh: gmsh ? "ready" : "idle", meshio: "idle", ftetwild: "idle", mmg: "idle", openscad: "idle" },
   });
   // The same library the fe-mesh-panel shot posts, so the Preset picker reads
   // like a session that has the built-in starters rather than the pre-hydration

@@ -3823,6 +3823,10 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
         warnings,
         ...readScadSettings(),
         ...(defines && Object.keys(defines).length > 0 ? { defines } : {}),
+        wasm: {
+          extensionPath: this.context.extensionPath,
+          convertScadViaWasm: (...args) => this.docPipeline(uri).convertScadViaWasm(...args),
+        },
       });
     }
 

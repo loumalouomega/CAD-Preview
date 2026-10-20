@@ -1,6 +1,6 @@
 # CAD-Preview
 
-[![CI](https://github.com/loumalouomega/CAD-Preview/actions/workflows/ci.yml/badge.svg)](https://github.com/loumalouomega/CAD-Preview/actions/workflows/ci.yml) [![Docs](https://img.shields.io/badge/docs-online-blue)](https://loumalouomega.github.io/CAD-Preview/) [![VS Code Engine](https://img.shields.io/badge/VS%20Code-%5E1.80-blue?logo=visualstudiocode)](https://code.visualstudio.com/) [![Three.js](https://img.shields.io/badge/Three.js-r160-black?logo=threedotjs)](https://threejs.org/) [![OpenCascade.js](https://img.shields.io/badge/OpenCascade.js-1.x-orange)](https://ocjs.org/) [![License](https://img.shields.io/badge/license-GPL--2.0--or--later-blue)](LICENSE) [![TypeScript](https://img.shields.io/badge/TypeScript-5.x-blue?logo=typescript)](https://www.typescriptlang.org/)
+[![CI](https://github.com/loumalouomega/CAD-Preview/actions/workflows/ci.yml/badge.svg)](https://github.com/loumalouomega/CAD-Preview/actions/workflows/ci.yml) [![Docs](https://img.shields.io/badge/docs-online-blue)](https://loumalouomega.github.io/CAD-Preview/) [![VS Code Engine](https://img.shields.io/badge/VS%20Code-%5E1.80-blue?logo=visualstudiocode)](https://code.visualstudio.com/) [![Three.js](https://img.shields.io/badge/Three.js-r160-black?logo=threedotjs)](https://threejs.org/) [![OpenCascade.js](https://img.shields.io/badge/OpenCascade.js-1.x-orange)](https://ocjs.org/) [![License](https://img.shields.io/badge/license-GPL--3.0--or--later-blue)](LICENSE) [![TypeScript](https://img.shields.io/badge/TypeScript-5.x-blue?logo=typescript)](https://www.typescriptlang.org/)
 
 <div style="display: flex; justify-content: space-around; align-items: flex-start;">
   <img src="https://raw.githubusercontent.com/loumalouomega/CAD-Preview/master/images/cad_preview.png" alt="CAD Preview" style="width: 48%;">
@@ -19,7 +19,7 @@ B-rep (boundary-representation) formats are parsed and tessellated with [OpenCas
 | IGES        | `.iges`, `.igs` | OpenCascade.js → `BRepMesh` tessellation   |
 | BREP        | `.brep`         | OpenCascade.js → `BRepMesh` tessellation   |
 | OpenSCAD CSG | `.csg`         | CSG parse → OCCT build → `BRepMesh`        |
-| OpenSCAD Src | `.scad`        | openscad binary → `.csg` → same as above   |
+| OpenSCAD Src | `.scad`        | bundled OpenSCAD WASM → `.csg` → same as above (user-installed `openscad` binary as fallback)   |
 | STL         | `.stl`          | Three.js `STLLoader`                       |
 | OBJ         | `.obj`          | Three.js `OBJLoader`                       |
 | PLY         | `.ply`          | Three.js `PLYLoader`                       |
@@ -238,8 +238,9 @@ CAD-Preview bundles [`@loumalouomega/gmsh-wasm`](https://github.com/loumalouomeg
 CAD-Preview itself is distributed under the **GPL-3.0-or-later** — see [LICENSE](LICENSE).
 It was GPL-2.0-or-later until 2026-09-24, when the project committed to the
 [OpenSCAD WASM port](doc/roadmap.md#build-and-bundle-an-openscad-wasm-port): its
-CGAL/Manifold backends require GPLv3-compatible terms. The relicense preceded
-that dependency landing. The now-bundled LGPL-3.0-or-later MMG runtime is also
+CGAL/Manifold backends require GPLv3-compatible terms. That dependency has now
+landed as [`@loumalouomega/openscad-wasm`](https://github.com/loumalouomega/openscad-wasm)
+(see below). The now-bundled LGPL-3.0-or-later MMG runtime is also
 compatible with the GPLv3 combined work and independently requires
 GPLv3-compatible terms for that combination.
 
@@ -265,6 +266,22 @@ files and debug modifications; no restriction on reverse engineering for that
 purpose is imposed. Redistribution must retain the notices and satisfy the
 applicable source/relinking obligations, not merely copy the WASM binary.
 
+[`@loumalouomega/openscad-wasm`](https://github.com/loumalouomega/openscad-wasm)
+(OpenSCAD compiled to WebAssembly, Manifold backend by default, CGAL included —
+evaluates `.scad` to the `.csg` this extension imports, with no `openscad`
+binary on `PATH`) is **GPL-3.0-or-later**, compatible with the combined work's
+**GPL-3.0-or-later**. Its CJS glue remains external under
+`node_modules/@loumalouomega/openscad-wasm/`, its binary is separately
+replaceable at `dist/openscad-core.wasm` (the package's own bundled copy is
+dead weight and is not shipped), and the VSIX includes the package's `LICENSE`,
+`NOTICE` and `THIRD_PARTY_NOTICES.md` obligations via the package itself.
+No library modifications are made; source (the `openscad` submodule at the
+pinned commit plus `scripts/build-deps.sh` / `scripts/build-wasm.sh`) and build
+instructions are at [openscad-wasm](https://github.com/loumalouomega/openscad-wasm).
+The user-installed `openscad` binary remains as a fallback for constructs the
+WASM path declines (`import()`/`surface()`, missing includes, over the staging
+caps).
+
 [`draco3d`](https://github.com/google/draco) (Google Draco, **Apache-2.0**; decodes `KHR_draco_mesh_compression` glTF) and [`meshoptimizer`](https://github.com/zeux/meshoptimizer) (**MIT**; decodes `EXT_meshopt_compression` glTF) are bundled for compressed glTF/GLB support. Apache-2.0 is compatible with the combined work's GPL-3.0-or-later (not with GPLv2, which is why this arrived with the relicense). The Draco decoder WebAssembly and its loader glue ship under `dist/draco/` beside the Apache-2.0 text (`dist/draco/LICENSE`); no modifications are made. Both decoders run only when a compressed file is opened.
 
 [`node-hid`](https://github.com/node-hid/node-hid) (SpaceMouse 6DOF input — only the extension-host bundle, loaded lazily) is **MIT OR X11**-licensed, including the per-platform `.node` prebuilds as shipped in its npm package — GPL-compatible, so bundling the linux-x64 / darwin-arm64 / darwin-x64 / win32-x64 prebuilds is fine. Only those four prebuilds ship (other platforms get a clear message, not a crash); the package is never imported by the MCP/kernel bundles.
@@ -277,6 +294,7 @@ applicable source/relinking obligations, not merely copy the WASM binary.
 - **fTetWild** — Y. Hu, T. Schneider, B. Wang, D. Zorin, D. Panozzo. <https://github.com/wildmeshing/fTetWild>
 - **Draco** — Google. <https://github.com/google/draco>; **meshoptimizer** — A. Kapoulkine. <https://github.com/zeux/meshoptimizer>
 - **MMG** — MMG Consortium / MmgTools. <https://www.mmgtools.org>; WASM bindings: V. Mataix Ferrándiz. <https://github.com/loumalouomega/MMG-WASM>
+- **OpenSCAD** — The OpenSCAD Authors. <https://openscad.org>; WASM build: V. Mataix Ferrándiz. <https://github.com/loumalouomega/openscad-wasm>
 
 </details>
 

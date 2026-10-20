@@ -5,13 +5,14 @@
  */
 declare const __KERNEL_VERSIONS__: string | undefined;
 
-export type KernelVersions = Record<"opencascade.js" | "@loumalouomega/gmsh-wasm" | "@loumalouomega/mmg-wasm" | "@meshioplusplus/wasm" | "float-tetwild-wasm", string | null>;
+export type KernelVersions = Record<"opencascade.js" | "@loumalouomega/gmsh-wasm" | "@loumalouomega/mmg-wasm" | "@loumalouomega/openscad-wasm" | "@meshioplusplus/wasm" | "float-tetwild-wasm", string | null>;
 
 export function kernelVersions(): KernelVersions {
   const empty: KernelVersions = {
     "opencascade.js": null,
     "@loumalouomega/gmsh-wasm": null,
     "@loumalouomega/mmg-wasm": null,
+    "@loumalouomega/openscad-wasm": null,
     "@meshioplusplus/wasm": null,
     "float-tetwild-wasm": null,
   };

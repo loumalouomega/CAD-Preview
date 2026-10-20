@@ -1776,7 +1776,7 @@ server.registerTool(
   "convert_scad",
   {
     description:
-      "Evaluate an OpenSCAD .scad file with the user-installed openscad binary and write the resulting .csg to outputPath — optionally with Customizer parameter overrides (`parameters`, applied as `-D name=value`; see list_scad_parameters), a geometry backend (cgal | manifold; manifold needs a recent OpenSCAD) and extra library folders (prepended to OPENSCADPATH, e.g. a BOSL2 checkout). The .scad source is never modified; open the written .csg with load_model. Unknown parameter names and wrong types are reported and NOT applied. Without openscad installed the result is supported:false with an install hint (set OPENSCAD_BINARY or cadPreview.openscadBinary).",
+      "Evaluate an OpenSCAD .scad file with the bundled OpenSCAD WASM (falling back to the user-installed openscad binary for declined constructs) and write the resulting .csg to outputPath — optionally with Customizer parameter overrides (`parameters`, applied as `-D name=value`; see list_scad_parameters), a geometry backend (cgal | manifold; manifold needs a recent OpenSCAD) and extra library folders (prepended to OPENSCADPATH, e.g. a BOSL2 checkout). The .scad source is never modified; open the written .csg with load_model. Unknown parameter names and wrong types are reported and NOT applied. Without openscad installed the result is supported:false with an install hint (set OPENSCAD_BINARY or cadPreview.openscadBinary).",
     inputSchema: {
       path: z.string().describe("Absolute path to the .scad file"),
       outputPath: z.string().describe("Absolute path of the .csg file to write (must end in .csg; must not be the source)"),
@@ -1787,7 +1787,7 @@ server.registerTool(
     },
   },
   wrap((args: { path: string; outputPath: string; parameters?: Record<string, unknown>; backend?: string; libraryPaths?: string[]; overwrite?: boolean }) =>
-    convertScadTool(args)
+    convertScadTool(args, ctx)
   )
 );
 

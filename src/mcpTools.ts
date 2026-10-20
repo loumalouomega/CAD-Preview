@@ -165,6 +165,7 @@ import type { BuildPlate } from "./printability";
 import type { measureMeshDeviation } from "./meshDeviationHost";
 import type { bakeMeshEdits } from "./meshEditBake";
 import type { decodeGltfGeometry } from "./gltfDecode";
+import type { convertScadViaWasm } from "./scadWasmService";
 import { estimateMeshBudget, budgetWarning, type MeshBudget } from "./meshBudget";
 import { deviationPly } from "./meshDeviation";
 import { triangleMassProperties } from "./triangleMassProperties";
@@ -325,6 +326,7 @@ export interface Pipeline {
   measureMeshDeviation: typeof measureMeshDeviation;
   bakeMeshEdits: typeof bakeMeshEdits;
   decodeGltfGeometry: typeof decodeGltfGeometry;
+  convertScadViaWasm: typeof convertScadViaWasm;
 }
 
 export interface ToolContext {
@@ -532,6 +534,7 @@ async function readModelBytes(modelPath: string): Promise<Uint8Array> {
  * Error from scadService.ts.
  */
 async function readOcctSource(
+  ctx: ToolContext | undefined,
   modelPath: string,
   route: FileRoute,
   warnings: string[],
@@ -544,6 +547,14 @@ async function readOcctSource(
       readBytes: () => readModelBytes(modelPath),
       warnings,
       diagnostics,
+      ...(ctx
+        ? {
+            wasm: {
+              extensionPath: ctx.extensionPath,
+              convertScadViaWasm: (...args) => ctx.pipeline.convertScadViaWasm(...args),
+            },
+          }
+        : {}),
     });
     return { ok: true, bytes: src.bytes, format: src.format };
   } catch (err) {
@@ -901,7 +912,7 @@ export async function loadModel(ctx: ToolContext, params: { path: string }) {
   const { ops } = await readEditsResolved(modelPath);
   const warnings: string[] = recovered.message ? [recovered.message] : [];
   const scadDiag: ScadDiagnosticCollector = { diagnostics: [], droppedCount: 0 };
-  const src = await readOcctSource(modelPath, route, warnings, scadDiag);
+  const src = await readOcctSource(ctx, modelPath, route, warnings, scadDiag);
   if (!src.ok) {
     return {
       format: route.format,
@@ -1077,7 +1088,7 @@ export async function getMassProperties(
 
   const { ops } = await readEditsResolved(modelPath);
   const warnings: string[] = [];
-  const src = await readOcctSource(modelPath, route, warnings);
+  const src = await readOcctSource(ctx, modelPath, route, warnings);
   if (!src.ok) {
     return {
       format: route.format,
@@ -1140,7 +1151,7 @@ export async function checkBrepHealthTool(
   }
   const { ops } = await readEditsResolved(modelPath);
   const warnings: string[] = [];
-  const src = await readOcctSource(modelPath, route, warnings);
+  const src = await readOcctSource(ctx, modelPath, route, warnings);
   if (!src.ok) return { format: route.format, supported: false, warnings: [...warnings, src.reason] };
   const report = await ctx.pipeline.checkBrepHealth(ctx.extensionPath, src.bytes, src.format as BRepFormat, ops);
   if (report.issueCount > report.issues.length) {
@@ -1191,7 +1202,7 @@ export async function generateBomTool(
 
   const { ops } = await readEditsResolved(modelPath);
   const warnings: string[] = [];
-  const src = await readOcctSource(modelPath, route, warnings);
+  const src = await readOcctSource(ctx, modelPath, route, warnings);
   if (!src.ok) {
     return { format: route.format, supported: false, warnings: [...warnings, src.reason] };
   }
@@ -1235,7 +1246,7 @@ export async function generateHoleTableTool(
 
   const { ops } = await readEditsResolved(modelPath);
   const warnings: string[] = [];
-  const src = await readOcctSource(modelPath, route, warnings);
+  const src = await readOcctSource(ctx, modelPath, route, warnings);
   if (!src.ok) {
     return { format: route.format, supported: false, warnings: [...warnings, src.reason] };
   }
@@ -1279,7 +1290,7 @@ export async function inspectEntity(
 
   const { ops } = await readEditsResolved(modelPath);
   const warnings: string[] = [];
-  const src = await readOcctSource(modelPath, route, warnings);
+  const src = await readOcctSource(ctx, modelPath, route, warnings);
   if (!src.ok) {
     return { format: route.format, supported: false, warnings: [...warnings, src.reason] };
   }
@@ -1335,7 +1346,7 @@ export async function measureTool(
 
   const { ops } = await readEditsResolved(modelPath);
   const warnings: string[] = [];
-  const src = await readOcctSource(modelPath, route, warnings);
+  const src = await readOcctSource(ctx, modelPath, route, warnings);
   if (!src.ok) {
     return { format: route.format, supported: false, warnings: [...warnings, src.reason] };
   }
@@ -1381,7 +1392,7 @@ export async function measureExactTool(
 
   const { ops } = await readEditsResolved(modelPath);
   const warnings: string[] = [];
-  const src = await readOcctSource(modelPath, route, warnings);
+  const src = await readOcctSource(ctx, modelPath, route, warnings);
   if (!src.ok) {
     return { format: route.format, supported: false, warnings: [...warnings, src.reason] };
   }
@@ -1555,7 +1566,7 @@ export async function checkInterferenceTool(
   }
 
   const { ops } = await readEditsResolved(modelPath);
-  const src = await readOcctSource(modelPath, route, warnings);
+  const src = await readOcctSource(ctx, modelPath, route, warnings);
   if (!src.ok) {
     return { format: route.format, supported: false, hasOverlap: false, overlapVolume: 0, unresolvedA: [], unresolvedB: [], warnings: [...warnings, src.reason] };
   }
@@ -1667,7 +1678,7 @@ export async function checkInterferenceAllTool(
   }
 
   const { ops } = await readEditsResolved(modelPath);
-  const src = await readOcctSource(modelPath, route, warnings);
+  const src = await readOcctSource(ctx, modelPath, route, warnings);
   if (!src.ok) {
     return { format: route.format, supported: false, pairs: [], warnings: [...warnings, src.reason] };
   }
@@ -1769,7 +1780,7 @@ export async function resolveSelectorTool(
 
   const { ops } = await readEditsResolved(modelPath);
   const warnings: string[] = [];
-  const src = await readOcctSource(modelPath, route, warnings);
+  const src = await readOcctSource(ctx, modelPath, route, warnings);
   if (!src.ok) {
     return { format: route.format, supported: false, warnings: [...warnings, src.reason] };
   }
@@ -1834,7 +1845,7 @@ export async function synthesizeSelectorTool(
 
   const { ops } = await readEditsResolved(modelPath);
   const warnings: string[] = [];
-  const src = await readOcctSource(modelPath, route, warnings);
+  const src = await readOcctSource(ctx, modelPath, route, warnings);
   if (!src.ok) {
     return { format: route.format, supported: false, warnings: [...warnings, src.reason] };
   }
@@ -1955,7 +1966,7 @@ export async function renderSnapshotTool(
   const warnings: string[] = [];
   const quality = resolveSnapshotQuality(params.tessellationQuality, warnings);
   const display = resolveSnapshotDisplay(params.displayMode, params.clip, warnings);
-  const src = await readOcctSource(modelPath, route, warnings);
+  const src = await readOcctSource(ctx, modelPath, route, warnings);
   if (!src.ok) {
     return { supported: false, images: [], warnings: [...warnings, src.reason] };
   }
@@ -2138,7 +2149,7 @@ export async function renderOpsPrefixTool(
   const prefixOps = current.fullOps.slice(current.bakedThrough, idx + 1);
   const warnings: string[] = [];
 
-  const src = await readOcctSource(modelPath, route, warnings);
+  const src = await readOcctSource(ctx, modelPath, route, warnings);
   if (!src.ok) {
     return {
       format: route.format,
@@ -2292,7 +2303,7 @@ export async function compareModelsTool(
   const resolveSource = async (modelPath: string, route: typeof routeA): Promise<{ source: CompareSource; side: CompareSideFacts }> => {
     if (route.strategy === "occt") {
       const { ops } = await readEditsResolved(modelPath);
-      const src = await readOcctSource(modelPath, route, warnings);
+      const src = await readOcctSource(ctx, modelPath, route, warnings);
       if (!src.ok) throw new ScadUnavailableError(src.reason);
       return { source: { kind: "brep", bytes: src.bytes, format: src.format as BRepFormat, ops }, side: { kind: "brep", surfaceDerived: false } };
     }
@@ -3027,7 +3038,7 @@ export async function analyzePassagesTool(
   const targetCells = params.targetCells ?? 3;
   if (!(Number.isFinite(targetCells) && targetCells >= 1)) throw new Error(`targetCells must be ≥ 1 (got ${params.targetCells})`);
   const warnings: string[] = [];
-  const src = await readOcctSource(modelPath, route, warnings);
+  const src = await readOcctSource(ctx, modelPath, route, warnings);
   if (!src.ok) return { format: route.format, supported: false, warnings: [...warnings, src.reason] };
   const { ops } = await readEditsResolved(modelPath);
   const parts = await readParts(modelPath);
@@ -3090,7 +3101,7 @@ export async function checkPrintabilityTool(
   const { ops } = await readEditsResolved(modelPath);
   let source: CompareSource;
   if (route.strategy === "occt") {
-    const src = await readOcctSource(modelPath, route, warnings);
+    const src = await readOcctSource(ctx, modelPath, route, warnings);
     if (!src.ok) return { format: route.format, supported: false, warnings: [...warnings, src.reason] };
     source = { kind: "brep", bytes: src.bytes, format: src.format as BRepFormat, ops };
   } else {
@@ -3130,7 +3141,7 @@ export async function recognizePrimitivesTool(
   }
 
   const warnings: string[] = [];
-  const src = await readOcctSource(modelPath, route, warnings);
+  const src = await readOcctSource(ctx, modelPath, route, warnings);
   if (!src.ok) {
     return { format: route.format, supported: false, warnings: [...warnings, src.reason] };
   }
@@ -3182,7 +3193,7 @@ export async function decomposeToPrimitivesTool(
   }
 
   const warnings: string[] = [];
-  const src = await readOcctSource(modelPath, route, warnings);
+  const src = await readOcctSource(ctx, modelPath, route, warnings);
   if (!src.ok) {
     return { format: route.format, supported: false, warnings: [...warnings, src.reason] };
   }
@@ -3660,7 +3671,7 @@ async function maybeRebindParts(
   const oldTail = replayTail(oldOps, bakedThrough);
   const newTail = replayTail(newOps, bakedThrough);
   if (oldTail.length === newTail.length && JSON.stringify(oldTail) === JSON.stringify(newTail)) return null;
-  const src = await readOcctSource(modelPath, route, warnings);
+  const src = await readOcctSource(ctx, modelPath, route, warnings);
   if (!src.ok) {
     // No openscad binary: nothing replays, so nothing rebinds — but say so
     // (the caller already notes the skipped replay; this notes the skipped
@@ -3792,7 +3803,7 @@ export async function applyEditOps(
     // topology-changing ops renumber face-N/edge-N ids. Without an openscad
     // binary a .scad source skips the replay (ops still persist, mesh-style)
     // rather than failing the whole call.
-    const src = await readOcctSource(modelPath, route, warnings);
+    const src = await readOcctSource(ctx, modelPath, route, warnings);
     if (!src.ok) {
       warnings.push(src.reason);
     } else {
@@ -3866,7 +3877,7 @@ async function currentEntitySummary(
   warnings: string[]
 ): Promise<ReturnType<typeof entitySummary> | null> {
   if (route.strategy !== "occt") return null;
-  const src = await readOcctSource(modelPath, route, warnings);
+  const src = await readOcctSource(ctx, modelPath, route, warnings);
   if (!src.ok) {
     warnings.push(src.reason);
     return null;
@@ -4108,7 +4119,7 @@ async function compileAndApplyScript(
   let notApplied = 0;
   if (!params.dryRun && accepted.length > 0 && route.strategy === "occt") {
     // Same scad-unavailable skip as apply_edit_ops above — ops still persist.
-    const src = await readOcctSource(modelPath, route, warnings);
+    const src = await readOcctSource(ctx, modelPath, route, warnings);
     if (!src.ok) {
       warnings.push(src.reason);
     } else {
@@ -4246,7 +4257,7 @@ export async function screenshotShapeTool(
   const display = resolveSnapshotDisplay(params.displayMode, params.clip, warnings);
 
   const { ops } = await readEditsResolved(modelPath);
-  const src = await readOcctSource(modelPath, route, warnings);
+  const src = await readOcctSource(ctx, modelPath, route, warnings);
   if (!src.ok) {
     return { supported: false, images: [], warnings: [...warnings, src.reason] };
   }
@@ -4317,7 +4328,7 @@ export async function hitTestTool(
   }
 
   const { ops } = await readEditsResolved(modelPath);
-  const src = await readOcctSource(modelPath, route, warnings);
+  const src = await readOcctSource(ctx, modelPath, route, warnings);
   if (!src.ok) {
     return { supported: false, hits: [], warnings: [...warnings, src.reason] };
   }
@@ -5362,7 +5373,7 @@ async function resolveMeshInputHeadless(
   const factor = unitScaleFactor(unit);
   if (route.strategy === "occt") {
     const { ops } = await readEditsResolved(modelPath);
-    const src = await readOcctSource(modelPath, route, warnings);
+    const src = await readOcctSource(ctx, modelPath, route, warnings);
     if (!src.ok) {
       throw new Error(`Cannot mesh ${path.basename(modelPath)} — ${src.reason}`);
     }
@@ -5692,7 +5703,7 @@ export async function measureMeshDeviationTool(
   const { parts, options } = await resolveMeshPartsAndOptionsHeadless(modelPath, input, base, warnings);
   let reference: Parameters<Pipeline["measureMeshDeviation"]>[1];
   if (route.strategy === "occt") {
-    const src = await readOcctSource(modelPath, route, warnings);
+    const src = await readOcctSource(ctx, modelPath, route, warnings);
     if (!src.ok) throw new Error(`Cannot measure ${path.basename(modelPath)} — ${src.reason}`);
     const { ops } = await readEditsResolved(modelPath);
     reference = { kind: "brep", bytes: src.bytes, format: src.format as "step" | "iges" | "brep" | "csg", ops };
@@ -6392,7 +6403,7 @@ export async function exportBRepTool(
   }
 
   const { ops, fullOps } = await readEditsResolved(modelPath);
-  const src = await readOcctSource(modelPath, route, warnings);
+  const src = await readOcctSource(ctx, modelPath, route, warnings);
   if (!src.ok) {
     throw new Error(`Cannot export ${path.basename(modelPath)} — ${src.reason}`);
   }
@@ -6487,7 +6498,7 @@ export async function exportTessellatedStlTool(
     assertNotSourcePath(modelPath, path.resolve(params.outputPath));
   }
   const { ops, fullOps } = await readEditsResolved(modelPath);
-  const src = await readOcctSource(modelPath, route, warnings);
+  const src = await readOcctSource(ctx, modelPath, route, warnings);
   if (!src.ok) return { format: route.format, supported: false, warnings: [...warnings, src.reason] };
   const result = await ctx.pipeline.exportTessellatedStl(ctx.extensionPath, src.bytes, src.format as "step" | "iges" | "brep" | "csg", ops, {
     targetCellSize: params.targetCellSize!,
@@ -6585,7 +6596,7 @@ export async function saveModelTool(ctx: ToolContext, params: { path: string }) 
   if (ops.length === 0) {
     return { written: path.resolve(modelPath), baked: 0, editsBaked: fullOps.length, warnings };
   }
-  const src = await readOcctSource(modelPath, route, warnings);
+  const src = await readOcctSource(ctx, modelPath, route, warnings);
   if (!src.ok) {
     throw new Error(`Cannot save ${path.basename(modelPath)} — ${src.reason}`);
   }
@@ -6883,7 +6894,7 @@ async function resolveDrawingSource(
 
   let source: CompareSource;
   if (route.strategy === "occt") {
-    const src = await readOcctSource(modelPath, route, warnings);
+    const src = await readOcctSource(ctx, modelPath, route, warnings);
     if (!src.ok) {
       throw new Error(`Cannot draw ${path.basename(modelPath)} — ${src.reason}`);
     }
@@ -7799,14 +7810,17 @@ export async function listScadParameters(params: { path: string; includeHidden?:
  * Needs the openscad binary — without one the result is `supported: false`
  * with the install hint, like every other `.scad` path.
  */
-export async function convertScadTool(params: {
-  path: string;
-  outputPath: string;
-  parameters?: Record<string, unknown>;
-  backend?: string;
-  libraryPaths?: string[];
-  overwrite?: boolean;
-}): Promise<{
+export async function convertScadTool(
+  params: {
+    path: string;
+    outputPath: string;
+    parameters?: Record<string, unknown>;
+    backend?: string;
+    libraryPaths?: string[];
+    overwrite?: boolean;
+  },
+  ctx?: ToolContext
+): Promise<{
   supported: boolean;
   written?: string;
   bytes?: number;
@@ -7834,6 +7848,14 @@ export async function convertScadTool(params: {
       backend: params.backend,
       libraryPaths: params.libraryPaths,
       defines: checked.defines,
+      ...(ctx
+        ? {
+            wasm: {
+              extensionPath: ctx.extensionPath,
+              convertScadViaWasm: (...args) => ctx.pipeline.convertScadViaWasm(...args),
+            },
+          }
+        : {}),
     });
     warnings.push(...convWarnings);
     await fs.writeFile(params.outputPath, csgBytes);

@@ -159,18 +159,18 @@
     "viewsWelcome": [
       {
         "view": "cad-preview.models",
-        "contents": "No CAD models found in this workspace.\n[Open CAD File…](command:cad-preview.open)\n[New Blank Model…](command:cad-preview.new)"
+        "contents": "No CAD models found in this workspace.\n[Open CAD File\u2026](command:cad-preview.open)\n[New Blank Model\u2026](command:cad-preview.new)"
       }
     ],
     "commands": [
       {
         "command": "cad-preview.open",
-        "title": "CAD Preview: Open File…",
+        "title": "CAD Preview: Open File\u2026",
         "icon": "$(folder-opened)"
       },
       {
         "command": "cad-preview.new",
-        "title": "CAD Preview: New Blank Model…",
+        "title": "CAD Preview: New Blank Model\u2026",
         "icon": "$(new-file)"
       },
       {
@@ -184,19 +184,19 @@
       },
       {
         "command": "cad-preview.saveAs",
-        "title": "CAD Preview: Save As / Export…"
+        "title": "CAD Preview: Save As / Export\u2026"
       },
       {
         "command": "cad-preview.export",
-        "title": "CAD Preview: Export…"
+        "title": "CAD Preview: Export\u2026"
       },
       {
         "command": "cad-preview.savePreprocess",
-        "title": "CAD Preview: Save Preprocess (.zip)…"
+        "title": "CAD Preview: Save Preprocess (.zip)\u2026"
       },
       {
         "command": "cad-preview.loadPreprocess",
-        "title": "CAD Preview: Load Preprocess (.zip)…"
+        "title": "CAD Preview: Load Preprocess (.zip)\u2026"
       },
       {
         "command": "cad-preview.whatsNew",
@@ -204,28 +204,28 @@
       },
       {
         "command": "cad-preview.screenshot",
-        "title": "CAD Preview: Screenshot to PNG…"
+        "title": "CAD Preview: Screenshot to PNG\u2026"
       },
       {
         "command": "cad-preview.exportSvg",
-        "title": "CAD Preview: Export Silhouette SVG…"
+        "title": "CAD Preview: Export Silhouette SVG\u2026"
       },
       {
         "command": "cad-preview.exportDxf",
-        "title": "CAD Preview: Export Silhouette DXF…"
+        "title": "CAD Preview: Export Silhouette DXF\u2026"
       },
       {
         "command": "cad-preview.exportDrawing",
-        "title": "CAD Preview: Export Technical Drawing…",
+        "title": "CAD Preview: Export Technical Drawing\u2026",
         "category": "CAD Preview"
       },
       {
         "command": "cad-preview.exportSheet",
-        "title": "CAD Preview: Export Drawing Sheet…"
+        "title": "CAD Preview: Export Drawing Sheet\u2026"
       },
       {
         "command": "cad-preview.exportMesh",
-        "title": "CAD Preview: Export FE Mesh…"
+        "title": "CAD Preview: Export FE Mesh\u2026"
       },
       {
         "command": "cad-preview.zoomToSelection",
@@ -233,15 +233,15 @@
       },
       {
         "command": "cad-preview.compareModels",
-        "title": "CAD Preview: Compare Models…"
+        "title": "CAD Preview: Compare Models\u2026"
       },
       {
         "command": "cad-preview.batchExport",
-        "title": "CAD Preview: Batch Export…"
+        "title": "CAD Preview: Batch Export\u2026"
       },
       {
         "command": "cad-preview.prepReport",
-        "title": "CAD Preview: Preparation Report…"
+        "title": "CAD Preview: Preparation Report\u2026"
       },
       {
         "command": "cad-preview.spaceMouseConnect",
@@ -253,7 +253,7 @@
       },
       {
         "command": "cad-preview.connectAgent",
-        "title": "CAD Preview: Connect an agent…"
+        "title": "CAD Preview: Connect an agent\u2026"
       }
     ],
     "mcpServerDefinitionProviders": [
@@ -402,7 +402,7 @@
         "cadPreview.openscadBinary": {
           "type": "string",
           "default": "openscad",
-          "description": "OpenSCAD binary used to convert .scad sources to .csg on open (resolved via PATH when bare). Wins over the OPENSCAD_BINARY environment variable, which is the headless (MCP server) escape hatch. Unused when no .scad file is opened."
+          "description": "Fallback OpenSCAD binary used when the bundled OpenSCAD WASM declines a .scad source (import()/surface(), missing includes, over the staging caps). Ordinary models need no install \u2014 they convert in the kernel worker with nothing on PATH. Resolved via PATH when bare. Wins over the OPENSCAD_BINARY environment variable, the headless (MCP server) escape hatch. Unused when no .scad file is opened."
         },
         "cadPreview.openscadBackend": {
           "type": "string",
@@ -432,7 +432,7 @@
           "default": 5,
           "minimum": 0.1,
           "maximum": 120,
-          "markdownDescription": "Watchdog for a single kernel job (load, mesh, export…). A job running longer is killed and the kernel worker respawned. Applies to newly opened documents."
+          "markdownDescription": "Watchdog for a single kernel job (load, mesh, export\u2026). A job running longer is killed and the kernel worker respawned. Applies to newly opened documents."
         },
         "cadPreview.tessellationQuality": {
           "type": "string",
@@ -442,9 +442,9 @@
             "fine"
           ],
           "enumDescriptions": [
-            "Coarser, faster tessellation — larger triangles, less detail on curved surfaces.",
+            "Coarser, faster tessellation \u2014 larger triangles, less detail on curved surfaces.",
             "The default: unchanged from previous versions of this extension.",
-            "Finer, slower tessellation — smaller triangles, more detail on curved surfaces."
+            "Finer, slower tessellation \u2014 smaller triangles, more detail on curved surfaces."
           ],
           "default": "standard",
           "description": "B-rep tessellation quality (STEP/IGES/BREP sources). Re-read on every edit, so a change takes effect on the next edit without reopening the file. Does not affect FE mesh generation (see the FE Mesh panel's own size settings)."
@@ -485,6 +485,7 @@
   "dependencies": {
     "@loumalouomega/gmsh-wasm": "^0.4.0",
     "@loumalouomega/mmg-wasm": "0.1.0",
+    "@loumalouomega/openscad-wasm": "^0.3.1",
     "@meshioplusplus/wasm": "17.8.0",
     "@modelcontextprotocol/sdk": "^1.32.1",
     "draco3d": "^1.5.9",

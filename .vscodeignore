@@ -15,6 +15,7 @@ third-party/**
 !dist/opencascade.wasm.wasm
 !dist/gmsh-core.wasm
 !dist/mmg-core.wasm
+!dist/openscad-core.wasm
 !dist/macros/starter-library.json
 !dist/mesh-presets/starter-presets.json
 !dist/process-limits/starter-limits.json
@@ -52,6 +53,16 @@ node_modules/**
 !node_modules/@loumalouomega/mmg-wasm/dist/mmg-descriptor.cjs
 !node_modules/@loumalouomega/mmg-wasm/dist/runtime.cjs
 !node_modules/@loumalouomega/mmg-wasm/LICENSE
+# OpenSCAD WASM (roadmap "Build and bundle an OpenSCAD WASM port"): same
+# real-files pattern — the CJS glue + factory stay in node_modules, the
+# 24 MB .wasm ships once as dist/openscad-core.wasm (copied by esbuild.mjs)
+# and is passed explicitly as `wasmBinary`, so the package's own bundled copy
+# is dead weight and is NOT carved back in.
+!node_modules/@loumalouomega/openscad-wasm/package.json
+!node_modules/@loumalouomega/openscad-wasm/dist/openscad.cjs
+!node_modules/@loumalouomega/openscad-wasm/dist/openscad.mjs
+!node_modules/@loumalouomega/openscad-wasm/dist/openscad-factory.mjs
+!node_modules/@loumalouomega/openscad-wasm/dist/core.mjs
 # ESM kernels are staged beside the bundles; inventory: scripts/runtimeAssets.mjs.
 !dist/meshio/package.json
 !dist/meshio/src/index.mjs
