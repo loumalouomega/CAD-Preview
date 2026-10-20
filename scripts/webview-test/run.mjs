@@ -7166,7 +7166,7 @@ test("status bar: sits below the canvas, holds the facts, and clears the dock", 
       text: document.getElementById("kernel-status-text").textContent,
       tone: document.getElementById("kernel-status").dataset.tone,
     }));
-  const idle = { occt: "idle", gmsh: "idle", meshio: "idle", ftetwild: "idle", mmg: "idle" };
+  const idle = { occt: "idle", gmsh: "idle", meshio: "idle", ftetwild: "idle", mmg: "idle", openscad: "idle" };
   await post(page, { type: "kernelStatus", state: idle });
   await sleep(60);
   let k = await kernel();

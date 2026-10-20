@@ -130,12 +130,13 @@ export type KernelEvent =
  */
 export function reduceKernelState(prev: KernelState, ev: KernelEvent): KernelState {
   if (ev.type === "reset") {
-    return KERNEL_ORDER.every((k) => prev[k] === "idle") ? prev : initialKernelState();
+    // Missing keys (a stripped-down harness state) read as idle, never active.
+    return KERNEL_ORDER.every((k) => (prev[k] ?? "idle") === "idle") ? prev : initialKernelState();
   }
   const touched = kernelsFor(ev.fn);
   let next: KernelState | null = null;
   for (const k of touched) {
-    let phase: KernelPhase = prev[k];
+    let phase: KernelPhase = prev[k] ?? "idle";
     if (ev.type === "start") {
       // Never demote a kernel that is already warm just because another call started.
       if (prev[k] === "idle") phase = "loading";
@@ -156,7 +157,9 @@ export function reduceKernelState(prev: KernelState, ev: KernelEvent): KernelSta
  *   - otherwise "OCCT ready · Gmsh loading…", listing only the non-idle kernels
  */
 export function describeKernelState(state: KernelState): { text: string; tone: "idle" | "loading" | "ready" } {
-  const active = KERNEL_ORDER.filter((k) => state[k] !== "idle");
+  // A missing key (an older host or a stripped-down harness posting a
+  // five-kernel state) reads as idle — never as a phantom "X loading…".
+  const active = KERNEL_ORDER.filter((k) => (state[k] ?? "idle") !== "idle");
   if (active.length === 0) return { text: "Kernels idle", tone: "idle" };
   const text = active.map((k) => `${KERNEL_LABELS[k]} ${state[k] === "ready" ? "ready" : "loading…"}`).join(" · ");
   return { text, tone: active.some((k) => state[k] === "loading") ? "loading" : "ready" };
