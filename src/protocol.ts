@@ -7,6 +7,7 @@ import type { MeshExportFormatId } from "./meshExportFormats";
 import type { ViewerDefaults } from "./viewerDefaults";
 import type { MassProperties } from "./massProperties";
 import type { QualitySummary } from "./meshQuality";
+import type { BoundaryLayerAchieved } from "./boundaryLayerMeasurement";
 import type { DisplayUnit } from "./lengthUnits";
 import type { KernelState } from "./kernelActivity";
 import type { EntityFacts, ExactMeasureKind, ExactMeasureResult, InterferenceResult, InterferencePairResult } from "./entityFacts";
@@ -566,6 +567,9 @@ export type HostToWebview =
         shownCount: number;
         belowThresholdCount: number;
       };
+      /** Achieved boundary-layer rows per wall Part for a 2-D B-rep generate.
+       * Absent otherwise. */
+      boundaryLayers?: BoundaryLayerAchieved[];
     }
   | { type: "meshingError"; requestId: string; message: string }
   /** FE Mesh panel's refinement sweep (roadmap Tier 1 "Parity gaps") — the

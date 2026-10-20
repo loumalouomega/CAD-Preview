@@ -407,6 +407,19 @@ const sheetFieldsSchema = z
   })
   .optional()
   .describe("Title-block fields; each adds a cell only when present");
+const sheetSectionSchema = z.object({
+  id: z.string().describe("Stable section id, used in the report and the SVG group id"),
+  label: z.string().optional().describe("Drawn label, e.g. A—A (default: the id)"),
+  view: z.string().describe("Parent view the section is marked on; the section itself is drawn looking along the plane normal"),
+  origin: z.tuple([z.number(), z.number(), z.number()]).describe("A point on the cutting plane, in model millimetres"),
+  normal: z.tuple([z.number(), z.number(), z.number()]).describe("Cutting-plane normal; the negative side is kept unless flip is set"),
+  flip: z.boolean().optional().describe("Keep the positive-normal side and look from -normal"),
+});
+const sheetViewSectionSchema = z.object({
+  origin: z.tuple([z.number(), z.number(), z.number()]),
+  normal: z.tuple([z.number(), z.number(), z.number()]),
+  flip: z.boolean().optional(),
+});
 // Deliberately loose op/options schemas: validateEditOp / validateMeshOptions
 // are the real (tolerant, always-current) gates — duplicating the 44-kind op
 // union in zod would drift against src/editOps.ts.
@@ -467,14 +480,14 @@ server.registerTool(
   "get_mass_properties",
   {
     description:
-      "Volume, surface area, length, center of mass, and moments of inertia (about the centroid) for the whole model or one entity — B-rep sources via OCCT BRepGProp; STL/OBJ/PLY/glTF sources via headless triangle integration (volume/area/centroid/watertight, no length or inertia). Other mesh formats compute client-side in the webview instead.",
+      "Volume, surface area, length, center of mass, and moments of inertia (about the centroid) for the whole model or one entity — B-rep sources via OCCT BRepGProp; STL/OBJ/PLY/glTF sources via headless triangle integration; meshio-only formats via the boundary surface meshio++ extracts (marked surfaceDerived; volume is withheld unless that boundary is watertight, and bbox is included). Other mesh formats compute client-side in the webview instead.",
     inputSchema: {
       path: modelPath,
       entityId: z
         .string()
         .optional()
         .describe(
-          "solid-N / face-N / edge-N id (B-rep) or mesh-component-N / mesh-triangle-N / mesh-vertex-N id (STL/OBJ/PLY/glTF) from load_model's inventory; omit for the whole model"
+          "solid-N / face-N / edge-N id (B-rep), mesh-component-N / mesh-triangle-N / mesh-vertex-N id (STL/OBJ/PLY/glTF), or a boundary-side mesh id for a meshio-only source; omit for the whole model"
         ),
     },
   },
@@ -518,11 +531,11 @@ server.registerTool(
   "measure",
   {
     description:
-      "Facts only: straight-line distance between two entities' bbox centers, plus (if `axis` is given) the signed component of that displacement along it — 'is this hole 25mm from that edge' class questions. B-rep sources plus STL/OBJ/PLY/glTF sources headless (bbox centers in raw file coordinates).",
+      "Facts only: straight-line distance between two entities' bbox centers, plus (if `axis` is given) the signed component of that displacement along it — 'is this hole 25mm from that edge' class questions. B-rep sources plus STL/OBJ/PLY/glTF sources headless (bbox centers in raw file coordinates), plus meshio-only formats via their extracted boundary surface (surfaceDerived; use whole-model or the boundary-side mesh-component-N / mesh-triangle-N / mesh-vertex-N ids).",
     inputSchema: {
       path: modelPath,
-      from: z.string().describe("entity id from load_model's inventory (B-rep or headless mesh ids)"),
-      to: z.string().describe("entity id from load_model's inventory (B-rep or headless mesh ids)"),
+      from: z.string().describe("entity id (B-rep or headless mesh ids); meshio-only sources use whole-model or a boundary-side mesh id"),
+      to: z.string().describe("entity id (B-rep or headless mesh ids); meshio-only sources use whole-model or a boundary-side mesh id"),
       axis: z
         .tuple([z.number(), z.number(), z.number()])
         .optional()
@@ -793,7 +806,7 @@ server.registerTool(
   "compare_models",
   {
     description:
-      "Diff two models solid-by-solid, matched by bounding-box-centroid proximity + volume similarity — reports added/removed/matched solids, with each match's raw centre displacement and volume delta (never a black-box moved/unchanged verdict) so you can judge match confidence yourself. STEP/IGES/BREP (edits baked in) and STL/OBJ/PLY/glTF (pending mesh edits baked in by the headless mesh-edit replay, then compared as STL) are supported headless, in any combination; meshio-only formats return supported: false. Optional includeSnapshots (default false) additionally renders each B-rep side's whole-model before/after PNGs (render_snapshot's own DEFAULT_VIEWS engine) as image content blocks — costs up to two headless browser launches and up to 8 images, opt in only when you actually want to look at the geometry.",
+      "Diff two models solid-by-solid, matched by bounding-box-centroid proximity + volume similarity — reports added/removed/matched solids, with each match's raw centre displacement and volume delta (never a black-box moved/unchanged verdict) so you can judge match confidence yourself. STEP/IGES/BREP (edits baked in), STL/OBJ/PLY/glTF (pending mesh edits baked in by the headless mesh-edit replay, then compared as STL), and meshio-only formats (compared as the boundary surface meshio++ extracts; `sides` marks that side surfaceDerived and gives its region count and watertight flag) are supported headless, in any combination; display-only formats (3MF/Collada/AMF) return supported: false. Optional includeSnapshots (default false) additionally renders each B-rep side's whole-model before/after PNGs (render_snapshot's own DEFAULT_VIEWS engine) as image content blocks — costs up to two headless browser launches and up to 8 images, opt in only when you actually want to look at the geometry.",
     inputSchema: {
       pathA: modelPath,
       pathB: modelPath,
@@ -1117,7 +1130,7 @@ server.registerTool(
   "export_drawing_sheet",
   {
     description:
-      "Write a multi-view DRAFTING SHEET to .svg or .dxf: several views of one model (default front, top, right, iso) at one shared scale, inside a frame with a title block (title, scale ratio, projection method, date, views). Views are technical drawings by default — visible edges solid, hidden edges dashed (SVG) / on a HIDDEN layer (DXF) — and are aligned orthographically: first-angle (ISO, default) puts the top view BELOW the front and the right view on its LEFT; third-angle (ASME) mirrors that. Pinned annotations are drawn once each, in the orthographic view where the measured line reads at true length. paper \"fit\" (default) sizes the sheet to the views at 1:1 (or `scale`); A4–A0 (landscape) picks the largest ISO 5455 standard scale that fits and warns if none does. No unit conversion: the scale is a real drawn-to-actual ratio in millimetres. Works for B-rep and STL/OBJ/PLY/glTF sources (edits baked in for B-rep only). A review/illustration artifact — use measure_exact for dimensions you must rely on.",
+      "Write a multi-view DRAFTING SHEET to .svg or .dxf: several views of one model (default front, top, right, iso) at one shared scale, inside a frame with a title block (title, scale ratio, projection method, date, views). Views are technical drawings by default — visible edges solid, hidden edges dashed (SVG) / on a HIDDEN layer (DXF) — and are aligned orthographically: first-angle (ISO, default) puts the top view BELOW the front and the right view on its LEFT; third-angle (ASME) mirrors that. Pinned annotations are drawn once each, in the orthographic view where the measured line reads at true length. paper \"fit\" (default) sizes the sheet to the views at 1:1 (or `scale`); A4–A0 (landscape) picks the largest ISO 5455 standard scale that fits and warns if none does. No unit conversion: the scale is a real drawn-to-actual ratio in millimetres. Works for B-rep and STL/OBJ/PLY/glTF sources (edits baked in for B-rep only). Optional `sections` add full section views cut from the same tessellation — each names its parent view, is drawn looking along the plane normal with the cut loops hatched at 45° on a SECTION layer/group, and marks the cutting plane with arrows and the label in the parent; `viewSections` cuts a view in place instead. A section whose plane misses the model is refused by name. A review/illustration artifact — use measure_exact for dimensions you must rely on.",
     inputSchema: {
       path: modelPath,
       outputPath: z.string().describe("Absolute path to write (.svg or .dxf); must not be the source path"),
@@ -1137,6 +1150,8 @@ server.registerTool(
       template: z.string().optional().describe("Sheet template name (bundled starters ∪ libraryPath) supplying any setting not given explicitly"),
       libraryPath: z.string().optional().describe("User sheet-template library JSON"),
       layers: z.array(z.string()).optional().describe("Layer names/ids to restrict every view to (one group per layer in each view). Absent = every layer. B-rep sources only."),
+      sections: z.array(sheetSectionSchema).optional(),
+      viewSections: z.record(z.string(), sheetViewSectionSchema).optional(),
       date: z.string().optional().describe("Title-block date (YYYY-MM-DD). Default: today's date, or none when `deterministic`."),
       deterministic: z
         .boolean()
@@ -1161,6 +1176,8 @@ server.registerTool(
       template?: string;
       libraryPath?: string;
       layers?: string[];
+      sections?: Array<{ id: string; label?: string; view: string; origin: [number, number, number]; normal: [number, number, number]; flip?: boolean }>;
+      viewSections?: Record<string, { origin: [number, number, number]; normal: [number, number, number]; flip?: boolean }>;
       date?: string;
       deterministic?: boolean;
     }) => exportDrawingSheetTool(ctx, args)
@@ -1225,6 +1242,8 @@ server.registerTool(
       title: z.string().optional(),
       fields: sheetFieldsSchema,
       layers: z.array(z.string()).optional().describe("Layer names/ids to restrict every view to"),
+      sections: z.array(sheetSectionSchema).optional().describe("Named section views, each cut from the same tessellation as its parent view"),
+      viewSections: z.record(z.string(), sheetViewSectionSchema).optional().describe("In-place cuts keyed by view name"),
       overwrite: z.boolean().optional(),
     },
   },
@@ -1822,7 +1841,7 @@ server.registerTool(
   "generate_mesh",
   {
     description:
-      "Generate a finite-element mesh of the model with Gmsh (edits baked in for B-rep sources; raw file bytes for .stl) and return statistics only (node/element counts, per-part element groups, timing, a minSICN quality summary, and — for a 3D mesh with elements scoring below 0.2 — a worstElements count), plus the pre-generation `estimate` (see estimate_mesh_budget) beside the actual counts. Nothing is written to disk — use export_mesh for that. Emits notifications/progress at start and completion if you set _meta.progressToken — Gmsh itself has no mid-call progress hook, so this is start/done signaling only, not a genuine percentage.",
+      "Generate a finite-element mesh of the model with Gmsh (edits baked in for B-rep sources; raw file bytes for .stl) and return statistics only (node/element counts, per-part element groups, timing, a minSICN quality summary, and — for a 3D mesh with elements scoring below 0.2 — a worstElements count), plus the pre-generation `estimate` (see estimate_mesh_budget) beside the actual counts. For a 2-D B-rep generate with a Part.meshBoundaryLayer, `boundaryLayers` reports each wall Part's planned rows and the rows actually read back from the generated nodes (minimum and median over sampled wall stations, plus wall coverage), and warns when any station fell short of the plan. Nothing is written to disk — use export_mesh for that. Emits notifications/progress at start and completion if you set _meta.progressToken — Gmsh itself has no mid-call progress hook, so this is start/done signaling only, not a genuine percentage.",
     inputSchema: { path: modelPath, options: meshOptionsOverride },
   },
   wrap((args: { path: string; options?: Record<string, unknown> }, onProgress) =>

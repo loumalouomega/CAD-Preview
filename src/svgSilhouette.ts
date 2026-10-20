@@ -21,7 +21,7 @@ import { annotatedLabelText, type AnnotatedTolerance } from "./toleranceBand";
 import { resolveNamedView } from "./viewDirections";
 // Type-only: `drawingSheet.ts` imports `drawingBounds` from this module as a
 // VALUE, so a value import back would be a real cycle.
-import type { SheetLayout, SheetText } from "./drawingSheet";
+import type { PlacedView, SheetLayout, SheetText } from "./drawingSheet";
 
 export type Vec3 = readonly [number, number, number];
 type Pt2 = [number, number];
@@ -397,7 +397,17 @@ function drawingLayers(
 }
 
 /** Sheet stroke widths, in real print millimetres (ISO 128 line series). */
-const SHEET_STROKE = { visible: 0.35, hidden: 0.25, glyph: 0.18, frame: 0.7, titleBlock: 0.35 } as const;
+const SHEET_STROKE = {
+  visible: 0.35,
+  hidden: 0.25,
+  glyph: 0.18,
+  frame: 0.7,
+  titleBlock: 0.35,
+  sectionCut: 0.5,
+  sectionHatch: 0.18,
+} as const;
+/** Section labels use the same ISO 3098 series as view labels. */
+const SECTION_LABEL_HEIGHT = 3.5;
 
 /** An element id made safe from a view name (`iso-ftr` stays `iso-ftr`). */
 function viewId(name: string): string {
@@ -416,6 +426,46 @@ export function sheetSvg(layout: SheetLayout, options: { stroke?: string; title?
     list.map(([a, b]) => `M ${fmt(a[0], decimals)} ${fmt(a[1], decimals)} L ${fmt(b[0], decimals)} ${fmt(b[1], decimals)}`).join(" ");
   const text = (t: SheetText): string =>
     `<text x="${fmt(t.x, decimals)}" y="${fmt(t.y, decimals)}" font-family="sans-serif" font-size="${fmtStrokeWidth(t.height)}" fill="${stroke}" text-anchor="${t.anchor}">${escapeXml(t.text)}</text>`;
+  const sectionSvg = (view: PlacedView): string => {
+    const parts: string[] = [];
+    if (view.section) {
+      const id = `section-${viewId(view.name)}-${viewId(view.section.id)}`;
+      const loopD = view.section.loops
+        .filter((loop) => loop.length >= 2)
+        .map((loop) => `${loop.map((p, i) => `${i === 0 ? "M" : "L"} ${fmt(p[0], decimals)} ${fmt(p[1], decimals)}`).join(" ")} Z`)
+        .join(" ");
+      const hatchD = view.section.hatch
+        .map(([a, b]) => `M ${fmt(a[0], decimals)} ${fmt(a[1], decimals)} L ${fmt(b[0], decimals)} ${fmt(b[1], decimals)}`)
+        .join(" ");
+      const clip = `${id}-clip`;
+      parts.push(
+        `<g class="SECTION" id="${id}" data-section="${escapeXml(view.section.label)}">` +
+          (loopD ? `<clipPath id="${clip}"><path fill-rule="evenodd" d="${loopD}"/></clipPath>` : "") +
+          (hatchD
+            ? `<path fill="none" stroke="${stroke}" stroke-width="${fmtStrokeWidth(SHEET_STROKE.sectionHatch)}" stroke-linecap="butt"${loopD ? ` clip-path="url(#${clip})"` : ""} d="${hatchD}"/>`
+            : "") +
+          (loopD ? `<path fill="none" stroke="${stroke}" stroke-width="${fmtStrokeWidth(SHEET_STROKE.sectionCut)}" stroke-linejoin="round" d="${loopD}"/>` : "") +
+          `</g>`
+      );
+    }
+    for (const mark of view.sectionMarks ?? []) {
+      const id = `section-mark-${viewId(view.name)}`;
+      const lineD = mark.segments
+        .map(([a, b]) => `M ${fmt(a[0], decimals)} ${fmt(a[1], decimals)} L ${fmt(b[0], decimals)} ${fmt(b[1], decimals)}`)
+        .join(" ");
+      const arrowD = mark.arrows
+        .map(([a, b]) => `M ${fmt(a[0], decimals)} ${fmt(a[1], decimals)} L ${fmt(b[0], decimals)} ${fmt(b[1], decimals)}`)
+        .join(" ");
+      parts.push(
+        `<g class="SECTION-MARK" id="${id}">` +
+          (lineD ? `<path fill="none" stroke="${stroke}" stroke-width="${fmtStrokeWidth(SHEET_STROKE.sectionCut)}" d="${lineD}"/>` : "") +
+          (arrowD ? `<path fill="none" stroke="${stroke}" stroke-width="${fmtStrokeWidth(SHEET_STROKE.sectionCut)}" d="${arrowD}"/>` : "") +
+          `<text x="${fmt(mark.labelAt[0], decimals)}" y="${fmt(mark.labelAt[1], decimals)}" font-family="sans-serif" font-size="${fmtStrokeWidth(SECTION_LABEL_HEIGHT)}" fill="${stroke}" text-anchor="middle">${escapeXml(mark.label)}</text>` +
+          `</g>`
+      );
+    }
+    return parts.join("");
+  };
 
   let body = "";
   for (const view of layout.views) {
@@ -442,7 +492,7 @@ export function sheetSvg(layout: SheetLayout, options: { stroke?: string; title?
       const layers = drawingLayers(view.visible, view.hidden, view.dimensions, style);
       content = `${layers.hidden}${layers.visible}${layers.dimensions}`;
     }
-    body += `<g id="view-${viewId(view.name)}">${content}${text(view.label)}</g>`;
+    body += `<g id="view-${viewId(view.name)}">${content}${sectionSvg(view)}${text(view.label)}</g>`;
   }
   const w = fmt(layout.width, decimals);
   const h = fmt(layout.height, decimals);

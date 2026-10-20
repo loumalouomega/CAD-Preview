@@ -1,5 +1,6 @@
 import { SIZE_MAX_SENTINEL, DEFAULT_MESH_OPTIONS, boundaryLayerPlan, validateMeshBoundaryLayer, validateMeshGrading, validateMeshStructured, type MeshOptions, type MeshGrading, type MeshStructured, type MeshBoundaryLayer } from "../meshOptions";
 import type { QualitySummary } from "../meshQuality";
+import type { BoundaryLayerAchieved } from "../boundaryLayerMeasurement";
 import { describeGateCheck, type QualityGateResult } from "../meshQualityGate";
 import { TOOLBAR_ICONS } from "../toolbarIcons";
 import { MESH_EXPORT_FORMATS, type MeshExportFormatId } from "../meshExportFormats";
@@ -35,6 +36,8 @@ export interface MeshingStats {
   /** The worst-quality-elements highlight overlay's stats — omitted for a
    * non-3D generate, or when nothing scored below the quality threshold. */
   worstElements?: { threshold: number; shownCount: number; belowThresholdCount: number };
+  /** Achieved boundary-layer rows per wall Part for a 2-D B-rep generate. */
+  boundaryLayers?: BoundaryLayerAchieved[];
 }
 
 /** Failure readout: a human-readable error message from the host. */
@@ -221,6 +224,9 @@ export class MeshingPanel {
   private extents: ModelExtents | null = null;
   /** Options as of the last `render()` — the slider/estimate math needs them between renders. */
   private lastOptions: MeshOptions | null = null;
+  /** The plan line of every rendered boundary-layer row, so a later
+   * `meshingResult` can add its achieved count without rebuilding the form. */
+  private layerRows: Array<{ name: string; plan: HTMLElement; base: string }> = [];
 
   constructor(
     private readonly panel: HTMLElement,
@@ -988,17 +994,47 @@ export class MeshingPanel {
     if (!status) {
       this.statusEl.textContent = "";
       this.renderQuality(undefined, undefined);
+      this.renderLayerAchieved(undefined);
       this.gateEl.hidden = true;
     } else if ("error" in status) {
       this.statusEl.textContent = status.error;
       this.statusEl.classList.add("meshing-status-error");
       this.renderQuality(undefined, undefined);
+      this.renderLayerAchieved(undefined);
       this.gateEl.hidden = true;
     } else {
       this.gateEl.hidden = false;
       const elapsed = status.elapsedMs != null ? ` · ${formatElapsed(status.elapsedMs)}` : "";
       this.statusEl.textContent = `Nodes: ${status.nodeCount} · Elements: ${status.elementCount}${elapsed}`;
       this.renderQuality(status.quality, status.worstElements);
+      this.renderLayerAchieved(status.boundaryLayers);
+    }
+  }
+
+  /**
+   * Appends each wall Part's achieved row count to its layer plan line. The
+   * plan is the promise; this is what Gmsh actually produced. A worst station
+   * below the plan is highlighted rather than hidden — a silently degenerated
+   * layer is exactly the failure this read-back exists to expose.
+   */
+  private renderLayerAchieved(results: BoundaryLayerAchieved[] | undefined): void {
+    const byPart = new Map((results ?? []).map((r) => [r.part, r]));
+    for (const row of this.layerRows) {
+      row.plan.classList.remove("is-warning");
+      if (!row.base) {
+        row.plan.textContent = "";
+        continue;
+      }
+      const achieved = byPart.get(row.name);
+      if (!achieved) {
+        row.plan.textContent = row.base;
+        continue;
+      }
+      const coverage = Math.round(achieved.coverage * 100);
+      row.plan.textContent =
+        `${row.base} · achieved ${achieved.achievedMedian}/${achieved.plannedRows} median` +
+        ` (min ${achieved.achievedMin}, ${coverage}% covered)`;
+      row.plan.classList.toggle("is-warning", achieved.achievedMin < achieved.plannedRows);
     }
   }
 
@@ -1363,6 +1399,7 @@ export class MeshingPanel {
     }
     this.partsSection.hidden = parts.length === 0;
     this.partsBody.textContent = "";
+    this.layerRows = [];
     parts.forEach((part, index) => {
       const row = document.createElement("div");
       row.className = "meshing-part-row";
@@ -1463,7 +1500,7 @@ export class MeshingPanel {
       });
 
       if (hasLayerTarget) {
-        const layerRow = this.buildPartBoundaryLayerRow(index, part.meshBoundaryLayer);
+        const layerRow = this.buildPartBoundaryLayerRow(index, part.name, part.meshBoundaryLayer);
         layerRow.hidden = true;
         this.partsBody.appendChild(layerRow);
 
@@ -1601,7 +1638,7 @@ export class MeshingPanel {
    * blank clears, a valid set commits, anything else shows inline and never
    * forwards.
    */
-  private buildPartBoundaryLayerRow(index: number, initial: MeshBoundaryLayer | undefined): HTMLDivElement {
+  private buildPartBoundaryLayerRow(index: number, partName: string, initial: MeshBoundaryLayer | undefined): HTMLDivElement {
     const row = document.createElement("div");
     row.className = "meshing-part-grading meshing-part-layer";
 
@@ -1645,13 +1682,18 @@ export class MeshingPanel {
     error.className = "meshing-part-grading-error";
     row.appendChild(error);
 
+    const entry = { name: partName, plan, base: "" };
+    this.layerRows.push(entry);
     const showPlan = (layer: MeshBoundaryLayer | undefined): void => {
+      plan.classList.remove("is-warning");
       if (!layer) {
+        entry.base = "";
         plan.textContent = "";
         return;
       }
       const p = boundaryLayerPlan(layer);
-      plan.textContent = `${p.layers} row${p.layers === 1 ? "" : "s"}, last ${formatSize(p.lastHeight)}, total ${formatSize(p.totalThickness)}`;
+      entry.base = `${p.layers} row${p.layers === 1 ? "" : "s"}, last ${formatSize(p.lastHeight)}, total ${formatSize(p.totalThickness)}`;
+      plan.textContent = entry.base;
     };
     showPlan(initial);
 

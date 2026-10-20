@@ -236,3 +236,34 @@ describe("sheet writers", () => {
     }
   });
 });
+
+describe("sheet sections", () => {
+  const sectioned = (): SheetViewInput[] => {
+    const v = boxViews();
+    v[0].section = { id: "A-A", label: "A—A", loops: [[[100, -220], [130, -220], [130, -200], [100, -200]]] };
+    v[0].sectionMarks = [{ label: "A—A", segments: [[[100, -210], [130, -210]]], arrows: [[[100, -210], [103, -208]], [[100, -210], [103, -212]]], labelAt: [115, -200] }];
+    return v;
+  };
+
+  it("layoutSheet hatches the cut at a constant sheet spacing and carries the mark", () => {
+    const layout = layoutSheet(sectioned(), { paper: "fit" });
+    const front = layout.views.find((x) => x.name === "front")!;
+    expect(front.section?.loopCount).toBe(1);
+    expect(front.section?.hatch.length).toBeGreaterThan(0);
+    expect(front.sectionMarks).toHaveLength(1);
+    expect(layout.views.find((x) => x.name === "top")!.section).toBeUndefined();
+  });
+
+  it("sheetSvg draws a SECTION group and the mark; sheetDxf uses a SECTION layer", () => {
+    const layout = layoutSheet(sectioned(), { paper: "A4", title: "box.step" });
+    const svg = sheetSvg(layout);
+    expect(svg).toContain('class="SECTION"');
+    expect(svg).toContain('class="SECTION-MARK"');
+    expect(svg).toContain("A—A");
+    expect(svg).not.toMatch(/NaN|Infinity/);
+    const { dxf } = sheetDxf(layout);
+    const entities = parseDxfRawEntities(dxf);
+    const layers = new Set(entities.map((e) => e.pairs.find(([code]) => code === 8)?.[1]));
+    expect(layers.has("SECTION")).toBe(true);
+  });
+});

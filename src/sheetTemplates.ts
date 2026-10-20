@@ -8,7 +8,7 @@
  * title-block fields; never geometry.
  */
 import type { TitleBlockFields } from "./drawingSheet";
-import type { SheetSettingsInput } from "./sheetSettings";
+import type { SheetSectionInput, SheetSettingsInput, SheetViewSectionInput } from "./sheetSettings";
 
 export const SHEET_TEMPLATE_LIBRARY_VERSION = 1;
 export const BUNDLED_SHEET_TEMPLATES_FILE = "starter-templates.json";
@@ -57,6 +57,34 @@ function validateTemplate(key: string, value: unknown): SheetTemplate | null {
   if (Array.isArray(r.views) && r.views.every((v) => typeof v === "string")) t.views = r.views as string[];
   for (const k of ["format", "paper", "projection", "title"] as const) if (typeof r[k] === "string") t[k] = r[k] as string;
   if (typeof r.scale === "number" || typeof r.scale === "string") t.scale = r.scale as number | string;
+  if (Array.isArray(r.sections)) {
+    const sections = r.sections.filter((s): s is SheetSectionInput => {
+      if (!s || typeof s !== "object" || Array.isArray(s)) return false;
+      const e = s as Record<string, unknown>;
+      return (
+        typeof e.id === "string" &&
+        e.id.trim() !== "" &&
+        typeof e.view === "string" &&
+        e.view.trim() !== "" &&
+        isVec3(e.origin) &&
+        isVec3(e.normal) &&
+        (e.label === undefined || typeof e.label === "string") &&
+        (e.flip === undefined || typeof e.flip === "boolean")
+      );
+    });
+    if (sections.length > 0) t.sections = sections;
+  }
+  if (r.viewSections && typeof r.viewSections === "object" && !Array.isArray(r.viewSections)) {
+    const cuts: Record<string, SheetViewSectionInput> = {};
+    for (const [key, value] of Object.entries(r.viewSections)) {
+      if (!value || typeof value !== "object" || Array.isArray(value)) continue;
+      const e = value as Record<string, unknown>;
+      if (isVec3(e.origin) && isVec3(e.normal) && (e.flip === undefined || typeof e.flip === "boolean")) {
+        cuts[key] = { origin: e.origin, normal: e.normal, ...(e.flip === true ? { flip: true } : {}) };
+      }
+    }
+    if (Object.keys(cuts).length > 0) t.viewSections = cuts;
+  }
   if (r.fields && typeof r.fields === "object" && !Array.isArray(r.fields)) {
     const f: TitleBlockFields = {};
     for (const k of ["author", "drawingNumber", "revision", "material"] as const) {
@@ -66,6 +94,10 @@ function validateTemplate(key: string, value: unknown): SheetTemplate | null {
     if (Object.keys(f).length) t.fields = f;
   }
   return t;
+}
+
+function isVec3(v: unknown): v is [number, number, number] {
+  return Array.isArray(v) && v.length === 3 && v.every((n) => typeof n === "number" && Number.isFinite(n));
 }
 
 export function serializeSheetTemplatesJson(library: SheetTemplateLibrary): string {

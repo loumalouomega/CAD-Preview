@@ -492,6 +492,7 @@ function fakePipeline(overrides: Partial<Pipeline> = {}): Pipeline {
       paper: opts.paper ?? "fit",
       projection: opts.projection ?? "first",
       views: opts.views.map((v) => ({ name: v.name, segmentCount: 4, hiddenSegmentCount: 0, dimensionCount: 0 })),
+      sections: [],
       triangleCount: 12,
       warnings: [],
     })),
@@ -647,8 +648,9 @@ beforeEach(async () => {
   // A minimal but genuinely parseable glTF: the tools now resolve external
   // buffers before calling the pipeline, which reads the JSON for real.
   await fs.writeFile(gltfModel, MINIMAL_GLTF, "utf8");
-  // meshio-only source — the remaining "no host-side geometry" rejection path,
-  // which glTF used to cover before it gained a parser.
+  // meshio-only source — still the "no host-side triangle-soup parser" rejection
+  // path for the mesh-healing/export tools, even though compare/mass/measure now
+  // read its extracted boundary surface.
   await fs.writeFile(vtkModel, "# vtk DataFile Version 3.0\n", "utf8");
   await fs.writeFile(scadModel, "cube(size = [10, 10, 10], center = true);\n", "utf8");
 });
@@ -1081,11 +1083,36 @@ describe("get_mass_properties", () => {
     expect(result.warnings.join(" ")).toMatch(/NOT baked in/i);
   });
 
-  it("still returns supported:false for meshio-only sources without touching WASM", async () => {
-    const c = ctx();
+  it("computes triangle-based mass for a meshio-only source from its extracted boundary", async () => {
+    // A closed, consistently-wound unit tetrahedron: volume 1/6, area
+    // 3 right faces (1/2 each) plus the √2-edged equilateral face (√3/2).
+    // (The shared TWO_TET boundary fixture has mixed winding, so its signed
+    // volume cancels to 0 — right for conformity, wrong for a volume read.)
+    const tetra = [
+      "solid tet",
+      "facet normal 0 0 -1", "outer loop", "vertex 0 0 0", "vertex 0 1 0", "vertex 1 0 0", "endloop", "endfacet",
+      "facet normal 0 -1 0", "outer loop", "vertex 0 0 0", "vertex 1 0 0", "vertex 0 0 1", "endloop", "endfacet",
+      "facet normal -1 0 0", "outer loop", "vertex 0 0 0", "vertex 0 0 1", "vertex 0 1 0", "endloop", "endfacet",
+      "facet normal 0.5773502691896258 0.5773502691896258 0.5773502691896258",
+      "outer loop", "vertex 1 0 0", "vertex 0 1 0", "vertex 0 0 1", "endloop", "endfacet",
+      "endsolid tet",
+    ].join("\n");
+    const c = ctx(fakePipeline({
+      convertToStlBoundaryWithRegions: vi.fn(async () => ({
+        stlBytes: new TextEncoder().encode(tetra),
+        regions: { regionNames: ["MaterialA"], triangleRegion: Int32Array.from([0, 0, 0, 0]) },
+      })),
+    }));
     const result = await getMassProperties(c, { path: vtkModel });
     expect(c.pipeline.computeMassProperties).not.toHaveBeenCalled();
-    expect(result.supported).toBe(false);
+    expect(result.supported).toBe(true);
+    expect(result.surfaceDerived).toBe(true);
+    expect(result.regionCount).toBe(1);
+    expect(result.watertight).toBe(true);
+    expect(result.volume).toBeCloseTo(1 / 6, 9);
+    expect(result.area).toBeCloseTo((3 + Math.sqrt(3)) / 2, 9);
+    expect(result.bbox).toMatchObject({ min: [0, 0, 0], max: [1, 1, 1] });
+    expect(result.warnings.join(" ")).toMatch(/surface-derived/i);
   });
 
   it("rejects unsupported extensions", async () => {
@@ -1163,6 +1190,16 @@ describe("measure", () => {
     });
     expect(result.axis).toEqual([0, 0, 1]);
     expect(result.axisComponent).toBeCloseTo(result.delta![2], 12);
+  });
+
+  it("measures a meshio-only source on its extracted boundary, marked surface-derived", async () => {
+    const c = ctx(fakePipeline({
+      convertToStlBoundaryWithRegions: vi.fn(async () => ({ stlBytes: TWO_TET_BOUNDARY_STL })),
+    }));
+    const result = await measureTool(c, { path: vtkModel, from: "whole-model", to: "mesh-component-0" });
+    expect(c.pipeline.measureEntities).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ supported: true, surfaceDerived: true, regionCount: 0 });
+    expect(result.warnings.join(" ")).toMatch(/surface-derived/i);
   });
 });
 
@@ -1600,7 +1637,7 @@ describe("compare_models", () => {
       { kind: "brep", bytes: expect.any(Uint8Array), format: "step", ops: [] },
       { kind: "brep", bytes: expect.any(Uint8Array), format: "step", ops: [] }
     );
-    expect(result).toEqual({ formatA: "step", formatB: "step", supported: true, warnings: [], diff: FAKE_MODEL_DIFF });
+    expect(result).toEqual({ formatA: "step", formatB: "step", supported: true, warnings: [], diff: FAKE_MODEL_DIFF, sides: { A: { kind: "brep", surfaceDerived: false }, B: { kind: "brep", surfaceDerived: false } } });
   });
 
   it("replays each side's sidecar ops before comparing", async () => {
@@ -1620,7 +1657,7 @@ describe("compare_models", () => {
       { kind: "brep", bytes: expect.any(Uint8Array), format: "step", ops: [] },
       { kind: "stl", bytes: expect.any(Uint8Array) }
     );
-    expect(result).toEqual({ formatA: "step", formatB: "stl", supported: true, warnings: [], diff: FAKE_MODEL_DIFF });
+    expect(result).toEqual({ formatA: "step", formatB: "stl", supported: true, warnings: [], diff: FAKE_MODEL_DIFF, sides: { A: { kind: "brep", surfaceDerived: false }, B: { kind: "mesh", surfaceDerived: false } } });
   });
 
   it("diffs two STL sources", async () => {
@@ -1668,7 +1705,7 @@ describe("compare_models", () => {
       { kind: "brep", bytes: expect.any(Uint8Array), format: "step", ops: [] },
       { kind: "obj", bytes: expect.any(Uint8Array) }
     );
-    expect(result).toEqual({ formatA: "step", formatB: "obj", supported: true, warnings: [], diff: FAKE_MODEL_DIFF });
+    expect(result).toEqual({ formatA: "step", formatB: "obj", supported: true, warnings: [], diff: FAKE_MODEL_DIFF, sides: { A: { kind: "brep", surfaceDerived: false }, B: { kind: "mesh", surfaceDerived: false } } });
   });
 
   it("diffs a B-rep source against a PLY source, as raw PLY bytes with no edits baked", async () => {
@@ -1679,7 +1716,7 @@ describe("compare_models", () => {
       { kind: "brep", bytes: expect.any(Uint8Array), format: "step", ops: [] },
       { kind: "ply", bytes: expect.any(Uint8Array) }
     );
-    expect(result).toEqual({ formatA: "step", formatB: "ply", supported: true, warnings: [], diff: FAKE_MODEL_DIFF });
+    expect(result).toEqual({ formatA: "step", formatB: "ply", supported: true, warnings: [], diff: FAKE_MODEL_DIFF, sides: { A: { kind: "brep", surfaceDerived: false }, B: { kind: "mesh", surfaceDerived: false } } });
   });
 
   it("diffs OBJ against PLY directly", async () => {
@@ -1727,13 +1764,31 @@ describe("compare_models", () => {
     expect(result.supported).toBe(true);
   });
 
-  it("returns supported: false with a warning for a meshio-only format (.vtk), without touching WASM", async () => {
-    const c = ctx();
+  it("diffs a meshio-only source through its extracted boundary and marks that side surface-derived", async () => {
+    const c = ctx(fakePipeline({
+      convertToStlBoundaryWithRegions: vi.fn(async () => ({
+        stlBytes: TWO_TET_BOUNDARY_STL,
+        regions: { regionNames: ["MaterialA", "MaterialB"], triangleRegion: Int32Array.from([0, 0, 0, 1, 1, 1]) },
+      })),
+    }));
     const result = await compareModelsTool(c, { pathA: stpModel, pathB: vtkModel });
-    expect(c.pipeline.compareModels).not.toHaveBeenCalled();
-    expect(result.supported).toBe(false);
-    expect(result.diff).toBeUndefined();
-    expect(result.warnings[0]).toMatch(/STEP\/IGES\/BREP\/CSG\/STL\/OBJ\/PLY\/glTF/i);
+    expect(c.pipeline.convertToStlBoundaryWithRegions).toHaveBeenCalledWith(
+      expect.any(Uint8Array),
+      "vtk",
+      "model.vtk",
+      []
+    );
+    expect(c.pipeline.compareModels).toHaveBeenCalledWith(
+      dir,
+      { kind: "brep", bytes: expect.any(Uint8Array), format: "step", ops: [] },
+      { kind: "stl", bytes: TWO_TET_BOUNDARY_STL }
+    );
+    expect(result.supported).toBe(true);
+    expect(result.sides).toEqual({
+      A: { kind: "brep", surfaceDerived: false },
+      B: { kind: "meshio", surfaceDerived: true, regionCount: 2, watertight: true },
+    });
+    expect(result.warnings.join(" ")).toMatch(/surface-derived/i);
   });
 
   it("rejects unsupported extensions on either path", async () => {
@@ -3244,7 +3299,13 @@ describe("recoverable mesh save (roadmap 1.5)", () => {
   const BAKED = "solid baked\nendsolid baked\n";
 
   /** Stages a save-in-place interrupted at `point`. */
-  async function stage(modelPath: string, point: "before-source" | "after-source" | "after-watermark" | "unrecognised", bakedThrough = 0) {
+  async function stage(
+    modelPath: string,
+    point: "before-source" | "after-source" | "after-watermark" | "unrecognised",
+    bakedThrough = 0,
+    format = "stl",
+    tempExt = format
+  ) {
     const baked = point === "unrecognised" ? "solid torn\nendsolid tor" : BAKED;
     await fs.writeFile(modelPath, point === "before-source" ? ORIGINAL : baked, "utf8");
     await fs.writeFile(`${modelPath}.bak`, ORIGINAL, "utf8");
@@ -3265,14 +3326,17 @@ describe("recoverable mesh save (roadmap 1.5)", () => {
         source: path.basename(modelPath),
         saveId: "save-1",
         startedAt: "2026-09-26T00:00:00.000Z",
-        format: "stl",
+        format,
         bakedThrough: 1,
         preSaveSha256: hashBytes(Buffer.from(ORIGINAL, "utf8")),
         bakedSha256: hashBytes(Buffer.from(BAKED, "utf8")),
       }),
       "utf8"
     );
-    if (point === "before-source") await fs.writeFile(path.join(dir, "model.save-tmp.stl"), BAKED, "utf8");
+    if (point === "before-source") {
+      const base = path.basename(modelPath).replace(/\.[^.]+$/, "");
+      await fs.writeFile(path.join(dir, `${base}.save-tmp.${tempExt}`), BAKED, "utf8");
+    }
   }
 
   it("finishes the save when the source holds the baked geometry but the watermark never landed", async () => {
@@ -3349,11 +3413,71 @@ describe("recoverable mesh save (roadmap 1.5)", () => {
     expect((await getState({ path: stlModel })).bakedThrough).toBe(0);
   });
 
-  it("ignores a staged journal on a B-rep source (the mesh-only gate)", async () => {
+  it("recovers a staged journal on a B-rep source too", async () => {
     const c = ctx();
-    await stage(stpModel, "after-source");
-    await loadModel(c, { path: stpModel });
+    await stage(stpModel, "after-source", 0, "step");
+    const result = await loadModel(c, { path: stpModel });
+    expect(result.warnings.join(" ")).toMatch(/the save was completed/i);
+    expect(result.warnings.join(" ")).toMatch(/verify them/i);
+    expect((await getState({ path: stpModel })).bakedThrough).toBe(1);
+    await expect(fs.stat(`${stpModel}.save-journal.json`)).rejects.toThrow();
+  });
+
+  it("recovers the same crash for STEP, IGES and BREP", async () => {
+    for (const [ext, format] of [["stp", "step"], ["igs", "iges"], ["brep", "brep"]] as const) {
+      const modelPath = path.join(dir, `recover.${ext}`);
+      const c = ctx();
+      await stage(modelPath, "after-source", 0, format);
+      const result = await loadModel(c, { path: modelPath });
+      expect(result.warnings.join(" "), format).toMatch(/the save was completed/i);
+      expect((await getState({ path: modelPath })).bakedThrough, format).toBe(1);
+      await expect(fs.stat(`${modelPath}.save-journal.json`), format).rejects.toThrow();
+    }
+  });
+
+  it("discards a pre-source B-rep crash and sweeps the temp sibling for STEP, IGES and BREP", async () => {
+    for (const [ext, format, tempExt] of [["stp", "step", "step"], ["igs", "iges", "iges"], ["brep", "brep", "brep"]] as const) {
+      const modelPath = path.join(dir, `before.${ext}`);
+      const c = ctx();
+      await stage(modelPath, "before-source", 0, format, tempExt);
+      const result = await loadModel(c, { path: modelPath });
+      expect(result.warnings.join(" "), format).toMatch(/never rewritten/i);
+      expect((await getState({ path: modelPath })).bakedThrough, format).toBe(0);
+      expect(await fs.readFile(modelPath, "utf8"), format).toBe(ORIGINAL);
+      await expect(fs.stat(`${modelPath}.save-journal.json`), format).rejects.toThrow();
+      await expect(fs.stat(path.join(dir, `before.save-tmp.${tempExt}`)), format).rejects.toThrow();
+    }
+  });
+
+  it("reports, but does not guess at, an unrecognised B-rep source on open", async () => {
+    await stage(stpModel, "unrecognised", 0, "step");
+    const c = ctx();
+    const result = await loadModel(c, { path: stpModel });
+    expect(result.warnings.join(" ")).toMatch(/Nothing has been changed/i);
     expect((await getState({ path: stpModel })).bakedThrough).toBe(0);
+    await expect(fs.stat(`${stpModel}.save-journal.json`)).resolves.toBeDefined();
+  });
+
+  it("completes staged B-rep saves for STEP, IGES and BREP on save_model", async () => {
+    for (const [ext, format] of [["stp", "step"], ["igs", "iges"], ["brep", "brep"]] as const) {
+      const modelPath = path.join(dir, `resave.${ext}`);
+      await stage(modelPath, "after-source", 0, format);
+      const c = ctx();
+      const r = await saveModelTool(c, { path: modelPath });
+      expect(r.warnings.join(" "), format).toMatch(/the save was completed/i);
+      // Recovery advanced the watermark first, so the pending tail is now empty
+      // and the re-save is a no-op rather than a second application.
+      expect(r.baked, format).toBe(0);
+      expect(c.pipeline.exportBRep, format).not.toHaveBeenCalled();
+      await expect(fs.stat(`${modelPath}.save-journal.json`), format).rejects.toThrow();
+    }
+  });
+
+  it("refuses to save over a B-rep source that matches neither hash", async () => {
+    await stage(stpModel, "unrecognised", 0, "step");
+    const c = ctx();
+    await expect(saveModelTool(c, { path: stpModel })).rejects.toThrow(/Refusing to save over/);
+    expect(c.pipeline.exportBRep).not.toHaveBeenCalled();
     await expect(fs.stat(`${stpModel}.save-journal.json`)).resolves.toBeDefined();
   });
 
@@ -5772,6 +5896,35 @@ describe("export_drawing_sheet", () => {
     await exportDrawingSheetTool(c, { path: stpModel, outputPath: path.join(dir, "n.svg") });
     const call = (c.pipeline.exportDrawingSheet as ReturnType<typeof vi.fn>).mock.calls[0][2];
     expect("layerFilter" in call).toBe(false);
+  });
+
+  it("forwards named sections and in-place view cuts to the pipeline and echoes the section report", async () => {
+    const c = ctx();
+    const r = await exportDrawingSheetTool(c, {
+      path: stpModel,
+      outputPath: path.join(dir, "sec.svg"),
+      sections: [{ id: "A-A", label: "A—A", view: "front", origin: [0, 0, 0], normal: [0, 1, 0] }],
+      viewSections: { top: { origin: [0, 0, 0], normal: [0, 0, 1] } },
+    });
+    const call = (c.pipeline.exportDrawingSheet as ReturnType<typeof vi.fn>).mock.calls[0][2];
+    expect(call.sections).toEqual([{ id: "A-A", label: "A—A", view: "front", origin: [0, 0, 0], normal: [0, 1, 0] }]);
+    expect(call.views.find((v: { name: string }) => v.name === "top")).toMatchObject({
+      sectionPlane: { origin: [0, 0, 0], normal: [0, 0, 1] },
+    });
+    expect(r.sections).toEqual([]);
+  });
+
+  it("warns and skips a section whose parent view is absent", async () => {
+    const c = ctx();
+    const r = await exportDrawingSheetTool(c, {
+      path: stpModel,
+      outputPath: path.join(dir, "sec-miss.svg"),
+      views: ["front"],
+      sections: [{ id: "A-A", view: "top", origin: [0, 0, 0], normal: [0, 1, 0] }],
+    });
+    const call = (c.pipeline.exportDrawingSheet as ReturnType<typeof vi.fn>).mock.calls[0][2];
+    expect(call.sections).toEqual([]);
+    expect(r.warnings.join(" ")).toMatch(/Section "A-A" names view "top"/);
   });
 });
 

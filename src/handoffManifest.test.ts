@@ -52,6 +52,13 @@ describe("buildHandoffManifest", () => {
     expect(m.outputs[0].sha256).toMatch(/^[0-9a-f]{64}$/);
   });
 
+  it("records achieved boundary-layer rows when the export measured them", () => {
+    const boundaryLayers = [{ part: "Wall", plannedRows: 6, achievedMin: 6, achievedMedian: 6, coverage: 1, stations: 9 }];
+    const m = build({ facts: { ...facts, boundaryLayers } });
+    expect(m.boundaryLayers).toEqual(boundaryLayers);
+    expect(build().boundaryLayers).toBeUndefined();
+  });
+
   it("records a unit conversion exactly once", () => {
     const m = build({ unit: "in", scaleFactor: 1 / 25.4 });
     expect(m.unit).toEqual({ unit: "in", scaleFactor: 1 / 25.4 });

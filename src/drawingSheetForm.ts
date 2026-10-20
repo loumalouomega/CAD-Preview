@@ -93,6 +93,12 @@ ${formLayers.length > 0 ? `<fieldset><legend>Layers</legend><div class="views">
   <span>Revision</span><input id="revision" type="text" value="${esc(f.revision ?? "")}" />
   <span>Material</span><input id="material" type="text" value="${esc(f.material ?? "")}" />
 </div></fieldset>
+<fieldset><legend>Sections (optional, JSON)</legend>
+  <div class="grid">
+  <span>Named sections</span><textarea id="sections" rows="4" cols="40" placeholder='[{"id":"A-A","view":"front","origin":[0,0,0],"normal":[0,1,0]}]'>${esc(initial.sections !== undefined ? JSON.stringify(initial.sections) : "")}</textarea>
+  <span>In-place cuts</span><textarea id="viewSections" rows="3" cols="40" placeholder='{"front":{"origin":[0,0,0],"normal":[0,1,0]}}'>${esc(initial.viewSections !== undefined ? JSON.stringify(initial.viewSections) : "")}</textarea>
+  </div>
+</fieldset>
 <div id="warn"></div>
 <div class="row"><button id="export" class="primary">Export…</button><button id="save">Save as template…</button><button id="cancel">Cancel</button></div>
 <script nonce="${nonce}">
@@ -111,7 +117,21 @@ ${formLayers.length > 0 ? `<fieldset><legend>Layers</legend><div class="views">
     const layers = layerBoxes.length > 0 && layerBoxes.some((c) => !c.checked)
       ? layerBoxes.filter((c) => c.checked).map((c) => c.value)
       : undefined;
-    return { views, projection: $("projection").value, paper: $("paper").value, scale, format: $("format").value, title: $("title").value.trim(), fields, layers };
+    const parseJson = (id, what) => {
+      const raw = $(id).value.trim();
+      if (!raw) return undefined;
+      try {
+        return JSON.parse(raw);
+      } catch (e) {
+        $("warn").textContent = what + " is not valid JSON.";
+        return null;
+      }
+    };
+    const sections = parseJson("sections", "Sections");
+    if (sections === null) return undefined;
+    const viewSections = parseJson("viewSections", "In-place cuts");
+    if (viewSections === null) return undefined;
+    return { views, projection: $("projection").value, paper: $("paper").value, scale, format: $("format").value, title: $("title").value.trim(), fields, layers, sections, viewSections };
   }
   function apply(t) {
     if (t.views) for (const c of document.querySelectorAll(".view")) c.checked = t.views.includes(c.value);
@@ -126,10 +146,13 @@ ${formLayers.length > 0 ? `<fieldset><legend>Layers</legend><div class="views">
     }
     if (t.title) $("title").value = t.title;
     for (const k of ["author", "drawingNumber", "revision", "material"]) if (t.fields && t.fields[k] !== undefined) $(k).value = t.fields[k];
+    if (t.sections !== undefined) $("sections").value = typeof t.sections === "string" ? t.sections : JSON.stringify(t.sections);
+    if (t.viewSections !== undefined) $("viewSections").value = typeof t.viewSections === "string" ? t.viewSections : JSON.stringify(t.viewSections);
   }
   $("template").addEventListener("change", () => { const t = templates.find((x) => x.name === $("template").value); if (t) apply(t); });
   $("export").addEventListener("click", () => {
     const s = read();
+    if (!s) return;
     if (s.views.length === 0) { $("warn").textContent = "Pick at least one view."; return; }
     vscode.postMessage({ type: "export", settings: s });
   });

@@ -35,6 +35,7 @@ import * as path from "path";
 // package's "require" export condition), sidestepping both problems above.
 import initialize from "@loumalouomega/gmsh-wasm";
 import { boundaryLayerAlgorithmProblem, gmshShapeOptions, SIZE_MAX_SENTINEL, DEFAULT_MESH_OPTIONS, type MeshOptions, type MeshEngine } from "./meshOptions";
+import { measureBoundaryLayerRows, type BoundaryLayerAchieved, type BoundaryLayerWall } from "./boundaryLayerMeasurement";
 import { summarizeQuality, type QualitySummary } from "./meshQuality";
 import type { Part, MeshElementGroup } from "./protocol";
 import { applyPartsToGmshModel, type PartGroupInfo, type PartGroupMaps } from "./gmshPartsMap";
@@ -248,6 +249,10 @@ export interface MeshResult {
    * False for single-solid (no-op), mesh sources, and when the option is off.
    * Recorded in the handoff manifest via `meshOptions` + `HandoffFacts`. */
   conformalApplied: boolean;
+  /** Achieved boundary-layer rows per wall Part — 2-D B-rep generates only
+   * (see `boundaryLayerMeasurement.ts`). Absent on a 3-D or mesh-source
+   * generate, where the layer is not measured. */
+  boundaryLayers?: BoundaryLayerAchieved[];
 }
 
 /** A highlight overlay of the mesh's worst-quality elements, closing the
@@ -572,6 +577,93 @@ async function populateMeshedModel(
 }
 
 /**
+ * Samples a wall curve as a short polyline. Gmsh exposes a curve's parametric
+ * bounds and values directly, so this works for arcs/splines as well as lines;
+ * the boundary-endpoint fallback keeps a curve measurable if those calls fail
+ * on an unusual entity.
+ */
+function sampleWallCurve(gmsh: GmshApi, tag: number): Array<[number, number, number]> {
+  try {
+    const bounds = gmsh.model.getParametrizationBounds(1, tag) as { min: number[]; max: number[] };
+    const u0 = bounds.min?.[0] ?? 0;
+    const u1 = bounds.max?.[0] ?? 1;
+    if (!(u1 > u0)) return [];
+    const samples: number[] = [];
+    for (let i = 0; i <= 16; i++) samples.push(u0 + ((u1 - u0) * i) / 16);
+    const value = gmsh.model.getValue(1, tag, samples) as { coord: number[] };
+    const points: Array<[number, number, number]> = [];
+    for (let i = 0; i + 2 < value.coord.length; i += 3) {
+      points.push([value.coord[i], value.coord[i + 1], value.coord[i + 2]]);
+    }
+    if (points.length >= 2) return points;
+  } catch {
+    /* fall through to the endpoint fallback */
+  }
+  try {
+    const boundary = gmsh.model.getBoundary([1, tag], false, false, false) as { outDimTags: number[] };
+    const points: Array<[number, number, number]> = [];
+    for (let i = 0; i + 1 < boundary.outDimTags.length; i += 2) {
+      if (boundary.outDimTags[i] !== 0) continue;
+      const value = gmsh.model.getValue(0, boundary.outDimTags[i + 1], []) as { coord: number[] };
+      if (value.coord.length >= 3) points.push([value.coord[0], value.coord[1], value.coord[2]]);
+    }
+    return points.length >= 2 ? [points[0], points[points.length - 1]] : [];
+  } catch {
+    const box = gmsh.model.getBoundingBox(1, tag) as number[];
+    return box.length >= 6 ? [[box[0], box[1], box[2]], [box[3], box[4], box[5]]] : [];
+  }
+}
+
+/**
+ * Reads the generated nodes back against every wall Part's requested layer.
+ * Only 2-D B-rep generates carry a layer (`applyPartsToGmshModel` warns and
+ * ignores it elsewhere), so other generates return `[]` and leave their
+ * existing behaviour untouched.
+ */
+function measureBoundaryLayersFromModel(
+  gmsh: GmshApi,
+  input: MeshGenerationInput,
+  options: MeshOptions,
+  parts: readonly Part[],
+  groupMaps: PartGroupMaps | null,
+  coords: ArrayLike<number>
+): { results: BoundaryLayerAchieved[]; warnings: string[] } {
+  if (input.kind !== "brep" || options.dimension !== 2) return { results: [], warnings: [] };
+  const layerParts = parts.filter((p) => p.meshBoundaryLayer != null);
+  if (layerParts.length === 0) return { results: [], warnings: [] };
+  const curveTagsByPart = new Map<string, number[]>();
+  for (const [tag, info] of groupMaps?.curveTagToPart ?? []) {
+    const list = curveTagsByPart.get(info.name) ?? [];
+    list.push(tag);
+    curveTagsByPart.set(info.name, list);
+  }
+  const walls: BoundaryLayerWall[] = layerParts.map((part) => ({
+    part: part.name,
+    layer: part.meshBoundaryLayer!,
+    polylines: (curveTagsByPart.get(part.name) ?? []).map((tag) => sampleWallCurve(gmsh, tag)).filter((p) => p.length >= 2),
+  }));
+  let results: BoundaryLayerAchieved[];
+  try {
+    results = measureBoundaryLayerRows(walls, coords);
+  } catch (err) {
+    return {
+      results: [],
+      warnings: [`Boundary layer rows could not be measured (${(err as Error).message}) — the mesh itself is unchanged.`],
+    };
+  }
+  const warnings: string[] = [];
+  for (const result of results) {
+    if (result.plannedRows > 0 && result.achievedMin < result.plannedRows) {
+      warnings.push(
+        `Part "${result.part}": boundary layer achieved ${result.achievedMin} of ${result.plannedRows} planned rows at the worst sampled station ` +
+          `(median ${result.achievedMedian}, ${Math.round(result.coverage * 100)}% of the sampled wall covered) — check the wall edges and layer thickness.`
+      );
+    }
+  }
+  return { results, warnings };
+}
+
+/**
  * Generates a mesh from `input` per `options` and returns node/element counts
  * plus a display-ready boundary triangulation (`positions`/`indices`) alongside
  * the raw `.msh` text. For `dimension === 3` the boundary triangles are derived
@@ -603,6 +695,7 @@ export async function generateMesh(
     const mshText = gmsh.FS.readFile(outPath, { encoding: "utf8" }) as string;
 
     const { quality, worstElements } = computeQualityAndWorstElements(gmsh, options.dimension, tagToIndex, options.elementOrder);
+    const measured = measureBoundaryLayersFromModel(gmsh, input, options, parts, loaded.groupMaps, nodes.coord);
 
     return {
       positions,
@@ -615,8 +708,9 @@ export async function generateMesh(
       quality,
       worstElements,
       engineUsed: loaded.engineUsed,
-      warnings: loaded.warnings,
+      warnings: [...loaded.warnings, ...measured.warnings],
       conformalApplied: loaded.conformalApplied,
+      boundaryLayers: measured.results.length > 0 ? measured.results : undefined,
     };
   } finally {
     if (tmpPath) {
@@ -895,6 +989,10 @@ export interface HandoffFacts {
   /** True when `options.conformal` fragmented 2+ volumes this run — recorded
    * in the handoff manifest alongside `meshOptions.conformal`. */
   conformalApplied: boolean;
+  /** Achieved boundary-layer rows per wall Part for a 2-D B-rep generate —
+   * the same read-back `generateMesh` reports, recorded in the handoff
+   * manifest so an exported layer carries its achieved count with it. */
+  boundaryLayers?: BoundaryLayerAchieved[];
 }
 
 /**
@@ -915,7 +1013,9 @@ export async function computeHandoffFacts(
     const loaded = await populateMeshedModel(extensionPath, gmsh, input, options, parts);
     tmpPath = loaded.tmpPath;
     const warnings = [...loaded.warnings];
-    const nodes = gmsh.model.mesh.getNodes() as { nodeTags: number[] };
+    const nodes = gmsh.model.mesh.getNodes() as { nodeTags: number[]; coord: number[] };
+    const measured = measureBoundaryLayersFromModel(gmsh, input, options, parts, loaded.groupMaps, nodes.coord);
+    warnings.push(...measured.warnings);
 
     const groups: PhysicalGroupFact[] = [];
     const pg = (gmsh.model.getPhysicalGroups().dimTags as number[]) ?? [];
@@ -971,6 +1071,7 @@ export async function computeHandoffFacts(
       subModelParts,
       warnings,
       conformalApplied: loaded.conformalApplied,
+      boundaryLayers: measured.results.length > 0 ? measured.results : undefined,
     };
   } finally {
     if (tmpPath) {

@@ -339,10 +339,11 @@ parses every MCP stdout line as JSON-RPC.
 
 `node scripts/dependency-watch.mjs` reports installed-versus-latest versions
 without writing to GitHub. The Monday workflow also supports manual dispatch
-and uses `--publish` to create or update one tracking issue. It monitors the
+and uses `--publish` to create or update one tracking issue, or to close it
+with a dated comment when every watched package is current. It monitors the
 five WASM packages, Three.js and the MCP SDK, including releases beyond caret
-ranges. Unchanged reports do not generate repeated updates; a current report
-leaves existing issues alone. Registry errors fail the job.
+ranges. Unchanged reports do not generate repeated updates. Registry errors
+fail the job.
 
 After updating kernels, run `npm test`, `npm run compat`, `npm run mcp:smoke`,
 then package a fresh VSIX and run `npm run compat:vsix`. The tests include real

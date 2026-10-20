@@ -41,16 +41,25 @@ import type { LayerDrawSubset } from "./layersSidecar";
 import { unitScaleFactor, type DisplayUnit } from "./lengthUnits";
 import type { CompareSource } from "./modelDiffHost";
 import { hiddenLineDrawing } from "./hiddenLineRemoval";
-import { technicalDrawingSvg, viewBasis, dimensionDrawings, sheetSvg } from "./svgSilhouette";
+import { technicalDrawingSvg, viewBasis, dimensionDrawings, drawingBounds, sheetSvg } from "./svgSilhouette";
 import { technicalDrawingDxf, sheetDxf } from "./dxfSilhouette";
+import { resolveNamedView } from "./viewDirections";
 import {
   assignDimensionsToViews,
   layoutSheet,
   type PaperSize,
   type ProjectionMethod,
   type SheetViewInput,
+  type SectionCutInput,
   type TitleBlockFields,
 } from "./drawingSheet";
+import {
+  buildCutLoops,
+  clipTrianglesToPlane,
+  cuttingPlaneMark,
+  type SectionPlane,
+  type SectionSpec,
+} from "./drawingSection";
 
 /**
  * Tangent-continuity threshold for a given tessellation quality.
@@ -520,10 +529,14 @@ export interface DrawingSheetView {
   name: string;
   direction: Vec3;
   up?: Vec3;
+  /** Cut this view in place instead of adding a separate section view. */
+  sectionPlane?: SectionPlane;
 }
 
 export interface DrawingSheetOptions {
   views: DrawingSheetView[];
+  /** Named section views, each cut from the same tessellation as its parent. */
+  sections?: SectionSpec[];
   quality?: TessellationQuality;
   format?: "svg" | "dxf";
   annotations?: DimensionSource[];
@@ -555,7 +568,15 @@ export interface DrawingSheetResult {
   scaleLabel: string;
   paper: PaperSize;
   projection: ProjectionMethod;
-  views: Array<{ name: string; segmentCount: number; hiddenSegmentCount: number; dimensionCount: number }>;
+  views: Array<{
+    name: string;
+    segmentCount: number;
+    hiddenSegmentCount: number;
+    dimensionCount: number;
+    sectionLoopCount?: number;
+  }>;
+  /** Every section in the sheet, its parent view and its cut-loop count. */
+  sections: Array<{ id: string; label: string; parentView: string; loopCount: number; hatchLineCount: number }>;
   triangleCount: number;
   warnings: string[];
 }
@@ -591,8 +612,85 @@ export async function exportDrawingSheet(
 
   const annotations = options.annotations ?? [];
   const assignment = assignDimensionsToViews(annotations, options.views);
-  const glyphScale = annotations.length > 0 ? diagonalOf(positions) : 0;
+  const modelDiag = diagonalOf(positions);
+  const glyphScale = annotations.length > 0 ? modelDiag : 0;
   const hiddenLines = options.hiddenLines ?? true;
+
+  // Named sections and in-place view cuts are validated by
+  // `resolveSheetSettings` on the tool path; the kernel entry validates
+  // defensively so a direct pipeline call gets the same contract.
+  const rawSections = options.sections ?? [];
+  const inPlacePlanes = options.views.map((v) => v.sectionPlane);
+  const hasSections = rawSections.length > 0 || inPlacePlanes.some((p) => p !== undefined);
+  if (hasSections && layerFilter.length > 0) {
+    throw new Error("Sections and layer filters cannot be combined in this version — omit layers to draw a section, or omit sections to draw filtered layers.");
+  }
+  const matchParentIndex = (name: string): number => {
+    const named = resolveNamedView(name);
+    if (named) {
+      const exact = options.views.findIndex((v) => v.name.toLowerCase() === named.canonical.toLowerCase());
+      if (exact >= 0) return exact;
+    }
+    return options.views.findIndex((v) => v.name.toLowerCase() === name.toLowerCase());
+  };
+  interface BuiltSection {
+    spec: SectionSpec;
+    parentIndex: number;
+  }
+  const builtSections: BuiltSection[] = [];
+  const sectionIds = new Set<string>();
+  const project3 = (p: readonly [number, number, number], basis: ReturnType<typeof viewBasis>): [number, number] => [
+    p[0] * basis.right[0] + p[1] * basis.right[1] + p[2] * basis.right[2],
+    -(p[0] * basis.up[0] + p[1] * basis.up[1] + p[2] * basis.up[2]),
+  ];
+  rawSections.forEach((spec, i) => {
+    const where = `sections[${i}]`;
+    const id = typeof spec.id === "string" ? spec.id.trim() : "";
+    if (!id) {
+      warnings.push(`${where} needs a non-empty id — skipped.`);
+      return;
+    }
+    if (sectionIds.has(id)) {
+      warnings.push(`Section "${id}" is repeated — drawn once.`);
+      return;
+    }
+    const parentIndex = typeof spec.view === "string" ? matchParentIndex(spec.view) : -1;
+    if (parentIndex < 0) {
+      warnings.push(`Section "${id}" names view "${typeof spec.view === "string" ? spec.view : ""}" — valid: ${options.views.map((v) => v.name).join(", ")}. Skipped.`);
+      return;
+    }
+    const origin = spec.origin, normal = spec.normal;
+    if (!Array.isArray(origin) || origin.length !== 3 || !origin.every(Number.isFinite) || !Array.isArray(normal) || normal.length !== 3 || !normal.every(Number.isFinite)) {
+      warnings.push(`Section "${id}" needs a 3-number origin and normal — skipped.`);
+      return;
+    }
+    if (normal.every((v) => v === 0)) {
+      warnings.push(`Section "${id}" needs a non-zero normal — skipped.`);
+      return;
+    }
+    sectionIds.add(id);
+    builtSections.push({ spec: { ...spec, id, label: spec.label?.trim() || id }, parentIndex });
+  });
+  const clipOrThrow = (
+    plane: { origin: Vec3; normal: Vec3; flip?: boolean },
+    name: string
+  ): {
+    clipped: ReturnType<typeof clipTrianglesToPlane>;
+    loops: Array<{ points: Vec3[]; closed: boolean }>;
+    open: Array<{ points: Vec3[]; closed: boolean }>;
+  } => {
+    const clipped = clipTrianglesToPlane(positions, mesh.indices, triangleFace, plane);
+    if (!clipped.crossed || clipped.cutSegments.length === 0) {
+      throw new Error(`Section "${name}" misses the model — no triangle crosses its plane, so it was refused rather than drawn empty.`);
+    }
+    const chains = buildCutLoops(clipped.cutSegments, Math.max(1e-9, modelDiag * 1e-7));
+    const loops = chains.filter((c) => c.closed && c.points.length >= 3);
+    const open = chains.filter((c) => !c.closed && c.points.length >= 2);
+    if (loops.length === 0 && open.length === 0) {
+      throw new Error(`Section "${name}" produces no cut loop — it was refused rather than drawn empty.`);
+    }
+    return { clipped, loops, open };
+  };
 
   const inputs: SheetViewInput[] = [];
   const seen = new Set<string>();
@@ -604,12 +702,13 @@ export async function exportDrawingSheet(
     face: Uint32Array | undefined,
     basis: ReturnType<typeof viewBasis>,
     direction: Vec3,
-    extraEdges: string[]
+    extraEdges: string[],
+    verts: Float32Array = positions
   ): { visible: Array<[[number, number], [number, number]]>; hidden: Array<[[number, number], [number, number]]> } => {
     let visible: Array<[[number, number], [number, number]]> = [];
     let hidden: Array<[[number, number], [number, number]]> = [];
     if (hiddenLines) {
-      const drawing = hiddenLineDrawing({ positions, indices, triangleFace: face }, basis, {
+      const drawing = hiddenLineDrawing({ positions: verts, indices, triangleFace: face }, basis, {
         creaseAngleDeg: options.creaseAngleDeg,
         tangentAngleDeg: tangentAngleForQuality(quality),
       });
@@ -621,13 +720,13 @@ export async function exportDrawingSheet(
       hidden = drawing.hidden;
     } else {
       const p = (v: number): [number, number] => {
-        const x = positions[v * 3], y = positions[v * 3 + 1], z = positions[v * 3 + 2];
+        const x = verts[v * 3], y = verts[v * 3 + 1], z = verts[v * 3 + 2];
         return [
           x * basis.right[0] + y * basis.right[1] + z * basis.right[2],
           -(x * basis.up[0] + y * basis.up[1] + z * basis.up[2]),
         ];
       };
-      for (const [a, b] of silhouetteEdges(positions, indices, direction)) {
+      for (const [a, b] of silhouetteEdges(verts, indices, direction)) {
         const pa = p(a), pb = p(b);
         if ([...pa, ...pb].every(Number.isFinite)) visible.push([pa, pb]);
       }
@@ -669,6 +768,25 @@ export async function exportDrawingSheet(
     }
     return { indices: new Uint32Array(kept), face: new Uint32Array(keptFace) };
   };
+  const validPlane = (
+    plane: { origin: Vec3; normal: Vec3; flip?: boolean } | undefined,
+    owner: string
+  ): { origin: Vec3; normal: Vec3; flip?: boolean } | undefined => {
+    if (!plane) return undefined;
+    const ok =
+      Array.isArray(plane.origin) &&
+      plane.origin.length === 3 &&
+      plane.origin.every(Number.isFinite) &&
+      Array.isArray(plane.normal) &&
+      plane.normal.length === 3 &&
+      plane.normal.every(Number.isFinite) &&
+      plane.normal.some((v) => v !== 0);
+    if (!ok) {
+      warnings.push(`${owner} has an invalid section plane — drawn uncut.`);
+      return undefined;
+    }
+    return plane;
+  };
   options.views.forEach((view, i) => {
     const basis = viewBasis(view.direction, view.up);
     const subset = assignment[i].map((ai) => annotations[ai]);
@@ -688,15 +806,89 @@ export async function exportDrawingSheet(
       });
       return;
     }
-    const runs = runsFor(mesh.indices, triangleFace, basis, view.direction, []);
+    const plane = validPlane(view.sectionPlane, `View "${view.name}"`);
+    if (!plane) {
+      const runs = runsFor(mesh.indices, triangleFace, basis, view.direction, []);
+      inputs.push({
+        name: view.name,
+        direction: view.direction,
+        visible: runs.visible,
+        hidden: runs.hidden,
+        ...(subset.length > 0 ? { dimensions: dimensionDrawings(subset, view, glyphScale) } : {}),
+      });
+      return;
+    }
+    // In-place cut: this view draws the retained half-space, with the cut
+    // loops hatched. A miss names the view, like a named section names itself.
+    const { clipped, loops, open } = clipOrThrow(plane, `view "${view.name}"`);
+    const runs = runsFor(clipped.indices, clipped.triangleFace, basis, view.direction, [], clipped.positions);
+    const loops2D = loops.map((loop) => loop.points.map((p) => project3(p, basis)));
+    const open2D: Array<[[number, number], [number, number]]> = [];
+    for (const chain of open) {
+      const pts = chain.points.map((p) => project3(p, basis));
+      for (let k = 0; k + 1 < pts.length; k++) open2D.push([pts[k], pts[k + 1]]);
+    }
     inputs.push({
       name: view.name,
       direction: view.direction,
-      visible: runs.visible,
+      visible: [...runs.visible, ...open2D],
       hidden: runs.hidden,
+      section: { id: `view-${view.name}`, label: view.name, loops: loops2D },
       ...(subset.length > 0 ? { dimensions: dimensionDrawings(subset, view, glyphScale) } : {}),
     });
   });
+
+  // Named sections, each appended as its own view looking along the plane
+  // normal (face-on to the cut) — the same direction the parent mark's
+  // arrows point. The parent keeps its full-model runs and gains the
+  // cutting-plane mark.
+  for (const built of builtSections) {
+    const parent = options.views[built.parentIndex];
+    const parentInput = inputs[built.parentIndex];
+    const parentBasis = viewBasis(parent.direction, parent.up);
+    const label = built.spec.label?.trim() || built.spec.id;
+    const bounds = drawingBounds(parentInput.visible, parentInput.hidden, []);
+    const mark = bounds
+      ? cuttingPlaneMark(
+          { origin: built.spec.origin, normal: built.spec.normal, flip: built.spec.flip },
+          parentBasis,
+          bounds,
+          label
+        )
+      : null;
+    if (mark) {
+      parentInput.sectionMarks = [...(parentInput.sectionMarks ?? []), mark];
+    } else {
+      warnings.push(
+        `Section "${built.spec.id}" is face-on to view "${parent.name}" — drawn without a cutting-plane mark.`
+      );
+    }
+    const nlen = Math.hypot(built.spec.normal[0], built.spec.normal[1], built.spec.normal[2]);
+    const sectionDir: Vec3 =
+      built.spec.flip === true
+        ? [-built.spec.normal[0] / nlen, -built.spec.normal[1] / nlen, -built.spec.normal[2] / nlen]
+        : [built.spec.normal[0] / nlen, built.spec.normal[1] / nlen, built.spec.normal[2] / nlen];
+    const sectionBasis = viewBasis(sectionDir);
+    const { clipped, loops, open } = clipOrThrow(
+      { origin: built.spec.origin, normal: built.spec.normal, flip: built.spec.flip },
+      built.spec.id
+    );
+    const runs = runsFor(clipped.indices, clipped.triangleFace, sectionBasis, sectionDir, [], clipped.positions);
+    const loops2D = loops.map((loop) => loop.points.map((p) => project3(p, sectionBasis)));
+    const open2D: Array<[[number, number], [number, number]]> = [];
+    for (const chain of open) {
+      const pts = chain.points.map((p) => project3(p, sectionBasis));
+      for (let k = 0; k + 1 < pts.length; k++) open2D.push([pts[k], pts[k + 1]]);
+    }
+    inputs.push({
+      name: `section-${built.spec.id}`,
+      labelText: `SECTION ${label}`,
+      direction: sectionDir,
+      visible: [...runs.visible, ...open2D],
+      hidden: runs.hidden,
+      section: { id: built.spec.id, label, loops: loops2D },
+    });
+  }
 
   const layout = layoutSheet(inputs, {
     paper: options.paper,
@@ -711,6 +903,22 @@ export async function exportDrawingSheet(
 
   const format = options.format === "dxf" ? "dxf" : "svg";
   const content = format === "dxf" ? sheetDxf(layout, { title: options.title }).dxf : sheetSvg(layout, { title: options.title });
+  const placedByName = new Map(layout.views.map((v) => [v.name, v]));
+  const sections = builtSections.map((built) => {
+    const placed = placedByName.get(`section-${built.spec.id}`);
+    const label = built.spec.label?.trim() || built.spec.id;
+    if (!placed?.section) {
+      warnings.push(`Section "${built.spec.id}" produced no drawable geometry and was omitted from the sheet.`);
+      return { id: built.spec.id, label, parentView: options.views[built.parentIndex].name, loopCount: 0, hatchLineCount: 0 };
+    }
+    return {
+      id: built.spec.id,
+      label,
+      parentView: options.views[built.parentIndex].name,
+      loopCount: placed.section.loopCount,
+      hatchLineCount: placed.section.hatch.length,
+    };
+  });
   return {
     content,
     format,
@@ -725,7 +933,9 @@ export async function exportDrawingSheet(
       segmentCount: v.visible.length + (v.layerGroups ?? []).reduce((n, g) => n + g.visible.length, 0),
       hiddenSegmentCount: v.hidden.length + (v.layerGroups ?? []).reduce((n, g) => n + g.hidden.length, 0),
       dimensionCount: v.dimensions?.drawings.length ?? 0,
+      ...(v.section ? { sectionLoopCount: v.section.loopCount } : {}),
     })),
+    sections,
     triangleCount,
     warnings,
   };

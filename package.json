@@ -485,7 +485,7 @@
   "dependencies": {
     "@loumalouomega/gmsh-wasm": "^0.4.0",
     "@loumalouomega/mmg-wasm": "0.1.0",
-    "@meshioplusplus/wasm": "^17.7.0",
+    "@meshioplusplus/wasm": "17.8.0",
     "@modelcontextprotocol/sdk": "^1.32.1",
     "draco3d": "^1.5.9",
     "fflate": "^0.8.3",

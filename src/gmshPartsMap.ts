@@ -249,7 +249,7 @@ export async function applyPartsToGmshModel(
         // Boundary layers are a 2-D Gmsh field and are NOT composed into the `Min`
         // background (see `addBoundaryLayerField`).
         if (dimension !== 2) {
-          warnings?.push(`Part "${part.name}": the boundary layer was ignored — boundary layers apply to 2-D meshes only (this is a ${dimension}-D generate).`);
+          warnings?.push(`Part "${part.name}": the boundary layer was ignored — boundary layers apply to and are measured on 2-D meshes only (this is a ${dimension}-D generate).`);
         } else if (curveTags.length === 0) {
           warnings?.push(`Part "${part.name}": the boundary layer was ignored — none of its edges resolved (it needs edge-N ids on the wall).`);
         } else {
