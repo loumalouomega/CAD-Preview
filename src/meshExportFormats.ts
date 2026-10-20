@@ -253,7 +253,7 @@ export const MESH_EXPORT_FORMATS = [
   // #165), adopted with the 17.7.0 bump. Reverses this file's earlier triage
   // of the `nastran_op2` writer as "no consumer here": unlike at 17.2.0, the
   // build now also READS OP2, so an exported file re-opens — the full
-  // round-trip bar above passes on the 17.7.0 FULL artifact (the
+  // round-trip bar above passes on the 17.8.0 FULL artifact (the
   // SaveAll-shaped pipeline mesh keeps every cell class through write+read;
   // blocks merge per type like the other results-file writers, with
   // `nastran:card/eid/pid/c1/c2` cell data attached on read). Probe:

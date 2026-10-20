@@ -255,7 +255,7 @@ const EXTENSION_MAP: Record<string, FileRoute> = {
   d3plot: { strategy: "meshio", format: "lsdyna_d3plot" },
   // meshio++ 17.4.0's Nastran OP2 result writer (PR #164, CVISC dampers in
   // #165), adopted with the 17.7.0 bump — reversing the earlier triage's
-  // "no consumer here" for `nastran_op2`. Verified live against the 17.7.0
+  // "no consumer here" for `nastran_op2`. Verified live against the 17.8.0
   // FULL artifact to the same two-step bar as the results-file writers
   // above: the SaveAll-shaped pipeline mesh (vertex/line/triangle/tetra)
   // wrote and read back through this build's OWN OP2 reader with every cell

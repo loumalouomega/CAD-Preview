@@ -2758,7 +2758,7 @@ try {
     `get_mass_properties reads the VTK boundary's volume/area (got: ${JSON.stringify(vtkMass).slice(0, 260)})`
   );
   assert(
-    vtkMass.bbox?.min?.[0] === 0 && vtkMass.bbox?.max?.[0] === 1,
+    vtkMass.bbox?.min?.[0] === -0.5 && vtkMass.bbox?.max?.[0] === 0.5,
     `get_mass_properties reports the VTK boundary's bbox (got: ${JSON.stringify(vtkMass.bbox)})`
   );
   const vtkMeas = await call("measure", { path: vtkCube, from: "whole-model", to: "mesh-component-0" });
@@ -5885,7 +5885,7 @@ try {
       path: sectionModel,
       outputPath: path.join(dir, "sheet-section.svg"),
       views: ["front", "right"],
-      sections: [{ id: "A-A", view: "front", origin: [0, 0, 0], normal: [1, 0, 0] }],
+      sections: [{ id: "A-A", label: "A—A", view: "front", origin: [0, 0, 0], normal: [1, 0, 0] }],
     });
     assert(
       sectioned.sections.length === 1 &&
@@ -5907,7 +5907,7 @@ try {
       outputPath: path.join(dir, "sheet-section.dxf"),
       views: ["front", "right"],
       format: "dxf",
-      sections: [{ id: "A-A", view: "front", origin: [0, 0, 0], normal: [1, 0, 0] }],
+      sections: [{ id: "A-A", label: "A—A", view: "front", origin: [0, 0, 0], normal: [1, 0, 0] }],
     });
     assert(sectionDxf.sections[0].loopCount === 2, "DXF carries the same section");
     const sectionDxfText = fs.readFileSync(path.join(dir, "sheet-section.dxf"), "utf8");
@@ -5920,7 +5920,7 @@ try {
       path: path.join(dir, "sheet-section.stl"),
       outputPath: path.join(dir, "sheet-section-stl.svg"),
       views: ["front", "right"],
-      sections: [{ id: "A-A", view: "front", origin: [0, 0, 0], normal: [1, 0, 0] }],
+      sections: [{ id: "A-A", label: "A—A", view: "front", origin: [0, 0, 0], normal: [1, 0, 0] }],
     });
     assert(
       sectionedStl.sections[0].loopCount === sectioned.sections[0].loopCount && sectionedStl.sections[0].hatchLineCount > 0,
