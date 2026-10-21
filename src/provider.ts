@@ -2609,6 +2609,7 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
                 belowThresholdCount: result.worstElements.belowThresholdCount,
               },
               boundaryLayers: result.boundaryLayers,
+              octree: result.octree,
             });
           });
         } catch (err) {

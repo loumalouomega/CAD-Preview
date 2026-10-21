@@ -69,6 +69,9 @@ describe("estimateMeshBudget — honesty", () => {
     expect(estimateMeshBudget({ volume: 1e6, area: 6e4, bboxSize: [100, 100, 100], sizeMax: 2, dimension: 3, localSizing: true }).confidence).toBe("uncertain");
     expect(estimateMeshBudget({ volume: 1e6, area: 6e4, bboxSize: [100, 100, 100], sizeMax: 2, dimension: 3, elementShape: "hexDominant" }).confidence).toBe("uncertain");
     expect(estimateMeshBudget({ volume: 1e6, area: 6e4, bboxSize: [100, 100, 100], sizeMax: 2, dimension: 3, engine: "ftetwild" }).confidence).toBe("uncertain");
+    const octree = estimateMeshBudget({ volume: 1e6, area: 6e4, bboxSize: [100, 100, 100], sizeMax: 2, dimension: 3, engine: "octree" });
+    expect(octree.confidence).toBe("uncertain");
+    expect(octree.assumptions.some((a) => /octreeMaxLevel/.test(a))).toBe(true);
   });
   it("falls back to the bounding box with a stated assumption when facts are missing", () => {
     const b = estimateMeshBudget({ bboxSize: [10, 10, 10], sizeMax: 1, dimension: 3 });

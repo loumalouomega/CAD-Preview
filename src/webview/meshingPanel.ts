@@ -1,4 +1,4 @@
-import { SIZE_MAX_SENTINEL, DEFAULT_MESH_OPTIONS, boundaryLayerPlan, validateMeshBoundaryLayer, validateMeshGrading, validateMeshStructured, type MeshOptions, type MeshGrading, type MeshStructured, type MeshBoundaryLayer } from "../meshOptions";
+import { SIZE_MAX_SENTINEL, DEFAULT_MESH_OPTIONS, boundaryLayerPlan, validateMeshBoundaryLayer, validateMeshGrading, validateMeshStructured, octreeSummary, OCTREE_MAX_LEVEL_LIMIT, type OctreeStats, type MeshOptions, type MeshGrading, type MeshStructured, type MeshBoundaryLayer } from "../meshOptions";
 import type { QualitySummary } from "../meshQuality";
 import type { BoundaryLayerAchieved } from "../boundaryLayerMeasurement";
 import { describeGateCheck, type QualityGateResult } from "../meshQualityGate";
@@ -38,6 +38,8 @@ export interface MeshingStats {
   worstElements?: { threshold: number; shownCount: number; belowThresholdCount: number };
   /** Achieved boundary-layer rows per wall Part for a 2-D B-rep generate. */
   boundaryLayers?: BoundaryLayerAchieved[];
+  /** Octree facts — shown only when the octree engine ran. */
+  octree?: OctreeStats;
 }
 
 /** Failure readout: a human-readable error message from the host. */
@@ -183,6 +185,8 @@ export class MeshingPanel {
   private readonly ftetwildManifoldSurfaceCheckbox: HTMLInputElement;
   private readonly ftetwildCoarsenCheckbox: HTMLInputElement;
   private readonly ftetwildDisableFilteringCheckbox: HTMLInputElement;
+  private readonly octreeMaxLevelInput: HTMLInputElement;
+  private readonly octreeSnapCheckbox: HTMLInputElement;
 
   /** Mesh-ops section (meshio++ sources only) — one operation per Run. */
   private readonly meshOpsSection: HTMLElement;
@@ -376,12 +380,15 @@ export class MeshingPanel {
     this.engineSelect = this.select(engineSection, "Engine", [
       ["gmsh", "Gmsh (default)"],
       ["ftetwild", "fTetWild (robust)"],
+      ["octree", "Octree (hex-dominant)"],
     ]);
     this.engineSelect.title =
       "Gmsh is fast but needs a watertight/manifold/well-oriented boundary. " +
       "fTetWild survives dirty triangle meshes (holes, self-intersections, non-manifold edges) " +
       "that make Gmsh's own STL reclassification throw or silently produce no elements — " +
-      "only for a mesh-format 3D source; a B-rep source or a non-3D dimension falls back to Gmsh.";
+      "only for a mesh-format 3D source; a B-rep source or a non-3D dimension falls back to Gmsh. " +
+      "Octree builds a hex-dominant volume (hexahedra, pyramids, tetrahedra) from the tessellated skin of any 3D " +
+      "source, sized by its max level — Parts and physical groups are not preserved.";
     this.engineSelect.addEventListener("change", () => {
       cb.onOptionsChange({ engine: this.engineSelect.value as MeshOptions["engine"] });
     });
@@ -630,6 +637,24 @@ export class MeshingPanel {
       "interior. Inspection only; never what meshing or repair wants. Only used by engine: fTetWild.");
     this.ftetwildDisableFilteringCheckbox.addEventListener("change", () => {
       cb.onOptionsChange({ ftetwildDisableFiltering: this.ftetwildDisableFilteringCheckbox.checked });
+    });
+
+    this.octreeMaxLevelInput = this.numberField(form, "Octree max level", DEFAULT_MESH_OPTIONS.octreeMaxLevel);
+    this.octreeMaxLevelInput.title =
+      "Deepest octree refinement level (1-6): the root grid is split this many times near the skin. " +
+      "Higher is finer and much larger. Only used by engine: Octree (it does not read Size max).";
+    this.octreeMaxLevelInput.step = "1";
+    this.octreeMaxLevelInput.min = "1";
+    this.octreeMaxLevelInput.max = String(OCTREE_MAX_LEVEL_LIMIT);
+    this.octreeMaxLevelInput.addEventListener("change", () => {
+      const raw = Number(this.octreeMaxLevelInput.value);
+      cb.onOptionsChange({ octreeMaxLevel: raw >= 1 ? Math.min(OCTREE_MAX_LEVEL_LIMIT, Math.round(raw)) : DEFAULT_MESH_OPTIONS.octreeMaxLevel });
+    });
+
+    this.octreeSnapCheckbox = this.checkboxField(form, "Octree snap to skin",
+      "Move leaf nodes onto the skin. Refused snaps are counted and reported, never forced. Only used by engine: Octree.");
+    this.octreeSnapCheckbox.addEventListener("change", () => {
+      cb.onOptionsChange({ octreeSnap: this.octreeSnapCheckbox.checked });
     });
 
     const resetBtn = document.createElement("button");
@@ -966,6 +991,8 @@ export class MeshingPanel {
     this.ftetwildManifoldSurfaceCheckbox.checked = options.ftetwildManifoldSurface;
     this.ftetwildCoarsenCheckbox.checked = options.ftetwildCoarsen;
     this.ftetwildDisableFilteringCheckbox.checked = options.ftetwildDisableFiltering;
+    this.octreeMaxLevelInput.value = String(options.octreeMaxLevel);
+    this.octreeSnapCheckbox.checked = options.octreeSnap;
 
     // fTetWild ignores sizeMin/algorithm2D/algorithm3D/elementOrder/
     // elementShape/optimize/stlAngle entirely (see gmshService.ts's
@@ -974,19 +1001,26 @@ export class MeshingPanel {
     // need re-entering them. A UX nicety only: `effectiveEngine`'s own
     // downgrade + `validateMeshOptions` already make every combination safe
     // regardless of what this panel currently disables.
+    // The octree ignores the same Gmsh-only set (and Size max too: it is sized
+    // by its max level), and refuses a quadratic or all-hex request at generate.
     const ftetwild = options.engine === "ftetwild";
-    this.sizeMinInput.disabled = ftetwild;
-    this.algorithm2DSelect.disabled = ftetwild;
-    this.algorithm3DSelect.disabled = ftetwild;
-    this.elementOrderSelect.disabled = ftetwild;
-    this.elementShapeSelect.disabled = ftetwild;
-    this.optimizeSelect.disabled = ftetwild;
-    this.stlAngleInput.disabled = ftetwild;
-    this.conformalCheckbox.disabled = ftetwild || this.sourceKind === "mesh";
+    const octree = options.engine === "octree";
+    const notGmsh = ftetwild || octree;
+    this.sizeMinInput.disabled = notGmsh;
+    this.sizeMaxInput.disabled = octree;
+    this.algorithm2DSelect.disabled = notGmsh;
+    this.algorithm3DSelect.disabled = notGmsh;
+    this.elementOrderSelect.disabled = notGmsh;
+    this.elementShapeSelect.disabled = notGmsh;
+    this.optimizeSelect.disabled = notGmsh;
+    this.stlAngleInput.disabled = notGmsh;
+    this.conformalCheckbox.disabled = notGmsh || this.sourceKind === "mesh";
     this.ftetwildEpsRelInput.disabled = !ftetwild;
     this.ftetwildManifoldSurfaceCheckbox.disabled = !ftetwild;
     this.ftetwildCoarsenCheckbox.disabled = !ftetwild;
     this.ftetwildDisableFilteringCheckbox.disabled = !ftetwild;
+    this.octreeMaxLevelInput.disabled = !octree;
+    this.octreeSnapCheckbox.disabled = !octree;
 
     this.syncSlider();
 
@@ -1005,7 +1039,8 @@ export class MeshingPanel {
     } else {
       this.gateEl.hidden = false;
       const elapsed = status.elapsedMs != null ? ` · ${formatElapsed(status.elapsedMs)}` : "";
-      this.statusEl.textContent = `Nodes: ${status.nodeCount} · Elements: ${status.elementCount}${elapsed}`;
+      const octreeNote = status.octree ? ` · ${octreeSummary(status.octree)}` : "";
+      this.statusEl.textContent = `Nodes: ${status.nodeCount} · Elements: ${status.elementCount}${elapsed}${octreeNote}`;
       this.renderQuality(status.quality, status.worstElements);
       this.renderLayerAchieved(status.boundaryLayers);
     }
@@ -1217,7 +1252,7 @@ export class MeshingPanel {
     // Conformal fragmentation only runs on the B-rep OCC-import path; a mesh
     // source ignores the option, so grey it out exactly like the fTetWild
     // row above greys Gmsh-only fields (render() applies the same rule).
-    this.conformalCheckbox.disabled = kind === "mesh" || this.lastOptions?.engine === "ftetwild";
+    this.conformalCheckbox.disabled = kind === "mesh" || this.lastOptions?.engine === "ftetwild" || this.lastOptions?.engine === "octree";
   }
 
   /**

@@ -16,7 +16,7 @@ import { sha256Hex } from "./hash";
 import type { BoundaryLayerAchieved } from "./boundaryLayerMeasurement";
 import type { HandoffFacts } from "./gmshService";
 import type { KernelVersions } from "./kernelVersions";
-import type { MeshOptions } from "./meshOptions";
+import type { MeshOptions, OctreeStats } from "./meshOptions";
 import type { Part } from "./protocol";
 
 export const HANDOFF_MANIFEST_VERSION = 1;
@@ -51,6 +51,10 @@ export interface HandoffManifest {
    * requested one. Absent when no layer was measured, so older manifests and
    * non-layer exports keep their shape. */
   boundaryLayers?: BoundaryLayerAchieved[];
+  /** Octree facts (level, snap counts, element mix) — present only for an
+   * `engineUsed: "octree"` export, which has no Parts or physical groups: the
+   * mesh is a single unnamed region. */
+  octree?: OctreeStats;
   parts: ManifestPart[];
   coverage: {
     emptyParts: string[];
@@ -106,6 +110,9 @@ export function buildHandoffManifest(input: ManifestInput): HandoffManifest {
   if (facts.conformalApplied) {
     notes.push("Conformal fragment applied — touching solids share interface nodes (gmsh.model.occ.fragment over all volumes, Parts resolved after).");
   }
+  if (facts.octree) {
+    notes.push("Octree mesh — a single unnamed region: Parts, physical groups and SubModelParts are not preserved.");
+  }
   if (input.scaleFactor !== 1) {
     notes.push(`Geometry and mesh sizes were scaled by ${input.scaleFactor} (mm → ${input.unit}) at export; meshOptions are recorded in native mm.`);
   }
@@ -127,6 +134,7 @@ export function buildHandoffManifest(input: ManifestInput): HandoffManifest {
     outputs: input.outputs.map((o) => ({ path: o.path, format: o.format, sha256: sha256Hex(o.bytes) })),
     mesh: { nodeCount: facts.nodeCount, elementCount: facts.elementCount },
     ...(facts.boundaryLayers && facts.boundaryLayers.length > 0 ? { boundaryLayers: facts.boundaryLayers } : {}),
+    ...(facts.octree ? { octree: facts.octree } : {}),
     parts,
     coverage: {
       emptyParts: parts.filter((p) => p.status === "empty").map((p) => p.name),

@@ -53,7 +53,8 @@ export function serializeMeshJson(sourceName: string, options: MeshOptions): str
  * misrepresenting what was done, not just producing a slightly different
  * result. The `Merge` + `Mesh.*` option lines still emit unchanged (they're
  * harmless, and several — `Mesh.MeshSizeMin`/`Max` — are still meaningful
- * context even though fTetWild doesn't read them via this file).
+ * context even though fTetWild doesn't read them via this file). `engine:
+ * "octree"` is replaced the same way, for the same reason.
  */
 export function generateGeoScript(sourceName: string, options: MeshOptions): string {
   const shape = gmshShapeOptions(options.elementShape, options.dimension);
@@ -97,7 +98,11 @@ export function generateGeoScript(sourceName: string, options: MeshOptions): str
         `// this script's own "Mesh ${options.dimension};" would mesh via Gmsh's\n` +
         "// classifySurfaces path instead — a different result, not a re-run of\n" +
         "// what this extension actually did — so it is deliberately omitted."
-      : `Mesh ${options.dimension};`,
+      : options.engine === "octree"
+        ? "// engine: octree — this document was volume-meshed by meshio++'s octree (a\n" +
+          "// hex-dominant grid fitted to the tessellated skin), not Gmsh's mesher, so\n" +
+          "// there is no Gmsh directive that reproduces it; \"Mesh " + options.dimension + ";\" is deliberately omitted."
+        : `Mesh ${options.dimension};`,
   ];
   return lines.join("\n") + "\n";
 }

@@ -253,6 +253,40 @@ function mshExtentAndTetVolume(mshText) {
   return { extent: hi.map((h, k) => h - lo[k]), volume, tets };
 }
 
+/** Signed total volume and per-class cell counts of the 3-D cells (Gmsh types
+ * 4 tet, 5 hex, 7 pyramid) in an MSH 4.1 file, with a count of cells whose
+ * signed volume is not positive. Pins what an octree mesh encloses AND that its
+ * node order matches Gmsh's reference cells (a mirrored hex/pyramid reads
+ * negative). Hex = six tets about the 0-6 diagonal; pyramid = two tets. */
+function mshCellVolumes(mshText) {
+  const { coords } = mshVolumeNodes(mshText);
+  const tri = (o, a, b, c) => {
+    const u = a.map((x, k) => x - o[k]), v = b.map((x, k) => x - o[k]), w = c.map((x, k) => x - o[k]);
+    return (u[0] * (v[1] * w[2] - v[2] * w[1]) - u[1] * (v[0] * w[2] - v[2] * w[0]) + u[2] * (v[0] * w[1] - v[1] * w[0])) / 6;
+  };
+  const elementLines = (mshText.split("$Elements\n")[1]?.split("$EndElements")[0] ?? "").trim().split("\n");
+  const counts = { tet: 0, hex: 0, pyramid: 0 };
+  let volume = 0, nonPositive = 0, cursor = 1;
+  for (let b = 0, blocks = Number(elementLines[0]?.split(/\s+/)[0]); b < blocks; b++) {
+    const [dim, , elType, n] = elementLines[cursor++].trim().split(/\s+/).map(Number);
+    for (let i = 0; i < n; i++, cursor++) {
+      if (dim !== 3) continue;
+      const P = elementLines[cursor].trim().split(/\s+/).map(Number).slice(1).map((t) => coords.get(t));
+      let v;
+      if (elType === 4) { v = tri(P[0], P[1], P[2], P[3]); counts.tet++; }
+      else if (elType === 7) { v = tri(P[0], P[1], P[2], P[4]) + tri(P[0], P[2], P[3], P[4]); counts.pyramid++; }
+      else if (elType === 5) {
+        v = [[0, 1, 2, 6], [0, 2, 3, 6], [0, 3, 7, 6], [0, 7, 4, 6], [0, 4, 5, 6], [0, 5, 1, 6]]
+          .reduce((a, q) => a + tri(P[q[0]], P[q[1]], P[q[2]], P[q[3]]), 0);
+        counts.hex++;
+      } else continue;
+      volume += v;
+      if (!(v > 0)) nonPositive++;
+    }
+  }
+  return { volume, nonPositive, ...counts };
+}
+
 /** Top-dimensional node-tag sets keyed by Gmsh volume tag, plus node positions.
  * Unlike comparing coincident coordinates, intersecting tags proves two
  * volumes actually share the SAME mesh nodes at their interface. */
@@ -7151,6 +7185,81 @@ try {
   assert(
     geoUnrolledResult.isError === true && /ftetwild/i.test(geoUnrolledResult.content?.[0]?.text ?? ""),
     `export_mesh geoUnrolled rejects engine:"ftetwild" with a specific, actionable error (got: ${(geoUnrolledResult.content?.[0]?.text ?? "").slice(0, 160)})`
+  );
+
+  // engine:"octree" (the octree hex-dominant engine): meshio++'s
+  // octree as a third volume engine. The `templates` transition is what the
+  // MDPA writer accepts (hexahedra + pyramids + tetrahedra); it works on a
+  // B-rep (tessellated on host OCCT) and a mesh source alike, preserves no
+  // Parts, and is sized by octreeMaxLevel rather than sizeMax.
+  const octreeBlock = path.join(dir, "octree-block.stp");
+  fs.copyFileSync(path.join(ROOT, "examples", "STP", "block.stp"), octreeBlock);
+  const octBrep = await call("generate_mesh", { path: octreeBlock, options: { engine: "octree", octreeMaxLevel: 4 } });
+  assert(
+    octBrep.engineUsed === "octree" && octBrep.octree && octBrep.octree.maxLevel === 4 && octBrep.octree.numRefused === 0,
+    `generate_mesh(engine:"octree") on block.stp reports engineUsed octree and its facts (got ${JSON.stringify({ e: octBrep.engineUsed, o: octBrep.octree })})`
+  );
+  assert(
+    octBrep.octree.elementMix.hexahedra === 1372 && octBrep.octree.elementMix.pyramids === 542 && octBrep.octree.elementMix.tetrahedra === 1608 &&
+      octBrep.elementCount === 3522,
+    `...the probe's exact level-4 mix: 1372 hex / 542 pyramid / 1608 tet (got ${JSON.stringify(octBrep.octree.elementMix)}, ${octBrep.elementCount} elements)`
+  );
+  assert(octBrep.quality && octBrep.quality.min > 0.5, `...and a non-degenerate quality floor over all three classes (got ${JSON.stringify(octBrep.quality)})`);
+  const octMsh = path.join(dir, "octree-block.msh");
+  await call("export_mesh", { path: octreeBlock, format: "msh", outputPath: octMsh, options: { engine: "octree", octreeMaxLevel: 4 } });
+  const octVol = mshCellVolumes(fs.readFileSync(octMsh, "utf8"));
+  assert(
+    Math.abs(octVol.volume - 60) < 1e-6 && octVol.nonPositive === 0 && octVol.hex === 1372 && octVol.pyramid === 542 && octVol.tet === 1608,
+    `the octree .msh encloses exactly 3x4x5 = 60 with every hex/pyramid/tet positively oriented in Gmsh's node order (got ${JSON.stringify(octVol)})`
+  );
+  const octMdpa = path.join(dir, "octree-block.mdpa");
+  await call("export_mesh", { path: octreeBlock, format: "mdpaElements", outputPath: octMdpa, options: { engine: "octree", octreeMaxLevel: 4 } });
+  const octMdpaText = fs.readFileSync(octMdpa, "utf8");
+  assert(
+    ["Element3D4N", "Element3D5N", "Element3D8N"].every((n) => octMdpaText.includes(`Begin Elements ${n}`)),
+    "export_mesh mdpaElements under engine:\"octree\" writes all three cell classes (tet, pyramid, hex)"
+  );
+  // The same engine over a mesh source: exactly the cube's 1000.
+  const octCube = await call("export_mesh", {
+    path: cleanCubeStl, format: "msh", outputPath: path.join(dir, "octree-cube.msh"), options: { engine: "octree", octreeMaxLevel: 4 },
+  });
+  assert(octCube.engineUsed === undefined || octCube.engineUsed === "octree", "export_mesh on a mesh source under octree succeeds");
+  const octCubeVol = mshCellVolumes(fs.readFileSync(path.join(dir, "octree-cube.msh"), "utf8"));
+  assert(
+    Math.abs(octCubeVol.volume - 1000) < 1e-6 && octCubeVol.nonPositive === 0,
+    `the octree over cube.stl (a mesh source) encloses exactly 1000 (got ${JSON.stringify(octCubeVol)})`
+  );
+  // Curved B-rep: converges, never claims more than it measured — a snap the
+  // engine refuses is counted in the report, not forced.
+  const octBull = await call("generate_mesh", { path: model, options: { engine: "octree", octreeMaxLevel: 4 } });
+  assert(
+    octBull.engineUsed === "octree" && octBull.elementCount > 0 && octBull.octree.numSnapped >= 0,
+    `generate_mesh(engine:"octree") on the curved bull.stp meshes (${octBull.elementCount} elements, ${octBull.octree.numSnapped} snapped, ${octBull.octree.numRefused} refused)`
+  );
+  // Requests the engine can never honor are refused by name, never ignored.
+  for (const [what, options, needle] of [
+    ["elementOrder 2", { engine: "octree", elementOrder: 2 }, /elementOrder/],
+    ["a periodic pair", { engine: "octree", periodic: [{ slave: "a", master: "b", translation: [1, 0, 0] }] }, /periodic/],
+    ["a sizeField", { engine: "octree", sizeField: [{ point: [0, 0, 0], size: 1 }] }, /sizeField/],
+  ]) {
+    const refused = await request("tools/call", { name: "generate_mesh", arguments: { path: octreeBlock, options } });
+    assert(
+      refused.isError === true && needle.test(refused.content?.[0]?.text ?? ""),
+      `generate_mesh(engine:"octree") refuses ${what} by name (got: ${(refused.content?.[0]?.text ?? "").slice(0, 140)})`
+    );
+  }
+  const octDim2 = await call("generate_mesh", { path: octreeBlock, options: { engine: "octree", dimension: 2, sizeMax: 1 } });
+  assert(
+    octDim2.engineUsed === "gmsh" && octDim2.warnings.some((w) => /octree.*was requested/i.test(w)),
+    `generate_mesh(engine:"octree") at dimension 2 falls back to gmsh with a warning (got ${octDim2.engineUsed}: ${JSON.stringify(octDim2.warnings)})`
+  );
+  const octGeo = await request("tools/call", {
+    name: "export_mesh",
+    arguments: { path: octreeBlock, format: "geoUnrolled", outputPath: path.join(dir, "octree.geo_unrolled"), options: { engine: "octree" } },
+  });
+  assert(
+    octGeo.isError === true && /octree/i.test(octGeo.content?.[0]?.text ?? ""),
+    `export_mesh geoUnrolled rejects engine:"octree" with a specific error (got: ${(octGeo.content?.[0]?.text ?? "").slice(0, 160)})`
   );
 
   // repair_mesh (roadmap "Robust volumetric meshing", Phase 3 — closes the

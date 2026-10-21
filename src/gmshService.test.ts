@@ -4,7 +4,9 @@ import {
   computeQualityAndWorstElements,
   WORST_ELEMENT_QUALITY_THRESHOLD,
   MAX_WORST_ELEMENTS,
+  octreeUnsupportedOptions,
 } from "./gmshService";
+import { DEFAULT_MESH_OPTIONS } from "./meshOptions";
 import type { PartGroupInfo, PartGroupMaps } from "./gmshPartsMap";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -321,5 +323,34 @@ describe("computeQualityAndWorstElements", () => {
     const indexSet = new Set(worstElements!.indices);
     expect(indexSet.has(9_000_000)).toBe(true); // the single worst element must survive the cap
     expect(indexSet.has(8_000_000)).toBe(false); // the least-bad-of-the-bad element must be the one dropped
+  });
+});
+
+describe("octreeUnsupportedOptions", () => {
+  it("is silent for defaults and no Parts", () => {
+    expect(octreeUnsupportedOptions(DEFAULT_MESH_OPTIONS, [])).toEqual({ refuse: [], ignored: [] });
+  });
+
+  it("refuses by name what the engine can never honor", () => {
+    const { refuse } = octreeUnsupportedOptions(
+      {
+        ...DEFAULT_MESH_OPTIONS,
+        elementOrder: 2,
+        elementShape: "subdivided",
+        periodic: [{ slave: "a", master: "b", translation: [1, 0, 0] }],
+        sizeField: [{ point: [0, 0, 0], size: 1 }],
+      },
+      []
+    );
+    expect(refuse.map((r) => r.split(" ")[0])).toEqual(["elementOrder", "elementShape", "periodic", "sizeField"]);
+  });
+
+  it("only warns about an optimizer pass that did something and about Parts", () => {
+    expect(octreeUnsupportedOptions({ ...DEFAULT_MESH_OPTIONS, optimize: "none" }, []).ignored).toEqual([]);
+    const { refuse, ignored } = octreeUnsupportedOptions({ ...DEFAULT_MESH_OPTIONS, optimize: "netgen" }, [{ name: "wall" } as never]);
+    expect(refuse).toEqual([]);
+    expect(ignored).toHaveLength(2);
+    expect(ignored[0]).toContain("netgen");
+    expect(ignored[1]).toMatch(/1 Part\(s\).*not preserved/);
   });
 });

@@ -6,6 +6,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/); thi
 
 ## [Unreleased]
 
+### Added
+
+- **`engine: "octree"`: a hex-dominant volume mesher beside Gmsh and fTetWild.** meshio++ 17.8.0's `octree` turns the tessellated skin of any 3D source (a B-rep tessellated on host OCCT, or a mesh source as-is) into a conforming hexahedra + pyramids + tetrahedra volume (`transition: "templates"`, the only transition MDPA export accepts). New `MeshOptions.octreeMaxLevel` (1–6, default 4) and `octreeSnap` (default on); `generate_mesh` reports `octree {maxLevel, snap, numSnapped, numRefused, elementMix}`, the FE Mesh panel gets an "Octree (hex-dominant)" engine with those two fields and a status-line summary, and the handoff manifest records the facts. `block.stp` at level 4 meshes to 3522 cells (1372 hex / 542 pyramid / 1608 tet) enclosing exactly 60, every cell positively oriented in Gmsh's node order; `cube.stl` encloses exactly 1000; MDPA export writes all three cell classes. Parts and physical groups are not preserved (the engine has no face correlation) and Gmsh-only options are refused by name (`elementOrder: 2`, a non-simplex `elementShape`, `periodic`, `sizeField` throw; an optimizer pass and Part settings warn; `dimension !== 3` falls back to Gmsh). Refinement sweeps and `.geo_unrolled` export refuse the engine. See `doc/gmsh-integration.md#octree-engine`.
+
 ## [3.26.0] - 2026-10-20
 
 ### Added

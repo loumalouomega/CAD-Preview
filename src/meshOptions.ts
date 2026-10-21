@@ -42,9 +42,42 @@ export type MeshElementShape = "simplex" | "subdivided" | "hexDominant";
  * already has exact geometry there — nothing to be robust against) or for
  * `dimension !== 3` (fTetWild is a volume mesher only); both degrade to
  * `"gmsh"` with a warning rather than erroring — see `populateMeshedModel`'s
- * doc comment in `gmshService.ts`.
+ * doc comment in `gmshService.ts`. `"octree"` is `src/octreeService.ts`'s
+ * meshio++ octree: a conforming hex-dominant volume (hexahedra, pyramids and
+ * tetrahedra) built from the tessellated skin of EITHER source kind. It has
+ * no face correlation, so Parts and physical groups are not preserved, and
+ * Gmsh-only options are refused by name — see `gmshService.ts`'s
+ * `octreeUnsupportedOptions`.
  */
-export type MeshEngine = "gmsh" | "ftetwild";
+export type MeshEngine = "gmsh" | "ftetwild" | "octree";
+
+/** Deepest `octreeMaxLevel` offered. Cell count grows roughly 4x per level on a
+ * surface, so level 6 is already a very large mesh; meshio++'s own `maxCells`
+ * guard ends anything past it with a plain error. */
+export const OCTREE_MAX_LEVEL_LIMIT = 6;
+
+/** Facts an octree generate reports (the type is here, not in `octreeService.ts`,
+ * because the webview and the handoff manifest import it and that module
+ * pulls in WASM services). Parts are never preserved by this engine. */
+export interface OctreeStats {
+  maxLevel: number;
+  snap: boolean;
+  numLeaves: number;
+  numHanging: number;
+  finestLevel: number;
+  numSnapped: number;
+  numRefused: number;
+  elementMix: { hexahedra: number; pyramids: number; tetrahedra: number };
+}
+
+/** One-line readout of an octree generate for the panel status line. */
+export function octreeSummary(stats: OctreeStats): string {
+  const { hexahedra, pyramids, tetrahedra } = stats.elementMix;
+  const snaps = stats.snap
+    ? `snapped ${stats.numSnapped}${stats.numRefused > 0 ? `, refused ${stats.numRefused}` : ""}`
+    : "snap off";
+  return `Octree L${stats.maxLevel}: ${hexahedra} hex · ${pyramids} pyramid · ${tetrahedra} tet · ${snaps} · Parts not preserved`;
+}
 
 /** Post-generate optimisation pass — see `MeshOptions.optimize`. */
 export type MeshOptimizeMode = "none" | "default" | "netgen" | "highOrder";
@@ -95,6 +128,14 @@ export interface MeshOptions {
    * `numThreads` is deliberately NOT exposed: this repo always loads the
    * serial build, where it has no effect. */
   ftetwildDisableFiltering: boolean;
+  /** Octree: deepest refinement level (1..{@link OCTREE_MAX_LEVEL_LIMIT}); the
+   * root grid is split this many times near the skin. Only meaningful when
+   * `engine === "octree"`. */
+  octreeMaxLevel: number;
+  /** Octree: move leaf nodes onto the skin (default on). Refused snaps are
+   * counted and reported, never forced. Only meaningful when
+   * `engine === "octree"`. */
+  octreeSnap: boolean;
   /**
    * Conformal multi-body meshing: call
    * `gmsh.model.occ.fragment` over every imported solid before meshing, so
@@ -360,6 +401,8 @@ export const DEFAULT_MESH_OPTIONS: MeshOptions = {
   ftetwildManifoldSurface: false,
   ftetwildCoarsen: false,
   ftetwildDisableFiltering: false,
+  octreeMaxLevel: 4, // block.stp at level 4: 3522 cells, exactly its volume (probe)
+  octreeSnap: true,
   conformal: true,
 };
 
@@ -450,7 +493,7 @@ export function validateMeshOptions(raw: unknown): MeshOptions | null {
   const stlAngle =
     isFiniteNumber(o.stlAngle) && o.stlAngle > 0 && o.stlAngle < 180 ? o.stlAngle : DEFAULT_MESH_OPTIONS.stlAngle;
 
-  const engine: MeshOptions["engine"] = o.engine === "gmsh" || o.engine === "ftetwild" ? o.engine : DEFAULT_MESH_OPTIONS.engine;
+  const engine: MeshOptions["engine"] = o.engine === "gmsh" || o.engine === "ftetwild" || o.engine === "octree" ? o.engine : DEFAULT_MESH_OPTIONS.engine;
 
   const ftetwildEpsRel =
     isFiniteNumber(o.ftetwildEpsRel) && o.ftetwildEpsRel > 0
@@ -463,6 +506,12 @@ export function validateMeshOptions(raw: unknown): MeshOptions | null {
     typeof o.ftetwildCoarsen === "boolean" ? o.ftetwildCoarsen : DEFAULT_MESH_OPTIONS.ftetwildCoarsen;
   const ftetwildDisableFiltering =
     typeof o.ftetwildDisableFiltering === "boolean" ? o.ftetwildDisableFiltering : DEFAULT_MESH_OPTIONS.ftetwildDisableFiltering;
+
+  const octreeMaxLevel =
+    isFiniteNumber(o.octreeMaxLevel) && o.octreeMaxLevel >= 1
+      ? Math.min(OCTREE_MAX_LEVEL_LIMIT, Math.round(o.octreeMaxLevel))
+      : DEFAULT_MESH_OPTIONS.octreeMaxLevel;
+  const octreeSnap = typeof o.octreeSnap === "boolean" ? o.octreeSnap : DEFAULT_MESH_OPTIONS.octreeSnap;
 
   const conformal = typeof o.conformal === "boolean" ? o.conformal : DEFAULT_MESH_OPTIONS.conformal;
 
@@ -481,6 +530,8 @@ export function validateMeshOptions(raw: unknown): MeshOptions | null {
     ftetwildManifoldSurface,
     ftetwildCoarsen,
     ftetwildDisableFiltering,
+    octreeMaxLevel,
+    octreeSnap,
     conformal,
   };
   // Optional and omitted when absent, so an untouched sidecar stays byte-stable.
