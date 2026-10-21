@@ -15,6 +15,16 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v7
+        with:
+          # Pin the commit under test. `github.ref` on its own is a moving
+          # target: v3.27.0's tag was force-moved to a later commit four
+          # minutes after it was pushed, and this run's checkout then died
+          # with "The ref 'refs/tags/v3.27.0' does not point to the expected
+          # commit" before a single test ran. The same happens when master
+          # moves on while the run sits in the queue. Pull requests keep the
+          # default merge-ref checkout — `github.sha` is the PR's merge commit
+          # and the merge ref already pins it.
+          ref: ${{ github.event_name == 'pull_request' && github.ref || github.sha }}
 
       - name: Setup Node.js
         uses: actions/setup-node@v7
@@ -93,29 +103,65 @@ jobs:
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/v')
 
+    # A tag that was moved and re-pushed leaves two runs of the same tag.
+    # Serialise them: two concurrent `vsce publish` calls would have the
+    # second one fail with "version already exists".
+    concurrency:
+      group: release-${{ github.ref }}
+      cancel-in-progress: false
+
     permissions:
       contents: write
 
     steps:
       - name: Checkout
         uses: actions/checkout@v7
+        with:
+          # Same pin as the build job: the run packages exactly the commit it
+          # was triggered for.
+          ref: ${{ github.sha }}
+
+      # A tag push is the release trigger, so the tag must not move while the
+      # run is in flight. The artifact below is built from the checked-out
+      # commit; if the tag now points somewhere else, publishing it would ship
+      # the wrong bits under the release name. The move triggered a newer run,
+      # which owns the release — this one stands down instead.
+      - name: Check that the tag still points at this commit
+        id: tag
+        run: |
+          if ! git fetch --force --no-tags origin "refs/tags/${GITHUB_REF_NAME}:refs/tags/${GITHUB_REF_NAME}"; then
+            echo "::warning::Tag ${GITHUB_REF_NAME} is gone from the remote; this run publishes nothing."
+            echo "moved=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          expected=$(git rev-parse HEAD)
+          tagged=$(git rev-parse "refs/tags/${GITHUB_REF_NAME}^{commit}")
+          if [ "$tagged" != "$expected" ]; then
+            echo "::warning::Tag ${GITHUB_REF_NAME} points at ${tagged}, but this run was triggered for ${expected}. The tag moved after the run started; the newer run owns this release and this one publishes nothing."
+            echo "moved=true" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Setup Node.js
+        if: steps.tag.outputs.moved != 'true'
         uses: actions/setup-node@v7
         with:
           node-version: 20
           cache: npm
 
       - name: Install dependencies
+        if: steps.tag.outputs.moved != 'true'
         run: npm ci
 
       - name: Build
+        if: steps.tag.outputs.moved != 'true'
         run: npm run build
 
       - name: Package extension (.vsix)
+        if: steps.tag.outputs.moved != 'true'
         run: npm run package -- --out cad-preview-${{ github.ref_name }}.vsix
 
       - name: Check packaged runtime files
+        if: steps.tag.outputs.moved != 'true'
         run: npm run compat:vsix -- cad-preview-${{ github.ref_name }}.vsix
 
       # marketplace.visualstudio.com is a network call this job has no control
@@ -126,6 +172,7 @@ jobs:
       # VSCE_PAT env var rather than `-p` on the command line so it never
       # appears in the child process's argv.
       - name: Publish to VS Code Marketplace
+        if: steps.tag.outputs.moved != 'true'
         uses: nick-fields/retry@v4
         env:
           VSCE_PAT: ${{ secrets.VSCE_PAT }}
@@ -141,7 +188,7 @@ jobs:
       # package built fine. `!cancelled()` still lets the job report failure, so
       # a genuine publish problem stays visible.
       - name: Create GitHub Release
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && steps.tag.outputs.moved != 'true' }}
         uses: softprops/action-gh-release@v3
         with:
           name: ${{ github.ref_name }}

@@ -264,6 +264,8 @@ See `.github/workflows/ci.yml`. Two jobs:
 3. Create a GitHub Release with auto-generated release notes
 4. Attach the `.vsix` as a release asset
 
+**Both jobs check out a commit, not a ref.** The ref a run was triggered for is a moving target: `v3.27.0`'s tag was force-moved to a later commit four minutes after it was pushed, and the run that was still queued died in its checkout step with *"The ref 'refs/tags/v3.27.0' does not point to the expected commit"* — before a single test ran. Both jobs therefore check out `github.sha`, the commit the run was triggered for, so a run always tests exactly one commit. The `release` job additionally re-reads the tag from the remote and **publishes nothing** when it no longer points at that commit: the move triggered a newer run, and that run owns the release. (A `pull_request` run keeps the default merge-ref checkout — `github.sha` is the PR's merge commit, which the merge ref already pins.)
+
 ## Compatibility corpus
 
 `npm run compat` (`scripts/compat/`) is a table-driven sibling of `mcp:smoke`: each row of `corpus.json` opens a committed fixture, writes a mesh export from `examples/STP/block.stp` and re-opens it, or round-trips a B-rep export through `get_mass_properties` — every import format, every meshio/Gmsh export writer, compound extensions and mixed cells, against the real kernels. Known upstream limitations are rows too: they assert the current failure text and report **FIXED-UPSTREAM** (a finding to record, never a failure) when it stops failing. `--only <substring>` filters rows; the last run's table is written to `scripts/compat/last-run.json` (git-ignored). Timing stays in `npm run perf`.
@@ -276,6 +278,7 @@ It is not in CI (it runs the WASM kernels for minutes); run it before and after 
 2. `npm ci` so the checkout matches the lockfile (a stale `node_modules` silently tests a different artifact).
 3. `npm run compat` — update `corpus.json`'s `verifiedAt` when versions changed, and record any FIXED-UPSTREAM row in `CLAUDE.md`.
 4. `npm run package -- --out cad-preview.vsix && npm run compat:vsix -- cad-preview.vsix`.
+5. **Never move a tag that has been pushed.** A tag push *is* the release trigger: CI builds it, publishes it to the Marketplace and creates the GitHub Release. A tag that moves afterwards leaves the in-flight run standing down (see the CI section) and the release is whatever the *new* tag points at — so amend before tagging, or cut a new version after tagging.
 
 ## Dependency Hygiene
 
