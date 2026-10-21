@@ -7596,6 +7596,68 @@ test("FE Mesh: preset actions share the PRESET label's line, and the export row 
   assert(m.lastId === "meshing-export-row" && m.exportInside, `the export row is the last thing in the panel body (last visible child: ${m.lastId})`);
 });
 
+test("FE Mesh: the Octree engine greys the Gmsh-only fields, enables its own, and the result row names the mix and the Parts loss", async (page) => {
+  await populate(page);
+  // Open the collapsed Advanced section so its fields are rendered.
+  await page.evaluate(() => {
+    const adv = [...document.querySelectorAll("#meshing-body details, #meshing-body .meshing-advanced")];
+    for (const d of adv) d.open = true;
+  });
+  const fields = () =>
+    page.evaluate(() => {
+      const byLabel = (text) => {
+        const row = [...document.querySelectorAll("#meshing-body .meshing-field")].find((r) => r.querySelector(".meshing-label")?.textContent === text);
+        return row?.querySelector("input, select") ?? null;
+      };
+      const engine = byLabel("Engine");
+      return {
+        options: engine ? [...engine.options].map((o) => o.value) : null,
+        value: engine?.value ?? null,
+        sizeMinDisabled: byLabel("Size min")?.disabled ?? null,
+        sizeMaxDisabled: byLabel("Size max")?.disabled ?? null,
+        levelDisabled: byLabel("Octree max level")?.disabled ?? null,
+        snapDisabled: byLabel("Octree snap to skin")?.disabled ?? null,
+        epsDisabled: byLabel("fTetWild envelope (eps)")?.disabled ?? null,
+        orderDisabled: byLabel("Element order")?.disabled ?? null,
+      };
+    });
+  const before = await fields();
+  assert(before.options?.includes("octree"), `the Engine select offers octree (got ${JSON.stringify(before.options)})`);
+  assert(before.levelDisabled === true && before.snapDisabled === true, "under Gmsh the octree-only fields are greyed");
+  await page.evaluate(() => (window.__sent.length = 0));
+  await page.evaluate(() => {
+    const row = [...document.querySelectorAll("#meshing-body .meshing-field")].find((r) => r.querySelector(".meshing-label")?.textContent === "Engine");
+    const sel = row.querySelector("select");
+    sel.value = "octree";
+    sel.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+  await sleep(150);
+  const after = await fields();
+  assert(after.value === "octree", `the select reflects the change (got ${after.value})`);
+  assert(after.levelDisabled === false && after.snapDisabled === false, "under Octree its own fields are enabled");
+  assert(after.sizeMinDisabled === true && after.sizeMaxDisabled === true && after.orderDisabled === true && after.epsDisabled === true,
+    `and the Gmsh-only fields, Size max (it sizes by level) and the fTetWild field are greyed (got ${JSON.stringify(after)})`);
+  const sent = await page.evaluate(() => (window.__sent ?? []).filter((m) => m.type === "meshingChanged").at(-1) ?? null);
+  assert(sent?.options?.engine === "octree" && sent.options.octreeMaxLevel === 4 && sent.options.octreeSnap === true,
+    `the change posts engine octree with the default level and snap (got ${JSON.stringify(sent?.options)})`);
+  // A result carrying octree facts renders them, with the loss of Parts stated.
+  const sentBefore = await page.evaluate(() => window.__sent.length);
+  await page.evaluate(() => document.getElementById("meshing-generate")?.click());
+  await page.waitForFunction((n) => window.__sent.slice(n).some((m) => m.type === "meshingGenerate"), sentBefore, { timeout: 5000 });
+  const requestId = await page.evaluate((n) => window.__sent.slice(n).findLast((m) => m.type === "meshingGenerate").requestId, sentBefore);
+  await post(page, {
+    type: "meshingResult", requestId, positions: "", indices: "", edges: "", nodeCount: 2393, elementCount: 3522, elementGroups: [], elapsedMs: 900,
+    octree: { maxLevel: 4, snap: true, numLeaves: 1450, numHanging: 0, finestLevel: 4, numSnapped: 433, numRefused: 81, elementMix: { hexahedra: 1372, pyramids: 542, tetrahedra: 1608 } },
+  });
+  await post(page, { type: "meshingJobSettled", requestId });
+  await sleep(300);
+  const text = await page.evaluate(() => document.getElementById("meshing-status")?.textContent ?? "");
+  assert(
+    text.includes("Octree L4: 1372 hex · 542 pyramid · 1608 tet · snapped 433, refused 81 · Parts not preserved"),
+    `the result row names the element mix, the snap counts and the loss of Parts (got ${JSON.stringify(text)})`
+  );
+});
+
 test("toolbar and tree: a selected item is a quiet lifted background, not the saturated blue", async (page) => {
   await populate(page);
   // Turn selection mode on so the Select trigger is `.active`, and select a tree row.

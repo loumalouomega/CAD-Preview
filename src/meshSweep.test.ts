@@ -60,6 +60,12 @@ describe("sweepOutputName", () => {
 });
 
 describe("runMeshSweep (shared by compare_mesh_refinement and the FE Mesh panel)", () => {
+  it("refuses an octree sweep up front — the sizes it varies are ignored by that engine", async () => {
+    const generate = vi.fn();
+    await expect(runMeshSweep([4, 2], { ...DEFAULT_MESH_OPTIONS, engine: "octree" }, generate, { warnings: [] })).rejects.toThrow(/octreeMaxLevel/);
+    expect(generate).not.toHaveBeenCalled();
+  });
+
   const fakeResult = (o: MeshOptions) => ({
     nodeCount: Math.round(100 / o.sizeMax),
     elementCount: Math.round(400 / o.sizeMax),

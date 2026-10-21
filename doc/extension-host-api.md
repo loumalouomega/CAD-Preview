@@ -1610,6 +1610,7 @@ Pure helpers and pipeline pieces with no dedicated section above — each is one
 - **`src/holeTable.ts`** — `holeTableTsv` shared by the Parts-panel copy button and `generate_hole_table`.
 - **`src/nastranDeck.ts`** — `BEGIN BULK` normalization at meshio staging.
 - **`src/kernelClient.ts` / `src/kernelWorker.ts` / `src/kernelIpc.ts`** — forked-child runtime (serialized queue, watchdog, generic typed-array marshal); `provider.ts` and `mcpTools.ts` talk only to the `Pipeline` interface.
+- **`src/octreeService.ts`** — meshio++ `octree` as `engine: "octree"` (`octreeMesh`, pure `octreeToMsh41`, `brepSkinStlBytes` for a B-rep source's tessellated skin); runs on the meshio++ singleton, no new kernel or `Pipeline` function.
 - **`src/ftetwildService.ts`** — fTetWild singleton (`tetrahedralizeTyped`, always `{threads: false}`); underlies `engine: "ftetwild"` and `repair_mesh`.
 - **`src/meshioBoundary.ts` / `src/meshTopology.ts`** — STL-boundary funnel guards and the pure edge-topology analyzer (deliberately orientation-blind; winding comes from `featureEdges`).
 - **`src/meshioBoundarySide.ts`** — the headless geometry side of a meshio-only source: wraps meshio++'s extracted boundary STL into the same welded `WeldedMesh`/`meshInspection` facts STL uses, marking every result `surfaceDerived` and carrying the correlated region count and boundary-closure flag. Used by `get_mass_properties`, `measure` and `compare_models`; never by `inspect` or the mesh-healing tools.

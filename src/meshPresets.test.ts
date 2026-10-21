@@ -56,6 +56,11 @@ describe("parseMeshPresetsJson", () => {
     expect(lib.weird.options.sizeMax).toBe(3);
   });
 
+  it("keeps a pinned octree engine instead of falling back to gmsh", () => {
+    const text = JSON.stringify({ version: 1, presets: { hex: { name: "hex", engine: "octree", options: {} } } });
+    expect(parseMeshPresetsJson(text).hex.engine).toBe("octree");
+  });
+
   it("prefers the entry's own name field over its object key", () => {
     const text = JSON.stringify({
       version: 1,
@@ -128,6 +133,20 @@ describe("inapplicablePresetFields", () => {
       options: { ...DEFAULT_MESH_OPTIONS, ftetwildCoarsen: true },
     };
     expect(inapplicablePresetFields(preset)).toEqual(["ftetwildCoarsen"]);
+  });
+
+  it("lists the octree's own fields under Gmsh and fTetWild, and the ignored Gmsh set under octree", () => {
+    const withOctree = { ...DEFAULT_MESH_OPTIONS, octreeMaxLevel: 5 };
+    expect(inapplicablePresetFields({ ...gmshPreset, options: withOctree })).toEqual(["octreeMaxLevel"]);
+    expect(inapplicablePresetFields({ ...gmshPreset, engine: "ftetwild", options: withOctree })).toEqual(["octreeMaxLevel"]);
+    const octree: MeshPreset = {
+      ...gmshPreset,
+      name: "hex",
+      engine: "octree",
+      options: { ...DEFAULT_MESH_OPTIONS, optimize: "netgen", ftetwildCoarsen: true, elementOrder: 2 },
+    };
+    // elementOrder is REFUSED at generate rather than ignored, so it is not listed as "ignored".
+    expect(inapplicablePresetFields(octree)).toEqual(["optimize", "ftetwildCoarsen"]);
   });
 
   it("is silent when every engine-foreign field is at its default", () => {

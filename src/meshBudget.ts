@@ -149,6 +149,10 @@ export function estimateMeshBudget(input: MeshBudgetInput): MeshBudget {
     downgrade("uncertain");
     assumptions.push("fTetWild sizes by its own edge-length rule — uncalibrated here.");
   }
+  if ((input.engine ?? "gmsh") === "octree") {
+    downgrade("uncertain");
+    assumptions.push("Octree sizes by octreeMaxLevel, not by the target size — this estimate does not model it.");
+  }
   if (input.localSizing) {
     downgrade("uncertain");
     assumptions.push("Part sizing/grading refines locally — the uniform estimate is a lower bound.");

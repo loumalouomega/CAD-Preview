@@ -1795,13 +1795,13 @@ server.registerTool(
   "save_mesh_preset",
   {
     description:
-      "Save the given mesh options as a named, reusable preset in a library file — the meshing counterpart of save_parametric_script. `options` is a partial MeshOptions (see describe_capabilities); `unit` names the unit its sizes were authored in (mm|cm|m|in|ft, default mm); `engine` pins gmsh|ftetwild (default gmsh). Invalid fields fall back to defaults with a warning. The bundled starters are read-only — libraryPath is always required, nothing ever writes into the bundle. Touches no model and no geometry.",
+      "Save the given mesh options as a named, reusable preset in a library file — the meshing counterpart of save_parametric_script. `options` is a partial MeshOptions (see describe_capabilities); `unit` names the unit its sizes were authored in (mm|cm|m|in|ft, default mm); `engine` pins gmsh|ftetwild|octree (default gmsh). Invalid fields fall back to defaults with a warning. The bundled starters are read-only — libraryPath is always required, nothing ever writes into the bundle. Touches no model and no geometry.",
     inputSchema: {
       libraryPath: presetLibraryPath,
       name: z.string().describe("Unique name within the library; how apply_mesh_preset refers to it"),
       options: z.looseObject({}).describe("Partial MeshOptions, in `unit`"),
       unit: z.string().optional().describe("Unit the sizes were authored in: mm | cm | m | in | ft (default mm)"),
-      engine: z.string().optional().describe("Pinned engine: gmsh | ftetwild (default gmsh)"),
+      engine: z.string().optional().describe("Pinned engine: gmsh | ftetwild | octree (default gmsh)"),
       description: z.string().optional().describe("Free text shown by list_mesh_presets"),
       overwrite: z.boolean().optional().describe("Replace an existing preset of the same name (default false: a name collision is an error)"),
     },

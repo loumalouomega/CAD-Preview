@@ -1,6 +1,8 @@
 import { describe, it, expect } from "vitest";
 import {
   validateMeshOptions,
+  octreeSummary,
+  OCTREE_MAX_LEVEL_LIMIT,
   validateMeshGrading,
   validateMeshStructured,
   validateMeshBoundaryLayer,
@@ -38,6 +40,8 @@ describe("validateMeshOptions", () => {
       ftetwildManifoldSurface: true,
       ftetwildCoarsen: false,
       ftetwildDisableFiltering: false,
+      octreeMaxLevel: 5,
+      octreeSnap: false,
       conformal: true,
     };
     expect(validateMeshOptions(opts)).toEqual(opts);
@@ -127,7 +131,8 @@ describe("validateMeshOptions", () => {
     expect(validateMeshOptions({ optimize: 1 })?.optimize).toBe(DEFAULT_MESH_OPTIONS.optimize);
   });
 
-  it("defaults engine unless it is exactly 'gmsh' or 'ftetwild'", () => {
+  it("defaults engine unless it is exactly 'gmsh', 'ftetwild' or 'octree'", () => {
+    expect(validateMeshOptions({ engine: "octree" })?.engine).toBe("octree");
     expect(validateMeshOptions({ engine: "ftetwild" })?.engine).toBe("ftetwild");
     expect(validateMeshOptions({ engine: "gmsh" })?.engine).toBe("gmsh");
     expect(validateMeshOptions({ engine: "tetgen" })?.engine).toBe(DEFAULT_MESH_OPTIONS.engine);
@@ -410,6 +415,8 @@ describe("DEFAULT_MESH_OPTIONS", () => {
       ftetwildManifoldSurface: false,
       ftetwildCoarsen: false,
       ftetwildDisableFiltering: false,
+      octreeMaxLevel: 4,
+      octreeSnap: true,
       conformal: true,
     });
   });
@@ -505,5 +512,30 @@ describe("scalePartsMeshSizeForUnit boundary layers", () => {
     const result = scalePartsMeshSizeForUnit(parts, 2);
     expect(result[0].meshBoundaryLayer).toEqual({ wallSize: 0.1, growthRatio: 1.2, thickness: 1, quads: true });
     expect(parts[0].meshBoundaryLayer!.wallSize).toBe(0.05); // original untouched
+  });
+});
+
+describe("octree options", () => {
+  it("clamps octreeMaxLevel to 1..limit, rounds it, and defaults anything else", () => {
+    expect(validateMeshOptions({ octreeMaxLevel: 3 })?.octreeMaxLevel).toBe(3);
+    expect(validateMeshOptions({ octreeMaxLevel: 2.6 })?.octreeMaxLevel).toBe(3);
+    expect(validateMeshOptions({ octreeMaxLevel: 99 })?.octreeMaxLevel).toBe(OCTREE_MAX_LEVEL_LIMIT);
+    expect(validateMeshOptions({ octreeMaxLevel: 0 })?.octreeMaxLevel).toBe(DEFAULT_MESH_OPTIONS.octreeMaxLevel);
+    expect(validateMeshOptions({ octreeMaxLevel: -2 })?.octreeMaxLevel).toBe(DEFAULT_MESH_OPTIONS.octreeMaxLevel);
+    expect(validateMeshOptions({ octreeMaxLevel: NaN })?.octreeMaxLevel).toBe(DEFAULT_MESH_OPTIONS.octreeMaxLevel);
+    expect(validateMeshOptions({ octreeMaxLevel: "4" })?.octreeMaxLevel).toBe(DEFAULT_MESH_OPTIONS.octreeMaxLevel);
+  });
+
+  it("takes octreeSnap only as a real boolean", () => {
+    expect(validateMeshOptions({ octreeSnap: false })?.octreeSnap).toBe(false);
+    expect(validateMeshOptions({ octreeSnap: 0 })?.octreeSnap).toBe(true);
+    expect(validateMeshOptions({})?.octreeSnap).toBe(true);
+  });
+
+  it("summarizes an octree result for the status line, naming refusals and the Parts loss", () => {
+    const stats = { maxLevel: 4, snap: true, numLeaves: 3000, numHanging: 0, finestLevel: 4, numSnapped: 433, numRefused: 0, elementMix: { hexahedra: 1372, pyramids: 542, tetrahedra: 1608 } };
+    expect(octreeSummary(stats)).toBe("Octree L4: 1372 hex · 542 pyramid · 1608 tet · snapped 433 · Parts not preserved");
+    expect(octreeSummary({ ...stats, numRefused: 81 })).toContain("snapped 433, refused 81");
+    expect(octreeSummary({ ...stats, snap: false })).toContain("snap off");
   });
 });

@@ -460,6 +460,7 @@ export function describeCapabilities() {
         "conformal (default true) fragments every imported solid (gmsh.model.occ.fragment over all volumes) before meshing, so touching solids share interface nodes — Parts resolve after the renumbering, so physical groups and Kratos SubModelParts survive per body. Single-solid output is identical with and without it; mesh sources ignore it. generate_mesh reports conformalApplied; the handoff manifest records meshOptions.conformal plus the applied fact.",
         "sizeField (optional, B-rep sources, gmsh engine) is view-driven sizing: a list of {point:[x,y,z], size} samples steering the background mesh through a list-based SP view + PostView field joined into the shared Min background (the view is removed after generate, so no view is left behind). Refine where measure_mesh_deviation reports the worst error: sample that report's high-deviation region into sizes and regenerate in one pass — Parts, physical groups and the face-N correlation survive because the mesh is regenerated from CAD (unlike MMG field adaptation, which renumbers). Mesh sources and engine ftetwild ignore it with a warning; capped at 20000 samples (first N win).",
         'engine "gmsh" (default) is the classifySurfaces/createGeometry/addSurfaceLoop/addVolume path — fast, but needs a watertight/manifold/well-oriented boundary. engine "ftetwild" is an alternative volume mesher (fTetWild) for a dirty mesh-format 3D source that Gmsh rejects or silently produces no elements for (holes, self-intersections, non-manifold edges) — meaningless for a B-rep source (exact geometry already) or dimension !== 3, both of which silently fall back to "gmsh" with a warning rather than erroring. Only dimension/sizeMax (mapped to fTetWild\'s own target-edge-length fraction), ftetwildEpsRel (its envelope size, also a bbox-diagonal fraction), ftetwildManifoldSurface (force a manifold boundary), ftetwildCoarsen (fewer, larger tets), and ftetwildDisableFiltering (skip interior filtering — returns a hull fill, NOT the part interior; inspection only) apply under "ftetwild" — sizeMin/algorithm2D/algorithm3D/elementOrder/elementShape/stlAngle are all ignored. repair_mesh honors the stored options (still forcing engine/dimension). generate_mesh\'s response reports engineUsed and any fallback warnings.',
+        'engine "octree" is meshio++\'s octree: a conforming hex-dominant volume (hexahedra, pyramids and tetrahedra — the "templates" transition, which MDPA export accepts) fitted to the TESSELLATED skin, so it works on a B-rep source (tessellated on host OCCT) and on a mesh-format source alike. It is sized by octreeMaxLevel (1-6, default 4: a 3x4x5 block meshes to 3522 cells enclosing exactly its volume) and octreeSnap (default true; refused snaps are counted, never forced), NOT by sizeMax. It has no face correlation, so Parts, physical groups and SubModelParts are NOT preserved (Parts are ignored with a warning; the handoff manifest records a single unnamed region). A request it can never honor is refused by name rather than ignored: elementOrder 2, elementShape other than simplex, periodic and sizeField throw. optimize and Part settings are ignored with a named warning. dimension !== 3 falls back to "gmsh" with a warning. .geo_unrolled export is refused. generate_mesh reports octree {maxLevel, snap, numSnapped, numRefused, elementMix{hexahedra,pyramids,tetrahedra}}; the node/element quality summary covers all three classes.',
         "save_mesh_preset / list_mesh_presets / apply_mesh_preset manage named, reusable option bundles (the macro library's bundled-plus-user pattern: bundled starters coarse-preview, balanced, fine-detail, robust-repair, plus your own caller-named file). A preset stores global options only — never Part sizing or entity assignments — with explicit authored units (converted to mm on apply) and a pinned engine. Preset names describe density intent, never a mesh-quality guarantee.",
         "compare_mesh_refinement meshes one model at several explicit sizes (max 8) with identical geometry and non-size options — each run a uniform mesh (sizeMin = sizeMax = size), reporting engine/nodes/elements/elapsed/quality per run plus a TSV, with failed runs as individual rows. Optional per-run output files in any export_mesh format; optional applyIndex persists one run's options. Rows describe meshing cost and element shape quality only — density/quality trends do NOT establish FE-solution convergence without a solver.",
       ],
@@ -5242,14 +5243,14 @@ export async function saveMeshPreset(params: {
     typeof params.unit === "string" && (DISPLAY_UNITS as readonly string[]).includes(params.unit)
       ? (params.unit as MeshPreset["unit"])
       : "mm";
-  const engine: MeshPreset["engine"] = params.engine === "ftetwild" ? "ftetwild" : "gmsh";
+  const engine: MeshPreset["engine"] = params.engine === "ftetwild" || params.engine === "octree" ? params.engine : "gmsh";
 
   const warnings: string[] = [];
   if (params.unit != null && unit !== params.unit) {
     warnings.push(`Unknown unit "${params.unit}" — valid: ${DISPLAY_UNITS.join(", ")}. Stored as "mm".`);
   }
   if (params.engine != null && engine !== params.engine) {
-    warnings.push(`Unknown engine "${params.engine}" — valid: gmsh, ftetwild. Stored as "gmsh".`);
+    warnings.push(`Unknown engine "${params.engine}" — valid: gmsh, ftetwild, octree. Stored as "gmsh".`);
   }
   for (const key of Object.keys(params.options)) {
     if (!(key in DEFAULT_MESH_OPTIONS)) warnings.push(`Unknown option "${key}" ignored.`);
@@ -5522,6 +5523,9 @@ export async function generateMeshTool(
     // "gmsh" — the reason is in `warnings` above, never a silent surprise).
     engineUsed: result.engineUsed,
     conformalApplied: result.conformalApplied,
+    // Octree facts (level, snap counts, hex/pyramid/tet mix) — null for any
+    // other engine. An octree mesh has no Parts or physical groups.
+    octree: result.octree ?? null,
     // Read back from the generated nodes for a 2-D B-rep generate with a
     // Part.meshBoundaryLayer: the plan is what was requested, these are the
     // rows the mesh actually contains.
@@ -6043,7 +6047,8 @@ async function writeHandoffManifest(
     units: { length: manifest.unit.unit, scale: manifest.unit.scaleFactor },
     options: manifest.meshOptions,
     engine: manifest.engineUsed,
-    engineVersion: manifest.kernels["@loumalouomega/gmsh-wasm"] ?? "unavailable",
+    engineVersion:
+      (manifest.engineUsed === "octree" ? manifest.kernels["@meshioplusplus/wasm"] : manifest.kernels["@loumalouomega/gmsh-wasm"]) ?? "unavailable",
     engineVersionSource: "CAD Preview build kernel package metadata",
     artifacts: manifest.outputs.map((output) => ({
       role: "mesh" as const,

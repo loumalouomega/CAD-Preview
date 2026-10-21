@@ -34,7 +34,7 @@ import * as path from "path";
 // the "cjs" output, which Node resolves at actual runtime (honoring the
 // package's "require" export condition), sidestepping both problems above.
 import initialize from "@loumalouomega/gmsh-wasm";
-import { boundaryLayerAlgorithmProblem, gmshShapeOptions, SIZE_MAX_SENTINEL, DEFAULT_MESH_OPTIONS, type MeshOptions, type MeshEngine } from "./meshOptions";
+import { boundaryLayerAlgorithmProblem, gmshShapeOptions, SIZE_MAX_SENTINEL, DEFAULT_MESH_OPTIONS, type MeshOptions, type MeshEngine, type OctreeStats } from "./meshOptions";
 import { measureBoundaryLayerRows, type BoundaryLayerAchieved, type BoundaryLayerWall } from "./boundaryLayerMeasurement";
 import { summarizeQuality, type QualitySummary } from "./meshQuality";
 import type { Part, MeshElementGroup } from "./protocol";
@@ -44,6 +44,7 @@ import { writeMdpa, type MdpaMesh, type MdpaMode, type MdpaNode, type MdpaCell, 
 import { parseToWeldedMesh } from "./meshHeal";
 import { boundsOfTriangles, boundsDiagonal, weldedMeshToStlBytes } from "./meshComponents";
 import { tetrahedralize, tetsToMsh41 } from "./ftetwildService";
+import { octreeMesh, brepSkinStlBytes } from "./octreeService";
 import type { MeshParseFormat } from "./fileRouter";
 import type { GltfExternalBuffers } from "./gltfParser";
 import {
@@ -253,9 +254,12 @@ export interface MeshResult {
    * (see `boundaryLayerMeasurement.ts`). Absent on a 3-D or mesh-source
    * generate, where the layer is not measured. */
   boundaryLayers?: BoundaryLayerAchieved[];
+  /** Octree facts (level, snap counts, hex/pyramid/tet mix) — only set when
+   * `engineUsed === "octree"`. Parts are never preserved by that engine. */
+  octree?: OctreeStats;
 }
 
-/** A highlight overlay of the mesh's worst-quality elements, closing the
+/** A highlight overlay of the worst-quality elements, closing the
  * roadmap gap where bad tets are frequently *interior* and invisible in the
  * boundary-only FE overlay — see `computeQualityAndWorstElements`. */
 export interface WorstElementsOverlay {
@@ -439,6 +443,19 @@ async function loadGeometryAndApplyOptions(
  * it's always valid.
  */
 function effectiveEngine(input: MeshGenerationInput, options: MeshOptions): { engine: MeshEngine; warnings: string[] } {
+  if (options.engine === "octree") {
+    // Unlike fTetWild, octree works on a B-rep too: it meshes the tessellated
+    // skin of either source kind (the B-rep path tessellates on host OCCT).
+    if (options.dimension !== 3) {
+      return {
+        engine: "gmsh",
+        warnings: [
+          `Engine "octree" was requested but dimension is ${options.dimension} — octree only produces 3D hex-dominant volume meshes, so Gmsh was used instead.`,
+        ],
+      };
+    }
+    return { engine: "octree", warnings: [] };
+  }
   if (options.engine !== "ftetwild") return { engine: "gmsh", warnings: [] };
   if (input.kind === "brep") {
     return {
@@ -457,6 +474,30 @@ function effectiveEngine(input: MeshGenerationInput, options: MeshOptions): { en
     };
   }
   return { engine: "ftetwild", warnings: [] };
+}
+
+/**
+ * What `engine: "octree"` cannot honor, named so nothing is silently ignored.
+ * `refuse` lists requests the engine can never satisfy — generating anyway
+ * would hand back a mesh that quietly differs from what was asked for
+ * (quadratic or all-hex output, periodic faces, view-driven sizing) — and the
+ * caller throws. `ignored` lists settings that only lose their effect (a
+ * Gmsh optimizer pass, Part sizing and physical groups) and become warnings.
+ * Defaults carry values for most Gmsh fields (`conformal: true`, the
+ * algorithms), so only a value that differs from the default counts.
+ */
+export function octreeUnsupportedOptions(options: MeshOptions, parts: readonly Part[]): { refuse: string[]; ignored: string[] } {
+  const refuse: string[] = [];
+  const ignored: string[] = [];
+  if (options.elementOrder !== DEFAULT_MESH_OPTIONS.elementOrder) refuse.push(`elementOrder ${options.elementOrder} (octree is linear only)`);
+  if (options.elementShape !== DEFAULT_MESH_OPTIONS.elementShape) refuse.push(`elementShape "${options.elementShape}" (octree decides its own hex/pyramid/tet mix)`);
+  if ((options.periodic?.length ?? 0) > 0) refuse.push("periodic (octree has no face correlation)");
+  if ((options.sizeField?.length ?? 0) > 0) refuse.push("sizeField (octree refines by octreeMaxLevel only)");
+  if (options.optimize !== DEFAULT_MESH_OPTIONS.optimize && options.optimize !== "none") ignored.push(`optimize "${options.optimize}"`);
+  if (parts.length > 0) {
+    ignored.push(`${parts.length} Part(s) — names, sizes, grading, structured divisions, boundary layers and physical groups are not preserved`);
+  }
+  return { refuse, ignored };
 }
 
 /**
@@ -506,8 +547,30 @@ async function populateMeshedModel(
   input: MeshGenerationInput,
   options: MeshOptions,
   parts: Part[]
-): Promise<{ tmpPath: string | null; groupMaps: PartGroupMaps | null; engineUsed: MeshEngine; warnings: string[]; conformalApplied: boolean }> {
+): Promise<{ tmpPath: string | null; groupMaps: PartGroupMaps | null; engineUsed: MeshEngine; warnings: string[]; conformalApplied: boolean; octree?: OctreeStats }> {
   const { engine, warnings } = effectiveEngine(input, options);
+
+  if (engine === "octree") {
+    const unsupported = octreeUnsupportedOptions(options, parts);
+    if (unsupported.refuse.length > 0) {
+      throw new Error(
+        `engine "octree" cannot honor: ${unsupported.refuse.join("; ")}. Remove them or switch the engine to "gmsh".`
+      );
+    }
+    for (const note of unsupported.ignored) warnings.push(`Ignored under engine "octree": ${note}.`);
+    const stlBytes = input.kind === "stl" ? input.stlBytes : await brepSkinStlBytes(extensionPath, input.stepBytes);
+    const { mshText, stats } = await octreeMesh(stlBytes, { maxLevel: options.octreeMaxLevel, snap: options.octreeSnap });
+    gmsh.clear();
+    gmsh.model.add(`model-${++_modelCounter}`);
+    const tmpPath = "/i.msh";
+    gmsh.FS.writeFile(tmpPath, mshText);
+    gmsh.merge(tmpPath);
+    gmsh.option.setNumber("Mesh.SaveAll", 1);
+    if (stats.numRefused > 0) {
+      warnings.push(`Octree refused ${stats.numRefused} of ${stats.numSnapped + stats.numRefused} node snaps (left unsnapped, never forced).`);
+    }
+    return { tmpPath, groupMaps: null, engineUsed: "octree", warnings, conformalApplied: false, octree: stats };
+  }
 
   if (engine === "gmsh") {
     const loaded = await loadGeometryAndApplyOptions(extensionPath, gmsh, input, options, parts);
@@ -711,6 +774,7 @@ export async function generateMesh(
       warnings: [...loaded.warnings, ...measured.warnings],
       conformalApplied: loaded.conformalApplied,
       boundaryLayers: measured.results.length > 0 ? measured.results : undefined,
+      ...(loaded.octree ? { octree: loaded.octree } : {}),
     };
   } finally {
     if (tmpPath) {
@@ -824,6 +888,11 @@ export async function exportGeoUnrolled(
   if (engine === "ftetwild") {
     throw new Error(
       '.geo_unrolled export is not available under engine "ftetwild" — it represents Gmsh\'s own geometry import, and fTetWild never runs one. Export a mesh format (e.g. .msh) instead, or switch the engine to "gmsh".'
+    );
+  }
+  if (engine === "octree") {
+    throw new Error(
+      '.geo_unrolled export is not available under engine "octree" — it represents Gmsh\'s own geometry import, and the octree never runs one. Export a mesh format (e.g. .msh) instead, or switch the engine to "gmsh".'
     );
   }
 
@@ -993,6 +1062,8 @@ export interface HandoffFacts {
    * the same read-back `generateMesh` reports, recorded in the handoff
    * manifest so an exported layer carries its achieved count with it. */
   boundaryLayers?: BoundaryLayerAchieved[];
+  /** Octree facts — only set when `engineUsed === "octree"`. */
+  octree?: OctreeStats;
 }
 
 /**
@@ -1072,6 +1143,7 @@ export async function computeHandoffFacts(
       warnings,
       conformalApplied: loaded.conformalApplied,
       boundaryLayers: measured.results.length > 0 ? measured.results : undefined,
+      ...(loaded.octree ? { octree: loaded.octree } : {}),
     };
   } finally {
     if (tmpPath) {

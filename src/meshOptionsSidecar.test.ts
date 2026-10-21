@@ -24,6 +24,8 @@ describe("parseMeshJson", () => {
       ftetwildManifoldSurface: true,
       ftetwildCoarsen: false,
       ftetwildDisableFiltering: false,
+      octreeMaxLevel: 4,
+      octreeSnap: true,
       conformal: true,
     };
     const text = JSON.stringify({ version: 1, source: "bull.stp", options });
@@ -83,6 +85,8 @@ describe("generateGeoScript", () => {
       ftetwildManifoldSurface: false,
       ftetwildCoarsen: false,
       ftetwildDisableFiltering: false,
+      octreeMaxLevel: 4,
+      octreeSnap: true,
       conformal: true,
     };
     const script = generateGeoScript("bull.stp", options);
@@ -172,5 +176,12 @@ describe("generateGeoScript", () => {
     expect(script).toContain("Mesh.MeshSizeMax");
     expect(script).not.toMatch(/^Mesh 3;/m);
     expect(script.toLowerCase()).toContain("ftetwild");
+  });
+
+  it("omits the trailing Mesh <dimension>; directive under engine: octree, naming the engine instead", () => {
+    const script = generateGeoScript("part.stp", { ...DEFAULT_MESH_OPTIONS, dimension: 3, engine: "octree" });
+    expect(script).toContain('Merge "part.stp";');
+    expect(script).not.toMatch(/^Mesh 3;/m);
+    expect(script).toContain("engine: octree");
   });
 });
