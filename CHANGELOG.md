@@ -6,9 +6,15 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/); thi
 
 ## [Unreleased]
 
+## [3.27.0] - 2026-10-21
+
 ### Added
 
 - **`engine: "octree"`: a hex-dominant volume mesher beside Gmsh and fTetWild.** meshio++ 17.8.0's `octree` turns the tessellated skin of any 3D source (a B-rep tessellated on host OCCT, or a mesh source as-is) into a conforming hexahedra + pyramids + tetrahedra volume (`transition: "templates"`, the only transition MDPA export accepts). New `MeshOptions.octreeMaxLevel` (1–6, default 4) and `octreeSnap` (default on); `generate_mesh` reports `octree {maxLevel, snap, numSnapped, numRefused, elementMix}`, the FE Mesh panel gets an "Octree (hex-dominant)" engine with those two fields and a status-line summary, and the handoff manifest records the facts. `block.stp` at level 4 meshes to 3522 cells (1372 hex / 542 pyramid / 1608 tet) enclosing exactly 60, every cell positively oriented in Gmsh's node order; `cube.stl` encloses exactly 1000; MDPA export writes all three cell classes. Parts and physical groups are not preserved (the engine has no face correlation) and Gmsh-only options are refused by name (`elementOrder: 2`, a non-simplex `elementShape`, `periodic`, `sizeField` throw; an optimizer pass and Part settings warn; `dimension !== 3` falls back to Gmsh). Refinement sweeps and `.geo_unrolled` export refuse the engine. See `doc/gmsh-integration.md#octree-engine`.
+
+### Security
+
+- **`hono` 4.13.7 → 4.13.13 closes the last open Dependabot alert (GHSA-5r4p-p66f-jhc7, moderate, CVSS 5.3) — and the same bug was live in the pinned adapter.** The advisory covers `hono` `>= 4.12.4, < 4.13.11`: `serveStatic` decoded the request path a *second* time after Hono had already decoded it for routing, so a crafted request could be routed as one path and served as another, skipping middleware mounted on that prefix (an auth check, say). The manifest's `hono` override moves `^4.13.7` → `^4.13.13` (4.13.11 is the patched release; 4.13.13 is the current 4.x), and the fix is the same guard in both packages — a request path that still contains `%` after the first decode is rejected, with `allowPercentInPath: true` as the opt-out. The **same** advisory class was live one level down: `@hono/node-server` `>= 1.19.10, < 2.1.3` (GHSA-rmxm-3fg6-px4f) shipped the vulnerable `serveStatic` of its own, and the manifest pinned 2.0.11 — inside the affected range — so the override moves `^2.0.11` → `^2.1.5`, the first line carrying the fix plus "serve only GET and HEAD" and an HTTP/2 stream-reset abort fix. 2.1.x widens the peer range to `hono: ^4 || ^5.0.0-0`; the manifest's own `hono` override keeps the tree on 4.13.13. **Reachability, measured rather than assumed:** `hono` enters this project only through `@modelcontextprotocol/sdk` → `@hono/node-server` (the SDK's Streamable-HTTP transport) and the SDK's own `hono` dependency — the extension host, the viewer and the six WASM kernels never import it, and nothing here mounts `serveStatic`. The shipped MCP server connects over **stdio** (`src/mcpServer.ts`), never the HTTP transport, so the vulnerable path was not reachable in a shipped configuration. It is fixed anyway: a lockfile pin inside the affected range is a real supply-chain liability for anyone installing from source, and the MCP server *can* be hosted over HTTP by a third party, who would then be running the vulnerable adapter. Verified against the new lockfile: `npm test` 3106/3106 (208 files), `mcp:smoke` green on the `hono` bump (the stdio transport it drives never touches `@hono/node-server`; that package's 2.1.3+ fix is a static-file middleware the shipped MCP server does not mount), and `npm audit` no longer lists `hono` — the two advisories it still reports are the dev-only `vite`/`vitepress` pair, which has no fix available and is already resolved on the Dependabot side.
 
 ## [3.26.0] - 2026-10-20
 
@@ -959,6 +965,7 @@ This release republishes v1.9.0's full changelog (below) unchanged; v1.9.0 itsel
 
 - Initial release: read-only 3D preview for CAD and mesh files (STEP, IGES, BREP, STL, OBJ, PLY, glTF) inside a VS Code custom editor, using OpenCascade.js (OCCT WASM) in the extension host for B-rep formats and Three.js in the webview for rendering.
 
+[3.27.0]: https://github.com/loumalouomega/CAD-Preview/compare/v3.26.0...v3.27.0
 [3.26.0]: https://github.com/loumalouomega/CAD-Preview/compare/v3.25.0...v3.26.0
 [3.25.0]: https://github.com/loumalouomega/CAD-Preview/compare/v3.24.0...v3.25.0
 [3.24.0]: https://github.com/loumalouomega/CAD-Preview/compare/v3.23.0...v3.24.0
