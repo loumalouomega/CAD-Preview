@@ -37,7 +37,7 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import * as vscode from "vscode";
-import { installModalStubs, pick, save, cancel, open as openAnswer, waitForFile, waitFor, type ModalAnswer } from "./modalStubs";
+import { installModalStubs, pick, save, cancel, input, open as openAnswer, waitForFile, waitFor, type ModalAnswer } from "./modalStubs";
 import { writeParts } from "../../../src/partsStore";
 import { serializeEditsJson } from "../../../src/editsSidecar";
 import { hashBytes, serializeSaveJournal } from "../../../src/saveJournal";
@@ -89,6 +89,37 @@ function minXOfPosts(seen: Array<{ type: string; meshes?: Array<{ positions?: st
   return min === Infinity ? null : min;
 }
 
+/**
+ * The world-space bounding box of the last `geometry` post seen, as
+ * `{min, max}` in millimetres.
+ *
+ * The viewer's own unit is millimetres and the host posts model-space
+ * millimetres, so an extent here is directly comparable with a fixture's
+ * documented size — which is what makes it usable as an *assertion* rather
+ * than a smoke signal ("the model changed" proves nothing; "the plate is now
+ * 60 mm wide" does).
+ */
+function extentOfPosts(seen: Array<{ type: string; meshes?: Array<{ positions?: string }> }>): { min: number[]; max: number[] } | null {
+  const last = [...seen].reverse().find((m) => m.type === "geometry" && Array.isArray(m.meshes));
+  if (!last?.meshes) return null;
+  const min = [Infinity, Infinity, Infinity];
+  const max = [-Infinity, -Infinity, -Infinity];
+  for (const mesh of last.meshes) {
+    if (!mesh.positions) continue;
+    const buf = Buffer.from(mesh.positions, "base64");
+    const arr = new Float32Array(buf.buffer, buf.byteOffset, Math.floor(buf.byteLength / 4));
+    for (let i = 0; i < arr.length; i += 3) {
+      for (let k = 0; k < 3; k++) {
+        const v = arr[i + k];
+        if (v < min[k]) min[k] = v;
+        if (v > max[k]) max[k] = v;
+      }
+    }
+  }
+  if (min.some((v) => !Number.isFinite(v))) return null;
+  return { min, max };
+}
+
 /** Opens a document with the post observer attached from before the open. */
 async function openAndWaitGeometry(
   file: string,
@@ -111,6 +142,22 @@ function readSidecarJson(file: string): { ops?: unknown[]; bakedThrough?: unknow
     return JSON.parse(fs.readFileSync(file, "utf8"));
   } catch {
     return {};
+  }
+}
+
+/**
+ * Reads a JSON file, or `null` when it is missing or unreadable.
+ *
+ * Distinct from `readSidecarJson` on purpose: a case that ASSERTS a file was
+ * written must fail as a clean assertion, not as an ENOENT exception thrown
+ * half-way through the case (which would hide every later assertion and make
+ * the failure read like a harness problem).
+ */
+function readJsonIfExists(file: string): unknown {
+  try {
+    return JSON.parse(fs.readFileSync(file, "utf8"));
+  } catch {
+    return null;
   }
 }
 
@@ -3016,19 +3063,501 @@ test("FE-mesh export with a handoff manifest records Parts and coverage", async 
   await closeAll();
 });
 
+/**
+ * Roadmap "OpenSCAD Customizer panel in the viewer": Apply is a HOST flow.
+ * The provider validates the form's values against the SOURCE TEXT, persists
+ * the validated set to `<model>.scad-params.json` and reloads the model with
+ * those values as `-D` overrides — the source itself is never written.
+ *
+ * `examples/OpenSCAD/parametric.scad` is analytic: a `width × depth ×
+ * thickness` plate minus a hole, so widening it by 20 mm moves the X extent
+ * by exactly 20 and leaves everything else alone. The width is the assertion
+ * (a "the model changed" signal would prove nothing).
+ */
+test("the OpenSCAD Customizer's Apply persists the overrides, reloads the model wider and never writes the source", async () => {
+  const api = await saveTestApi();
+  if (!api?.simulateWebviewMessage || !api.onDidPostMessage) return;
+  const staged = stage(path.join(ROOT, "examples", "OpenSCAD", "parametric.scad"));
+  const sourceBefore = fs.readFileSync(staged);
+  const sidecar = `${staged}.scad-params.json`;
+
+  const seen: Array<{ type: string; meshes?: Array<{ positions?: string }> }> = [];
+  const statuses: string[] = [];
+  // Attached BEFORE the open: the WASM conversion is fast enough to post the
+  // first geometry inside `openDocument`'s own settle wait, and a listener
+  // attached afterwards would miss it entirely.
+  const sub = api.onDidPostMessage((m) => {
+    seen.push(m as { type: string });
+    const msg = m as { type: string; text?: string };
+    if (msg.type === "status" && msg.text) statuses.push(msg.text);
+  });
+  try {
+    assert(await openDocument(staged), "the parametric .scad opens through the bundled WASM");
+    // The WASM conversion plus the first tessellation is not instant — wait
+    // for the geometry instead of guessing a delay (a fixed sleep reports
+    // "no geometry" identically for "still converting" and "failed").
+    assert(await waitFor(() => seen.some((m) => m.type === "geometry"), 60000), "the open posts geometry");
+    const before = extentOfPosts(seen);
+    assert(before !== null, "the open posted geometry");
+    assert(
+      before !== null && Math.abs(before.max[0] - before.min[0] - 40) < 1e-3,
+      `the plate is 40 mm wide at the defaults (got ${JSON.stringify(before && [before.min[0], before.max[0]])})`
+    );
+
+    const geometryBefore = seen.filter((m) => m.type === "geometry").length;
+    await api.simulateWebviewMessage!(vscode.Uri.file(staged), {
+      type: "scadApplyOverrides",
+      overrides: { width: 60, notAParameter: 7 },
+    });
+    assert(
+      await waitFor(() => seen.filter((m) => m.type === "geometry").length > geometryBefore, 60000),
+      "Apply reloads the model with the override"
+    );
+    const after = extentOfPosts(seen);
+    assert(
+      after !== null && Math.abs(after.max[0] - after.min[0] - 60) < 1e-3,
+      `the plate is 60 mm wide after the override (got ${JSON.stringify(after && [after.min[0], after.max[0]])})`
+    );
+    assert(fs.existsSync(sidecar), "the overrides sidecar is written beside the model");
+    const persisted = (readJsonIfExists(sidecar) ?? {}) as { overrides?: Record<string, unknown> };
+    assert(persisted.overrides?.width === 60, `the validated override is persisted (got ${JSON.stringify(persisted.overrides)})`);
+    assert(
+      !("notAParameter" in (persisted.overrides ?? {})),
+      `an unknown parameter never reaches the -D set (got ${JSON.stringify(persisted.overrides)})`
+    );
+    assert(
+      statuses.some((s) => /notAParameter/.test(s) && /ignored/i.test(s)),
+      `the dropped parameter is reported to the user (saw ${JSON.stringify(statuses)})`
+    );
+    assert(fs.readFileSync(staged).equals(sourceBefore), "the .scad source is byte-identical — Apply never writes it");
+  } finally {
+    sub.dispose();
+  }
+  await closeAll();
+});
+
+/**
+ * Roadmap "Saved parametric scripts — the macro library": saving a macro is a
+ * HOST flow with a text prompt, and the library it writes is a real file
+ * beside the model — the thing a user can lose. Three facts matter: the
+ * prompt is the naming step, the recorded script is the document's op list,
+ * and a dismissed prompt writes NOTHING (a silent write would be worse than
+ * no write).
+ */
+test("saving a macro writes the library beside the model, records the op list, and a dismissed prompt writes nothing", async () => {
+  const api = await saveTestApi();
+  if (!api?.simulateWebviewMessage || !api.onDidPostMessage) return;
+  const staged = stage(STEP_FIXTURE);
+  const library = path.join(path.dirname(staged), "cad-preview-macros.json");
+  assert(await openDocument(staged), "the STEP fixture opens");
+  await sleep(1500);
+
+  // One op, so "the recorded script IS the op list" is checkable.
+  await api.simulateWebviewMessage!(vscode.Uri.file(staged), {
+    type: "editsChanged",
+    ops: [{ op: "translate", targets: ["solid-0"], vec: [5, 0, 0] }],
+    variables: [],
+  });
+  await sleep(1500);
+
+  const record = await withModals([input("my-macro")], async () => {
+    await api.simulateWebviewMessage!(vscode.Uri.file(staged), { type: "macroSaveCurrent" });
+    await waitForFile(library, 15000);
+  });
+  assert(record.inputBoxes.length === 1, `the name prompt opened once (saw ${JSON.stringify(record.inputBoxes)})`);
+  assert(/name/i.test(record.inputBoxes[0]?.prompt ?? ""), `the prompt asks for a name (got ${JSON.stringify(record.inputBoxes[0])})`);
+  assert(fs.existsSync(library), "the macro library is written beside the model");  const saved = (readJsonIfExists(library) ?? {}) as {
+    scripts?: Record<string, { name?: string; script?: { steps?: Array<{ op?: { op?: string } }> } }>;
+  };
+  const entry = saved.scripts?.["my-macro"];
+  assert(entry !== undefined, `the macro is stored under its name (got ${JSON.stringify(Object.keys(saved.scripts ?? {}))})`);
+  assert(entry?.name === "my-macro", `the entry carries its name (got ${JSON.stringify(entry?.name)})`);
+  assert(
+    entry?.script?.steps?.[0]?.op?.op === "translate",
+    `the recorded script IS the document's op list (got ${JSON.stringify(entry?.script?.steps)})`
+  );
+
+  // A dismissed prompt is a quiet no-op — and must not write.
+  const before = fs.readFileSync(library);
+  const dismissed = await withModals([cancel()], async () => {
+    await api.simulateWebviewMessage!(vscode.Uri.file(staged), { type: "macroSaveCurrent" });
+    await sleep(1500);
+  });
+  assert(dismissed.inputBoxes.length === 1, "the dismissed save still opened the prompt");
+  assert(fs.existsSync(library) && fs.readFileSync(library).equals(before), "a dismissed prompt writes nothing");
+  await api.revertDocument?.(vscode.Uri.file(staged));
+  await closeAll();
+});
+
+/**
+ * Roadmap "Bundled starter macro library": a bundled starter is READ-ONLY.
+ * Two halves, both host-side: Run pushes the macro's ops onto the same op
+ * stack as hand edits (so the model really changes), and Delete is refused
+ * for a bundled name — a refusal that must not touch the shipped library
+ * file.
+ *
+ * The starter's own description says it is "designed for a blank model" (its
+ * pattern and boolean reference the solids its first two steps create on an
+ * empty base), so the run happens on a blank model.
+ */
+test("a bundled starter macro runs on a blank model and cannot be deleted", async () => {
+  const api = await saveTestApi();
+  if (!api?.simulateWebviewMessage || !api.onDidPostMessage) return;
+  const dest = path.join(tempDir(), "blank.brep");
+  const bundled = path.join(ROOT, "dist", "macros", "starter-library.json");
+  const bundledBefore = fs.existsSync(bundled) ? fs.readFileSync(bundled) : null;
+
+  const seen: Array<{ type: string; meshes?: Array<{ positions?: string }> }> = [];
+  const statuses: string[] = [];
+  const errors: string[] = [];
+  const sub = api.onDidPostMessage((m) => {
+    seen.push(m as { type: string });
+    const msg = m as { type: string; text?: string; message?: string };
+    if (msg.type === "status" && msg.text) statuses.push(msg.text);
+    if (msg.type === "error" && msg.message) errors.push(msg.message);
+  });
+  try {
+    await withModals([save(dest)], async () => {
+      await vscode.commands.executeCommand("cad-preview.new");
+      await waitForFile(dest, 20000);
+      assert(
+        await waitFor(() => vscode.window.tabGroups.activeTabGroup.activeTab?.label === path.basename(dest), 20000),
+        "the blank model is open"
+      );
+      await sleep(1500);
+      const geometryBefore = seen.filter((m) => m.type === "geometry").length;
+      await api.simulateWebviewMessage!(vscode.Uri.file(dest), { type: "macroRun", name: "bolt-circle-flange" });
+      assert(
+        await waitFor(() => seen.filter((m) => m.type === "geometry").length > geometryBefore, 60000),
+        "running the macro rebuilds the model"
+      );
+      assert(
+        statuses.some((s) => /Ran "bolt-circle-flange"/.test(s)),
+        `the run is reported (saw ${JSON.stringify(statuses)})`
+      );
+      const extent = extentOfPosts(seen);
+      // The starter's first step is a r=40, h=10 cylinder centred on the
+      // origin. The extent is a TESSELLATED one: a 32-facet cylinder's
+      // extreme point sits a chord-error inside the true radius (39.95 mm
+      // here), so the tolerance is a fraction of a millimetre, not exact.
+      assert(
+        extent !== null && Math.abs(extent.max[0] - extent.min[0] - 80) < 0.5,
+        `the flange is 80 mm across (got ${JSON.stringify(extent && [extent.min[0], extent.max[0]])})`
+      );
+      assert(
+        extent !== null && Math.abs(extent.max[2] - extent.min[2] - 10) < 1e-2,
+        `the flange is 10 mm tall (got ${JSON.stringify(extent && [extent.min[2], extent.max[2]])})`
+      );
+
+      // Delete is refused for a bundled starter — and the shipped file is untouched.
+      await api.simulateWebviewMessage!(vscode.Uri.file(dest), { type: "macroDelete", name: "bolt-circle-flange" });
+      await sleep(1000);
+      assert(
+        errors.some((e) => /bundled starter macro and cannot be deleted/.test(e)),
+        `the delete is refused by name (saw ${JSON.stringify(errors)})`
+      );
+      if (bundledBefore) {
+        assert(fs.readFileSync(bundled).equals(bundledBefore), "the shipped starter library is untouched");
+      }
+    });
+  } finally {
+    sub.dispose();
+  }
+  await api.revertDocument?.(vscode.Uri.file(dest));
+  await closeAll();
+});
+
+/**
+ * Roadmap "Reusable meshing presets": the preset library is a real file beside
+ * the model, and Apply is what makes it worth having — it must put the
+ * preset's options back on the document (the `.mesh.json` sidecar AND the
+ * generated `.geo`), not merely acknowledge the name.
+ */
+test("a meshing preset saves beside the model and Apply restores its options", async () => {
+  const api = await saveTestApi();
+  if (!api?.simulateWebviewMessage || !api.onDidPostMessage) return;
+  const staged = stage(STEP_FIXTURE);
+  const library = path.join(path.dirname(staged), "cad-preview-mesh-presets.json");
+  assert(await openDocument(staged), "the STEP fixture opens");
+  await sleep(1500);
+
+  const statuses: string[] = [];
+  const sub = api.onDidPostMessage((m) => {
+    const msg = m as { type: string; text?: string };
+    if (msg.type === "status" && msg.text) statuses.push(msg.text);
+  });
+  try {
+    await api.simulateWebviewMessage!(vscode.Uri.file(staged), {
+      type: "meshingChanged",
+      options: { ...DEFAULT_MESH_OPTIONS, sizeMax: 3 },
+    });
+    await sleep(1500);
+
+    const record = await withModals([input("my-preset")], async () => {
+      await api.simulateWebviewMessage!(vscode.Uri.file(staged), { type: "meshPresetSaveCurrent" });
+      await waitForFile(library, 15000);
+    });
+    assert(record.inputBoxes.length === 1, `the name prompt opened once (saw ${JSON.stringify(record.inputBoxes)})`);
+    assert(fs.existsSync(library), "the preset library is written beside the model");
+    const saved = (readJsonIfExists(library) ?? {}) as {
+      presets?: Record<string, { name?: string; unit?: string; options?: { sizeMax?: number } }>;
+    };
+    const preset = saved.presets?.["my-preset"];
+    assert(preset !== undefined, `the preset is stored under its name (got ${JSON.stringify(Object.keys(saved.presets ?? {}))})`);
+    assert(preset?.options?.sizeMax === 3, `the preset carries the options at save time (got ${JSON.stringify(preset?.options?.sizeMax)})`);
+    assert(preset?.unit === "mm", `the preset is stored in mm (got ${JSON.stringify(preset?.unit)})`);
+
+    // Change the options, then Apply the preset: the preset's values must win.
+    await api.simulateWebviewMessage!(vscode.Uri.file(staged), {
+      type: "meshingChanged",
+      options: { ...DEFAULT_MESH_OPTIONS, sizeMax: 9 },
+    });
+    await sleep(1500);
+    await api.simulateWebviewMessage!(vscode.Uri.file(staged), { type: "meshPresetApply", name: "my-preset" });
+    await sleep(1500);
+    assert(
+      statuses.some((s) => /Applied mesh preset "my-preset"/.test(s)),
+      `the apply is reported (saw ${JSON.stringify(statuses)})`
+    );
+    const applied = (readJsonIfExists(`${staged}.mesh.json`) ?? {}) as { options?: { sizeMax?: number } };
+    assert(applied.options?.sizeMax === 3, `the preset's sizeMax is back on the document (got ${JSON.stringify(applied.options?.sizeMax)})`);
+    const geo = fs.existsSync(`${staged}.geo`) ? fs.readFileSync(`${staged}.geo`, "utf8") : "";
+    assert(/Mesh\.MeshSizeMax = 3;/.test(geo), `the generated .geo carries the preset's size (got ${/Mesh\.MeshSizeMax = [^;]+;/.exec(geo)?.[0]})`);
+  } finally {
+    sub.dispose();
+  }
+  await closeAll();
+});
+
+/**
+ * Roadmap "Mesh operations panel for meshio sources": the Run action is a host
+ * flow that ends in a real file. Two facts matter — the operation's output
+ * lands in a NEW file (the source is never the target), and the source stays
+ * byte-identical afterwards.
+ */
+test("a meshio operation writes a new mesh and leaves the source untouched", async () => {
+  const api = await saveTestApi();
+  if (!api?.simulateWebviewMessage || !api.onDidPostMessage) return;
+  const staged = stage(path.join(ROOT, "examples", "MED", "two-material-tets.med"));
+  const sourceBefore = fs.readFileSync(staged);
+  const out = path.join(path.dirname(staged), "smoothed.med");
+  assert(await openDocument(staged), "the MED fixture opens through the meshio bridge");
+  await sleep(2000);
+
+  let result: { steps?: Array<{ op?: string; applied?: boolean }> } | undefined;
+  const sub = api.onDidPostMessage((m) => {
+    const msg = m as { type: string; steps?: Array<{ op?: string; applied?: boolean }> };
+    if (msg.type === "meshioOpsResult") result = { steps: msg.steps };
+  });
+  try {
+    await withModals([save(out)], async () => {
+      await api.simulateWebviewMessage!(vscode.Uri.file(staged), {
+        type: "meshioOpsRequest",
+        requestId: "meshio-ops-1",
+        ops: [{ op: "smooth", iterations: 1 }],
+      });
+      await waitForFile(out, 60000);
+    });
+    assert(fs.existsSync(out), "the operation's output is written to the chosen path");
+    const written = fs.readFileSync(out);
+    // The output keeps the SOURCE's format (the save dialog's extension
+    // follows the routed one), and MED is an HDF5 container — so this is the
+    // real file header, not a text mesh.
+    assert(
+      written.length > 8 && written.subarray(0, 4).toString("latin1") === "\x89HDF",
+      `the output is a real MED (HDF5) document (got ${written.subarray(0, 8).toString("latin1")})`
+    );
+    assert(result?.steps?.some((s) => s.op === "smooth"), `the op is reported back (got ${JSON.stringify(result?.steps)})`);
+    assert(fs.readFileSync(staged).equals(sourceBefore), "the source mesh is byte-identical — the op wrote a new file");
+  } finally {
+    sub.dispose();
+  }
+  await closeAll();
+});
+
+/**
+ * Roadmap "Snapshot display modes, section clip, compare_models quality and
+ * clearance": the Clash panel's Clearance field is a HOST value — the provider
+ * validates it and forwards it to the kernel, which answers with the exact
+ * gap between the two operands.
+ *
+ * The fixture is analytic: `block.stp` is a 3×4×5 box centred on the origin
+ * (x −1.5…1.5) and the added box is 3×4×5 centred at x = 10 (x 8.5…11.5), so
+ * the gap between them is exactly 7 mm.
+ */
+test("the clash check validates the clearance, forwards it to the kernel and reports the exact gap", async () => {
+  const api = await saveTestApi();
+  if (!api?.simulateWebviewMessage || !api.onDidPostMessage) return;
+  const staged = stage(STEP_FIXTURE);
+  assert(await openDocument(staged), "the STEP fixture opens");
+  await sleep(1500);
+
+  const results: Array<{ requestId?: string; result?: { hasOverlap?: boolean; clearance?: number; withinClearance?: boolean } }> = [];
+  const errors: Array<{ requestId?: string; message?: string }> = [];
+  const sub = api.onDidPostMessage((m) => {
+    const msg = m as { type: string; requestId?: string; result?: { hasOverlap?: boolean; clearance?: number; withinClearance?: boolean }; message?: string };
+    if (msg.type === "clashCheckResult") results.push({ requestId: msg.requestId, result: msg.result });
+    if (msg.type === "clashCheckError") errors.push({ requestId: msg.requestId, message: msg.message });
+  });
+  try {
+    // A second solid, 7 mm clear of the box.
+    await api.simulateWebviewMessage!(vscode.Uri.file(staged), {
+      type: "editsChanged",
+      ops: [{ op: "addBox", center: [10, 0, 0], size: [3, 4, 5] }],
+      variables: [],
+    });
+    await sleep(2000);
+    await api.simulateWebviewMessage!(vscode.Uri.file(staged), {
+      type: "partsChanged",
+      parts: [
+        { name: "A", color: "#ff0000", volumes: ["solid-0"], surfaces: [], lines: [], points: [] },
+        { name: "B", color: "#00ff00", volumes: ["solid-1"], surfaces: [], lines: [], points: [] },
+      ],
+    });
+    await sleep(1500); // the parts sidecar is debounced — the tool reads it from disk
+
+    const ask = async (requestId: string, minClearance: unknown) => {
+      await api.simulateWebviewMessage!(vscode.Uri.file(staged), {
+        type: "clashCheckRequest",
+        requestId,
+        partA: "A",
+        partB: "B",
+        minClearance,
+      });
+      return waitFor(
+        () => results.some((r) => r.requestId === requestId) || errors.some((e) => e.requestId === requestId),
+        60000
+      );
+    };
+
+    assert(await ask("clash-wide", 8), "the check answers");
+    const wide = results.find((r) => r.requestId === "clash-wide")?.result;
+    assert(wide?.hasOverlap === false, `the two boxes do not overlap (got ${JSON.stringify(wide)})`);
+    assert(
+      wide?.clearance !== undefined && Math.abs(wide.clearance - 7) < 1e-3,
+      `the exact gap is 7 mm (got ${JSON.stringify(wide?.clearance)})`
+    );
+    assert(wide?.withinClearance === true, "a 7 mm gap is inside an 8 mm clearance");
+
+    // Control: the same pair with a clearance the gap already satisfies.
+    assert(await ask("clash-narrow", 1), "the narrow check answers");
+    const narrow = results.find((r) => r.requestId === "clash-narrow")?.result;
+    assert(narrow?.withinClearance === false, `a 7 mm gap is outside a 1 mm clearance (got ${JSON.stringify(narrow)})`);
+
+    // A bad value never reaches the kernel.
+    assert(await ask("clash-bad", -1), "the invalid check answers");
+    const bad = errors.find((e) => e.requestId === "clash-bad");
+    assert(
+      bad?.message !== undefined && /clearance/i.test(bad.message),
+      `the invalid clearance is refused by name (got ${JSON.stringify(bad?.message)})`
+    );
+    assert(!results.some((r) => r.requestId === "clash-bad"), "the refused request produces no result");
+  } finally {
+    sub.dispose();
+  }
+  await api.revertDocument?.(vscode.Uri.file(staged));
+  await closeAll();
+});
+
+/**
+ * Roadmap "Interactive half — pin-as-query row": the synthesis is SERVER-side
+ * — the provider replays the op's prefix in the kernel and asks for a query
+ * bound to the picked face. The host half is what the webview cannot prove:
+ * that a face produced by an op really does synthesize a query, and that an
+ * op index the host cannot replay is refused rather than answered.
+ */
+test("pinning a produced face as a query synthesizes it server-side", async () => {
+  const api = await saveTestApi();
+  if (!api?.simulateWebviewMessage || !api.onDidPostMessage) return;
+  const staged = stage(STEP_FIXTURE);
+  assert(await openDocument(staged), "the STEP fixture opens");
+  await sleep(1500);
+
+  const results: Array<{ requestId?: string; results?: Array<{ entityId?: string; query?: unknown; kind?: string | null; reason?: string }> }> = [];
+  const errors: Array<{ requestId?: string; message?: string }> = [];
+  const sub = api.onDidPostMessage((m) => {
+    const msg = m as { type: string; requestId?: string; results?: Array<{ entityId?: string; query?: unknown; kind?: string | null; reason?: string }>; message?: string };
+    if (msg.type === "selectorSynthesizeResult") results.push({ requestId: msg.requestId, results: msg.results });
+    if (msg.type === "selectorSynthesizeError") errors.push({ requestId: msg.requestId, message: msg.message });
+  });
+  try {
+    // One op that produces faces (an added box → six new faces, ids 6…11).
+    await api.simulateWebviewMessage!(vscode.Uri.file(staged), {
+      type: "editsChanged",
+      ops: [{ op: "addBox", center: [10, 0, 0], size: [3, 4, 5] }],
+      variables: [],
+    });
+    await sleep(2000);
+
+    await api.simulateWebviewMessage!(vscode.Uri.file(staged), {
+      type: "selectorSynthesizeRequest",
+      requestId: "pin-1",
+      op: 0,
+      role: "body",
+      entityIds: ["face-6", "face-7", "face-8", "face-9", "face-10", "face-11"],
+    });
+    assert(
+      results.find((r) => r.requestId === "pin-1") !== undefined,
+      "the synthesis answers"
+    );
+    assert(
+      errors.length === 0,
+      `a well-formed request is answered, not refused wholesale (saw ${JSON.stringify(errors)})`
+    );
+    const entries = results.find((r) => r.requestId === "pin-1")?.results ?? [];
+    assert(entries.length === 6, `every picked face is answered (got ${entries.length})`);
+    const synthesized = entries.filter((e) => e.query);
+    assert(synthesized.length > 0, `at least one face synthesizes a query (got ${JSON.stringify(entries)})`);
+    assert(
+      synthesized.every((e) => e.kind === "addBox"),
+      `the query is stamped with the producing op (got ${JSON.stringify(synthesized.map((e) => e.kind))})`
+    );
+
+    // An op index the host cannot replay is refused per face, not answered
+    // with a query: the reply carries the reason instead.
+    await api.simulateWebviewMessage!(vscode.Uri.file(staged), {
+      type: "selectorSynthesizeRequest",
+      requestId: "pin-2",
+      op: 99,
+      role: "body",
+      entityIds: ["face-6"],
+    });
+    assert(
+      await waitFor(() => results.some((r) => r.requestId === "pin-2"), 30000),
+      "the impossible op index is answered"
+    );
+    const refused = results.find((r) => r.requestId === "pin-2")?.results ?? [];
+    assert(refused.length === 1, `the refused request answers per face (got ${JSON.stringify(refused)})`);
+    assert(refused[0]?.query === null, `no query is synthesized for an op the host cannot replay (got ${JSON.stringify(refused[0])})`);
+    assert(
+      /Bucket op 99/.test(refused[0]?.reason ?? ""),
+      `the refusal names the op it cannot replay (got ${JSON.stringify(refused[0]?.reason)})`
+    );
+  } finally {
+    sub.dispose();
+  }
+  await api.revertDocument?.(vscode.Uri.file(staged));
+  await closeAll();
+});
+
   // `/tmp/cad-preview-test-only` (a substring) runs only matching cases —
   // iterating on one kernel-slow case without paying for the whole suite
   // each time. The launcher does not forward env into the test VS Code, so a
   // file (written from the shell before spawning) is the channel. Absent file
-  // runs everything; delete it afterwards.
-  let only: string | undefined;
+  // runs everything; delete it afterwards. One substring PER LINE, so a
+  // group of related cases can be run together.
+  let only: string[] = [];
   try {
-    only = fs.readFileSync("/tmp/cad-preview-test-only", "utf8").trim() || undefined;
+    only = fs
+      .readFileSync("/tmp/cad-preview-test-only", "utf8")
+      .split("\n")
+      .map((s) => s.trim())
+      .filter(Boolean);
   } catch {
-    only = undefined;
+    only = [];
   }
   for (const c of CASES) {
-    if (only && !c.name.includes(only)) continue;
+    if (only.length > 0 && !only.some((o) => c.name.includes(o))) continue;
     console.log(`\n${c.name}`);
     try {
       await c.run();

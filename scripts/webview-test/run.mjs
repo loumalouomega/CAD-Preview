@@ -5132,6 +5132,168 @@ test("gizmo: grid snap quantises the drag to the grid size; turning it off frees
   assert(Math.abs(free / 5 - Math.round(free / 5)) > 0.01, `with snap off the delta is continuous (got ${free})`);
 });
 
+/** A capture of the WebGL canvas only — the sidebar is not part of the question. */
+const canvasShot = (page) => page.locator("#app canvas").last().screenshot().then((b) => b.toString("base64"));
+
+/** How many pixels differ between two canvas captures. */
+async function canvasDiffCount(page, aB64, bB64) {
+  return page.evaluate(async ([a, b]) => {
+    const load = async (b64) => {
+      const bmp = await createImageBitmap(await (await fetch(`data:image/png;base64,${b64}`)).blob());
+      const c = document.createElement("canvas");
+      c.width = bmp.width; c.height = bmp.height;
+      c.getContext("2d").drawImage(bmp, 0, 0);
+      return c.getContext("2d").getImageData(0, 0, c.width, c.height).data;
+    };
+    const [da, db] = await Promise.all([load(a), load(b)]);
+    let diff = 0;
+    for (let i = 0; i < da.length; i += 4) {
+      if (da[i] !== db[i] || da[i + 1] !== db[i + 1] || da[i + 2] !== db[i + 2]) diff++;
+    }
+    return diff;
+  }, [aB64, bB64]);
+}
+
+/**
+ * Entity-point snapping ("Snap to points") is the one gizmo feature with no
+ * end-to-end coverage, and the reason is quantitative rather than accidental:
+ * its tolerance is 1% of the model diagonal, so a drag has to land within
+ * ~1.8 mm of an existing vertex before the snap can fire at all — "drag about
+ * 70 px" lands nowhere near that.
+ *
+ * The fixture makes it deterministic: the model's origin IS a vertex
+ * (`point-37` at (0,0,0) in `fixtures/geometry.json`), so a drag of ~1 mm
+ * along the world X axis lands inside the tolerance of it, and the snap holds
+ * the model on that vertex instead of letting it drift.
+ *
+ * The measurement is "how many canvas pixels changed during the drag". Two
+ * captures of the same state differ by ZERO pixels (the viewer renders on
+ * demand), so the count is geometry, not rasterisation noise — and the two
+ * runs differ by an order of magnitude: with the snap on the model is held
+ * (only the gizmo's own highlight changes), with it off the model drifts.
+ *
+ * WHAT THIS CASE RECORDS — the snap reaches the PREVIEW only. The form's
+ * `vec` deliberately keeps the raw delta ("deliberately does NOT try to
+ * reflect entity-point snap in the form", `src/webview/main.ts`), so the
+ * committed `translate` op carries the raw delta and the object lands OFF the
+ * vertex after Apply. Closing that gap needs a committed per-target delta,
+ * which the single-`vec` `translate` op cannot express for a multi-target
+ * drag — a roadmap item, not a fix here. This case pins the current
+ * behaviour so a future fix flips it loudly instead of silently.
+ */
+test("gizmo: entity-point snap holds the preview on an existing point; the committed op still carries the raw delta", async (page) => {
+  await populate(page);
+  await openGizmoForm(page, "Move");
+  const h = await gizmoHandle(page, "x");
+  assert(h !== null, "the translate gizmo's X handle is visible");
+  if (!h) return;
+
+  // Zoom in before measuring: the snap's largest possible correction is the
+  // tolerance (1% of the diagonal), which at the default framing is a couple
+  // of pixels against ~150 000 drawn ones — too diluted to measure. Eight
+  // clicks of the shipped Zoom in button (0.8x each) multiply the
+  // millimetre-per-pixel, and with it the signal.
+  for (let i = 0; i < 8; i++) {
+    await page.click("#zoom-in");
+    await sleep(60);
+  }
+  await sleep(400);
+
+  // The snap tolerance, computed from the fixture rather than hard-coded:
+  // it is 1% of the model diagonal, so the drag has to be sized against it.
+  const geo = fixture("geometry");
+  let lo = [Infinity, Infinity, Infinity];
+  let hi = [-Infinity, -Infinity, -Infinity];
+  for (const m of geo.meshes ?? []) {
+    const buf = Buffer.from(m.positions, "base64");
+    const arr = new Float32Array(buf.buffer, buf.byteOffset, Math.floor(buf.byteLength / 4));
+    for (let i = 0; i < arr.length; i += 3) {
+      for (let k = 0; k < 3; k++) {
+        if (arr[i + k] < lo[k]) lo[k] = arr[i + k];
+        if (arr[i + k] > hi[k]) hi[k] = arr[i + k];
+      }
+    }
+  }
+  const diagonal = Math.hypot(hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]);
+  const tolerance = diagonal * 0.01;
+  assert(tolerance > 0.5 && tolerance < 5, `the snap tolerance is a usable ~1% of the diagonal (got ${tolerance} mm)`);
+
+  // Calibration: how many world millimetres does one screen pixel buy?
+  const h0 = await gizmoHandle(page, "x");
+  if (!h0) { assert(false, "gizmo handle visible after zooming in"); return; }
+  await dragFromTo(page, h0.grab, [h0.grab[0] + h0.dir[0] * 30, h0.grab[1] + h0.dir[1] * 30]);
+  const trial = (await formVec(page, "vec"))[0];
+  assert(Math.abs(trial) > 0.05, `precondition: the calibration drag produced a real delta (got ${trial})`);
+  const px = Math.max(1, Math.round(tolerance / 2 / (Math.abs(trial) / 30)));
+
+  const reopenMove = async () => {
+    await page.evaluate(() => [...document.querySelectorAll(".edits-tab")].find((b) => b.textContent === "Geometry")?.click());
+    await page.evaluate(() => [...document.querySelectorAll(".edits-tab")].find((b) => b.textContent === "Edit")?.click());
+    await page.evaluate(() => [...document.querySelectorAll(".op-btn")].find((b) => b.querySelector(".op-name")?.textContent === "Move")?.click());
+    await sleep(400);
+  };
+  const setPointSnap = async (on) => {
+    await page.click("#view-menu");
+    await page.click("#snap-points");
+    await page.click("#view-menu"); // close via the trigger
+    await sleep(100);
+    const checked = await page.getAttribute("#snap-points", "aria-checked");
+    assert(checked === (on ? "true" : "false"), `the Snap to points toggle reads ${on ? "on" : "off"} (got ${checked})`);
+  };
+
+  // 1) Snap ON: the drag lands on the model's origin vertex, so the preview
+  //    holds the model where it started instead of letting it drift.
+  await reopenMove();
+  await setPointSnap(true);
+  const hOn = await gizmoHandle(page, "x");
+  if (!hOn) { assert(false, "gizmo handle visible with the point snap on"); return; }
+  const beforeOn = await canvasShot(page);
+  await dragFromTo(page, hOn.grab, [hOn.grab[0] + hOn.dir[0] * px, hOn.grab[1] + hOn.dir[1] * px]);
+  const vecOn = await formVec(page, "vec");
+  assert(
+    Math.abs(vecOn[0]) > 0 && Math.abs(vecOn[0]) < tolerance,
+    `the drag landed inside the snap tolerance (got ${vecOn[0]} mm, tolerance ${tolerance} mm)`
+  );
+  const afterOn = await canvasShot(page);
+  // The instrument's own control: two captures of the SAME state differ by
+  // zero pixels, so the counts below are geometry and not noise.
+  const noise = await canvasDiffCount(page, afterOn, await canvasShot(page));
+  assert(noise === 0, `two captures of the same state are pixel-identical (got ${noise} differing pixels)`);
+  const diffOn = await canvasDiffCount(page, beforeOn, afterOn);
+
+  // 2) The same drag with the snap OFF: the model drifts by the raw delta.
+  await reopenMove();
+  await setPointSnap(false);
+  const hOff = await gizmoHandle(page, "x");
+  if (!hOff) { assert(false, "gizmo handle visible with the point snap off"); return; }
+  const beforeOff = await canvasShot(page);
+  await dragFromTo(page, hOff.grab, [hOff.grab[0] + hOff.dir[0] * px, hOff.grab[1] + hOff.dir[1] * px]);
+  const vecOff = await formVec(page, "vec");
+  const afterOff = await canvasShot(page);
+  const diffOff = await canvasDiffCount(page, beforeOff, afterOff);
+  assert(Math.abs(vecOff[0] - vecOn[0]) < 1e-3, `the raw delta is the same either way (got ${vecOn[0]} vs ${vecOff[0]})`);
+  assert(
+    diffOff > diffOn * 4,
+    `the snap held the model on the vertex — with it on the drag changed ${diffOn} pixels, with it off ${diffOff}`
+  );
+
+  // 3) The committed op: the snap never reaches it (the recorded gap).
+  await reopenMove();
+  await setPointSnap(true);
+  const hApply = await gizmoHandle(page, "x");
+  if (!hApply) { assert(false, "gizmo handle visible before Apply"); return; }
+  await dragFromTo(page, hApply.grab, [hApply.grab[0] + hApply.dir[0] * px, hApply.grab[1] + hApply.dir[1] * px]);
+  await page.click("#edits-params .compose-apply");
+  await sleep(300);
+  const sent = await page.evaluate(() => (window.__sent ?? []).filter((m) => m.type === "editsChanged").at(-1) ?? null);
+  const op = sent?.ops?.at(-1);
+  assert(op?.op === "translate", `Apply commits a translate (got ${JSON.stringify(op)})`);
+  assert(
+    Math.abs(op.vec[0] - vecOn[0]) < 1e-3,
+    `the committed op carries the RAW delta, not the snapped one — the recorded gap (got ${JSON.stringify(op.vec)} vs ${vecOn[0]})`
+  );
+});
+
 // ── Mesh Health panel ─────────────────────────────────────────────────────
 //
 // The kernel half (`checkMeshHealth`, promote, repair) is covered live by

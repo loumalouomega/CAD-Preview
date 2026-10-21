@@ -164,16 +164,22 @@
     {
       "id": "macros-panel-save-prompt",
       "section": "Saved parametric scripts \u2014 the macro library (roadmap Tier 1, closed)",
-      "gap": "the Macros panel's click-through (Save current \u2192 name prompt \u2192 Run with edited parameters \u2192 Delete) has NOT been exercised in a real Extension Development Host session. S",
-      "status": "open",
-      "note": "Run/Delete/parameter rows are now covered (macros-panel-run-delete); the Save current name-prompt is a host-side flow."
+      "gap": "The Macros panel's Save current \u2192 name prompt \u2192 write flow in a real Extension Development Host: the prompt, the library file written beside the model, the recorded op list, and a dismissed prompt writing nothing.",
+      "status": "closed",
+      "closedBy": [
+        "saving a macro writes the library beside the model, records the op list, and a dismissed prompt writes nothing"
+      ],
+      "note": "The harness gained a `showInputBox` stub for this (the modal stub set covered quick-pick/save/open only). Seen green in CI run 39595473671 (master @ 0f46ebf) and in a local `test:integration` run on 2026-10-21."
     },
     {
       "id": "bundled-starter-macro-library",
       "section": "Bundled starter macro library (roadmap Tier 1 item, closed)",
-      "gap": "no real Extension Development Host session was run here \u2014 the bundled rows rendering, Run-on-blank click-through, and Delete-refusal in a live webview need the F5 checkli",
-      "status": "open",
-      "note": "The read-only (no Delete) row rule is covered by the macros webview case; the Run-on-a-blank-model host click-through remains."
+      "gap": "The bundled starter library's host half: Run on a blank model through the real provider, and the Delete refusal for a bundled name leaving the shipped library untouched.",
+      "status": "closed",
+      "closedBy": [
+        "a bundled starter macro runs on a blank model and cannot be deleted"
+      ],
+      "note": "Seen green in CI run 39595473671 (master @ 0f46ebf) and in a local `test:integration` run on 2026-10-21. The starter's own description says it is designed for a blank model, so the run happens on one: the flange measures 80 mm across and 10 mm tall."
     },
     {
       "id": "hole-table-feature-schedule",
@@ -197,8 +203,12 @@
     {
       "id": "svg-silhouette-export",
       "section": "SVG silhouette export (roadmap item, closed)",
-      "gap": "the File \u25be \u2192 Export Silhouette SVG\u2026 click \u2192 view quick-pick \u2192 unit quick-pick \u2192 save dialog flow has NOT been exercised in a real Extension Development Host session. See ",
-      "status": "open"
+      "gap": "The File \u25be \u2192 Export Silhouette SVG\u2026 click \u2192 view quick-pick \u2192 unit quick-pick \u2192 save dialog flow in a real Extension Development Host.",
+      "status": "closed",
+      "closedBy": [
+        "Export Silhouette SVG\u2026 offers the view list and writes a parseable drawing"
+      ],
+      "note": "Seen green in CI run 39595473671 (master @ 0f46ebf) and in a local `test:integration` run on 2026-10-21. The case drives the command, picks a view and a unit from the REAL offered lists, writes through the save dialog and parses the SVG \u2014 the export-join entry's sibling."
     },
     {
       "id": "progress-reporting-and-cancellation",
@@ -252,8 +262,12 @@
     {
       "id": "interactive-half",
       "section": "Interactive half \u2014 pin-as-query row (follow-up, closed)",
-      "gap": "the host handler (`provider.ts`, no unit-test path) and the human feel of the row are F5-only \u2014 same caveat as every other webview-touching feature. The test fakes the ke",
-      "status": "open"
+      "gap": "The pin-as-query host handler: the server-side synthesis of a query for a face an op produced, and the refusal for an op index the host cannot replay.",
+      "status": "closed",
+      "closedBy": [
+        "pinning a produced face as a query synthesizes it server-side"
+      ],
+      "note": "Seen green in CI run 39595473671 (master @ 0f46ebf) and in a local `test:integration` run on 2026-10-21. The row's feel stays a manual check."
     },
     {
       "id": "openscad-csg-import",
@@ -288,8 +302,12 @@
     {
       "id": "mesh-operations-panel-for-meshio-sources",
       "section": "Mesh-operations panel for meshio sources (roadmap Tier 2 item, closed)",
-      "gap": "no real Extension Development Host session was run here \u2014 the Run-click \u2192 save-dialog \u2192 write flow and the section's show/hide across source kinds need the F5 checklist b",
-      "status": "open"
+      "gap": "The mesh-operations Run flow in a real Extension Development Host: the save dialog, the operation's output written as a NEW file, and the source left byte-identical.",
+      "status": "closed",
+      "closedBy": [
+        "a meshio operation writes a new mesh and leaves the source untouched"
+      ],
+      "note": "Seen green in CI run 39595473671 (master @ 0f46ebf) and in a local `test:integration` run on 2026-10-21. The section's show/hide across source kinds stays a manual check."
     },
     {
       "id": "bom-copy-button",
@@ -367,8 +385,12 @@
     {
       "id": "reusable-meshing-presets",
       "section": "Reusable meshing presets (roadmap Tier 1 item, closed)",
-      "gap": "no real Extension Development Host session \u2014 the Apply\u2192re-render\u2192generate click-through and the Save name-prompt flow need the F5 checklist (open any model \u2192 Saved preset",
-      "status": "open"
+      "gap": "The preset library's host half: the Save name prompt writing the library beside the model, and Apply restoring the preset's options to `.mesh.json` and the generated `.geo`.",
+      "status": "closed",
+      "closedBy": [
+        "a meshing preset saves beside the model and Apply restores its options"
+      ],
+      "note": "The harness gained a `showInputBox` stub for this. Seen green in CI run 39595473671 (master @ 0f46ebf) and in a local `test:integration` run on 2026-10-21."
     },
     {
       "id": "measured-mesh-refinement-comparison",
@@ -438,9 +460,12 @@
     {
       "id": "gizmo-point-snap",
       "section": "Grid and entity snapping",
-      "gap": "Entity-point snapping a live gizmo drag onto a vertex has no end-to-end coverage (the snap tolerance is 1% of the model diagonal, so a deterministic target needs its own fixture).",
-      "status": "open",
-      "note": "Left open deliberately rather than asserted weakly."
+      "gap": "Entity-point snapping a live gizmo drag onto a vertex, end to end: the toggle, a calibrated drag that lands inside the 1%-of-the-diagonal tolerance, and the preview being held on the vertex.",
+      "status": "closed",
+      "closedBy": [
+        "gizmo: entity-point snap holds the preview on an existing point; the committed op still carries the raw delta"
+      ],
+      "note": "THE CASE ALSO RECORDS A GAP: the snap reaches the PREVIEW only \u2014 the form's `vec` keeps the raw delta by design, so the committed `translate` op carries the raw delta and the model lands OFF the vertex after Apply. Closing that needs a committed per-target delta, which the single-`vec` `translate` op cannot express for a multi-target drag; it is tracked as its own roadmap item, and the case pins the current behaviour so a fix flips it loudly."
     },
     {
       "id": "mass-properties-panel",
@@ -600,59 +625,63 @@
     {
       "id": "dae-real-webview",
       "section": "Collada \u2014 a display-only, import-only mesh format (roadmap 2.1, Collada increment)",
-      "gap": "ColladaLoader (DOMParser) under a real VS Code webview's CSP, and how a Collada file reads in light and high-contrast themes. test:webview sets no CSP; the integration loop (the Collada half of the compressed-glTF case) is written but has not been run because this environment cannot download VS Code.",
-      "status": "test-written",
+      "gap": "ColladaLoader (DOMParser) under a real VS Code webview's CSP \u2014 the loader path the CSP-free webview harness cannot exercise.",
+      "status": "closed",
       "closedBy": [
         "Compressed glTF (Draco and meshopt) loads under the real webview CSP"
-      ]
+      ],
+      "note": "Seen green in CI run 39595473671 (master @ 0f46ebf) and in a local `test:integration` run on 2026-10-21. The case opens cube.dae, cube-metre.dae and cube-inch.dae through the real editor and exports each to STL, pinning the triangle count and the unit scale. What is left is how a Collada file READS in the light and high-contrast themes \u2014 a look, not a claim a harness can assert."
     },
     {
       "id": "openscad-customizer-panel",
       "section": "OpenSCAD Customizer panel in the viewer (roadmap \"OpenSCAD Customizer panel in the viewer\")",
-      "gap": "no real Extension Development Host session was run here \u2014 the Apply->conversion->reload round trip through provider.ts, the sidecar watcher reconciliation, and the panel's feel across themes are F5-only; the panel DOM and message shapes are covered over the real bundle by test:webview.",
-      "status": "test-written",
+      "gap": "The Customizer's Apply round trip through provider.ts: the validated overrides persisted to `<model>.scad-params.json`, the model reloaded with them as `-D` overrides, an unknown parameter dropped with a warning, and the source left unwritten.",
+      "status": "closed",
       "closedBy": [
-        "scad customizer: .scad documentInfo shows the section; other formats keep it hidden",
-        "scad customizer: params + overrides render grouped fields; Apply posts the form values",
-        "scad customizer: Reset posts empty overrides; the hidden attribute genuinely hides the section"
-      ]
+        "the OpenSCAD Customizer's Apply persists the overrides, reloads the model wider and never writes the source"
+      ],
+      "note": "Seen green in CI run 39595473671 (master @ 0f46ebf) and in a local `test:integration` run on 2026-10-21. The claim was re-scoped first: the panel's DOM and message shapes were already covered over the real bundle, and the tracked claim was the HOST round trip, which is what the new case drives. How the panel FEELS across themes stays a manual check."
     },
     {
       "id": "openscad-include-watch",
       "section": "OpenSCAD include tracking and conversion cache",
       "gap": "The provider's per-dependency file watchers reloading an open `.scad` document when an included file changes, in a real Extension Development Host.",
-      "status": "test-written",
+      "status": "closed",
       "closedBy": [
         "a .scad model opens with no binary and editing an include reloads it (WASM-first)",
         "editing an included .scad file reloads the open document (binary fallback)"
       ],
-      "note": "Split per conversion path: the WASM-first test needs no binary at all (bogus path proves the no-install headline), the fallback test drives the counting stub binary through an import() model the WASM path declines. Not yet seen green because this environment cannot download VS Code for test:integration (the proxy refuses the host). The cache itself and the dependency-list format ARE verified live against OpenSCAD 2021.01 (unit tests, a live probe, and mcp:smoke's include-main.scad block)."
+      "note": "Seen green in CI run 39595473671 (master @ 0f46ebf) and in a local `test:integration` run on 2026-10-21. One case per conversion path: the WASM-first one needs no binary at all (a bogus path proves the no-install headline), the fallback one drives the counting stub binary. The cache key and the dependency-list format stay covered by unit tests, a live probe and mcp:smoke's include-main.scad block."
     },
     {
       "id": "openscad-color-parts-open",
       "section": "OpenSCAD color() becomes Parts",
       "gap": "The provider creating colour Parts on first open of a coloured .csg through the real extension host (webview post, parts sidecar write, revision echo with the parts watcher), exactly once across a reopen.",
-      "status": "test-written",
+      "status": "closed",
       "closedBy": [
         "opening a coloured .csg creates one Part per colour, once"
       ],
-      "note": "Written, not yet seen green (no VS Code download here). The kernel half is verified live against real OpenSCAD 2021.01 output and the headless twin through mcp:smoke."
+      "note": "Seen green in CI run 39595473671 (master @ 0f46ebf) and in a local `test:integration` run on 2026-10-21. The case opens the real OpenSCAD 2021.01 output two-colour.csg, checks the announced Parts and the persisted sidecar, and reopens to prove the Parts are not duplicated."
     },
     {
       "id": "snapshot-section-and-clearance",
       "section": "Snapshot display modes, section clip, compare_models quality and clearance",
-      "gap": "The Clash panel's Clearance field through the real extension host: provider.ts forwarding minClearance to the kernel and validating it, and the near-miss rows in a live webview.",
-      "status": "open"
+      "gap": "The Clash panel's Clearance field through the real extension host: provider.ts validating it and forwarding it to the kernel, which answers with the exact gap between the two operands.",
+      "status": "closed",
+      "closedBy": [
+        "the clash check validates the clearance, forwards it to the kernel and reports the exact gap"
+      ],
+      "note": "Seen green in CI run 39595473671 (master @ 0f46ebf) and in a local `test:integration` run on 2026-10-21. The fixture is analytic (two boxes 7 mm apart), so the reported gap is an exact number rather than a sign. The near-miss ROWS' rendering is covered over the real bundle by the webview harness."
     },
     {
       "id": "quotable-entity-references",
       "section": "Quotable entity references",
       "gap": "The host posting documentInfo.relativePath (vscode.workspace.asRelativePath) in a real extension host, as Copy reference quotes it; the webview half is covered over the real bundle.",
-      "status": "test-written",
+      "status": "closed",
       "closedBy": [
         "Ctrl+S bakes through the same join as Export save-in-place"
       ],
-      "note": "Assertion added to the existing document-chip case; not seen green here (no VS Code download)."
+      "note": "Seen green in CI run 39595473671 (master @ 0f46ebf) and in a local `test:integration` run on 2026-10-21. The relative path is asserted in the document-chip case, which already opens a document with a pending sidecar op \u2014 the lifecycle the chip has to track."
     },
     {
       "id": "unify-same-domain-faces",
@@ -669,11 +698,12 @@
     {
       "id": "amf-real-webview",
       "section": "AMF \u2014 a display-only, import-only mesh format (roadmap 2.1, AMF increment)",
-      "gap": "AMFLoader (DOMParser) under a real VS Code webview's CSP. test:webview sets no CSP; the integration loop (the AMF half of the compressed-glTF case) is written but has not been run because this environment cannot download VS Code.",
-      "status": "test-written",
+      "gap": "AMFLoader (DOMParser) under a real VS Code webview's CSP \u2014 the loader path the CSP-free webview harness cannot exercise.",
+      "status": "closed",
       "closedBy": [
         "Compressed glTF (Draco and meshopt) loads under the real webview CSP"
-      ]
+      ],
+      "note": "Seen green in CI run 39595473671 (master @ 0f46ebf) and in a local `test:integration` run on 2026-10-21. The case opens cube.amf, cube-inch.amf and the zipped cube-zip.amf through the real editor and exports each to STL, pinning the triangle count and that the viewer does not scale the AMF a second time. What is left is how an AMF file READS in the light and high-contrast themes \u2014 a look, not a claim a harness can assert."
     }
   ]
 }

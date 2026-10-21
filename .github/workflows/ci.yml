@@ -73,10 +73,17 @@ jobs:
       # a network call this job has no control over. A transient blip there
       # (ETIMEDOUT/ENETUNREACH) fails the whole job even though nothing here
       # is actually broken, so retry a few times with backoff before giving up.
+      #
+      # The timeout is a HANG guard, not a budget: the suite's legitimate
+      # runtime is ~8 min (it opens a real VS Code, loads the real WASM
+      # kernels and drives a real webview per case), and the host-side
+      # verification increment added seven more cases to it. Ten minutes was
+      # close enough to the real runtime that a slow runner would have had
+      # its perfectly healthy suite killed and retried three times.
       - name: Test (integration, real VS Code host)
         uses: nick-fields/retry@v4
         with:
-          timeout_minutes: 10
+          timeout_minutes: 25
           max_attempts: 3
           retry_wait_seconds: 20
           command: xvfb-run -a npm run test:integration

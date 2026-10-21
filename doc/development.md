@@ -225,7 +225,11 @@ Features that were checked only by hand are recorded in `scripts/verification-ga
 
 To close a gap: write the harness case, bug-inject it (confirm the fault turns it red), set the entry's `status` and `closedBy`, and lower the baseline.
 
+**Rewrite the claim before closing it.** An entry's text often bundles a decidable claim with a look-and-feel one ("the panel's click-through has not been exercised" + "how it reads in the light theme"). Narrow the text to the part a harness can decide, close the entry by a test that decides exactly that part, and leave the residual in the entry's `note` — where it stays visible instead of disappearing. An entry closed by rewording, with no test behind it, is the failure this gate exists to prevent.
+
 `WEBVIEW_TEST_ONLY="<substring>" node scripts/webview-test/run.mjs` runs only the matching `test:webview` cases, which is the fast loop for writing one. If Playwright wants a newer Chromium than the one installed and you cannot download one, point its expected path at the installed headless shell instead of reinstalling.
+
+`/tmp/cad-preview-test-only` does the same for the integration suite: one case-name substring per line, and the launcher reads the file (it cannot forward an env var into the test VS Code). It is how the second host-side increment was written — seven new cases, iterated in minutes instead of in the ~12 minutes the whole suite takes.
 
 ## VS Code Remote / SSH
 

@@ -38,12 +38,15 @@ export type ModalAnswer =
   | { kind: "save"; path: string }
   /** Answer an open dialog with these filesystem paths. */
   | { kind: "open"; paths: string[] }
+  /** Answer an input box with this text. */
+  | { kind: "input"; value: string }
   /** Simulate Escape / dismissal on whichever modal comes next. */
   | { kind: "cancel" };
 
 export const pick = (label: string): ModalAnswer => ({ kind: "pick", label });
 export const save = (path: string): ModalAnswer => ({ kind: "save", path });
 export const open = (...paths: string[]): ModalAnswer => ({ kind: "open", paths });
+export const input = (value: string): ModalAnswer => ({ kind: "input", value });
 export const cancel = (): ModalAnswer => ({ kind: "cancel" });
 
 /** What the user was actually shown — assertable, not just the outcome. */
@@ -51,6 +54,7 @@ export interface ModalRecord {
   quickPicks: Array<{ placeHolder?: string; labels: string[] }>;
   saveDialogs: Array<{ defaultPath?: string; filters?: Record<string, string[]> }>;
   openDialogs: Array<{ openLabel?: string; filters?: Record<string, string[]> }>;
+  inputBoxes: Array<{ title?: string; prompt?: string; placeHolder?: string }>;
   warnings: Array<{ message: string; buttons: string[] }>;
   errors: string[];
   /** `showInformationMessage` text, e.g. batch export's "N ok, M failed" tally.
@@ -75,13 +79,14 @@ const labelOf = (item: unknown): string =>
  */
 export function installModalStubs(answers: ModalAnswer[]): ModalSession {
   const queue = [...answers];
-  const record: ModalRecord = { quickPicks: [], saveDialogs: [], openDialogs: [], warnings: [], errors: [], infos: [], leftover: 0 };
+  const record: ModalRecord = { quickPicks: [], saveDialogs: [], openDialogs: [], inputBoxes: [], warnings: [], errors: [], infos: [], leftover: 0 };
 
   const win = vscode.window as unknown as Record<string, unknown>;
   const original = {
     showQuickPick: win.showQuickPick,
     showSaveDialog: win.showSaveDialog,
     showOpenDialog: win.showOpenDialog,
+    showInputBox: win.showInputBox,
     showWarningMessage: win.showWarningMessage,
     showErrorMessage: win.showErrorMessage,
     showInformationMessage: win.showInformationMessage,
@@ -129,6 +134,34 @@ export function installModalStubs(answers: ModalAnswer[]): ModalSession {
     record.openDialogs.push({ openLabel: options?.openLabel, filters: options?.filters });
     const answer = next("open", options?.openLabel ?? "no label");
     return answer.kind === "cancel" ? undefined : answer.paths.map((p) => vscode.Uri.file(p));
+  };
+
+  /**
+   * An input box is a PROMPT with a free-text answer, so it gets its own
+   * answer kind rather than reusing the quick-pick's label match — the text is
+   * the thing under test (a macro name, a preset name, a template name).
+   *
+   * The provider's own `validateInput` is honoured: a scripted value the
+   * provider would refuse throws HERE rather than being handed over, because
+   * the provider treats a rejected input as "the user dismissed the box" and
+   * the flow would then quietly do nothing — a test that passes without
+   * exercising the write it was written for.
+   */
+  win.showInputBox = async (options?: {
+    title?: string;
+    prompt?: string;
+    placeHolder?: string;
+    value?: string;
+    validateInput?: (v: string) => string | undefined | null;
+  }) => {
+    record.inputBoxes.push({ title: options?.title, prompt: options?.prompt, placeHolder: options?.placeHolder });
+    const answer = next("input", options?.prompt ?? options?.title ?? "no prompt");
+    if (answer.kind === "cancel") return undefined;
+    const rejection = options?.validateInput?.(answer.value);
+    if (typeof rejection === "string") {
+      throw new Error(`Modal stub: the input box rejected "${answer.value}" — ${rejection}`);
+    }
+    return answer.value;
   };
 
   // Not queued: error messages are fire-and-forget (`void showErrorMessage(...)`)
