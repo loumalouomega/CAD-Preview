@@ -6,10 +6,17 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/); thi
 
 ## [Unreleased]
 
+## [3.28.0] - 2026-10-22
+
 ### Added
 
 - **Draft and undercut analysis (`check_draft` MCP tool).** Given a `pull` direction it reports, as facts, the walls with less than `minDraftDeg` of draft, the walls tilted away from the pull (or, with `twoSided`, each face judged against its own release side) and the faces shadowed along the pull (sampled rays, with the sample count and per-face fraction), naming `face-N` for B-rep and `facet-N` for mesh sources. Cap faces perpendicular to the pull are excluded, the projected area is included, and display-only/meshio-only formats return `supported: false`. The Advanced ▸ Analysis **Draft** panel runs the same report and colours the view by draft angle.
 - **Hole callouts and centre marks on drawing sheets (`export_drawing_sheet` `holeCallouts: true`).** Every hole whose axis is a view's line of sight gets a centre cross, and each hole group (size, axis, through/blind) one leader callout — `4× Ø5 THRU`, `2× Ø5 ↧6` for a blind group — with the nearest standard designation appended when within 5 %. SVG carries a `CENTER` group per marked view; DXF a `CENTER` layer. B-rep sources only (a mesh source warns), default off so existing sheets stay byte-identical, and the result reports `holeMarkCount`. The Export Drawing Sheet form has a **Hole callouts** checkbox and sheet templates accept a `holeCallouts` key, resolved by the same `resolveSheetSettings` as the tool (explicit input beats the template).
+- **Variable-radius fillets (`FilletOp.radius2`).** A fillet edge now takes a second radius: `radius2` is the end radius, so one edge applies through `Add_3(r1, r2, edge)` and a connected chain is ordered end-to-start and interpolated by cumulative length, one `Add_3` per edge. The first radius lands at the curve's first parameter, not the explorer's first vertex (probed on all 12 cube edges); an oversized radius is refused before the kernel call (it would abort the WASM instance) and constant fillets keep the untouched `Add_2` path. The Fillet form gains an optional **End radius** and `describeOp`/`OP_PARAM_DOCS` carry it. The smoke suite pins the analytic removed volume against constant controls, the oversized-radius refusal and radius-swap symmetry.
+
+### Fixed
+
+- **Entity-point snap now commits the snapped delta for one target.** The gizmo held the preview on the vertex but the Move form's `vec` kept the raw drag delta, so Apply landed the model off the point. For exactly one target, `snapped - basePosition` is written into `vec`; a multi-target drag stays preview-only because one `translate.vec` cannot carry a per-target delta, and the form hint and `OP_PARAM_DOCS` now say so.
 
 ## [3.27.0] - 2026-10-21
 
@@ -971,6 +978,7 @@ This release republishes v1.9.0's full changelog (below) unchanged; v1.9.0 itsel
 
 - Initial release: read-only 3D preview for CAD and mesh files (STEP, IGES, BREP, STL, OBJ, PLY, glTF) inside a VS Code custom editor, using OpenCascade.js (OCCT WASM) in the extension host for B-rep formats and Three.js in the webview for rendering.
 
+[3.28.0]: https://github.com/loumalouomega/CAD-Preview/compare/v3.27.0...v3.28.0
 [3.27.0]: https://github.com/loumalouomega/CAD-Preview/compare/v3.26.0...v3.27.0
 [3.26.0]: https://github.com/loumalouomega/CAD-Preview/compare/v3.25.0...v3.26.0
 [3.25.0]: https://github.com/loumalouomega/CAD-Preview/compare/v3.24.0...v3.25.0
