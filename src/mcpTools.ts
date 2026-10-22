@@ -160,8 +160,9 @@ import { mergeSheetTemplates, type SheetTemplate } from "./sheetTemplates";
 import type { TitleBlockFields } from "./drawingSheet";
 import type { analyzePassages } from "./passageAnalysisHost";
 import type { checkPrintability } from "./printabilityHost";
+import type { checkDraft } from "./draftAnalysisHost";
 import { resolvePlate, resolveProcess } from "./processLimits";
-import type { BuildPlate } from "./printability";
+import type { Axis, BuildPlate } from "./printability";
 import type { measureMeshDeviation } from "./meshDeviationHost";
 import type { bakeMeshEdits } from "./meshEditBake";
 import type { decodeGltfGeometry } from "./gltfDecode";
@@ -323,6 +324,7 @@ export interface Pipeline {
   exportTessellatedStl: typeof exportTessellatedStl;
   analyzePassages: typeof analyzePassages;
   checkPrintability: typeof checkPrintability;
+  checkDraft: typeof checkDraft;
   measureMeshDeviation: typeof measureMeshDeviation;
   bakeMeshEdits: typeof bakeMeshEdits;
   decodeGltfGeometry: typeof decodeGltfGeometry;
@@ -432,6 +434,7 @@ export function describeCapabilities() {
       "Tools report facts (numbers, images, structured warnings) — you render the verdict, not the tool.",
       "A tool/network failure or a `supported: false` response is need-more-info, never a silent pass or fail.",
       "render_snapshot's images (and compare_models' optional includeSnapshots ones) are diagnostic, not authoritative — convert a visual concern into an inspect/measure check before treating anything as validated.",
+      "check_draft reports draft angle per wall against a pull direction, walls below your minDraftDeg, walls tilted away from the pull (one-sided) and SAMPLED undercut shadowing, naming faces; cap faces perpendicular to the pull are parting faces, not findings. It states no pass/fail and does not add draft (the `draft` op does).",
       "check_printability reports measured numbers per orientation and per body — overhang area, plate contact, a support-volume UPPER BOUND, SAMPLED wall thickness (an estimate at the stated resolution, never a minimum certificate), plate fit — and lists every rule it cannot measure under `notChecked` with checked:false: an unmeasured rule is not a passed rule. A process or plate only adds counts to compare against; each bundled row names its source and is a starting point, not a standard.",
       "hit_test is the inverse of render_snapshot (pixel/ray -> entity id) and needs no browser, so unlike the image tools it never degrades to supported:false. Its hit point and face normal feed render_snapshot's look-from view, closing the loop.",
       "fit_mesh_region publishes EVERY candidate fit with its own residual rather than one winner, because a flat region is also fitted by an enormous sphere with a tiny residual — `simplest` applies the published plane<cylinder<sphere rule to those same numbers, and you can apply a different one. A shape that is absent could not be fitted at all.",
@@ -3121,6 +3124,66 @@ export async function checkPrintabilityTool(
     warnings: [...warnings, ...report.warnings],
     note:
       "Facts, not a verdict: compare them to your own limits. Overhang uses the stated limit from vertical (a face exactly at the limit is not counted); supportVolumeUpperBound ignores the model under an overhang; wall thickness is SAMPLED at the stated resolution and can miss a feature smaller than the sample spacing. Rules in `notChecked` were not measured — they are not passed.",
+  };
+}
+
+/**
+ * Draft and undercut FACTS along a pull direction over the same welded
+ * triangles `check_printability` measures (B-rep: fine tessellation with edits
+ * baked and `face-N` ids kept; mesh: pending edits baked). No verdict: the
+ * caller states `minDraftDeg`.
+ */
+export async function checkDraftTool(
+  ctx: ToolContext,
+  params: {
+    path: string;
+    pull?: string | [number, number, number];
+    minDraftDeg?: number;
+    capToleranceDeg?: number;
+    twoSided?: boolean;
+    maxSamples?: number;
+    maxFaces?: number;
+  }
+) {
+  const modelPath = params.path;
+  const route = requireRoute(modelPath);
+  if (route.strategy !== "occt" && !COMPARABLE_MESH_FORMATS.has(route.format)) {
+    return {
+      format: route.format,
+      supported: false,
+      warnings: [
+        DISPLAY_ONLY_MESH_FORMATS.has(route.format)
+          ? displayOnlyMeshMessage(route.format, "a draft check")
+          : `${route.format} is a meshio-only format — it exposes no triangle array to the host, so there is nothing to measure. Export it to STL first.`,
+      ],
+    };
+  }
+  const warnings: string[] = [];
+  const { ops } = await readEditsResolved(modelPath);
+  let source: CompareSource;
+  if (route.strategy === "occt") {
+    const src = await readOcctSource(ctx, modelPath, route, warnings);
+    if (!src.ok) return { format: route.format, supported: false, warnings: [...warnings, src.reason] };
+    source = { kind: "brep", bytes: src.bytes, format: src.format as BRepFormat, ops };
+  } else {
+    source = await meshCompareSource(ctx, modelPath, route, ops, await readModelBytes(modelPath), warnings, "measuring the raw file only");
+  }
+  const { report } = await ctx.pipeline.checkDraft(ctx.extensionPath, source, {
+    pull: params.pull as Axis | [number, number, number] | undefined,
+    minDraftDeg: params.minDraftDeg,
+    capToleranceDeg: params.capToleranceDeg,
+    twoSided: params.twoSided,
+    maxSamples: params.maxSamples,
+    maxFaces: params.maxFaces,
+  });
+  return {
+    format: route.format,
+    supported: true,
+    idKind: route.strategy === "occt" ? "face-N (B-rep)" : "facet-N (coplanar triangle groups of the mesh)",
+    ...report,
+    warnings: [...warnings, ...report.warnings],
+    note:
+      "Facts, not a verdict. Draft is the angle between a wall and the pull (0° = parallel; positive tilts toward +pull). One-sided mode reports walls tilted away from +pull as negativeDraft — run the opposite pull for the other mould half, or set twoSided to judge each face against its own release side. Cap faces (within capToleranceDeg of perpendicular to the pull) are parting faces, not draft facts. Undercuts are SAMPLED shadowing along the release direction and can miss a sliver smaller than the sample spacing; a curved face's min/max are over its tessellated normals. Adding draft is the `draft` op's job.",
   };
 }
 

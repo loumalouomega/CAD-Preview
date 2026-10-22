@@ -50,6 +50,7 @@ import {
   checkMeshQualityTool,
   analyzePassagesTool,
   checkPrintabilityTool,
+  checkDraftTool,
   measureMeshDeviationTool,
   saveModelTool,
   rewriteGeoMerge,
@@ -527,6 +528,14 @@ function fakePipeline(overrides: Partial<Pipeline> = {}): Pipeline {
       warnings: [],
     })),
     analyzePassages: vi.fn(async () => ({ findings: [], rejected: [], targetCells: 3, facesAnalyzed: 0, diagonal: 1 })),
+    checkDraft: vi.fn(async () => ({
+      report: {
+        pull: [0, 0, 1] as [number, number, number], twoSided: false, minDraftDeg: 1, capToleranceDeg: 5, faceCount: 6, capFaceCount: 2,
+        zeroDraft: [], negativeDraft: [], undercut: [], counts: { zeroDraft: 0, negativeDraft: 0, undercut: 0 },
+        minWallDraftDeg: 0, maxWallDraftDeg: 0, projectedArea: 4, sampling: { requested: 2000, used: 0, capped: false, note: "sampled" },
+        truncated: false, warnings: [],
+      },
+    })),
     checkPrintability: vi.fn(async () => ({
       report: {
         triangles: 12, vertices: 8, bodyCount: 1, bodies: [], bounds: null, unitsSuspect: { suspect: false, diagonal: 17 },
@@ -4809,6 +4818,31 @@ describe("check_printability", () => {
     expect(vtk.supported).toBe(false);
     expect(vtk.warnings.join(" ")).toMatch(/meshio-only/);
     expect(c.pipeline.checkPrintability).not.toHaveBeenCalled();
+  });
+});
+
+describe("check_draft", () => {
+  it("hands a B-rep source and the pull options to the kernel", async () => {
+    const c = ctx();
+    const r = await checkDraftTool(c, { path: stpModel, pull: "-Z", minDraftDeg: 2, twoSided: true, maxSamples: 300 });
+    expect(r.supported).toBe(true);
+    const call = vi.mocked(c.pipeline.checkDraft).mock.lastCall!;
+    expect(call[1]).toMatchObject({ kind: "brep", format: "step", ops: [] });
+    expect(call[2]).toMatchObject({ pull: "-Z", minDraftDeg: 2, twoSided: true, maxSamples: 300 });
+    expect((r as { idKind: string }).idKind).toMatch(/face-N/);
+    await checkDraftTool(c, { path: stlModel, pull: [1, 0, 0] });
+    expect(vi.mocked(c.pipeline.checkDraft).mock.lastCall![1]).toMatchObject({ kind: "stl" });
+  });
+
+  it("refuses display-only and meshio-only formats with supported:false, never touching the kernel", async () => {
+    const c = ctx();
+    const dae = await checkDraftTool(c, { path: daeModel });
+    expect(dae.supported).toBe(false);
+    expect(dae.warnings.join(" ")).toMatch(/display-only/);
+    const vtk = await checkDraftTool(c, { path: vtkModel });
+    expect(vtk.supported).toBe(false);
+    expect(vtk.warnings.join(" ")).toMatch(/meshio-only/);
+    expect(c.pipeline.checkDraft).not.toHaveBeenCalled();
   });
 });
 

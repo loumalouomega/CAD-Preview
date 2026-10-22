@@ -322,7 +322,8 @@ These are outcome groupings, not release numbers. Independent small items can sh
 *Area: Geometry. Effort: M.*
 
 - **Evidence:** a moulded or cast part needs draft on every wall and no undercuts along the pull. Nothing here measures either. text-to-cad's `dfm` skill reports per-face draft relative to a pull direction (zero-draft faces, minimum wall draft), undercuts, and projected area.
-- **First useful increment (M):** a `check_draft` MCP tool plus a section under Advanced ▸ Analysis taking a `pull` direction. For a B-rep source, planar faces get an exact draft angle from `faceSurfaceInfo`'s normal; curved faces report the minimum and maximum over their tessellated normals. Faces with zero or negative draft, faces shadowed along the pull (an undercut, found by ray casting), and the projected area are reported as facts with face ids. The faces are coloured by draft through the colour-field path.
+- **Done so far:** the `check_draft` MCP tool (pure `draftAnalysis.ts`, host `draftAnalysisHost.ts`): per-face draft against a `pull`, zero- and negative-draft walls, sampled undercut shadowing, projected area; a box reports its four walls at 0° and a 5° frustum reports 5° (`mcp:smoke`).
+- **What is left (S):** the Advanced ▸ Analysis section (pull select, minimum draft, results) and colouring the faces by draft through the colour-field path, with a screenshot regeneration.
 - **Done when:** a box reports its four side walls at exactly 0°, a tapered extrusion reports its taper angle, and a pocket under an overhang is reported as an undercut.
 - **Out of scope:** suggesting a parting line; adding draft (the `draft` op is the tool for that, and its kernel limitation is recorded in `CLAUDE.md`).
 

@@ -149,7 +149,7 @@ export interface SvgSilhouetteResult {
  * model looks like an open-boundary edge and the "silhouette" degenerates into
  * a full wireframe of every face in the model. */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function weldedMeshFromTessellation(
+export function weldedMeshFromTessellation(
   oc: any,
   shape: any,
   quality: TessellationQuality
