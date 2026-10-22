@@ -9,10 +9,16 @@
 #     unless $STUB_NO_DEPFILE is set;
 #   - emits a cube whose size is the spawn number, so a cached result and a
 #     fresh one are distinguishable by content;
+#   - records the raw argv and OPENSCADPATH to $STUB_ARGS when set, so the
+#     settings -> child-process path can be asserted end to end;
 #   - prints $STUB_WARN to stderr when set.
 if [ "$1" = "--version" ]; then
   echo "OpenSCAD version stub-deps for tests"
   exit 0
+fi
+if [ -n "$STUB_ARGS" ]; then
+  printf 'args=%s\n' "$*" >> "$STUB_ARGS"
+  printf 'openscadpath=%s\n' "$OPENSCADPATH" >> "$STUB_ARGS"
 fi
 out=""; dep=""; src=""
 while [ $# -gt 0 ]; do

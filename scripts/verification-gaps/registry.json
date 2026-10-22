@@ -106,8 +106,12 @@
     {
       "id": "free-points-and-lines-are-meshed-on",
       "section": "Free points and lines are meshed on (roadmap \"Embedded points and curves\", closed)",
-      "gap": "no real Extension Development Host session was run here. Placing an `addPoint`, assigning it to a Part and pressing \u25b6 Generate in a live webview \u2014 and the \"curved free ed",
-      "status": "open"
+      "gap": "A free point and a free line assigned to a Part reach the generated volume mesh: Generate over the real kernel puts nodes exactly on the point and on both line endpoints, and the Part survives as a physical group. The source stays byte-identical.",
+      "status": "test-written",
+      "closedBy": [
+        "a free point and a free line assigned to a Part become mesh nodes at their own coordinates"
+      ],
+      "note": "Written 2026-10-22; awaiting a green CI run. The webview harness already covers the Point/Line composers, the coincident-point prompt and the Part-assignment UI; this case covers the host generate half. Curved free edges (arcs, splines) are not in this case \u2014 only the straight-line and point path \u2014 and the feel of a live Generate stays a manual check."
     },
     {
       "id": "distance-graded-mesh-sizing-anchored-on-a",
@@ -118,8 +122,13 @@
     {
       "id": "ftetwild-robust-volume-meshing",
       "section": "fTetWild robust volume meshing (roadmap \"Robust volumetric meshing from a skin mesh\", closed \u2014 via a route the item's own text never considered)",
-      "gap": "the FE Mesh panel's Engine `<select>` and the Mesh Health panel's Repair (robust)\u2026 button both compile clean and are wired following established patterns exactly, but nei",
-      "status": "open"
+      "gap": "The FE Mesh Engine select posts `engine: \"ftetwild\"`, enables its own fields and greys the Gmsh-only ones; Generate through the real host tetrahedralizes the one-facet-holed cube that Gmsh's own path renders as zero elements, with non-inverted elements and real indices.",
+      "status": "test-written",
+      "closedBy": [
+        "FE Mesh: the fTetWild engine enables its own fields, greys the Gmsh-only ones, and posts the engine",
+        "the FE Mesh fTetWild engine generates a tetrahedral mesh from a holed skin"
+      ],
+      "note": "Written 2026-10-22; awaiting a green CI run. The integration fixture is `examples/STL/holed-cube.stl`, which the smoke case already pins as zero elements under Gmsh, so ignoring the engine choice fails the gate. The Mesh Health panel's Repair (robust)\u2026 button is still not exercised by either harness, and how the engine's result row reads beside a real theme stays a manual check."
     },
     {
       "id": "chrome-redesign-toolbar-dock-document-chip",
@@ -361,8 +370,13 @@
     {
       "id": "primitive-recognition-panel",
       "section": "Primitive-recognition panel (roadmap Tier 2 item, closed \u2014 Tier 2 now empty)",
-      "gap": "no real Extension Development Host session was run here \u2014 the Recognize \u2192 Apply \u2192 Export \u2192 Save-macro click-through in a live VS Code webview (including the Export quick-",
-      "status": "open"
+      "gap": "The host half of the panel's click-through: Recognize over the real kernel reports the block fixture as one box; Export's format and unit quick-picks plus the save dialog write a real STEP file from the emitted ops; Save macro's name prompt writes the op list into cad-preview-macros.json; a dismissed prompt writes nothing. The source stays byte-identical throughout.",
+      "status": "test-written",
+      "closedBy": [
+        "primitives: Apply pushes the emitted ops via editsChanged",
+        "the primitives panel recognizes a box, exports it as STEP, and saves it as a macro"
+      ],
+      "note": "Written 2026-10-22; awaiting a green CI run. The webview case covers Recognize's request shape, the rendered report and Apply's emitted ops; the integration case covers the real kernel report and the modal/write half. How the panel reads beside a real theme stays a manual check."
     },
     {
       "id": "sidebar-layout-and-keyboard-usability",
@@ -522,9 +536,12 @@
     {
       "id": "openscad-backend-and-libraries",
       "section": "OpenSCAD backend, library paths and Customizer overrides",
-      "gap": "`--backend=manifold` against a real OpenSCAD snapshot that supports it (only the argv shape and the rejection message are tested, through stub binaries), and the interactive path: the three `cadPreview.openscad*` settings read by `readScadSettings()` and honoured when a `.scad` opens in a real Extension Development Host.",
-      "status": "open",
-      "note": "No OpenSCAD binary is installed where this was written, so even the stock invocation was exercised only through stubs; the only live-binary evidence in the repo is the 2026-09-07 run against OpenSCAD 2021.01, which predates --backend."
+      "gap": "The three `cadPreview.openscad*` settings reach the BINARY conversion path in a real host: the recording stub is spawned with `--backend=manifold`, the `-o`/depfile shape is unchanged, the configured library folder is first on `OPENSCADPATH`, and opening the model leaves the `.scad` source byte-identical.",
+      "status": "test-written",
+      "closedBy": [
+        "the OpenSCAD backend and library-path settings reach the fallback binary and never write the source"
+      ],
+      "note": "Written 2026-10-22; awaiting a green CI run. The model uses `import()`, which the bundled WASM declines, so the recorded child process is the only path that could have produced the geometry. `--backend=manifold` against a real OpenSCAD snapshot that supports it stays unverified here (no binary is installed), and how the settings read in the Settings UI stays a manual check."
     },
     {
       "id": "layers-distinct-from-parts",
@@ -609,8 +626,13 @@
     {
       "id": "mark-agent-made-edits-flash",
       "section": "Mark agent-made edits in the viewer (roadmap Tier 2 item, closed)",
-      "gap": "the one-shot face flash after an external append and the badge's look beside a real theme are F5-only; nothing in the harness asserts the highlight.",
-      "status": "open"
+      "gap": "An external append badges only the appended history rows, a later local edit clears the badge, and the next replay flashes the appended op's produced faces once, then restores the unhighlighted model.",
+      "status": "test-written",
+      "closedBy": [
+        "external edits: appended rows are badged, earlier rows are not, a local edit clears it",
+        "external edits: the appended op flashes its produced faces once, then restores"
+      ],
+      "note": "Written 2026-10-22; awaiting a green CI run. The flash is asserted as a pixel difference against an identical replay with no pending flash, and the restore as the same capture matching that control. How the badge reads beside a real theme stays a manual check."
     },
     {
       "id": "3mf-real-webview",
