@@ -301,6 +301,23 @@ export function viewerBodyHtml(): string {
         </div>
         <div id="printability-body"></div>
       </div>
+      <div id="draft-panel" class="side-section" hidden>
+        <div id="draft-header" class="panel-header">
+          <button class="panel-chevron" type="button" aria-expanded="true" title="Collapse section">${glyph("chevronDown")}</button>
+          <span class="panel-icon" aria-hidden="true">${glyph("layersDim")}</span>
+          <span id="draft-title" class="panel-title">Draft</span>
+          <div id="draft-actions">
+            <button id="draft-check" title="Measure draft and undercuts along the pull direction. Facts only: no pass/fail verdict; undercuts are sampled">${icon("generate")} Check</button>
+            <button id="draft-clear" title="Remove the draft colouring from the view">Clear</button>
+          </div>
+        </div>
+        <div id="draft-options">
+          <label title="Pull direction: the way the tool leaves the part. The colouring shows draft along this direction">pull <select id="draft-pull"><option>+Z</option><option>-Z</option><option>+Y</option><option>-Y</option><option>+X</option><option>-X</option></select></label>
+          <label title="A wall with less draft than this (degrees) is listed; blank uses 1">min° <input id="draft-min" type="text" inputmode="decimal" size="3" placeholder="1" /></label>
+          <label title="Judge each face against its own release side (+pull or -pull), as for a mould parted at the silhouette"><input id="draft-two-sided" type="checkbox" /> two-sided</label>
+        </div>
+        <div id="draft-body"></div>
+      </div>
       <div class="advanced-subhead">Library</div>
       <div id="macros-panel" class="side-section">
         <div id="macros-header" class="panel-header">

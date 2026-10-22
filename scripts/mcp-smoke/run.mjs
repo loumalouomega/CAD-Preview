@@ -352,8 +352,8 @@ try {
   assert(capsText.length > 100, "resources/read cad-preview://capabilities returns JSON text");
 
   const tools = (await request("tools/list", {})).tools.map((t) => t.name);
-  assert(tools.length === 81, `tools/list exposes 81 tools (got ${tools.length}: ${tools.join(", ")})`);
-  for (const t of ["check_printability", "list_workspace_models", "check_interference_all", "generate_bom", "generate_hole_table", "render_ops_prefix", "check_tolerance", "inspect_meshio_fields", "pin_annotation", "import_svg", "save_mesh_preset", "list_mesh_presets", "apply_mesh_preset", "compare_mesh_refinement", "export_tessellated_stl", "estimate_mesh_budget", "analyze_passages", "measure_mesh_deviation", "save_sheet_template", "list_sheet_templates", "batch_export", "check_handoff_manifest", "generate_prep_report", "job_status", "job_cancel", "check_brep_health", "list_scad_parameters", "convert_scad", "list_layers", "set_layer", "assign_layer", "segment_mesh_surface", "fit_mesh_to_cad", "iga_sample", "iga_refine", "iga_evaluate", "check_mesh_quality"]) {
+  assert(tools.length === 82, `tools/list exposes 82 tools (got ${tools.length}: ${tools.join(", ")})`);
+  for (const t of ["check_draft", "check_printability", "list_workspace_models", "check_interference_all", "generate_bom", "generate_hole_table", "render_ops_prefix", "check_tolerance", "inspect_meshio_fields", "pin_annotation", "import_svg", "save_mesh_preset", "list_mesh_presets", "apply_mesh_preset", "compare_mesh_refinement", "export_tessellated_stl", "estimate_mesh_budget", "analyze_passages", "measure_mesh_deviation", "save_sheet_template", "list_sheet_templates", "batch_export", "check_handoff_manifest", "generate_prep_report", "job_status", "job_cancel", "check_brep_health", "list_scad_parameters", "convert_scad", "list_layers", "set_layer", "assign_layer", "segment_mesh_surface", "fit_mesh_to_cad", "iga_sample", "iga_refine", "iga_evaluate", "check_mesh_quality"]) {
     assert(tools.includes(t), `tools/list exposes ${t}`);
   }
 
@@ -8811,6 +8811,33 @@ try {
     assert(threeMf.supported === false && /display-only/.test(threeMf.warnings.join(" ")), "a 3MF is refused by name (display-only)");
     const bad = await callTolerant("check_printability", { path: path.join(PF, "slab-1mm.stl"), process: "laser" });
     assert(/Unknown process/.test(bad.error ?? ""), `an unknown bundled process names the choices (${JSON.stringify(bad).slice(0, 160)})`);
+  }
+
+  // --- check_draft (roadmap "Draft and undercut analysis") ---
+  {
+    const blk = path.join(dir, "dr-block.stp");
+    fs.copyFileSync(path.join(ROOT, "examples", "STP", "block.stp"), blk);
+    const box = await call("check_draft", { path: blk });
+    assert(box.supported && box.counts.zeroDraft === 4 && box.counts.negativeDraft === 0 && box.counts.undercut === 0, `block.stp along +Z: four vertical walls, no undercut (${JSON.stringify(box.counts)})`);
+    assert(box.zeroDraft.every((f) => /^face-\d+$/.test(f.id) && Math.abs(f.minDraftDeg) < 1e-6), "the four walls are named face-N at exactly 0 degrees");
+    assert(box.capFaceCount === 2, `the top and bottom are cap faces (${box.capFaceCount})`);
+    // A 5 degree frustum written as ASCII STL: facets are found from the mesh.
+    const deg = 5, h = 10, w1 = 5 - h * Math.tan((deg * Math.PI) / 180);
+    const V = [[-5, -5, 0], [5, -5, 0], [5, 5, 0], [-5, 5, 0], [-w1, -w1, h], [w1, -w1, h], [w1, w1, h], [-w1, w1, h]];
+    const quads = [[0, 3, 2, 1], [4, 5, 6, 7], [0, 1, 5, 4], [2, 3, 7, 6], [1, 2, 6, 5], [3, 0, 4, 7]];
+    let stl = "solid frustum\n";
+    for (const [a, b, c, d] of quads) for (const t of [[a, b, c], [a, c, d]]) {
+      stl += "facet normal 0 0 0\n outer loop\n" + t.map((i) => `  vertex ${V[i].join(" ")}\n`).join("") + " endloop\nendfacet\n";
+    }
+    stl += "endsolid frustum\n";
+    const fr = path.join(dir, "dr-frustum.stl");
+    fs.writeFileSync(fr, stl);
+    const up = await call("check_draft", { path: fr });
+    assert(up.supported && Math.abs(up.minWallDraftDeg - deg) < 1e-3 && Math.abs(up.maxWallDraftDeg - deg) < 1e-3 && up.counts.undercut === 0, `a 5 degree frustum reports 5 degrees of draft (${up.minWallDraftDeg})`);
+    const down = await call("check_draft", { path: fr, pull: "-Z" });
+    assert(down.counts.negativeDraft === 4 && Math.abs(down.minWallDraftDeg + deg) < 1e-3, `pulled the other way the same walls are -5 degrees (${JSON.stringify(down.counts)})`);
+    const threeMf = await call("check_draft", { path: path.join(ROOT, "examples", "3MF", "cube.3mf") });
+    assert(threeMf.supported === false && /display-only/.test(threeMf.warnings.join(" ")), "a 3MF is refused by name (display-only)");
   }
 
   // --- measure_mesh_deviation (roadmap "CAD-to-mesh deviation map") ---

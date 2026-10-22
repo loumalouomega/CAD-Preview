@@ -3517,7 +3517,7 @@ test("collapse: hides EVERY body sibling, not just #x-body", async (page) => {
   );
 });
 
-test("advanced: the group ships collapsed, hides its ten children, and opens on its chevron", async (page) => {
+test("advanced: the group ships collapsed, hides its eleven children, and opens on its chevron", async (page) => {
   await populate(page);
 
   // Collapsed by default is the entire point: the sidebar's top level should
@@ -3525,7 +3525,7 @@ test("advanced: the group ships collapsed, hides its ten children, and opens on 
   const shut = await page.evaluate(() => {
     const ids = [
       "mass-panel", "clash-panel", "brep-health-panel", "mesh-health-panel", "region-fit-panel",
-      "primitives-panel", "passages-panel", "printability-panel", "macros-panel", "standard-parts-panel",
+      "primitives-panel", "passages-panel", "printability-panel", "draft-panel", "macros-panel", "standard-parts-panel",
     ];
     return {
       collapsed: document.getElementById("advanced-group").classList.contains("collapsed"),
@@ -3541,13 +3541,13 @@ test("advanced: the group ships collapsed, hides its ten children, and opens on 
   assert(shut.collapsed, "the group starts collapsed");
   assert(shut.headerShown, "its header is still visible while collapsed");
   assert(!shut.bodyShown, "its body is hidden while collapsed");
-  assert(!shut.anyChildShown, "none of the ten children render while it is collapsed");
+  assert(!shut.anyChildShown, "none of the eleven children render while it is collapsed");
   assert(shut.topLevel, "Components/Parts/Edits/FE Mesh stayed OUT of the group");
 
   // The badge must report availability, not the raw child count: on this
   // B-rep fixture Mesh Health and Region fit gate themselves out.
   const badge = await page.evaluate(() => document.getElementById("advanced-count").textContent.trim());
-  assert(badge === "8 of 10", `the badge counts only the available children (got ${JSON.stringify(badge)})`);
+  assert(badge === "9 of 11", `the badge counts only the available children (got ${JSON.stringify(badge)})`);
 
   await openAdvanced(page);
   const open = await page.evaluate(() => ({
@@ -4057,6 +4057,58 @@ test("printability: Check posts the typed options; the reply renders facts + not
   assert(/sampled/.test(view.head) && /fdm/.test(view.head), "the header labels the wall figures as sampled and names the process");
   // The overlay took the colour-field slot; Clear releases it (a later stale reply must not re-arm it).
   await page.click("#printability-clear");
+  await sleep(150);
+  assert(!(await page.evaluate(() => window.__sent.some((m) => m.type === "error"))), "Clear raises no error");
+});
+
+const DRAFT_REPORT = {
+  pull: [0, 0, 1], twoSided: false, minDraftDeg: 2, capToleranceDeg: 5, faceCount: 6, capFaceCount: 2,
+  zeroDraft: [{ id: "face-1", triangles: 2, area: 20, minDraftDeg: 0, maxDraftDeg: 0 }],
+  negativeDraft: [{ id: "face-2", triangles: 2, area: 12, minDraftDeg: -3, maxDraftDeg: -3 }],
+  undercut: [{ id: "face-3", triangles: 2, area: 15, minDraftDeg: 0, maxDraftDeg: 0, shadowedFraction: 0.5 }],
+  counts: { zeroDraft: 1, negativeDraft: 1, undercut: 1 },
+  minWallDraftDeg: -3, maxWallDraftDeg: 0, projectedArea: 12,
+  sampling: { requested: 2000, used: 2000, capped: false, note: "sampled" }, truncated: false, warnings: [],
+};
+
+test("draft: Check posts the typed options; the reply renders fact rows and colours the view; a stale reply and a bad minimum are refused", async (page) => {
+  await populate(page);
+  await openAdvanced(page);
+  assert(await page.evaluate(() => document.getElementById("draft-panel")?.offsetParent != null), "the Draft section is available for a B-rep source");
+  await page.selectOption("#draft-pull", "-Z");
+  await page.fill("#draft-min", "2");
+  await page.check("#draft-two-sided");
+  await page.click("#draft-check");
+  await sleep(200);
+  const req = await page.evaluate(() => (window.__sent ?? []).filter((m) => m.type === "draftRequest").at(-1) ?? null);
+  assert(req !== null && req.pull === "-Z" && req.minDraftDeg === 2 && req.twoSided === true, `Check posts the typed options (got ${JSON.stringify(req)})`);
+  await page.evaluate((id) => window.postMessage({ type: "draftError", requestId: id, message: "boom" }, "*"), req.requestId);
+  await sleep(200);
+  assert(/boom/.test(await page.evaluate(() => document.getElementById("draft-body").textContent)) && !(await page.evaluate(() => document.getElementById("draft-check").disabled)), "an error reply is shown and re-enables Check");
+  await page.fill("#draft-min", "95");
+  await page.click("#draft-check");
+  assert(/from 0 up to/.test(await page.evaluate(() => document.getElementById("draft-body").textContent)), "an out-of-range minimum is refused in the panel");
+  assert((await page.evaluate(() => (window.__sent ?? []).filter((m) => m.type === "draftRequest").length)) === 1, "the refused click posted nothing");
+  const positions = Buffer.from(new Float32Array(12 * 9).fill(1).buffer).toString("base64");
+  const values = Buffer.from(new Float32Array(12 * 3).fill(2).buffer).toString("base64");
+  await page.evaluate(([report, positions, values]) => window.postMessage({ type: "draftResult", requestId: "stale", report, positions, values }, "*"), [DRAFT_REPORT, positions, values]);
+  await sleep(150);
+  assert(!/Wall draft/.test(await page.evaluate(() => document.getElementById("draft-body").textContent)), "a stale reply renders nothing");
+  await page.fill("#draft-min", "2");
+  await page.click("#draft-check");
+  const req2 = await page.evaluate(() => (window.__sent ?? []).filter((m) => m.type === "draftRequest").at(-1));
+  await page.evaluate(([id, report, positions, values]) => window.postMessage({ type: "draftResult", requestId: id, report, positions, values }, "*"), [req2.requestId, DRAFT_REPORT, positions, values]);
+  await sleep(250);
+  const view = await page.evaluate(() => ({
+    rows: [...document.querySelectorAll("#draft-body .printability-row")].map((r) => ({ warn: r.classList.contains("warn"), text: r.textContent })),
+    head: document.querySelector("#draft-body .printability-message")?.textContent ?? "",
+  }));
+  const text = view.rows.map((r) => r.text).join("\n");
+  assert(/Wall draft-3° … 0° · projected area 12 mm²/.test(text), `the wall draft range renders (got ${JSON.stringify(text.slice(0, 200))})`);
+  assert(/face-2-3° · 12 mm²/.test(text) && /face-3.*50% of samples shadowed/.test(text), "listed faces carry their draft and shadowed fraction");
+  assert(view.rows.find((r) => /^face-2/.test(r.text))?.warn === true, "a face lacking draft is flagged");
+  assert(/sampled/.test(view.head) && /one-sided|two-sided/.test(view.head), "the header labels undercuts as sampled");
+  await page.click("#draft-clear");
   await sleep(150);
   assert(!(await page.evaluate(() => window.__sent.some((m) => m.type === "error"))), "Clear raises no error");
 });

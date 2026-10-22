@@ -107,6 +107,7 @@ import {
   checkMeshQualityTool,
   analyzePassagesTool,
   checkPrintabilityTool,
+  checkDraftTool,
   measureMeshDeviationTool,
   saveSheetTemplate,
   listSheetTemplates,
@@ -1916,6 +1917,27 @@ server.registerTool(
     },
   },
   wrap((args: Parameters<typeof checkPrintabilityTool>[1]) => checkPrintabilityTool(ctx, args))
+);
+
+server.registerTool(
+  "check_draft",
+  {
+    description:
+      "Facts-only draft and undercut report along a pull direction (see describe_capabilities' verdictConventions), over the welded triangles the model reduces to (B-rep: fine tessellation with edits baked, findings named by `face-N`; STL/OBJ/PLY/glTF: pending mesh edits baked, findings named by `facet-N` coplanar groups). Draft is the angle between a wall and the pull (0° = parallel, positive tilts toward +pull); returns every wall below `minDraftDeg` (`zeroDraft`), in one-sided mode every wall tilted away from the pull (`negativeDraft`; `twoSided` instead judges each face against its own release side), and `undercut` faces — SAMPLED shadowing: rays from points just off the wall along the release direction that meet the part again (a sliver smaller than the sample spacing can be missed; the sample count is reported). Planar faces are exact; curved faces report min/max over tessellated normals. Cap faces (within `capToleranceDeg` of perpendicular to the pull) are parting faces and are neither. Also the projected area along the pull. Lists are capped (`maxFaces`, worst first) with true totals in `counts`. Display-only formats (3MF/Collada/AMF) and meshio-only formats return supported:false. To ADD draft use the `draft` op.",
+    inputSchema: {
+      path: modelPath,
+      pull: z
+        .union([z.string().describe("An axis: +X, -X, +Y, -Y, +Z or -Z"), z.tuple([z.number(), z.number(), z.number()]).describe("A direction vector (normalised)")])
+        .optional()
+        .describe("Pull direction (default +Z)"),
+      minDraftDeg: z.number().min(0).lt(90).optional().describe("A wall whose smallest draft is below this lacks draft (default 1°; a starting point, not a standard)"),
+      capToleranceDeg: z.number().min(0).lt(45).optional().describe("Faces within this of perpendicular to the pull are cap/parting faces (default 5°)"),
+      twoSided: z.boolean().optional().describe("Measure each face against its own release direction (+pull or -pull) instead of the single +pull"),
+      maxSamples: z.number().int().min(0).optional().describe("Cap on undercut rays (default 2000, 0 skips the undercut test)"),
+      maxFaces: z.number().int().min(1).optional().describe("List at most this many faces per category, worst first (default 50)"),
+    },
+  },
+  wrap((args: Parameters<typeof checkDraftTool>[1]) => checkDraftTool(ctx, args))
 );
 
 server.registerTool(

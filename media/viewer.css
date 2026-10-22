@@ -1915,7 +1915,8 @@ body:not(:has(#side.visible)) #status {
 #brep-health-actions,
 #primitives-actions,
 #passages-actions,
-#printability-actions {
+#printability-actions,
+#draft-actions {
   display: flex;
   gap: 2px;
   flex-wrap: wrap;
@@ -1928,6 +1929,7 @@ body:not(:has(#side.visible)) #status {
 #primitives-actions button,
 #passages-actions button,
 #printability-actions button,
+#draft-actions button,
 #mass-refresh {
   font: inherit;
   font-size: var(--ui-fs-sm);
@@ -1947,6 +1949,7 @@ body:not(:has(#side.visible)) #status {
 #primitives-actions button:hover:not(:disabled),
 #passages-actions button:hover:not(:disabled),
 #printability-actions button:hover:not(:disabled),
+#draft-actions button:hover:not(:disabled),
 #mass-refresh:hover:not(:disabled) {
   opacity: 1;
   background: var(--vscode-toolbar-hoverBackground, rgba(255,255,255,0.1));
@@ -1957,7 +1960,8 @@ body:not(:has(#side.visible)) #status {
 #brep-health-actions button:disabled,
 #primitives-actions button:disabled,
 #passages-actions button:disabled,
-#printability-actions button:disabled { opacity: 0.35; cursor: default; }
+#printability-actions button:disabled,
+#draft-actions button:disabled { opacity: 0.35; cursor: default; }
 
 #meshing-worst-toggle.active {
   opacity: 1;
@@ -2519,7 +2523,8 @@ input[type="range"].meshing-slider:focus {
 #primitives-panel[hidden],
 #scad-panel[hidden],
 #passages-panel[hidden],
-#printability-panel[hidden] {
+#printability-panel[hidden],
+#draft-panel[hidden] {
   display: none;
 }
 
@@ -2833,7 +2838,8 @@ input[type="range"].meshing-slider:focus {
 
 /* ── Printability panel (roadmap "Printability facts report") ── */
 
-#printability-panel {
+#printability-panel,
+#draft-panel {
   display: flex;
   flex-direction: column;
   flex-shrink: 0;
@@ -2842,7 +2848,8 @@ input[type="range"].meshing-slider:focus {
   border-top: 1px solid var(--vscode-sideBar-border, #3c3c3c);
 }
 
-#printability-options {
+#printability-options,
+#draft-options {
   display: flex;
   flex-wrap: wrap;
   gap: 2px 8px;
@@ -2851,10 +2858,13 @@ input[type="range"].meshing-slider:focus {
   opacity: 0.85;
 }
 
-#printability-options label { text-transform: none; white-space: nowrap; }
+#printability-options label,
+#draft-options label { text-transform: none; white-space: nowrap; }
 
 #printability-options select,
-#printability-options input {
+#printability-options input,
+#draft-options select,
+#draft-options input[type="text"] {
   font: inherit;
   font-size: var(--ui-fs-sm);
   color: var(--vscode-input-foreground, #ccc);
@@ -2864,9 +2874,11 @@ input[type="range"].meshing-slider:focus {
   padding: 0 3px;
 }
 
-#printability-limit { width: 2.5em; }
+#printability-limit,
+#draft-min { width: 2.5em; }
 
-#printability-body {
+#printability-body,
+#draft-body {
   flex: 1;
   min-height: 0;
   overflow-y: auto;

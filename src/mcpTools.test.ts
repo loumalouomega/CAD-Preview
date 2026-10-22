@@ -50,6 +50,7 @@ import {
   checkMeshQualityTool,
   analyzePassagesTool,
   checkPrintabilityTool,
+  checkDraftTool,
   measureMeshDeviationTool,
   saveModelTool,
   rewriteGeoMerge,
@@ -527,6 +528,14 @@ function fakePipeline(overrides: Partial<Pipeline> = {}): Pipeline {
       warnings: [],
     })),
     analyzePassages: vi.fn(async () => ({ findings: [], rejected: [], targetCells: 3, facesAnalyzed: 0, diagonal: 1 })),
+    checkDraft: vi.fn(async () => ({
+      report: {
+        pull: [0, 0, 1] as [number, number, number], twoSided: false, minDraftDeg: 1, capToleranceDeg: 5, faceCount: 6, capFaceCount: 2,
+        zeroDraft: [], negativeDraft: [], undercut: [], counts: { zeroDraft: 0, negativeDraft: 0, undercut: 0 },
+        minWallDraftDeg: 0, maxWallDraftDeg: 0, projectedArea: 4, sampling: { requested: 2000, used: 0, capped: false, note: "sampled" },
+        truncated: false, warnings: [],
+      },
+    })),
     checkPrintability: vi.fn(async () => ({
       report: {
         triangles: 12, vertices: 8, bodyCount: 1, bodies: [], bounds: null, unitsSuspect: { suspect: false, diagonal: 17 },
@@ -4812,6 +4821,31 @@ describe("check_printability", () => {
   });
 });
 
+describe("check_draft", () => {
+  it("hands a B-rep source and the pull options to the kernel", async () => {
+    const c = ctx();
+    const r = await checkDraftTool(c, { path: stpModel, pull: "-Z", minDraftDeg: 2, twoSided: true, maxSamples: 300 });
+    expect(r.supported).toBe(true);
+    const call = vi.mocked(c.pipeline.checkDraft).mock.lastCall!;
+    expect(call[1]).toMatchObject({ kind: "brep", format: "step", ops: [] });
+    expect(call[2]).toMatchObject({ pull: "-Z", minDraftDeg: 2, twoSided: true, maxSamples: 300 });
+    expect((r as { idKind: string }).idKind).toMatch(/face-N/);
+    await checkDraftTool(c, { path: stlModel, pull: [1, 0, 0] });
+    expect(vi.mocked(c.pipeline.checkDraft).mock.lastCall![1]).toMatchObject({ kind: "stl" });
+  });
+
+  it("refuses display-only and meshio-only formats with supported:false, never touching the kernel", async () => {
+    const c = ctx();
+    const dae = await checkDraftTool(c, { path: daeModel });
+    expect(dae.supported).toBe(false);
+    expect(dae.warnings.join(" ")).toMatch(/display-only/);
+    const vtk = await checkDraftTool(c, { path: vtkModel });
+    expect(vtk.supported).toBe(false);
+    expect(vtk.warnings.join(" ")).toMatch(/meshio-only/);
+    expect(c.pipeline.checkDraft).not.toHaveBeenCalled();
+  });
+});
+
 describe("estimate_mesh_budget", () => {
   it("estimates a B-rep from its mass properties + bbox, and warns (never blocks) above a budget", async () => {
     const c = ctx(
@@ -5827,6 +5861,13 @@ describe("export_drawing_sheet", () => {
     const on = await exportDrawingSheetTool(c, { path: stpModel, outputPath: path.join(dir, "hc1.svg"), holeCallouts: true });
     expect(optsOf().holeCallouts).toBe(true);
     expect(on.holeMarkCount).toBe(0);
+    // A template can turn it on; an explicit false still wins.
+    const lib = path.join(dir, "hc-lib.json");
+    await fs.writeFile(lib, JSON.stringify({ templates: { holes: { holeCallouts: true } } }));
+    await exportDrawingSheetTool(c, { path: stpModel, outputPath: path.join(dir, "hc2.svg"), template: "holes", libraryPath: lib });
+    expect(optsOf().holeCallouts).toBe(true);
+    await exportDrawingSheetTool(c, { path: stpModel, outputPath: path.join(dir, "hc3.svg"), template: "holes", libraryPath: lib, holeCallouts: false });
+    expect(optsOf().holeCallouts).toBeUndefined();
   });
 
   it("puts today's date in the title block, none when deterministic, and the caller's when given", async () => {

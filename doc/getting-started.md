@@ -733,6 +733,16 @@ The **Printability** panel (below Passages; any source with triangles — a B-re
 
 The overhang faces of the chosen direction are coloured in the view (yellow); **Clear** removes the colouring, and so does an edit. The same report is available headless as the `check_printability` MCP tool.
 
+### Draft
+
+The **Draft** panel (below Printability; any source with triangles) reports **facts** about draft and undercuts along a pull direction; it never says "pass" or "fail". Pick the **pull** (the way the tool leaves the part), a **min°** threshold (default 1°) and, for a mould parted at the silhouette, **two-sided**. It lists:
+
+- the range of wall draft and the projected area along the pull;
+- walls with less draft than the threshold, and (one-sided) walls tilted away from the pull — each with its `face-N` (B-rep) or `facet-N` id, draft angle and area; hovering a B-rep row highlights the face;
+- **undercuts**: faces shadowed along the release direction. This is sampled (rays from points just off each wall), so a sliver smaller than the sample spacing can be missed; the sample count is shown.
+
+Faces nearly perpendicular to the pull are parting faces and are not findings. The view is coloured by draft angle (viridis, clamped to ±15°); **Clear** removes it, and so does an edit. The same report is available headless as the `check_draft` MCP tool. The Draft edit operation (a different thing) is currently blocked by the kernel — see its row in the operations table.
+
 ### Primitives
 
 The **Primitives** panel (below Region fit, B-rep sources only) classifies each solid as a box, sphere, cylinder, cone, or torus — the interactive counterpart of the `recognize_primitives` / `decompose_to_primitives` MCP tools.
@@ -791,6 +801,7 @@ A settings form opens with every choice on one page:
 - **Scale** — Auto, a standard ratio, or **Custom** (any ratio like `3:4`).
 - **Title block** — title (default the file name), drawn by, drawing number, revision and material; each field adds a cell only when filled.
 - **Sections (optional, JSON)** — **Named sections**: a list of `{id, label?, view, origin, normal, flip?}`; each names the parent view it is marked on and is drawn as its own `SECTION <label>` view looking along the plane normal, with the cut loops hatched at 45°. **In-place cuts**: an object keyed by view name (`{"front": {"origin": […], "normal": […]}}`); the view draws the clipped half-space itself. A section whose plane misses the model is refused by name instead of drawing an empty view.
+- **Hole callouts** — centre cross on every hole and one leader callout per hole group (`4× Ø5 THRU`) in the views looking down the hole axis; B-rep sources only, off by default.
 - **Format** — SVG or DXF.
 
 **Export…** then asks for a destination. There is no unit step: a sheet's scale ratio is only meaningful against the model's own millimetres. The form remembers your last settings for the session.

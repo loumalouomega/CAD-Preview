@@ -142,7 +142,7 @@ export const NOT_CHECKED: ReadonlyArray<NotChecked> = [
   { rule: "surface finish and layer-line visibility per orientation", checked: false, reason: "not a geometric fact of the mesh" },
 ];
 
-interface Tri {
+export interface Tri {
   /** Unit outward normal (after the body's winding fix). */
   n: [number, number, number];
   area: number;
@@ -150,7 +150,7 @@ interface Tri {
   c: [number, number, number];
 }
 
-function triangleFacts(mesh: PrintMesh, t: number, flip: boolean): Tri | null {
+export function triangleFacts(mesh: PrintMesh, t: number, flip: boolean): Tri | null {
   const { positions: p, indices: i } = mesh;
   const a = i[t * 3] * 3, b = i[t * 3 + 1] * 3, c = i[t * 3 + 2] * 3;
   const ux = p[b] - p[a], uy = p[b + 1] - p[a + 1], uz = p[b + 2] - p[a + 2];
@@ -189,7 +189,7 @@ function signedVolume(mesh: PrintMesh, triangles: number[]): number {
  * negative body whose bounds lie inside another body's bounds is taken as a
  * cavity; anything else negative is inverted.
  */
-function bodyFlips(mesh: PrintMesh, bodies: number[][]): boolean[] {
+export function bodyFlips(mesh: PrintMesh, bodies: number[][]): boolean[] {
   const vols = bodies.map((b) => signedVolume(mesh, b));
   const bnds = bodies.map((b) => boundsOfTriangles(mesh.positions, mesh.indices, b));
   const inside = (a: Vec3Bounds, b: Vec3Bounds) =>

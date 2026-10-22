@@ -85,6 +85,7 @@ ${formLayers.length > 0 ? `<fieldset><legend>Layers</legend><div class="views">
   <span>Scale</span><span><select id="scale">${scaleOptions.map((s) => `<option value="${esc(s)}" ${s === initialScale ? "selected" : ""}>${s === "auto" ? "Auto (largest standard that fits)" : s === "custom" ? "Custom…" : s}</option>`).join("")}</select>
     <input id="scaleCustom" type="text" size="6" placeholder="e.g. 3:4" value="${initialScale === "custom" ? esc(String(initial.scale)) : ""}" /></span>
   <span>Format</span><select id="format"><option value="svg" ${initial.format !== "dxf" ? "selected" : ""}>SVG</option><option value="dxf" ${initial.format === "dxf" ? "selected" : ""}>DXF</option></select>
+  <span>Hole callouts</span><label><input id="holeCallouts" type="checkbox" ${initial.holeCallouts ? "checked" : ""}/> Centre marks and Ø callouts (B-rep sources)</label>
 </div></fieldset>
 <fieldset><legend>Title block</legend><div class="grid">
   <span>Title</span><input id="title" type="text" value="${esc(initial.title ?? opts.defaultTitle)}" />
@@ -131,7 +132,7 @@ ${formLayers.length > 0 ? `<fieldset><legend>Layers</legend><div class="views">
     if (sections === null) return undefined;
     const viewSections = parseJson("viewSections", "In-place cuts");
     if (viewSections === null) return undefined;
-    return { views, projection: $("projection").value, paper: $("paper").value, scale, format: $("format").value, title: $("title").value.trim(), fields, layers, sections, viewSections };
+    return { views, projection: $("projection").value, paper: $("paper").value, scale, format: $("format").value, title: $("title").value.trim(), fields, layers, sections, viewSections, ...($("holeCallouts").checked ? { holeCallouts: true } : {}) };
   }
   function apply(t) {
     if (t.views) for (const c of document.querySelectorAll(".view")) c.checked = t.views.includes(c.value);
@@ -144,6 +145,7 @@ ${formLayers.length > 0 ? `<fieldset><legend>Layers</legend><div class="views">
       if (opts.includes(String(t.scale))) $("scale").value = String(t.scale);
       else { $("scale").value = "custom"; $("scaleCustom").value = String(t.scale); }
     }
+    if (t.holeCallouts !== undefined) $("holeCallouts").checked = t.holeCallouts === true;
     if (t.title) $("title").value = t.title;
     for (const k of ["author", "drawingNumber", "revision", "material"]) if (t.fields && t.fields[k] !== undefined) $(k).value = t.fields[k];
     if (t.sections !== undefined) $("sections").value = typeof t.sections === "string" ? t.sections : JSON.stringify(t.sections);
