@@ -5899,6 +5899,40 @@ try {
     for (const name of ["front", "top", "right", "iso-ftr"]) assert(sheetSvgText.includes(`<g id="view-${name}">`), `SVG sheet has a group for ${name}`);
     assert(sheetSvgText.includes('id="title-block"') && !/NaN|Infinity/.test(sheetSvgText), "SVG sheet carries a title block and no non-finite coordinates");
 
+    // Hole callouts (roadmap "Hole callouts and centre lines on drawing
+    // sheets"): four Ø1 through holes along z on a copy of the same box. The
+    // marks must land only in the view looking down the axis (FRONT, direction
+    // +z), with one grouped callout, in both SVG and DXF; default-off sheets
+    // stay free of any CENTER content.
+    {
+      const holeSheetModel = path.join(dir, "sheet-holes.stp");
+      fs.copyFileSync(path.join(ROOT, "examples", "STP", "block.stp"), holeSheetModel);
+      const drilled = await call("apply_edit_ops", {
+        path: holeSheetModel,
+        ops: [[-0.8, -1.2], [0.8, -1.2], [-0.8, 1.2], [0.8, 1.2]].map(([x, y]) => ({
+          op: "addHole", targets: ["solid-0"], position: [x, y, -2.5], axis: [0, 0, 1], radius: 0.5, depth: 10,
+        })),
+      });
+      assert(drilled.applied === 4, `hole-sheet fixture applies all 4 holes (got ${drilled.applied})`);
+      const plainOut = path.join(dir, "sheet-holes-off.svg");
+      const plain = await call("export_drawing_sheet", { path: holeSheetModel, outputPath: plainOut });
+      assert(plain.holeMarkCount === undefined && !fs.readFileSync(plainOut, "utf8").includes("CENTER"), "hole callouts are off by default");
+      const holeSvgOut = path.join(dir, "sheet-holes.svg");
+      const marked = await call("export_drawing_sheet", { path: holeSheetModel, outputPath: holeSvgOut, holeCallouts: true });
+      const byView = Object.fromEntries(marked.views.map((v) => [v.name, v.holeMarkCount]));
+      assert(
+        byView.front === 4 && byView.top === 0 && byView.right === 0 && byView["iso-ftr"] === 0,
+        `centre marks land only in the view looking down the hole axis (got ${JSON.stringify(byView)})`
+      );
+      const holeSvg = fs.readFileSync(holeSvgOut, "utf8");
+      assert((holeSvg.match(/class="CENTER"/g) ?? []).length === 1, "SVG has exactly one CENTER group");
+      assert(holeSvg.includes("4× Ø1 THRU"), `one grouped callout reads 4× Ø1 THRU (got ${(holeSvg.match(/\d+× Ø[^<]*/g) ?? []).join("|")})`);
+      const holeDxfOut = path.join(dir, "sheet-holes.dxf");
+      await call("export_drawing_sheet", { path: holeSheetModel, outputPath: holeDxfOut, format: "dxf", holeCallouts: true });
+      const holeDxf = fs.readFileSync(holeDxfOut, "utf8");
+      assert(holeDxf.includes("\nCENTER\n") && holeDxf.includes("4x %%c1 THRU"), "DXF puts the marks and callout on the CENTER layer");
+    }
+
     // A4 picks a standard ISO 5455 scale and reports the real sheet size.
     const a4 = await call("export_drawing_sheet", { path: sheetModel, outputPath: path.join(dir, "sheet-a4.svg"), paper: "A4" });
     assert(a4.paper === "A4" && a4.sheetSize[0] === 297 && a4.sheetSize[1] === 210, `A4 sheet reports its real size (got ${JSON.stringify(a4.sheetSize)})`);

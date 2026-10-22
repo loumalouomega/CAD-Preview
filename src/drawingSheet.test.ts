@@ -267,3 +267,54 @@ describe("sheet sections", () => {
     expect(layers.has("SECTION")).toBe(true);
   });
 });
+
+describe("sheet hole marks", () => {
+  const holed = (): SheetViewInput[] => {
+    const v = boxViews();
+    // Top view (looking down the hole axis): two holes + one callout above the part.
+    v[1].holeMarks = {
+      crosses: [
+        [[105, -305], [109, -305]],
+        [[107, -307], [107, -303]],
+        [[121, -305], [125, -305]],
+        [[123, -307], [123, -303]],
+      ],
+      callouts: [{ text: "2× Ø4 THRU", at: [107, -315], leader: [[107, -305], [107, -315]] }],
+      holeCount: 2,
+    };
+    return v;
+  };
+
+  it("layoutSheet carries the marks only on the view that has them", () => {
+    const layout = layoutSheet(holed(), { paper: "fit" });
+    const top = layout.views.find((x) => x.name === "top")!;
+    expect(top.holeMarks?.holeCount).toBe(2);
+    expect(top.holeMarks?.crosses).toHaveLength(4);
+    expect(top.holeMarks?.callouts[0].label.text).toBe("2× Ø4 THRU");
+    expect(layout.views.find((x) => x.name === "front")!.holeMarks).toBeUndefined();
+  });
+
+  it("the callout leader extends the view bounds", () => {
+    const plain = layoutSheet(boxViews(), { paper: "fit" });
+    const marked = layoutSheet(holed(), { paper: "fit" });
+    expect(marked.height).toBeGreaterThan(plain.height);
+  });
+
+  it("sheetSvg draws a CENTER group in the marked view only; sheetDxf a CENTER layer with %%c", () => {
+    const layout = layoutSheet(holed(), { paper: "A4", title: "box.step" });
+    const svg = sheetSvg(layout);
+    expect(svg.match(/class="CENTER"/g)).toHaveLength(1);
+    expect(svg).toContain("2× Ø4 THRU");
+    expect(svg).not.toMatch(/NaN|Infinity/);
+    const { dxf } = sheetDxf(layout);
+    const layers = new Set(parseDxfRawEntities(dxf).map((e) => e.pairs.find(([code]) => code === 8)?.[1]));
+    expect(layers.has("CENTER")).toBe(true);
+    expect(dxf).toContain("2x %%c4 THRU");
+  });
+
+  it("without marks the output has no CENTER anything", () => {
+    const layout = layoutSheet(boxViews(), { paper: "A4" });
+    expect(sheetSvg(layout)).not.toContain("CENTER");
+    expect(sheetDxf(layout).dxf).not.toContain("CENTER");
+  });
+});

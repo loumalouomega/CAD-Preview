@@ -66,7 +66,7 @@ function dot(a: Vec3, b: Vec3): number {
  * name collides with one of these is written with a prefix (roadmap
  * "Layers, distinct from Parts") — silently merging it into `0` or `HIDDEN`
  * would misattribute the geometry. */
-const RESERVED_DXF_LAYERS = new Set(["0", "HIDDEN", "DIMENSIONS", "BORDER", "TITLE", "SECTION"]);
+const RESERVED_DXF_LAYERS = new Set(["0", "HIDDEN", "DIMENSIONS", "BORDER", "TITLE", "SECTION", "CENTER"]);
 
 /**
  * Sanitizes a user layer name for DXF: characters DXF forbids in symbol names
@@ -401,6 +401,16 @@ export function sheetDxf(layout: SheetLayout, options: { title?: string } = {}):
       chainCount += line.chainCount + arrows.chainCount;
       lineCount += line.lineCount + arrows.lineCount;
       w.text("SECTION", mark.labelAt[0], mark.labelAt[1], 3.5, mark.label, "middle");
+    }
+    if (view.holeMarks) {
+      const crosses = w.segments("CENTER", view.holeMarks.crosses);
+      chainCount += crosses.chainCount;
+      lineCount += crosses.lineCount;
+      for (const c of view.holeMarks.callouts) {
+        w.lines("CENTER", [c.leader]);
+        // %%c is DXF's diameter code; "×" is outside the ASCII-safe TEXT set.
+        w.text("CENTER", c.label.x, c.label.y, c.label.height, c.text.replace(/Ø/g, "%%c").replace(/×/g, "x").replace(/↧/g, "DEEP "), "middle");
+      }
     }
     if (view.dimensions && view.dimensions.drawings.length > 0) w.dimensions(view.dimensions);
     w.text("TITLE", view.label.x, view.label.y, view.label.height, view.label.text, view.label.anchor);

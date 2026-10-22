@@ -328,12 +328,11 @@ These are outcome groupings, not release numbers. Independent small items can sh
 
 #### 2.17 Hole callouts and centre lines on drawing sheets {#hole-callouts-on-drawing-sheets}
 
-*Area: Drawings. Effort: M.*
+*Area: Drawings. Effort: S (remaining).*
 
-- **Evidence:** `export_drawing_sheet` places views, pinned dimensions and a title block, and `generate_hole_table` already groups cylindrical faces by diameter and axis with the nearest standard designation — but a drawing sheet shows neither hole callouts nor centre lines. text-to-cad's engineering drawings call out holes (through, depth, counterbore, countersink, thread) and draw a `CENTER` layer.
-- **First useful increment (M):** for each hole group whose axis is parallel to a view's direction, draw centre marks on its circular edges, and one leader callout per group in the view where the holes appear as circles (`4× Ø6.8 THRU` with the nearest designation, from `holeTable.ts` and `holeStandards.ts`). SVG gets the marks in their own group; DXF gets a new `CENTER` layer beside `0`, `HIDDEN`, `DIMENSIONS`, `BORDER` and `TITLE`. Callouts are facts, never a tolerance class the geometry does not carry.
-- **Done when:** a plate with four M6 tap-drill holes shows one callout and four centre marks in its top view and none in its side view, in both formats.
-- **Out of scope:** thread annotation beyond the designation; GD&T frames.
+- **Done so far:** `export_drawing_sheet` takes `holeCallouts: true` (B-rep sources, default off): a centre cross per hole and one leader callout per hole group (`4× Ø5 THRU`, blind depth, nearest standard designation as a fact) in the orthographic views looking down the hole axis, as a `CENTER` SVG group / DXF layer. `mcp:smoke` pins four Ø1 holes on `block.stp` (marks in FRONT only, one `4× Ø1 THRU` callout, both formats). See `CLAUDE.md`'s Drawings bullet.
+- **What is left (S):** the interactive Export Sheet form checkbox and the `holeCallouts` key in sheet templates (`sheetSettings.ts`/`sheetTemplates.ts`/`drawingSheetForm.ts`, with a screenshot regeneration); counterbore/countersink/thread callouts are out of scope.
+- **Done when:** the form and templates carry the setting and a form-driven export matches the tool's.
 
 ### Probe-gated — establish feasibility before estimating
 
