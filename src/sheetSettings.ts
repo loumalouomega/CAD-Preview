@@ -62,6 +62,8 @@ export interface SheetSettingsInput {
    * half-space instead of gaining a separate section view.
    */
   viewSections?: Record<string, SheetViewSectionInput>;
+  /** Centre marks + leader callouts for holes (B-rep sources only). Absent = off. */
+  holeCallouts?: boolean;
 }
 
 export interface ResolvedSheetSettings {
@@ -76,6 +78,7 @@ export interface ResolvedSheetSettings {
   layers: string[] | undefined;
   /** Validated sections; a section whose parent view is absent is skipped with a warning. */
   sections: SheetSectionInput[];
+  holeCallouts: boolean;
   /** Validated in-place cuts, keyed by canonical view name. */
   viewSections: Array<{ view: string; origin: [number, number, number]; normal: [number, number, number]; flip: boolean }>;
   warnings: string[];
@@ -164,7 +167,10 @@ export function resolveSheetSettings(
   }
   const sections = resolveSections(pick("sections"), views, warnings);
   const viewSections = resolveViewSections(pick("viewSections"), views, warnings);
-  return { views, format, paper, projection, scale, title, fields, layers, sections, viewSections, warnings };
+  const rawHoles = pick("holeCallouts");
+  if (rawHoles !== undefined && typeof rawHoles !== "boolean") warnings.push("holeCallouts must be true or false — drawing no hole callouts.");
+  const holeCallouts = rawHoles === true;
+  return { views, format, paper, projection, scale, title, fields, layers, sections, viewSections, holeCallouts, warnings };
 }
 
 function resolveSections(

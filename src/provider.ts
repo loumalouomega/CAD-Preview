@@ -5175,6 +5175,7 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
           scale: settings.scale,
           annotations,
           ...(sheetLayerFilter ? { layerFilter: sheetLayerFilter } : {}),
+          ...(settings.holeCallouts ? { holeCallouts: true } : {}),
           title: settings.title,
           fields: settings.fields,
           date: new Date().toISOString().slice(0, 10),

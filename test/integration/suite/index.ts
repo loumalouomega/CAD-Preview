@@ -1916,7 +1916,7 @@ test("Export Drawing Sheet applies the form's settings: views, scale, projection
   api.setSheetFormAnswer(async (opts) => {
     const o = opts as { templates: () => Promise<Array<{ name: string }>> };
     offeredTemplates = (await o.templates()).map((t) => t.name);
-    return { views: ["front", "top"], projection: "third", paper: "fit", scale: "2:1", format: "svg", title: "Bracket", fields: { author: "Ann", drawingNumber: "D-7" } };
+    return { views: ["front", "top"], projection: "third", paper: "fit", scale: "2:1", format: "svg", title: "Bracket", fields: { author: "Ann", drawingNumber: "D-7" }, holeCallouts: true };
   });
   try {
     await withModals([save(out)], async () => {
@@ -1930,6 +1930,7 @@ test("Export Drawing Sheet applies the form's settings: views, scale, projection
   const svg = fs.existsSync(out) ? fs.readFileSync(out, "utf8") : "";
   assert(/id="view-front"/.test(svg) && /id="view-top"/.test(svg) && !/id="view-right"/.test(svg), "exactly the chosen views are drawn");
   assert(/Scale 2:1/.test(svg) && /Third-angle projection/.test(svg), "scale and projection reach the title block");
+  assert(!/need a B-rep source/.test(svg), "hole callouts on a B-rep source are accepted without a mesh-source warning");
   assert(/Bracket/.test(svg) && /Drawn Ann/.test(svg) && /Dwg D-7/.test(svg), "the title and fields are drawn");
   await closeAll();
 });

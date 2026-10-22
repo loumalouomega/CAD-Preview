@@ -5827,6 +5827,13 @@ describe("export_drawing_sheet", () => {
     const on = await exportDrawingSheetTool(c, { path: stpModel, outputPath: path.join(dir, "hc1.svg"), holeCallouts: true });
     expect(optsOf().holeCallouts).toBe(true);
     expect(on.holeMarkCount).toBe(0);
+    // A template can turn it on; an explicit false still wins.
+    const lib = path.join(dir, "hc-lib.json");
+    await fs.writeFile(lib, JSON.stringify({ templates: { holes: { holeCallouts: true } } }));
+    await exportDrawingSheetTool(c, { path: stpModel, outputPath: path.join(dir, "hc2.svg"), template: "holes", libraryPath: lib });
+    expect(optsOf().holeCallouts).toBe(true);
+    await exportDrawingSheetTool(c, { path: stpModel, outputPath: path.join(dir, "hc3.svg"), template: "holes", libraryPath: lib, holeCallouts: false });
+    expect(optsOf().holeCallouts).toBeUndefined();
   });
 
   it("puts today's date in the title block, none when deterministic, and the caller's when given", async () => {

@@ -8,7 +8,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/); thi
 
 ### Added
 
-- **Hole callouts and centre marks on drawing sheets (`export_drawing_sheet` `holeCallouts: true`).** Every hole whose axis is a view's line of sight gets a centre cross, and each hole group (size, axis, through/blind) one leader callout — `4× Ø5 THRU`, `2× Ø5 ↧6` for a blind group — with the nearest standard designation appended when within 5 %. SVG carries a `CENTER` group per marked view; DXF a `CENTER` layer. B-rep sources only (a mesh source warns), default off so existing sheets stay byte-identical, and the result reports `holeMarkCount`. The interactive Export Sheet form does not expose it yet.
+- **Hole callouts and centre marks on drawing sheets (`export_drawing_sheet` `holeCallouts: true`).** Every hole whose axis is a view's line of sight gets a centre cross, and each hole group (size, axis, through/blind) one leader callout — `4× Ø5 THRU`, `2× Ø5 ↧6` for a blind group — with the nearest standard designation appended when within 5 %. SVG carries a `CENTER` group per marked view; DXF a `CENTER` layer. B-rep sources only (a mesh source warns), default off so existing sheets stay byte-identical, and the result reports `holeMarkCount`. The Export Drawing Sheet form has a **Hole callouts** checkbox and sheet templates accept a `holeCallouts` key, resolved by the same `resolveSheetSettings` as the tool (explicit input beats the template).
 
 ## [3.27.0] - 2026-10-21
 

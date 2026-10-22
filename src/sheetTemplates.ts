@@ -56,6 +56,7 @@ function validateTemplate(key: string, value: unknown): SheetTemplate | null {
   if (typeof r.description === "string") t.description = r.description;
   if (Array.isArray(r.views) && r.views.every((v) => typeof v === "string")) t.views = r.views as string[];
   for (const k of ["format", "paper", "projection", "title"] as const) if (typeof r[k] === "string") t[k] = r[k] as string;
+  if (typeof r.holeCallouts === "boolean") t.holeCallouts = r.holeCallouts;
   if (typeof r.scale === "number" || typeof r.scale === "string") t.scale = r.scale as number | string;
   if (Array.isArray(r.sections)) {
     const sections = r.sections.filter((s): s is SheetSectionInput => {

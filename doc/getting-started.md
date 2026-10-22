@@ -791,6 +791,7 @@ A settings form opens with every choice on one page:
 - **Scale** — Auto, a standard ratio, or **Custom** (any ratio like `3:4`).
 - **Title block** — title (default the file name), drawn by, drawing number, revision and material; each field adds a cell only when filled.
 - **Sections (optional, JSON)** — **Named sections**: a list of `{id, label?, view, origin, normal, flip?}`; each names the parent view it is marked on and is drawn as its own `SECTION <label>` view looking along the plane normal, with the cut loops hatched at 45°. **In-place cuts**: an object keyed by view name (`{"front": {"origin": […], "normal": […]}}`); the view draws the clipped half-space itself. A section whose plane misses the model is refused by name instead of drawing an empty view.
+- **Hole callouts** — centre cross on every hole and one leader callout per hole group (`4× Ø5 THRU`) in the views looking down the hole axis; B-rep sources only, off by default.
 - **Format** — SVG or DXF.
 
 **Export…** then asks for a destination. There is no unit step: a sheet's scale ratio is only meaningful against the model's own millimetres. The form remembers your last settings for the session.

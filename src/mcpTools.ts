@@ -6973,7 +6973,7 @@ export async function exportDrawingSheetTool(
   }
   // One resolver for this tool AND the extension's Export Drawing Sheet form.
   const settings = resolveSheetSettings(
-    { views: params.views, format: params.format, paper: params.paper, projection: params.projection, scale: params.scale, title: params.title, fields: params.fields, layers: params.layers, sections: params.sections, viewSections: params.viewSections },
+    { views: params.views, format: params.format, paper: params.paper, projection: params.projection, scale: params.scale, title: params.title, fields: params.fields, layers: params.layers, sections: params.sections, viewSections: params.viewSections, holeCallouts: params.holeCallouts },
     template,
     { title: path.basename(modelPath) }
   );
@@ -6995,7 +6995,7 @@ export async function exportDrawingSheetTool(
     hiddenLines: params.hiddenLines ?? true,
     creaseAngleDeg: params.creaseAngleDeg,
     ...(layerFilter ? { layerFilter } : {}),
-    ...(params.holeCallouts ? { holeCallouts: true } : {}),
+    ...(settings.holeCallouts ? { holeCallouts: true } : {}),
     paper,
     projection,
     scale,
@@ -7018,7 +7018,7 @@ export async function exportDrawingSheetTool(
     sections: result.sections,
     triangleCount: result.triangleCount,
     ...(annotations.length > 0 ? { dimensionCount: drawnDimensions } : {}),
-    ...(params.holeCallouts ? { holeMarkCount: result.views.reduce((n, v) => n + (v.holeMarkCount ?? 0), 0) } : {}),
+    ...(settings.holeCallouts ? { holeMarkCount: result.views.reduce((n, v) => n + (v.holeMarkCount ?? 0), 0) } : {}),
     ...(layerFilter ? { layers: layerFilter.map((s) => ({ id: s.id, name: s.name })) } : {}),
     warnings: [
       ...warnings,

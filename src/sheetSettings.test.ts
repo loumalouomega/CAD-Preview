@@ -37,6 +37,18 @@ describe("resolveSheetSettings", () => {
     expect(s.warnings.join(" ")).toMatch(/Unknown view "nope".*repeated.*Unknown format.*Unknown paper.*Unknown projection.*Invalid scale/s);
     expect(() => resolveSheetSettings({ views: ["nope"] }, undefined, { title: "x" })).toThrow(/at least one named view/);
   });
+  it("holeCallouts: input beats template beats off; a non-boolean warns", () => {
+    expect(resolveSheetSettings({}, undefined, { title: "x" }).holeCallouts).toBe(false);
+    expect(resolveSheetSettings({}, { holeCallouts: true }, { title: "x" }).holeCallouts).toBe(true);
+    expect(resolveSheetSettings({ holeCallouts: false }, { holeCallouts: true }, { title: "x" }).holeCallouts).toBe(false);
+    const bad = resolveSheetSettings({ holeCallouts: "yes" as unknown as boolean }, undefined, { title: "x" });
+    expect(bad.holeCallouts).toBe(false);
+    expect(bad.warnings.join(" ")).toMatch(/holeCallouts must be true or false/);
+    const lib = parseSheetTemplatesJson(JSON.stringify({ templates: { a: { holeCallouts: true }, b: { holeCallouts: "x" } } }));
+    expect(lib.a.holeCallouts).toBe(true);
+    expect(lib.b.holeCallouts).toBeUndefined();
+    expect(parseSheetTemplatesJson(serializeSheetTemplatesJson(lib)).a.holeCallouts).toBe(true);
+  });
   it('treats scale "auto" as the automatic choice', () => {
     expect(resolveSheetSettings({ scale: "auto" }, { scale: "1:2" }, { title: "x" }).scale).toBeUndefined();
   });
