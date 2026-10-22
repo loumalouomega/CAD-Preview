@@ -1145,6 +1145,10 @@ server.registerTool(
       hiddenLines: z.boolean().optional().describe("Draw hidden edges (default true); false draws outlines only"),
       creaseAngleDeg: z.number().optional().describe("Mesh sources only: dihedral angle above which an interior edge is drawn (default 35°)"),
       tessellationQuality: z.string().optional().describe('B-rep only: draft/standard/fine (default "fine")'),
+      holeCallouts: z
+        .boolean()
+        .optional()
+        .describe("B-rep only: draw a centre cross on every hole and one leader callout per hole group (`4× Ø5 THRU`, or `↧depth` when blind, plus the nearest standard designation) in each orthographic view looking down the hole axis; on a CENTER group (SVG) / CENTER layer (DXF). Default false."),
       title: z.string().optional().describe("Title-block title (default: the model's file name)"),
       fields: sheetFieldsSchema,
       template: z.string().optional().describe("Sheet template name (bundled starters ∪ libraryPath) supplying any setting not given explicitly"),
@@ -1171,6 +1175,7 @@ server.registerTool(
       hiddenLines?: boolean;
       creaseAngleDeg?: number;
       tessellationQuality?: string;
+      holeCallouts?: boolean;
       title?: string;
       fields?: { author?: string; drawingNumber?: string; revision?: string; material?: string };
       template?: string;

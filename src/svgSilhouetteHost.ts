@@ -25,7 +25,8 @@
  */
 
 import { getOcct, readShape, wrapOcctFault } from "./occtService";
-import { applyEditsBRep } from "./occtOperations";
+import { applyEditsBRep, collectFaces, faceSurfaceInfo } from "./occtOperations";
+import { extractHoles, groupHoleCallouts, type CylinderFace } from "./holeCallouts";
 import { enumerateEdges } from "./edgeEnumeration";
 import { tessellateByGroup } from "./meshExtract";
 import { tessellationParamsFor, type TessellationQuality } from "./tessellationQuality";
@@ -47,6 +48,8 @@ import { resolveNamedView } from "./viewDirections";
 import {
   assignDimensionsToViews,
   layoutSheet,
+  isOrthographic,
+  type HoleMarksInput,
   type PaperSize,
   type ProjectionMethod,
   type SheetViewInput,
@@ -481,13 +484,16 @@ export interface LayerDrawingGroup {
 async function loadDrawingMesh(
   extensionPath: string,
   source: CompareSource,
-  quality: TessellationQuality
+  quality: TessellationQuality,
+  wantCylinders = false
 ): Promise<{
   mesh: WeldedMesh;
   triangleFace?: Uint32Array;
   triangleFaceId?: string[];
   triangleGroupId?: string[];
   edgeLines?: Array<{ id: string; positions: Float32Array }>;
+  /** Analytic cylinder facts per `face-N` (only when `wantCylinders`). */
+  cylinders?: CylinderFace[];
 }> {
   if (source.kind !== "brep") return { mesh: meshFromSource(source) };
 
@@ -505,7 +511,25 @@ async function loadDrawingMesh(
     // shared enumerator the viewer and every op-resolution path use, so index
     // `i` IS `edge-i`.
     const edgeLines = enumerateEdges(oc, shape, cleanup).map((e, i) => ({ id: `edge-${i}`, positions: e.positions }));
-    return { ...tessellated, edgeLines };
+    let cylinders: CylinderFace[] | undefined;
+    if (wantCylinders) {
+      // `collectFaces` order IS the `face-N` numbering `tessellateByGroup`
+      // stamped on every triangle, so index `i` is `face-i`.
+      cylinders = [];
+      const faces = collectFaces(oc, shape, cleanup);
+      for (let i = 0; i < faces.length; i++) {
+        const info = faceSurfaceInfo(oc, faces[i], cleanup);
+        if (info.params?.kind === "cylinder") {
+          cylinders.push({
+            faceId: `face-${i}`,
+            radius: info.params.radius,
+            axisLocation: info.params.axisLocation,
+            axisDirection: info.params.axisDirection,
+          });
+        }
+      }
+    }
+    return { ...tessellated, edgeLines, ...(cylinders ? { cylinders } : {}) };
   } catch (err) {
     throw wrapOcctFault(err);
   } finally {
@@ -544,6 +568,13 @@ export interface DrawingSheetOptions {
   hiddenLines?: boolean;
   creaseAngleDeg?: number;
   /**
+   * Centre marks and one leader callout per hole group in each orthographic
+   * view looking down the hole axis (`holeCallouts.ts`). B-rep sources only;
+   * a mesh source draws without marks and says so in `warnings`. Off by
+   * default so existing sheets stay byte-identical.
+   */
+  holeCallouts?: boolean;
+  /**
    * Restrict every view to these layers' members (roadmap "Layers, distinct
    * from Parts", second increment): one group per layer inside each view.
    * Absent = the whole model, exactly as before. B-rep sources only.
@@ -574,6 +605,8 @@ export interface DrawingSheetResult {
     hiddenSegmentCount: number;
     dimensionCount: number;
     sectionLoopCount?: number;
+    /** Holes marked in this view (only when `holeCallouts` was on). */
+    holeMarkCount?: number;
   }>;
   /** Every section in the sheet, its parent view and its cut-loop count. */
   sections: Array<{ id: string; label: string; parentView: string; loopCount: number; hatchLineCount: number }>;
@@ -601,7 +634,59 @@ export async function exportDrawingSheet(
   const warnings: string[] = [];
   if (options.views.length === 0) throw new Error("A drawing sheet needs at least one view.");
   const quality = options.quality ?? "fine";
-  const { mesh, triangleFace, triangleFaceId, triangleGroupId, edgeLines } = await loadDrawingMesh(extensionPath, source, quality);
+  const wantHoles = options.holeCallouts === true;
+  const { mesh, triangleFace, triangleFaceId, triangleGroupId, edgeLines, cylinders } = await loadDrawingMesh(
+    extensionPath,
+    source,
+    quality,
+    wantHoles && source.kind === "brep"
+  );
+  if (wantHoles && source.kind !== "brep") {
+    warnings.push("Hole callouts need a B-rep source — this mesh source is drawn without hole marks.");
+  }
+  const holeGroups =
+    wantHoles && cylinders && triangleFaceId
+      ? groupHoleCallouts(extractHoles(mesh.positions, mesh.indices, triangleFaceId, cylinders))
+      : [];
+  /** Centre marks + callouts for one orthographic view looking along a hole axis. */
+  const holeMarksFor = (
+    basis: ReturnType<typeof viewBasis>,
+    direction: Vec3,
+    visible: Array<[[number, number], [number, number]]>
+  ): HoleMarksInput | undefined => {
+    if (holeGroups.length === 0 || !isOrthographic(direction)) return undefined;
+    const fwd = basis.forward;
+    const groups = holeGroups.filter((g) => Math.abs(g.axis[0] * fwd[0] + g.axis[1] * fwd[1] + g.axis[2] * fwd[2]) > 0.9999);
+    if (groups.length === 0) return undefined;
+    let minY = Infinity;
+    let minX = Infinity;
+    let maxX = -Infinity;
+    for (const [a, b] of visible) {
+      for (const p of [a, b]) {
+        if (p[1] < minY) minY = p[1];
+        if (p[0] < minX) minX = p[0];
+        if (p[0] > maxX) maxX = p[0];
+      }
+    }
+    if (!Number.isFinite(minY)) return undefined;
+    const crosses: Array<[[number, number], [number, number]]> = [];
+    const callouts: HoleMarksInput["callouts"] = [];
+    let holeCount = 0;
+    const pad = 0.08 * Math.max(maxX - minX, 1);
+    groups.forEach((g, gi) => {
+      for (const h of g.holes) {
+        const c = project3(h.centre, basis);
+        const arm = Math.max(1.5 * h.radius, 1e-3);
+        crosses.push([[c[0] - arm, c[1]], [c[0] + arm, c[1]]]);
+        crosses.push([[c[0], c[1] - arm], [c[0], c[1] + arm]]);
+        holeCount++;
+      }
+      const c0 = project3(g.holes[0].centre, basis);
+      const at: [number, number] = [c0[0], minY - pad * (gi + 1)];
+      callouts.push({ text: g.text, at, leader: [c0, at] });
+    });
+    return { crosses, callouts, holeCount };
+  };
   const positions = mesh.positions;
   const triangleCount = Math.floor(mesh.indices.length / 3);
   if (triangleCount === 0) warnings.push("The source produced no triangles — the sheet is empty.");
@@ -809,11 +894,13 @@ export async function exportDrawingSheet(
     const plane = validPlane(view.sectionPlane, `View "${view.name}"`);
     if (!plane) {
       const runs = runsFor(mesh.indices, triangleFace, basis, view.direction, []);
+      const holeMarks = holeMarksFor(basis, view.direction, runs.visible);
       inputs.push({
         name: view.name,
         direction: view.direction,
         visible: runs.visible,
         hidden: runs.hidden,
+        ...(holeMarks ? { holeMarks } : {}),
         ...(subset.length > 0 ? { dimensions: dimensionDrawings(subset, view, glyphScale) } : {}),
       });
       return;
@@ -933,6 +1020,7 @@ export async function exportDrawingSheet(
       segmentCount: v.visible.length + (v.layerGroups ?? []).reduce((n, g) => n + g.visible.length, 0),
       hiddenSegmentCount: v.hidden.length + (v.layerGroups ?? []).reduce((n, g) => n + g.hidden.length, 0),
       dimensionCount: v.dimensions?.drawings.length ?? 0,
+      ...(wantHoles && cylinders ? { holeMarkCount: v.holeMarks?.holeCount ?? 0 } : {}),
       ...(v.section ? { sectionLoopCount: v.section.loopCount } : {}),
     })),
     sections,

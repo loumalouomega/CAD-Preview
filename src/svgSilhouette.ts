@@ -405,6 +405,7 @@ const SHEET_STROKE = {
   titleBlock: 0.35,
   sectionCut: 0.5,
   sectionHatch: 0.18,
+  centre: 0.18,
 } as const;
 /** Section labels use the same ISO 3098 series as view labels. */
 const SECTION_LABEL_HEIGHT = 3.5;
@@ -461,6 +462,17 @@ export function sheetSvg(layout: SheetLayout, options: { stroke?: string; title?
           (lineD ? `<path fill="none" stroke="${stroke}" stroke-width="${fmtStrokeWidth(SHEET_STROKE.sectionCut)}" d="${lineD}"/>` : "") +
           (arrowD ? `<path fill="none" stroke="${stroke}" stroke-width="${fmtStrokeWidth(SHEET_STROKE.sectionCut)}" d="${arrowD}"/>` : "") +
           `<text x="${fmt(mark.labelAt[0], decimals)}" y="${fmt(mark.labelAt[1], decimals)}" font-family="sans-serif" font-size="${fmtStrokeWidth(SECTION_LABEL_HEIGHT)}" fill="${stroke}" text-anchor="middle">${escapeXml(mark.label)}</text>` +
+          `</g>`
+      );
+    }
+    if (view.holeMarks) {
+      const crossD = seg(view.holeMarks.crosses);
+      const leaderD = seg(view.holeMarks.callouts.map((c) => c.leader));
+      parts.push(
+        `<g class="CENTER" id="center-${viewId(view.name)}" data-holes="${view.holeMarks.holeCount}">` +
+          (crossD ? `<path fill="none" stroke="${stroke}" stroke-width="${fmtStrokeWidth(SHEET_STROKE.centre)}" d="${crossD}"/>` : "") +
+          (leaderD ? `<path fill="none" stroke="${stroke}" stroke-width="${fmtStrokeWidth(SHEET_STROKE.centre)}" d="${leaderD}"/>` : "") +
+          view.holeMarks.callouts.map((c) => text(c.label)).join("") +
           `</g>`
       );
     }

@@ -6930,6 +6930,8 @@ export async function exportDrawingSheetTool(
     hiddenLines?: boolean;
     creaseAngleDeg?: number;
     tessellationQuality?: string;
+    /** Centre marks + one leader callout per hole group in views looking down the hole axis. B-rep sources only. */
+    holeCallouts?: boolean;
     title?: string;
     fields?: TitleBlockFields;
     /** A sheet template (bundled starters ∪ `libraryPath`) supplying any setting not given explicitly. */
@@ -6993,6 +6995,7 @@ export async function exportDrawingSheetTool(
     hiddenLines: params.hiddenLines ?? true,
     creaseAngleDeg: params.creaseAngleDeg,
     ...(layerFilter ? { layerFilter } : {}),
+    ...(params.holeCallouts ? { holeCallouts: true } : {}),
     paper,
     projection,
     scale,
@@ -7015,6 +7018,7 @@ export async function exportDrawingSheetTool(
     sections: result.sections,
     triangleCount: result.triangleCount,
     ...(annotations.length > 0 ? { dimensionCount: drawnDimensions } : {}),
+    ...(params.holeCallouts ? { holeMarkCount: result.views.reduce((n, v) => n + (v.holeMarkCount ?? 0), 0) } : {}),
     ...(layerFilter ? { layers: layerFilter.map((s) => ({ id: s.id, name: s.name })) } : {}),
     warnings: [
       ...warnings,

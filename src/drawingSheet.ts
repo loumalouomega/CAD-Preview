@@ -44,6 +44,16 @@ export interface SectionCutInput {
   loops: Pt2[][];
 }
 
+/** Centre marks + leader callouts for the holes whose axis is this view's line of sight. */
+export interface HoleMarksInput {
+  /** Centre-mark segments (a cross per hole) in the view's projected frame. */
+  crosses: Segment2[];
+  /** One leader + text per hole group; the leader runs from a hole centre to `at`. */
+  callouts: Array<{ text: string; at: Pt2; leader: Segment2 }>;
+  /** Number of holes marked (not crosses). */
+  holeCount: number;
+}
+
 export interface SheetViewInput {
   /** Canonical view name (e.g. `"front"`, `"iso-ftr"`). Drives slot placement. */
   name: string;
@@ -65,6 +75,8 @@ export interface SheetViewInput {
    * group; writers nest one group per layer inside the view.
    */
   layerGroups?: Array<{ id: string; name: string; color: string; visible: Segment2[]; hidden: Segment2[] }>;
+  /** Hole centre marks + callouts (B-rep sources, opt-in). */
+  holeMarks?: HoleMarksInput;
 }
 
 export const PAPER_SIZES = ["fit", "A4", "A3", "A2", "A1", "A0"] as const;
@@ -162,6 +174,8 @@ export interface PlacedView {
     loopCount: number;
   };
   sectionMarks?: SectionMark[];
+  /** Hole marks in SHEET coordinates (present iff the input had any). */
+  holeMarks?: { crosses: Segment2[]; callouts: Array<{ text: string; leader: Segment2; label: SheetText }>; holeCount: number };
   /** Per-layer runs, transformed into sheet space (present iff the input had them). */
   layerGroups?: Array<{ id: string; name: string; color: string; visible: Segment2[]; hidden: Segment2[] }>;
   label: SheetText;
@@ -326,7 +340,10 @@ export function layoutSheet(inputs: ReadonlyArray<SheetViewInput>, options: Shee
         ? loop.map((p, j) => [p, loop[(j + 1) % loop.length]] as Segment2)
         : []
     );
-    const markSegments = (input.sectionMarks ?? []).flatMap((m) => [...m.segments, ...m.arrows]);
+    const markSegments = [
+      ...(input.sectionMarks ?? []).flatMap((m) => [...m.segments, ...m.arrows]),
+      ...(input.holeMarks ? [...input.holeMarks.crosses, ...input.holeMarks.callouts.map((c) => c.leader)] : []),
+    ];
     const b = drawingBounds(
       [...input.visible, ...grouped.flatMap((g) => g.visible), ...sectionLoops, ...markSegments],
       [...input.hidden, ...grouped.flatMap((g) => g.hidden)],
@@ -461,12 +478,29 @@ export function layoutSheet(inputs: ReadonlyArray<SheetViewInput>, options: Shee
       arrows: mark.arrows.map(ts),
       labelAt: tp(mark.labelAt),
     }));
+    const hm = m.input.holeMarks;
+    const holeMarks =
+      hm && (hm.crosses.length > 0 || hm.callouts.length > 0)
+        ? {
+            crosses: hm.crosses.map(ts),
+            holeCount: hm.holeCount,
+            callouts: hm.callouts.map((c) => {
+              const [x, y] = tp(c.at);
+              return {
+                text: c.text,
+                leader: ts(c.leader),
+                label: { x, y: y - SHEET.cellTextHeight * 0.4, text: c.text, height: SHEET.cellTextHeight, anchor: "middle" as const },
+              };
+            }),
+          }
+        : undefined;
     return {
       name: m.input.name,
       visible: m.input.visible.map(ts),
       hidden: m.input.hidden.map(ts),
       ...(section ? { section } : {}),
       ...(sectionMarks && sectionMarks.length > 0 ? { sectionMarks } : {}),
+      ...(holeMarks ? { holeMarks } : {}),
       ...(m.input.layerGroups && m.input.layerGroups.length > 0
         ? {
             layerGroups: m.input.layerGroups.map((g) => ({

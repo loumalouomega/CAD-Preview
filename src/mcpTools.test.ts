@@ -5818,6 +5818,17 @@ describe("export_drawing_sheet", () => {
     expect(r.dimensionCount).toBeUndefined();
   });
 
+  it("passes holeCallouts only when asked and reports the marked-hole count", async () => {
+    const c = ctx();
+    const optsOf = () => vi.mocked(c.pipeline.exportDrawingSheet).mock.lastCall![2] as { holeCallouts?: boolean };
+    const off = await exportDrawingSheetTool(c, { path: stpModel, outputPath: path.join(dir, "hc0.svg") });
+    expect(optsOf().holeCallouts).toBeUndefined();
+    expect(off.holeMarkCount).toBeUndefined();
+    const on = await exportDrawingSheetTool(c, { path: stpModel, outputPath: path.join(dir, "hc1.svg"), holeCallouts: true });
+    expect(optsOf().holeCallouts).toBe(true);
+    expect(on.holeMarkCount).toBe(0);
+  });
+
   it("puts today's date in the title block, none when deterministic, and the caller's when given", async () => {
     const c = ctx();
     const dateOf = () => vi.mocked(c.pipeline.exportDrawingSheet).mock.lastCall![2].date;
