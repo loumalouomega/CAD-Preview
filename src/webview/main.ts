@@ -55,6 +55,7 @@ import { ScadCustomizerPanel } from "./scadCustomizerPanel";
 import type { ScadParameter, ScadValue } from "../scadParams";
 import { PassagesPanel } from "./passagesPanel";
 import { PrintabilityPanel } from "./printabilityPanel";
+import { DraftPanel } from "./draftPanel";
 import { emitPrimitiveOps } from "../primitiveEmit";
 import { fitConstructionPlane, fitOpForKind, fitStoreWarning } from "../fitMapping";
 import { validateEditOp, GUIDE_KINDS, COINCIDENT_CURVE_KINDS, curveEndpointSlots, getVec3Slot } from "../editOps";
@@ -2102,6 +2103,46 @@ const printabilityPanel = new PrintabilityPanel(document.getElementById("printab
     printabilityOverlayShown = false;
   },
 });
+
+// Draft panel (roadmap "Draft and undercut analysis"): facts-only host report;
+// the per-corner draft angle colours the view through the same colour-field
+// overlay slot as printability, so Clear / a new field pick release it.
+let draftRequestId: string | null = null;
+let draftOverlayShown = false;
+let draftPanelEligible = false;
+const draftPanel = new DraftPanel(document.getElementById("draft-panel")!, {
+  onCheck: async (params) => {
+    const requestId = `${Date.now()}-${Math.random()}`;
+    draftRequestId = requestId;
+    draftPanel.setBusy(true);
+    draftPanel.renderMessage("Measuring…");
+    post({
+      type: "draftRequest",
+      requestId,
+      pull: params.pull,
+      ...(params.minDraftDeg !== undefined ? { minDraftDeg: params.minDraftDeg } : {}),
+      ...(params.twoSided ? { twoSided: true } : {}),
+      stl: await currentStlIfMeshSource(),
+    });
+  },
+  onClear: () => {
+    if (draftOverlayShown) viewer.setColorFieldOverlay(null);
+    draftOverlayShown = false;
+  },
+  onHighlight: (faceId) => {
+    if (faceId) viewer.renderSelection([{ entityType: "surface" as const, entityId: faceId }]);
+    else renderHighlight();
+  },
+});
+
+function setDraftEligible(eligible: boolean): void {
+  draftPanel.setEligible(eligible);
+  if (!eligible) draftRequestId = null;
+  if (!eligible && draftOverlayShown) {
+    viewer.setColorFieldOverlay(null);
+    draftOverlayShown = false;
+  }
+}
 
 function setPassagesEligible(eligible: boolean): void {
   passagesPanel.setEligible(eligible);
@@ -5670,6 +5711,14 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
           printabilityPanelEligible = true;
           setPrintabilityEligible(true); // a B-rep is measured through its fine tessellation (once: keep the last report on edits)
         }
+        if (draftOverlayShown) {
+          viewer.setColorFieldOverlay(null); // the draft angles describe the geometry before this edit
+          draftOverlayShown = false;
+        }
+        if (!draftPanelEligible) {
+          draftPanelEligible = true;
+          setDraftEligible(true);
+        }
         meshingPanel.setMeshioOpsAvailable(false); // B-rep has exact geometry — no meshio mesh model
         clashPanel.setEligible(true); // exact booleans exist only for B-rep
         clearClashResults(); // re-tessellation may renumber the ids results name
@@ -5791,6 +5840,8 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
       await initManifoldBrowser(); // booleans/holes replay synchronously; see loadMeshBytes
       printabilityPanelEligible = COMPARABLE_MESH_FORMATS.has(msg.format);
       setPrintabilityEligible(printabilityPanelEligible);
+      draftPanelEligible = printabilityPanelEligible;
+      setDraftEligible(draftPanelEligible);
       setMeshHealthEligibility(COMPARABLE_MESH_FORMATS.has(msg.format) ? (msg.format as MeshParseFormat) : null);
       meshingPanel.setMeshioOpsAvailable(false); // native mesh has no meshio++ mesh model
       clashPanel.setEligible(false); // no exact boolean geometry for a mesh
@@ -5813,6 +5864,8 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
       setMeshHealthEligibility(null);
       printabilityPanelEligible = true; // the converted boundary is a plain triangle mesh the webview can serialise
       setPrintabilityEligible(true);
+      draftPanelEligible = true;
+      setDraftEligible(true);
       // Mesh-ops needs a meshio++ mesh model — every loadMeshBytes source has
       // one except OpenFOAM (geometry-only case staging, no readMesh path).
       meshingPanel.setMeshioOpsAvailable(msg.sourceFormat !== "openfoam");
@@ -6399,8 +6452,27 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
       viewer.setColorFieldOverlay(buildColorFieldOverlay(decodeF32Local(msg.positions), msg.values, 0, 1));
       printabilityOverlayShown = true;
       deviationOverlayShown = false; // the colour-field slot now belongs to this overlay
+      draftOverlayShown = false;
       break;
     }
+    case "draftResult": {
+      if (msg.requestId !== draftRequestId) break; // stale — a newer check/load superseded it
+      draftRequestId = null;
+      draftPanel.setBusy(false);
+      draftPanel.render(msg.report);
+      // Draft angle per corner (degrees) on the viridis ramp, clamped to ±15°: 0° (no draft) is the middle.
+      viewer.setColorFieldOverlay(buildColorFieldOverlay(decodeF32Local(msg.positions), msg.values, -15, 15));
+      draftOverlayShown = true;
+      deviationOverlayShown = false;
+      printabilityOverlayShown = false; // the colour-field slot now belongs to this overlay
+      break;
+    }
+    case "draftError":
+      if (msg.requestId !== draftRequestId) break;
+      draftRequestId = null;
+      draftPanel.setBusy(false);
+      draftPanel.renderMessage(msg.message, true);
+      break;
     case "printabilityError":
       if (msg.requestId !== printabilityRequestId) break;
       printabilityRequestId = null;
@@ -6486,6 +6558,7 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
       if (msg.requestId !== colorFieldRequestId) break; // stale — a newer selection/Clear/edit superseded it
       deviationOverlayShown = false; // the field picker now owns the overlay slot
       printabilityOverlayShown = false;
+      draftOverlayShown = false;
       const positions = pristineMeshPositions();
       if (!positions) break; // model was replaced/cleared while the request was in flight
       viewer.setColorFieldOverlay(buildColorFieldOverlay(positions, msg.values, msg.min, msg.max));

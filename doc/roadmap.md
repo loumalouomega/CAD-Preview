@@ -211,7 +211,7 @@ Two projects built for AI agents were read for this extension:
 | Snapshot presets (xray, hidden-line) and section mode | text-to-cad | Shipped: `render_snapshot` / `screenshot_shape` take all five display modes and an optional section `clip` (the viewer's own clip plane, solid cap included) |
 | `mass_properties` with density | text-to-cad | Shipped: `Part.density` gives BOM mass and a per-solid `massGrams` (mass-weighted centre and density-weighted inertia remain out) |
 | dfam-check (overhangs, wall thickness, support, orientations, plate fit) | text-to-cad, ReOpenSCAD (plates) | Shipped as `check_printability` (overhang area, sampled wall thickness, support-volume upper bound, plate fit; unmeasured rules listed as not checked) and the Advanced ▸ Analysis **Printability** panel with an overhang colour overlay |
-| dfm draft and undercuts | text-to-cad | [Draft and undercut analysis](#draft-and-undercut-analysis) |
+| dfm draft and undercuts | text-to-cad | Shipped: `check_draft` and the Draft panel |
 | Engineering-drawing hole callouts, CENTER layer | text-to-cad | Shipped: `holeCallouts` on `export_drawing_sheet`, the Export Sheet form and templates |
 | Byte-deterministic writers (mesh formats, manifest) | text-to-cad | Shipped — see `CLAUDE.md`'s "Reproducible exports" |
 | Per-solid signed-volume check | text-to-cad | Addendum to [More facts in the B-rep validity report](#more-facts-in-the-b-rep-validity-report) |
@@ -316,16 +316,6 @@ These are outcome groupings, not release numbers. Independent small items can sh
 - **Done so far:** [A cantilever beam](/tutorials/cantilever) — a 100 × 10 × 10 box, `FixedEnd` and `LoadFace` Parts, an optional steel density, and an MDPA export with a handoff manifest. `mcp:smoke` pins it on the live kernel: the beam's volume is exactly 10 000 mm³, and every node of each `SubModelPart` sits exactly on its end plane (x = −50 / +50).
 - **What is left (S):** the cross-repository check — open the exported `.mdpa` in VSCode-MDPA-Preview and confirm both SubModelParts populate. It needs that extension and is not exercised from this repository.
 - **Done when:** that check passes, and KKSS's tutorial links to the page.
-
-#### 2.16 Draft and undercut analysis for a pull direction {#draft-and-undercut-analysis}
-
-*Area: Geometry. Effort: M.*
-
-- **Evidence:** a moulded or cast part needs draft on every wall and no undercuts along the pull. Nothing here measures either. text-to-cad's `dfm` skill reports per-face draft relative to a pull direction (zero-draft faces, minimum wall draft), undercuts, and projected area.
-- **Done so far:** the `check_draft` MCP tool (pure `draftAnalysis.ts`, host `draftAnalysisHost.ts`): per-face draft against a `pull`, zero- and negative-draft walls, sampled undercut shadowing, projected area; a box reports its four walls at 0° and a 5° frustum reports 5° (`mcp:smoke`).
-- **What is left (S):** the Advanced ▸ Analysis section (pull select, minimum draft, results) and colouring the faces by draft through the colour-field path, with a screenshot regeneration.
-- **Done when:** a box reports its four side walls at exactly 0°, a tapered extrusion reports its taper angle, and a pocket under an overhang is reported as an undercut.
-- **Out of scope:** suggesting a parting line; adding draft (the `draft` op is the tool for that, and its kernel limitation is recorded in `CLAUDE.md`).
 
 ### Probe-gated — establish feasibility before estimating
 
@@ -811,7 +801,7 @@ Three groups, three different revival rules. Each says what would change our min
 
 - **Hosted, shared workspaces and an HTTP MCP transport** — rejected. ReOpenSCAD serves its MCP over HTTP, with the workspace URL itself granting edit access. This extension's MCP server is a local stdio process that reads and writes files the user already owns; a network listener would be a new attack surface with nothing local to gain. What survives: registering the server with VS Code (shipped — the MCP server-definition provider and the **Connect an agent…** snippets) and copyable client snippets. **Revive only** for a concrete embedding request that cannot spawn a process (for example, a KKSS deployment that runs the server remotely), with authentication designed in from the start.
 
-- **Slicing, printer hand-off, supplier ordering and robot-description export** — rejected. text-to-cad ships skills that slice with OrcaSlicer, open Bambu Studio, preflight a SendCutSend order and write URDF/SDF. These are manufacturing and robotics execution, outside a tool for previewing, inspecting and preparing models. What survives is the fact-only analysis these skills start from: the printability facts report (shipped as `check_printability` and the Advanced ▸ Analysis **Printability** panel) and [draft and undercut analysis](#draft-and-undercut-analysis) (2.16). **Revive only** if a downstream tool needs a file format this extension cannot already export (3MF is tracked separately).
+- **Slicing, printer hand-off, supplier ordering and robot-description export** — rejected. text-to-cad ships skills that slice with OrcaSlicer, open Bambu Studio, preflight a SendCutSend order and write URDF/SDF. These are manufacturing and robotics execution, outside a tool for previewing, inspecting and preparing models. What survives is the fact-only analysis these skills start from: the printability facts report (shipped as `check_printability` and the Advanced ▸ Analysis **Printability** panel) and draft and undercut analysis (shipped as `check_draft` and the **Draft** panel). **Revive only** if a downstream tool needs a file format this extension cannot already export (3MF is tracked separately).
 
 - **An in-viewer OpenSCAD editor with live re-evaluation** — rejected. ReOpenSCAD's workbench is a text area with syntax highlighting and live preview; here, VS Code is the editor and the viewer opens beside it. What survives: the Customizer panel (shipped), include tracking (shipped) so a saved edit reloads promptly, and structured diagnostics (shipped). **Revive only** if the side-by-side workflow turns out to be unworkable in practice.
 

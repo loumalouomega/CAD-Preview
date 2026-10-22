@@ -21,6 +21,7 @@ import type { PrimitiveReport } from "./primitiveReport";
 import type { BrepHealthReport } from "./brepHealthReport";
 import type { PassageReport } from "./passageAnalysis";
 import type { Axis, PrintabilityReport } from "./printability";
+import type { DraftReport } from "./draftAnalysis";
 import type { DeviationReport } from "./meshDeviation";
 import type { MeshioOpSpec } from "./meshioOps";
 import type { BomRow } from "./bomExport";
@@ -757,6 +758,11 @@ export type HostToWebview =
    * triangle: 1 = needs support). */
   | { type: "printabilityResult"; requestId: string; report: PrintabilityReport; up: Axis; positions: string; values: string }
   | { type: "printabilityError"; requestId: string; message: string }
+  /** Draft (roadmap "Draft and undercut analysis"): the facts report plus the per-corner
+   * draft angle in degrees as the overlay field (base64 Float32 positions, 9 per
+   * triangle; values, 3 per triangle). */
+  | { type: "draftResult"; requestId: string; report: DraftReport; positions: string; values: string }
+  | { type: "draftError"; requestId: string; message: string }
   /** FE Mesh quality gate (roadmap "meshio++ check_quality as a caller-supplied quality gate"):
    * meshio++'s `checkQuality` over the LAST generated mesh, against the
    * caller's threshold text. Facts only (see `QualityGateResult`); same
@@ -1054,6 +1060,9 @@ export type WebviewToHost =
   /** Printability panel: measure the open model. `process`/`plate` are bundled
    * names (the host resolves them); `up` is the build direction the overlay
    * shows; `stl` as for meshingGenerate (a mesh source's displayed, edited mesh). */
+  /** Draft panel: measure draft/undercuts of the open model along `pull` (an axis name);
+   * `stl` as for printabilityRequest. */
+  | { type: "draftRequest"; requestId: string; pull: string; minDraftDeg?: number; twoSided?: boolean; stl?: string }
   | { type: "printabilityRequest"; requestId: string; process?: string; plate?: string; up: Axis; overhangLimitDeg?: number; stl?: string }
   /** FE Mesh ▸ Quality gate: gate the last generated mesh (the host keeps its
    * MSH text per document) against `require`. The host answers with

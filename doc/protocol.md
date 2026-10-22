@@ -1505,6 +1505,14 @@ Sent from the Printability panel (roadmap "Printability facts report") — the i
 { "type": "printabilityRequest", "requestId": "1234-0.56", "up": "+Z", "process": "fdm", "plate": "prusa-mk4" }
 ```
 
+### `draftRequest` / `draftResult` / `draftError`
+
+Sent from the Draft panel (roadmap "Draft and undercut analysis") — the interactive half of `check_draft`. `draftRequest` carries the pull direction `pull` (an axis name, `+X`…`-Z`), optional `minDraftDeg` and `twoSided`, and `stl` for a mesh source as for `printabilityRequest`. `draftResult` returns the `DraftReport` plus the per-corner draft angle in degrees (`positions`, 9 floats per triangle, and `values`, 3 per triangle, both base64 Float32) that the view shows through the colour-field overlay; `draftError` carries the message. A reply whose `requestId` is no longer current is ignored.
+
+```json
+{ "type": "draftRequest", "requestId": "1234-0.56", "pull": "+Z", "minDraftDeg": 2, "twoSided": false }
+```
+
 ### `qualityGateRequest` / `qualityGateResult` / `qualityGateError`
 
 Sent from the FE Mesh panel's **Quality gate** row (roadmap "meshio++ check_quality as a caller-supplied quality gate") — the interactive half of `check_mesh_quality`. The row is rendered only while a generated mesh is displayed. `qualityGateRequest` carries the caller's threshold text `require` (e.g. `scaled_jacobian >= 0.2; aspect_ratio <= 5 @ 1%`); the host keeps the MSH text of the **last mesh that panel generated** (reset at the start of each generate) and runs meshio++'s `checkQuality` over it. It replies `qualityGateError` when nothing has been generated or the text is malformed (meshio++'s own message names the unknown metric). `qualityGateResult` carries a `QualityGateResult` (`src/meshQualityGate.ts`): `passed`, `numCells`, `numInverted`, `numDegenerate`, `checks[]` (`name`, `metric`, `min`/`max`, `maxFraction`, `evaluated`, `violations`, `fraction`, `worst`, `worstCell`, `passed`, `vacuous`) and `vacuousChecks`. Facts only — the panel words `passed` as "Within / Outside your thresholds". Correlated by `requestId`; a stale reply is ignored.

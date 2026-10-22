@@ -3,6 +3,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
 import { routeFile } from "./fileRouter";
 import { showDrawingSheetForm } from "./drawingSheetForm";
+import type { Axis } from "./printability";
 import { resolveSheetSettings, type ResolvedSheetSettings, type SheetSettingsInput } from "./sheetSettings";
 import {
   USER_SHEET_TEMPLATES_FILE,
@@ -3681,6 +3682,44 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
           post({ type: "passagesResult", requestId: msg.requestId, report, sizeMax });
         } catch (err) {
           post({ type: "passagesError", requestId: msg.requestId, message: (err as Error).message });
+        }
+        return;
+      }
+
+      if (msg.type === "draftRequest") {
+        try {
+          if (!route) throw new Error("Unsupported file type.");
+          let source: Parameters<KernelClient["checkDraft"]>[1];
+          if (route.strategy === "occt") {
+            const scadWarnings: string[] = [];
+            const src = await this.readOcctSource(document.uri, route.format, scadWarnings);
+            for (const w of scadWarnings) post({ type: "status", text: w });
+            source = {
+              kind: "brep",
+              bytes: src.bytes,
+              format: src.format as Extract<CadFormat, "step" | "iges" | "brep" | "csg">,
+              ops: replayTail(currentEdits, currentBakedThrough),
+            };
+          } else {
+            if (DISPLAY_ONLY_MESH_FORMATS.has(route.format)) throw new Error(displayOnlyMeshMessage(route.format, "a draft check"));
+            if (!msg.stl) throw new Error("No mesh geometry available: missing STL data.");
+            source = { kind: "stl", bytes: Buffer.from(msg.stl, "base64") };
+          }
+          const result = await docPipeline.checkDraft(this.context.extensionPath, source, {
+            pull: msg.pull as Axis,
+            minDraftDeg: msg.minDraftDeg,
+            twoSided: msg.twoSided,
+            overlay: true,
+          });
+          post({
+            type: "draftResult",
+            requestId: msg.requestId,
+            report: result.report,
+            positions: encodeBuffer(result.overlay!.positions),
+            values: encodeBuffer(result.overlay!.values),
+          });
+        } catch (err) {
+          post({ type: "draftError", requestId: msg.requestId, message: (err as Error).message });
         }
         return;
       }

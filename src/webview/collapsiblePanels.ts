@@ -46,6 +46,7 @@ export const COLLAPSIBLE_PANELS: readonly { readonly panel: string; readonly hea
   { panel: "primitives-panel", header: "primitives-header" },
   { panel: "passages-panel", header: "passages-header" },
   { panel: "printability-panel", header: "printability-header" },
+  { panel: "draft-panel", header: "draft-header" },
   { panel: "macros-panel", header: "macros-header" },
   { panel: "standard-parts-panel", header: "standard-parts-header" },
 ];
@@ -130,6 +131,7 @@ export const ADVANCED_CHILDREN: readonly string[] = [
   "primitives-panel",
   "passages-panel",
   "printability-panel",
+  "draft-panel",
   "macros-panel",
   "standard-parts-panel",
 ];
