@@ -36,8 +36,8 @@ export interface ScaleOp { op: "scale"; targets: string[]; center: Vec3; factors
 export interface MirrorOp { op: "mirror"; targets: string[]; planePoint?: Vec3; planeNormal?: Vec3; planeId?: string; midplaneFaces?: [string, string]; }
 /** Combine solid sets `a` and `b` (union/subtract/intersect). */
 export interface BooleanOp { op: "boolean"; kind: "union" | "subtract" | "intersect"; a: string[]; b: string[]; }
-/** Round the selected edges with radius `radius`. */
-export interface FilletOp { op: "fillet"; edges: string[]; radius: number; }
+/** Round the selected edges with radius `radius`. With `radius2` the radius varies from `radius` (start) to `radius2` (end): along one edge directly, along a chain of edges (ordered end-to-start by shared vertices) linearly by cumulative edge length. */
+export interface FilletOp { op: "fillet"; edges: string[]; radius: number; radius2?: number; }
 /** Bevel the selected edges: symmetric `distance`, asymmetric `distance`/`distance2` on two sides of a reference `face`, or distance-angle `distance` at `angleDeg` to `face`. `face` is required when `distance2` or `angleDeg` is set — it chooses which side gets `distance`. */
 export interface ChamferOp { op: "chamfer"; edges: string[]; distance: number; distance2?: number; angleDeg?: number; face?: string; }
 /**
@@ -1039,7 +1039,10 @@ function validateEditOpCore(raw: unknown): EditOp | null {
     }
     case "fillet": {
       const edges = asIdArray(o.edges);
-      return edges && isFiniteNumber(o.radius) ? { op: "fillet", edges, radius: o.radius } : null;
+      if (!edges || !isFiniteNumber(o.radius)) return null;
+      const out: FilletOp = { op: "fillet", edges, radius: o.radius };
+      if (o.radius2 !== undefined && isPositive(o.radius2)) out.radius2 = o.radius2 as number;
+      return out;
     }
     case "chamfer": {
       const edges = asIdArray(o.edges);

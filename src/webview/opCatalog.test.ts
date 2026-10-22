@@ -119,6 +119,11 @@ describe("describeOp", () => {
     expect(describeOp({ op: "loft", profileEdgeSets: [["edge-0"], ["edge-1"]] })).toContain("2 profiles");
   });
 
+  it("labels a variable-radius fillet with both radii", () => {
+    expect(describeOp({ op: "fillet", edges: ["edge-1"], radius: 2 })).toBe("Fillet 1 r=2");
+    expect(describeOp({ op: "fillet", edges: ["edge-1"], radius: 2, radius2: 8 })).toBe("Fillet 1 r=2→8");
+  });
+
   it("returns a non-empty label for every op kind", () => {
     for (const op of Object.values(REPRESENTATIVE_OPS)) {
       const label = describeOp(op);

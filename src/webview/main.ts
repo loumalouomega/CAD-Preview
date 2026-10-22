@@ -1181,8 +1181,13 @@ const editsPanel = new EditsPanel(document.getElementById("edits-panel")!, {
     return loftRail;
   },
   onClearLoftRail: () => { loftRail = []; scheduleOpPreview(); },
-  onApplyFillet: (kind, amount, exprs) => {
-    const resolved = buildOpForPanel(kind, { amount, exprs: exprs?.amount ? { amount: exprs.amount } : undefined });
+  onApplyFillet: (kind, amount, exprs, amount2) => {
+    const resolved = buildOpForPanel(kind, {
+      amount, amount2,
+      exprs: exprs?.amount || exprs?.amount2
+        ? { ...(exprs.amount ? { amount: exprs.amount } : {}), ...(exprs.amount2 ? { amount2: exprs.amount2 } : {}) }
+        : undefined,
+    });
     if (resolved.error || !resolved.op) { setStatus(resolved.error ?? "Cannot apply.", true); return; }
     cancelOpPreview();
     editsModel.push(resolved.op);
@@ -2884,10 +2889,12 @@ function buildOpForPanelCore(id: PanelOpId, rawDraft: Record<string, unknown>): 
     case "chamfer": {
       if (selEdges.length === 0) return { error: `Select one or more edges (Line mode) before applying a ${id}.` };
       if (d.amount <= 0) return { error: "Enter a positive radius / setback." };
+      if (id === "fillet" && d.amount2 !== undefined && !(d.amount2 > 0)) return { error: "Enter a positive end radius, or leave it blank for a constant fillet." };
       const op: EditOp = id === "fillet"
-        ? { op: "fillet", edges: selEdges, radius: d.amount }
+        ? { op: "fillet", edges: selEdges, radius: d.amount, ...(d.amount2 !== undefined ? { radius2: d.amount2 } : {}) }
         : { op: "chamfer", edges: selEdges, distance: d.amount };
       if (d.exprs?.amount) op.exprs = { [id === "fillet" ? "radius" : "distance"]: d.exprs.amount };
+      if (id === "fillet" && d.exprs?.amount2 && d.amount2 !== undefined) op.exprs = { ...op.exprs, radius2: d.exprs.amount2 };
       return { op };
     }
 

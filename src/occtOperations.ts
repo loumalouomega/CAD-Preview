@@ -1042,7 +1042,8 @@ export function combineSolids(oc: any, shapes: any[], cleanup: Array<{ delete():
  * OCCT fillet/chamfer API, verified against the live WASM (see CLAUDE.md):
  *   fillet  → `new BRepFilletAPI_MakeFillet(shape, ChFi3d_FilletShape.ChFi3d_Rational)`
  *   chamfer → `new BRepFilletAPI_MakeChamfer(shape)`
- * both then `.Add_2(amount, edge)` per edge → `.Shape()` (auto-builds; `.Build()`
+ * both then `.Add_2(amount, edge)` per edge (fillet with `radius2`: one
+ * `.Add_3(r1, r2, edge)` per edge, see `variableFilletLaws`) → `.Shape()` (auto-builds; `.Build()`
  * needs the unbound `Message_ProgressRange`, so rely on `.Shape()`). An op whose
  * edges don't resolve, or that doesn't complete (`IsDone()` false / `.Shape()`
  * throws), is skipped so replay never hard-fails.
@@ -1093,6 +1094,10 @@ function filletEdges(oc: any, shape: any, op: Extract<EditOp, { op: "fillet" | "
       const angleRad = ((op.angleDeg as number) * Math.PI) / 180;
       for (const e of picked) maker.AddDA(op.distance, angleRad, e, refFace);
     }
+  } else if (isFillet && (op as Extract<EditOp, { op: "fillet" }>).radius2 !== undefined) {
+    const laws = variableFilletLaws(oc, shape, op as Extract<EditOp, { op: "fillet" }>, picked, cleanup, fail);
+    if (!laws) return shape;
+    for (const l of laws) maker.Add_3(l.r1, l.r2, l.edge);
   } else {
     const amount = isFillet ? op.radius : op.distance;
     for (const e of picked) maker.Add_2(amount, e);
@@ -1117,6 +1122,124 @@ function filletEdges(oc: any, shape: any, op: Extract<EditOp, { op: "fillet" | "
   }
   cleanup.push(result);
   return result;
+}
+
+/** One `MakeFillet.Add_3(r1, r2, edge)` call: `r1` sits at the edge's own curve start (`BRepAdaptor_Curve_2` `FirstParameter`), `r2` at its end. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+interface FilletLaw { edge: any; r1: number; r2: number }
+
+/**
+ * Plans the per-edge radius laws of a variable-radius fillet (`radius` →
+ * `radius2`), or returns null after calling `fail` (graceful skip).
+ *
+ * Verified live (scripts/probe/examples/occt-var-fillet-orient.ts, all 12 cube
+ * edges, both edge orientations): `Add_3(R1, R2, edge)` puts R1 at the point
+ * `BRepAdaptor_Curve_2(edge).Value(FirstParameter())` — NOT the explorer's
+ * first vertex, which is the opposite end. One law per `Add` call, so a chain
+ * gets one law per edge: edges are ordered end-to-start by shared endpoints and
+ * the radius is interpolated linearly by cumulative edge length, so the law is
+ * continuous across the chain. The chain starts at the end incident to the
+ * first listed edge (else the lexicographically smaller end). A closed edge has
+ * no ends to vary between and degenerates to `radius` (reported as a note).
+ *
+ * A radius that does not fit the local geometry aborts the WASM instance, so
+ * every radius is checked first against half the smallest non-zero bounding-box
+ * extent of the faces adjacent to the edge (a conservative bound: a constant
+ * fillet is not subject to it).
+ */
+function variableFilletLaws(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  oc: any, shape: any, op: Extract<EditOp, { op: "fillet" }>, picked: any[],
+  cleanup: Array<{ delete(): void }>, fail?: OutcomeFail
+): FilletLaw[] | null {
+  const r1 = op.radius, r2 = op.radius2 as number;
+  if (!(r1 > 0) || !(r2 > 0)) {
+    fail?.(`variable fillet radii must be positive (got ${r1} → ${r2})`, "use radius > 0 and radius2 > 0");
+    return null;
+  }
+  const keep = <T extends { delete(): void }>(h: T): T => { cleanup.push(h); return h; };
+  const info = picked.map((e) => {
+    const curve = keep(new oc.BRepAdaptor_Curve_2(e));
+    const a = keep(curve.Value(curve.FirstParameter())), b = keep(curve.Value(curve.LastParameter()));
+    const props = keep(new oc.GProp_GProps_1());
+    oc.BRepGProp.LinearProperties(e, props, false, false);
+    return { edge: e, a: [a.X(), a.Y(), a.Z()] as Vec3, b: [b.X(), b.Y(), b.Z()] as Vec3, len: props.Mass() as number };
+  });
+  const tol = 1e-5 * Math.max(1, ...info.map((i) => i.len));
+  const same = (p: Vec3, q: Vec3): boolean => Math.hypot(p[0] - q[0], p[1] - q[1], p[2] - q[2]) <= tol;
+
+  // Radius-fit guard against the adjacent faces.
+  const { edgeFaces, faces } = buildEdgeFaceAdjacency(oc, shape, cleanup);
+  const rMax = Math.max(r1, r2);
+  for (const i of info) {
+    const entry = edgeFaces.get(i.edge.HashCode(1 << 30))?.find((b) => b.edge.IsSame(i.edge));
+    for (const fi of entry?.faceIdxs ?? []) {
+      const ext = bboxExtent(oc, faces[fi], cleanup);
+      const dims = [0, 1, 2].map((k) => ext.max[k] - ext.min[k]).filter((d) => d > 1e-4); // OCC bboxes carry ~1e-7 padding, so a planar face is not "thick"
+      const bound = dims.length ? Math.min(...dims) / 2 : Infinity;
+      if (rMax > bound) {
+        fail?.(
+          `radius ${rMax} does not fit the faces next to an edge (limit about ${Number(bound.toPrecision(3))})`,
+          "use smaller radii, or fillet fewer edges at once — an oversized radius would corrupt the OCCT kernel"
+        );
+        return null;
+      }
+    }
+  }
+
+  if (info.length === 1) {
+    const i = info[0];
+    if (same(i.a, i.b)) {
+      fail?.note?.(`edge is closed — radius2 ignored, constant radius ${r1} used`);
+      return [{ edge: i.edge, r1, r2: r1 }];
+    }
+    return [{ edge: i.edge, r1, r2 }];
+  }
+
+  // Chain: nodes are clustered endpoints; a valid chain is an open path.
+  const nodes: Vec3[] = [];
+  const nodeOf = (p: Vec3): number => {
+    let k = nodes.findIndex((q) => same(p, q));
+    if (k < 0) { nodes.push(p); k = nodes.length - 1; }
+    return k;
+  };
+  const ends = info.map((i) => ({ ...i, na: nodeOf(i.a), nb: nodeOf(i.b) }));
+  const degree = new Array(nodes.length).fill(0);
+  for (const e of ends) { degree[e.na]++; degree[e.nb]++; }
+  const tips = degree.map((d, k) => (d === 1 ? k : -1)).filter((k) => k >= 0);
+  if (ends.some((e) => e.na === e.nb) || degree.some((d) => d > 2) || tips.length !== 2 || nodes.length !== ends.length + 1) {
+    fail?.(
+      "the selected edges do not form one open chain (each edge must meet the next at a shared vertex, with no branches or loops)",
+      "pick a single connected run of edges, or apply one variable fillet per edge"
+    );
+    return null;
+  }
+  const first = ends[0];
+  const incident = tips.filter((k) => k === first.na || k === first.nb);
+  const lex = (p: Vec3, q: Vec3): number => p[0] - q[0] || p[1] - q[1] || p[2] - q[2];
+  let node = incident.length === 1 ? incident[0] : lex(nodes[tips[0]], nodes[tips[1]]) <= 0 ? tips[0] : tips[1];
+
+  const total = ends.reduce((acc, e) => acc + e.len, 0);
+  const radiusAt = (t: number): number => r1 + (r2 - r1) * t;
+  const used = new Set<number>();
+  const laws: FilletLaw[] = [];
+  let cum = 0;
+  for (let step = 0; step < ends.length; step++) {
+    const k = ends.findIndex((e, idx) => !used.has(idx) && (e.na === node || e.nb === node));
+    if (k < 0) { laws.length = 0; break; }
+    used.add(k);
+    const e = ends[k];
+    const forward = e.na === node; // traversed from the curve start to its end
+    const ra = radiusAt(cum / total), rb = radiusAt((cum + e.len) / total);
+    laws.push(forward ? { edge: e.edge, r1: ra, r2: rb } : { edge: e.edge, r1: rb, r2: ra });
+    cum += e.len;
+    node = forward ? e.nb : e.na;
+  }
+  if (laws.length !== ends.length) {
+    fail?.("the selected edges could not be ordered into one chain", "pick a single connected run of edges");
+    return null;
+  }
+  return laws;
 }
 
 /** Parses an `edge-N` id to its index, or -1. */

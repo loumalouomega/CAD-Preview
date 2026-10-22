@@ -248,7 +248,7 @@ function describeOpBase(op: EditOp): string {
     case "scale": return `Scale ${op.targets.length} (${op.factors.join(", ")})`;
     case "mirror": return `Mirror ${op.targets.length}`;
     case "boolean": return `${cap(op.kind)} ${op.a.length}↔${op.b.length}`;
-    case "fillet": return `Fillet ${op.edges.length} r=${op.radius}`;
+    case "fillet": return `Fillet ${op.edges.length} r=${op.radius}${op.radius2 !== undefined ? `→${op.radius2}` : ""}`;
     case "chamfer": {
       if (op.distance2 !== undefined) return `Chamfer ${op.edges.length} ${op.distance}×${op.distance2}`;
       if (op.angleDeg !== undefined) return `Chamfer ${op.edges.length} d=${op.distance} ${op.angleDeg}°`;

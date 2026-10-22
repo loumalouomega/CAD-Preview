@@ -26,7 +26,7 @@ export const OP_PARAM_DOCS: Record<EditOpKind, string> = {
   scale: '{targets: id[], center: [x,y,z], factors: [sx,sy,sz]}',
   mirror: '{targets: id[], planePoint?: [x,y,z], planeNormal?: [x,y,z], planeId?: string (plane-N from planes sidecar — XOR with planePoint/planeNormal and midplaneFaces; planePoint/planeNormal may ride alongside as cache), midplaneFaces?: [faceId, faceId] (planar, parallel — XOR with planePoint/planeNormal)}',
   boolean: '{kind: "union"|"subtract"|"intersect", a: solidId[], b: solidId[]}',
-  fillet: '{edges: edgeId[], radius: n>0}',
+  fillet: '{edges: edgeId[], radius: n>0 (start radius), radius2?: n>0 (end radius: variable-radius fillet; a chain of edges is ordered end-to-start and interpolated by length)}',
   chamfer: '{edges: edgeId[], distance: n>0, distance2?: n>0 (asymmetric, needs face), angleDeg?: 0<n<90 (distance-angle, needs face), face?: faceId}',
 
   extrude: '{profile: faceId | profileEdges: edgeId[] (exactly one), dir: [x,y,z], length: n>0 | upToFace: faceId (exactly one of length/upToFace; planar terminator — extrusion runs to its plane, miss/parallel skips), thin?: n>0, thinOuter?: 0<=n<=thin}',

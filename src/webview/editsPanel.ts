@@ -141,7 +141,7 @@ export interface EditsPanelCallbacks {
   /** Apply a fillet/chamfer of the given amount to the selected edges (B-rep only).
    * `exprs` (if any) keys the amount as `"amount"` — the wiring remaps it to the
    * op's real field name (`radius`/`distance`). */
-  onApplyFillet: (kind: "fillet" | "chamfer", amount: number, exprs?: ExprMap) => void;
+  onApplyFillet: (kind: "fillet" | "chamfer", amount: number, exprs?: ExprMap, amount2?: number) => void;
   /** Apply a feature-modeling op; operands come from the selected faces/edges (B-rep only). */
   onApplyFeature: (draft: FeatureDraft) => void;
   /** Capture the selected edge as the sweep path; returns its id, or null when
@@ -617,9 +617,9 @@ export class EditsPanel {
       onApplyHole: withExprs(cb.onApplyHole),
       onApplyProfile: withExprs(cb.onApplyProfile),
       onApplyWireframe: withExprs(cb.onApplyWireframe),
-      onApplyFillet: (kind, amount) => {
+      onApplyFillet: (kind, amount, _exprs, amount2) => {
         const exprs = this.finishRead();
-        if (exprs !== null) cb.onApplyFillet(kind, amount, exprs);
+        if (exprs !== null) cb.onApplyFillet(kind, amount, exprs, amount2);
       },
       onApplyExplode: (factor) => {
         const exprs = this.finishRead();
@@ -1034,9 +1034,15 @@ export class EditsPanel {
 
       // ── EDIT · refine ──
       case "fillet":
-        f.appendChild(this.hint("Rounds the selected edges (Line mode)"));
+        f.appendChild(this.hint("Rounds the selected edges (Line mode). Give an End radius to vary the radius from Radius to End radius along the edge — or along a connected chain of edges, by length"));
         f.appendChild(this.numField("amount", "Radius", 1));
-        this.applyButtonDraft("Apply", "Apply to the selected edges (Line mode)", (): { kind: "fillet"; amount: number } => ({ kind: "fillet", amount: this.readNum("amount") }), (d) => this.cb.onApplyFillet(d.kind, d.amount));
+        f.appendChild(this.numField("amount2", "End radius", 1));
+        this.clearNumField("amount2");
+        this.applyButtonDraft("Apply", "Apply to the selected edges (Line mode)", (): { kind: "fillet"; amount: number; amount2?: number } => {
+          const d: { kind: "fillet"; amount: number; amount2?: number } = { kind: "fillet", amount: this.readNum("amount") };
+          if (this.hasNumValue("amount2")) d.amount2 = this.readNum("amount2");
+          return d;
+        }, (d) => this.cb.onApplyFillet(d.kind, d.amount, undefined, d.amount2));
         break;
       case "chamfer":
         f.appendChild(this.hint("Bevels the selected edges (Line mode)"));
@@ -2429,6 +2435,18 @@ export class EditsPanel {
       v[i] = this.parseNumeric(inp.value, `${name}[${i}]`);
     });
     return [v[0], v[1], v[2]];
+  }
+
+  /** Empties a numeric field so it reads as "not set" (see {@link hasNumValue}). */
+  private clearNumField(name: string): void {
+    const inp = this.paramsEl.querySelector<HTMLInputElement>(`input[data-name="${name}"]`);
+    if (inp) inp.value = "";
+  }
+
+  /** True when the optional numeric field holds text (a number or expression). */
+  private hasNumValue(name: string): boolean {
+    const inp = this.paramsEl.querySelector<HTMLInputElement>(`input[data-name="${name}"]`);
+    return !!inp && inp.value.trim() !== "";
   }
 
   private readNum(name: string): number {
