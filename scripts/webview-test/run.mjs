@@ -4349,6 +4349,37 @@ test("layers: a locked member refuses Extrude Apply, then applies once unlocked"
   assert(editsUnlocked === editsBefore + 1, "Apply posts exactly one editsChanged once unlocked");
 });
 
+test("fillet form: a blank End radius posts a constant fillet, a filled one posts radius2", async (page) => {
+  await populate(page);
+  const status = await runModeFilter(page, "line", "longestN", "1");
+  assert(/matched 1 of \d+/.test(status), `precondition: one edge is selected (got ${JSON.stringify(status)})`);
+  await page.click("#select-menu"); // dismiss: runModeFilter opens the menu itself
+  await sleep(150);
+  await page.evaluate(() => {
+    [...document.querySelectorAll(".op-btn")].find((b) => b.querySelector(".op-name")?.textContent === "Fillet")?.click();
+  });
+  await sleep(250);
+  const blank = await page.evaluate(() => document.querySelector('#edits-params input[data-name="amount2"]')?.value);
+  assert(blank === "", `the End radius field starts blank (got ${JSON.stringify(blank)})`);
+  const apply = () => page.evaluate(() => {
+    [...document.querySelectorAll("#edits-params .compose-apply")].find((b) => b.textContent === "Apply")?.click();
+  });
+  const lastOp = () => page.evaluate(() => (window.__sent ?? []).findLast((x) => x.type === "editsChanged")?.ops.at(-1));
+  await apply();
+  await sleep(300);
+  let op = await lastOp();
+  assert(op?.op === "fillet" && op.radius === 1 && !("radius2" in op), `blank End radius posts a constant fillet (got ${JSON.stringify(op)})`);
+  await page.evaluate(() => {
+    const set = (n, v) => { const i = document.querySelector(`#edits-params input[data-name="${n}"]`); i.value = v; i.dispatchEvent(new Event("input", { bubbles: true })); };
+    set("amount", "0.5");
+    set("amount2", "2");
+  });
+  await apply();
+  await sleep(300);
+  op = await lastOp();
+  assert(op?.op === "fillet" && op.radius === 0.5 && op.radius2 === 2, `a filled End radius posts radius2 (got ${JSON.stringify(op)})`);
+});
+
 const BREP_HEALTH_REPORT = {
   valid: false,
   counters: { solids: 1, shells: 1, faces: 36, edges: 98, looseEdges: 0, looseFaces: 0, looseWires: 0, solidsWithVoids: 0 },

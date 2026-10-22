@@ -885,6 +885,39 @@ try {
     );
   }
 
+  // Variable-radius fillet (roadmap 2.23): Add_3(R1, R2, edge) on one block.stp
+  // edge. A fillet removes L * r^2 * (1 - pi/4) from the edge, so the constant
+  // controls recover L and the linear law's removed volume must equal
+  // L * (1 - pi/4) * (r1^2 + r1*r2 + r2^2) / 3 — an analytic cross-check, not a
+  // "did not throw". An oversized radius must be refused up front (it would
+  // abort the WASM instance), leaving the solid unchanged.
+  {
+    const volumeAfter = async (name, ops) => {
+      const m = path.join(dir, `block-var-fillet-${name}.stp`);
+      fs.copyFileSync(path.join(ROOT, "examples", "STP", "block.stp"), m);
+      const r = await call("apply_edit_ops", { path: m, ops });
+      const mass = await call("get_mass_properties", { path: m });
+      return { r, volume: mass.volume };
+    };
+    const K = 1 - Math.PI / 4;
+    const a = 0.2, b = 1.0;
+    const ca = await volumeAfter("ca", [{ op: "fillet", edges: ["edge-0"], radius: a }]);
+    const cb = await volumeAfter("cb", [{ op: "fillet", edges: ["edge-0"], radius: b }]);
+    const vv = await volumeAfter("var", [{ op: "fillet", edges: ["edge-0"], radius: a, radius2: b }]);
+    const vr = await volumeAfter("rev", [{ op: "fillet", edges: ["edge-0"], radius: b, radius2: a }]);
+    assert(ca.r.applied === 1 && cb.r.applied === 1 && vv.r.applied === 1, `constant and variable fillets apply (got ${JSON.stringify(vv.r.report)})`);
+    const L = (60 - ca.volume) / (a * a * K);
+    const predicted = 60 - (L * K * (a * a + a * b + b * b)) / 3;
+    assert(L > 2.9 && L < 5.1, `the constant control recovers a block edge length (got ${L})`);
+    assert(
+      vv.volume < ca.volume && vv.volume > cb.volume && Math.abs(vv.volume - predicted) / 60 < 0.002,
+      `variable fillet 0.2 -> 1.0 removes the analytic volume (got ${vv.volume}, predicted ${predicted}, controls ${ca.volume} / ${cb.volume})`
+    );
+    assert(Math.abs(vv.volume - vr.volume) < 1e-6, `reversing the radii gives the same volume (got ${vv.volume} vs ${vr.volume})`);
+    const huge = await volumeAfter("huge", [{ op: "fillet", edges: ["edge-0"], radius: 0.5, radius2: 40 }]);
+    assert(huge.r.applied === 0 && Math.abs(huge.volume - 60) < 1e-6, `an oversized radius2 is refused before the kernel call, solid unchanged (got ${JSON.stringify(huge.r.report)} volume ${huge.volume})`);
+  }
+
   // Selector persistence (Phase A) — same block.stp+box+fillet shape on its own
   // copy: synthesize the band cylinder, persist via set_part, append an
   // unrelated op (the part must re-resolve to the same cylinder through

@@ -11,6 +11,15 @@ describe("validateEditOp", () => {
       .toEqual({ op: "mirror", targets: ["solid-0"], planePoint: [0, 0, 5], planeNormal: [1, 2, -1] });
   });
 
+  it("keeps a valid fillet radius2 and drops an invalid one without rejecting the op", () => {
+    expect(validateEditOp({ op: "fillet", edges: ["edge-3"], radius: 2, radius2: 8 }))
+      .toEqual({ op: "fillet", edges: ["edge-3"], radius: 2, radius2: 8 });
+    for (const bad of [0, -1, NaN, "8", null]) {
+      expect(validateEditOp({ op: "fillet", edges: ["edge-3"], radius: 2, radius2: bad }))
+        .toEqual({ op: "fillet", edges: ["edge-3"], radius: 2 });
+    }
+  });
+
   it("accepts well-formed boolean and fillet/chamfer ops", () => {
     expect(validateEditOp({ op: "boolean", kind: "union", a: ["solid-0"], b: ["solid-1"] }))
       .toMatchObject({ op: "boolean", kind: "union" });
