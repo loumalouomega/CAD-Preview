@@ -3201,6 +3201,20 @@ try {
     assert(/display-only mesh format/i.test(meshDae.error ?? ""), `generate_mesh refuses a Collada file by name (got: ${JSON.stringify(meshDae).slice(0, 240)})`);
   }
 
+  // USD is DISPLAY-ONLY on the host exactly like AMF: same refusals, by name.
+  {
+    const usd = path.join(ROOT, "examples", "USD", "cube.usda");
+    const healthUsd = await call("check_mesh_health", { path: usd });
+    assert(
+      healthUsd.supported === false && /usd has no host-side triangle-soup parser/i.test(healthUsd.warnings?.[0] ?? ""),
+      `check_mesh_health refuses a USD file by name (got: ${JSON.stringify(healthUsd)})`
+    );
+    const loadUsd = await call("load_model", { path: usd });
+    assert(loadUsd.format === "usd" && /USD is display-only/.test((loadUsd.warnings ?? []).join(" ")), `load_model opens a USD file with a display-only warning (got: ${JSON.stringify(loadUsd).slice(0, 240)})`);
+    const meshUsd = await callTolerant("generate_mesh", { path: usd });
+    assert(/display-only mesh format/i.test(meshUsd.error ?? ""), `generate_mesh refuses a USD file by name (got: ${JSON.stringify(meshUsd).slice(0, 240)})`);
+  }
+
   // AMF is DISPLAY-ONLY on the host exactly like 3MF: same refusals, by name.
   {
     const amf = path.join(ROOT, "examples", "AMF", "cube.amf");

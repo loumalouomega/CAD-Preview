@@ -159,7 +159,7 @@ export function convertThreeMfMaterials(group: THREE.Object3D): void {
 }
 
 /**
- * Re-expresses the materials a Collada (`.dae`) produced (Phong / Lambert /
+ * Re-expresses the materials a Collada (`.dae`) or USD stage produced (Phong / Lambert /
  * Basic, all with a flat `color`) as the viewer's standard material, marked
  * native so the file's colour shows and a Part colour still wins. Textures are
  * deliberately dropped (sibling image files are outside the webview's CSP

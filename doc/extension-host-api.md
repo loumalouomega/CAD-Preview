@@ -116,6 +116,7 @@ The extension host is a Node.js process. These modules run there — never in th
 | `src/objSolidSignatures.ts` | Wires `objParser.ts` + `meshComponents.ts` into `SolidSignature[]` for Compare Models' OBJ side (pure, unit-tested) |
 | `src/plyParser.ts` | Pure host-side PLY parser (ASCII + both binary endiannesses, one shared header parser) into a flat indexed mesh (vscode/OCCT/THREE-free, unit-tested) |
 | `src/plySolidSignatures.ts` | Wires `plyParser.ts` + `meshComponents.ts` into `SolidSignature[]` for Compare Models' PLY side (pure, unit-tested) |
+| `src/usdUnits.ts` | USD `metersPerUnit` helpers (`usdMmPerUnit`, `usdDeclaredUnit`) — pure; the loader's scale is reset and replaced by millimetres |
 | `src/amfUnits.ts` | AMF `unit` reader (`amfDeclaredUnit`, zip-aware) — pure; seeds the Units dropdown only, since three's `AMFLoader` already scales to millimetres |
 | `src/colladaUnits.ts` | Collada `<unit meter>` readers (`colladaMetresPerUnit`, `colladaMmPerUnit`, `colladaDeclaredUnit`) — pure; the loader itself is three's `ColladaLoader` in the webview only |
 | `src/threeMf.ts` | 3MF writer (`build3mf`, hand-rolled on `fflate`, byte-stable; optional per-triangle `colors` become one `<basematerials>`) and unit readers (`threeMfMmPerUnit`, `threeMfDeclaredUnit`) — pure; the loader itself is three's `3MFLoader` in the webview only |
@@ -786,6 +787,7 @@ Returns `undefined` for unrecognized extensions (the extension never opens those
 | `.3mf`          | `three`  | `3mf` (display-only on the host) |
 | `.dae`          | `three`  | `dae` (import-only; display-only on the host) |
 | `.amf`          | `three`  | `amf` (import-only; display-only on the host) |
+| `.usd` `.usda` `.usdc` `.usdz` | `three` | `usd` (import-only; display-only on the host) |
 | `.vtk`          | `meshio` | `vtk`    |
 | `.vtu`          | `meshio` | `vtu`    |
 | `.med`          | `meshio` | `med`    |

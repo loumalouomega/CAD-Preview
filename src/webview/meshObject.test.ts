@@ -185,3 +185,23 @@ describe("convertAmfMaterials", () => {
     expect(isNativeColor(m)).toBe(true);
   });
 });
+
+describe("convertColladaMaterials on a USD stage", () => {
+  const mesh = (m: THREE.Material) => new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), m);
+
+  it("clears USDLoader's unnamed plain-white MeshPhysicalMaterial fallback and keeps a displayColor", () => {
+    const red = new THREE.MeshPhysicalMaterial();
+    red.color.setRGB(1, 0, 0);
+    const g = new THREE.Group();
+    g.add(mesh(new THREE.MeshPhysicalMaterial()), mesh(red));
+    convertColladaMaterials(g);
+    expect((g.children[0] as THREE.Mesh).material).toBeUndefined();
+    const kept = (g.children[1] as THREE.Mesh).material as THREE.MeshStandardMaterial;
+    expect(kept.color.getHex()).toBe(0xff0000);
+    expect(isNativeColor(kept)).toBe(true);
+    applyDefaultMaterial(g);
+    const plain = (g.children[0] as THREE.Mesh).material as THREE.MeshStandardMaterial;
+    expect(plain.color.getHex()).toBe(0xc0c4cc);
+    expect(isNativeColor(plain)).toBe(false);
+  });
+});

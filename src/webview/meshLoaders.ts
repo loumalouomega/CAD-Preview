@@ -5,12 +5,14 @@ import { MTLLoader } from "three/examples/jsm/loaders/MTLLoader.js";
 import { ThreeMFLoader } from "three/examples/jsm/loaders/3MFLoader.js";
 import { ColladaLoader } from "three/examples/jsm/loaders/ColladaLoader.js";
 import { AMFLoader } from "three/examples/jsm/loaders/AMFLoader.js";
+import { USDLoader } from "three/examples/jsm/loaders/USDLoader.js";
 import type { CadFormat } from "../fileRouter";
 import { isSafeRelativePath } from "../safeRelativePath";
 import { applyDefaultMaterial, convertAmfMaterials, convertColladaMaterials, convertThreeMfMaterials, parseMeshObject, parseObjObject } from "./meshObject";
 import { threeMfDeclaredUnit, threeMfMmPerUnit } from "../threeMf";
 import { colladaDeclaredUnit, colladaMmPerUnit } from "../colladaUnits";
 import { amfDeclaredUnit } from "../amfUnits";
+import { usdDeclaredUnit, usdMmPerUnit } from "../usdUnits";
 import { gltfUsesCompression } from "./gltfSniff";
 
 /**
@@ -137,6 +139,8 @@ export async function loadMeshFromUrl(
       return loadDae(url);
     case "amf":
       return loadAmf(url);
+    case "usd":
+      return loadUsd(url);
     default:
       throw new Error(`Mesh loader for "${format}" is not implemented.`);
   }
@@ -272,6 +276,35 @@ async function loadAmf(url: string): Promise<THREE.Object3D> {
   convertAmfMaterials(group);
   applyDefaultMaterial(group);
   const unit = amfDeclaredUnit(new Uint8Array(data));
+  if (unit) group.userData.declaredUnit = unit;
+  return group;
+}
+
+/**
+ * Loads a USD stage (`.usd/.usda/.usdc/.usdz`) through three's `USDLoader`
+ * (the deprecated `USDZLoader` is only a stub over it). The loader scales its
+ * root by `metersPerUnit` and rotates a Z-up stage to Y-up; the viewer works in
+ * millimetres and `Viewer.setModel` owns the root rotation, so — like Collada —
+ * the loader's scale is read (it IS `metersPerUnit`), then its scale/rotation
+ * are reset and replaced by `usdMmPerUnit`. Flat material colours are kept as
+ * native colours and textures are ignored (`convertColladaMaterials` drops the
+ * loader's unnamed plain-white fallback so the palette look applies).
+ */
+async function loadUsd(url: string): Promise<THREE.Object3D> {
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`Failed to fetch ${url}: ${res.status}`);
+  const data = await res.arrayBuffer();
+  const scene = new USDLoader().parse(data);
+  if (!scene) throw new Error("Could not parse the USD file.");
+  const metersPerUnit = scene.scale.x;
+  scene.rotation.set(0, 0, 0);
+  scene.scale.set(1, 1, 1);
+  const group = new THREE.Group();
+  group.add(scene);
+  convertColladaMaterials(group);
+  applyDefaultMaterial(group);
+  group.scale.multiplyScalar(usdMmPerUnit(metersPerUnit));
+  const unit = usdDeclaredUnit(metersPerUnit);
   if (unit) group.userData.declaredUnit = unit;
   return group;
 }

@@ -49,6 +49,18 @@
             "filenamePattern": "*.amf"
           },
           {
+            "filenamePattern": "*.usd"
+          },
+          {
+            "filenamePattern": "*.usda"
+          },
+          {
+            "filenamePattern": "*.usdc"
+          },
+          {
+            "filenamePattern": "*.usdz"
+          },
+          {
             "filenamePattern": "*.step"
           },
           {
