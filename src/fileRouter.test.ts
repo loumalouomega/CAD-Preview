@@ -33,6 +33,12 @@ describe("routeFile", () => {
     expect(routeFile("M.AMF")).toEqual({ strategy: "three", format: "amf" });
   });
 
+  it("routes every USD extension to the one usd format", () => {
+    for (const ext of ["usd", "usda", "usdc", "usdz", "USDZ"]) {
+      expect(routeFile(`m.${ext}`)).toEqual({ strategy: "three", format: "usd" });
+    }
+  });
+
   it("is case-insensitive", () => {
     expect(routeFile("MODEL.STP")).toEqual({ strategy: "occt", format: "step" });
     expect(routeFile("Mesh.STL")).toEqual({ strategy: "three", format: "stl" });
@@ -194,6 +200,11 @@ describe("display-only mesh formats", () => {
   it("AMF is display-only and never host-comparable", () => {
     expect(DISPLAY_ONLY_MESH_FORMATS.has("amf")).toBe(true);
     expect(COMPARABLE_MESH_FORMATS.has("amf")).toBe(false);
+  });
+
+  it("USD is display-only and never host-comparable", () => {
+    expect(DISPLAY_ONLY_MESH_FORMATS.has("usd")).toBe(true);
+    expect(COMPARABLE_MESH_FORMATS.has("usd")).toBe(false);
   });
 
   it("the refusal names the format and the action", () => {

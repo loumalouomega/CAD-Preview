@@ -68,7 +68,7 @@ const CTYPE = {
   ".js": "text/javascript", ".css": "text/css", ".wasm": "application/wasm",
   ".json": "application/json", ".map": "application/json", ".html": "text/html",
   ".stl": "model/stl", ".obj": "text/plain", ".ply": "application/octet-stream",
-  ".gltf": "model/gltf+json", ".3mf": "model/3mf", ".dae": "model/vnd.collada+xml", ".amf": "model/amf", ".glb": "model/gltf-binary", ".svg": "image/svg+xml", ".mtl": "text/plain", ".png": "image/png",
+  ".gltf": "model/gltf+json", ".3mf": "model/3mf", ".dae": "model/vnd.collada+xml", ".amf": "model/amf", ".usd": "model/vnd.usd", ".usda": "model/vnd.usda", ".usdc": "model/vnd.usdc", ".usdz": "model/vnd.usdz+zip", ".glb": "model/gltf-binary", ".svg": "image/svg+xml", ".mtl": "text/plain", ".png": "image/png",
 };
 
 /**

@@ -6,6 +6,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/); thi
 
 ## [Unreleased]
 
+### Added
+
+- **USD (`.usd`, `.usda`, `.usdc`, `.usdz`) opens as a display-only, import-only mesh format** through three's `USDLoader` (ASCII, binary crate and zipped packages): geometry, flat colours (a Part colour still wins) and the stage's `metersPerUnit`, which is applied to millimetres once and seeds the Units dropdown; a Z-up stage stays Z-up. Like AMF it exports to STL/OBJ/PLY/glTF/3MF and is refused by name by host-side tools. Textures, animation and skinning are ignored.
+
 ## [3.28.0] - 2026-10-22
 
 ### Added

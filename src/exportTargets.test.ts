@@ -180,3 +180,23 @@ describe("AMF as an import-only, display-only mesh format", () => {
     expect(UNIT_CONVERTIBLE_FORMATS.has("amf")).toBe(false);
   });
 });
+
+describe("USD as an import-only, display-only mesh format", () => {
+  it("offers every mesh export format for a USD source, with no save-in-place", () => {
+    const all = ["stl", "obj", "ply", "gltf", "3mf"];
+    expect(exportTargetsFor({ strategy: "three", format: "usd" })).toEqual(all);
+    expect(exportTargetsFor({ strategy: "three", format: "usd" }, true)).toEqual(all);
+    expect(MESH_SAVE_IN_PLACE_FORMATS.has("usd")).toBe(false);
+  });
+
+  it("is never an export target for any other source (there is no USD writer)", () => {
+    for (const route of [
+      { strategy: "occt", format: "step" },
+      { strategy: "three", format: "stl" },
+      { strategy: "three", format: "amf" },
+    ] as const) {
+      expect(exportTargetsFor(route, true)).not.toContain("usd");
+    }
+    expect(UNIT_CONVERTIBLE_FORMATS.has("usd")).toBe(false);
+  });
+});

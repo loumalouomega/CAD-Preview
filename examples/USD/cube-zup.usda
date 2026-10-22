@@ -1,0 +1,17 @@
+#usda 1.0
+(
+    defaultPrim = "Cube"
+    metersPerUnit = 0.001
+    upAxis = "Z"
+)
+
+def Xform "Cube"
+{
+    def Mesh "Body"
+    {
+        int[] faceVertexCounts = [4, 4, 4, 4, 4, 4]
+        int[] faceVertexIndices = [0, 3, 2, 1, 4, 5, 6, 7, 0, 1, 5, 4, 3, 7, 6, 2, 0, 4, 7, 3, 1, 2, 6, 5]
+        point3f[] points = [(0, 0, 0), (10, 0, 0), (10, 10, 0), (0, 10, 0), (0, 0, 30), (10, 0, 30), (10, 10, 30), (0, 10, 30)]
+        uniform token subdivisionScheme = "none"
+    }
+}

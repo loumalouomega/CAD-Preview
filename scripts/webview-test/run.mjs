@@ -8420,6 +8420,61 @@ for (const [file, label] of [
   });
 }
 
+test("USD: a committed cube (usda and usdz) opens, renders and exports to STL, and the export reopens with the same triangle count", async (page) => {
+  for (const file of ["cube.usda", "cube.usdz"]) {
+    await openColoured(page, `/examples/USD/${file}`, "usd");
+    const status = await page.evaluate(() => document.getElementById("status").textContent);
+    assert(!/fail|error/i.test(status), `${file}: no load error is reported (status ${JSON.stringify(status)})`);
+    const stats = await viewportModelStats(page);
+    assert(stats.fraction > 0.01 && stats.centre > 0, `${file}: the model renders and is centred (fraction ${stats.fraction.toFixed(3)})`);
+    const first = await exportBytes(page, "stl");
+    const b = stlBounds(first);
+    assert(b.tris === 12, `${file}: exporting the loaded cube writes its 12 triangles (got ${b.tris})`);
+    assert(b.size.every((v) => Math.abs(v - 10) < 1e-3), `${file}: a metersPerUnit = 0.001 cube measures 10 mm per side (got ${JSON.stringify(b.size)})`);
+    await post(page, { type: "loadUrl", url: `data:application/octet-stream;base64,${first.toString("base64")}`, format: "stl" });
+    await sleep(1200);
+    assert(stlBounds(await exportBytes(page, "stl")).tris === 12, `${file}: reopening the exported STL keeps the triangle count`);
+  }
+});
+
+test("USD: metersPerUnit is applied once (loader scale reset, then mm) and a Z-up stage keeps its Z extent", async (page) => {
+  const unit = () => page.evaluate(() => document.getElementById("vc-unit").value);
+  for (const [file, wantSize, wantUnit] of [["cube-cm.usda", [10, 10, 10], "cm"], ["cube.usda", [10, 10, 10], "mm"], ["cube-zup.usda", [10, 10, 30], "mm"]]) {
+    await openColoured(page, `/examples/USD/${file}`, "usd");
+    const b = stlBounds(await exportBytes(page, "stl"));
+    assert([...b.size].sort((a, c) => a - c).every((v, i) => Math.abs(v - wantSize[i]) < 1e-3), `${file} measures ${JSON.stringify(wantSize)} mm, not double-scaled or squashed (got ${JSON.stringify(b.size)})`);
+    assert((await unit()) === wantUnit, `${file} selects ${wantUnit} (got ${await unit()})`);
+  }
+});
+
+test("USD colour: a displayColor renders, an unbound file stays the palette grey, and a Part colour wins and is undone", async (page) => {
+  await openColoured(page, "/examples/USD/cube-colour.usda", "usd");
+  await lookFrom(page, ISO_FRONT);
+  const red = await hueCounts(page);
+  assert(red.red > 3 * MIN_PX, `the red displayColor shows (got ${JSON.stringify(red)})`);
+  assert(red.green < MAX_STRAY && red.blue < MAX_STRAY, `with no stray hues (got ${JSON.stringify(red)})`);
+
+  // Control: the colour-less fixture gets the loader's plain-white fallback,
+  // which must NOT show as a file colour.
+  await openColoured(page, "/examples/USD/cube.usda", "usd");
+  await lookFrom(page, ISO_FRONT);
+  const plain = await hueCounts(page);
+  assert(plain.red < MAX_STRAY && plain.green < MAX_STRAY && plain.blue < MAX_STRAY, `an uncoloured USD file shows no file colour (got ${JSON.stringify(plain)})`);
+
+  await openColoured(page, "/examples/USD/cube-colour.usda", "usd");
+  await lookFrom(page, ISO_FRONT);
+  const ids = Array.from({ length: 8 }, (_, i) => `node-${i}`);
+  await post(page, { type: "parts", parts: [{ name: "Skin", color: "#ff00ff", volumes: ids, surfaces: [], lines: [], points: [] }] });
+  await sleep(600);
+  const painted = await hueCounts(page);
+  assert(painted.magenta > 3 * MIN_PX, `a Part colour covers the visible faces (got ${JSON.stringify(painted)})`);
+  assert(painted.red < MAX_STRAY, `and replaces the file colour rather than tinting it (got ${JSON.stringify(painted)})`);
+  await post(page, { type: "parts", parts: [] });
+  await sleep(600);
+  const restored = await hueCounts(page);
+  assert(restored.red > 3 * MIN_PX && restored.magenta < MAX_STRAY, `removing the Part restores the file colour (got ${JSON.stringify(restored)})`);
+});
+
 test("mesh colours: an OBJ renders the colours of its .mtl, one per usemtl", async (page) => {
   await openColoured(page, "/examples/OBJ/colored-cube.obj", "obj");
   await lookFrom(page, ISO_FRONT);

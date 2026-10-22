@@ -138,6 +138,7 @@ let scadModel: string;
 let threeMfModel: string;
 let daeModel: string;
 let amfModel: string;
+let usdModel: string;
 
 /** A real, closed unit-cube OBJ (quad faces) — matches `objSolidSignatures.test.ts`'s fixture, used wherever a test needs actual resolvable geometry rather than just a recognized extension. */
 const UNIT_CUBE_OBJ = `
@@ -658,6 +659,8 @@ beforeEach(async () => {
   await fs.writeFile(daeModel, "<COLLADA/>", "utf8");
   amfModel = path.join(dir, "model.amf");
   await fs.writeFile(amfModel, "<amf/>", "utf8");
+  usdModel = path.join(dir, "model.usda");
+  await fs.writeFile(usdModel, "#usda 1.0\n", "utf8");
   await fs.writeFile(stpModel, "ISO-10303-21;", "utf8");
   await fs.writeFile(stpModel2, "ISO-10303-21;", "utf8");
   await fs.writeFile(stlModel, "solid x\nendsolid x\n", "utf8");
@@ -5290,7 +5293,7 @@ describe("list_workspace_models", () => {
 
     const result = await listWorkspaceModels({ root: dir });
     expect(result.truncated).toBe(false);
-    const expected = ["model.3mf", "model.amf", "model.dae", "model.gltf", "model.obj", "model.ply", "model.scad", "model.stl", "model.stp", "model.vtk", "model2.stp", "nested/b.step"];
+    const expected = ["model.3mf", "model.amf", "model.dae", "model.gltf", "model.obj", "model.ply", "model.scad", "model.stl", "model.stp", "model.usda", "model.vtk", "model2.stp", "nested/b.step"];
     expect(result.models.map((m) => path.relative(dir, m.path))).toEqual(expected);
     expect(result.models.some((m) => m.path.includes("ignored"))).toBe(false);
     expect(result.models.some((m) => m.path.endsWith("notes.txt"))).toBe(false);
@@ -6159,6 +6162,32 @@ describe("AMF is display-only on the host", () => {
     expect(r.warnings.join(" ")).toMatch(/AMF is display-only/);
     await expect(saveModelTool(c, { path: amfModel })).rejects.toThrow(/AMF is display-only/);
     await expect(generateMeshTool(c, { path: amfModel })).rejects.toThrow(/display-only mesh format/);
+    expect(c.pipeline.generateMesh).not.toHaveBeenCalled();
+  });
+});
+
+describe("USD is display-only on the host", () => {
+  it("check_mesh_health returns supported:false without touching the pipeline", async () => {
+    const c = ctx();
+    const r = await checkMeshHealthTool(c, { path: usdModel });
+    expect(r.supported).toBe(false);
+    expect(r.warnings.join(" ")).toMatch(/usd has no host-side triangle-soup parser/i);
+    expect(c.pipeline.checkMeshHealth).not.toHaveBeenCalled();
+  });
+
+  it("promote_mesh_to_brep, compare_models, load_model, save_model and meshing refuse it by name", async () => {
+    const c = ctx();
+    await expect(promoteMeshToBrepTool(c, { path: usdModel, outputPath: path.join(dir, "x.step") })).rejects.toThrow(/usd has no host-side triangle-soup parser/i);
+    const cmp = await compareModelsTool(c, { pathA: usdModel, pathB: stlModel });
+    expect(cmp.supported).toBe(false);
+    expect(cmp.warnings.join(" ")).toMatch(/display-only/i);
+    const r = await loadModel(c, { path: usdModel });
+    expect(r.format).toBe("usd");
+    expect(r.warnings.join(" ")).toMatch(/USD is display-only/);
+    await expect(saveModelTool(c, { path: usdModel })).rejects.toThrow(/USD is display-only/);
+    await expect(generateMeshTool(c, { path: usdModel })).rejects.toThrow(/display-only mesh format/);
+    expect(c.pipeline.promoteMeshToBrep).not.toHaveBeenCalled();
+    expect(c.pipeline.compareModels).not.toHaveBeenCalled();
     expect(c.pipeline.generateMesh).not.toHaveBeenCalled();
   });
 });
