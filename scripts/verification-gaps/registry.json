@@ -460,12 +460,12 @@
     {
       "id": "gizmo-point-snap",
       "section": "Grid and entity snapping",
-      "gap": "Entity-point snapping a live gizmo drag onto a vertex, end to end: the toggle, a calibrated drag that lands inside the 1%-of-the-diagonal tolerance, and the preview being held on the vertex.",
+      "gap": "Entity-point snapping a live gizmo drag onto a vertex, end to end: the toggle, a calibrated drag that lands inside the 1%-of-the-diagonal tolerance, the preview being held on the vertex, and the committed single-target op carrying the snapped delta. A multi-target drag remains preview-only by design (one translate.vec cannot carry a per-target delta).",
       "status": "closed",
       "closedBy": [
-        "gizmo: entity-point snap holds the preview on an existing point; the committed op still carries the raw delta"
+        "gizmo: entity-point snap holds the preview on an existing point; the committed op carries the snapped delta"
       ],
-      "note": "THE CASE ALSO RECORDS A GAP: the snap reaches the PREVIEW only \u2014 the form's `vec` keeps the raw delta by design, so the committed `translate` op carries the raw delta and the model lands OFF the vertex after Apply. Closing that needs a committed per-target delta, which the single-`vec` `translate` op cannot express for a multi-target drag; it is tracked as its own roadmap item, and the case pins the current behaviour so a fix flips it loudly."
+      "note": "Was open until roadmap 2.25: the snap reached the PREVIEW only, so the committed translate op carried the raw delta and the model landed off the vertex. The case now asserts the snapped delta for one target, the raw delta with the snap off, and that the two differ; multi-target preview-only behaviour is stated in the Move form hint."
     },
     {
       "id": "mass-properties-panel",

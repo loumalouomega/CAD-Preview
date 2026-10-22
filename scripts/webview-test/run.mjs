@@ -5172,16 +5172,13 @@ async function canvasDiffCount(page, aB64, bB64) {
  * runs differ by an order of magnitude: with the snap on the model is held
  * (only the gizmo's own highlight changes), with it off the model drifts.
  *
- * WHAT THIS CASE RECORDS — the snap reaches the PREVIEW only. The form's
- * `vec` deliberately keeps the raw delta ("deliberately does NOT try to
- * reflect entity-point snap in the form", `src/webview/main.ts`), so the
- * committed `translate` op carries the raw delta and the object lands OFF the
- * vertex after Apply. Closing that gap needs a committed per-target delta,
- * which the single-`vec` `translate` op cannot express for a multi-target
- * drag — a roadmap item, not a fix here. This case pins the current
- * behaviour so a future fix flips it loudly instead of silently.
+ * WHAT THIS CASE NOW PINS — 2.25 closed the gap this test used to record. For
+ * a SINGLE target, the form's `vec` is the snapped delta (`snapped - base`),
+ * so Apply commits the position the preview showed. Multi-target dragging
+ * still snaps per target in the preview only, because one `translate.vec`
+ * cannot carry a different delta per target; the form hint says so.
  */
-test("gizmo: entity-point snap holds the preview on an existing point; the committed op still carries the raw delta", async (page) => {
+test("gizmo: entity-point snap holds the preview on an existing point; the committed op carries the snapped delta", async (page) => {
   await populate(page);
   await openGizmoForm(page, "Move");
   const h = await gizmoHandle(page, "x");
@@ -5251,8 +5248,8 @@ test("gizmo: entity-point snap holds the preview on an existing point; the commi
   await dragFromTo(page, hOn.grab, [hOn.grab[0] + hOn.dir[0] * px, hOn.grab[1] + hOn.dir[1] * px]);
   const vecOn = await formVec(page, "vec");
   assert(
-    Math.abs(vecOn[0]) > 0 && Math.abs(vecOn[0]) < tolerance,
-    `the drag landed inside the snap tolerance (got ${vecOn[0]} mm, tolerance ${tolerance} mm)`
+    Math.hypot(vecOn[0], vecOn[1], vecOn[2]) < 1e-6,
+    `the form shows the SNAPPED delta, not the raw one (got ${JSON.stringify(vecOn)}; the target is the origin vertex)`
   );
   const afterOn = await canvasShot(page);
   // The instrument's own control: two captures of the SAME state differ by
@@ -5271,13 +5268,16 @@ test("gizmo: entity-point snap holds the preview on an existing point; the commi
   const vecOff = await formVec(page, "vec");
   const afterOff = await canvasShot(page);
   const diffOff = await canvasDiffCount(page, beforeOff, afterOff);
-  assert(Math.abs(vecOff[0] - vecOn[0]) < 1e-3, `the raw delta is the same either way (got ${vecOn[0]} vs ${vecOff[0]})`);
+  assert(Math.abs(vecOff[0]) > 0 && Math.abs(vecOff[0]) < tolerance,
+    `the same drag without the snap is a real raw delta inside the tolerance (got ${vecOff[0]} mm, tolerance ${tolerance} mm)`);
+  assert(Math.abs(vecOff[0] - vecOn[0]) > 1e-3,
+    `the raw and snapped deltas differ — the form is not ignoring the drag (got ${vecOff[0]} vs ${vecOn[0]})`);
   assert(
     diffOff > diffOn * 4,
     `the snap held the model on the vertex — with it on the drag changed ${diffOn} pixels, with it off ${diffOff}`
   );
 
-  // 3) The committed op: the snap never reaches it (the recorded gap).
+  // 3) The committed op: for one target, the snap reaches it.
   await reopenMove();
   await setPointSnap(true);
   const hApply = await gizmoHandle(page, "x");
@@ -5290,7 +5290,11 @@ test("gizmo: entity-point snap holds the preview on an existing point; the commi
   assert(op?.op === "translate", `Apply commits a translate (got ${JSON.stringify(op)})`);
   assert(
     Math.abs(op.vec[0] - vecOn[0]) < 1e-3,
-    `the committed op carries the RAW delta, not the snapped one — the recorded gap (got ${JSON.stringify(op.vec)} vs ${vecOn[0]})`
+    `the committed op carries the SNAPPED delta, the position the preview showed (got ${JSON.stringify(op.vec)} vs form ${vecOn[0]})`
+  );
+  assert(
+    Math.abs(op.vec[0] - vecOff[0]) > 1e-3,
+    `and not the raw delta from the same drag without snapping (raw ${vecOff[0]})`
   );
 });
 

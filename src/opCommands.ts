@@ -21,7 +21,7 @@ import { OP_CATALOG, allCatalogEntries, type PanelOpId } from "./webview/opCatal
  * `mcpTools.test.ts` — a new op kind fails the test until documented here.
  */
 export const OP_PARAM_DOCS: Record<EditOpKind, string> = {
-  translate: '{targets: id[], vec: [x,y,z]}',
+  translate: '{targets: id[], vec: [x,y,z]} (the viewer\'s Move gizmo commits the snapped vec for a single target when "Snap to points" is on; a multi-target drag previews snapping only)',
   rotate: '{targets: id[], axisPoint: [x,y,z], axisDir: [x,y,z], angleDeg: n}',
   scale: '{targets: id[], center: [x,y,z], factors: [sx,sy,sz]}',
   mirror: '{targets: id[], planePoint?: [x,y,z], planeNormal?: [x,y,z], planeId?: string (plane-N from planes sidecar — XOR with planePoint/planeNormal and midplaneFaces; planePoint/planeNormal may ride alongside as cache), midplaneFaces?: [faceId, faceId] (planar, parallel — XOR with planePoint/planeNormal)}',
