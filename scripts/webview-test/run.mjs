@@ -4507,6 +4507,39 @@ test("external edits: appended rows are badged, earlier rows are not, a local ed
   assert(rows.every((b) => !b), "an edits post without externalFrom clears the badges");
 });
 
+test("external edits: the appended op flashes its produced faces once, then restores", async (page) => {
+  await populate(page);
+  await post(page, { type: "edits", ops: SAVE_POINT_OPS, variables: [], bakedThrough: 0 });
+  await sleep(300);
+  const appended = [...SAVE_POINT_OPS, { op: "translate", targets: ["solid-0"], vec: [0, 0, 1] }];
+  await post(page, { type: "edits", ops: appended, variables: [], bakedThrough: 0, externalFrom: 2 });
+  await sleep(200);
+
+  // The flash fires from the geometry handler, against the produced faces the
+  // host classified for the appended op. Reuse the fixture's model so the
+  // entity ids exist; the second, identical post has no pending flash and
+  // gives the same model WITHOUT the highlight as a control.
+  const geometry = fixture("geometry");
+  const opBuckets = [{ op: 2, kind: "translate", roles: { body: ["face-0", "face-1", "face-2", "face-3"] } }];
+  await post(page, { ...geometry, autoFit: false, opBuckets });
+  await sleep(300);
+  const flashing = await canvasShot(page);
+  await sleep(2000); // the one-shot restore timer is 1500 ms, plus a frame
+  const restored = await canvasShot(page);
+  await post(page, { ...geometry, autoFit: false, opBuckets });
+  await sleep(300);
+  const control = await canvasShot(page);
+
+  const flashDiff = await canvasDiffCount(page, flashing, control);
+  const restoredDiff = await canvasDiffCount(page, restored, control);
+  assert(flashDiff > 100, `the produced faces are visibly highlighted (${flashDiff} pixels differ)`);
+  // A few hundred pixels can survive as antialiasing/hover noise between two
+  // independently rebuilt models; a missed restore leaves the whole highlight
+  // (tens of thousands here). The absolute bound keeps the noise case honest
+  // without letting a partial restore through.
+  assert(restoredDiff < 1000, `the highlight restores after the one-shot window (${restoredDiff} pixels vs control; a missed restore would differ by ${flashDiff})`);
+});
+
 // ── Saved view bookmarks (roadmap Tier 1 "Saved view bookmarks") ─────────────
 //
 // A named collection of inspection viewpoints persisted as a top-level
@@ -5172,16 +5205,13 @@ async function canvasDiffCount(page, aB64, bB64) {
  * runs differ by an order of magnitude: with the snap on the model is held
  * (only the gizmo's own highlight changes), with it off the model drifts.
  *
- * WHAT THIS CASE RECORDS — the snap reaches the PREVIEW only. The form's
- * `vec` deliberately keeps the raw delta ("deliberately does NOT try to
- * reflect entity-point snap in the form", `src/webview/main.ts`), so the
- * committed `translate` op carries the raw delta and the object lands OFF the
- * vertex after Apply. Closing that gap needs a committed per-target delta,
- * which the single-`vec` `translate` op cannot express for a multi-target
- * drag — a roadmap item, not a fix here. This case pins the current
- * behaviour so a future fix flips it loudly instead of silently.
+ * WHAT THIS CASE NOW PINS — 2.25 closed the gap this test used to record. For
+ * a SINGLE target, the form's `vec` is the snapped delta (`snapped - base`),
+ * so Apply commits the position the preview showed. Multi-target dragging
+ * still snaps per target in the preview only, because one `translate.vec`
+ * cannot carry a different delta per target; the form hint says so.
  */
-test("gizmo: entity-point snap holds the preview on an existing point; the committed op still carries the raw delta", async (page) => {
+test("gizmo: entity-point snap holds the preview on an existing point; the committed op carries the snapped delta", async (page) => {
   await populate(page);
   await openGizmoForm(page, "Move");
   const h = await gizmoHandle(page, "x");
@@ -5251,8 +5281,8 @@ test("gizmo: entity-point snap holds the preview on an existing point; the commi
   await dragFromTo(page, hOn.grab, [hOn.grab[0] + hOn.dir[0] * px, hOn.grab[1] + hOn.dir[1] * px]);
   const vecOn = await formVec(page, "vec");
   assert(
-    Math.abs(vecOn[0]) > 0 && Math.abs(vecOn[0]) < tolerance,
-    `the drag landed inside the snap tolerance (got ${vecOn[0]} mm, tolerance ${tolerance} mm)`
+    Math.hypot(vecOn[0], vecOn[1], vecOn[2]) < 1e-6,
+    `the form shows the SNAPPED delta, not the raw one (got ${JSON.stringify(vecOn)}; the target is the origin vertex)`
   );
   const afterOn = await canvasShot(page);
   // The instrument's own control: two captures of the SAME state differ by
@@ -5271,13 +5301,16 @@ test("gizmo: entity-point snap holds the preview on an existing point; the commi
   const vecOff = await formVec(page, "vec");
   const afterOff = await canvasShot(page);
   const diffOff = await canvasDiffCount(page, beforeOff, afterOff);
-  assert(Math.abs(vecOff[0] - vecOn[0]) < 1e-3, `the raw delta is the same either way (got ${vecOn[0]} vs ${vecOff[0]})`);
+  assert(Math.abs(vecOff[0]) > 0 && Math.abs(vecOff[0]) < tolerance,
+    `the same drag without the snap is a real raw delta inside the tolerance (got ${vecOff[0]} mm, tolerance ${tolerance} mm)`);
+  assert(Math.abs(vecOff[0] - vecOn[0]) > 1e-3,
+    `the raw and snapped deltas differ — the form is not ignoring the drag (got ${vecOff[0]} vs ${vecOn[0]})`);
   assert(
     diffOff > diffOn * 4,
     `the snap held the model on the vertex — with it on the drag changed ${diffOn} pixels, with it off ${diffOff}`
   );
 
-  // 3) The committed op: the snap never reaches it (the recorded gap).
+  // 3) The committed op: for one target, the snap reaches it.
   await reopenMove();
   await setPointSnap(true);
   const hApply = await gizmoHandle(page, "x");
@@ -5290,7 +5323,11 @@ test("gizmo: entity-point snap holds the preview on an existing point; the commi
   assert(op?.op === "translate", `Apply commits a translate (got ${JSON.stringify(op)})`);
   assert(
     Math.abs(op.vec[0] - vecOn[0]) < 1e-3,
-    `the committed op carries the RAW delta, not the snapped one — the recorded gap (got ${JSON.stringify(op.vec)} vs ${vecOn[0]})`
+    `the committed op carries the SNAPPED delta, the position the preview showed (got ${JSON.stringify(op.vec)} vs form ${vecOn[0]})`
+  );
+  assert(
+    Math.abs(op.vec[0] - vecOff[0]) > 1e-3,
+    `and not the raw delta from the same drag without snapping (raw ${vecOff[0]})`
   );
 });
 
@@ -7818,6 +7855,60 @@ test("FE Mesh: the Octree engine greys the Gmsh-only fields, enables its own, an
     text.includes("Octree L4: 1372 hex · 542 pyramid · 1608 tet · snapped 433, refused 81 · Parts not preserved"),
     `the result row names the element mix, the snap counts and the loss of Parts (got ${JSON.stringify(text)})`
   );
+});
+
+test("FE Mesh: the fTetWild engine enables its own fields, greys the Gmsh-only ones, and posts the engine", async (page) => {
+  await populate(page);
+  await page.evaluate(() => {
+    const adv = [...document.querySelectorAll("#meshing-body details, #meshing-body .meshing-advanced")];
+    for (const d of adv) d.open = true;
+  });
+  const fields = () =>
+    page.evaluate(() => {
+      const byLabel = (text) => {
+        const row = [...document.querySelectorAll("#meshing-body .meshing-field")].find((r) => r.querySelector(".meshing-label")?.textContent === text);
+        return row?.querySelector("input, select") ?? null;
+      };
+      const engine = byLabel("Engine");
+      return {
+        options: engine ? [...engine.options].map((o) => o.value) : null,
+        value: engine?.value ?? null,
+        sizeMinDisabled: byLabel("Size min")?.disabled ?? null,
+        sizeMaxDisabled: byLabel("Size max")?.disabled ?? null,
+        algorithm2DDisabled: byLabel("2D algorithm")?.disabled ?? null,
+        orderDisabled: byLabel("Element order")?.disabled ?? null,
+        epsDisabled: byLabel("fTetWild envelope (eps)")?.disabled ?? null,
+        manifoldDisabled: byLabel("fTetWild manifold surface")?.disabled ?? null,
+        coarsenDisabled: byLabel("fTetWild coarsen")?.disabled ?? null,
+        noFilterDisabled: byLabel("fTetWild no interior filter")?.disabled ?? null,
+      };
+    });
+  const before = await fields();
+  assert(before.options?.includes("ftetwild"), `the Engine select offers fTetWild (got ${JSON.stringify(before.options)})`);
+  assert(
+    before.epsDisabled === true && before.manifoldDisabled === true && before.coarsenDisabled === true && before.noFilterDisabled === true,
+    "under Gmsh the fTetWild fields are greyed"
+  );
+  await page.evaluate(() => (window.__sent.length = 0));
+  await page.evaluate(() => {
+    const row = [...document.querySelectorAll("#meshing-body .meshing-field")].find((r) => r.querySelector(".meshing-label")?.textContent === "Engine");
+    const sel = row.querySelector("select");
+    sel.value = "ftetwild";
+    sel.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+  await sleep(150);
+  const after = await fields();
+  assert(after.value === "ftetwild", `the select reflects the change (got ${after.value})`);
+  assert(
+    after.epsDisabled === false && after.manifoldDisabled === false && after.coarsenDisabled === false && after.noFilterDisabled === false,
+    "under fTetWild its own fields are enabled"
+  );
+  assert(
+    after.sizeMinDisabled === true && after.sizeMaxDisabled === false && after.algorithm2DDisabled === true && after.orderDisabled === true,
+    `and Size min, the 2D algorithm and Element order are greyed while Size max still sizes the mesh (got ${JSON.stringify(after)})`
+  );
+  const sent = await page.evaluate(() => (window.__sent ?? []).filter((m) => m.type === "meshingChanged").at(-1) ?? null);
+  assert(sent?.options?.engine === "ftetwild", `the change posts engine ftetwild (got ${JSON.stringify(sent?.options?.engine)})`);
 });
 
 test("toolbar and tree: a selected item is a quiet lifted background, not the saturated blue", async (page) => {

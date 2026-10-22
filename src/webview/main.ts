@@ -1011,11 +1011,19 @@ viewer.setGizmoHandlers(
     }
     const snapCandidates = gizmoMode === "translate" && snapToPointsEnabled ? collectSnapPoints() : null;
     const snapTolerance = (viewer.getModelExtents()?.diagonal ?? 0) * 0.01;
+    // The delta Apply will commit. It is the shared drag delta except for the
+    // one case where entity-point snap can be expressed as a single vector:
+    // exactly ONE target resolved onto a point, so `snapped - base` is the
+    // position the user was actually shown. A multi-target drag can snap each
+    // target to a DIFFERENT point, which one `translate.vec` cannot express;
+    // that case deliberately stays preview-only (see the form hint).
+    let committedDelta: THREE.Vector3 | null = null;
     for (const t of gizmoTargets) {
       if (gizmoMode === "translate") {
         const result = applyTranslateDelta(t, d);
         const snapped = snapCandidates ? nearestSnapPoint(result.position, snapCandidates, snapTolerance) : null;
         t.object.position.copy(snapped ?? result.position);
+        if (snapped && gizmoTargets.length === 1) committedDelta = snapped.clone().sub(t.basePosition);
       } else if (gizmoMode === "rotate") {
         const r = applyRotateDelta(t, d);
         t.object.position.copy(r.position);
@@ -1030,13 +1038,15 @@ viewer.setGizmoHandlers(
     // Push the live-dragged values into the open form's fields — the answer
     // to "what happens when a drag overwrites a field the user had typed an
     // expression into" (see `EditsPanel.setVecField`'s doc comment): the
-    // drag wins, silently, same as the user typing over it by hand. Reflects
-    // the GRID-snapped delta when grid snap is active; deliberately does NOT
-    // try to reflect entity-point snap in the form (that's inherently a
-    // per-target adjustment with no single shared "delta" left to show when
-    // multiple targets each snapped to a different nearby point).
+    // drag wins, silently, same as the user typing over it by hand. This is
+    // what Apply commits, so it reflects the GRID-snapped delta, and for a
+    // single target it reflects the ENTITY-point-snapped delta too (2.25:
+    // a preview that shows one position and commits another is the user's
+    // intent dropped). Multi-target entity snapping stays preview-only — the
+    // single `translate.vec` has no per-target slots.
     if (gizmoMode === "translate") {
-      editsPanel.setVecField("vec", [d.positionDelta.x, d.positionDelta.y, d.positionDelta.z]);
+      const vec = committedDelta ?? d.positionDelta;
+      editsPanel.setVecField("vec", [vec.x, vec.y, vec.z]);
     } else if (gizmoMode === "rotate") {
       const { axis, angleRad } = quaternionToAxisAngle(d.quaternionDelta);
       editsPanel.setVecField("axisPoint", [d.pivot.x, d.pivot.y, d.pivot.z]);

@@ -993,6 +993,7 @@ export class EditsPanel {
       // ── EDIT · transform ──
       case "translate":
         f.appendChild(this.vecField("vec", "Δ", [0, 0, 0]));
+        f.appendChild(this.hint("Snap to points commits the snapped Δ for one target; several targets preview only."));
         this.applyButtonDraft("Apply", "Apply to the selected volumes", (): TransformDraft => ({ kind: "translate", vec: this.readVec("vec") }), (d) => this.cb.onApplyTransform(d));
         break;
       case "rotate":

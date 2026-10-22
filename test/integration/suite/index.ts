@@ -2386,6 +2386,59 @@ test("editing an included .scad file reloads the open document (binary fallback)
 });
 
 /**
+ * Roadmap 1.1 / registry `openscad-backend-and-libraries`: the three
+ * `cadPreview.openscad*` settings are read by `readScadSettings()` and must
+ * reach the BINARY conversion path, not just the compiled argv helper. A
+ * recording stub captures the real child argv and environment; the model uses
+ * `import()`, which the WASM path declines, so the fallback is the only path
+ * that can have produced the geometry.
+ */
+test("the OpenSCAD backend and library-path settings reach the fallback binary and never write the source", async () => {
+  const api = await saveTestApi();
+  if (!api) return;
+  const dir = tempDir();
+  const libs = path.join(dir, "libs");
+  fs.mkdirSync(libs);
+  const model = path.join(dir, "settings.scad");
+  fs.writeFileSync(model, 'import("mesh.stl");\n');
+  const stub = path.join(ROOT, "src", "test-fixtures", "openscad-deps-stub.sh");
+  fs.chmodSync(stub, 0o755);
+  const argsFile = path.join(dir, "args.txt");
+  const config = vscode.workspace.getConfiguration("cadPreview");
+  const previousBinary = config.inspect<string>("openscadBinary")?.globalValue;
+  const previousBackend = config.inspect<string>("openscadBackend")?.globalValue;
+  const previousLibraries = config.inspect<string[]>("openscadLibraryPaths")?.globalValue;
+  const savedArgsEnv = process.env.STUB_ARGS;
+  process.env.STUB_ARGS = argsFile;
+  const sourceBefore = fs.readFileSync(model);
+  await config.update("openscadBinary", stub, vscode.ConfigurationTarget.Global);
+  await config.update("openscadBackend", "manifold", vscode.ConfigurationTarget.Global);
+  await config.update("openscadLibraryPaths", [libs], vscode.ConfigurationTarget.Global);
+  try {
+    assert(await openDocument(model), "the .scad model opens through the configured fallback binary");
+    assert(await waitFor(() => fs.existsSync(argsFile), 30000), "the configured fallback binary ran");
+    const lines = fs.readFileSync(argsFile, "utf8").split("\n").filter(Boolean);
+    const argsLine = lines.find((l) => l.startsWith("args=")) ?? "";
+    assert(argsLine.includes("--backend=manifold"), `the backend setting reaches argv (got ${JSON.stringify(argsLine)})`);
+    assert(
+      /\s-o\s/.test(` ${argsLine} `) && /\s-d\s/.test(` ${argsLine} `),
+      `the conversion still asks for -o and a depfile (got ${JSON.stringify(argsLine)})`
+    );
+    const pathLine = lines.find((l) => l.startsWith("openscadpath=")) ?? "";
+    const first = pathLine.slice("openscadpath=".length).split(path.delimiter).filter(Boolean)[0];
+    assert(first === libs, `the library folder is first on OPENSCADPATH (got ${JSON.stringify(pathLine)})`);
+    assert(fs.readFileSync(model).equals(sourceBefore), "opening the model does not write the .scad source");
+  } finally {
+    await config.update("openscadBinary", previousBinary, vscode.ConfigurationTarget.Global);
+    await config.update("openscadBackend", previousBackend, vscode.ConfigurationTarget.Global);
+    await config.update("openscadLibraryPaths", previousLibraries, vscode.ConfigurationTarget.Global);
+    if (savedArgsEnv === undefined) delete process.env.STUB_ARGS;
+    else process.env.STUB_ARGS = savedArgsEnv;
+  }
+  await closeAll();
+});
+
+/**
  * Roadmap "OpenSCAD `color()` and top-level objects become Parts": opening a
  * `.csg` with coloured solids creates one Part per distinct colour — through
  * the real provider, kernel worker and parts sidecar — exactly once.
@@ -3064,6 +3117,159 @@ test("FE-mesh export with a handoff manifest records Parts and coverage", async 
 });
 
 /**
+ * Roadmap "Embedded points and curves" / registry
+ * `free-points-and-lines-are-meshed-on`: the host half of the panel flow.
+ * `test:webview` drives the Point/Line composers and the Part assignment;
+ * this case proves the real kernel puts nodes exactly on the free entities,
+ * which is the claim the feature exists for.
+ *
+ * The fixture is the one `gmshEmbed.ts` measured: `block.stp` + one
+ * `addPoint` (point-8) + one `addLine` (edge-12). The line's own endpoints
+ * are interior coordinates with exact half-millimetre values, so a Float32
+ * mesh node can be compared without a tolerance debate.
+ */
+test("a free point and a free line assigned to a Part become mesh nodes at their own coordinates", async () => {
+  const api = await saveTestApi();
+  if (!api?.simulateWebviewMessage || !api.onDidPostMessage) return;
+  const staged = stage(STEP_FIXTURE);
+  const point: [number, number, number] = [1.5, 2, 2.5];
+  const lineStart: [number, number, number] = [0.5, 0.5, 0.5];
+  const lineEnd: [number, number, number] = [2.5, 3.5, 4.5];
+  fs.writeFileSync(
+    `${staged}.edits.json`,
+    JSON.stringify({
+      version: 1,
+      source: path.basename(staged),
+      ops: [
+        { op: "addPoint", position: point },
+        { op: "addLine", start: lineStart, end: lineEnd },
+      ],
+    })
+  );
+  await writeParts(vscode.Uri.file(staged), [
+    {
+      name: "Free",
+      color: "#ff0000",
+      volumes: ["solid-0"],
+      surfaces: [],
+      lines: ["edge-12"],
+      points: ["point-8"],
+    },
+  ]);
+  const sourceBefore = fs.readFileSync(staged);
+  const geometry: Array<{ type: string }> = [];
+  assert(await openAndWaitGeometry(staged, api, geometry), "the STEP fixture opens with the free point and line ops");
+  type MeshMsg = {
+    type: string;
+    requestId?: string;
+    message?: string;
+    positions?: string;
+    nodeCount?: number;
+    elementCount?: number;
+    elementGroups?: Array<{ name?: string | null }>;
+  };
+  const posted: MeshMsg[] = [];
+  const sub = api.onDidPostMessage((m) => posted.push(m as MeshMsg));
+  try {
+    await api.simulateWebviewMessage!(vscode.Uri.file(staged), {
+      type: "meshingGenerate",
+      requestId: "free-1",
+      options: { ...DEFAULT_MESH_OPTIONS, sizeMax: 1 },
+    });
+    assert(
+      await waitFor(
+        () => posted.some((m) => (m.type === "meshingResult" || m.type === "meshingError") && m.requestId === "free-1"),
+        180000
+      ),
+      "Generate answers"
+    );
+    const error = posted.find((m) => m.type === "meshingError" && m.requestId === "free-1");
+    assert(error === undefined, `Generate reports no error (got ${JSON.stringify(error?.message)})`);
+    const result = posted.find((m) => m.type === "meshingResult" && m.requestId === "free-1");
+    assert((result?.nodeCount ?? 0) > 0 && (result?.elementCount ?? 0) > 0, `the volume is meshed (${result?.nodeCount} nodes, ${result?.elementCount} elements)`);
+    assert(
+      result?.elementGroups?.some((g) => g.name === "Free"),
+      `the Part survives as a physical group (got ${JSON.stringify(result?.elementGroups)})`
+    );
+    const buf = Buffer.from(result?.positions ?? "", "base64");
+    const positions = new Float32Array(buf.buffer, buf.byteOffset, Math.floor(buf.byteLength / 4));
+    const hasNode = (p: [number, number, number]): boolean => {
+      for (let i = 0; i + 2 < positions.length; i += 3) {
+        if (
+          Math.abs(positions[i] - p[0]) < 1e-5 &&
+          Math.abs(positions[i + 1] - p[1]) < 1e-5 &&
+          Math.abs(positions[i + 2] - p[2]) < 1e-5
+        ) {
+          return true;
+        }
+      }
+      return false;
+    };
+    assert(hasNode(point), `a mesh node sits exactly on the free point (${JSON.stringify(point)})`);
+    assert(hasNode(lineStart) && hasNode(lineEnd), "mesh nodes sit on both endpoints of the free line");
+    assert(fs.readFileSync(staged).equals(sourceBefore), "meshing never writes the source");
+  } finally {
+    sub.dispose();
+  }
+  await closeAll();
+});
+
+/**
+ * Roadmap "Robust volumetric meshing from a skin mesh" / registry
+ * `ftetwild-robust-volume-meshing`: the FE Mesh panel's Engine select is
+ * covered by `test:webview`; this is the host half — the real fTetWild WASM
+ * tetrahedralizing the one-facet-holed cube that Gmsh's own path renders as
+ * zero elements. If the engine choice is ignored, the gate fails on an empty
+ * mesh rather than passing on a Gmsh result.
+ */
+test("the FE Mesh fTetWild engine generates a tetrahedral mesh from a holed skin", async () => {
+  const api = await saveTestApi();
+  if (!api?.simulateWebviewMessage || !api.onDidPostMessage) return;
+  const staged = stage(path.join(ROOT, "examples", "STL", "holed-cube.stl"));
+  const stl = fs.readFileSync(staged).toString("base64");
+  assert(await openDocument(staged), "the holed-cube STL opens");
+  type MeshMsg = {
+    type: string;
+    requestId?: string;
+    message?: string;
+    nodeCount?: number;
+    elementCount?: number;
+    positions?: string;
+    indices?: string;
+    quality?: { min?: number } | null;
+  };
+  const posted: MeshMsg[] = [];
+  const sub = api.onDidPostMessage((m) => posted.push(m as MeshMsg));
+  try {
+    await api.simulateWebviewMessage!(vscode.Uri.file(staged), {
+      type: "meshingGenerate",
+      requestId: "ftw-1",
+      stl,
+      options: { ...DEFAULT_MESH_OPTIONS, engine: "ftetwild", ftetwildEpsRel: 5e-3 },
+    });
+    assert(
+      await waitFor(
+        () => posted.some((m) => (m.type === "meshingResult" || m.type === "meshingError") && m.requestId === "ftw-1"),
+        180000
+      ),
+      "fTetWild Generate answers"
+    );
+    const error = posted.find((m) => m.type === "meshingError" && m.requestId === "ftw-1");
+    assert(error === undefined, `fTetWild reports no error (got ${JSON.stringify(error?.message)})`);
+    const result = posted.find((m) => m.type === "meshingResult" && m.requestId === "ftw-1");
+    assert(
+      (result?.nodeCount ?? 0) > 0 && (result?.elementCount ?? 0) > 0,
+      `the holed cube tetrahedralizes (${result?.nodeCount} nodes, ${result?.elementCount} elements)`
+    );
+    assert((result?.quality?.min ?? 0) > -1e-6, `the elements are non-inverted (min quality ${result?.quality?.min})`);
+    assert(Buffer.from(result?.indices ?? "", "base64").length > 0, "the result carries element indices");
+  } finally {
+    sub.dispose();
+  }
+  await closeAll();
+});
+
+/**
  * Roadmap "OpenSCAD Customizer panel in the viewer": Apply is a HOST flow.
  * The provider validates the form's values against the SOURCE TEXT, persists
  * the validated set to `<model>.scad-params.json` and reloads the model with
@@ -3186,6 +3392,89 @@ test("saving a macro writes the library beside the model, records the op list, a
   assert(dismissed.inputBoxes.length === 1, "the dismissed save still opened the prompt");
   assert(fs.existsSync(library) && fs.readFileSync(library).equals(before), "a dismissed prompt writes nothing");
   await api.revertDocument?.(vscode.Uri.file(staged));
+  await closeAll();
+});
+
+/**
+ * Roadmap 1.1 / registry `primitive-recognition-panel`: the host half of the
+ * panel's click-through. `test:webview` already drives Recognize's request
+ * shape and Apply's emitted ops; what it cannot reach is the real kernel
+ * report, the Export quick-picks/save dialog, and the Save-macro prompt. The
+ * source must stay byte-identical throughout.
+ */
+test("the primitives panel recognizes a box, exports it as STEP, and saves it as a macro", async () => {
+  const api = await saveTestApi();
+  if (!api?.simulateWebviewMessage || !api.onDidPostMessage) return;
+  const staged = stage(STEP_FIXTURE);
+  const out = path.join(path.dirname(staged), "recognized.step");
+  const library = path.join(path.dirname(staged), "cad-preview-macros.json");
+  const sourceBefore = fs.readFileSync(staged);
+  type PrimitiveMsg = {
+    type: string;
+    requestId?: string;
+    report?: { solidCount?: number; solids?: Array<{ candidate?: { kind?: string } | null }> };
+    message?: string;
+  };
+  const seen: PrimitiveMsg[] = [];
+  const sub = api.onDidPostMessage((m) => seen.push(m as PrimitiveMsg));
+  try {
+    assert(await openDocument(staged), "the STEP fixture opens");
+    await sleep(2000);
+    await api.simulateWebviewMessage!(vscode.Uri.file(staged), { type: "primitiveRecognizeRequest", requestId: "prim-1" });
+    assert(
+      await waitFor(() => seen.some((m) => m.type === "primitiveRecognizeResult" || m.type === "primitiveRecognizeError"), 60000),
+      "Recognize answers"
+    );
+    const error = seen.find((m) => m.type === "primitiveRecognizeError");
+    assert(error === undefined, `Recognize reports no error (got ${JSON.stringify(error?.message)})`);
+    const result = seen.find((m) => m.type === "primitiveRecognizeResult");
+    assert(result?.report?.solidCount === 1, `the box fixture reports one solid (got ${JSON.stringify(result?.report?.solidCount)})`);
+    assert(
+      result?.report?.solids?.[0]?.candidate?.kind === "box",
+      `and recognizes it as a box (got ${JSON.stringify(result?.report?.solids?.[0]?.candidate)})`
+    );
+
+    const exportRecord = await withModals([pick("STEP"), pick("Native (mm)"), save(out)], async () => {
+      await api.simulateWebviewMessage!(vscode.Uri.file(staged), { type: "decomposeExportClicked" });
+      assert(await waitForFile(out, 60000), "Export writes the chosen STEP file");
+    });
+    assert(
+      exportRecord.quickPicks[0]?.placeHolder === "Export recognized primitives as…",
+      `Export offers the format picker (got ${JSON.stringify(exportRecord.quickPicks[0])})`
+    );
+    assert(fs.existsSync(out) && fs.statSync(out).size > 0, "the exported file is non-empty");
+    assert(/^ISO-10303-21;/.test(fs.readFileSync(out, "latin1").slice(0, 32)), "the export is a real STEP file");
+    assert(fs.readFileSync(staged).equals(sourceBefore), "Export does not write the source");
+
+    const macroRecord = await withModals([input("recognized-block")], async () => {
+      await api.simulateWebviewMessage!(vscode.Uri.file(staged), { type: "decomposeSaveMacroClicked" });
+      assert(await waitForFile(library, 30000), "Save macro writes the library");
+    });
+    assert(
+      macroRecord.inputBoxes[0]?.title === "Save primitives as macro",
+      `Save macro asks for a name (got ${JSON.stringify(macroRecord.inputBoxes[0])})`
+    );
+    const saved = readJsonIfExists(library) as {
+      scripts?: Record<string, { name?: string; script?: { steps?: Array<{ op?: { op?: string } }> } }>;
+    } | null;
+    const entry = saved?.scripts?.["recognized-block"];
+    assert(entry !== undefined, `the macro is stored under its name (got ${JSON.stringify(Object.keys(saved?.scripts ?? {}))})`);
+    assert(
+      entry?.script?.steps?.[0]?.op?.op === "addBox",
+      `the macro records the emitted addBox (got ${JSON.stringify(entry?.script?.steps)})`
+    );
+    assert(fs.readFileSync(staged).equals(sourceBefore), "Save macro does not write the source");
+
+    const beforeDismiss = fs.readFileSync(library);
+    const dismissed = await withModals([cancel()], async (session) => {
+      await api.simulateWebviewMessage!(vscode.Uri.file(staged), { type: "decomposeSaveMacroClicked" });
+      assert(await waitFor(() => session.record.inputBoxes.length === 1, 30000), "the dismissed save still opened the prompt");
+    });
+    assert(dismissed.inputBoxes.length === 1, "the dismissed save still opened the prompt");
+    assert(fs.readFileSync(library).equals(beforeDismiss), "a dismissed prompt writes nothing");
+  } finally {
+    sub.dispose();
+  }
   await closeAll();
 });
 
