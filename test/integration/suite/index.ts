@@ -3466,9 +3466,9 @@ test("the primitives panel recognizes a box, exports it as STEP, and saves it as
     assert(fs.readFileSync(staged).equals(sourceBefore), "Save macro does not write the source");
 
     const beforeDismiss = fs.readFileSync(library);
-    const dismissed = await withModals([cancel()], async () => {
+    const dismissed = await withModals([cancel()], async (session) => {
       await api.simulateWebviewMessage!(vscode.Uri.file(staged), { type: "decomposeSaveMacroClicked" });
-      await sleep(1500);
+      assert(await waitFor(() => session.record.inputBoxes.length === 1, 30000), "the dismissed save still opened the prompt");
     });
     assert(dismissed.inputBoxes.length === 1, "the dismissed save still opened the prompt");
     assert(fs.readFileSync(library).equals(beforeDismiss), "a dismissed prompt writes nothing");
