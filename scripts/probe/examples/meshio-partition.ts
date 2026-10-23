@@ -4,7 +4,8 @@
  * bull.stp -> Gmsh tets -> MSH 4.1 -> meshio++ `partition` for n in {2,4,8}:
  *   method 'sfc'  : balance (max/mean), cells covered exactly once, interface-node count (the baseline a graph
  *                   partitioner must beat), ghostLayers=1 halo;
- *   method 'kahip': must throw today (the build never compiles KaHIP) -- the exact message is recorded.
+ *   method 'kahip': links in the FULL artifact since meshio++ 17.13 (it threw before); measured exactly like
+ *                   'sfc' -- coverage, balance, interface nodes -- plus `hasKahip()` and a fixed-seed repeat.
  */
 import * as fs from "fs";
 import { getGmsh } from "../../../src/gmshService";
@@ -66,9 +67,62 @@ async function main(): Promise<void> {
       row.haloPieces = pieces.length;
       row.haloCellData = Object.keys(pieces[0].mesh.cell_data ?? {});
     } catch (e) { row.sfcError = String((e as Error).message).slice(0, 300); }
+    const measure = (labels: number[][]): Record<string, unknown> => {
+      const counts = new Array(n).fill(0);
+      const nodeParts = new Map<number, Set<number>>();
+      tetBlocks.forEach(({ b, i }) => {
+        const L = labels[i];
+        for (let c = 0; c < L.length; c++) {
+          counts[L[c]]++;
+          for (let k = 0; k < 4; k++) {
+            const node = Number(b.data[c * 4 + k]);
+            (nodeParts.get(node) ?? nodeParts.set(node, new Set()).get(node)!).add(L[c]);
+          }
+        }
+      });
+      const interfaceNodes = [...nodeParts.values()].filter((s2) => s2.size > 1).length;
+      const mean = counts.reduce((a: number, b: number) => a + b, 0) / n;
+      return { counts, covered: counts.reduce((a: number, b: number) => a + b, 0) === totalTets, balanceMaxOverMean: Math.max(...counts) / mean, interfaceNodes, interfaceFraction: interfaceNodes / nodeParts.size };
+    };
+    // KaHIP tuning: the default call came back 1.77+ unbalanced with empty parts on the full SaveAll mesh
+    // (vertex/line/triangle blocks share the graph), so also try a tet-only mesh and explicit imbalance/mode/seed.
+    const tetOnly = { ...mesh, cells: (mesh.cells as any[]).filter((b) => b.type === "tetra") };
+    const tetBlocksOnly = [{ b: tetOnly.cells[0] as any, i: 0 }];
+    const measureTet = (labels: number[][]): Record<string, unknown> => {
+      const counts = new Array(n).fill(0);
+      const nodeParts = new Map<number, Set<number>>();
+      const b = tetBlocksOnly[0].b;
+      const L = labels[0];
+      for (let c = 0; c < L.length; c++) {
+        counts[L[c]]++;
+        for (let k = 0; k < 4; k++) {
+          const node = Number(b.data[c * 4 + k]);
+          (nodeParts.get(node) ?? nodeParts.set(node, new Set()).get(node)!).add(L[c]);
+        }
+      }
+      const iface = [...nodeParts.values()].filter((s2) => s2.size > 1).length;
+      const mean = counts.reduce((a: number, x: number) => a + x, 0) / n;
+      return { counts, balanceMaxOverMean: Math.max(...counts) / mean, interfaceNodes: iface, interfaceFraction: iface / nodeParts.size };
+    };
+    for (const [mode, imb] of [["fast", 0.03], ["eco", 0.03], ["strong", 0.03], ["eco", 0.01]] as const) {
+      try {
+        const t0 = Date.now();
+        (row as any)[`kahipTet_${mode}_${imb}`] = { ms: 0, ...measureTet(m.partitionLabels(tetOnly as any, n, "kahip", imb, mode, 1) as number[][]) };
+        (row as any)[`kahipTet_${mode}_${imb}`].ms = Date.now() - t0;
+        (row as any)[`kahipFull_${mode}_${imb}`] = measure(m.partitionLabels(mesh, n, "kahip", imb, mode, 1) as number[][]);
+      } catch (e) { (row as any)[`kahip_${mode}_${imb}`] = { error: String((e as Error).message).slice(0, 200) }; }
+    }
+    row.hasKahip = typeof m.hasKahip === "function" ? m.hasKahip() : "missing";
     for (const method of ["kahip", "auto"] as const) {
-      try { const l = m.partitionLabels(mesh, n, method) as number[][]; row[method] = { ok: true, labels: l.length }; }
-      catch (e) { row[method] = { ok: false, error: String((e as Error).message).slice(0, 300) }; }
+      try {
+        const t0 = Date.now();
+        const l = m.partitionLabels(mesh, n, method) as number[][];
+        row[method] = { ok: true, ms: Date.now() - t0, ...measure(l) };
+        if (method === "kahip") {
+          const again = m.partitionLabels(mesh, n, method) as number[][];
+          (row[method] as any).reproducible = JSON.stringify(again.map((a) => Array.from(a))) === JSON.stringify(l.map((a) => Array.from(a)));
+        }
+      } catch (e) { row[method] = { ok: false, error: String((e as Error).message).slice(0, 300) }; }
     }
     out(row);
   }

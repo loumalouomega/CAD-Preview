@@ -16,7 +16,7 @@ import { sha256Hex } from "./hash";
 import type { BoundaryLayerAchieved } from "./boundaryLayerMeasurement";
 import type { HandoffFacts } from "./gmshService";
 import type { KernelVersions } from "./kernelVersions";
-import type { MeshOptions, OctreeStats } from "./meshOptions";
+import type { MeshOptions, OctreeStats, OctreeMeshStats } from "./meshOptions";
 import type { Part } from "./protocol";
 
 export const HANDOFF_MANIFEST_VERSION = 1;
@@ -55,6 +55,8 @@ export interface HandoffManifest {
    * `engineUsed: "octree"` export, which has no Parts or physical groups: the
    * mesh is a single unnamed region. */
   octree?: OctreeStats;
+  /** Octree-mesh facts — present only for an `engineUsed: "octreemesh"` export (no Parts or physical groups). */
+  octreeMesh?: OctreeMeshStats;
   parts: ManifestPart[];
   coverage: {
     emptyParts: string[];
@@ -113,6 +115,9 @@ export function buildHandoffManifest(input: ManifestInput): HandoffManifest {
   if (facts.octree) {
     notes.push("Octree mesh — a single unnamed region: Parts, physical groups and SubModelParts are not preserved.");
   }
+  if (facts.octreeMesh) {
+    notes.push("Octree-mesh — a single unnamed region: Parts, physical groups and SubModelParts are not preserved.");
+  }
   if (input.scaleFactor !== 1) {
     notes.push(`Geometry and mesh sizes were scaled by ${input.scaleFactor} (mm → ${input.unit}) at export; meshOptions are recorded in native mm.`);
   }
@@ -135,6 +140,7 @@ export function buildHandoffManifest(input: ManifestInput): HandoffManifest {
     mesh: { nodeCount: facts.nodeCount, elementCount: facts.elementCount },
     ...(facts.boundaryLayers && facts.boundaryLayers.length > 0 ? { boundaryLayers: facts.boundaryLayers } : {}),
     ...(facts.octree ? { octree: facts.octree } : {}),
+    ...(facts.octreeMesh ? { octreeMesh: facts.octreeMesh } : {}),
     parts,
     coverage: {
       emptyParts: parts.filter((p) => p.status === "empty").map((p) => p.name),

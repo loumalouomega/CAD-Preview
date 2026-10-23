@@ -18,6 +18,7 @@ import {
   checkMeshHealthTool,
   promoteMeshToBrepTool,
   fitMeshToCadTool,
+  meshCadSurfaceTool,
   repairMeshTool,
   inspectMeshioFieldsTool,
   inspectEntity,
@@ -392,6 +393,9 @@ const FAKE_FIT_RESULT: FitMeshToCadResult = {
     numVariableFillet: 0, numBlend: 0, numRoundedThread: 0, numVertexBlend: 0, numChamfer: 0,
     numConicBlend: 0, numTaperedThread: 0, numVariablePitchThread: 0,
     fitCounts: { plane: 6, sphere: 0, cylinder: 0, cone: 0, torus: 0, unfitted: 0, merged: 0 },
+    backend: "occt", brepChecked: true, closed: true, refined: false, refinementKept: false,
+    initialExplainedAreaFraction: 0, explainedAreaFraction: 0, facetAreaFraction: 0,
+    faceHausdorffMax: null, faceHausdorffRms: null,
     warnings: [],
   },
 };
@@ -568,6 +572,14 @@ function fakePipeline(overrides: Partial<Pipeline> = {}): Pipeline {
       patches: [], adjacency: [], truncated: false, warnings: [],
     })),
     fitMeshToCad: vi.fn(async () => FAKE_FIT_RESULT),
+    meshCadSurfaceModel: vi.fn(async () => ({
+      outputBytes: new TextEncoder().encode("solid cad\nendsolid cad\n"),
+      report: {
+        targetSize: 1, numPoints: 8, numTriangles: 12, numEdgeSegments: 12, numFaces: 6, numFailed: 0, numEdges: 12,
+        numOpenEdges: 0, numNonManifoldEdges: 0, numMisorientedEdges: 0, numDegenerateDropped: 0, tolerance: 1e-6,
+        minAngleDeg: 45, maxAngleDeg: 90, minEdge: 1, maxEdge: 1.4, maxEdgeGap: 0, faces: [], facesTruncated: false, warnings: [],
+      },
+    })),
     igaSampleModel: vi.fn(async () => ({
       model: {
         format: "cad_json" as const, breps: 1, faces: 6, trimmedFaces: 6, rationalFaces: 0, edges: 12, vertices: 0,
@@ -2151,6 +2163,29 @@ describe("promote_mesh_to_brep", () => {
   });
 });
 
+describe("mesh_cad_surface", () => {
+  it("meshes a STEP source into a new file and spreads upstream's closure facts", async () => {
+    const c = ctx();
+    const stepModel = path.join(dir, "mcs-block.step");
+    await fs.writeFile(stepModel, "ISO-10303-21;");
+    const outputPath = path.join(dir, "mcs-block.stl");
+    const result = await meshCadSurfaceTool(c, { path: stepModel, outputPath, targetSize: 0.5, strict: true });
+    expect(c.pipeline.meshCadSurfaceModel).toHaveBeenCalledWith(expect.any(Uint8Array), "step", ".stl", { targetSize: 0.5, strict: true });
+    expect(result).toMatchObject({ supported: true, written: outputPath, numFaces: 6, numOpenEdges: 0, numFailed: 0 });
+    expect(await fs.readFile(outputPath, "utf8")).toContain("solid cad");
+  });
+
+  it("refuses a mesh-format source by name and an unsupported output extension before the pipeline", async () => {
+    const c = ctx();
+    const refused = await meshCadSurfaceTool(c, { path: stlModel, outputPath: path.join(dir, "o.stl"), targetSize: 1 });
+    expect(refused).toMatchObject({ supported: false });
+    const stepModel = path.join(dir, "mcs-ext.step");
+    await fs.writeFile(stepModel, "ISO-10303-21;");
+    await expect(meshCadSurfaceTool(c, { path: stepModel, outputPath: path.join(dir, "o.step"), targetSize: 1 })).rejects.toThrow(/outputPath must end in/);
+    expect(c.pipeline.meshCadSurfaceModel).not.toHaveBeenCalled();
+  });
+});
+
 describe("fit_mesh_to_cad", () => {
   it("fits an STL source and writes the pipeline's STEP bytes, spreading the report", async () => {
     const c = ctx();
@@ -2177,6 +2212,20 @@ describe("fit_mesh_to_cad", () => {
     );
     expect(result).toMatchObject({ cadJsonWritten: cadJsonPath, cadJsonBytes: 2 });
     expect(await fs.readFile(cadJsonPath, "utf8")).toBe("{}");
+  });
+
+  it("passes the 17.9+ knobs (backend, refineSegmentation, freeformMode, faceDeviation, segmentMethod) through untouched", async () => {
+    const c = ctx();
+    await fitMeshToCadTool(c, {
+      path: stlModel, outputPath: path.join(dir, "fitted2.step"),
+      backend: "occt", refineSegmentation: true, freeformMode: "adaptive", faceDeviation: true, mergeFaces: false, segmentMethod: "primitive",
+    });
+    expect(c.pipeline.fitMeshToCad).toHaveBeenCalledWith(
+      expect.any(Uint8Array),
+      "stl",
+      { backend: "occt", refineSegmentation: true, freeformMode: "adaptive", faceDeviation: true, mergeFaces: false, segmentMethod: "primitive", cadJson: false },
+      undefined
+    );
   });
 
   it("rejects an outputPath that is not .step/.stp, without touching the pipeline", async () => {

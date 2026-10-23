@@ -345,6 +345,16 @@ describe("octreeUnsupportedOptions", () => {
     expect(refuse.map((r) => r.split(" ")[0])).toEqual(["elementOrder", "elementShape", "periodic", "sizeField"]);
   });
 
+  it("applies the same gate to engine octreemesh and names its own sizing knobs", () => {
+    const { refuse } = octreeUnsupportedOptions(
+      { ...DEFAULT_MESH_OPTIONS, engine: "octreemesh", elementOrder: 2, sizeField: [{ point: [0, 0, 0], size: 1 }] },
+      []
+    );
+    expect(refuse).toHaveLength(2);
+    expect(refuse[0]).toContain("octree-mesh is linear only");
+    expect(refuse[1]).toContain("octreeMeshMaxSize/octreeMeshLevels");
+  });
+
   it("only warns about an optimizer pass that did something and about Parts", () => {
     expect(octreeUnsupportedOptions({ ...DEFAULT_MESH_OPTIONS, optimize: "none" }, []).ignored).toEqual([]);
     const { refuse, ignored } = octreeUnsupportedOptions({ ...DEFAULT_MESH_OPTIONS, optimize: "netgen" }, [{ name: "wall" } as never]);

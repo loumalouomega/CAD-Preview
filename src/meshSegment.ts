@@ -34,6 +34,38 @@ export interface SegmentMeshOptions {
   types?: FitPrimitiveType[];
   /** Cap on patches listed in `patches`; the true count stays in `numPatches`. Default 200. */
   maxPatches?: number;
+  /**
+   * Patch boundaries (meshio++ 17.9): `"angle"` (default) ends a patch at a
+   * dihedral edge, `"primitive"` where the surface its facets lie on changes,
+   * so a fillet comes apart from its tangent planes. Measured on a tessellated
+   * `bull.stp`: 11 patches by angle, 29 by primitive.
+   */
+  method?: "angle" | "primitive";
+  /** Primitive segmentation's fit tolerance, relative to the bbox diagonal. Only with `method: "primitive"`. */
+  primitiveTolerance?: number;
+  /**
+   * Refine the patches by variational shape approximation (`refinePatches`,
+   * meshio++ 17.11) before fitting: boundaries move, freeform patches are
+   * split by seeded RANSAC and neighbours one primitive explains are merged.
+   * Deterministic (fixed seed). Adds a `refinement` block to the report.
+   */
+  refine?: boolean;
+}
+
+/** What `refinePatches` did, in meshio++'s own words. */
+export interface SegmentRefinement {
+  numPatches: number;
+  numIterations: number;
+  numSplits: number;
+  numMerges: number;
+  numPrimitive: number;
+  numFreeform: number;
+  numFacets: number;
+  explainedAreaFraction: number;
+  initialExplainedAreaFraction: number;
+  hausdorffMax: number;
+  hausdorffRms: number;
+  stop: string;
 }
 
 export interface SegmentPatch {
@@ -60,6 +92,8 @@ export interface SegmentMeshReport {
   /** Pairs of adjacent patches and their shared edge count. */
   adjacency: Array<{ a: number; b: number; sharedEdges: number }>;
   truncated: boolean;
+  /** Present only when `refine` ran. */
+  refinement?: SegmentRefinement;
   warnings: string[];
 }
 
@@ -87,6 +121,12 @@ export async function segmentMeshSurface(
   }
   if (types.length === 0) throw new Error("types must name at least one primitive kind.");
   const maxPatches = Math.max(1, Math.floor(options.maxPatches ?? 200));
+  if (options.method !== undefined && options.method !== "angle" && options.method !== "primitive") {
+    throw new Error(`method must be "angle" or "primitive" (got ${String(options.method)})`);
+  }
+  if (options.primitiveTolerance !== undefined && !(Number.isFinite(options.primitiveTolerance) && options.primitiveTolerance > 0)) {
+    throw new Error(`primitiveTolerance must be a positive number (got ${options.primitiveTolerance})`);
+  }
 
   const { positions, indices } = parseToWeldedMesh(bytes, format, external);
   const triCount = indices.length / 3;
@@ -95,9 +135,34 @@ export async function segmentMeshSurface(
   const m = await getMeshio();
   try {
     const { mesh } = componentMesh(positions, indices, Array.from({ length: triCount }, (_, i) => i));
-    const seg = m.segment(mesh, featureAngle, 0, 0, options.minPatchCells ?? 1, "", "patch");
+    // The two trailing arguments are passed only for the opt-in method, so the
+    // default call is byte-for-byte the pre-17.9 one.
+    const seg =
+      options.method === "primitive"
+        ? m.segment(mesh, featureAngle, 0, 0, options.minPatchCells ?? 1, "", "patch", "primitive", options.primitiveTolerance ?? 0.01)
+        : m.segment(mesh, featureAngle, 0, 0, options.minPatchCells ?? 1, "", "patch");
+    let patched = seg.mesh;
+    let refinement: SegmentRefinement | undefined;
+    if (options.refine) {
+      const r = m.refinePatches(seg.mesh, {});
+      patched = r.mesh;
+      refinement = {
+        numPatches: r.numPatches,
+        numIterations: r.numIterations,
+        numSplits: r.numSplits,
+        numMerges: r.numMerges,
+        numPrimitive: r.numPrimitive,
+        numFreeform: r.numFreeform,
+        numFacets: r.numFacets,
+        explainedAreaFraction: r.explainedAreaFraction,
+        initialExplainedAreaFraction: r.initialExplainedAreaFraction,
+        hausdorffMax: r.hausdorffMax,
+        hausdorffRms: r.hausdorffRms,
+        stop: r.stop,
+      };
+    }
     const fit = m.fitPrimitives(
-      seg.mesh,
+      patched,
       "segment:patch",
       options.tolerance ?? 0.01,
       !options.absoluteTolerance,
@@ -116,7 +181,7 @@ export async function segmentMeshSurface(
     const max = toNumbers(fd["fit:patch_max"]);
     const fraction = toNumbers(fd["fit:patch_fraction"]);
     const params = toNumbers(fd["fit:patch_params"]);
-    const adj = toNumbers(seg.mesh.field_data?.["segment:adjacency"]);
+    const adj = toNumbers(patched.field_data?.["segment:adjacency"]);
 
     const all: SegmentPatch[] = ids.map((id, k) => {
       const f = (v: number | undefined) => (v !== undefined && Number.isFinite(v) ? v : null);
@@ -143,7 +208,7 @@ export async function segmentMeshSurface(
       warnings.push(`The surface is not closed/manifold (${seg.numBoundaryEdges} boundary, ${seg.numNonManifoldEdges} non-manifold edges); patches are still reported.`);
     }
     return {
-      numPatches: seg.numPatches,
+      numPatches: refinement ? refinement.numPatches : seg.numPatches,
       numMerged: seg.numMerged,
       numFeatureEdges: seg.numFeatureEdges,
       numBoundaryEdges: seg.numBoundaryEdges,
@@ -159,6 +224,7 @@ export async function segmentMeshSurface(
       patches: all.slice(0, maxPatches),
       adjacency: adjacency.slice(0, maxPatches * 4),
       truncated,
+      ...(refinement ? { refinement } : {}),
       warnings,
     };
   } catch (err) {

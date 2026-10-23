@@ -26,6 +26,9 @@ describe("parseMeshJson", () => {
       ftetwildDisableFiltering: false,
       octreeMaxLevel: 4,
       octreeSnap: true,
+      octreeMeshOutput: "tet",
+      octreeMeshMaxSize: 0,
+      octreeMeshLevels: 2,
       conformal: true,
     };
     const text = JSON.stringify({ version: 1, source: "bull.stp", options });
@@ -87,6 +90,9 @@ describe("generateGeoScript", () => {
       ftetwildDisableFiltering: false,
       octreeMaxLevel: 4,
       octreeSnap: true,
+      octreeMeshOutput: "tet",
+      octreeMeshMaxSize: 0,
+      octreeMeshLevels: 2,
       conformal: true,
     };
     const script = generateGeoScript("bull.stp", options);
