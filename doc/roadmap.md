@@ -576,6 +576,11 @@ The MMG core probe is complete; its working volume/surface paths and negative op
   2. *Platform localisation.* In `test:integration`, launch the test VS Code with `--locale=es` and throwaway `package.nls.es.json` and `l10n/bundle.l10n.es.json` files. Assert that a manifest title and a host notification both resolve to their Spanish text.
   3. *Catalogue cost.* Move the status and notification strings and the static `viewerDom.ts` labels into a throwaway catalogue with one extra locale. Record the gzip growth of `media/viewer.js` and `dist/extension.js`, and confirm `test:webview` passes with the locale forced. As a starting proposal, a ceiling of 10 % growth of the viewer bundle per locale, to be confirmed with the maintainer.
   4. *Contract boundary.* Confirm from `describe_capabilities` and the sidecar parsers that no machine-readable key is derived from display text.
+- **Probe progress (2026-10-23):**
+  - **Step 1, grammar: done.** `src/localeNumber.ts` (`normalizeDecimalComma`) admits a decimal comma only where the whole field text is one number (`1,5` → `1.5`, a comma is never a thousands separator, so `1,234` → `1.234`), leaves `max(1,5)` untouched and rejects a bare comma inside an expression (`1,5+2`) with a message naming the rule. Unit-tested and bug-injected; it is not yet wired into any input field, so no behaviour changed.
+  - **Step 3, catalogue cost: estimated, not measured.** Baseline gzip is 805 976 B for `media/viewer.js` and 411 805 B for `dist/extension.js`. The static `viewerDom.ts` markup holds about 83 text nodes and 202 `title` attributes, and `src/` has 27 `show*Message` sites outside tests; one extra locale is a few KB gzipped against the 80 KB ceiling (10 % of the viewer bundle). A real throwaway catalogue is still needed to confirm it.
+  - **Step 2, `--locale=es`: not run.** The sandbox cannot download VS Code (proxy 403), so `test:integration` cannot launch here. Run it in CI or locally.
+  - **Step 4, contract boundary: not done.**
 - **Decision gate:**
   - **Pass:** one unambiguous number-input rule, platform localisation resolves, and growth stays inside the ceiling.
   - **Partial:** no safe input rule → localise display only, keep `.`-decimal input with a visible hint, and record that as the decision. Localised display alone is still a product.
