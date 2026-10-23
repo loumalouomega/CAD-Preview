@@ -8095,7 +8095,7 @@ test("mesh colours: a vertex-coloured PLY renders its own colours (front three f
 test("mesh colours: a Part colour replaces the file colours and removing it brings them back", async (page) => {
   await openColoured(page, "/examples/PLY/colored-cube.ply", "ply");
   await lookFrom(page, ISO_FRONT);
-  await post(page, { type: "parts", parts: [{ name: "Skin", color: "#ff00ff", volumes: ["node-0"], surfaces: [], lines: [], points: [] }] });
+  await post(page, { type: "parts", parts: [{ name: "Skin", color: "#ff00ff", volumes: Array.from({ length: 8 }, (_, i) => `node-${i}`), surfaces: [], lines: [], points: [] }] });
   await sleep(600);
   const painted = await hueCounts(page);
   assert(painted.magenta > 3 * MIN_PX, `the Part colour covers the visible faces (got ${JSON.stringify(painted)})`);
