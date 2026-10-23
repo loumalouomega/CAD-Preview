@@ -4432,6 +4432,40 @@ test("fillet form: a blank End radius posts a constant fillet, a filled one post
   assert(op?.op === "fillet" && op.radius === 0.5 && op.radius2 === 2, `a filled End radius posts radius2 (got ${JSON.stringify(op)})`);
 });
 
+test("numeric fields: a decimal comma reads as a dot in a plain number and is refused inside an expression", async (page) => {
+  await populate(page);
+  const status = await runModeFilter(page, "line", "longestN", "1");
+  assert(/matched 1 of \d+/.test(status), `precondition: one edge is selected (got ${JSON.stringify(status)})`);
+  await page.click("#select-menu");
+  await sleep(150);
+  await page.evaluate(() => {
+    [...document.querySelectorAll(".op-btn")].find((b) => b.querySelector(".op-name")?.textContent === "Fillet")?.click();
+  });
+  await sleep(250);
+  const set = (v) => page.evaluate((v) => {
+    const i = document.querySelector('#edits-params input[data-name="amount"]');
+    i.value = v;
+    i.dispatchEvent(new Event("input", { bubbles: true }));
+  }, v);
+  const apply = () => page.evaluate(() => {
+    [...document.querySelectorAll("#edits-params .compose-apply")].find((b) => b.textContent === "Apply")?.click();
+  });
+  const sentCount = () => page.evaluate(() => (window.__sent ?? []).filter((x) => x.type === "editsChanged").length);
+  const lastOp = () => page.evaluate(() => (window.__sent ?? []).findLast((x) => x.type === "editsChanged")?.ops.at(-1));
+  await set("0,5");
+  await apply();
+  await sleep(300);
+  const op = await lastOp();
+  assert(op?.op === "fillet" && op.radius === 0.5 && !op.exprs, `"0,5" posts radius 0.5 with no expression (got ${JSON.stringify(op)})`);
+  const before = await sentCount();
+  await set("1,5+2");
+  await apply();
+  await sleep(300);
+  assert((await sentCount()) === before, "a bare comma inside an expression posts no op");
+  const msg = await page.evaluate(() => document.querySelector("#edits-params")?.textContent ?? "");
+  assert(/decimal separator/.test(msg), "the refusal names the decimal-comma rule");
+});
+
 const BREP_HEALTH_REPORT = {
   valid: false,
   counters: { solids: 1, shells: 1, faces: 36, edges: 98, looseEdges: 0, looseFaces: 0, looseWires: 0, solidsWithVoids: 0 },

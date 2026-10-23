@@ -4,6 +4,7 @@ import type { ConstructionPlane } from "../protocol";
 import type { OpBucket } from "../opBuckets";
 import { bucketSummary } from "../opBuckets";
 import { evalExpr } from "../paramExpr";
+import { normalizeDecimalComma } from "../localeNumber";
 import { profilePlacementFromPlane } from "../planeFrame";
 import { OP_CATALOG, describeOp, type CatalogCategory, type PanelOpId } from "./opCatalog";
 import { QUERYABLE_PANEL_FORMS, catalogLocation } from "./opCatalog";
@@ -655,8 +656,14 @@ export class EditsPanel {
    * string under `path` in `pendingExprs` (or the failure in `pendingErrors`).
    */
   private parseNumeric(raw: string, path: string): number {
-    const trimmed = raw.trim();
-    if (trimmed === "") return 0;
+    const rawTrimmed = raw.trim();
+    if (rawTrimmed === "") return 0;
+    const comma = normalizeDecimalComma(rawTrimmed);
+    if (!comma.ok) {
+      this.pendingErrors.push(`${path}: ${comma.error}`);
+      return 0;
+    }
+    const trimmed = comma.text;
     const n = Number(trimmed);
     if (Number.isFinite(n)) return n;
     const r = evalExpr(trimmed, this.variableValues);
