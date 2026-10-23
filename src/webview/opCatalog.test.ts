@@ -316,3 +316,18 @@ describe("catalogLocation", () => {
     expect(catalogLocation("translate")).toBe("edit");
   });
 });
+
+describe("localisation contract boundary", () => {
+  it("machine-readable op kinds and panel ids are ASCII identifiers, never display labels", () => {
+    const ident = /^[A-Za-z][A-Za-z0-9]*$/;
+    for (const e of allCatalogEntries()) {
+      expect(e.id, e.id).toMatch(ident);
+      for (const k of e.kinds) expect(k, k).toMatch(ident);
+    }
+  });
+  it("describeOp (display text) is not what a sidecar or tool stores: the op JSON keeps its `op` kind", () => {
+    const op: EditOp = { op: "translate", targets: ["solid-0"], vec: [1, 2, 3] };
+    expect(describeOp(op)).not.toBe(op.op);
+    expect(JSON.parse(JSON.stringify(op)).op).toBe("translate");
+  });
+});

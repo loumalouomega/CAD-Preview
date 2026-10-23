@@ -587,6 +587,7 @@ The **Variables** table at the top of the Edits panel makes the model parametric
 
 1. Click **＋ New** in the Variables header. A variable appears with an auto-generated name (`L1`, …) — rename it inline and set its expression (e.g. `20`). The computed value shows to the right of the row.
 2. In any op's parameter form, type the variable name — or an arithmetic expression like `L/2 + 1` — instead of a number, then **Apply**/**Add** as usual. The op is created with the current value and remembers the expression (the history line shows it as `[length = L/2 + 1]`).
+   A plain number may use a decimal comma (`0,5` reads as `0.5`; a comma is never a thousands separator). Inside an expression a comma only separates function arguments, e.g. `max(1, 5)`; `1,5+2` is refused with a message naming the rule.
 3. Edit the variable's expression in the table — every operation referencing it re-resolves and the model rebuilds immediately.
 
 ![The Variables table with two variables — L = 20 and the derived H = L / 2 = 10.](/screenshots/variables.png)
