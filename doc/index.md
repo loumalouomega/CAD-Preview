@@ -4,7 +4,7 @@ layout: home
 hero:
   name: CAD Preview
   text: Interactive 3D CAD and mesh previews in VS Code
-  tagline: Open a STEP, IGES, BREP, STL, OBJ, PLY, glTF, 3MF, Collada, AMF, or USD file — CAD Preview renders it instantly inside the editor with full orbit, pan, and zoom.
+  tagline: Open a STEP, IGES, BREP, STL, OBJ, PLY, glTF, 3MF, Collada, AMF, USD, or VRML file — CAD Preview renders it instantly inside the editor with full orbit, pan, and zoom.
   actions:
     - theme: brand
       text: Get Started
@@ -118,6 +118,7 @@ features:
 | Collada | `.dae`         | Three.js `ColladaLoader` (import-only; display-only on the host) |
 | AMF | `.amf`         | Three.js `AMFLoader` (import-only; display-only on the host) |
 | USD | `.usd` `.usda` `.usdc` `.usdz` | Three.js `USDLoader` (import-only; display-only on the host) |
+| VRML | `.wrl` | Three.js `VRMLLoader` (import-only; display-only on the host) |
 
 Plus [VTK (`.vtk`), VTU (`.vtu`), MED (`.med`), CGNS (`.cgns`), Exodus (`.exo`, `.e`), XDMF (`.xdmf`), Kratos MDPA (`.mdpa`), OpenFOAM (`.foam`), Gmsh Mesh (`.msh`, `.msh2`), Abaqus (`.inp`), I-DEAS Universal (`.unv`), SU2 (`.su2`), INRIA Medit (`.mesh`), GiD Postprocess (`.post.msh`), libMesh (`.xda`, `.xdr` and their `.gz`/`.bz2` pairings), Kratos CAD JSON (`.cad.json` — an exact NURBS B-rep the `iga_sample`/`iga_refine`/`iga_evaluate` tools read), Nastran Bulk Data (`.bdf`), and the meshio++ 17.3.0 binary writers Tecplot (`.plt`), FEBio plot (`.xplt`), Medit binary (`.meshb`), MSC Marc post (`.t19`), Abaqus results (`.fil`), Ansys MAPDL results (`.rst`), LS-DYNA d3plot (`.d3plot`), plus 17.4.0's Nastran OP2 results (`.op2`)](/file-formats#meshio-bridge-formats-vtk-med-cgns-exodus-xdmf-kratos-mdpa-openfoam-and-more) via the host-side meshio++ bridge — Gmsh Mesh, Abaqus, I-DEAS Universal, SU2, INRIA Medit and Nastran close a real export/import asymmetry (this codebase's own FE Meshing panel wrote them but couldn't reopen them). SVG and DXF are not rendering formats but appear at both ends of the pipeline: **Import SVG…**/**Import DXF…** trace a 2D drawing's geometry into sketch polylines/profile ops, and **Export Silhouette SVG…/…DXF…** write a 2D outline of the model back out.
 

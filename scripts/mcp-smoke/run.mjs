@@ -3215,6 +3215,20 @@ try {
     assert(/display-only mesh format/i.test(meshUsd.error ?? ""), `generate_mesh refuses a USD file by name (got: ${JSON.stringify(meshUsd).slice(0, 240)})`);
   }
 
+  // VRML (.wrl) is DISPLAY-ONLY on the host exactly like USD: same refusals, by name.
+  {
+    const wrl = path.join(ROOT, "examples", "VRML", "cube.wrl");
+    const healthWrl = await call("check_mesh_health", { path: wrl });
+    assert(
+      healthWrl.supported === false && /wrl has no host-side triangle-soup parser/i.test(healthWrl.warnings?.[0] ?? ""),
+      `check_mesh_health refuses a VRML file by name (got: ${JSON.stringify(healthWrl)})`
+    );
+    const loadWrl = await call("load_model", { path: wrl });
+    assert(loadWrl.format === "wrl" && /WRL is display-only/.test((loadWrl.warnings ?? []).join(" ")), `load_model opens a VRML file with a display-only warning (got: ${JSON.stringify(loadWrl).slice(0, 240)})`);
+    const meshWrl = await callTolerant("generate_mesh", { path: wrl });
+    assert(/display-only mesh format/i.test(meshWrl.error ?? ""), `generate_mesh refuses a VRML file by name (got: ${JSON.stringify(meshWrl).slice(0, 240)})`);
+  }
+
   // AMF is DISPLAY-ONLY on the host exactly like 3MF: same refusals, by name.
   {
     const amf = path.join(ROOT, "examples", "AMF", "cube.amf");

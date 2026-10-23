@@ -26,6 +26,7 @@
     { "id": "load-3mf-display-only", "check": "load", "fixture": "3MF/cube.3mf", "expect": { "format": "3mf", "warningIncludes": "display-only" } },
     { "id": "load-dae-display-only", "check": "load", "fixture": "Collada/cube.dae", "expect": { "format": "dae", "warningIncludes": "display-only" } },
     { "id": "load-usd-display-only", "check": "load", "fixture": "USD/cube.usda", "expect": { "format": "usd", "warningIncludes": "display-only" } },
+    { "id": "load-wrl-display-only", "check": "load", "fixture": "VRML/cube.wrl", "expect": { "format": "wrl", "warningIncludes": "display-only" } },
     { "id": "load-usdz-display-only", "check": "load", "fixture": "USD/cube.usdz", "expect": { "format": "usd", "warningIncludes": "display-only" } },
     { "id": "load-amf-display-only", "check": "load", "fixture": "AMF/cube.amf", "expect": { "format": "amf", "warningIncludes": "display-only" } },
     { "id": "load-med-two-material", "check": "load", "fixture": "MED/two-material-tets.med", "expect": { "format": "med", "warningIncludes": "MaterialA" } },

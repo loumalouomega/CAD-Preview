@@ -2168,7 +2168,7 @@ const brepHealthPanel = new BrepHealthPanel(document.getElementById("brep-health
   },
 });
 
-/** Printability: any source with host-measurable triangles (a B-rep through its fine tessellation; STL/OBJ/PLY/glTF; a meshio boundary). Display-only formats (3MF/Collada/AMF/USD) have none. */
+/** Printability: any source with host-measurable triangles (a B-rep through its fine tessellation; STL/OBJ/PLY/glTF; a meshio boundary). Display-only formats (3MF/Collada/AMF/USD/VRML) have none. */
 function setPrintabilityEligible(eligible: boolean): void {
   printabilityPanel.setEligible(eligible);
   if (!eligible) printabilityRequestId = null;

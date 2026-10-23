@@ -788,6 +788,7 @@ Returns `undefined` for unrecognized extensions (the extension never opens those
 | `.dae`          | `three`  | `dae` (import-only; display-only on the host) |
 | `.amf`          | `three`  | `amf` (import-only; display-only on the host) |
 | `.usd` `.usda` `.usdc` `.usdz` | `three` | `usd` (import-only; display-only on the host) |
+| `.wrl` | `three` | `wrl` (import-only; display-only on the host) |
 | `.vtk`          | `meshio` | `vtk`    |
 | `.vtu`          | `meshio` | `vtu`    |
 | `.med`          | `meshio` | `med`    |

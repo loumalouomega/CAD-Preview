@@ -1033,6 +1033,21 @@ test("Compressed glTF (Draco and meshopt) loads under the real webview CSP", asy
     assert(Math.abs(max - min - edge) < 1e-3, `${name}: the cube measures ${edge} mm along x (got ${max - min})`);
     await closeAll();
   }
+
+  // VRML: `VRMLLoader` (chevrotain) must parse under the real webview CSP.
+  {
+    const staged = stage(path.join(ROOT, "examples", "VRML", "cube.wrl"));
+    const out = path.join(path.dirname(staged), "from-wrl.stl");
+    assert(await openDocument(staged), "cube.wrl opens");
+    await withModals([pick("STL"), pick("Native"), save(out)], async () => {
+      await vscode.commands.executeCommand("cad-preview.export");
+      await waitForFile(out);
+    });
+    const buf = fs.readFileSync(out);
+    const count = buf.length >= 84 ? buf.readUInt32LE(80) : 0;
+    assert(count === 12, `cube.wrl: the displayed model carries the cube's 12 triangles (got ${count})`);
+    await closeAll();
+  }
 });
 
 test("Save in place bakes ops into the source with .bak + watermark", async () => {

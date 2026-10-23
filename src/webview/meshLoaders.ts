@@ -6,6 +6,7 @@ import { ThreeMFLoader } from "three/examples/jsm/loaders/3MFLoader.js";
 import { ColladaLoader } from "three/examples/jsm/loaders/ColladaLoader.js";
 import { AMFLoader } from "three/examples/jsm/loaders/AMFLoader.js";
 import { USDLoader } from "three/examples/jsm/loaders/USDLoader.js";
+import { VRMLLoader } from "three/examples/jsm/loaders/VRMLLoader.js";
 import type { CadFormat } from "../fileRouter";
 import { isSafeRelativePath } from "../safeRelativePath";
 import { applyDefaultMaterial, convertAmfMaterials, convertColladaMaterials, convertThreeMfMaterials, parseMeshObject, parseObjObject } from "./meshObject";
@@ -141,6 +142,8 @@ export async function loadMeshFromUrl(
       return loadAmf(url);
     case "usd":
       return loadUsd(url);
+    case "wrl":
+      return loadWrl(url);
     default:
       throw new Error(`Mesh loader for "${format}" is not implemented.`);
   }
@@ -306,5 +309,35 @@ async function loadUsd(url: string): Promise<THREE.Object3D> {
   group.scale.multiplyScalar(usdMmPerUnit(metersPerUnit));
   const unit = usdDeclaredUnit(metersPerUnit);
   if (unit) group.userData.declaredUnit = unit;
+  return group;
+}
+
+/**
+ * Loads a VRML97 `.wrl` through three's `VRMLLoader` (chevrotain lexer/parser;
+ * it calls `eval` only on a function value, which a CSP without
+ * `'unsafe-eval'` leaves untouched). VRML declares no unit, so the geometry is
+ * shown as authored (millimetres, like STL/OBJ) with no scale and no
+ * `declaredUnit`; the loader's own scale/rotation are reset because
+ * `Viewer.setModel` owns the root rotation. `Appearance`/`Material`
+ * `diffuseColor`s are kept as native colours and textures are ignored
+ * (`convertColladaMaterials` drops the loader's unnamed plain-white fallback
+ * so the palette look applies).
+ */
+async function loadWrl(url: string): Promise<THREE.Object3D> {
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`Failed to fetch ${url}: ${res.status}`);
+  const text = await res.text();
+  let scene: THREE.Object3D;
+  try {
+    scene = new VRMLLoader().parse(text, "");
+  } catch (err) {
+    throw new Error(`Could not parse the VRML file: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  scene.rotation.set(0, 0, 0);
+  scene.scale.set(1, 1, 1);
+  const group = new THREE.Group();
+  group.add(scene);
+  convertColladaMaterials(group);
+  applyDefaultMaterial(group);
   return group;
 }
