@@ -117,6 +117,7 @@ export const EXPORT_EXTENSION: Record<CadFormat, string> = {
   amf: "amf",
   usd: "usd",
   wrl: "wrl",
+  fbx: "fbx",
   // meshio++-only formats (below) are never reachable via `exportTargetsFor` —
   // they're import-only document formats, not export targets — but every
   // `CadFormat` member needs an entry here for `Record<CadFormat, string>` to
@@ -178,6 +179,7 @@ export const EXPORT_LABEL: Record<CadFormat, string> = {
   amf: "AMF",
   usd: "USD",
   wrl: "VRML",
+  fbx: "FBX",
   // Never offered by exportTargetsFor (see EXPORT_EXTENSION's comment) — present only for Record exhaustiveness.
   vtk: "VTK",
   vtu: "VTU",

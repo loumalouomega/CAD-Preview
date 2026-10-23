@@ -64,6 +64,9 @@
             "filenamePattern": "*.wrl"
           },
           {
+            "filenamePattern": "*.fbx"
+          },
+          {
             "filenamePattern": "*.step"
           },
           {

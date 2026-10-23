@@ -181,6 +181,26 @@ describe("AMF as an import-only, display-only mesh format", () => {
   });
 });
 
+describe("FBX as an import-only, display-only mesh format", () => {
+  it("offers every mesh export format for an FBX source, with no save-in-place", () => {
+    const all = ["stl", "obj", "ply", "gltf", "3mf"];
+    expect(exportTargetsFor({ strategy: "three", format: "fbx" })).toEqual(all);
+    expect(exportTargetsFor({ strategy: "three", format: "fbx" }, true)).toEqual(all);
+    expect(MESH_SAVE_IN_PLACE_FORMATS.has("fbx")).toBe(false);
+  });
+
+  it("is never an export target for any other source (there is no FBX writer)", () => {
+    for (const route of [
+      { strategy: "occt", format: "step" },
+      { strategy: "three", format: "stl" },
+      { strategy: "three", format: "wrl" },
+    ] as const) {
+      expect(exportTargetsFor(route, true)).not.toContain("fbx");
+    }
+    expect(UNIT_CONVERTIBLE_FORMATS.has("fbx")).toBe(false);
+  });
+});
+
 describe("VRML as an import-only, display-only mesh format", () => {
   it("offers every mesh export format for a VRML source, with no save-in-place", () => {
     const all = ["stl", "obj", "ply", "gltf", "3mf"];

@@ -3229,6 +3229,20 @@ try {
     assert(/display-only mesh format/i.test(meshWrl.error ?? ""), `generate_mesh refuses a VRML file by name (got: ${JSON.stringify(meshWrl).slice(0, 240)})`);
   }
 
+  // FBX is DISPLAY-ONLY on the host exactly like VRML: same refusals, by name.
+  {
+    const fbx = path.join(ROOT, "examples", "FBX", "cube.fbx");
+    const healthFbx = await call("check_mesh_health", { path: fbx });
+    assert(
+      healthFbx.supported === false && /fbx has no host-side triangle-soup parser/i.test(healthFbx.warnings?.[0] ?? ""),
+      `check_mesh_health refuses an FBX file by name (got: ${JSON.stringify(healthFbx)})`
+    );
+    const loadFbx = await call("load_model", { path: fbx });
+    assert(loadFbx.format === "fbx" && /FBX is display-only/.test((loadFbx.warnings ?? []).join(" ")), `load_model opens an FBX file with a display-only warning (got: ${JSON.stringify(loadFbx).slice(0, 240)})`);
+    const meshFbx = await callTolerant("generate_mesh", { path: fbx });
+    assert(/display-only mesh format/i.test(meshFbx.error ?? ""), `generate_mesh refuses an FBX file by name (got: ${JSON.stringify(meshFbx).slice(0, 240)})`);
+  }
+
   // AMF is DISPLAY-ONLY on the host exactly like 3MF: same refusals, by name.
   {
     const amf = path.join(ROOT, "examples", "AMF", "cube.amf");

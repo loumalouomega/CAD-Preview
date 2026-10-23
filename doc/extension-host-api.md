@@ -116,6 +116,7 @@ The extension host is a Node.js process. These modules run there — never in th
 | `src/objSolidSignatures.ts` | Wires `objParser.ts` + `meshComponents.ts` into `SolidSignature[]` for Compare Models' OBJ side (pure, unit-tested) |
 | `src/plyParser.ts` | Pure host-side PLY parser (ASCII + both binary endiannesses, one shared header parser) into a flat indexed mesh (vscode/OCCT/THREE-free, unit-tested) |
 | `src/plySolidSignatures.ts` | Wires `plyParser.ts` + `meshComponents.ts` into `SolidSignature[]` for Compare Models' PLY side (pure, unit-tested) |
+| `src/fbxUnits.ts` | FBX `UnitScaleFactor` helpers (`fbxMmPerUnit`, `fbxDeclaredUnit`) — pure; the loader never applies the factor, `loadFbx` does |
 | `src/usdUnits.ts` | USD `metersPerUnit` helpers (`usdMmPerUnit`, `usdDeclaredUnit`) — pure; the loader's scale is reset and replaced by millimetres |
 | `src/amfUnits.ts` | AMF `unit` reader (`amfDeclaredUnit`, zip-aware) — pure; seeds the Units dropdown only, since three's `AMFLoader` already scales to millimetres |
 | `src/colladaUnits.ts` | Collada `<unit meter>` readers (`colladaMetresPerUnit`, `colladaMmPerUnit`, `colladaDeclaredUnit`) — pure; the loader itself is three's `ColladaLoader` in the webview only |
@@ -789,6 +790,7 @@ Returns `undefined` for unrecognized extensions (the extension never opens those
 | `.amf`          | `three`  | `amf` (import-only; display-only on the host) |
 | `.usd` `.usda` `.usdc` `.usdz` | `three` | `usd` (import-only; display-only on the host) |
 | `.wrl` | `three` | `wrl` (import-only; display-only on the host) |
+| `.fbx` | `three` | `fbx` (import-only; display-only on the host) |
 | `.vtk`          | `meshio` | `vtk`    |
 | `.vtu`          | `meshio` | `vtu`    |
 | `.med`          | `meshio` | `med`    |

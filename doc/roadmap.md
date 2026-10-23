@@ -280,21 +280,6 @@ These are outcome groupings, not release numbers. Independent small items can sh
 
 *Admission: no kernel unknown remains. Either a probe passed and its call shapes are in `CLAUDE.md`, or the work only reuses shipped machinery. The estimate is firm.*
 
-#### 2.1 More mesh formats through three's bundled loaders {#more-mesh-formats-through-three-s-bundled-loaders}
-
-*Area: Formats.*
-
-- **Evidence:**
-  - three ships a loader the viewer does not use: `FBXLoader`. (`3MFLoader`, `ColladaLoader`, `AMFLoader`, `USDLoader` and `VRMLLoader` are now used — see below.)
-  - **VRML shipped (geometry, `diffuseColor`, `DEF`/`USE`, no unit).** `.wrl` opens through `VRMLLoader`, **import-only** and **display-only on the host**, like USD; the chevrotain parser adds ~157 KB to the webview bundle. See `CLAUDE.md`'s 3MF/Collada/AMF/USD/VRML bullet.
-  - **USD shipped (geometry, flat colour, `metersPerUnit`).** `.usd/.usda/.usdc/.usdz` open through `USDLoader`, **import-only** and **display-only on the host**, like AMF. See `CLAUDE.md`'s 3MF/Collada/AMF/USD bullet.
-  - **AMF shipped (geometry, colour, declared unit).** `.amf` (plain or zipped) opens through `AMFLoader`, **import-only** and **display-only on the host**, like Collada. The loader already scales to millimetres from `<amf unit>`, so the viewer applies no scale; `amfDeclaredUnit` only seeds the Units dropdown. See `CLAUDE.md`'s 3MF/Collada bullet.
-  - **Collada shipped (geometry, flat colour, unit and up-axis handling).** `.dae` opens through `ColladaLoader` and is **import-only** (three has no Collada writer) and **display-only on the host**, like 3MF. `ColladaLoader` scales by the raw `<unit meter>` and rotates `Z_UP`; both are replaced in `loadDae` (millimetres from `colladaMmPerUnit`, the viewer owns the root rotation). Textures are ignored. See `CLAUDE.md`'s 3MF/Collada bullet.
-  - **3MF shipped (geometry, colour and unit seeding).** `.3mf` opens through `3MFLoader` and exports from every source through a small hand-rolled zip+XML writer on `fflate` (`src/threeMf.ts`) — not `three-3mf-exporter`, which would have added `jszip` and `fast-xml-parser` for a few dozen lines. It is **display-only on the host**: Compare Models, Mesh Health, Promote, Repair, drawings, headless meshing/baking and `save_model` refuse it by name. three's loader reads the `unit` attribute but never applies it, so the loader path scales to millimetres and the writer labels the unit it scaled to. See `CLAUDE.md`'s 3MF section.
-- **Remaining increments (S each):**
-  - The remaining loader (FBX) follows with a fixture, stating its host-side status plainly (display-only unless a host parser is added). Needs: large scene machinery, embedded textures through `Blob` URLs.
-- **Done when:** the remaining format has a committed fixture that opens, edits, exports back (to its own format where a writer exists, otherwise to a mesh format) and reopens with the same triangle count.
-
 #### 2.2 Shared UI design system with VSCode-MDPA-Preview {#shared-ui-design-system-with-vscode-mdpa-preview}
 
 *Area: Ecosystem.*

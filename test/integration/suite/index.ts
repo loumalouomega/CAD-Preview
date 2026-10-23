@@ -1034,6 +1034,32 @@ test("Compressed glTF (Draco and meshopt) loads under the real webview CSP", asy
     await closeAll();
   }
 
+  // FBX: `FBXLoader` (fflate + text parser) must parse under the real webview CSP,
+  // and UnitScaleFactor is applied once (the cm file pins it).
+  for (const name of ["cube.fbx", "cube-cm.fbx"]) {
+    const staged = stage(path.join(ROOT, "examples", "FBX", name));
+    const out = path.join(path.dirname(staged), "from-fbx.stl");
+    assert(await openDocument(staged), `${name} opens`);
+    await withModals([pick("STL"), pick("Native"), save(out)], async () => {
+      await vscode.commands.executeCommand("cad-preview.export");
+      await waitForFile(out);
+    });
+    const buf = fs.readFileSync(out);
+    const count = buf.length >= 84 ? buf.readUInt32LE(80) : 0;
+    assert(count === 12, `${name}: the displayed model carries the cube's 12 triangles (got ${count})`);
+    let max = -Infinity;
+    let min = Infinity;
+    for (let i = 0; i < count; i++) {
+      for (let v = 0; v < 3; v++) {
+        const x = buf.readFloatLE(84 + i * 50 + 12 + v * 12);
+        max = Math.max(max, x);
+        min = Math.min(min, x);
+      }
+    }
+    assert(Math.abs(max - min - 10) < 1e-3, `${name}: the cube measures 10 mm along x (got ${max - min})`);
+    await closeAll();
+  }
+
   // VRML: `VRMLLoader` (chevrotain) must parse under the real webview CSP.
   {
     const staged = stage(path.join(ROOT, "examples", "VRML", "cube.wrl"));

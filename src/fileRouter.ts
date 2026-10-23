@@ -11,7 +11,7 @@
 export type RenderStrategy = "occt" | "three" | "meshio";
 
 export type CadFormat =
-  | "step" | "iges" | "brep" | "csg" | "scad" | "stl" | "obj" | "ply" | "gltf" | "3mf" | "dae" | "amf" | "usd" | "wrl"
+  | "step" | "iges" | "brep" | "csg" | "scad" | "stl" | "obj" | "ply" | "gltf" | "3mf" | "dae" | "amf" | "usd" | "wrl" | "fbx"
   | "vtk" | "vtu" | "med" | "cgns" | "exodus" | "xdmf" | "mdpa"
   | "openfoam"
   | "gmsh" | "abaqus" | "unv" | "su2" | "medit"
@@ -118,7 +118,7 @@ export const COMPARABLE_MESH_FORMATS: ReadonlySet<CadFormat> = new Set<CadFormat
  * must cover every `strategy: "three"` entry in `EXTENSION_MAP` (pinned by a
  * drift-guard test).
  */
-export const DISPLAY_ONLY_MESH_FORMATS: ReadonlySet<CadFormat> = new Set<CadFormat>(["3mf", "dae", "amf", "usd", "wrl"]);
+export const DISPLAY_ONLY_MESH_FORMATS: ReadonlySet<CadFormat> = new Set<CadFormat>(["3mf", "dae", "amf", "usd", "wrl", "fbx"]);
 
 /** Plain-language refusal naming a display-only format, for `what` the caller
  * cannot do with it. One builder so the host-side gates cannot drift. */
@@ -170,6 +170,8 @@ const EXTENSION_MAP: Record<string, FileRoute> = {
   usdz: { strategy: "three", format: "usd" },
   // VRML97 (`.wrl`): loaded by three's `VRMLLoader` in the webview; import-only, display-only on the host.
   wrl: { strategy: "three", format: "wrl" },
+  // FBX (`.fbx`, ASCII or binary): loaded by three's `FBXLoader` in the webview; import-only, display-only on the host.
+  fbx: { strategy: "three", format: "fbx" },
   vtk: { strategy: "meshio", format: "vtk" },
   vtu: { strategy: "meshio", format: "vtu" },
   med: { strategy: "meshio", format: "med" },
