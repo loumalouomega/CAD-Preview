@@ -6,8 +6,11 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/); thi
 
 ## [Unreleased]
 
+## [3.29.0] - 2026-10-23
+
 ### Added
 
+- **Plain numeric edit-op fields accept a decimal comma.** `0,5` reads as `0.5`; a comma is never a thousands separator, so `1,234` is `1.234`. Inside an expression a comma still separates function arguments (`max(1, 5)` is untouched), and a bare comma in an expression (`1,5+2`) is refused with a message naming the rule. The rule lives in the pure `normalizeDecimalComma` helper (`src/localeNumber.ts`) and is applied only by the Edits panel's `parseNumeric`, so persisted op JSON and machine-readable keys stay locale-independent.
 - **FBX (`.fbx`) opens as a display-only, import-only mesh format** through three's `FBXLoader` (ASCII or binary, version 7000+): geometry, diffuse colours (a Part colour still wins) and the file's `UnitScaleFactor`, which is applied to millimetres once and seeds the Units dropdown; a Z-up file stays Z-up. Lights, cameras, textures and animation are ignored. Like VRML it exports to STL/OBJ/PLY/glTF/3MF and is refused by name by the host-side tools.
 - **VRML (`.wrl`) opens as a display-only, import-only mesh format** through three's `VRMLLoader`: geometry, `DEF`/`USE` and `Transform` nodes, and `diffuseColor`s (a Part colour still wins). VRML declares no unit, so geometry is shown as authored. Like USD it exports to STL/OBJ/PLY/glTF/3MF and is refused by name by the host-side tools.
 - **USD (`.usd`, `.usda`, `.usdc`, `.usdz`) opens as a display-only, import-only mesh format** through three's `USDLoader` (ASCII, binary crate and zipped packages): geometry, flat colours (a Part colour still wins) and the stage's `metersPerUnit`, which is applied to millimetres once and seeds the Units dropdown; a Z-up stage stays Z-up. Like AMF it exports to STL/OBJ/PLY/glTF/3MF and is refused by name by host-side tools. Textures, animation and skinning are ignored.
@@ -984,6 +987,7 @@ This release republishes v1.9.0's full changelog (below) unchanged; v1.9.0 itsel
 
 - Initial release: read-only 3D preview for CAD and mesh files (STEP, IGES, BREP, STL, OBJ, PLY, glTF) inside a VS Code custom editor, using OpenCascade.js (OCCT WASM) in the extension host for B-rep formats and Three.js in the webview for rendering.
 
+[3.29.0]: https://github.com/loumalouomega/CAD-Preview/compare/v3.28.0...v3.29.0
 [3.28.0]: https://github.com/loumalouomega/CAD-Preview/compare/v3.27.0...v3.28.0
 [3.27.0]: https://github.com/loumalouomega/CAD-Preview/compare/v3.26.0...v3.27.0
 [3.26.0]: https://github.com/loumalouomega/CAD-Preview/compare/v3.25.0...v3.26.0
