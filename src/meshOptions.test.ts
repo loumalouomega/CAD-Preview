@@ -2,7 +2,9 @@ import { describe, it, expect } from "vitest";
 import {
   validateMeshOptions,
   octreeSummary,
+  octreeMeshSummary,
   OCTREE_MAX_LEVEL_LIMIT,
+  OCTREE_MESH_LEVELS_LIMIT,
   validateMeshGrading,
   validateMeshStructured,
   validateMeshBoundaryLayer,
@@ -42,6 +44,9 @@ describe("validateMeshOptions", () => {
       ftetwildDisableFiltering: false,
       octreeMaxLevel: 5,
       octreeSnap: false,
+      octreeMeshOutput: "hex" as const,
+      octreeMeshMaxSize: 1.5,
+      octreeMeshLevels: 3,
       conformal: true,
     };
     expect(validateMeshOptions(opts)).toEqual(opts);
@@ -131,8 +136,10 @@ describe("validateMeshOptions", () => {
     expect(validateMeshOptions({ optimize: 1 })?.optimize).toBe(DEFAULT_MESH_OPTIONS.optimize);
   });
 
-  it("defaults engine unless it is exactly 'gmsh', 'ftetwild' or 'octree'", () => {
+  it("defaults engine unless it is exactly 'gmsh', 'ftetwild', 'octree' or 'octreemesh'", () => {
     expect(validateMeshOptions({ engine: "octree" })?.engine).toBe("octree");
+    expect(validateMeshOptions({ engine: "octreemesh" })?.engine).toBe("octreemesh");
+    expect(validateMeshOptions({ engine: "octreeMesh" })?.engine).toBe("gmsh");
     expect(validateMeshOptions({ engine: "ftetwild" })?.engine).toBe("ftetwild");
     expect(validateMeshOptions({ engine: "gmsh" })?.engine).toBe("gmsh");
     expect(validateMeshOptions({ engine: "tetgen" })?.engine).toBe(DEFAULT_MESH_OPTIONS.engine);
@@ -417,6 +424,9 @@ describe("DEFAULT_MESH_OPTIONS", () => {
       ftetwildDisableFiltering: false,
       octreeMaxLevel: 4,
       octreeSnap: true,
+      octreeMeshOutput: "tet",
+      octreeMeshMaxSize: 0,
+      octreeMeshLevels: 2,
       conformal: true,
     });
   });
@@ -537,5 +547,42 @@ describe("octree options", () => {
     expect(octreeSummary(stats)).toBe("Octree L4: 1372 hex · 542 pyramid · 1608 tet · snapped 433 · Parts not preserved");
     expect(octreeSummary({ ...stats, numRefused: 81 })).toContain("snapped 433, refused 81");
     expect(octreeSummary({ ...stats, snap: false })).toContain("snap off");
+  });
+});
+
+describe("octree-mesh options", () => {
+  it("accepts only tet or hex as the output (castellated has hanging nodes and is not offered)", () => {
+    expect(validateMeshOptions({ octreeMeshOutput: "hex" })?.octreeMeshOutput).toBe("hex");
+    expect(validateMeshOptions({ octreeMeshOutput: "castellated" })?.octreeMeshOutput).toBe("tet");
+    expect(validateMeshOptions({ octreeMeshOutput: 3 })?.octreeMeshOutput).toBe("tet");
+  });
+
+  it("keeps a positive max size, and maps zero, negative and non-numbers to automatic (0)", () => {
+    expect(validateMeshOptions({ octreeMeshMaxSize: 2.5 })?.octreeMeshMaxSize).toBe(2.5);
+    expect(validateMeshOptions({ octreeMeshMaxSize: 0 })?.octreeMeshMaxSize).toBe(0);
+    expect(validateMeshOptions({ octreeMeshMaxSize: -1 })?.octreeMeshMaxSize).toBe(0);
+    expect(validateMeshOptions({ octreeMeshMaxSize: "2" })?.octreeMeshMaxSize).toBe(0);
+    expect(validateMeshOptions({ octreeMeshMaxSize: Infinity })?.octreeMeshMaxSize).toBe(0);
+  });
+
+  it("clamps levels to 1..limit, rounds, and defaults anything else", () => {
+    expect(validateMeshOptions({ octreeMeshLevels: 3 })?.octreeMeshLevels).toBe(3);
+    expect(validateMeshOptions({ octreeMeshLevels: 2.6 })?.octreeMeshLevels).toBe(3);
+    expect(validateMeshOptions({ octreeMeshLevels: 99 })?.octreeMeshLevels).toBe(OCTREE_MESH_LEVELS_LIMIT);
+    expect(validateMeshOptions({ octreeMeshLevels: 0 })?.octreeMeshLevels).toBe(DEFAULT_MESH_OPTIONS.octreeMeshLevels);
+    expect(validateMeshOptions({ octreeMeshLevels: NaN })?.octreeMeshLevels).toBe(DEFAULT_MESH_OPTIONS.octreeMeshLevels);
+  });
+
+  it("summarizes a result with the quality facts and the Parts loss", () => {
+    const tet = {
+      output: "tet" as const, maxSize: 2, minSize: 0.5, numLeaves: 100, numTetrahedra: 44832, numHexahedra: 0, numInverted: 0,
+      minDihedral: 35.26, maxDihedral: 125.26, minScaledJacobian: 0.24, hausdorffToSkin: 0, numFeatureChains: 12,
+      numFeatureChainsMissed: 2, numWarpRefused: 0, warnings: [],
+    };
+    expect(octreeMeshSummary(tet)).toBe(
+      "Octree-mesh tet: 44832 tet · min Jacobian 0.24 · dihedral 35.3°–125.3° · features 10/12 · 0 inverted · Parts not preserved"
+    );
+    const hex = octreeMeshSummary({ ...tet, output: "hex", numTetrahedra: 0, numHexahedra: 7776, numFeatureChains: 0, numFeatureChainsMissed: 0 });
+    expect(hex).toBe("Octree-mesh hex: 7776 hex · min Jacobian 0.24 · 0 inverted · Parts not preserved");
   });
 });

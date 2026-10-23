@@ -71,7 +71,7 @@ CAD-Preview combines an interactive 3D viewer with non-destructive editing, side
 - **Explore models** — orbit, pan, zoom, projection, clipping, snapping, display controls, and saved viewpoints.
 - **Model non-destructively** — transforms, booleans, features, sketches, curves, wireframe operations, and patterns.
 - **Organize and reuse** — Parts, Standard Parts, BOM and hole tables, blank models, and portable sidecar state.
-- **Export and mesh** — compatible 3D exports, SVG/DXF drawings, drawing sheets, and Gmsh/fTetWild/octree FE meshing.
+- **Export and mesh** — compatible 3D exports, SVG/DXF drawings, drawing sheets, and Gmsh/fTetWild/octree/octree-mesh FE meshing.
 - **Inspect and automate** — measurements, annotations, mass properties, health checks, reports, batch operations, comparisons, and an MCP server.
 
 <details>

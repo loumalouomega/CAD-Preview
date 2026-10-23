@@ -56,6 +56,11 @@ describe("parseMeshPresetsJson", () => {
     expect(lib.weird.options.sizeMax).toBe(3);
   });
 
+  it("keeps a pinned octreemesh engine instead of falling back to gmsh", () => {
+    const text = JSON.stringify({ version: 1, presets: { tets: { name: "tets", engine: "octreemesh", options: {} } } });
+    expect(parseMeshPresetsJson(text).tets.engine).toBe("octreemesh");
+  });
+
   it("keeps a pinned octree engine instead of falling back to gmsh", () => {
     const text = JSON.stringify({ version: 1, presets: { hex: { name: "hex", engine: "octree", options: {} } } });
     expect(parseMeshPresetsJson(text).hex.engine).toBe("octree");

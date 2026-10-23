@@ -34,7 +34,7 @@ import * as path from "path";
 // the "cjs" output, which Node resolves at actual runtime (honoring the
 // package's "require" export condition), sidestepping both problems above.
 import initialize from "@loumalouomega/gmsh-wasm";
-import { boundaryLayerAlgorithmProblem, gmshShapeOptions, SIZE_MAX_SENTINEL, DEFAULT_MESH_OPTIONS, type MeshOptions, type MeshEngine, type OctreeStats } from "./meshOptions";
+import { boundaryLayerAlgorithmProblem, gmshShapeOptions, SIZE_MAX_SENTINEL, DEFAULT_MESH_OPTIONS, type MeshOptions, type MeshEngine, type OctreeStats, type OctreeMeshStats } from "./meshOptions";
 import { measureBoundaryLayerRows, type BoundaryLayerAchieved, type BoundaryLayerWall } from "./boundaryLayerMeasurement";
 import { summarizeQuality, type QualitySummary } from "./meshQuality";
 import type { Part, MeshElementGroup } from "./protocol";
@@ -45,6 +45,7 @@ import { parseToWeldedMesh } from "./meshHeal";
 import { boundsOfTriangles, boundsDiagonal, weldedMeshToStlBytes } from "./meshComponents";
 import { tetrahedralize, tetsToMsh41 } from "./ftetwildService";
 import { octreeMesh, brepSkinStlBytes } from "./octreeService";
+import { octreeMeshVolume } from "./octreeMeshService";
 import type { MeshParseFormat } from "./fileRouter";
 import type { GltfExternalBuffers } from "./gltfParser";
 import {
@@ -257,6 +258,8 @@ export interface MeshResult {
   /** Octree facts (level, snap counts, hex/pyramid/tet mix) — only set when
    * `engineUsed === "octree"`. Parts are never preserved by that engine. */
   octree?: OctreeStats;
+  /** Octree-mesh facts — only set when `engineUsed === "octreemesh"`. */
+  octreeMesh?: OctreeMeshStats;
 }
 
 /** A highlight overlay of the worst-quality elements, closing the
@@ -456,6 +459,18 @@ function effectiveEngine(input: MeshGenerationInput, options: MeshOptions): { en
     }
     return { engine: "octree", warnings: [] };
   }
+  if (options.engine === "octreemesh") {
+    // Like octree, works on a B-rep through its tessellated skin.
+    if (options.dimension !== 3) {
+      return {
+        engine: "gmsh",
+        warnings: [
+          `Engine "octreemesh" was requested but dimension is ${options.dimension} — octree-mesh only produces 3D volume meshes, so Gmsh was used instead.`,
+        ],
+      };
+    }
+    return { engine: "octreemesh", warnings: [] };
+  }
   if (options.engine !== "ftetwild") return { engine: "gmsh", warnings: [] };
   if (input.kind === "brep") {
     return {
@@ -489,10 +504,15 @@ function effectiveEngine(input: MeshGenerationInput, options: MeshOptions): { en
 export function octreeUnsupportedOptions(options: MeshOptions, parts: readonly Part[]): { refuse: string[]; ignored: string[] } {
   const refuse: string[] = [];
   const ignored: string[] = [];
-  if (options.elementOrder !== DEFAULT_MESH_OPTIONS.elementOrder) refuse.push(`elementOrder ${options.elementOrder} (octree is linear only)`);
-  if (options.elementShape !== DEFAULT_MESH_OPTIONS.elementShape) refuse.push(`elementShape "${options.elementShape}" (octree decides its own hex/pyramid/tet mix)`);
-  if ((options.periodic?.length ?? 0) > 0) refuse.push("periodic (octree has no face correlation)");
-  if ((options.sizeField?.length ?? 0) > 0) refuse.push("sizeField (octree refines by octreeMaxLevel only)");
+  // Both octree engines share this gate; only the wording of the size knob and
+  // of the element-mix remark differs.
+  const family = options.engine === "octreemesh" ? "octree-mesh" : "octree";
+  const sizing = options.engine === "octreemesh" ? "octreeMeshMaxSize/octreeMeshLevels" : "octreeMaxLevel";
+  const mix = options.engine === "octreemesh" ? "decides its own tet or hex output via octreeMeshOutput" : "decides its own hex/pyramid/tet mix";
+  if (options.elementOrder !== DEFAULT_MESH_OPTIONS.elementOrder) refuse.push(`elementOrder ${options.elementOrder} (${family} is linear only)`);
+  if (options.elementShape !== DEFAULT_MESH_OPTIONS.elementShape) refuse.push(`elementShape "${options.elementShape}" (${family} ${mix})`);
+  if ((options.periodic?.length ?? 0) > 0) refuse.push(`periodic (${family} has no face correlation)`);
+  if ((options.sizeField?.length ?? 0) > 0) refuse.push(`sizeField (${family} refines by ${sizing} only)`);
   if (options.optimize !== DEFAULT_MESH_OPTIONS.optimize && options.optimize !== "none") ignored.push(`optimize "${options.optimize}"`);
   if (parts.length > 0) {
     ignored.push(`${parts.length} Part(s) — names, sizes, grading, structured divisions, boundary layers and physical groups are not preserved`);
@@ -547,8 +567,32 @@ async function populateMeshedModel(
   input: MeshGenerationInput,
   options: MeshOptions,
   parts: Part[]
-): Promise<{ tmpPath: string | null; groupMaps: PartGroupMaps | null; engineUsed: MeshEngine; warnings: string[]; conformalApplied: boolean; octree?: OctreeStats }> {
+): Promise<{ tmpPath: string | null; groupMaps: PartGroupMaps | null; engineUsed: MeshEngine; warnings: string[]; conformalApplied: boolean; octree?: OctreeStats; octreeMesh?: OctreeMeshStats }> {
   const { engine, warnings } = effectiveEngine(input, options);
+
+  if (engine === "octreemesh") {
+    const unsupported = octreeUnsupportedOptions(options, parts);
+    if (unsupported.refuse.length > 0) {
+      throw new Error(
+        `engine "octreemesh" cannot honor: ${unsupported.refuse.join("; ")}. Remove them or switch the engine to "gmsh".`
+      );
+    }
+    for (const note of unsupported.ignored) warnings.push(`Ignored under engine "octreemesh": ${note}.`);
+    const stlBytes = input.kind === "stl" ? input.stlBytes : await brepSkinStlBytes(extensionPath, input.stepBytes);
+    const { mshText, stats } = await octreeMeshVolume(stlBytes, {
+      output: options.octreeMeshOutput,
+      maxSize: options.octreeMeshMaxSize,
+      levels: options.octreeMeshLevels,
+    });
+    gmsh.clear();
+    gmsh.model.add(`model-${++_modelCounter}`);
+    const tmpPath = "/i.msh";
+    gmsh.FS.writeFile(tmpPath, mshText);
+    gmsh.merge(tmpPath);
+    gmsh.option.setNumber("Mesh.SaveAll", 1);
+    for (const w of stats.warnings) warnings.push(`Octree-mesh: ${w}`);
+    return { tmpPath, groupMaps: null, engineUsed: "octreemesh", warnings, conformalApplied: false, octreeMesh: stats };
+  }
 
   if (engine === "octree") {
     const unsupported = octreeUnsupportedOptions(options, parts);
@@ -775,6 +819,7 @@ export async function generateMesh(
       conformalApplied: loaded.conformalApplied,
       boundaryLayers: measured.results.length > 0 ? measured.results : undefined,
       ...(loaded.octree ? { octree: loaded.octree } : {}),
+      ...(loaded.octreeMesh ? { octreeMesh: loaded.octreeMesh } : {}),
     };
   } finally {
     if (tmpPath) {
@@ -888,6 +933,11 @@ export async function exportGeoUnrolled(
   if (engine === "ftetwild") {
     throw new Error(
       '.geo_unrolled export is not available under engine "ftetwild" — it represents Gmsh\'s own geometry import, and fTetWild never runs one. Export a mesh format (e.g. .msh) instead, or switch the engine to "gmsh".'
+    );
+  }
+  if (engine === "octreemesh") {
+    throw new Error(
+      '.geo_unrolled export is not available under engine "octreemesh" — it represents Gmsh\'s own geometry import, and the octree-mesh never runs one. Export a mesh format (e.g. .msh) instead, or switch the engine to "gmsh".'
     );
   }
   if (engine === "octree") {
@@ -1064,6 +1114,8 @@ export interface HandoffFacts {
   boundaryLayers?: BoundaryLayerAchieved[];
   /** Octree facts — only set when `engineUsed === "octree"`. */
   octree?: OctreeStats;
+  /** Octree-mesh facts — only set when `engineUsed === "octreemesh"`. */
+  octreeMesh?: OctreeMeshStats;
 }
 
 /**
@@ -1144,6 +1196,7 @@ export async function computeHandoffFacts(
       conformalApplied: loaded.conformalApplied,
       boundaryLayers: measured.results.length > 0 ? measured.results : undefined,
       ...(loaded.octree ? { octree: loaded.octree } : {}),
+      ...(loaded.octreeMesh ? { octreeMesh: loaded.octreeMesh } : {}),
     };
   } finally {
     if (tmpPath) {

@@ -6633,6 +6633,7 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
         worstElements: msg.worstElements,
         boundaryLayers: msg.boundaryLayers,
         octree: msg.octree,
+        octreeMesh: msg.octreeMesh,
       });
       break;
 

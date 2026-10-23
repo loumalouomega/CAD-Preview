@@ -352,8 +352,8 @@ try {
   assert(capsText.length > 100, "resources/read cad-preview://capabilities returns JSON text");
 
   const tools = (await request("tools/list", {})).tools.map((t) => t.name);
-  assert(tools.length === 82, `tools/list exposes 82 tools (got ${tools.length}: ${tools.join(", ")})`);
-  for (const t of ["check_draft", "check_printability", "list_workspace_models", "check_interference_all", "generate_bom", "generate_hole_table", "render_ops_prefix", "check_tolerance", "inspect_meshio_fields", "pin_annotation", "import_svg", "save_mesh_preset", "list_mesh_presets", "apply_mesh_preset", "compare_mesh_refinement", "export_tessellated_stl", "estimate_mesh_budget", "analyze_passages", "measure_mesh_deviation", "save_sheet_template", "list_sheet_templates", "batch_export", "check_handoff_manifest", "generate_prep_report", "job_status", "job_cancel", "check_brep_health", "list_scad_parameters", "convert_scad", "list_layers", "set_layer", "assign_layer", "segment_mesh_surface", "fit_mesh_to_cad", "iga_sample", "iga_refine", "iga_evaluate", "check_mesh_quality"]) {
+  assert(tools.length === 83, `tools/list exposes 83 tools (got ${tools.length}: ${tools.join(", ")})`);
+  for (const t of ["check_draft", "check_printability", "list_workspace_models", "check_interference_all", "generate_bom", "generate_hole_table", "render_ops_prefix", "check_tolerance", "inspect_meshio_fields", "pin_annotation", "import_svg", "save_mesh_preset", "list_mesh_presets", "apply_mesh_preset", "compare_mesh_refinement", "export_tessellated_stl", "estimate_mesh_budget", "analyze_passages", "measure_mesh_deviation", "save_sheet_template", "list_sheet_templates", "batch_export", "check_handoff_manifest", "generate_prep_report", "job_status", "job_cancel", "check_brep_health", "list_scad_parameters", "convert_scad", "list_layers", "set_layer", "assign_layer", "segment_mesh_surface", "fit_mesh_to_cad", "mesh_cad_surface", "iga_sample", "iga_refine", "iga_evaluate", "check_mesh_quality"]) {
     assert(tools.includes(t), `tools/list exposes ${t}`);
   }
 
@@ -2959,6 +2959,57 @@ try {
     badFitExtension.error && /\.step\/\.stp/.test(badFitExtension.error),
     `fit_mesh_to_cad rejects a non-STEP outputPath (got: ${badFitExtension.error})`
   );
+  // meshio++ 17.9-17.12 knobs: segment `method:"primitive"` + `refine`, and
+  // fit_mesh_to_cad's backend / refineSegmentation / faceDeviation. The cube
+  // is six planes whichever way it is cut, so the analytic expectation holds.
+  const cubeSegRefined = await call("segment_mesh_surface", { path: cubeStl, method: "primitive", refine: true });
+  assert(
+    cubeSegRefined.numPatches === 6 && cubeSegRefined.fitCounts.plane === 6 && cubeSegRefined.refinement &&
+      cubeSegRefined.refinement.numPrimitive === 6 && cubeSegRefined.refinement.explainedAreaFraction === 1,
+    `segment_mesh_surface(cube.stl, primitive + refine): 6 planes, all explained, with a refinement block (got ${JSON.stringify({ n: cubeSegRefined.numPatches, f: cubeSegRefined.fitCounts, r: cubeSegRefined.refinement })})`
+  );
+  const cubeFitNative = await call("fit_mesh_to_cad", { path: cubeStl, outputPath: path.join(dir, "cube-native.step"), backend: "native" });
+  assert(
+    cubeFitNative.backend === "native" && cubeFitNative.brepChecked === false && cubeFitNative.volume === null && cubeFitNative.volumeRatio === null &&
+      cubeFitNative.numPlane === 6 && cubeFitNative.closed === true,
+    `fit_mesh_to_cad(backend native): 6 planes, closed, and NO volume / B-rep check claimed (got ${JSON.stringify({ b: cubeFitNative.backend, c: cubeFitNative.brepChecked, v: cubeFitNative.volume, p: cubeFitNative.numPlane })})`
+  );
+  const cubeFitDev = await call("fit_mesh_to_cad", {
+    path: cubeStl, outputPath: path.join(dir, "cube-dev.step"), backend: "occt", refineSegmentation: true, faceDeviation: true,
+  });
+  assert(
+    cubeFitDev.backend === "occt" && cubeFitDev.brepChecked === true && cubeFitDev.refined === true && cubeFitDev.faceHausdorffMax !== null &&
+      cubeFitDev.faceHausdorffMax < 1e-6 && Math.abs(cubeFitDev.volume - 1000) < 1,
+    `fit_mesh_to_cad(occt + refineSegmentation + faceDeviation): refined, B-rep checked, ~0 two-sided deviation (got ${JSON.stringify({ r: cubeFitDev.refined, h: cubeFitDev.faceHausdorffMax, v: cubeFitDev.volume })})`
+  );
+  const nativeDev = await callTolerant("fit_mesh_to_cad", { path: cubeStl, outputPath: path.join(dir, "cube-nd.step"), backend: "native", faceDeviation: true });
+  assert(nativeDev.error && /faceDeviation needs the OpenCASCADE backend/.test(nativeDev.error), `fit_mesh_to_cad refuses faceDeviation on the native backend (got: ${nativeDev.error})`);
+
+  // mesh_cad_surface: a kernel-free conforming skin of the B-rep. block.stp
+  // (3x4x5 = 60) closes with no open edge and encloses exactly its volume;
+  // the written STL is re-read by the independent mshCellVolumes-style sum.
+  const mcsBlock = path.join(dir, "mcs-block.stp");
+  fs.copyFileSync(path.join(ROOT, "examples", "STP", "block.stp"), mcsBlock);
+  const mcsMsh = path.join(dir, "mcs-block.msh");
+  const mcs = await call("mesh_cad_surface", { path: mcsBlock, outputPath: mcsMsh, targetSize: 0.5 });
+  assert(
+    mcs.supported === true && mcs.numFaces === 6 && mcs.numFailed === 0 && mcs.numOpenEdges === 0 && mcs.numNonManifoldEdges === 0 &&
+      mcs.numMisorientedEdges === 0 && mcs.numTriangles === 888,
+    `mesh_cad_surface(block.stp @0.5): 6 faces, closed and consistently wound, the probe's 888 triangles (got ${JSON.stringify({ f: mcs.numFaces, o: mcs.numOpenEdges, t: mcs.numTriangles })})`
+  );
+  const mcsText = fs.readFileSync(mcsMsh, "utf8");
+  assert(fs.existsSync(mcsMsh) && /\$Elements/.test(mcsText), "mesh_cad_surface wrote a Gmsh .msh");
+  const mcsStl = path.join(dir, "mcs-block.stl");
+  await call("mesh_cad_surface", { path: mcsBlock, outputPath: mcsStl, targetSize: 0.5 });
+  const mcsFacts = await call("get_mass_properties", { path: mcsStl });
+  assert(
+    Math.abs(mcsFacts.volume - 60) < 1e-6 && mcsFacts.watertight === true,
+    `the mesh_cad_surface STL encloses exactly 3x4x5 = 60 and is watertight (got ${JSON.stringify({ v: mcsFacts.volume, w: mcsFacts.watertight })})`
+  );
+  const mcsMeshSource = await call("mesh_cad_surface", { path: cubeStl, outputPath: path.join(dir, "mcs-cube.stl"), targetSize: 1 });
+  assert(mcsMeshSource.supported === false, "mesh_cad_surface refuses a mesh-format source (no B-rep faces)");
+  const mcsBad = await callTolerant("mesh_cad_surface", { path: mcsBlock, outputPath: path.join(dir, "mcs-block.step"), targetSize: 0.5 });
+  assert(mcsBad.error && /outputPath must end in/.test(mcsBad.error), `mesh_cad_surface rejects an unsupported outputPath extension (got: ${mcsBad.error})`);
   const softSnap = await call("render_snapshot", { path: cubeStl });
   assert(
     softSnap.supported === true && softSnap.engine === "meshio-software" && softSnap.images?.length === 4,
@@ -7369,6 +7420,65 @@ try {
   assert(
     octGeo.isError === true && /octree/i.test(octGeo.content?.[0]?.text ?? ""),
     `export_mesh geoUnrolled rejects engine:"octree" with a specific error (got: ${(octGeo.content?.[0]?.text ?? "").slice(0, 160)})`
+  );
+
+  // engine:"octreemesh" (meshio++ 17.13 octreeMesh): conforming graded tets or
+  // an all-hex mesh fitted to the tessellated skin. Sized by octreeMeshMaxSize
+  // + octreeMeshLevels, never sizeMax; no Parts; same refusals as the octree.
+  const ocmOpts = { engine: "octreemesh", octreeMeshMaxSize: 2, octreeMeshLevels: 2 };
+  const ocmTet = await call("generate_mesh", { path: octreeBlock, options: ocmOpts });
+  assert(
+    ocmTet.engineUsed === "octreemesh" && ocmTet.octreeMesh && ocmTet.octreeMesh.output === "tet" && ocmTet.octreeMesh.numInverted === 0 &&
+      ocmTet.octreeMesh.numTetrahedra === 6512 && ocmTet.elementCount === 6512,
+    `generate_mesh(engine:"octreemesh") on block.stp reports its facts and the probe's 6512 tets (got ${JSON.stringify({ e: ocmTet.engineUsed, n: ocmTet.elementCount, o: ocmTet.octreeMesh })})`
+  );
+  assert(ocmTet.octree === null, "...and no octree facts (they belong to the other engine)");
+  const ocmMsh = path.join(dir, "octreemesh-block.msh");
+  await call("export_mesh", { path: octreeBlock, format: "msh", outputPath: ocmMsh, options: ocmOpts });
+  const ocmVol = mshCellVolumes(fs.readFileSync(ocmMsh, "utf8"));
+  assert(
+    Math.abs(ocmVol.volume - 60) < 1e-6 && ocmVol.nonPositive === 0 && ocmVol.tet === 6512,
+    `the octreemesh tet .msh encloses exactly 60 with every tet positively oriented in Gmsh's node order (got ${JSON.stringify(ocmVol)})`
+  );
+  const ocmHexMsh = path.join(dir, "octreemesh-block-hex.msh");
+  await call("export_mesh", { path: octreeBlock, format: "msh", outputPath: ocmHexMsh, options: { ...ocmOpts, octreeMeshOutput: "hex" } });
+  const ocmHexVol = mshCellVolumes(fs.readFileSync(ocmHexMsh, "utf8"));
+  assert(
+    Math.abs(ocmHexVol.volume - 60) < 1e-6 && ocmHexVol.nonPositive === 0 && ocmHexVol.hex === 856 && ocmHexVol.tet === 0,
+    `the octreemesh hex .msh encloses exactly 60 with every hexahedron positive (got ${JSON.stringify(ocmHexVol)})`
+  );
+  await call("export_mesh", { path: cleanCubeStl, format: "msh", outputPath: path.join(dir, "octreemesh-cube.msh"), options: ocmOpts });
+  const ocmCubeVol = mshCellVolumes(fs.readFileSync(path.join(dir, "octreemesh-cube.msh"), "utf8"));
+  assert(
+    Math.abs(ocmCubeVol.volume - 1000) < 1e-6 && ocmCubeVol.nonPositive === 0,
+    `the octreemesh over cube.stl (a mesh source) encloses exactly 1000 (got ${JSON.stringify(ocmCubeVol)})`
+  );
+  const ocmMdpa = path.join(dir, "octreemesh-block.mdpa");
+  await call("export_mesh", { path: octreeBlock, format: "mdpaElements", outputPath: ocmMdpa, options: ocmOpts });
+  assert(fs.readFileSync(ocmMdpa, "utf8").includes("Begin Elements Element3D4N"), "export_mesh mdpaElements under engine:\"octreemesh\" writes Element3D4N");
+  for (const [what, options, needle] of [
+    ["elementOrder 2", { engine: "octreemesh", elementOrder: 2 }, /elementOrder/],
+    ["a periodic pair", { engine: "octreemesh", periodic: [{ slave: "a", master: "b", translation: [1, 0, 0] }] }, /periodic/],
+    ["a sizeField", { engine: "octreemesh", sizeField: [{ point: [0, 0, 0], size: 1 }] }, /sizeField/],
+  ]) {
+    const refused = await request("tools/call", { name: "generate_mesh", arguments: { path: octreeBlock, options } });
+    assert(
+      refused.isError === true && needle.test(refused.content?.[0]?.text ?? ""),
+      `generate_mesh(engine:"octreemesh") refuses ${what} by name (got: ${(refused.content?.[0]?.text ?? "").slice(0, 140)})`
+    );
+  }
+  const ocmDim2 = await call("generate_mesh", { path: octreeBlock, options: { engine: "octreemesh", dimension: 2, sizeMax: 1 } });
+  assert(
+    ocmDim2.engineUsed === "gmsh" && ocmDim2.warnings.some((w) => /octreemesh.*was requested/i.test(w)),
+    `generate_mesh(engine:"octreemesh") at dimension 2 falls back to gmsh with a warning (got ${ocmDim2.engineUsed})`
+  );
+  const ocmGeo = await request("tools/call", {
+    name: "export_mesh",
+    arguments: { path: octreeBlock, format: "geoUnrolled", outputPath: path.join(dir, "octreemesh.geo_unrolled"), options: { engine: "octreemesh" } },
+  });
+  assert(
+    ocmGeo.isError === true && /octreemesh/i.test(ocmGeo.content?.[0]?.text ?? ""),
+    `export_mesh geoUnrolled rejects engine:"octreemesh" with a specific error (got: ${(ocmGeo.content?.[0]?.text ?? "").slice(0, 160)})`
   );
 
   // repair_mesh (roadmap "Robust volumetric meshing", Phase 3 — closes the

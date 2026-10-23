@@ -189,9 +189,9 @@ export async function runMeshSweep<R extends SweepGenerateResult>(
     isCancelled?: () => boolean;
   }
 ): Promise<MeshSweepOutcome> {
-  if (baseOptions.engine === "octree") {
+  if (baseOptions.engine === "octree" || baseOptions.engine === "octreemesh") {
     throw new Error(
-      'A refinement sweep varies the target size, which engine "octree" ignores (it is sized by octreeMaxLevel) — every row would be the same mesh. Switch the engine to "gmsh" or "ftetwild", or compare octreeMaxLevel values by generating each.'
+      'A refinement sweep varies the target size, which the octree engines ignore (they are sized by octreeMaxLevel / octreeMeshMaxSize + octreeMeshLevels) — every row would be the same mesh. Switch the engine to "gmsh" or "ftetwild", or compare octreeMaxLevel values by generating each.'
     );
   }
   const runs: MeshSweepRun[] = [];

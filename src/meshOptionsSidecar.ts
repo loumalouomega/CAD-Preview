@@ -98,6 +98,10 @@ export function generateGeoScript(sourceName: string, options: MeshOptions): str
         `// this script's own "Mesh ${options.dimension};" would mesh via Gmsh's\n` +
         "// classifySurfaces path instead — a different result, not a re-run of\n" +
         "// what this extension actually did — so it is deliberately omitted."
+      : options.engine === "octreemesh"
+        ? "// engine: octreemesh — this document was volume-meshed by meshio++'s octreeMesh (graded\n" +
+          "// tetrahedra or hexahedra fitted to the tessellated skin), not Gmsh's mesher, so\n" +
+          "// there is no Gmsh directive that reproduces it; \"Mesh " + options.dimension + ";\" is deliberately omitted."
       : options.engine === "octree"
         ? "// engine: octree — this document was volume-meshed by meshio++'s octree (a\n" +
           "// hex-dominant grid fitted to the tessellated skin), not Gmsh's mesher, so\n" +

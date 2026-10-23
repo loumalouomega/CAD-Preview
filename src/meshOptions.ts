@@ -49,7 +49,16 @@ export type MeshElementShape = "simplex" | "subdivided" | "hexDominant";
  * Gmsh-only options are refused by name — see `gmshService.ts`'s
  * `octreeUnsupportedOptions`.
  */
-export type MeshEngine = "gmsh" | "ftetwild" | "octree";
+export type MeshEngine = "gmsh" | "ftetwild" | "octree" | "octreemesh";
+
+/** Outputs of meshio++ 17.13's `octreeMesh` (`engine: "octreemesh"`). The
+ * castellated output has hanging nodes and surrogate boundary faces, which no
+ * downstream reader here accepts as a conforming mesh, so it is NOT offered. */
+export type OctreeMeshOutput = "tet" | "hex";
+export const OCTREE_MESH_OUTPUTS: readonly OctreeMeshOutput[] = ["tet", "hex"];
+
+/** Deepest `octreeMeshLevels` offered (leaf edge = maxSize / 2^levels). */
+export const OCTREE_MESH_LEVELS_LIMIT = 4;
 
 /** Deepest `octreeMaxLevel` offered. Cell count grows roughly 4x per level on a
  * surface, so level 6 is already a very large mesh; meshio++'s own `maxCells`
@@ -68,6 +77,38 @@ export interface OctreeStats {
   numSnapped: number;
   numRefused: number;
   elementMix: { hexahedra: number; pyramids: number; tetrahedra: number };
+}
+
+/** Facts an `engine: "octreemesh"` generate reports — the subset of meshio++'s
+ * `OctreeMeshResult` that says how good the mesh is. Parts are never preserved. */
+export interface OctreeMeshStats {
+  output: OctreeMeshOutput;
+  /** Resolved leaf-edge bounds, in the skin's own units (mm). */
+  maxSize: number;
+  minSize: number;
+  numLeaves: number;
+  numTetrahedra: number;
+  numHexahedra: number;
+  numInverted: number;
+  /** Degrees; 0 for an all-hex output. */
+  minDihedral: number;
+  maxDihedral: number;
+  minScaledJacobian: number;
+  /** Two-sided distance between the output boundary and the skin. */
+  hausdorffToSkin: number;
+  numFeatureChains: number;
+  numFeatureChainsMissed: number;
+  numWarpRefused: number;
+  /** meshio++'s own warnings, verbatim. */
+  warnings: string[];
+}
+
+/** One-line readout of an octreemesh generate for the panel status line. */
+export function octreeMeshSummary(stats: OctreeMeshStats): string {
+  const cells = stats.output === "tet" ? `${stats.numTetrahedra} tet` : `${stats.numHexahedra} hex`;
+  const dihedral = stats.output === "tet" ? ` · dihedral ${stats.minDihedral.toFixed(1)}°–${stats.maxDihedral.toFixed(1)}°` : "";
+  const features = stats.numFeatureChains > 0 ? ` · features ${stats.numFeatureChains - stats.numFeatureChainsMissed}/${stats.numFeatureChains}` : "";
+  return `Octree-mesh ${stats.output}: ${cells} · min Jacobian ${stats.minScaledJacobian.toFixed(2)}${dihedral}${features} · ${stats.numInverted} inverted · Parts not preserved`;
 }
 
 /** One-line readout of an octree generate for the panel status line. */
@@ -136,6 +177,19 @@ export interface MeshOptions {
    * counted and reported, never forced. Only meaningful when
    * `engine === "octree"`. */
   octreeSnap: boolean;
+  /** Octree-mesh: `"tet"` = conforming graded tetrahedra fitted to the skin
+   * (stuffing), `"hex"` = all-hexahedra by the octree dual. Only meaningful
+   * when `engine === "octreemesh"`. */
+  octreeMeshOutput: OctreeMeshOutput;
+  /** Octree-mesh: largest leaf edge in mm; `0` = automatic (one eighth of the
+   * skin's bounding-box diagonal). meshio++'s own default is far finer (a
+   * 10 mm cube becomes 516k tets), so the engine never passes "unset". Only
+   * meaningful when `engine === "octreemesh"`. */
+  octreeMeshMaxSize: number;
+  /** Octree-mesh: refinement levels below `maxSize` (smallest leaf edge =
+   * maxSize / 2^levels), 1..{@link OCTREE_MESH_LEVELS_LIMIT}. Only meaningful
+   * when `engine === "octreemesh"`. */
+  octreeMeshLevels: number;
   /**
    * Conformal multi-body meshing: call
    * `gmsh.model.occ.fragment` over every imported solid before meshing, so
@@ -403,6 +457,9 @@ export const DEFAULT_MESH_OPTIONS: MeshOptions = {
   ftetwildDisableFiltering: false,
   octreeMaxLevel: 4, // block.stp at level 4: 3522 cells, exactly its volume (probe)
   octreeSnap: true,
+  octreeMeshOutput: "tet",
+  octreeMeshMaxSize: 0,
+  octreeMeshLevels: 2, // cube.stl at maxSize 2, levels 2: 44 832 tets, min dihedral 35° (probe)
   conformal: true,
 };
 
@@ -493,7 +550,7 @@ export function validateMeshOptions(raw: unknown): MeshOptions | null {
   const stlAngle =
     isFiniteNumber(o.stlAngle) && o.stlAngle > 0 && o.stlAngle < 180 ? o.stlAngle : DEFAULT_MESH_OPTIONS.stlAngle;
 
-  const engine: MeshOptions["engine"] = o.engine === "gmsh" || o.engine === "ftetwild" || o.engine === "octree" ? o.engine : DEFAULT_MESH_OPTIONS.engine;
+  const engine: MeshOptions["engine"] = o.engine === "gmsh" || o.engine === "ftetwild" || o.engine === "octree" || o.engine === "octreemesh" ? o.engine : DEFAULT_MESH_OPTIONS.engine;
 
   const ftetwildEpsRel =
     isFiniteNumber(o.ftetwildEpsRel) && o.ftetwildEpsRel > 0
@@ -512,6 +569,16 @@ export function validateMeshOptions(raw: unknown): MeshOptions | null {
       ? Math.min(OCTREE_MAX_LEVEL_LIMIT, Math.round(o.octreeMaxLevel))
       : DEFAULT_MESH_OPTIONS.octreeMaxLevel;
   const octreeSnap = typeof o.octreeSnap === "boolean" ? o.octreeSnap : DEFAULT_MESH_OPTIONS.octreeSnap;
+
+  const octreeMeshOutput: OctreeMeshOutput = OCTREE_MESH_OUTPUTS.includes(o.octreeMeshOutput as OctreeMeshOutput)
+    ? (o.octreeMeshOutput as OctreeMeshOutput)
+    : DEFAULT_MESH_OPTIONS.octreeMeshOutput;
+  const octreeMeshMaxSize =
+    isFiniteNumber(o.octreeMeshMaxSize) && o.octreeMeshMaxSize > 0 ? o.octreeMeshMaxSize : DEFAULT_MESH_OPTIONS.octreeMeshMaxSize;
+  const octreeMeshLevels =
+    isFiniteNumber(o.octreeMeshLevels) && o.octreeMeshLevels >= 1
+      ? Math.min(OCTREE_MESH_LEVELS_LIMIT, Math.round(o.octreeMeshLevels))
+      : DEFAULT_MESH_OPTIONS.octreeMeshLevels;
 
   const conformal = typeof o.conformal === "boolean" ? o.conformal : DEFAULT_MESH_OPTIONS.conformal;
 
@@ -532,6 +599,9 @@ export function validateMeshOptions(raw: unknown): MeshOptions | null {
     ftetwildDisableFiltering,
     octreeMaxLevel,
     octreeSnap,
+    octreeMeshOutput,
+    octreeMeshMaxSize,
+    octreeMeshLevels,
     conformal,
   };
   // Optional and omitted when absent, so an untouched sidecar stays byte-stable.

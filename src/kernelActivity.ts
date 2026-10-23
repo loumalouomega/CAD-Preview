@@ -90,6 +90,7 @@ export const KERNELS_BY_FUNCTION: Record<keyof DocumentPipeline, readonly Kernel
   recognizePrimitives: O,
   segmentMeshSurface: M,
   fitMeshToCad: M,
+  meshCadSurfaceModel: M,
   igaSampleModel: M,
   igaRefineModel: M,
   igaEvaluateModel: M,

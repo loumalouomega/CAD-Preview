@@ -70,6 +70,7 @@ import {
   segmentMeshSurfaceTool,
   fitMeshToCadTool,
   igaSampleTool,
+  meshCadSurfaceTool,
   igaRefineTool,
   igaEvaluateTool,
   transformMeshTool,
@@ -968,6 +969,9 @@ server.registerTool(
       minInlierFraction: z.number().optional().describe("Fraction of a patch's vertices that must lie within tolerance (default 0.9)"),
       types: z.array(z.enum(["plane", "sphere", "cylinder", "cone", "torus"])).optional().describe("Primitive kinds a patch may be fitted with (default all five)"),
       maxPatches: z.number().optional().describe("Cap on patches listed (default 200)"),
+      method: z.enum(["angle", "primitive"]).optional().describe("Patch boundaries: angle (default, dihedral edges) or primitive (where the surface the facets lie on changes -- a fillet comes apart from its tangent planes; meshio++ 17.9)"),
+      primitiveTolerance: z.number().optional().describe("method primitive only: the segmentation's fit tolerance relative to the bbox diagonal (default 0.01)"),
+      refine: z.boolean().optional().describe("Refine the patches by variational shape approximation before fitting (meshio++ refinePatches): boundaries move, freeform patches are split by seeded RANSAC, neighbours one primitive explains are merged. Adds a `refinement` block (explained-area share before/after, splits, merges, Hausdorff)"),
     },
   },
   wrap((args: Parameters<typeof segmentMeshSurfaceTool>[1]) => segmentMeshSurfaceTool(ctx, args))
@@ -999,9 +1003,35 @@ server.registerTool(
       freeformSplit: z.boolean().optional().describe("Split a freeform patch that folds over every flattening (default true)"),
       fillets: z.boolean().optional().describe("Try fillets, blends, chamfers and vertex blends (default true)"),
       threads: z.boolean().optional().describe("Try thread faces, tapered and variable-pitch included (default true)"),
+      segmentMethod: z.enum(["angle", "primitive"]).optional().describe("Segmentation stage: patch boundaries at dihedral edges (default) or where the underlying surface changes (primitive)"),
+      backend: z.enum(["auto", "occt", "native"]).optional().describe("Engine that builds the solid: occt (OpenCASCADE, sewn and B-rep-checked), native (kernel-free; no volume, no B-rep check -- reported as null/false) or auto (default = occt)"),
+      mergeFaces: z.boolean().optional().describe("Merge faces on one surface once the solid is built (default true)"),
+      refineSegmentation: z.boolean().optional().describe("First refine the patches by variational shape approximation inside fitCad. On a tessellated bull.stp: explained area 52% -> 97%, volume ratio 0.955 -> 1.0004, max deviation 1.75 -> 0.144 (default false)"),
+      freeformMode: z.enum(["legacy", "adaptive", "network", "auto"]).optional().describe("Freeform B-spline treatment of patches no primitive explains (default legacy)"),
+      faceDeviation: z.boolean().optional().describe("Also measure the two-sided solid-to-skin Hausdorff distance and RMS (occt backend only)"),
     },
   },
   wrap((args: Parameters<typeof fitMeshToCadTool>[1]) => fitMeshToCadTool(ctx, args))
+);
+
+server.registerTool(
+  "mesh_cad_surface",
+  {
+    description:
+      "B-rep -> conforming SURFACE mesh with no CAD kernel (meshio++ meshCadSurface): every face of a STEP/IGES file (or a Kratos .cad.json model) is triangulated to edges of about targetSize, and every B-rep edge is sampled ONCE and shared by its faces, so neighbouring faces meet node-for-node and the surface is watertight whenever the B-rep is (block.stp at 0.5 closes with 0 open edges and encloses exactly 60; bull.stp's 36 faces mesh in ~100 ms). Writes the mesh to a NEW file at outputPath (.stl/.obj/.ply/.vtk/.vtu/.msh; triangles carry cad:face, an optional line block of the B-rep edges carries cad:edge in the formats that hold cell data; OBJ drops the edge block). FACTS ONLY: numFaces/numFailed, numOpenEdges/numNonManifoldEdges/numMisorientedEdges (all 0 = closed, consistently wound), min/max edge length and triangle angle, maxEdgeGap, and per-face {status, reason} for every face that did not come back ok (a face that cannot be meshed is listed, never meshed wrong; strict:true throws instead). Not a replacement for generate_mesh: it makes a boundary SURFACE (no volume, no Parts) and does not need OpenCASCADE at all -- use it when you want an exact-geometry skin for a solver, a viewer or repair_mesh/octreemesh input without tessellate-and-weld. Mesh-format sources are refused (they have no B-rep faces).",
+    inputSchema: {
+      path: modelPath,
+      outputPath: z.string().describe("Absolute path of the NEW surface mesh to write (.stl/.obj/.ply/.vtk/.vtu/.msh; must not be the source path)"),
+      targetSize: z.number().describe("Target edge length in model units (> 0)"),
+      maxChordalDeviation: z.number().optional().describe("Cap on a boundary segment's sagitta; 0 (default) is off"),
+      minPointsPerEdge: z.number().optional().describe("At least this many points inside every edge (default 0)"),
+      tolerance: z.number().optional().describe("Geometric tolerance; 0 (default) is 1e-7 of the control nets' diagonal"),
+      edges: z.boolean().optional().describe("Also write a line block of the B-rep edges with cad:edge (default true; dropped for OBJ)"),
+      strict: z.boolean().optional().describe("Throw when any face cannot be meshed instead of listing it (default false)"),
+      maxPoints: z.number().optional().describe("The most points in the result (default and ceiling 5 000 000)"),
+    },
+  },
+  wrap((args: Parameters<typeof meshCadSurfaceTool>[1]) => meshCadSurfaceTool(ctx, args))
 );
 
 server.registerTool(
@@ -1807,7 +1837,7 @@ server.registerTool(
       name: z.string().describe("Unique name within the library; how apply_mesh_preset refers to it"),
       options: z.looseObject({}).describe("Partial MeshOptions, in `unit`"),
       unit: z.string().optional().describe("Unit the sizes were authored in: mm | cm | m | in | ft (default mm)"),
-      engine: z.string().optional().describe("Pinned engine: gmsh | ftetwild | octree (default gmsh)"),
+      engine: z.string().optional().describe("Pinned engine: gmsh | ftetwild | octree | octreemesh (default gmsh)"),
       description: z.string().optional().describe("Free text shown by list_mesh_presets"),
       overwrite: z.boolean().optional().describe("Replace an existing preset of the same name (default false: a name collision is an error)"),
     },
