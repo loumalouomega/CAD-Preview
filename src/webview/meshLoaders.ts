@@ -6,6 +6,8 @@ import { ThreeMFLoader } from "three/examples/jsm/loaders/3MFLoader.js";
 import { ColladaLoader } from "three/examples/jsm/loaders/ColladaLoader.js";
 import { AMFLoader } from "three/examples/jsm/loaders/AMFLoader.js";
 import { USDLoader } from "three/examples/jsm/loaders/USDLoader.js";
+import { VRMLLoader } from "three/examples/jsm/loaders/VRMLLoader.js";
+import { FBXLoader } from "three/examples/jsm/loaders/FBXLoader.js";
 import type { CadFormat } from "../fileRouter";
 import { isSafeRelativePath } from "../safeRelativePath";
 import { applyDefaultMaterial, convertAmfMaterials, convertColladaMaterials, convertThreeMfMaterials, parseMeshObject, parseObjObject } from "./meshObject";
@@ -13,6 +15,7 @@ import { threeMfDeclaredUnit, threeMfMmPerUnit } from "../threeMf";
 import { colladaDeclaredUnit, colladaMmPerUnit } from "../colladaUnits";
 import { amfDeclaredUnit } from "../amfUnits";
 import { usdDeclaredUnit, usdMmPerUnit } from "../usdUnits";
+import { fbxDeclaredUnit, fbxMmPerUnit } from "../fbxUnits";
 import { gltfUsesCompression } from "./gltfSniff";
 
 /**
@@ -141,6 +144,10 @@ export async function loadMeshFromUrl(
       return loadAmf(url);
     case "usd":
       return loadUsd(url);
+    case "wrl":
+      return loadWrl(url);
+    case "fbx":
+      return loadFbx(url);
     default:
       throw new Error(`Mesh loader for "${format}" is not implemented.`);
   }
@@ -305,6 +312,81 @@ async function loadUsd(url: string): Promise<THREE.Object3D> {
   applyDefaultMaterial(group);
   group.scale.multiplyScalar(usdMmPerUnit(metersPerUnit));
   const unit = usdDeclaredUnit(metersPerUnit);
+  if (unit) group.userData.declaredUnit = unit;
+  return group;
+}
+
+/**
+ * Loads a VRML97 `.wrl` through three's `VRMLLoader` (chevrotain lexer/parser;
+ * it calls `eval` only on a function value, which a CSP without
+ * `'unsafe-eval'` leaves untouched). VRML declares no unit, so the geometry is
+ * shown as authored (millimetres, like STL/OBJ) with no scale and no
+ * `declaredUnit`; the loader's own scale/rotation are reset because
+ * `Viewer.setModel` owns the root rotation. `Appearance`/`Material`
+ * `diffuseColor`s are kept as native colours and textures are ignored
+ * (`convertColladaMaterials` drops the loader's unnamed plain-white fallback
+ * so the palette look applies).
+ */
+async function loadWrl(url: string): Promise<THREE.Object3D> {
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`Failed to fetch ${url}: ${res.status}`);
+  const text = await res.text();
+  let scene: THREE.Object3D;
+  try {
+    scene = new VRMLLoader().parse(text, "");
+  } catch (err) {
+    throw new Error(`Could not parse the VRML file: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  scene.rotation.set(0, 0, 0);
+  scene.scale.set(1, 1, 1);
+  const group = new THREE.Group();
+  group.add(scene);
+  convertColladaMaterials(group);
+  applyDefaultMaterial(group);
+  return group;
+}
+
+/**
+ * Loads an FBX (`.fbx`, ASCII or binary, version >= 7000) through three's
+ * `FBXLoader`. Four loader behaviours are replaced rather than trusted:
+ * - **Units:** the loader never applies `GlobalSettings.UnitScaleFactor` (cm per
+ *   unit, default 1); it only copies it to `userData.unitScaleFactor`, which is
+ *   read here and applied once as {@link fbxMmPerUnit}. A non-default factor
+ *   seeds the presentation-only Units dropdown through `userData.declaredUnit`.
+ * - **Up axis:** a Z-up file gets `rotation.x = -PI/2`; the rotation is dropped
+ *   because `Viewer.setModel` owns the root rotation (vertices are shown raw).
+ * - **Non-geometry:** the scene may carry lights (an `AmbientLight` for the
+ *   file's ambient colour), cameras and animation clips; all are removed so
+ *   the Components tree and picking only see meshes.
+ * - **Materials/textures:** only flat colours are kept (`convertColladaMaterials`
+ *   rebuilds each material from its colour, dropping the texture maps whose
+ *   blob URLs the CSP would refuse, and clears the loader's `__DEFAULT` fallback).
+ */
+async function loadFbx(url: string): Promise<THREE.Object3D> {
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`Failed to fetch ${url}: ${res.status}`);
+  const data = await res.arrayBuffer();
+  let scene: THREE.Group;
+  try {
+    scene = new FBXLoader().parse(data, "");
+  } catch (err) {
+    throw new Error(`Could not parse the FBX file: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  const unitScaleFactor = scene.userData.unitScaleFactor as unknown;
+  scene.rotation.set(0, 0, 0);
+  scene.scale.set(1, 1, 1);
+  scene.animations = [];
+  const extras: THREE.Object3D[] = [];
+  scene.traverse((o) => {
+    if ((o as THREE.Light).isLight || (o as THREE.Camera).isCamera) extras.push(o);
+  });
+  for (const o of extras) o.removeFromParent();
+  const group = new THREE.Group();
+  group.add(scene);
+  convertColladaMaterials(group);
+  applyDefaultMaterial(group);
+  group.scale.multiplyScalar(fbxMmPerUnit(unitScaleFactor));
+  const unit = fbxDeclaredUnit(unitScaleFactor);
   if (unit) group.userData.declaredUnit = unit;
   return group;
 }

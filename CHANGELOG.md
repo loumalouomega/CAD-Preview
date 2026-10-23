@@ -8,6 +8,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/); thi
 
 ### Added
 
+- **FBX (`.fbx`) opens as a display-only, import-only mesh format** through three's `FBXLoader` (ASCII or binary, version 7000+): geometry, diffuse colours (a Part colour still wins) and the file's `UnitScaleFactor`, which is applied to millimetres once and seeds the Units dropdown; a Z-up file stays Z-up. Lights, cameras, textures and animation are ignored. Like VRML it exports to STL/OBJ/PLY/glTF/3MF and is refused by name by the host-side tools.
+- **VRML (`.wrl`) opens as a display-only, import-only mesh format** through three's `VRMLLoader`: geometry, `DEF`/`USE` and `Transform` nodes, and `diffuseColor`s (a Part colour still wins). VRML declares no unit, so geometry is shown as authored. Like USD it exports to STL/OBJ/PLY/glTF/3MF and is refused by name by the host-side tools.
 - **USD (`.usd`, `.usda`, `.usdc`, `.usdz`) opens as a display-only, import-only mesh format** through three's `USDLoader` (ASCII, binary crate and zipped packages): geometry, flat colours (a Part colour still wins) and the stage's `metersPerUnit`, which is applied to millimetres once and seeds the Units dropdown; a Z-up stage stays Z-up. Like AMF it exports to STL/OBJ/PLY/glTF/3MF and is refused by name by host-side tools. Textures, animation and skinning are ignored.
 
 ## [3.28.0] - 2026-10-22

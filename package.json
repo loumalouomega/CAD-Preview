@@ -61,6 +61,12 @@
             "filenamePattern": "*.usdz"
           },
           {
+            "filenamePattern": "*.wrl"
+          },
+          {
+            "filenamePattern": "*.fbx"
+          },
+          {
             "filenamePattern": "*.step"
           },
           {

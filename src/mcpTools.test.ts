@@ -139,6 +139,8 @@ let threeMfModel: string;
 let daeModel: string;
 let amfModel: string;
 let usdModel: string;
+let wrlModel: string;
+let fbxModel: string;
 
 /** A real, closed unit-cube OBJ (quad faces) — matches `objSolidSignatures.test.ts`'s fixture, used wherever a test needs actual resolvable geometry rather than just a recognized extension. */
 const UNIT_CUBE_OBJ = `
@@ -661,6 +663,10 @@ beforeEach(async () => {
   await fs.writeFile(amfModel, "<amf/>", "utf8");
   usdModel = path.join(dir, "model.usda");
   await fs.writeFile(usdModel, "#usda 1.0\n", "utf8");
+  wrlModel = path.join(dir, "model.wrl");
+  await fs.writeFile(wrlModel, "#VRML V2.0 utf8\n", "utf8");
+  fbxModel = path.join(dir, "model.fbx");
+  await fs.writeFile(fbxModel, "; FBX 7.4.0 project file\n", "utf8");
   await fs.writeFile(stpModel, "ISO-10303-21;", "utf8");
   await fs.writeFile(stpModel2, "ISO-10303-21;", "utf8");
   await fs.writeFile(stlModel, "solid x\nendsolid x\n", "utf8");
@@ -5293,7 +5299,7 @@ describe("list_workspace_models", () => {
 
     const result = await listWorkspaceModels({ root: dir });
     expect(result.truncated).toBe(false);
-    const expected = ["model.3mf", "model.amf", "model.dae", "model.gltf", "model.obj", "model.ply", "model.scad", "model.stl", "model.stp", "model.usda", "model.vtk", "model2.stp", "nested/b.step"];
+    const expected = ["model.3mf", "model.amf", "model.dae", "model.fbx", "model.gltf", "model.obj", "model.ply", "model.scad", "model.stl", "model.stp", "model.usda", "model.vtk", "model.wrl", "model2.stp", "nested/b.step"];
     expect(result.models.map((m) => path.relative(dir, m.path))).toEqual(expected);
     expect(result.models.some((m) => m.path.includes("ignored"))).toBe(false);
     expect(result.models.some((m) => m.path.endsWith("notes.txt"))).toBe(false);
@@ -6188,6 +6194,38 @@ describe("USD is display-only on the host", () => {
     await expect(generateMeshTool(c, { path: usdModel })).rejects.toThrow(/display-only mesh format/);
     expect(c.pipeline.promoteMeshToBrep).not.toHaveBeenCalled();
     expect(c.pipeline.compareModels).not.toHaveBeenCalled();
+    expect(c.pipeline.generateMesh).not.toHaveBeenCalled();
+  });
+});
+
+describe("VRML is display-only on the host", () => {
+  it("check_mesh_health returns supported:false and load_model/save_model/meshing refuse it by name", async () => {
+    const c = ctx();
+    const r = await checkMeshHealthTool(c, { path: wrlModel });
+    expect(r.supported).toBe(false);
+    expect(r.warnings.join(" ")).toMatch(/wrl has no host-side triangle-soup parser/i);
+    const loaded = await loadModel(c, { path: wrlModel });
+    expect(loaded.format).toBe("wrl");
+    expect(loaded.warnings.join(" ")).toMatch(/WRL is display-only/);
+    await expect(saveModelTool(c, { path: wrlModel })).rejects.toThrow(/WRL is display-only/);
+    await expect(generateMeshTool(c, { path: wrlModel })).rejects.toThrow(/display-only mesh format/);
+    expect(c.pipeline.checkMeshHealth).not.toHaveBeenCalled();
+    expect(c.pipeline.generateMesh).not.toHaveBeenCalled();
+  });
+});
+
+describe("FBX is display-only on the host", () => {
+  it("check_mesh_health returns supported:false and load_model/save_model/meshing refuse it by name", async () => {
+    const c = ctx();
+    const r = await checkMeshHealthTool(c, { path: fbxModel });
+    expect(r.supported).toBe(false);
+    expect(r.warnings.join(" ")).toMatch(/fbx has no host-side triangle-soup parser/i);
+    const loaded = await loadModel(c, { path: fbxModel });
+    expect(loaded.format).toBe("fbx");
+    expect(loaded.warnings.join(" ")).toMatch(/FBX is display-only/);
+    await expect(saveModelTool(c, { path: fbxModel })).rejects.toThrow(/FBX is display-only/);
+    await expect(generateMeshTool(c, { path: fbxModel })).rejects.toThrow(/display-only mesh format/);
+    expect(c.pipeline.checkMeshHealth).not.toHaveBeenCalled();
     expect(c.pipeline.generateMesh).not.toHaveBeenCalled();
   });
 });

@@ -8420,6 +8420,84 @@ for (const [file, label] of [
   });
 }
 
+test("FBX: a committed cube opens, renders, UnitScaleFactor is applied once, a Z-up file keeps its Z extent, and the export reopens with the same triangle count", async (page) => {
+  const unit = () => page.evaluate(() => document.getElementById("vc-unit").value);
+  for (const [file, wantSize, wantUnit] of [["cube.fbx", [10, 10, 10], "mm"], ["cube-cm.fbx", [10, 10, 10], "mm"], ["cube-zup.fbx", [10, 10, 30], "mm"]]) {
+    await openColoured(page, `/examples/FBX/${file}`, "fbx");
+    const status = await page.evaluate(() => document.getElementById("status").textContent);
+    assert(!/fail|error/i.test(status), `${file}: no load error is reported (status ${JSON.stringify(status)})`);
+    const stats = await viewportModelStats(page);
+    assert(stats.fraction > 0.01 && stats.centre > 0, `${file}: the model renders and is centred (fraction ${stats.fraction.toFixed(3)})`);
+    const first = await exportBytes(page, "stl");
+    const b = stlBounds(first);
+    assert(b.tris === 12, `${file}: exporting the loaded cube writes its 12 triangles (got ${b.tris})`);
+    assert([...b.size].sort((a, c) => a - c).every((v, i) => Math.abs(v - [...wantSize].sort((a, c) => a - c)[i]) < 1e-3), `${file} measures ${JSON.stringify(wantSize)} mm, not double-scaled or squashed (got ${JSON.stringify(b.size)})`);
+    assert((await unit()) === wantUnit, `${file} leaves/selects ${wantUnit} (got ${await unit()})`);
+    if (file === "cube.fbx") {
+      await post(page, { type: "loadUrl", url: `data:application/octet-stream;base64,${first.toString("base64")}`, format: "stl" });
+      await sleep(1200);
+      assert(stlBounds(await exportBytes(page, "stl")).tris === 12, `${file}: reopening the exported STL keeps the triangle count`);
+    }
+  }
+});
+
+test("FBX colour: a Lambert diffuse renders, an unbound file stays the palette grey, and a Part colour wins and is undone", async (page) => {
+  await openColoured(page, "/examples/FBX/cube-colour.fbx", "fbx");
+  await lookFrom(page, ISO_FRONT);
+  const red = await hueCounts(page);
+  assert(red.red > 3 * MIN_PX, `the red diffuse colour shows (got ${JSON.stringify(red)})`);
+  assert(red.green < MAX_STRAY && red.blue < MAX_STRAY, `with no stray hues (got ${JSON.stringify(red)})`);
+
+  // Control: the colour-less fixture gets the loader's __DEFAULT fallback, which must NOT show as a file colour.
+  await openColoured(page, "/examples/FBX/cube.fbx", "fbx");
+  await lookFrom(page, ISO_FRONT);
+  const plain = await hueCounts(page);
+  assert(plain.red < MAX_STRAY && plain.green < MAX_STRAY && plain.blue < MAX_STRAY, `an uncoloured FBX file shows no file colour (got ${JSON.stringify(plain)})`);
+
+  await openColoured(page, "/examples/FBX/cube-colour.fbx", "fbx");
+  await lookFrom(page, ISO_FRONT);
+  await post(page, { type: "parts", parts: [{ name: "Skin", color: "#ff00ff", volumes: Array.from({ length: 8 }, (_, i) => `node-${i}`), surfaces: [], lines: [], points: [] }] });
+  await sleep(600);
+  const painted = await hueCounts(page);
+  assert(painted.magenta > 3 * MIN_PX && painted.red < MAX_STRAY, `a Part colour replaces the file colour (got ${JSON.stringify(painted)})`);
+  await post(page, { type: "parts", parts: [] });
+  await sleep(600);
+  const restored = await hueCounts(page);
+  assert(restored.red > 3 * MIN_PX && restored.magenta < MAX_STRAY, `removing the Part restores the file colour (got ${JSON.stringify(restored)})`);
+});
+
+test("VRML: a committed cube opens, renders at 10 mm, DEF/USE places it twice, and the export reopens with the same triangle count", async (page) => {
+  await openColoured(page, "/examples/VRML/cube.wrl", "wrl");
+  const status = await page.evaluate(() => document.getElementById("status").textContent);
+  assert(!/fail|error/i.test(status), `no load error is reported (status ${JSON.stringify(status)})`);
+  const stats = await viewportModelStats(page);
+  assert(stats.fraction > 0.01 && stats.centre > 0, `the model renders and is centred (fraction ${stats.fraction.toFixed(3)})`);
+  const first = await exportBytes(page, "stl");
+  const b = stlBounds(first);
+  assert(b.tris === 12, `exporting the loaded cube writes its 12 triangles (got ${b.tris})`);
+  assert(b.size.every((v) => Math.abs(v - 10) < 1e-3), `a VRML cube authored at 10 units measures 10 mm per side, no unit assumed (got ${JSON.stringify(b.size)})`);
+  await post(page, { type: "loadUrl", url: `data:application/octet-stream;base64,${first.toString("base64")}`, format: "stl" });
+  await sleep(1200);
+  assert(stlBounds(await exportBytes(page, "stl")).tris === 12, "reopening the exported STL keeps the triangle count");
+
+  await openColoured(page, "/examples/VRML/cube-twice.wrl", "wrl");
+  const twice = stlBounds(await exportBytes(page, "stl"));
+  assert(twice.tris === 24, `DEF/USE yields two cubes: 24 triangles (got ${twice.tris})`);
+  assert(Math.abs(twice.size[0] - 30) < 1e-3, `the translated copy spans 30 mm along x (got ${JSON.stringify(twice.size)})`);
+});
+
+test("VRML colour: a diffuseColor renders and an unbound file stays the palette grey", async (page) => {
+  await openColoured(page, "/examples/VRML/cube-colour.wrl", "wrl");
+  await lookFrom(page, ISO_FRONT);
+  const red = await hueCounts(page);
+  assert(red.red > 3 * MIN_PX, `the red diffuseColor shows (got ${JSON.stringify(red)})`);
+  assert(red.green < MAX_STRAY && red.blue < MAX_STRAY, `with no stray hues (got ${JSON.stringify(red)})`);
+  await openColoured(page, "/examples/VRML/cube.wrl", "wrl");
+  await lookFrom(page, ISO_FRONT);
+  const plain = await hueCounts(page);
+  assert(plain.red < MAX_STRAY && plain.green < MAX_STRAY && plain.blue < MAX_STRAY, `an uncoloured VRML file shows no file colour (got ${JSON.stringify(plain)})`);
+});
+
 test("USD: a committed cube (usda and usdz) opens, renders and exports to STL, and the export reopens with the same triangle count", async (page) => {
   for (const file of ["cube.usda", "cube.usdz"]) {
     await openColoured(page, `/examples/USD/${file}`, "usd");

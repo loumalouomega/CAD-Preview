@@ -28,6 +28,8 @@ B-rep (boundary-representation) formats are parsed and tessellated with [OpenCas
 | Collada     | `.dae`          | Three.js `ColladaLoader` (import-only; display-only on the host) |
 | AMF         | `.amf`          | Three.js `AMFLoader` (import-only; display-only on the host) |
 | USD         | `.usd` `.usda` `.usdc` `.usdz` | Three.js `USDLoader` (import-only; display-only on the host) |
+| VRML        | `.wrl` | Three.js `VRMLLoader` (import-only; display-only on the host) |
+| FBX         | `.fbx` | Three.js `FBXLoader` (import-only; display-only on the host) |
 | VTK         | `.vtk`, `.vtu`  | meshio++ → STL boundary surface → Three.js |
 | MED         | `.med`          | meshio++ → STL boundary surface → Three.js |
 | CGNS        | `.cgns`         | meshio++ → STL boundary surface → Three.js |
@@ -115,7 +117,7 @@ The **File ▸ Export…** menu item (or Ctrl+E) converts the currently displaye
 | Source pipeline | Export targets |
 | --- | --- |
 | B-rep (STEP/IGES/BREP/CSG/SCAD) | the other B-rep formats (true OCCT writers) **+** STL/OBJ/PLY/glTF/3MF |
-| Mesh (STL/OBJ/PLY/glTF/3MF/Collada/AMF/USD) | the other mesh formats only (Collada, AMF and USD are never export targets) |
+| Mesh (STL/OBJ/PLY/glTF/3MF/Collada/AMF/USD/VRML/FBX) | the other mesh formats only (Collada, AMF, USD, VRML and FBX are never export targets) |
 
 The source format itself is never offered. B-rep targets are written entirely in the extension host via OCCT; mesh targets are serialized in the webview from the already-tessellated Three.js model (there is no way to promote a triangle mesh back into a B-rep). glTF export always produces a single binary `.glb` file; 3MF export writes geometry only, with the chosen export unit applied to the coordinates *and* declared in the file (`unit="inch"` etc.). A B-rep → STL export can instead be **mesh-aware**: give the downstream volume-mesh cell size and a chordal fraction, and the STL is tessellated host-side at that tolerance (independent of the viewport) with the sampled chordal error reported — also headless as `export_tessellated_stl`. See [File Formats → Export](https://loumalouomega.github.io/CAD-Preview/file-formats#export) for details.
 

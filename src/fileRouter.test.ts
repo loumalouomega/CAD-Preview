@@ -39,6 +39,16 @@ describe("routeFile", () => {
     }
   });
 
+  it("routes .wrl to the three strategy", () => {
+    expect(routeFile("m.wrl")).toEqual({ strategy: "three", format: "wrl" });
+    expect(routeFile("M.WRL")).toEqual({ strategy: "three", format: "wrl" });
+  });
+
+  it("routes .fbx to the three strategy", () => {
+    expect(routeFile("m.fbx")).toEqual({ strategy: "three", format: "fbx" });
+    expect(routeFile("M.FBX")).toEqual({ strategy: "three", format: "fbx" });
+  });
+
   it("is case-insensitive", () => {
     expect(routeFile("MODEL.STP")).toEqual({ strategy: "occt", format: "step" });
     expect(routeFile("Mesh.STL")).toEqual({ strategy: "three", format: "stl" });
@@ -205,6 +215,16 @@ describe("display-only mesh formats", () => {
   it("USD is display-only and never host-comparable", () => {
     expect(DISPLAY_ONLY_MESH_FORMATS.has("usd")).toBe(true);
     expect(COMPARABLE_MESH_FORMATS.has("usd")).toBe(false);
+  });
+
+  it("VRML is display-only and never host-comparable", () => {
+    expect(DISPLAY_ONLY_MESH_FORMATS.has("wrl")).toBe(true);
+    expect(COMPARABLE_MESH_FORMATS.has("wrl")).toBe(false);
+  });
+
+  it("FBX is display-only and never host-comparable", () => {
+    expect(DISPLAY_ONLY_MESH_FORMATS.has("fbx")).toBe(true);
+    expect(COMPARABLE_MESH_FORMATS.has("fbx")).toBe(false);
   });
 
   it("the refusal names the format and the action", () => {
