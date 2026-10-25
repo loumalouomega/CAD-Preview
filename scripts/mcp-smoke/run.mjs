@@ -8445,7 +8445,7 @@ try {
       const a7 = await call("inspect", { path: wireModel, entityId: "face-7" });
       const sheetArea = (a6.area ?? 0) + (a7.area ?? 0);
       assert(Math.abs(sheetArea - 50) < 1e-6, `the sheet's area is the analytic 50, 2 x (5 x 5) (got ${sheetArea})`);
-      const blockVol = await call("get_mass_properties", { path: wireModel, entityId: "solid-1" });
+      const blockVol = await call("get_mass_properties", { path: wireModel, entityId: "solid-0" });
       assert(Math.abs(blockVol.volume - 60) < 1e-6, `the sheet adds no volume to the block (got ${blockVol.volume})`);
       const upTo = await wireSkip("open profile up-to-face", [
         spine(20), { op: "extrude", profileEdges: ["edge-12", "edge-13"], dir: [0, 0, 1], upToFace: "face-0" },
