@@ -8452,7 +8452,7 @@ try {
       const apart = await wireSkip("non-adjacent corner edges", [box10x6, { op: "filletProfile", edges: ["edge-12", "edge-14"], radius: 1 }]);
       assert(/do not meet at a shared endpoint/i.test(apart), `non-adjacent edges are refused by name (got ${apart})`);
       const solidEdge = await wireSkip("fillet profile on a solid edge", [{ op: "filletProfile", edges: ["edge-0", "edge-1"], radius: 0.5 }]);
-      assert(/not both in one free wire|do not meet at a shared endpoint/i.test(solidEdge), `a solid's edges are refused by name (got ${solidEdge})`);
+      assert(/not both in one free wire|do not meet at a shared endpoint|inside a face or solid/i.test(solidEdge), `a solid's edges are refused by name (got ${solidEdge})`);
     }
 
     // 6. the refusals, each naming its own cause rather than a generic failure.
