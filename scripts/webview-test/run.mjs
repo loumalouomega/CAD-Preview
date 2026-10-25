@@ -4470,7 +4470,9 @@ const BREP_HEALTH_REPORT = {
   valid: false,
   counters: { solids: 1, shells: 1, faces: 36, edges: 98, looseEdges: 0, looseFaces: 0, looseWires: 0, solidsWithVoids: 0 },
   openBoundaryEdgeCount: 0,
-  solids: [{ solidId: "solid-0", valid: false, shellCount: 1, openShellCount: 0, openBoundaryEdgeCount: 0 }],
+  freeBoundaries: [],
+  freeBoundaryCount: 0,
+  solids: [{ solidId: "solid-0", valid: false, shellCount: 1, openShellCount: 0, openBoundaryEdgeCount: 0, signedVolume: 24 }],
   issues: [
     { id: "solid-0", statuses: [], valid: false },
     { id: "face-3", statuses: ["UnorientableShape"], valid: false },

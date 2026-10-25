@@ -21,15 +21,27 @@
  * - `ShapeAnalysis_ShapeContents` (unsuffixed) `.Perform(shape)` + `Nb*`.
  * - `ShapeAnalysis_Shell` (unsuffixed) `.LoadShells(s)` +
  *   `CheckOrientedShells(s, true, false)` + `.FreeEdges()` (a compound).
+ * - `ShapeAnalysis_FreeBounds_2(shape, tol, shared=true, splitClosed=false)` →
+ *   `GetClosedWires()` / `GetOpenWires()` (compounds of wires; probe
+ *   `scripts/probe/examples/occt-brep-health-facts.ts`: piston.stp's 48 open
+ *   edges → 14 closed wires over exactly 48 edges, 19 ms; turbine.stp 115 ms).
+ * - Signed volume = `volumePropertiesAdaptive(...)` + `Mass()` on the solid
+ *   (block.stp 60, `.Reversed()` -60).
+ * - `BRepExtrema_SelfIntersection` is NOT usable: every constructor needs the
+ *   unbound `BRepExtrema_ElementFilter` ("Cannot construct … due to unbound
+ *   types"), so the report has no self-intersection fact.
  */
 import { getOcct, readShape, wrapOcctFault } from "./occtService";
+import { volumePropertiesAdaptive } from "./brepGProp";
 import { applyEditsBRep, collectEdges, collectFaces, collectSolids } from "./occtOperations";
 import type { EditOp } from "./editOps";
 import type { BRepFormat } from "./massProperties";
 import {
+  capFreeBoundaries,
   capIssues,
   statusNameTable,
   statusNames,
+  type BrepFreeBoundary,
   type BrepHealthCounters,
   type BrepHealthReport,
   type BrepSolidHealth,
@@ -92,6 +104,49 @@ function openBoundaryEdges(oc: any, shape: any, cleanup: Cleanup): number | null
     const free = sas.FreeEdges();
     cleanup.push(free);
     return explore(oc, free, oc.TopAbs_ShapeEnum.TopAbs_EDGE, cleanup).length;
+  } catch {
+    return null;
+  }
+}
+
+/** Free-bound tolerance: sewing-ladder floor — edges closer than this share an end. */
+const FREE_BOUND_TOLERANCE = 1e-4;
+
+/** Open-boundary edges chained into wires (`null` if uncomputable). */
+function freeBoundaries(oc: any, shape: any, cleanup: Cleanup): BrepFreeBoundary[] | null {
+  try {
+    const fb = new oc.ShapeAnalysis_FreeBounds_2(shape, FREE_BOUND_TOLERANCE, true, false);
+    cleanup.push(fb);
+    const out: BrepFreeBoundary[] = [];
+    for (const closed of [true, false]) {
+      const compound = closed ? fb.GetClosedWires() : fb.GetOpenWires();
+      cleanup.push(compound);
+      for (const wire of explore(oc, compound, oc.TopAbs_ShapeEnum.TopAbs_WIRE, cleanup)) {
+        const wireEdges = explore(oc, wire, oc.TopAbs_ShapeEnum.TopAbs_EDGE, cleanup);
+        let length = 0;
+        for (const e of wireEdges) {
+          const props = new oc.GProp_GProps_1();
+          cleanup.push(props);
+          oc.BRepGProp.LinearProperties(e, props, false, false);
+          length += props.Mass();
+        }
+        out.push({ closed, edgeCount: wireEdges.length, length });
+      }
+    }
+    return out;
+  } catch {
+    return null;
+  }
+}
+
+/** Signed volume of one solid (`null` if uncomputable). */
+function solidSignedVolume(oc: any, solid: any, cleanup: Cleanup): number | null {
+  try {
+    const props = new oc.GProp_GProps_1();
+    cleanup.push(props);
+    volumePropertiesAdaptive(oc, solid, props);
+    const v: number = props.Mass();
+    return Number.isFinite(v) ? v : null;
   } catch {
     return null;
   }
@@ -168,13 +223,19 @@ export async function checkBrepHealth(
         shellCount: shells.length,
         openShellCount,
         openBoundaryEdgeCount: openBoundaryEdges(oc, s.solid, cleanup),
+        signedVolume: solidSignedVolume(oc, s.solid, cleanup),
       };
     });
 
+    const openBoundaryEdgeCount = openBoundaryEdges(oc, shape, cleanup);
+    // Nothing open → no wires to group; skip the extra pass on a closed model.
+    const wires = openBoundaryEdgeCount === 0 ? [] : freeBoundaries(oc, shape, cleanup);
     return {
       valid,
       counters: contentCounters(oc, shape, cleanup),
-      openBoundaryEdgeCount: openBoundaryEdges(oc, shape, cleanup),
+      openBoundaryEdgeCount,
+      freeBoundaries: wires ? capFreeBoundaries(wires) : null,
+      freeBoundaryCount: wires ? wires.length : null,
       solids: solidReports,
       issues: capIssues(issues),
       issueCount: issues.length,

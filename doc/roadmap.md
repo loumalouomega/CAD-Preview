@@ -320,7 +320,6 @@ Probes are grouped by area. Each group has its own order table. The order is the
 | ID | Item | Needs | Why here |
 | --- | --- | --- | --- |
 | 3.2 | B-rep repair as an explicit op | the shipped validity report | Turns `check_brep_health`'s findings into something the user can act on |
-| 3.3 | More facts in the B-rep validity report | — | Cheap, read-only, and it sharpens the repair probe's before/after |
 | 3.4 | Open-profile surface output | — | Exercises the free-face invariant every `face-N` operand depends on; structurally cheap |
 | 3.5 | N-sided surface filling | — | Closes the gap `addSurfaceFromLines` leaves for non-planar boundaries |
 | 3.6 | Read PMI, layers and materials from STEP | — | May also reopen colours through a different API than the dead one |
@@ -353,22 +352,6 @@ None of these depends on another's result.
   - A **Repair** button in the B-rep Health panel that proposes it.
   - The report before and after, shown side by side.
 - **Out of scope:** sewing an open shell into a solid; the mesh-to-B-rep promotion already covers the closable case.
-
-##### 3.3 More facts in the B-rep validity report {#more-facts-in-the-b-rep-validity-report}
-
-*Area: Geometry.*
-
-- **Hypothesis:** `BRepExtrema_SelfIntersection` detects self-intersecting faces, and `ShapeAnalysis_FreeBounds` returns open boundaries as closed or open wires. Both are green and never called, and both can join `check_brep_health`'s report as facts.
-- **Evidence today:** the report detects open-boundary edges (through `ShapeAnalysis_Shell`), but not their grouping into holes, and it cannot see self-intersection at all.
-- **Addendum (2026-10-12):** text-to-cad also checks each solid's signed volume, because a reversed solid can pass topology checks while reporting a negative volume. That fact needs no new binding — the adaptive `BRepGProp` wrappers in `src/brepGProp.ts` already compute it — so it can join the report alongside the two above, as a per-solid `signedVolume` fact.
-- **Probe (S):**
-  1. Build a deliberately self-intersecting solid by translating one face of a box through the opposite face. Confirm `BRepExtrema_SelfIntersection` reports the overlapping face pair, and that a clean box reports none.
-  2. On `piston.stp`, confirm `ShapeAnalysis_FreeBounds` groups the 48 open edges into closed wires (holes), and report their count and lengths.
-  3. Record timing on `turbine.stp`, since the report is already about 9 s there.
-- **Decision gate:**
-  - **Pass:** correct detections, and timing acceptable for an explicit action.
-  - **Fail:** no detection, or runaway time → recorded, with the report unchanged.
-- **If admitted (S):** two more fact fields in `check_brep_health` and the panel. Self-intersection is opt-in if timing demands it.
 
 ##### 3.4 Open-profile surface output {#open-profile-surface-output}
 
@@ -698,6 +681,7 @@ Three groups, three different revival rules. Each says what would change our min
 
   Recorded by the [kernel capability review](#kernel-capability-review).
 
+- **`BRepExtrema_SelfIntersection` (face self-intersection).** Probed live (opencascade.js 1.1.1, 2026-10-25, `scripts/probe/examples/occt-brep-health-facts.ts`): the prototype is empty and both `_1(tol)` and `_2(shape, tol)` constructors throw `Cannot construct … due to unbound types: 25BRepExtrema_ElementFilter`, so a box with a face pushed through the opposite face cannot be tested. `check_brep_health` therefore reports no self-intersection fact. **Revive only** with a build that binds `BRepExtrema_ElementFilter` (the self-built OCCT probe re-checks it).
 - **Hidden-line removal through OCCT's own `HLRBRep_*` family.** Every class is red in this build: `HLRBRep_Algo`, `HLRBRep_PolyAlgo`, `HLRBRep_HLRToShape`, `HLRBRep_PolyHLRToShape`. `HLRAlgo_Projector` is green but is a low-level internal only reachable through them.
 
   **The narrow survivor, `HLRAppli_ReflectLines`, was probed and is not the way in either — and it is this file's canonical example of green-but-useless.** The binding genuinely works: the unsuffixed constructor takes a `TopoDS_Shape`, and `SetAxes`/`Perform`/`GetResult` are all bound and functional (249 ms on `bull.stp`, returning a non-null compound this codebase's own `enumerateEdges` reads as 25 edges). It was rejected on the *drawing*, which is only visible by looking at it: rendered side by side against a tessellation-derived silhouette of the same view, `GetResult()` produced the outer boundary and a few fragments while missing the part's circular holes and interior cutout entirely. `GetResult()` returns reflect lines only; sharp feature edges live behind `GetCompoundOf3dEdges(type, …)`, whose `type` argument is an `HLRBRep_TypeOfResultingEdge` — from the entirely-red family above — so calling it throws. The one filter that would make the kernel path competitive is unreachable.

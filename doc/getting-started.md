@@ -706,8 +706,8 @@ Results are session-only and clear on every model rebuild, since re-tessellation
 The **B-rep Health** panel (Advanced ▸ Analysis, STEP/IGES/BREP sources only) runs OpenCascade's own validity checker (`BRepCheck`) on the model as currently edited. It reports facts, not a verdict of its own, and repairs nothing.
 
 1. Click **Check**. On a large model this takes a few seconds (about 9 s for a 2.3 MB STEP file).
-2. The summary line gives OCCT's whole-shape verdict (`valid per BRepCheck` or `INVALID per BRepCheck`), the number of flagged subshapes and the number of open-boundary edges.
-3. Below it: solid/shell/face/edge counts, one row per solid (shells and how many are open), and one row per flagged subshape with the checker's named statuses — for example `face-13 — UnorientableShape` or `shell-0 — NotClosed`. Hover a face, edge or solid row to highlight it in the view.
+2. The summary line gives OCCT's whole-shape verdict (`valid per BRepCheck` or `INVALID per BRepCheck`), the number of flagged subshapes, the number of open-boundary edges and how many wires they chain into (free boundaries — each closed wire is a hole's rim).
+3. Below it: solid/shell/face/edge counts, one row per solid (shells, how many are open, and the signed volume — negative flags a reversed solid that topology checks can miss), and one row per flagged subshape with the checker's named statuses — for example `face-13 — UnorientableShape` or `shell-0 — NotClosed`. Hover a face, edge or solid row to highlight it in the view.
 
 `shell-N` ids are local to this report; nothing else in CAD Preview names shells. A model that passes is not guaranteed to mesh in Gmsh — the checker and the mesher test different things. The same report is available headless as the `check_brep_health` MCP tool.
 

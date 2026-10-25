@@ -2909,6 +2909,16 @@ try {
     pistonHealth.report.counters.solids === 0 && pistonHealth.report.counters.shells === 7 && pistonHealth.report.openBoundaryEdgeCount === 48,
     `check_brep_health(piston.stp): 7 open shells, 48 open-boundary edges (got ${JSON.stringify({ c: pistonHealth.report.counters, o: pistonHealth.report.openBoundaryEdgeCount })})`
   );
+  const pistonWires = pistonHealth.report.freeBoundaries ?? [];
+  assert(
+    pistonHealth.report.freeBoundaryCount === 14 && pistonWires.length === 14 && pistonWires.every((w) => w.closed && w.length > 0) &&
+      pistonWires.reduce((n, w) => n + w.edgeCount, 0) === 48,
+    `check_brep_health(piston.stp): the 48 open edges group into 14 closed wires (got ${JSON.stringify({ n: pistonHealth.report.freeBoundaryCount, e: pistonWires.reduce((n, w) => n + w.edgeCount, 0) })})`
+  );
+  assert(
+    bullHealth.report.freeBoundaryCount === 0 && bullHealth.report.solids.every((sd) => sd.signedVolume > 0),
+    `check_brep_health(bull + edits): no free boundaries, positive signed volumes (got ${JSON.stringify(bullHealth.report.solids.map((sd) => sd.signedVolume))})`
+  );
   const meshBrepHealth = await call("check_brep_health", { path: cubeStl });
   assert(
     meshBrepHealth.supported === false && /check_mesh_health/.test(meshBrepHealth.warnings[0] ?? ""),
