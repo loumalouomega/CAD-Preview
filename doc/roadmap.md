@@ -49,6 +49,10 @@ Existing implementation references were checked against the repository where not
 
 **Closed 2026-10-25.** Extension, not a planning review: nothing was re-ranked and no other open ID changed. The shared UI design system item (formerly 2.2) shipped on this side and left the list: keyboard view snaps (`1`–`6`, `i`), the label-only renames Clip → "Cut Plane" and BACK → "REAR" (the `clip` view-state key, protocol messages and the `back` named view are unchanged), and `npm run ui:drift`, an informational CI step diffing the `--ui-*` tokens and icon ids against VSCode-MDPA-Preview's `webview/design-system.css` and `src/toolbarIcons.ts`. The sibling repository's half (its stale licence line, its own copy of the key order) is its to do.
 
+**Closed 2026-10-25 (B-rep repair probe).** Extension, not a planning review: nothing was re-ranked. The B-rep repair probe (formerly 3.2) **failed its decision gate** and left the list; the facts are under Kernel-blocked and `CLAUDE.md`'s dead-API list. Remaining probe IDs were not renumbered.
+
+**Closed 2026-10-25 (profile probes).** Extension, not a planning review: the open-profile surface probe (formerly 3.4) and the profile fillet/chamfer probe (formerly 3.7) both **passed** and moved to Ready product work as 2.4 and 2.5. Remaining probe IDs were not renumbered.
+
 Everything previously shipped is tracked in `CHANGELOG.md`, and `CLAUDE.md` holds the invariants, traps and verified kernel facts that a future change could break (not per-feature history, which lives in git) — this page is for what's **not** built yet, plus the Non-goals that record why a direction was rejected so it isn't re-proposed.
 
 ## How this file works
@@ -134,6 +138,7 @@ This review lists every capability that is **bound in a shipped kernel but never
 | Proven broken despite being green | What happened | Recorded in |
 | --- | --- | --- |
 | `ShapeFix_Shape`, `ShapeFix_Shell`, `ShapeFix_Wireframe` | Only `ShapeFix_Solid` works | `src/meshHeal.ts` |
+| `ShapeFix_Face`, `ShapeFix_Wire`, `ShapeFix_FixSmallFace` | Construct and run, but clear no real finding (see Kernel-blocked) | `scripts/probe/examples/occt-shapefix.ts` |
 | `BRepAlgoAPI_Section` | No accessible constructor | `src/occtOperations.ts` |
 | `BRepExtrema_DistanceSS` in maximum mode | Constructs, but never computes | `src/entityFacts.ts` (`measureExact`) |
 | `BRepOffsetAPI_DraftAngle.Build()` | Throws on real geometry | `src/occtOperations.ts` (`draftFaces`) |
@@ -144,7 +149,6 @@ This review lists every capability that is **bound in a shipped kernel but never
 
 | Classes | Would enable | Item |
 | --- | --- | --- |
-| `ShapeFix_Face`, `ShapeFix_Wire`, `ShapeFix_FixSmallFace`, `ShapeFix_FixSmallSolid` | An explicit repair step after `check_brep_health` | [B-rep repair as an explicit op](#b-rep-repair-as-an-explicit-op) |
 | `BRepExtrema_SelfIntersection`, `ShapeAnalysis_FreeBounds` | Self-intersection and free-boundary facts in the validity report | [More facts in the B-rep validity report](#more-facts-in-the-b-rep-validity-report) |
 | `BRepOffsetAPI_MakeFilling` | An N-sided, non-planar surface from boundary edges | [N-sided surface filling](#n-sided-surface-filling) |
 | `ChFi2d_FilletAPI`, `ChFi2d_ChamferAPI` | Rounding and chamfering sketch-profile corners before extrusion | [Fillets and chamfers on 2D profiles](#fillets-and-chamfers-on-2d-profiles) |
@@ -246,7 +250,7 @@ It does **not** admit AGPL code, so TetGen stays rejected. Every new bundled dep
 | Upkeep | The base stays current and trustworthy | Done: the dependency watch, "Verify the dependency watch on GitHub", has run — it published issue #84 and re-dispatching reported `unchanged`. The verification-debt gate has shipped and **24 claims are closed** (the ten webview ones, the first ten host-side ones, and the fourteen of the second host-side increment — six of which the harnesses already proved); the host-side halves (1.1) are next again, now with only look-and-feel claims left in the registry; recoverable B-rep saves (1.4) shipped and left the list; the dependency-watch close-out (1.6) shipped and left the list too — two live `workflow_dispatch` runs closed #92 with the dated comment and the second run was a `current` no-op | The verification debt count keeps falling by closure |
 | Parity | Everything an agent can do, a user can do, and the reverse | Done: headless mesh-edit replay closed the last listed gap (as did the hole-table, refinement-sweep, free-text-note and mesh-source FE-export gaps). Justified remainders: meshio `inspect` (compare/mass/measure now read its boundary surface; `inspect` itself stays B-rep/mesh-parser only), `promote_mesh_to_brep` and `repair_mesh` read the raw file (their ids and outputs are defined over it; `save_model` bakes first), and glTF has no own-format save (its exporter emits only `.glb`) | Headless tools see the same edited mesh the viewer shows, or each remaining difference is justified |
 | Meshing probes | Decide on remeshing and on conformal assemblies | MMG core probe is closed with a partial outcome: volume/surface/transport work, unconditional optimisation failed. MMG remeshing has shipped: shared service, MCP tool and panel with real-pipeline screenshots and packaged-runtime verification. Conformal multi-body meshing and Gmsh mesh optimisation have shipped, each with probe-measured results and a decision. Manifold mesh booleans have shipped, and so have periodic face pairs; pre-mesh healing and the hex-dominant MDPA split were probed and rejected (see Non-goals), and the size callback works but nothing ships on it. Structured meshing per Part has shipped as `Part.meshStructured` with exact-count smoke coverage. Metric-driven adaptive remeshing has shipped as **Adapt to field** on remesh (scalar metric; the tensor metric was probed and not worth shipping). Hausdorff-bounded surface coarsening has shipped as the `autoDecimate` backend (mmgs; the earlier negative result was a mis-scaled `hausd`). Anisotropic 2-D boundary layers have shipped as `Part.meshBoundaryLayer` (the recorded blocker did not reproduce). Achieved rows are now measured from the generated nodes (`boundaryLayerMeasurement.ts`; generate result, panel Layer row and handoff manifest, with a shortfall warning), closing 2.22. View-driven mesh sizing has shipped as `MeshOptions.sizeField` (list-based `SP` view + `PostView` field, `bull.stp` worst deviation 3.3× down at 11.7× elements, Parts and physical groups survive, no view left behind). The octree hex-dominant engine shipped as `engine: "octree"` (3522 cells enclosing exactly 60 on `block.stp`, MDPA with all three cell classes). Left: KaHIP partitioning (blocked on a meshio++ build that compiles KaHIP; re-checked on meshio++ 17.8.0 — the declarations still say it is never compiled in — and the SFC baseline is recorded) | Each probe filed with measured results and a decision |
-| Geometry probes | Decide which never-called OCCT capabilities become ops | B-rep repair (3.2); the face-region split passed its probe, shipped as the `splitFace` op, and left the list; variable-radius fillets passed theirs and shipped as `FilletOp.radius2` (see `CLAUDE.md`'s Fillet/chamfer call shapes) | Each probe filed with measured results and a decision |
+| Geometry probes | Decide which never-called OCCT capabilities become ops | B-rep repair probed and **failed** (no `ShapeFix_*` fixer clears a real finding; see Kernel-blocked) and left the list; the face-region split passed its probe, shipped as the `splitFace` op, and left the list; variable-radius fillets passed theirs and shipped as `FilletOp.radius2` (see `CLAUDE.md`'s Fillet/chamfer call shapes) | Each probe filed with measured results and a decision |
 | Agent ergonomics | An agent can tell a retryable failure from a model error, and two writers cannot silently clobber each other | Done: OpenSCAD diagnostics (document-derived OpenSCAD text now reaches an agent only inside untrusted-text markers), coded MCP errors (a failure carries a code and `retryable`; an undeclared parameter is warned about) and the MCP revision guard (a stale `expectedRevision` is refused with `stale-revision`). Mark agent-made edits has shipped too. Next: the Upkeep items (1.1, 1.2) and the remaining Ready product work | An agent's change is visible and refusable |
 | Strategic | Remove the kernel ceiling | The self-built OCCT WASM probe (6.1) | The existing test suites pass unchanged against the new build |
 
@@ -292,6 +296,23 @@ These are outcome groupings, not release numbers. Independent small items can sh
 - **What is left (S):** the cross-repository check — open the exported `.mdpa` in VSCode-MDPA-Preview and confirm both SubModelParts populate. It needs that extension and is not exercised from this repository.
 - **Done when:** that check passes, and KKSS's tutorial links to the page.
 
+#### 2.4 Open-profile surface output {#open-profile-surface-output}
+
+*Area: Geometry. Effort: S (phase 1).*
+
+- **Probe passed (2026-10-25, `scripts/probe/examples/occt-open-profile-surface.ts`).** `BRepPrimAPI_MakePrism_1(wire, vec, false, true)` on an open wire returns a `TopAbs_SHELL` with one face per segment; area equals Σ length × extrude to 1e-9 (20 and 35), sewing reports exactly `2·segments + 2` free edges (4 and 6), and `BRepPrimAPI_MakeRevol_1(wire, ax1, 2π, false)` gives the Pappus area (37.699). Appended to `block.stp` as `compound(existing + new)`, `collectFaces` and `tessellateByGroup` agree on the face count (7 and 8) and the sheet lands as its own contiguous group (`solid-1`), and a STEP round trip preserves face count and total area. Sewing needs `Perform(new Handle_Message_ProgressIndicator_1())`.
+- **First increment (S):** `extrude` and `revolve` accept an open profile without `thin` and produce a surface: bypass `finishThin`/`orientPositiveVolume`, bucket role generic `produced`, no new id kind. Consumers that need a closed volume (`addVolumeFromSurfaces`, mass volume) refuse these faces by name; the panel hint and `OP_PARAM_DOCS` say "surface, not solid".
+- **Deferred:** `sweep`/`loft` surfaces and a `shell-N` entity id (touches `entityIdScheme`, picker, rebinding, every sidecar reader).
+- **Done when:** an open polyline extrudes to a sheet with analytic area, stable `face-N` ids across reload, and a clean STEP export.
+
+#### 2.5 Fillets and chamfers on 2D profiles {#fillets-and-chamfers-on-2d-profiles}
+
+*Area: Geometry. Effort: S–M.*
+
+- **Probe passed (2026-10-25, `scripts/probe/examples/occt-profile-fillet.ts`).** On a 10 × 6 rectangle the fillet at a corner drops the area by exactly 1 − π/4 (0.214602 to 1e-15) and a chamfer by exactly 0.5 (asymmetric 2/1 by exactly 1); the rebuilt wire is valid, closed and extrudes to volume = area × height. Verified call shapes: `ChFi2d_FilletAPI_3(edge1, edge2, gp_Pln)` → `Perform(radius)` → `Result(cornerPnt, e1Out, e2Out, -1)` (arc edge; `e1Out`/`e2Out` are the trimmed neighbours; `NbResults(pnt)` is 1); `ChFi2d_ChamferAPI_3(edge1, edge2)` → `Perform()` → `Result(e1Out, e2Out, d1, d2)` (distances are `Result` arguments, `d1` along edge1). `_1()` is an empty ctor, `_2(wire, plane)` loads a wire. An oversize radius (50) returns `Perform() === false` without aborting.
+- **First increment (S–M):** optional corner radius / chamfer fields on the rectangle and polygon profile ops (validate the radius against the shorter adjacent edge before the call), then a `filletProfile` op for arbitrary polylines. Ship the full op checklist (`validateEditOp`, `buildOpForPanel`, `tintForPanelOp`, catalog button and icon, `OP_PARAM_DOCS`, docs, `mcp:smoke` area pin).
+- **Done when:** a rounded rectangle extrudes with the analytic area and survives a replay.
+
 ### Probe-gated — establish feasibility before estimating
 
 *Admission: a specific hypothesis with a discriminating experiment. Each probe below is a small, self-contained piece of work with a firm **S** estimate of its own; the phases under "If admitted" are what ships if the probe passes, tagged provisionally. A method that accepts arguments but changes nothing is a failed probe.*
@@ -319,55 +340,14 @@ Probes are grouped by area. Each group has its own order table. The order is the
 
 | ID | Item | Needs | Why here |
 | --- | --- | --- | --- |
-| 3.2 | B-rep repair as an explicit op | the shipped validity report | Turns `check_brep_health`'s findings into something the user can act on |
-| 3.4 | Open-profile surface output | — | Exercises the free-face invariant every `face-N` operand depends on; structurally cheap |
 | 3.5 | N-sided surface filling | — | Closes the gap `addSurfaceFromLines` leaves for non-planar boundaries |
 | 3.6 | Read PMI, layers and materials from STEP | — | May also reopen colours through a different API than the dead one |
-| 3.7 | Fillets and chamfers on 2D profiles | — | Small, self-contained, and it removes a common reason to hand-edit profiles |
 | 3.8 | Small-detail edge suppression | screenshot pipeline | Webview-side and independent; the risk is judgement, not bindings |
 | 3.9 | Project a curve onto a face | — | Useful mostly as an input to other features |
 | 3.10 | Loft takeoff by resampled intermediates | — | The measurement design is the hard part |
 | 3.11 | VRML export | — | Cheap but low value |
 
 None of these depends on another's result.
-
-##### 3.2 B-rep repair as an explicit op {#b-rep-repair-as-an-explicit-op}
-
-*Area: Geometry.*
-
-- **Hypothesis:** of the `ShapeFix_*` family, `ShapeFix_Face`, `ShapeFix_Wire`, `ShapeFix_FixSmallFace` and `ShapeFix_FixSmallSolid` (green, never called) fix the problems `check_brep_health` reports on real fixtures. They do this without the failures recorded for `ShapeFix_Shape` / `Shell` / `Wireframe`.
-- **Evidence today:**
-  - `check_brep_health` reports facts and repairs nothing.
-  - On `examples/STP/daratech.stp` it names five faces flagged `UnorientableShape`; `examples/STP/piston.stp` is seven open shells with 48 open-boundary edges.
-  - Only `ShapeFix_Solid` is known to work.
-- **Probe (S):**
-  1. Apply `ShapeFix_Face` to each of daratech's five flagged faces, then re-run the validity report on the result. Record whether the five findings clear and whether the volume moves.
-  2. Apply `ShapeFix_Wire` and `ShapeFix_FixSmallFace` to piston's shells, and report the open-edge count before and after.
-  3. Confirm that `bull.stp`, which is valid, comes out byte-identical through each fixer.
-- **Decision gate:**
-  - **Pass:** at least one fixer clears real findings without changing a valid shape.
-  - **Fail:** no fixer changes anything, or valid shapes change → Kernel-blocked beside the existing `ShapeFix_*` note.
-- **If admitted (M):**
-  - A `repairBrep` edit op: explicit, undoable, never automatic.
-  - A **Repair** button in the B-rep Health panel that proposes it.
-  - The report before and after, shown side by side.
-- **Out of scope:** sewing an open shell into a solid; the mesh-to-B-rep promotion already covers the closable case.
-
-##### 3.4 Open-profile surface output {#open-profile-surface-output}
-
-*Area: Geometry.*
-
-- **Hypothesis:** prisming an open wire directly with `BRepPrimAPI_MakePrism_1` — the already-verified call shape, applied to the wire instead of a face — yields a ruled *surface* the existing free-face pass displays and enumerates with stable `face-N` ids, with no new kernel binding.
-- **Evidence today:** the refusal is `openProfileNeedsThin` in `occtOperations.ts`, reached from `profileFaceFor`, `regionFacesFor` and the loft branch. Everything downstream is more permissive than that refusal implies: `featureModel` appends whatever `buildFeatureSolid` returns with no `TopAbs_SOLID` check (the same five `BRep_Builder` lines `addSurfaceFromLines` uses); `tessellateByGroup`'s free-face pass already groups un-owned faces as "Sketches" and `collectFaces` mirrors it; `computeMassProperties` already returns `volume: null` for a `face-N`; `STEPControl_AsIs` writes shells. The two real blockers are `finishThin`/`orientPositiveVolume`, which rejects a near-zero-volume result (a surface path must bypass it), and the id scheme — `solid-N`/`face-N`/`edge-N`/`point-N`, no `shell-N`.
-- **Probe (S):**
-  1. On `block.stp`, append an `addLine` (one segment) and an open three-point `addPolyline`; resolve their edges through `collectEdges` into a wire; `BRepPrimAPI_MakePrism_1(wire, vec, false, true).Shape()`.
-  2. Assert `ShapeType()` is a shell (or a compound of faces), face count equals segment count, `surfacePropertiesAdaptive` area equals the sum of segment length × extrude length to 1e-9, and a `BRepBuilderAPI_Sewing` pass reports `2·segments + 2` free edges — an open sheet by construction.
-  3. Append the result to the model compound exactly as `featureModel` would; run `tessellateByGroup` and `collectFaces` and assert the new faces land in "Sketches" at the same contiguous `face-N` positions in both — the invariant every `face-N` operand depends on.
-  4. Export to STEP at `/o.step`, re-read, and repeat step 2 on the reread shape; run `computeMassProperties` on one new face and assert `volume: null` with a matching `area`.
-  5. Then revolve the same open wire through `BRepPrimAPI_MakeRevol_1`: area equals Pappus (arc length × 2π × centroid radius) for a full sweep.
-- **Decision gate:** *pass* — analytic area, stable ids, a clean STEP round trip. *Fail* — the wire prism is refused, or the free-face pass and `collectFaces` disagree on the new faces' positions → Kernel-blocked (the wire prism specifically), with the refusal recorded.
-- **If admitted:** Phase 1 (**S**) — `extrude` and `revolve` accept an open profile without `thin` and produce a surface: the op outcome and bucket record the generic `produced` role, `finishThin` is bypassed, `featureModel` is unchanged, the faces are ordinary free faces (no new id kind), and consumers that need a closed volume (`addVolumeFromSurfaces`, mass volume) refuse them by name. The panel hint and `OP_PARAM_DOCS` say "surface, not solid". Phase 2 (**M**, only if a real need appears) — `sweep`/`loft` surfaces and a `shell-N` entity id; deferred deliberately, since that id touches `entityIdScheme`, the picker, rebinding and every sidecar reader.
-- **Out of scope:** any change to `collectFaces`'s claiming algorithm — the probe verifies the new faces fit it as-is.
 
 ##### 3.5 N-sided surface filling {#n-sided-surface-filling}
 
@@ -409,21 +389,6 @@ None of these depends on another's result.
   - Colours become per-face display colours.
 
   Each ships with its own verification.
-
-##### 3.7 Fillets and chamfers on 2D profiles {#fillets-and-chamfers-on-2d-profiles}
-
-*Area: Geometry.*
-
-- **Hypothesis:** `ChFi2d_FilletAPI` and `ChFi2d_ChamferAPI` (green, never called) round or chamfer the corners of a planar wire, so a profile can be rounded before it is extruded.
-- **Evidence today:** rounding a profile's corners is done today by filleting the extruded solid's edges afterwards. That costs an extra topology-changing op, and it is fragile once more features follow.
-- **Probe (S):**
-  1. Fillet one corner of a 10 × 6 rectangle profile at radius 1. Assert the area drops by exactly (1 − π/4).
-  2. Chamfer one corner at 1, and assert the area drops by exactly 0.5.
-  3. Confirm the result is still one closed wire that `extrude` accepts.
-- **Decision gate:**
-  - **Pass:** exact areas.
-  - **Fail:** the calls are rejected.
-- **If admitted (S–M):** an optional corner-radius or corner-chamfer field on the rectangle and polygon profile ops, plus a `filletProfile` op for arbitrary polylines.
 
 ##### 3.8 Optional small-detail edge suppression {#optional-small-detail-edge-suppression}
 
@@ -681,6 +646,7 @@ Three groups, three different revival rules. Each says what would change our min
 
   Recorded by the [kernel capability review](#kernel-capability-review).
 
+- **`ShapeFix_Face` / `ShapeFix_Wire` / `ShapeFix_FixSmallFace` / `ShapeFix_FixSmallSolid` (B-rep repair).** Probed live (opencascade.js 1.1.1, 2026-10-25, `scripts/probe/examples/occt-shapefix.ts`). Call shapes: `ShapeFix_Face_2(face)` → `Perform()` → `Face()`; `ShapeFix_Wire_2(wire, face, prec)` → `Perform()`; `ShapeFix_FixSmallFace` and `ShapeFix_FixSmallSolid` have **no `_N` constructors, only the plain `new`** (`FixSmallFace`: `Init(shape)`/`Perform()`/`FixShape()`; `FixSmallSolid.Remove` takes 2 arguments). Results: on `daratech.stp` all five faces `check_brep_health` flags (`face-13/54/58/70/71`, `UnorientableShape`) stay invalid — `ShapeFix_Face.Perform()` returns `false` on each, `ShapeFix_Wire` reports nothing fixed, volume unchanged; fixing every face changes one face and still leaves five bad. On `piston.stp` `ShapeFix_FixSmallFace` leaves the 48 open-boundary edges and the face count untouched (`ShapeFix_Face` likewise). Control `bull.stp` is unchanged by every fixer (volume equal to 1e-8 relative, `FixSmallFace` BREP text identical), so the fixers are safe but inert here. `FixSmallSolid` was only constructed (no fixture contains a small solid). **Revive only** with a fixture where a fixer demonstrably clears a `check_brep_health` finding, or a build that binds `ShapeFix_Shell`/`ShapeFix_Shape`; `check_brep_health` stays facts-only.
 - **`BRepExtrema_SelfIntersection` (face self-intersection).** Probed live (opencascade.js 1.1.1, 2026-10-25, `scripts/probe/examples/occt-brep-health-facts.ts`): the prototype is empty and both `_1(tol)` and `_2(shape, tol)` constructors throw `Cannot construct … due to unbound types: 25BRepExtrema_ElementFilter`, so a box with a face pushed through the opposite face cannot be tested. `check_brep_health` therefore reports no self-intersection fact. **Revive only** with a build that binds `BRepExtrema_ElementFilter` (the self-built OCCT probe re-checks it).
 - **Hidden-line removal through OCCT's own `HLRBRep_*` family.** Every class is red in this build: `HLRBRep_Algo`, `HLRBRep_PolyAlgo`, `HLRBRep_HLRToShape`, `HLRBRep_PolyHLRToShape`. `HLRAlgo_Projector` is green but is a low-level internal only reachable through them.
 
