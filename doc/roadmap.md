@@ -53,6 +53,8 @@ Existing implementation references were checked against the repository where not
 
 **Closed 2026-10-25 (profile probes).** Extension, not a planning review: the open-profile surface probe (formerly 3.4) and the profile fillet/chamfer probe (formerly 3.7) both **passed** and moved to Ready product work; the open-profile surface item has since shipped, and the fillet/chamfer item is now 2.4. Remaining probe IDs were not renumbered.
 
+**Closed 2026-10-25 (Round Corner panel form).** Extension, not a planning review: the panel form for `filletProfile` (formerly 2.4) shipped as Build from selection ▸ **Round Corner** and left the list. Its icon is hand-authored (no `pdflatex` here); a compiled TikZ icon is a cosmetic follow-up.
+
 Everything previously shipped is tracked in `CHANGELOG.md`, and `CLAUDE.md` holds the invariants, traps and verified kernel facts that a future change could break (not per-feature history, which lives in git) — this page is for what's **not** built yet, plus the Non-goals that record why a direction was rejected so it isn't re-proposed.
 
 ## How this file works
@@ -151,7 +153,7 @@ This review lists every capability that is **bound in a shipped kernel but never
 | --- | --- | --- |
 | `BRepExtrema_SelfIntersection`, `ShapeAnalysis_FreeBounds` | Self-intersection and free-boundary facts in the validity report | [More facts in the B-rep validity report](#more-facts-in-the-b-rep-validity-report) |
 | `BRepOffsetAPI_MakeFilling` | An N-sided, non-planar surface from boundary edges | [N-sided surface filling](#n-sided-surface-filling) |
-| `ChFi2d_FilletAPI`, `ChFi2d_ChamferAPI` | Rounding and chamfering sketch-profile corners before extrusion | [Fillets and chamfers on 2D profiles](#fillets-and-chamfers-on-2d-profiles) |
+| `ChFi2d_FilletAPI`, `ChFi2d_ChamferAPI` | Rounding and chamfering sketch-profile corners before extrusion | Fillets and chamfers on 2D profiles (shipped) |
 | `BRepProj_Projection` | Projecting a curve onto a face | [Project a curve onto a face](#project-a-curve-onto-a-face) |
 | `STEPCAFControl_GDTProperty`, `XCAFDoc_DimTolTool`, `XCAFDoc_LayerTool`, `XCAFDoc_MaterialTool`, `XCAFPrs_DocumentExplorer` | Reading STEP AP242 PMI, layers and materials, plus a second route to colours that bypasses the dead `XCAFDoc_ColorTool` getter | [Read PMI, layers and materials from STEP](#read-pmi-layers-and-materials-from-step) |
 | `VrmlAPI_Writer` | B-rep → VRML export, the one extra B-rep writer in the binding | [VRML export](#vrml-export) |
@@ -295,15 +297,6 @@ These are outcome groupings, not release numbers. Independent small items can sh
 - **Done so far:** [A cantilever beam](/tutorials/cantilever) — a 100 × 10 × 10 box, `FixedEnd` and `LoadFace` Parts, an optional steel density, and an MDPA export with a handoff manifest. `mcp:smoke` pins it on the live kernel: the beam's volume is exactly 10 000 mm³, and every node of each `SubModelPart` sits exactly on its end plane (x = −50 / +50).
 - **What is left (S):** the cross-repository check — open the exported `.mdpa` in VSCode-MDPA-Preview and confirm both SubModelParts populate. It needs that extension and is not exercised from this repository.
 - **Done when:** that check passes, and KKSS's tutorial links to the page.
-
-#### 2.4 Panel form for `filletProfile` {#fillets-and-chamfers-on-2d-profiles}
-
-*Area: Geometry. Effort: S (needs `pdflatex` for the icon).*
-
-- **Done so far:** the `filletProfile` op ships headless (MCP tools, scripts, replay, history rows): fillet or chamfer one corner of an `addPolyline` between two straight segments, with analytic-area pins in `mcp:smoke`. `addRoundedRectangleProfile` already covered the rectangle case.
-- **What is left (S):** the panel form, `buildOpForPanel` case, `tintForPanelOp` entry, catalog button and generated TikZ icon, then remove it from `AGENT_ONLY_OPS`. Blocked here only by the icon pipeline (`pdftocairo` is present, `pdflatex` is not).
-- **Also not covered:** arc neighbours (only straight-segment corners), and a one-shot "round every corner" convenience.
-- **Done when:** a user can pick two segments in the viewer, set a radius or chamfer, and see the rounded profile extrude with the analytic area.
 
 ### Probe-gated — establish feasibility before estimating
 

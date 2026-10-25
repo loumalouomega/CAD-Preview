@@ -1351,6 +1351,23 @@ const editsPanel = new EditsPanel(document.getElementById("edits-panel")!, {
     editsModel.push({ op: "addEdgeSlot", edge: edges[0], width });
     setStatus("");
   },
+  onBuildFilletProfile: (radius, chamfer, chamfer2) => {
+    const edges = selection.list().filter((e) => e.entityType === "line").map((e) => e.entityId);
+    if (edges.length !== 2) { setStatus("Select exactly two adjacent segments (Line mode) of one sketch.", true); return; }
+    const guide = edges.find((e) => guideEntityIds.has(e));
+    if (guide) { setStatus(`${guide} is guide (construction) geometry — guides are excluded from profile fillets.`, true); return; }
+    if (chamfer === undefined && chamfer2 !== undefined) { setStatus("Distance 2 needs a Distance (chamfer) value.", true); return; }
+    if (chamfer !== undefined && radius !== undefined) { setStatus("Give a Radius (round) or a Distance (chamfer), not both.", true); return; }
+    if (chamfer === undefined && radius === undefined) { setStatus("Enter a Radius (round) or a Distance (chamfer).", true); return; }
+    if ((chamfer !== undefined && !(chamfer > 0)) || (radius !== undefined && !(radius > 0)) || (chamfer2 !== undefined && !(chamfer2 > 0))) {
+      setStatus("Enter positive values.", true); return;
+    }
+    const op: EditOp = chamfer !== undefined
+      ? { op: "filletProfile", edges: [edges[0], edges[1]], chamfer, ...(chamfer2 !== undefined ? { chamfer2 } : {}) }
+      : { op: "filletProfile", edges: [edges[0], edges[1]], radius: radius! };
+    editsModel.push(op);
+    setStatus("");
+  },
   onFormChanged: updateGizmoForForm,
   onPreviewDraftChanged: () => scheduleOpPreview(),
   onPreviewCancel: () => cancelOpPreview(),
@@ -2581,6 +2598,7 @@ function tintForPanelOp(id: PanelOpId, wrapVariant?: "emboss" | "engrave" | "sta
     case "buildSurface":
     case "buildVolume":
     case "edgeSlot":
+    case "filletProfile":
       return "ref";
     default:
       return undefined; // mirror, draft, align, fillet, chamfer — neutral

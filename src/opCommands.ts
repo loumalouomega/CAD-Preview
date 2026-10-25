@@ -248,7 +248,7 @@ function buildCommandTable(): CommandRow[] {
   return rows;
 }
 
-/** One row per panel button (57 today) — locked to `allCatalogEntries()` by `opCommands.test.ts`. */
+/** One row per panel button (58 today) — locked to `allCatalogEntries()` by `opCommands.test.ts`. */
 export const COMMAND_TABLE: readonly CommandRow[] = buildCommandTable();
 
 const COMMAND_LOOKUP: ReadonlyMap<string, CommandRow> = (() => {

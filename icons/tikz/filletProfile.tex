@@ -1,0 +1,13 @@
+% Op icon: filletProfile — mirrored fillet corner with a ringed vertex marking the sketch corner.
+% NOTE: svg-ops/filletProfile.svg is hand-authored from this (no pdflatex in the authoring environment).
+\documentclass[tikz,border=2mm]{standalone}
+\usetikzlibrary{arrows.meta,calc,shapes.geometric}
+\begin{document}
+\begin{tikzpicture}[line width=1.3pt, line cap=round, line join=round, >=Stealth, x=1mm,y=1mm, xscale=-1]
+  \draw (-10,10) circle (1.5);
+  \draw[dashed] (-10,-10) -- (-10,10) -- (10,10);
+  \draw[very thick] (-10,-10) -- (-10,2);
+  \draw[very thick] (-10,2) arc (180:90:8);
+  \draw[very thick] (2,10) -- (10,10);
+\end{tikzpicture}
+\end{document}
