@@ -291,11 +291,11 @@ These are outcome groupings, not release numbers. Independent small items can sh
   - It proposes upstreaming its view snaps (keys 1–6 for the six faces, `i` for isometric) into this repository.
   - It leaves two renames pending: Clip → "Cut Plane", and the orientation cube's BACK → "REAR".
   - This repository's chrome passes already use `--ui-*` metric tokens beside the theme colours, which is the part both extensions could share.
+- **Done so far:** the view snaps shipped (`viewShortcuts.ts`: keys 1–6 and `i` through the named-view vocabulary; the digit order is this repository's cube order and should be reconciled with the sibling's table).
 - **First useful increment (M):**
-  - Adopt the view snaps. They go through the existing named-view vocabulary in `viewDirections.ts`, so they need no new camera code.
   - Decide the two renames with the maintainer of both repositories, and apply the decision here.
   - Add a drift-check script that compares the shared token block and icon names between the two repositories and prints the differences.
-- **Done when:** the snaps work in both extensions, the renames are settled, and the drift check runs in this repository's CI.
+- **Done when:** the snaps work in both extensions with one agreed key order, the renames are settled, and the drift check runs in this repository's CI.
 - **Other repository's half:** the matching change in VSCode-MDPA-Preview, and its stale licence line.
 
 #### 2.3 Canonical worked example for the simulation tutorial {#canonical-worked-example-for-the-simulation-tutorial}

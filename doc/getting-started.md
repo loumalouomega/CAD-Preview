@@ -396,6 +396,15 @@ Click any face of the cube to snap the camera to that standard view:
 | **+Y / -Y** | Top / Bottom |
 | **+Z / -Z** | Front / Back |
 
+The same views are on the keyboard (ignored while typing in a text field, and with Ctrl, Cmd or Alt held):
+
+| Key | View   | Key | View   |
+| --- | ------ | --- | ------ |
+| `1` | Front  | `4` | Left   |
+| `2` | Back   | `5` | Top    |
+| `3` | Right  | `6` | Bottom |
+| `i` | Isometric (front-top-right) | | |
+
 ### Component Tree Panel
 
 For multi-solid STEP/IGES assemblies or glTF scenes with multiple meshes, the component tree panel shows the model hierarchy. Click any row to highlight that solid/mesh in the 3D view (all others are dimmed). Click the same row again or click an empty area to deselect.

@@ -5,6 +5,7 @@ import { buildEntityReferenceIndex, QUERYABLE_PANEL_FORMS } from "./opCatalog";
 import { hoverContent, inspectorContent, summaryLine } from "./entityExplain";
 import { formatEntityReferences, producingBucketFor } from "./entityReference";
 import { UI_GLYPHS } from "../uiGlyphs";
+import { isTextEntryTarget, viewForKey } from "../viewShortcuts";
 import { MacrosPanel } from "./macrosPanel";
 import { selectionGroupsFor } from "./selectionGroups";
 import { loadMeshFromUrl } from "./meshLoaders";
@@ -4050,6 +4051,15 @@ function setupSelectionControls(): void {
   );
   document.addEventListener("keydown", (e) => {
     if (e.key === "Escape") closeMenu();
+  });
+  // View snaps (1-6 faces, i isometric). Typing in any input — including the
+  // command bar, which also stops propagation — must never move the camera.
+  document.addEventListener("keydown", (e) => {
+    if (e.defaultPrevented || isTextEntryTarget(e.target as HTMLElement | null)) return;
+    const view = viewForKey(e);
+    if (!view) return;
+    // The view-change hook already schedules the render.
+    viewer.setViewDirection(new THREE.Vector3(...view.direction));
   });
 }
 
