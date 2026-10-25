@@ -53,7 +53,7 @@ Existing implementation references were checked against the repository where not
 
 **Closed 2026-10-25 (profile probes).** Extension, not a planning review: the open-profile surface probe (formerly 3.4) and the profile fillet/chamfer probe (formerly 3.7) both **passed** and moved to Ready product work; the open-profile surface item has since shipped, and the fillet/chamfer item is now 2.4. Remaining probe IDs were not renumbered.
 
-**Closed 2026-10-25 (Round Corner panel form).** Extension, not a planning review: the panel form for `filletProfile` (formerly 2.4) shipped as Build from selection ▸ **Round Corner** and left the list. Its icon is hand-authored (no `pdflatex` here); a compiled TikZ icon is a cosmetic follow-up.
+**Closed 2026-10-25 (Round Corner panel form).** Extension, not a planning review: the panel form for `filletProfile` (formerly 2.4) shipped as Build from selection ▸ **Round Corner** and left the list.
 
 **Closed 2026-10-25 (N-sided surface filling).** Extension, not a planning review: the `BRepOffsetAPI_MakeFilling` probe (formerly 3.5) **passed** and the `addSurfaceFilling` op shipped (Build from selection ▸ Fill Surface) in the same change; it left the list. Remaining probe IDs were not renumbered.
 
