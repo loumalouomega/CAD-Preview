@@ -1,5 +1,5 @@
 import { BREP_ONLY_OPS, type EditOpKind, type EditOp } from "./editOps";
-import { OP_CATALOG, allCatalogEntries, type PanelOpId } from "./webview/opCatalog";
+import { OP_CATALOG, AGENT_ONLY_OPS, allCatalogEntries, type PanelOpId } from "./webview/opCatalog";
 
 /**
  * Pure, host- AND webview-safe command vocabulary shared by the MCP tools and
@@ -80,6 +80,7 @@ export const OP_PARAM_DOCS: Record<EditOpKind, string> = {
   addSurfaceFromLines: '{edges: edgeId[] (a single connected loop, or several disjoint closed loops forming exactly ONE outer boundary plus its holes — e.g. a letter "O"\'s outer ring + inner ring build one holed face; a set spanning more than one outer loop is refused)}',
   addVolumeFromSurfaces: '{faces: faceId[] (must sew into a closed shell)}',
   addEdgeSlot: '{edge: edgeId, width: n>0}',
+  filletProfile: '{edges: [edgeId, edgeId] (two adjacent straight segments of one sketch wire, e.g. an addPolyline — they meet at the corner), radius: n>0 (arc fillet) XOR chamfer: n>0 (bevel; distance along edges[0]), chamfer2?: n>0 (distance along edges[1]; chamfer only)}. Trims both segments and inserts the arc/bevel inside the same wire, so an extrude afterwards has the analytic area; apply once per corner. Radius/chamfer must be shorter than the adjacent segments (skipped with a diagnostic otherwise); straight segments only',
   align: '{targets: solidId[], axis: "x"|"y"|"z", extent: "min"|"center"|"max", to: n}',
   patternLinear: '{targets: solidId[], direction: [x,y,z], spacing: n!=0, count: int>=2 (total instances, incl. original)}',
   patternCircular: '{targets: solidId[], axisPoint?: [x,y,z], axisDir?: [x,y,z], midaxisOf?: [faceId|edgeId, faceId|edgeId] (parallel cylinder axes or straight edges — XOR with axisPoint/axisDir), angleDeg: n, count: int>=2 (total instances, incl. original)}',
@@ -177,6 +178,7 @@ export function editDistance(a: string, b: string): number {
 export function allOpKinds(): EditOpKind[] {
   const kinds = new Set<EditOpKind>();
   for (const entry of allCatalogEntries()) for (const k of entry.kinds) kinds.add(k);
+  for (const k of AGENT_ONLY_OPS) kinds.add(k);
   return [...kinds];
 }
 

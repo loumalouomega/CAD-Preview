@@ -196,8 +196,10 @@ type EditOp =
   //   profile / profiles            a face-N (a sketch, or any face)
   //   profileEdges / profileEdgeSets  edge-N ids assembled into one wire,
   //                       which is how an OPEN sketch is consumed. An open
-  //                       wire encloses no area, so it REQUIRES `thin` and
-  //                       refuses `thinOuter` (it has no inside or outside).
+  //                       wire encloses no area: extrude/revolve without `thin` build a
+  //                       SURFACE (sheet, no caps, no volume); sweep/loft and any
+  //                       `thin` build REQUIRE `thin` and refuse `thinOuter`
+  //                       (it has no inside or outside).
   // The single-profile three (not loft) also take an optional region pick:
   //   pick?: 'outer' | 'all' | number[]   which enclosed regions of a
   //                       multi-region profile to consume (0 = outer boundary,
@@ -217,6 +219,8 @@ type EditOp =
   | { op: 'defeature'; faces: string[] }   // removes faces as recognized features; solid heals behind them
   | { op: 'unifySameDomain' }   // parameter-free, whole model: merges same-surface faces/edges
   | { op: 'addEdgeSlot'; edge: string; width: number }               // stadium slot face around an existing edge
+  | { op: 'filletProfile'; edges: [string, string]; radius?: number; chamfer?: number; chamfer2?: number }
+                                                                  // round (radius) or bevel (chamfer, optional chamfer2) one corner of a sketch polyline; exactly one of radius/chamfer
   | { op: 'splitByPlane'; targets: string[]; planePoint?: Vec3; planeNormal?: Vec3; planeId?: string; midplaneFaces?: [string, string]; keep: 'both' | 'positive' | 'negative' }
   | { op: 'splitFace'; face: string; edgeIds?: string[]; points?: [Vec3, Vec3] }   // exactly one of edgeIds/points: splits one face into two regions along a splitting edge on it (boundary-condition regions); an edge that misses the face or stops short is skipped with a diagnostic
   | { op: 'section'; targets: string[]; planePoint?: Vec3; planeNormal?: Vec3; planeId?: string; midplaneFaces?: [string, string] }

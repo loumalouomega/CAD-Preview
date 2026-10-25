@@ -762,6 +762,32 @@ describe("rib", () => {
   });
 });
 
+describe("filletProfile", () => {
+  const ok = (o: Record<string, unknown>) => validateEditOp({ op: "filletProfile", edges: ["edge-0", "edge-1"], ...o });
+  it("accepts a radius, a chamfer, and an asymmetric chamfer", () => {
+    expect(ok({ radius: 1 })).toEqual({ op: "filletProfile", edges: ["edge-0", "edge-1"], radius: 1 });
+    expect(ok({ chamfer: 2 })).toMatchObject({ chamfer: 2 });
+    expect(ok({ chamfer: 2, chamfer2: 1 })).toMatchObject({ chamfer: 2, chamfer2: 1 });
+  });
+  it("needs exactly one of radius / chamfer", () => {
+    expect(ok({})).toBeNull();
+    expect(ok({ radius: 1, chamfer: 1 })).toBeNull();
+  });
+  it("rejects non-positive sizes and a chamfer2 without a chamfer", () => {
+    expect(ok({ radius: 0 })).toBeNull();
+    expect(ok({ radius: -1 })).toBeNull();
+    expect(ok({ chamfer: Number.NaN })).toBeNull();
+    expect(ok({ radius: 1, chamfer2: 1 })).toBeNull();
+    expect(ok({ chamfer: 1, chamfer2: 0 })).toBeNull();
+  });
+  it("needs two distinct edge ids", () => {
+    expect(ok({ radius: 1, edges: ["edge-0"] })).toBeNull();
+    expect(ok({ radius: 1, edges: ["edge-0", "edge-0"] })).toBeNull();
+    expect(ok({ radius: 1, edges: ["edge-0", "face-1"] })).toBeNull();
+    expect(ok({ radius: 1, edges: ["edge-0", "edge-1", "edge-2"] })).toBeNull();
+  });
+});
+
 describe("wrap", () => {
   const wrap = (extra: Record<string, unknown>) =>
     validateEditOp({

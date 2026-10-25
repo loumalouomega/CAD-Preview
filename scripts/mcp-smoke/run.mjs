@@ -8432,12 +8432,49 @@ try {
       `two identical open sections loft to band x separation, ${(BAND * 10).toFixed(6)} (got ${openLoft})`
     );
 
-    // 6. the refusals, each naming its own cause rather than a generic failure.
-    const noThin = await wireSkip("open profile without thin", [
-      spine(20), { op: "extrude", profileEdges: ["edge-12", "edge-13"], dir: [0, 0, 1], length: 5 },
-    ]);
-    assert(/open wire, which encloses no area/i.test(noThin), `an open profile without thin is refused by name (got ${noThin})`);
+    // 5b. `filletProfile` rounds/bevels one corner of a closed polyline in
+    // place; extruding the result by 5 gives the analytic area x height. The
+    // 10 x 6 rectangle loses 1 - PI/4 to a unit fillet, 0.5 to a unit chamfer
+    // and 1 to a 2/1 chamfer (probe occt-profile-fillet.ts).
+    {
+      const box10x6 = { op: "addPolyline", points: [[0, 0, 20], [10, 0, 20], [10, 6, 20], [0, 6, 20]], closed: true };
+      const ALL6 = ["edge-12", "edge-13", "edge-14", "edge-15", "edge-16"]; // 4 edges become 5 (corner pair -> trim, arc, trim)
+      const extrudeAll = { op: "extrude", profileEdges: ALL6, dir: [0, 0, 1], length: 5 };
+      const rounded = await wireVolume("filleted corner extrudes", [box10x6, { op: "filletProfile", edges: ["edge-12", "edge-13"], radius: 1 }, extrudeAll]);
+      const roundedExpect = (60 - (1 - Math.PI / 4)) * 5;
+      assert(Math.abs(rounded - roundedExpect) / roundedExpect < 1e-6, `a unit fillet takes exactly 1 - PI/4 off the area, volume ${roundedExpect.toFixed(6)} (got ${rounded})`);
+      const chamfered = await wireVolume("chamfered corner extrudes", [box10x6, { op: "filletProfile", edges: ["edge-12", "edge-13"], chamfer: 1 }, extrudeAll]);
+      assert(Math.abs(chamfered - 59.5 * 5) < 1e-6, `a unit chamfer takes exactly 0.5 off the area, volume 297.5 (got ${chamfered})`);
+      const asym = await wireVolume("asymmetric chamfer extrudes", [box10x6, { op: "filletProfile", edges: ["edge-12", "edge-13"], chamfer: 2, chamfer2: 1 }, extrudeAll]);
+      assert(Math.abs(asym - 59 * 5) < 1e-6, `a 2/1 chamfer takes exactly 1 off the area, volume 295 (got ${asym})`);
+      const tooBig = await wireSkip("fillet radius too large", [box10x6, { op: "filletProfile", edges: ["edge-12", "edge-13"], radius: 8 }]);
+      assert(/does not fit this corner/i.test(tooBig), `an oversize radius is refused by name (got ${tooBig})`);
+      const apart = await wireSkip("non-adjacent corner edges", [box10x6, { op: "filletProfile", edges: ["edge-12", "edge-14"], radius: 1 }]);
+      assert(/do not meet at a shared endpoint/i.test(apart), `non-adjacent edges are refused by name (got ${apart})`);
+      const solidEdge = await wireSkip("fillet profile on a solid edge", [{ op: "filletProfile", edges: ["edge-0", "edge-1"], radius: 0.5 }]);
+      assert(/not both in one free wire|do not meet at a shared endpoint|inside a face or solid/i.test(solidEdge), `a solid's edges are refused by name (got ${solidEdge})`);
+    }
 
+    // 6. the refusals, each naming its own cause rather than a generic failure.
+    // An open profile without `thin` is a SURFACE for extrude/revolve (two
+    // 5-long segments x 5 = area 50 over face-6 + face-7, no volume change);
+    // sweep/loft still refuse it by name.
+    {
+      resetWire();
+      const sheetOps = [spine(20), { op: "extrude", profileEdges: ["edge-12", "edge-13"], dir: [0, 0, 1], length: 5 }];
+      const res = await callWithCleanRetry("apply_edit_ops", { path: wireModel, ops: sheetOps }, resetWire);
+      assert(res.applied === sheetOps.length && (res.notApplied ?? 0) === 0, `an open profile without thin extrudes to a sheet (got ${JSON.stringify(res.report)})`);
+      const a6 = await call("inspect", { path: wireModel, entityId: "face-6" });
+      const a7 = await call("inspect", { path: wireModel, entityId: "face-7" });
+      const sheetArea = (a6.area ?? 0) + (a7.area ?? 0);
+      assert(Math.abs(sheetArea - 50) < 1e-6, `the sheet's area is the analytic 50, 2 x (5 x 5) (got ${sheetArea})`);
+      const blockVol = await call("get_mass_properties", { path: wireModel, entityId: "solid-0" });
+      assert(Math.abs(blockVol.volume - 60) < 1e-6, `the sheet adds no volume to the block (got ${blockVol.volume})`);
+      const upTo = await wireSkip("open profile up-to-face", [
+        spine(20), { op: "extrude", profileEdges: ["edge-12", "edge-13"], dir: [0, 0, 1], upToFace: "face-0" },
+      ]);
+      assert(/up-to-face extrusion needs a closed planar profile/i.test(upTo), `an open profile with upToFace is refused by name (got ${upTo})`);
+    }
     const badOuter = await wireSkip("open profile with thinOuter", [
       spine(20), { op: "extrude", profileEdges: ["edge-12", "edge-13"], dir: [0, 0, 1], length: 5, thin: 2, thinOuter: 0.5 },
     ]);

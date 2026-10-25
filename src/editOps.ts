@@ -87,8 +87,10 @@ export interface ThinSpec { thin?: number; thinOuter?: number; }
  *   genuinely disconnected set is skipped with a diagnostic.
  *
  * A CLOSED edge set behaves exactly like the equivalent face. An OPEN one
- * encloses no area, so it **requires** {@link ThinSpec.thin}: the wall is what
- * gives it a cross-section. See CLAUDE.md's "Open-profile (wire) operand".
+ * encloses no area: `extrude`/`revolve` without {@link ThinSpec.thin} sweep it
+ * into a **surface** (a sheet of faces with no caps and no volume), while
+ * `sweep`/`loft` and any thin build **require** `thin` — the wall is what
+ * gives them a cross-section. See CLAUDE.md's "Open-profile (wire) operand".
  *
  * `pick` optionally narrows WHICH enclosed regions of a multi-region profile
  * are consumed (roadmap "pick + drill", closed): a face's wires enumerate to
@@ -292,6 +294,16 @@ export interface SplitByPlaneOp { op: "splitByPlane"; targets: string[]; planePo
 export interface SplitFaceOp { op: "splitFace"; face: string; edgeIds?: string[]; points?: [Vec3, Vec3]; }
 /** Append the planar cross-section of the target solids with the plane (`planePoint`, `planeNormal`), the saved construction plane `planeId` (`plane-N`), or the midplane of `midplaneFaces` as a standalone face (under "Sketches"), leaving the solids untouched. `planePoint`/`planeNormal` may ride alongside `planeId` as the resolved cache. */
 export interface SectionOp { op: "section"; targets: string[]; planePoint?: Vec3; planeNormal?: Vec3; planeId?: string; midplaneFaces?: [string, string]; }
+/**
+ * Round or bevel ONE corner of a sketch wire (an `addPolyline`): `edges` names
+ * the two adjacent straight segments that meet at the corner, and exactly one
+ * of `radius` (arc fillet) or `chamfer` (bevel; `chamfer` is the distance along
+ * `edges[0]`, `chamfer2` the distance along `edges[1]`, default equal) is given.
+ * The two segments are trimmed and a new edge joins them inside the same wire,
+ * so the profile stays closed and a later `extrude` keeps an analytic area.
+ * Straight segments only; apply it once per corner.
+ */
+export interface FilletProfileOp { op: "filletProfile"; edges: [string, string]; radius?: number; chamfer?: number; chamfer2?: number; }
 /** Build a standalone flat face from the wire formed by the selected edges — they must connect into a closed loop. */
 export interface AddSurfaceFromLinesOp { op: "addSurfaceFromLines"; edges: string[]; }
 /**
@@ -326,7 +338,7 @@ export type EditOp = (
   | AddPointOp | AddLineOp | AddArcOp
   | AddPolylineOp | AddThreePointArcOp | AddSplineOp | AddBezierOp | AddEllipseArcOp | AddHelixOp
   | AddEdgeSlotOp
-  | AddSurfaceFromLinesOp | AddVolumeFromSurfacesOp
+  | AddSurfaceFromLinesOp | AddVolumeFromSurfacesOp | FilletProfileOp
   | AlignOp | PatternLinearOp | PatternCircularOp | DrillOp
  ) & {
   exprs?: ExprMap;
@@ -461,7 +473,7 @@ export const QUERYABLE_OPERAND_FIELDS: Record<EditOpKind, readonly string[]> = {
   addPoint: [], addLine: [], addArc: [],
   addPolyline: [], addThreePointArc: [], addSpline: [], addBezier: [], addEllipseArc: [], addHelix: [],
   addEdgeSlot: ["edge"],
-  addSurfaceFromLines: ["edges"], addVolumeFromSurfaces: ["faces"],
+  addSurfaceFromLines: ["edges"], addVolumeFromSurfaces: ["faces"], filletProfile: ["edges"],
   align: ["targets"], patternLinear: ["targets"], patternCircular: ["targets"],
   drill: ["targets", "profile", "profileEdges"],
 };
@@ -524,7 +536,7 @@ export const TOPOLOGY_CHANGING_OPS: ReadonlySet<EditOpKind> = new Set([
   "addEllipseProfile", "addRoundedRectangleProfile", "addSlotProfile", "addTrapezoidProfile",
   "addPoint", "addLine", "addArc",
   "addPolyline", "addThreePointArc", "addSpline", "addBezier", "addEllipseArc", "addHelix",
-  "addSurfaceFromLines", "addVolumeFromSurfaces", "addEdgeSlot",
+  "addSurfaceFromLines", "addVolumeFromSurfaces", "addEdgeSlot", "filletProfile",
   "patternLinear", "patternCircular", "drill",
 ]);
 
@@ -538,7 +550,7 @@ export const BREP_ONLY_OPS: ReadonlySet<EditOpKind> = new Set([
   "addEllipseProfile", "addRoundedRectangleProfile", "addSlotProfile", "addTrapezoidProfile",
   "addPoint", "addLine", "addArc",
   "addPolyline", "addThreePointArc", "addSpline", "addBezier", "addEllipseArc", "addHelix",
-  "addSurfaceFromLines", "addVolumeFromSurfaces", "addEdgeSlot", "drill",
+  "addSurfaceFromLines", "addVolumeFromSurfaces", "addEdgeSlot", "filletProfile", "drill",
 ]);
 
 function isFiniteNumber(v: unknown): v is number {
@@ -1183,6 +1195,21 @@ function validateEditOpCore(raw: unknown): EditOp | null {
     }
     case "unifySameDomain":
       return { op: "unifySameDomain" };
+    case "filletProfile": {
+      const edges = asEdgeIdArray(o.edges, 2);
+      if (!edges || edges.length !== 2 || edges[0] === edges[1]) return null;
+      const hasR = o.radius !== undefined;
+      const hasC = o.chamfer !== undefined;
+      if (hasR === hasC) return null; // exactly one of radius / chamfer
+      if (hasR && !isPositive(o.radius)) return null;
+      if (hasC && !isPositive(o.chamfer)) return null;
+      if (o.chamfer2 !== undefined && (!hasC || !isPositive(o.chamfer2))) return null;
+      const out: FilletProfileOp = { op: "filletProfile", edges: [edges[0], edges[1]] };
+      if (hasR) out.radius = o.radius as number;
+      if (hasC) out.chamfer = o.chamfer as number;
+      if (o.chamfer2 !== undefined) out.chamfer2 = o.chamfer2 as number;
+      return out;
+    }
     case "addEdgeSlot": {
       if (typeof o.edge !== "string" || !o.edge || !isPositive(o.width)) return null;
       return { op: "addEdgeSlot", edge: o.edge, width: o.width as number };
