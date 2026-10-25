@@ -67,6 +67,7 @@ export const PRODUCED_ROLE: Record<string, string> = {
   patternLinear: "copies",
   patternCircular: "copies",
   addEdgeSlot: "body",
+  filletProfile: "produced",
   addSurfaceFromLines: "body",
   addVolumeFromSurfaces: "body",
   addBox: "body",

@@ -296,13 +296,14 @@ These are outcome groupings, not release numbers. Independent small items can sh
 - **What is left (S):** the cross-repository check — open the exported `.mdpa` in VSCode-MDPA-Preview and confirm both SubModelParts populate. It needs that extension and is not exercised from this repository.
 - **Done when:** that check passes, and KKSS's tutorial links to the page.
 
-#### 2.4 Fillets and chamfers on 2D profiles {#fillets-and-chamfers-on-2d-profiles}
+#### 2.4 Panel form for `filletProfile` {#fillets-and-chamfers-on-2d-profiles}
 
-*Area: Geometry. Effort: S–M.*
+*Area: Geometry. Effort: S (needs `pdflatex` for the icon).*
 
-- **Probe passed (2026-10-25, `scripts/probe/examples/occt-profile-fillet.ts`).** On a 10 × 6 rectangle the fillet at a corner drops the area by exactly 1 − π/4 (0.214602 to 1e-15) and a chamfer by exactly 0.5 (asymmetric 2/1 by exactly 1); the rebuilt wire is valid, closed and extrudes to volume = area × height. Verified call shapes: `ChFi2d_FilletAPI_3(edge1, edge2, gp_Pln)` → `Perform(radius)` → `Result(cornerPnt, e1Out, e2Out, -1)` (arc edge; `e1Out`/`e2Out` are the trimmed neighbours; `NbResults(pnt)` is 1); `ChFi2d_ChamferAPI_3(edge1, edge2)` → `Perform()` → `Result(e1Out, e2Out, d1, d2)` (distances are `Result` arguments, `d1` along edge1). `_1()` is an empty ctor, `_2(wire, plane)` loads a wire. An oversize radius (50) returns `Perform() === false` without aborting.
-- **First increment (S–M):** optional corner radius / chamfer fields on the rectangle and polygon profile ops (validate the radius against the shorter adjacent edge before the call), then a `filletProfile` op for arbitrary polylines. Ship the full op checklist (`validateEditOp`, `buildOpForPanel`, `tintForPanelOp`, catalog button and icon, `OP_PARAM_DOCS`, docs, `mcp:smoke` area pin).
-- **Done when:** a rounded rectangle extrudes with the analytic area and survives a replay.
+- **Done so far:** the `filletProfile` op ships headless (MCP tools, scripts, replay, history rows): fillet or chamfer one corner of an `addPolyline` between two straight segments, with analytic-area pins in `mcp:smoke`. `addRoundedRectangleProfile` already covered the rectangle case.
+- **What is left (S):** the panel form, `buildOpForPanel` case, `tintForPanelOp` entry, catalog button and generated TikZ icon, then remove it from `AGENT_ONLY_OPS`. Blocked here only by the icon pipeline (`pdftocairo` is present, `pdflatex` is not).
+- **Also not covered:** arc neighbours (only straight-segment corners), and a one-shot "round every corner" convenience.
+- **Done when:** a user can pick two segments in the viewer, set a radius or chamfer, and see the rounded profile extrude with the analytic area.
 
 ### Probe-gated — establish feasibility before estimating
 

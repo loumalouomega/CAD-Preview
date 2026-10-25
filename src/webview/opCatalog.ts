@@ -241,6 +241,13 @@ function thinLabel(op: { thin?: number; thinOuter?: number }): string {
   return op.thinOuter ? ` thin=${op.thin}/${op.thinOuter}` : ` thin=${op.thin}`;
 }
 
+/**
+ * Op kinds with no panel button: they are authored through the MCP tools and
+ * scripts, replay and show in the history like any other op, and get a form
+ * only when a generated icon can be built for them.
+ */
+export const AGENT_ONLY_OPS: ReadonlySet<EditOpKind> = new Set<EditOpKind>(["filletProfile"]);
+
 function describeOpBase(op: EditOp): string {
   switch (op.op) {
     case "translate": return `Move ${op.targets.length} (${op.vec.join(", ")})`;
@@ -307,6 +314,7 @@ function describeOpBase(op: EditOp): string {
     case "addSurfaceFromLines": return `⌗ Surface from ${op.edges.length} lines`;
     case "addVolumeFromSurfaces": return `⬢ Volume from ${op.faces.length} surfaces`;
     case "addEdgeSlot": return `▭ Edge slot w=${op.width}`;
+    case "filletProfile": return op.radius !== undefined ? `◜ Round corner r=${op.radius}` : `◣ Chamfer corner d=${op.chamfer}${op.chamfer2 !== undefined ? `/${op.chamfer2}` : ""}`;
     case "align": return `⇥ Align ${op.targets.length} ${op.axis}:${op.extent}→${op.to}`;
     case "patternLinear": return `⠿ Linear ×${op.count} (${op.direction.join(",")}) s=${op.spacing}`;
     case "patternCircular": return `⠿ Circular ×${op.count} ${op.angleDeg}°`;
@@ -431,6 +439,8 @@ export function referencedEntities(op: EditOp): string[] {
       return op.pointRefs ? [...new Set(Object.values(op.pointRefs).map((r) => r.id))] : [];
     case "addEdgeSlot":
       return [op.edge];
+    case "filletProfile":
+      return [...op.edges];
   }
 }
 
