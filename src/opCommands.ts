@@ -79,6 +79,7 @@ export const OP_PARAM_DOCS: Record<EditOpKind, string> = {
   addHelix: '{center: [x,y,z] | "point-N" (base), axis: [x,y,z], radius: n>0, pitch: n>0, turns: n>0}',
   addSurfaceFromLines: '{edges: edgeId[] (a single connected loop, or several disjoint closed loops forming exactly ONE outer boundary plus its holes — e.g. a letter "O"\'s outer ring + inner ring build one holed face; a set spanning more than one outer loop is refused)}',
   addVolumeFromSurfaces: '{faces: faceId[] (must sew into a closed shell)}',
+  addSurfaceFilling: '{edges: edgeId[] (>=3 boundary edges forming one closed loop; the face is a smooth, generally non-planar patch interpolating them — approximate, not an exact analytic surface)}',
   addEdgeSlot: '{edge: edgeId, width: n>0}',
   filletProfile: '{edges: [edgeId, edgeId] (two adjacent straight segments of one sketch wire, e.g. an addPolyline — they meet at the corner), radius: n>0 (arc fillet) XOR chamfer: n>0 (bevel; distance along edges[0]), chamfer2?: n>0 (distance along edges[1]; chamfer only)}. Trims both segments and inserts the arc/bevel inside the same wire, so an extrude afterwards has the analytic area; apply once per corner. Radius/chamfer must be shorter than the adjacent segments (skipped with a diagnostic otherwise); straight segments only',
   align: '{targets: solidId[], axis: "x"|"y"|"z", extent: "min"|"center"|"max", to: n}',
@@ -248,7 +249,7 @@ function buildCommandTable(): CommandRow[] {
   return rows;
 }
 
-/** One row per panel button (57 today) — locked to `allCatalogEntries()` by `opCommands.test.ts`. */
+/** One row per panel button (59 today) — locked to `allCatalogEntries()` by `opCommands.test.ts`. */
 export const COMMAND_TABLE: readonly CommandRow[] = buildCommandTable();
 
 const COMMAND_LOOKUP: ReadonlyMap<string, CommandRow> = (() => {

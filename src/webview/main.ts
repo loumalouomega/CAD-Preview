@@ -1333,6 +1333,14 @@ const editsPanel = new EditsPanel(document.getElementById("edits-panel")!, {
     editsModel.push({ op: "addSurfaceFromLines", edges });
     setStatus("");
   },
+  onBuildSurfaceFilling: () => {
+    const edges = selection.list().filter((e) => e.entityType === "line").map((e) => e.entityId);
+    if (edges.length < 3) { setStatus("Select 3+ edges (Line mode) forming a closed boundary loop.", true); return; }
+    const guideEdge = edges.find((e) => guideEntityIds.has(e));
+    if (guideEdge) { setStatus(`${guideEdge} is guide (construction) geometry — guides are excluded from surface resolution.`, true); return; }
+    editsModel.push({ op: "addSurfaceFilling", edges });
+    setStatus("");
+  },
   onBuildVolumeFromSurfaces: () => {
     const faces = selection.list().filter((e) => e.entityType === "surface").map((e) => e.entityId);
     if (faces.length < 4) {
@@ -1349,6 +1357,23 @@ const editsPanel = new EditsPanel(document.getElementById("edits-panel")!, {
     if (edges.length !== 1) { setStatus("Select exactly one edge (Line mode) for the slot.", true); return; }
     if (!(width > 0)) { setStatus("Slot width must be positive.", true); return; }
     editsModel.push({ op: "addEdgeSlot", edge: edges[0], width });
+    setStatus("");
+  },
+  onBuildFilletProfile: (radius, chamfer, chamfer2) => {
+    const edges = selection.list().filter((e) => e.entityType === "line").map((e) => e.entityId);
+    if (edges.length !== 2) { setStatus("Select exactly two adjacent segments (Line mode) of one sketch.", true); return; }
+    const guide = edges.find((e) => guideEntityIds.has(e));
+    if (guide) { setStatus(`${guide} is guide (construction) geometry — guides are excluded from profile fillets.`, true); return; }
+    if (chamfer === undefined && chamfer2 !== undefined) { setStatus("Distance 2 needs a Distance (chamfer) value.", true); return; }
+    if (chamfer !== undefined && radius !== undefined) { setStatus("Give a Radius (round) or a Distance (chamfer), not both.", true); return; }
+    if (chamfer === undefined && radius === undefined) { setStatus("Enter a Radius (round) or a Distance (chamfer).", true); return; }
+    if ((chamfer !== undefined && !(chamfer > 0)) || (radius !== undefined && !(radius > 0)) || (chamfer2 !== undefined && !(chamfer2 > 0))) {
+      setStatus("Enter positive values.", true); return;
+    }
+    const op: EditOp = chamfer !== undefined
+      ? { op: "filletProfile", edges: [edges[0], edges[1]], chamfer, ...(chamfer2 !== undefined ? { chamfer2 } : {}) }
+      : { op: "filletProfile", edges: [edges[0], edges[1]], radius: radius! };
+    editsModel.push(op);
     setStatus("");
   },
   onFormChanged: updateGizmoForForm,
@@ -2581,6 +2606,8 @@ function tintForPanelOp(id: PanelOpId, wrapVariant?: "emboss" | "engrave" | "sta
     case "buildSurface":
     case "buildVolume":
     case "edgeSlot":
+    case "filletProfile":
+    case "fillSurface":
       return "ref";
     default:
       return undefined; // mirror, draft, align, fillet, chamfer — neutral
@@ -3245,6 +3272,10 @@ function buildOpForPanelCore(id: PanelOpId, rawDraft: Record<string, unknown>): 
       if (selEdges.length < 3) return { error: "Select 3+ lines (Line mode) forming a closed loop." };
       if (selEdges.some((e) => guideEntityIds.has(e))) return { error: "Guide (construction) edges are excluded from surface resolution." };
       return { op: { op: "addSurfaceFromLines", edges: selEdges } };
+    case "fillSurface":
+      if (selEdges.length < 3) return { error: "Select 3+ edges (Line mode) forming a closed boundary loop." };
+      if (selEdges.some((e) => guideEntityIds.has(e))) return { error: "Guide (construction) edges are excluded from surface resolution." };
+      return { op: { op: "addSurfaceFilling", edges: selEdges } };
     case "buildVolume":
       if (selFaces.length < 4) return { error: "Select 4+ surfaces (Surf mode) forming a closed shell." };
       if (selFaces.some((f) => guideEntityIds.has(f))) return { error: "Guide (construction) faces are excluded from volume resolution." };

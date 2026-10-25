@@ -219,6 +219,7 @@ type EditOp =
   | { op: 'defeature'; faces: string[] }   // removes faces as recognized features; solid heals behind them
   | { op: 'unifySameDomain' }   // parameter-free, whole model: merges same-surface faces/edges
   | { op: 'addEdgeSlot'; edge: string; width: number }               // stadium slot face around an existing edge
+  | { op: 'addSurfaceFilling'; edges: string[] }                      // smooth, generally non-planar face filling a closed edge loop
   | { op: 'filletProfile'; edges: [string, string]; radius?: number; chamfer?: number; chamfer2?: number }
                                                                   // round (radius) or bevel (chamfer, optional chamfer2) one corner of a sketch polyline; exactly one of radius/chamfer
   | { op: 'splitByPlane'; targets: string[]; planePoint?: Vec3; planeNormal?: Vec3; planeId?: string; midplaneFaces?: [string, string]; keep: 'both' | 'positive' | 'negative' }

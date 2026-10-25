@@ -8455,6 +8455,22 @@ try {
       assert(/not both in one free wire|do not meet at a shared endpoint|inside a face or solid/i.test(solidEdge), `a solid's edges are refused by name (got ${solidEdge})`);
     }
 
+    // 5c. `addSurfaceFilling` fills a closed loop of picked edges with a smooth
+    // face (BRepOffsetAPI_MakeFilling, probe occt-filling.ts). A planar square
+    // is the analytic case: the filled face must be area 10 x 10, found as the
+    // newest free face (the loop's four edges stay as wires).
+    {
+      resetWire();
+      const sq = { op: "addPolyline", points: [[0, 0, 20], [10, 0, 20], [10, 10, 20], [0, 10, 20]], closed: true };
+      const res = await callWithCleanRetry("apply_edit_ops", { path: wireModel, ops: [sq, { op: "addSurfaceFilling", edges: ["edge-12", "edge-13", "edge-14", "edge-15"] }] }, resetWire);
+      assert(res.applied === 2 && (res.notApplied ?? 0) === 0, `a closed four-edge loop fills (got ${JSON.stringify(res.report)})`);
+      const filled = await callWithCleanRetry("inspect", { path: wireModel, entityId: "face-6" }, resetWire);
+      assert(Math.abs((filled.area ?? 0) - 100) < 1e-3, `the filled planar square has the analytic area 100 (got ${filled.area})`);
+      resetWire();
+      const open = await wireSkip("fill with a missing edge", [sq, { op: "addSurfaceFilling", edges: ["edge-12", "edge-13", "edge-99"] }]);
+      assert(/no longer exists/i.test(open), `an unknown boundary edge is refused by name (got ${open})`);
+    }
+
     // 6. the refusals, each naming its own cause rather than a generic failure.
     // An open profile without `thin` is a SURFACE for extrude/revolve (two
     // 5-long segments x 5 = area 50 over face-6 + face-7, no volume change);

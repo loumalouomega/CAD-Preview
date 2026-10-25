@@ -53,6 +53,10 @@ Existing implementation references were checked against the repository where not
 
 **Closed 2026-10-25 (profile probes).** Extension, not a planning review: the open-profile surface probe (formerly 3.4) and the profile fillet/chamfer probe (formerly 3.7) both **passed** and moved to Ready product work; the open-profile surface item has since shipped, and the fillet/chamfer item is now 2.4. Remaining probe IDs were not renumbered.
 
+**Closed 2026-10-25 (Round Corner panel form).** Extension, not a planning review: the panel form for `filletProfile` (formerly 2.4) shipped as Build from selection ▸ **Round Corner** and left the list.
+
+**Closed 2026-10-25 (N-sided surface filling).** Extension, not a planning review: the `BRepOffsetAPI_MakeFilling` probe (formerly 3.5) **passed** and the `addSurfaceFilling` op shipped (Build from selection ▸ Fill Surface) in the same change; it left the list. Remaining probe IDs were not renumbered.
+
 Everything previously shipped is tracked in `CHANGELOG.md`, and `CLAUDE.md` holds the invariants, traps and verified kernel facts that a future change could break (not per-feature history, which lives in git) — this page is for what's **not** built yet, plus the Non-goals that record why a direction was rejected so it isn't re-proposed.
 
 ## How this file works
@@ -150,8 +154,8 @@ This review lists every capability that is **bound in a shipped kernel but never
 | Classes | Would enable | Item |
 | --- | --- | --- |
 | `BRepExtrema_SelfIntersection`, `ShapeAnalysis_FreeBounds` | Self-intersection and free-boundary facts in the validity report | [More facts in the B-rep validity report](#more-facts-in-the-b-rep-validity-report) |
-| `BRepOffsetAPI_MakeFilling` | An N-sided, non-planar surface from boundary edges | [N-sided surface filling](#n-sided-surface-filling) |
-| `ChFi2d_FilletAPI`, `ChFi2d_ChamferAPI` | Rounding and chamfering sketch-profile corners before extrusion | [Fillets and chamfers on 2D profiles](#fillets-and-chamfers-on-2d-profiles) |
+| `BRepOffsetAPI_MakeFilling` | An N-sided, non-planar surface from boundary edges | N-sided surface filling (shipped as `addSurfaceFilling`) |
+| `ChFi2d_FilletAPI`, `ChFi2d_ChamferAPI` | Rounding and chamfering sketch-profile corners before extrusion | Fillets and chamfers on 2D profiles (shipped) |
 | `BRepProj_Projection` | Projecting a curve onto a face | [Project a curve onto a face](#project-a-curve-onto-a-face) |
 | `STEPCAFControl_GDTProperty`, `XCAFDoc_DimTolTool`, `XCAFDoc_LayerTool`, `XCAFDoc_MaterialTool`, `XCAFPrs_DocumentExplorer` | Reading STEP AP242 PMI, layers and materials, plus a second route to colours that bypasses the dead `XCAFDoc_ColorTool` getter | [Read PMI, layers and materials from STEP](#read-pmi-layers-and-materials-from-step) |
 | `VrmlAPI_Writer` | B-rep → VRML export, the one extra B-rep writer in the binding | [VRML export](#vrml-export) |
@@ -296,15 +300,6 @@ These are outcome groupings, not release numbers. Independent small items can sh
 - **What is left (S):** the cross-repository check — open the exported `.mdpa` in VSCode-MDPA-Preview and confirm both SubModelParts populate. It needs that extension and is not exercised from this repository.
 - **Done when:** that check passes, and KKSS's tutorial links to the page.
 
-#### 2.4 Panel form for `filletProfile` {#fillets-and-chamfers-on-2d-profiles}
-
-*Area: Geometry. Effort: S (needs `pdflatex` for the icon).*
-
-- **Done so far:** the `filletProfile` op ships headless (MCP tools, scripts, replay, history rows): fillet or chamfer one corner of an `addPolyline` between two straight segments, with analytic-area pins in `mcp:smoke`. `addRoundedRectangleProfile` already covered the rectangle case.
-- **What is left (S):** the panel form, `buildOpForPanel` case, `tintForPanelOp` entry, catalog button and generated TikZ icon, then remove it from `AGENT_ONLY_OPS`. Blocked here only by the icon pipeline (`pdftocairo` is present, `pdflatex` is not).
-- **Also not covered:** arc neighbours (only straight-segment corners), and a one-shot "round every corner" convenience.
-- **Done when:** a user can pick two segments in the viewer, set a radius or chamfer, and see the rounded profile extrude with the analytic area.
-
 ### Probe-gated — establish feasibility before estimating
 
 *Admission: a specific hypothesis with a discriminating experiment. Each probe below is a small, self-contained piece of work with a firm **S** estimate of its own; the phases under "If admitted" are what ships if the probe passes, tagged provisionally. A method that accepts arguments but changes nothing is a failed probe.*
@@ -332,7 +327,6 @@ Probes are grouped by area. Each group has its own order table. The order is the
 
 | ID | Item | Needs | Why here |
 | --- | --- | --- | --- |
-| 3.5 | N-sided surface filling | — | Closes the gap `addSurfaceFromLines` leaves for non-planar boundaries |
 | 3.6 | Read PMI, layers and materials from STEP | — | May also reopen colours through a different API than the dead one |
 | 3.8 | Small-detail edge suppression | screenshot pipeline | Webview-side and independent; the risk is judgement, not bindings |
 | 3.9 | Project a curve onto a face | — | Useful mostly as an input to other features |
@@ -340,23 +334,6 @@ Probes are grouped by area. Each group has its own order table. The order is the
 | 3.11 | VRML export | — | Cheap but low value |
 
 None of these depends on another's result.
-
-##### 3.5 N-sided surface filling {#n-sided-surface-filling}
-
-*Area: Geometry.*
-
-- **Hypothesis:** `BRepOffsetAPI_MakeFilling` (green, never called) builds a smooth, non-planar face bounded by three or more picked edges.
-- **Evidence today:**
-  - `addSurfaceFromLines` builds planar faces only, and refuses non-coplanar loops by name.
-  - Closing a curved gap, or skinning between existing edges, has no op today.
-- **Probe (S):**
-  1. Fill a four-edge boundary taken from a cylinder's side, and check the face lies on the cylinder to a stated tolerance by sampling points.
-  2. Fill a three-edge non-planar triangle.
-  3. Confirm the new face can be sewn to the neighbouring faces into a closed shell, so `addVolumeFromSurfaces` can use it.
-- **Decision gate:**
-  - **Pass:** faces within tolerance that sew closed.
-  - **Fail:** no face, or no closure.
-- **If admitted (M):** an `addSurfaceFilling` op beside `addSurfaceFromLines`, taking edge ids, with a guide-aware refusal like the other profile-building ops.
 
 ##### 3.6 Read PMI, layers and materials from STEP {#read-pmi-layers-and-materials-from-step}
 

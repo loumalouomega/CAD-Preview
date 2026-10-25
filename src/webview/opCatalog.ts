@@ -34,7 +34,7 @@ export type PanelOpId =
   | "addCircleProfile" | "addRectangleProfile" | "addPolygonProfile"
   | "addEllipseProfile" | "addRoundedRectangleProfile" | "addSlotProfile" | "addTrapezoidProfile"
   // GEOMETRY 2D — build from selection
-  | "buildSurface" | "edgeSlot"
+  | "buildSurface" | "fillSurface" | "edgeSlot" | "filletProfile"
   // GEOMETRY 3D — primitives
   | "addBox" | "addSphere" | "addCylinder" | "addCone" | "addTorus" | "addPrism" | "addWedge"
   // GEOMETRY 3D — holes (subtractive: cut into the selected volumes)
@@ -103,7 +103,7 @@ export const OP_CATALOG: {
     },
     {
       title: "Build from selection",
-      ops: [entry("buildSurface", "Surface", ["addSurfaceFromLines"]), entry("edgeSlot", "Edge Slot", ["addEdgeSlot"])],
+      ops: [entry("buildSurface", "Surface", ["addSurfaceFromLines"]), entry("fillSurface", "Fill Surface", ["addSurfaceFilling"]), entry("edgeSlot", "Edge Slot", ["addEdgeSlot"]), entry("filletProfile", "Round Corner", ["filletProfile"])],
     },
   ],
   geometry3d: [
@@ -244,9 +244,10 @@ function thinLabel(op: { thin?: number; thinOuter?: number }): string {
 /**
  * Op kinds with no panel button: they are authored through the MCP tools and
  * scripts, replay and show in the history like any other op, and get a form
- * only when a generated icon can be built for them.
+ * only when a generated icon can be built for them. Empty today; the set stays
+ * so the coverage tests keep their exemption seam.
  */
-export const AGENT_ONLY_OPS: ReadonlySet<EditOpKind> = new Set<EditOpKind>(["filletProfile"]);
+export const AGENT_ONLY_OPS: ReadonlySet<EditOpKind> = new Set<EditOpKind>();
 
 function describeOpBase(op: EditOp): string {
   switch (op.op) {
@@ -312,6 +313,7 @@ function describeOpBase(op: EditOp): string {
     case "addEllipseArc": return `⌒ Ellipse arc ${op.radiusX}×${op.radiusY} ${op.startAngleDeg}°→${op.endAngleDeg}°`;
     case "addHelix": return `⌇ Helix r=${op.radius} p=${op.pitch} ×${op.turns}`;
     case "addSurfaceFromLines": return `⌗ Surface from ${op.edges.length} lines`;
+    case "addSurfaceFilling": return `⌗ Filled surface from ${op.edges.length} edges`;
     case "addVolumeFromSurfaces": return `⬢ Volume from ${op.faces.length} surfaces`;
     case "addEdgeSlot": return `▭ Edge slot w=${op.width}`;
     case "filletProfile": return op.radius !== undefined ? `◜ Round corner r=${op.radius}` : `◣ Chamfer corner d=${op.chamfer}${op.chamfer2 !== undefined ? `/${op.chamfer2}` : ""}`;
@@ -375,6 +377,7 @@ export function referencedEntities(op: EditOp): string[] {
     case "chamfer":
       return op.face ? [...op.edges, op.face] : [...op.edges];
     case "addSurfaceFromLines":
+    case "addSurfaceFilling":
       return [...op.edges];
     case "addVolumeFromSurfaces":
       return [...op.faces];

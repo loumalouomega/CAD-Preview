@@ -514,6 +514,8 @@ export function applyOneOp(oc: any, shape: any, op: EditOp, cleanup: Array<{ del
       return addWireframePrimitive(oc, shape, op, cleanup, fail, guideCollector, pointRefSink);
     case "addSurfaceFromLines":
       return addSurfaceFromLines(oc, shape, op, cleanup, fail, guideCollector);
+    case "addSurfaceFilling":
+      return addSurfaceFilling(oc, shape, op, cleanup, fail, guideCollector);
     case "addVolumeFromSurfaces":
       return addVolumeFromSurfaces(oc, shape, op, cleanup, fail, guideCollector);
     case "align":
@@ -4031,6 +4033,50 @@ function addSurfaceFromLines(oc: any, shape: any, op: Extract<EditOp, { op: "add
   builder.Add(comp, shape);
   builder.Add(comp, face);
   return comp;
+}
+
+/**
+ * `addSurfaceFilling`: a smooth, generally non-planar face spanning a closed
+ * loop of picked edges (`BRepOffsetAPI_MakeFilling`, probe
+ * `scripts/probe/examples/occt-filling.ts`). Appended like `addSurfaceFromLines`
+ * (a free face under "Sketches"). The patch is an approximation: on a quarter
+ * cylinder boundary the face area is within 0.2 % and the surface within 0.7 %
+ * of the radius, so it is never presented as an exact analytic surface.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function addSurfaceFilling(oc: any, shape: any, op: Extract<EditOp, { op: "addSurfaceFilling" }>, cleanup: Array<{ delete(): void }>, fail?: OutcomeFail, guideCollector?: GuideCollector): any {
+  try {
+    const edges = collectEdges(oc, shape, cleanup);
+    const picked: any[] = [];
+    for (const id of op.edges) {
+      const e = edges[edgeIndex(id)];
+      if (!e) { fail?.(`edge ${id} no longer exists`, "re-pick the boundary edges"); return shape; }
+      if (guideCollector && isGuideHandle(e, guideCollector)) { fail?.(`edge ${id} is construction (guide) geometry — guide entities are excluded from surface resolution`); return shape; }
+      picked.push(e);
+    }
+    const mf = new oc.BRepOffsetAPI_MakeFilling(3, 15, 2, false, 1e-5, 1e-4, 1e-2, 0.1, 8, 9);
+    cleanup.push(mf);
+    for (const e of picked) mf.Add_1(oc.TopoDS.Edge_1(e), oc.GeomAbs_Shape.GeomAbs_C0, true);
+    mf.Build();
+    if (!mf.IsDone()) {
+      fail?.("the selected edges could not be filled", "pick a connected, closed loop of 3 or more edges");
+      return shape;
+    }
+    const face = mf.Shape();
+    cleanup.push(face);
+    if (face.IsNull()) { fail?.("the selected edges could not be filled", "pick a connected, closed loop of 3 or more edges"); return shape; }
+    const comp = new oc.TopoDS_Compound();
+    cleanup.push(comp);
+    const builder = new oc.BRep_Builder();
+    cleanup.push(builder);
+    builder.MakeCompound(comp);
+    builder.Add(comp, shape);
+    builder.Add(comp, face);
+    return comp;
+  } catch (err) {
+    fail?.(`addSurfaceFilling threw (${err instanceof Error ? err.message : String(err)})`.slice(0, 160), "the edges must form one closed loop");
+    return shape;
+  }
 }
 
 /**
