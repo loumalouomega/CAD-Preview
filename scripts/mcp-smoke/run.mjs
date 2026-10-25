@@ -8438,7 +8438,7 @@ try {
     // and 1 to a 2/1 chamfer (probe occt-profile-fillet.ts).
     {
       const box10x6 = { op: "addPolyline", points: [[0, 0, 20], [10, 0, 20], [10, 6, 20], [0, 6, 20]], closed: true };
-      const ALL6 = ["edge-12", "edge-13", "edge-14", "edge-15", "edge-16", "edge-17"];
+      const ALL6 = ["edge-12", "edge-13", "edge-14", "edge-15", "edge-16"]; // 4 edges become 5 (corner pair -> trim, arc, trim)
       const extrudeAll = { op: "extrude", profileEdges: ALL6, dir: [0, 0, 1], length: 5 };
       const rounded = await wireVolume("filleted corner extrudes", [box10x6, { op: "filletProfile", edges: ["edge-12", "edge-13"], radius: 1 }, extrudeAll]);
       const roundedExpect = (60 - (1 - Math.PI / 4)) * 5;
