@@ -7,7 +7,8 @@
  * Every field is a FACT from OCCT's own checkers, never a pass/fail verdict of
  * ours (`verdictConventions`): `BRepCheck_Analyzer` for validity and named
  * statuses, `ShapeAnalysis_ShapeContents` for counters, `ShapeAnalysis_Shell`
- * for open-boundary edges.
+ * for open-boundary edges, `ShapeAnalysis_FreeBounds` for their grouping into
+ * wires, `BRepGProp` for each solid's signed volume.
  */
 
 /** One subshape the analyzer judged invalid, or that carries a non-NoError
@@ -34,6 +35,20 @@ export interface BrepSolidHealth {
   /** Edges bounding exactly one face of this solid's shells
    * (`ShapeAnalysis_Shell.FreeEdges`) — 0 for a closed solid. */
   openBoundaryEdgeCount: number | null;
+  /** Signed volume in mm³ (`BRepGProp`, adaptive). Negative means the solid's
+   * shell is oriented inward — a reversed solid can pass the topology checks —
+   * and 0 means a degenerate or open one. `null` if uncomputable. */
+  signedVolume: number | null;
+}
+
+/** One wire of `ShapeAnalysis_FreeBounds`: the open-boundary edges chained end
+ * to end. A closed wire is a hole's rim; an open one is a gap that does not
+ * close on itself. */
+export interface BrepFreeBoundary {
+  closed: boolean;
+  edgeCount: number;
+  /** Summed edge length in mm (`BRepGProp.LinearProperties`). */
+  length: number;
 }
 
 export interface BrepHealthCounters {
@@ -56,6 +71,12 @@ export interface BrepHealthReport {
   counters: BrepHealthCounters | null;
   /** Open-boundary edges over every shell in the shape. */
   openBoundaryEdgeCount: number | null;
+  /** The open-boundary edges grouped into wires (`ShapeAnalysis_FreeBounds`),
+   * at most `MAX_REPORTED_FREE_BOUNDARIES`, closed wires first. `null` if
+   * uncomputable. */
+  freeBoundaries: BrepFreeBoundary[] | null;
+  /** Total wires found, before capping (`null` with `freeBoundaries`). */
+  freeBoundaryCount: number | null;
   solids: BrepSolidHealth[];
   /** At most `MAX_REPORTED_ISSUES`, in solid → shell → face → edge order. */
   issues: BrepSubshapeIssue[];
@@ -69,6 +90,15 @@ export interface BrepHealthReport {
 /** Cap on `issues` — a badly broken import can flag thousands of edges, and a
  * report is for reading. `issueCount` still carries the true total. */
 export const MAX_REPORTED_ISSUES = 200;
+
+/** Cap on `freeBoundaries`; `freeBoundaryCount` carries the true total. */
+export const MAX_REPORTED_FREE_BOUNDARIES = 100;
+
+/** Keeps the first `MAX_REPORTED_FREE_BOUNDARIES`, closed wires ahead of open ones. */
+export function capFreeBoundaries(wires: BrepFreeBoundary[]): BrepFreeBoundary[] {
+  const ordered = [...wires.filter((w) => w.closed), ...wires.filter((w) => !w.closed)];
+  return ordered.length > MAX_REPORTED_FREE_BOUNDARIES ? ordered.slice(0, MAX_REPORTED_FREE_BOUNDARIES) : ordered;
+}
 
 /** Builds the `value → name` table from the bound `BRepCheck_Status` enum
  * object (its members are `{value}` objects keyed `BRepCheck_<Name>`). */
@@ -104,5 +134,11 @@ export function summarizeBrepHealth(r: BrepHealthReport): string {
   const parts = [r.valid ? "valid per BRepCheck" : "INVALID per BRepCheck"];
   if (r.issueCount > 0) parts.push(`${r.issueCount} subshape issue(s)`);
   if (r.openBoundaryEdgeCount != null && r.openBoundaryEdgeCount > 0) parts.push(`${r.openBoundaryEdgeCount} open-boundary edge(s)`);
+  if (r.freeBoundaryCount != null && r.freeBoundaryCount > 0) {
+    const closed = (r.freeBoundaries ?? []).filter((w) => w.closed).length;
+    parts.push(`${r.freeBoundaryCount} free boundar${r.freeBoundaryCount === 1 ? "y" : "ies"}${r.freeBoundaryCount <= (r.freeBoundaries?.length ?? 0) ? ` (${closed} closed)` : ""}`);
+  }
+  const reversed = r.solids.filter((s) => s.signedVolume != null && s.signedVolume < 0).length;
+  if (reversed > 0) parts.push(`${reversed} reversed solid(s)`);
   return parts.join(" · ");
 }
