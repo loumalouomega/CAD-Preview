@@ -858,7 +858,7 @@ The saved-macro library for the document's folder (`cad-preview-macros.json` —
 
 Sent in reply to `entityFactsRequest` — **B-rep sources only** (a triangle mesh has no analytic surface type; a fine-faceted prism and a cylinder are identical in triangles), same gate as `massPropertiesResult`. Carries `EntityFacts` verbatim from the existing `getEntityFacts` pipeline function — the interactive geometry inspector card is a new protocol pair over existing kernel surface, not new geometry work; the same function backs the `inspect` MCP tool.
 
-**Two consumers share this round trip**, each latched on its own request id: the inspector card, and the view-controls **Clip ▸ Face** button, which reads the reply's `normal` + `planeOrigin` to derive an arbitrary clip plane. The clip path issues its own request rather than reusing the card's last result — group/query selection never triggers a card fetch, so that cache can be empty or stale for a face selected that way.
+**Two consumers share this round trip**, each latched on its own request id: the inspector card, and the view-controls **Cut Plane ▸ Face** button, which reads the reply's `normal` + `planeOrigin` to derive an arbitrary clip plane. The clip path issues its own request rather than reusing the card's last result — group/query selection never triggers a card fetch, so that cache can be empty or stale for a face selected that way.
 
 Driven by **selection, not hover**: `getEntityFacts` has no shape cache, so every call re-reads the source bytes and replays the whole op list. The hover tooltip is deliberately pure-webview for the same reason.
 

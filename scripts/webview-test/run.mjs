@@ -4855,6 +4855,37 @@ test("bookmarks: saving the current view posts viewChanged carrying the bookmark
   assert(rows === 1, `the menu shows the new row (got ${rows})`);
 });
 
+test("view snaps: 5 looks from the top, 3 from the right, and typing in a text field never moves the camera", async (page) => {
+  await populate(page);
+  const lastDir = async () =>
+    page.evaluate(() => (window.__sent ?? []).filter((m) => m.type === "viewChanged").at(-1)?.view?.viewDirection ?? null);
+  const near = (d, want) => Array.isArray(d) && d.every((c, i) => Math.abs(c - want[i]) < 1e-3);
+  await page.evaluate(() => (window.__sent.length = 0));
+  await page.evaluate(() => document.body.focus());
+  await page.keyboard.press("5");
+  await sleep(800);
+  const top = await lastDir();
+  assert(near(top, [0, 1, 0]), `key 5 snaps to the top view (got ${JSON.stringify(top)})`);
+  await page.keyboard.press("3");
+  await sleep(800);
+  const right = await lastDir();
+  assert(near(right, [1, 0, 0]), `key 3 snaps to the right view (got ${JSON.stringify(right)})`);
+  // Typing digits into a text field must leave the camera alone.
+  await page.evaluate(() => (window.__sent.length = 0));
+  await page.evaluate(() => {
+    const input = document.createElement("input");
+    input.type = "text";
+    input.id = "snap-probe-input";
+    document.body.append(input);
+    input.focus();
+  });
+  await page.keyboard.press("1");
+  await page.evaluate(() => document.getElementById("snap-probe-input")?.remove());
+  await sleep(500);
+  const typed = await lastDir();
+  assert(typed === null, `typing 1 in a text field does not snap the view (got ${JSON.stringify(typed)})`);
+});
+
 test("bookmarks: restoring reframes and persists exactly one viewChanged matching the bookmark", async (page) => {
   await populate(page);
   await postBookmarks(page, [

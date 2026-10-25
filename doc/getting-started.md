@@ -255,7 +255,7 @@ The floating dock at the bottom of the 3D view holds the controls you reach for 
 
 | Where | Controls |
 |---|---|
-| **In the row** | Icon **navigation** — reset view, fit, zoom out, zoom in — then the **Display** modes (Shaded / Wire / X-Ray / Hidden / Flat / Geom, as text segments), the **Clip** plane (its on/off toggle, then X / Y / Z and the offset slider), **Persp / Ortho**, and the **Units** dropdown. A small chevron at the very end of the bar collapses the whole dock |
+| **In the row** | Icon **navigation** — reset view, fit, zoom out, zoom in — then the **Display** modes (Shaded / Wire / X-Ray / Hidden / Flat / Geom, as text segments), the **Cut Plane** (its on/off toggle, then X / Y / Z and the offset slider), **Persp / Ortho**, and the **Units** dropdown. A small chevron at the very end of the bar collapses the whole dock |
 | **Behind ⋯** | **Rotate** and **Pan** arrow pads, clip **Face** / **3 Pts**, the **Planes** group, background colour, opacity, **Grid size**, and **Colour by field** (shown only for a meshio++ source that declares one) |
 
 Nothing was removed — every control that used to sit in the tall two-tier panel is still one click away. The popover opens upward, stays on the canvas rather than covering the sidebar, closes on **Escape** or an outside click, and is arrow-key navigable like the toolbar menus. On a narrow editor the row wraps onto a second line instead of overflowing.
@@ -269,7 +269,7 @@ The panel's remaining controls in detail:
 - **Zoom buttons** (magnifier − / +) — Dolly in or out by a fixed factor.
 - **Fit** (frame icon) — Same as the toolbar Fit button (reframe in current orientation).
 - **Reset** (circular-arrow icon) — Reset to the default isometric view `(1, 0.8, 1)` and reframe.
-- **Clip group** — Enable a live section/clipping plane, then drag the offset slider to sweep it across the model's bounding box (`-1` = the min-side face, `0` = centre, `1` = the max side), measured along whichever normal is active. The cross-section is solid-filled, not see-through, and also applies to the FE Mesh overlay when shown. Turning it off instantly restores the full model.
+- **Cut Plane group** (formerly "Clip") — Enable a live section/clipping plane, then drag the offset slider to sweep it across the model's bounding box (`-1` = the min-side face, `0` = centre, `1` = the max side), measured along whichever normal is active. The cross-section is solid-filled, not see-through, and also applies to the FE Mesh overlay when shown. Turning it off instantly restores the full model.
 
   The plane can be **any** direction, not just an axis:
   - **X / Y / Z** are fast presets.
@@ -283,7 +283,7 @@ The panel's remaining controls in detail:
 - **Appearance group** — A background-colour swatch (live preview only — the session-only override always wins over the [`cadPreview.background` setting](#settings) until you reload), an opacity slider for the whole model, a **Persp / Ortho** button toggling between perspective and orthographic projection (orbit/pan/zoom, picking, and the orientation cube all keep working under either projection), a **Units** dropdown (mm/cm/m/in/ft, see [Units](#units) below), and a **Grid size** field controlling the [Transform Gizmo](#transform-gizmo)'s Snap to grid increment (see **View ▾** above — unrelated to the display grid's own Grid toggle). For a meshio++-imported source that declares point or cell scalar data (temperatures, stresses, …), a **Colour by field** dropdown also appears here — picking a field paints the model as a viridis colour ramp with a min/max legend; picking "None" reverts. Background/opacity/units/grid-size/colour-by-field stay session-only (never exported/persisted); colour-by-field additionally resets whenever an edit is applied, since a field's values only stay meaningful for the model's original, unedited geometry.
 - **Display group** — Six mutually exclusive rendering modes, replacing the old standalone Wireframe toolbar toggle: **Shaded** (the default, lit faces), **Wire** (faces rendered as a mesh of lines), **X-Ray** (translucent faces so edges show through), **Hidden** (edges of occluded geometry shown faintly through solid faces, full-strength where actually visible), and **Flat** (unlit, constant-colour faces — no lighting gradient, useful for reading true part colours without shading artifacts), and **Geom** (the B-rep *structure*, GiD-style: faces fade to a faint fill, every edge is redrawn through them in a single colour, points are enlarged markers, and each solid gets a bounding shell in its own stable colour; a small legend names the primitives. Picking and selection work as in Shaded, since the overlay is never pickable. B-rep models only — a mesh has no points or edges to show).
 
-![The view-controls dock: icon navigation, Display modes, Clip, Persp/Ortho and Units in one row, with the ⋯ overflow button at the right.](/screenshots/view-controls.png)
+![The view-controls dock: icon navigation, Display modes, Cut Plane, Persp/Ortho and Units in one row, with the ⋯ overflow button at the right.](/screenshots/view-controls.png)
 
 ![The ⋯ popover open above the dock: Rotate and Pan pads, clip Face / 3 Pts, Planes, and Appearance.](/screenshots/view-controls-more.png)
 
