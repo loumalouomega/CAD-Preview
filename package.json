@@ -496,6 +496,7 @@
     "compat": "npm run build && node scripts/compat/run.mjs",
     "compat:vsix": "node scripts/compat/vsix-check.mjs",
     "docs:dev": "vitepress dev doc",
+    "ui:drift": "node scripts/ui-drift-check.mjs",
     "docs:build": "vitepress build doc",
     "docs:preview": "vitepress preview doc",
     "docs:screenshots": "npm run build && node scripts/screenshots/make-fixtures.mjs && node scripts/screenshots/capture.mjs"

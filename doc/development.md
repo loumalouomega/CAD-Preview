@@ -255,6 +255,7 @@ See `.github/workflows/ci.yml`. Two jobs:
 3. `npm run build` — bundle + type-check
 4. `npm test` — unit tests (including the `doc/**` example-compile, op-coverage, and no-ordinal-roadmap-citation gates)
 5. `npm run docs:build` — VitePress build, which is also the only dead-link check over `doc/**`
+   - Then `npm run ui:drift` (`scripts/ui-drift-check.mjs`): informational — it fetches VSCode-MDPA-Preview's `webview/design-system.css` and `src/toolbarIcons.ts` and prints the `--ui-*` token and icon-id differences against this repository. It exits 0 on drift and prints "skipped" when the sibling is unreachable; the icon sets differ by design (each extension has its own surfaces), so read it for the shared tokens.
 6. `npm run test:webview` — Playwright assertions over the real viewer bundle (under `xvfb-run`)
 7. `npm run test:integration` — the host-side suite in a real VS Code (under `xvfb-run`, retried on network flakes)
 8. `npm run package` — produce `.vsix`

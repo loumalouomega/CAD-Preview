@@ -5,6 +5,7 @@ import { buildEntityReferenceIndex, QUERYABLE_PANEL_FORMS } from "./opCatalog";
 import { hoverContent, inspectorContent, summaryLine } from "./entityExplain";
 import { formatEntityReferences, producingBucketFor } from "./entityReference";
 import { UI_GLYPHS } from "../uiGlyphs";
+import { isTextEntryTarget, viewForKey } from "../viewShortcuts";
 import { MacrosPanel } from "./macrosPanel";
 import { selectionGroupsFor } from "./selectionGroups";
 import { loadMeshFromUrl } from "./meshLoaders";
@@ -428,7 +429,7 @@ function renderPlanesList(): void {
 
     const use = document.createElement("button");
     use.textContent = "Use";
-    use.title = "Clip along this plane";
+    use.title = "Cut along this plane";
     use.addEventListener("click", () => {
       if (!planesClipHandle) return;
       planesClipHandle.applyDerivedPlane(
@@ -4051,6 +4052,15 @@ function setupSelectionControls(): void {
   document.addEventListener("keydown", (e) => {
     if (e.key === "Escape") closeMenu();
   });
+  // View snaps (1-6 faces, i isometric). Typing in any input — including the
+  // command bar, which also stops propagation — must never move the camera.
+  document.addEventListener("keydown", (e) => {
+    if (e.defaultPrevented || isTextEntryTarget(e.target as HTMLElement | null)) return;
+    const view = viewForKey(e);
+    if (!view) return;
+    // The view-change hook already schedules the render.
+    viewer.setViewDirection(new THREE.Vector3(...view.direction));
+  });
 }
 
 /** Restricts pickable entity kinds (mesh formats expose only whole "volumes"). */
@@ -4974,8 +4984,8 @@ function setupClippingControls(): ClippingControlsHandle {
     scheduleViewSave();
     setStatus(
       offsetFrac <= -0.999
-        ? `Clip normal from ${label} — drag the offset slider to cut.`
-        : `Clipping along ${label}.`
+        ? `Cut plane normal from ${label} — drag the offset slider to cut.`
+        : `Cutting along ${label}.`
     );
   };
 
@@ -4989,16 +4999,16 @@ function setupClippingControls(): ClippingControlsHandle {
       const ok = sourceKind === "brep" && faces.length === 1 && picked.length === 1;
       faceBtn.disabled = !ok;
       faceBtn.title = ok
-        ? `Clip along ${faces[0].entityId}`
+        ? `Cut along ${faces[0].entityId}`
         : sourceKind === "brep"
-          ? "Select exactly one planar face to clip along it"
-          : "Clipping along a face needs a B-rep source";
+          ? "Select exactly one planar face to cut along it"
+          : "Cutting along a face needs a B-rep source";
     }
     if (pointsBtn) {
       // Self-gating for mesh sources: they build no `point-N` sprites at all.
       const ok = points.length === 3 && picked.length === 3;
       pointsBtn.disabled = !ok;
-      pointsBtn.title = ok ? "Clip through the three selected points" : "Select exactly three points";
+      pointsBtn.title = ok ? "Cut through the three selected points" : "Select exactly three points";
     }
   };
 

@@ -47,6 +47,8 @@ Existing implementation references were checked against the repository where not
 
 **Closed 2026-10-22.** Extension, not a planning review: nothing was re-ranked. 2.25 (The entity-point snap must reach the committed op) shipped: for exactly one target the Move form now carries the snapped delta (`snapped - base`), so Apply commits the position the preview showed; a multi-target drag stays preview-only and says so in the form hint and `OP_PARAM_DOCS`. The `gizmo-point-snap` case now pins the snapped commit (and its registry `closedBy` title moved with it), while the grid-snap behaviour is unchanged.
 
+**Closed 2026-10-25.** Extension, not a planning review: nothing was re-ranked and no other open ID changed. The shared UI design system item (formerly 2.2) shipped on this side and left the list: keyboard view snaps (`1`–`6`, `i`), the label-only renames Clip → "Cut Plane" and BACK → "REAR" (the `clip` view-state key, protocol messages and the `back` named view are unchanged), and `npm run ui:drift`, an informational CI step diffing the `--ui-*` tokens and icon ids against VSCode-MDPA-Preview's `webview/design-system.css` and `src/toolbarIcons.ts`. The sibling repository's half (its stale licence line, its own copy of the key order) is its to do.
+
 Everything previously shipped is tracked in `CHANGELOG.md`, and `CLAUDE.md` holds the invariants, traps and verified kernel facts that a future change could break (not per-feature history, which lives in git) — this page is for what's **not** built yet, plus the Non-goals that record why a direction was rejected so it isn't re-proposed.
 
 ## How this file works
@@ -177,7 +179,7 @@ CAD-Preview is embedded in [KKSS](https://github.com/loumalouomega/KKSS) as its 
 | Every new capability reachable through this repository's MCP server, since that is the only way the KKSS assistant sees it | KKSS roadmap | Already a house rule ("Shared capabilities must reach both consumers" above) |
 | A small, reproducible structural example that a geometry-to-results tutorial can reuse | KKSS roadmap | [Canonical worked example](#canonical-worked-example-for-the-simulation-tutorial) (the page ships; the cross-repo check remains) |
 | Performance baselines covering more than the OCCT and Gmsh paths | KKSS roadmap | Shipped; see `CLAUDE.md` |
-| One UI vocabulary across both extensions: view snaps 1–6 and `i` proposed for upstreaming, and "Cut Plane" / "REAR" renames pending | VSCode-MDPA-Preview `doc/ui-design-system.md` | [Shared UI design system](#shared-ui-design-system-with-vscode-mdpa-preview) |
+| One UI vocabulary across both extensions: view snaps 1–6 and `i`, and the "Cut Plane" / "REAR" renames | VSCode-MDPA-Preview `doc/ui-design-system.md` | Shipped here (`viewShortcuts.ts`, label-only renames, `npm run ui:drift`); the sibling's own half is its to do |
 | A scheduled job that compares dependency pins with npm | VSCode-MDPA-Preview roadmap | Shipped; see `CLAUDE.md` |
 | Consume CAD's mesh handoff manifest | VSCode-MDPA-Preview roadmap | Already shipped on this side (`export_mesh {manifest: true}`); the consuming half is theirs |
 
@@ -281,22 +283,6 @@ These are outcome groupings, not release numbers. Independent small items can sh
 ### 2. Ready product work {#tier-1-—-ready-product-work}
 
 *Admission: no kernel unknown remains. Either a probe passed and its call shapes are in `CLAUDE.md`, or the work only reuses shipped machinery. The estimate is firm.*
-
-#### 2.2 Shared UI design system with VSCode-MDPA-Preview {#shared-ui-design-system-with-vscode-mdpa-preview}
-
-*Area: Ecosystem.*
-
-- **Evidence:**
-  - VSCode-MDPA-Preview's `doc/ui-design-system.md` maps both extensions' vocabularies.
-  - It proposes upstreaming its view snaps (keys 1–6 for the six faces, `i` for isometric) into this repository.
-  - It leaves two renames pending: Clip → "Cut Plane", and the orientation cube's BACK → "REAR".
-  - This repository's chrome passes already use `--ui-*` metric tokens beside the theme colours, which is the part both extensions could share.
-- **First useful increment (M):**
-  - Adopt the view snaps. They go through the existing named-view vocabulary in `viewDirections.ts`, so they need no new camera code.
-  - Decide the two renames with the maintainer of both repositories, and apply the decision here.
-  - Add a drift-check script that compares the shared token block and icon names between the two repositories and prints the differences.
-- **Done when:** the snaps work in both extensions, the renames are settled, and the drift check runs in this repository's CI.
-- **Other repository's half:** the matching change in VSCode-MDPA-Preview, and its stale licence line.
 
 #### 2.3 Canonical worked example for the simulation tutorial {#canonical-worked-example-for-the-simulation-tutorial}
 

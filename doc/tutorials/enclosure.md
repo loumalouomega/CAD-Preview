@@ -86,11 +86,11 @@ has nothing to open the cavity through. The form requires at least one face for 
 
 ## Step 5 — Check it
 
-Enable a clipping plane from the **View controls** panel's **Clip** group and sweep it through
+Enable a clipping plane from the **View controls** panel's **Cut Plane** group and sweep it through
 the box. The cut face renders as a solid cap, so you can see the wall and floor thicknesses
 directly rather than looking through a hollow shell.
 
-![The view-controls panel with the Appearance and Clip groups.](/screenshots/view-controls.png)
+![The view-controls panel with the Appearance and Cut Plane groups.](/screenshots/view-controls.png)
 
 ## Full operation list
 

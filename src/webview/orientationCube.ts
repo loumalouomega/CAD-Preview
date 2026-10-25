@@ -22,7 +22,7 @@ export class OrientationCube {
     this.camera = new THREE.OrthographicCamera(-frustum, frustum, frustum, -frustum, 0.1, 100);
 
     // Material order matches BoxGeometry faces: +X, -X, +Y, -Y, +Z, -Z.
-    const labels = ["RIGHT", "LEFT", "TOP", "BOTTOM", "FRONT", "BACK"];
+    const labels = ["RIGHT", "LEFT", "TOP", "BOTTOM", "FRONT", "REAR"];
     this.textures = labels.map((l) => makeLabelTexture(l));
     this.materials = this.textures.map((map) => new THREE.MeshBasicMaterial({ map }));
     this.cube = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), this.materials);
