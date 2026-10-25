@@ -51,7 +51,7 @@ Existing implementation references were checked against the repository where not
 
 **Closed 2026-10-25 (B-rep repair probe).** Extension, not a planning review: nothing was re-ranked. The B-rep repair probe (formerly 3.2) **failed its decision gate** and left the list; the facts are under Kernel-blocked and `CLAUDE.md`'s dead-API list. Remaining probe IDs were not renumbered.
 
-**Closed 2026-10-25 (profile probes).** Extension, not a planning review: the open-profile surface probe (formerly 3.4) and the profile fillet/chamfer probe (formerly 3.7) both **passed** and moved to Ready product work as 2.4 and 2.5. Remaining probe IDs were not renumbered.
+**Closed 2026-10-25 (profile probes).** Extension, not a planning review: the open-profile surface probe (formerly 3.4) and the profile fillet/chamfer probe (formerly 3.7) both **passed** and moved to Ready product work; the open-profile surface item has since shipped, and the fillet/chamfer item is now 2.4. Remaining probe IDs were not renumbered.
 
 Everything previously shipped is tracked in `CHANGELOG.md`, and `CLAUDE.md` holds the invariants, traps and verified kernel facts that a future change could break (not per-feature history, which lives in git) — this page is for what's **not** built yet, plus the Non-goals that record why a direction was rejected so it isn't re-proposed.
 
@@ -296,16 +296,7 @@ These are outcome groupings, not release numbers. Independent small items can sh
 - **What is left (S):** the cross-repository check — open the exported `.mdpa` in VSCode-MDPA-Preview and confirm both SubModelParts populate. It needs that extension and is not exercised from this repository.
 - **Done when:** that check passes, and KKSS's tutorial links to the page.
 
-#### 2.4 Open-profile surface output {#open-profile-surface-output}
-
-*Area: Geometry. Effort: S (phase 1).*
-
-- **Probe passed (2026-10-25, `scripts/probe/examples/occt-open-profile-surface.ts`).** `BRepPrimAPI_MakePrism_1(wire, vec, false, true)` on an open wire returns a `TopAbs_SHELL` with one face per segment; area equals Σ length × extrude to 1e-9 (20 and 35), sewing reports exactly `2·segments + 2` free edges (4 and 6), and `BRepPrimAPI_MakeRevol_1(wire, ax1, 2π, false)` gives the Pappus area (37.699). Appended to `block.stp` as `compound(existing + new)`, `collectFaces` and `tessellateByGroup` agree on the face count (7 and 8) and the sheet lands as its own contiguous group (`solid-1`), and a STEP round trip preserves face count and total area. Sewing needs `Perform(new Handle_Message_ProgressIndicator_1())`.
-- **First increment (S):** `extrude` and `revolve` accept an open profile without `thin` and produce a surface: bypass `finishThin`/`orientPositiveVolume`, bucket role generic `produced`, no new id kind. Consumers that need a closed volume (`addVolumeFromSurfaces`, mass volume) refuse these faces by name; the panel hint and `OP_PARAM_DOCS` say "surface, not solid".
-- **Deferred:** `sweep`/`loft` surfaces and a `shell-N` entity id (touches `entityIdScheme`, picker, rebinding, every sidecar reader).
-- **Done when:** an open polyline extrudes to a sheet with analytic area, stable `face-N` ids across reload, and a clean STEP export.
-
-#### 2.5 Fillets and chamfers on 2D profiles {#fillets-and-chamfers-on-2d-profiles}
+#### 2.4 Fillets and chamfers on 2D profiles {#fillets-and-chamfers-on-2d-profiles}
 
 *Area: Geometry. Effort: S–M.*
 

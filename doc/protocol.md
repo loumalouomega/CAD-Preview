@@ -196,8 +196,10 @@ type EditOp =
   //   profile / profiles            a face-N (a sketch, or any face)
   //   profileEdges / profileEdgeSets  edge-N ids assembled into one wire,
   //                       which is how an OPEN sketch is consumed. An open
-  //                       wire encloses no area, so it REQUIRES `thin` and
-  //                       refuses `thinOuter` (it has no inside or outside).
+  //                       wire encloses no area: extrude/revolve without `thin` build a
+  //                       SURFACE (sheet, no caps, no volume); sweep/loft and any
+  //                       `thin` build REQUIRE `thin` and refuse `thinOuter`
+  //                       (it has no inside or outside).
   // The single-profile three (not loft) also take an optional region pick:
   //   pick?: 'outer' | 'all' | number[]   which enclosed regions of a
   //                       multi-region profile to consume (0 = outer boundary,

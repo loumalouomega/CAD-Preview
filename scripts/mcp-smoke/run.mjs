@@ -8433,11 +8433,25 @@ try {
     );
 
     // 6. the refusals, each naming its own cause rather than a generic failure.
-    const noThin = await wireSkip("open profile without thin", [
-      spine(20), { op: "extrude", profileEdges: ["edge-12", "edge-13"], dir: [0, 0, 1], length: 5 },
-    ]);
-    assert(/open wire, which encloses no area/i.test(noThin), `an open profile without thin is refused by name (got ${noThin})`);
-
+    // An open profile without `thin` is a SURFACE for extrude/revolve (two
+    // 5-long segments x 5 = area 50 over face-6 + face-7, no volume change);
+    // sweep/loft still refuse it by name.
+    {
+      resetWire();
+      const sheetOps = [spine(20), { op: "extrude", profileEdges: ["edge-12", "edge-13"], dir: [0, 0, 1], length: 5 }];
+      const res = await callWithCleanRetry("apply_edit_ops", { path: wireModel, ops: sheetOps }, resetWire);
+      assert(res.applied === sheetOps.length && (res.notApplied ?? 0) === 0, `an open profile without thin extrudes to a sheet (got ${JSON.stringify(res.report)})`);
+      const a6 = await call("inspect", { path: wireModel, entityId: "face-6" });
+      const a7 = await call("inspect", { path: wireModel, entityId: "face-7" });
+      const sheetArea = (a6.area ?? 0) + (a7.area ?? 0);
+      assert(Math.abs(sheetArea - 50) < 1e-6, `the sheet's area is the analytic 50, 2 x (5 x 5) (got ${sheetArea})`);
+      const blockVol = await call("get_mass_properties", { path: wireModel, entityId: "solid-1" });
+      assert(Math.abs(blockVol.volume - 60) < 1e-6, `the sheet adds no volume to the block (got ${blockVol.volume})`);
+      const upTo = await wireSkip("open profile up-to-face", [
+        spine(20), { op: "extrude", profileEdges: ["edge-12", "edge-13"], dir: [0, 0, 1], upToFace: "face-0" },
+      ]);
+      assert(/up-to-face extrusion needs a closed planar profile/i.test(upTo), `an open profile with upToFace is refused by name (got ${upTo})`);
+    }
     const badOuter = await wireSkip("open profile with thinOuter", [
       spine(20), { op: "extrude", profileEdges: ["edge-12", "edge-13"], dir: [0, 0, 1], length: 5, thin: 2, thinOuter: 0.5 },
     ]);

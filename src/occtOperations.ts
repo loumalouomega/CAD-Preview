@@ -369,7 +369,12 @@ function collectBucketForOp(oc: any, before: any, after: any, index: number, op:
           if (afterFaces[i].IsSame(profileFace)) { roles.startCap = [`face-${i}`]; break; }
         }
       }
-      if (kind === "extrude") {
+      // An open profile extruded without `thin` is a sheet: one produced face
+      // per segment and no caps, so the cap/side split below would mislabel a
+      // side as `endCap`. A closed edge set always adds two caps (n + 2).
+      const profileEdges = (op as { profileEdges?: string[] }).profileEdges;
+      const isSheet = !isThin && profileEdges !== undefined && producedIdx.length === profileEdges.length;
+      if (kind === "extrude" && !isSheet) {
         const [dx, dy, dz] = (op as { dir: Vec3 }).dir;
         const len = Math.hypot(dx, dy, dz) || 1;
         let bestIdx = -1;
@@ -1793,6 +1798,17 @@ function featureProfileFaces(oc: any, shape: any, op: EditOp & { profile?: strin
   const section = resolveProfileSection(oc, shape, op.profile, op.profileEdges, cleanup, fail);
   if (!section) return null;
   const pick = op.pick;
+  // An open wire with no `thin` encloses no area: extrude/revolve sweep the
+  // wire itself into a sheet (a SHELL, one face per segment — probed live),
+  // so the builder is handed the wire instead of a face. Sweep/loft still
+  // need a cross-section and keep refusing below.
+  if (!section.closed && !thinSpecOf(op) && (op.op === "extrude" || op.op === "revolve") && (pick === undefined || pick === "outer")) {
+    if ((op as { upToFace?: string }).upToFace !== undefined) {
+      fail?.(`up-to-face extrusion needs a closed planar profile, and ${section.label} is an open wire`, "give an explicit `length` to extrude an open profile into a surface");
+      return null;
+    }
+    return [section.wire];
+  }
   if (thinSpecOf(op)) {
     if (pick !== undefined) { fail?.(`pick cannot combine with thin — thin walls build from the outer boundary alone`, "drop `pick` (the default already consumes the outer boundary) or drop `thin`"); return null; }
     const face = profileFaceFor(oc, section, op, cleanup, fail);

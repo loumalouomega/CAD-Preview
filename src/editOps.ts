@@ -87,8 +87,10 @@ export interface ThinSpec { thin?: number; thinOuter?: number; }
  *   genuinely disconnected set is skipped with a diagnostic.
  *
  * A CLOSED edge set behaves exactly like the equivalent face. An OPEN one
- * encloses no area, so it **requires** {@link ThinSpec.thin}: the wall is what
- * gives it a cross-section. See CLAUDE.md's "Open-profile (wire) operand".
+ * encloses no area: `extrude`/`revolve` without {@link ThinSpec.thin} sweep it
+ * into a **surface** (a sheet of faces with no caps and no volume), while
+ * `sweep`/`loft` and any thin build **require** `thin` — the wall is what
+ * gives them a cross-section. See CLAUDE.md's "Open-profile (wire) operand".
  *
  * `pick` optionally narrows WHICH enclosed regions of a multi-region profile
  * are consumed (roadmap "pick + drill", closed): a face's wires enumerate to
