@@ -1333,6 +1333,14 @@ const editsPanel = new EditsPanel(document.getElementById("edits-panel")!, {
     editsModel.push({ op: "addSurfaceFromLines", edges });
     setStatus("");
   },
+  onBuildSurfaceFilling: () => {
+    const edges = selection.list().filter((e) => e.entityType === "line").map((e) => e.entityId);
+    if (edges.length < 3) { setStatus("Select 3+ edges (Line mode) forming a closed boundary loop.", true); return; }
+    const guideEdge = edges.find((e) => guideEntityIds.has(e));
+    if (guideEdge) { setStatus(`${guideEdge} is guide (construction) geometry — guides are excluded from surface resolution.`, true); return; }
+    editsModel.push({ op: "addSurfaceFilling", edges });
+    setStatus("");
+  },
   onBuildVolumeFromSurfaces: () => {
     const faces = selection.list().filter((e) => e.entityType === "surface").map((e) => e.entityId);
     if (faces.length < 4) {
@@ -2599,6 +2607,7 @@ function tintForPanelOp(id: PanelOpId, wrapVariant?: "emboss" | "engrave" | "sta
     case "buildVolume":
     case "edgeSlot":
     case "filletProfile":
+    case "fillSurface":
       return "ref";
     default:
       return undefined; // mirror, draft, align, fillet, chamfer — neutral
@@ -3263,6 +3272,10 @@ function buildOpForPanelCore(id: PanelOpId, rawDraft: Record<string, unknown>): 
       if (selEdges.length < 3) return { error: "Select 3+ lines (Line mode) forming a closed loop." };
       if (selEdges.some((e) => guideEntityIds.has(e))) return { error: "Guide (construction) edges are excluded from surface resolution." };
       return { op: { op: "addSurfaceFromLines", edges: selEdges } };
+    case "fillSurface":
+      if (selEdges.length < 3) return { error: "Select 3+ edges (Line mode) forming a closed boundary loop." };
+      if (selEdges.some((e) => guideEntityIds.has(e))) return { error: "Guide (construction) edges are excluded from surface resolution." };
+      return { op: { op: "addSurfaceFilling", edges: selEdges } };
     case "buildVolume":
       if (selFaces.length < 4) return { error: "Select 4+ surfaces (Surf mode) forming a closed shell." };
       if (selFaces.some((f) => guideEntityIds.has(f))) return { error: "Guide (construction) faces are excluded from volume resolution." };

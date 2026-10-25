@@ -53,6 +53,7 @@ const REPRESENTATIVE_OPS: Record<EditOpKind, EditOp> = {
   addBezier: { op: "addBezier", controlPoints: [[0, 0, 0], [5, 10, 0], [10, 0, 0]] },
   addEllipseArc: { op: "addEllipseArc", center: [0, 0, 0], normal: [0, 0, 1], up: [1, 0, 0], radiusX: 8, radiusY: 5, startAngleDeg: 0, endAngleDeg: 90 },
   addHelix: { op: "addHelix", center: [0, 0, 0], axis: [0, 0, 1], radius: 5, pitch: 3, turns: 2 },
+  addSurfaceFilling: { op: "addSurfaceFilling", edges: ["edge-0", "edge-1", "edge-2"] },
   addSurfaceFromLines: { op: "addSurfaceFromLines", edges: ["edge-0", "edge-1", "edge-2"] },
   addVolumeFromSurfaces: { op: "addVolumeFromSurfaces", faces: ["face-0", "face-1", "face-2", "face-3"] },
   addEdgeSlot: { op: "addEdgeSlot", edge: "edge-0", width: 2 },

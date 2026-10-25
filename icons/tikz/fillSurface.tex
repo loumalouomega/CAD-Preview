@@ -1,0 +1,10 @@
+% Op icon: fillSurface — a wavy four-sided patch bounded by curved edges with a dashed contour.
+% NOTE: svg-ops/fillSurface.svg is hand-authored (no pdflatex in the authoring environment).
+\documentclass[tikz,border=2mm]{standalone}
+\begin{document}
+\begin{tikzpicture}[line width=1.3pt, line cap=round, line join=round, x=1mm,y=1mm]
+  \draw (-14,-6) .. controls (-8,-2) and (-2,-12) .. (4,-6) .. controls (10,0) and (16,-10) .. (20,-4)
+        -- (20,8) .. controls (16,2) and (10,12) .. (4,6) .. controls (-2,0) and (-8,10) .. (-14,6) -- cycle;
+  \draw[dashed] (-14,0) .. controls (-8,4) and (-2,-6) .. (4,0) .. controls (10,6) and (16,-2) .. (20,2);
+\end{tikzpicture}
+\end{document}

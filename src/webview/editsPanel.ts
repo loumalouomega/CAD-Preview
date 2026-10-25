@@ -207,6 +207,8 @@ export interface EditsPanelCallbacks {
   onBuildVolumeFromSurfaces: () => void;
   /** Build a stadium slot face from the currently-selected edge (Line mode, B-rep only). */
   onBuildEdgeSlot: (width: number) => void;
+  /** Fill the selected closed edge loop with a smooth, generally non-planar face (B-rep only). */
+  onBuildSurfaceFilling: () => void;
   /** Round (`radius`) or bevel (`chamfer`, optional `chamfer2`) the corner between the two selected sketch segments. */
   onBuildFilletProfile: (radius?: number, chamfer?: number, chamfer2?: number) => void;
   /** Fired whenever the open param form changes (a different op button
@@ -1443,6 +1445,10 @@ export class EditsPanel {
       case "buildSurface":
         f.appendChild(this.hint("Select 3+ lines forming a closed loop (Line mode)"));
         this.applyButtonDraft("Build", "Build a flat face from the selected lines", () => ({}), () => this.cb.onBuildSurfaceFromLines());
+        break;
+      case "fillSurface":
+        f.appendChild(this.hint("Select 3+ edges (Line mode) forming a closed boundary. Builds a smooth, generally non-planar face through them (an approximation, not an exact analytic surface)"));
+        this.applyButtonDraft("Build", "Fill the selected boundary with a smooth face", () => ({}), () => this.cb.onBuildSurfaceFilling());
         break;
       case "buildVolume":
         f.appendChild(this.hint("Select 4+ surfaces forming a closed shell (Surf mode)"));

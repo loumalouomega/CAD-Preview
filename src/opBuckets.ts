@@ -69,6 +69,7 @@ export const PRODUCED_ROLE: Record<string, string> = {
   addEdgeSlot: "body",
   filletProfile: "produced",
   addSurfaceFromLines: "body",
+  addSurfaceFilling: "body",
   addVolumeFromSurfaces: "body",
   addBox: "body",
   addSphere: "body",

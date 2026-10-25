@@ -303,6 +303,7 @@ export interface SectionOp { op: "section"; targets: string[]; planePoint?: Vec3
  * so the profile stays closed and a later `extrude` keeps an analytic area.
  * Straight segments only; apply it once per corner.
  */
+export interface AddSurfaceFillingOp { op: "addSurfaceFilling"; edges: string[]; }
 export interface FilletProfileOp { op: "filletProfile"; edges: [string, string]; radius?: number; chamfer?: number; chamfer2?: number; }
 /** Build a standalone flat face from the wire formed by the selected edges — they must connect into a closed loop. */
 export interface AddSurfaceFromLinesOp { op: "addSurfaceFromLines"; edges: string[]; }
@@ -338,7 +339,7 @@ export type EditOp = (
   | AddPointOp | AddLineOp | AddArcOp
   | AddPolylineOp | AddThreePointArcOp | AddSplineOp | AddBezierOp | AddEllipseArcOp | AddHelixOp
   | AddEdgeSlotOp
-  | AddSurfaceFromLinesOp | AddVolumeFromSurfacesOp | FilletProfileOp
+  | AddSurfaceFromLinesOp | AddSurfaceFillingOp |  AddVolumeFromSurfacesOp | FilletProfileOp
   | AlignOp | PatternLinearOp | PatternCircularOp | DrillOp
  ) & {
   exprs?: ExprMap;
@@ -473,7 +474,7 @@ export const QUERYABLE_OPERAND_FIELDS: Record<EditOpKind, readonly string[]> = {
   addPoint: [], addLine: [], addArc: [],
   addPolyline: [], addThreePointArc: [], addSpline: [], addBezier: [], addEllipseArc: [], addHelix: [],
   addEdgeSlot: ["edge"],
-  addSurfaceFromLines: ["edges"], addVolumeFromSurfaces: ["faces"], filletProfile: ["edges"],
+  addSurfaceFromLines: ["edges"], addVolumeFromSurfaces: ["faces"], filletProfile: ["edges"], addSurfaceFilling: ["edges"],
   align: ["targets"], patternLinear: ["targets"], patternCircular: ["targets"],
   drill: ["targets", "profile", "profileEdges"],
 };
@@ -536,7 +537,7 @@ export const TOPOLOGY_CHANGING_OPS: ReadonlySet<EditOpKind> = new Set([
   "addEllipseProfile", "addRoundedRectangleProfile", "addSlotProfile", "addTrapezoidProfile",
   "addPoint", "addLine", "addArc",
   "addPolyline", "addThreePointArc", "addSpline", "addBezier", "addEllipseArc", "addHelix",
-  "addSurfaceFromLines", "addVolumeFromSurfaces", "addEdgeSlot", "filletProfile",
+  "addSurfaceFromLines", "addSurfaceFilling", "addVolumeFromSurfaces", "addEdgeSlot", "filletProfile",
   "patternLinear", "patternCircular", "drill",
 ]);
 
@@ -550,7 +551,7 @@ export const BREP_ONLY_OPS: ReadonlySet<EditOpKind> = new Set([
   "addEllipseProfile", "addRoundedRectangleProfile", "addSlotProfile", "addTrapezoidProfile",
   "addPoint", "addLine", "addArc",
   "addPolyline", "addThreePointArc", "addSpline", "addBezier", "addEllipseArc", "addHelix",
-  "addSurfaceFromLines", "addVolumeFromSurfaces", "addEdgeSlot", "filletProfile", "drill",
+  "addSurfaceFromLines", "addSurfaceFilling", "addVolumeFromSurfaces", "addEdgeSlot", "filletProfile", "drill",
 ]);
 
 function isFiniteNumber(v: unknown): v is number {
@@ -1563,6 +1564,10 @@ function validateEditOpCore(raw: unknown): EditOp | null {
     case "addSurfaceFromLines": {
       const edges = asIdArray(o.edges, 3); // a closed loop needs at least 3 edges
       return edges ? { op: "addSurfaceFromLines", edges } : null;
+    }
+    case "addSurfaceFilling": {
+      const edges = asEdgeIdArray(o.edges, 3); // a filled patch needs at least 3 boundary edges
+      return edges ? { op: "addSurfaceFilling", edges } : null;
     }
     case "addVolumeFromSurfaces": {
       const faces = asIdArray(o.faces, 4); // a closed volume needs at least 4 faces
