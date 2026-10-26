@@ -156,7 +156,7 @@ This review lists every capability that is **bound in a shipped kernel but never
 | `BRepExtrema_SelfIntersection`, `ShapeAnalysis_FreeBounds` | Self-intersection and free-boundary facts in the validity report | [More facts in the B-rep validity report](#more-facts-in-the-b-rep-validity-report) |
 | `BRepOffsetAPI_MakeFilling` | An N-sided, non-planar surface from boundary edges | N-sided surface filling (shipped as `addSurfaceFilling`) |
 | `ChFi2d_FilletAPI`, `ChFi2d_ChamferAPI` | Rounding and chamfering sketch-profile corners before extrusion | Fillets and chamfers on 2D profiles (shipped) |
-| `BRepProj_Projection` | Projecting a curve onto a face | [Project a curve onto a face](#project-a-curve-onto-a-face) |
+| `BRepProj_Projection` | Projecting a curve onto a face | Shipped as `splitFace.projectDir` |
 | `STEPCAFControl_GDTProperty`, `XCAFDoc_DimTolTool`, `XCAFDoc_LayerTool`, `XCAFDoc_MaterialTool`, `XCAFPrs_DocumentExplorer` | Reading STEP AP242 PMI, layers and materials, plus a second route to colours that bypasses the dead `XCAFDoc_ColorTool` getter | [Read PMI, layers and materials from STEP](#read-pmi-layers-and-materials-from-step) |
 | `VrmlAPI_Writer` | B-rep → VRML export, the one extra B-rep writer in the binding | [VRML export](#vrml-export) |
 
@@ -329,7 +329,6 @@ Probes are grouped by area. Each group has its own order table. The order is the
 | --- | --- | --- | --- |
 | 3.6 | Read PMI, layers and materials from STEP | — | May also reopen colours through a different API than the dead one |
 | 3.8 | Small-detail edge suppression | screenshot pipeline | Webview-side and independent; the risk is judgement, not bindings |
-| 3.9 | Project a curve onto a face | — | Useful mostly as an input to other features |
 | 3.10 | Loft takeoff by resampled intermediates | — | The measurement design is the hard part |
 | 3.11 | VRML export | — | Cheap but low value |
 
@@ -372,21 +371,6 @@ None of these depends on another's result.
 - **Decision gate:** *pass* — some τ hides at least 30 % of fillet-band seams on two or more fixtures while hiding no cylindrical hole rim and no large-extent face's edges. *Fail* — every τ that removes clutter also removes a hole rim → Rejected scope, with the tables kept.
 - **If admitted:** Phase 1 (**S**) — `detail: boolean` beside `smooth` on the wire format (never a filter: `edge-N` enumeration untouched), a `#hide-detail-edges` View item through `applyEdgeVisibility`, opt-in, the threshold a `cadPreview.*` setting defaulting to the probe's τ; and fix the documented "edge visibility does not survive a model rebuild" limitation for *both* flags in the same change, since a second toggle would double that bug's surface.
 - **Out of scope:** any default-on suppression; area alone as the criterion — surface type and extent are part of the test.
-
-##### 3.9 Project a curve onto a face {#project-a-curve-onto-a-face}
-
-*Area: Geometry.*
-
-- **Hypothesis:** `BRepProj_Projection` (green, never called) projects an edge or wire onto a face along a direction, giving edges that lie on that face.
-- **Evidence today:** `wrap` develops a sketch onto a cylinder or cone. Placing a path on an arbitrary face, for engraving, a split line or a sweep path, has no op today.
-- **Probe (S):**
-  1. Project a straight line onto a sphere, and check every sampled point lies on the sphere to 1e-6.
-  2. Project a circle onto a cylinder along its axis.
-  3. Use the projected edges as the splitting tool for the shipped `splitFace` op.
-- **Decision gate:**
-  - **Pass:** on-surface edges that the split probe accepts.
-  - **Fail:** recorded.
-- **If admitted (M):** a `projectCurve` op producing guide-able edges, most useful as input to the split-face op.
 
 ##### 3.10 Loft takeoff by resampled intermediates {#loft-takeoff-by-resampled-intermediates}
 
