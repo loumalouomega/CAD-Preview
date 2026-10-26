@@ -411,6 +411,7 @@ None of these depends on another's result.
 | ID | Item | Needs | Why here |
 | --- | --- | --- | --- |
 | 4.9 | KaHIP partitioning for Kratos MPI export | none — unblocked by meshio++ 17.13 (probe passed) | Lowest value; no user has asked for partitioned output yet |
+| 4.18 | All-hexahedra octree with multi-point constraints (MPC) in MDPA | meshio++ `octree`/`octreeMesh` hanging-node output — probe | A conforming all-hex mesh needs transition templates that bring in tets and pyramids; a graded all-hex mesh with hanging nodes tied by constraints is what Kratos can run, but nothing here can carry a constraint yet |
 
 The MMG core probe is complete; its working volume/surface paths and negative optimisation result are recorded in `CLAUDE.md`. MMG remeshing has shipped (shared `remeshMesh` service, `remesh_mesh` MCP tool and FE-panel action, with memory admission, documentation, real-pipeline screenshots and packaged-runtime verification). Conformal multi-body meshing has shipped as the default-on `conformal` mesh option with handoff-manifest recording, Gmsh mesh optimisation has shipped as the `optimize` enum, and structured meshing per Part has shipped as `Part.meshStructured` — probe numbers and findings are in `doc/gmsh-integration.md`. Field-driven adaptation has shipped on that same volume path (the **Adapt to field** option of remesh). Hausdorff-bounded surface coarsening (formerly 4.1) has shipped as the `autoDecimate` backend, with mmgs; its record lives in `CHANGELOG.md` and `CLAUDE.md`. Anisotropic boundary layers (formerly 4.3) have shipped as `Part.meshBoundaryLayer` on 2-D generates (`doc/gmsh-integration.md#anisotropic-boundary-layers`); the recorded blocker (a background size field voiding the layer) does not reproduce, and `scripts/probe/examples/gmsh-boundary-layer.ts` is the committed probe that shows it. IDs in this section were made continuous on 2026-10-08 (see the header).
 
@@ -430,6 +431,33 @@ The MMG core probe is complete; its working volume/surface paths and negative op
 - **What is left (M):** the export itself — see *If admitted* below. Nothing user-facing ships from this probe; the numbers say the work is worth doing if a Kratos MPI user asks for pre-partitioned output.
 - **Rejected regardless of the probe** if Kratos users confirm that load-time partitioning is what they use; no user has asked for pre-partitioned output.
 - **If admitted (M, no longer blocked):** partitioned MDPA export, one file per rank, with SubModelParts preserved per rank and the interface nodes listed, built on `partition` with `ghostLayers`; reuse `meshExportFormats.ts` (a rank count option) rather than a new tool. This is the lowest-value meshing item.
+
+##### 4.18 All-hexahedra octree with multi-point constraints in MDPA {#hex-octree-with-mpc}
+
+*Area: Meshing. Requested 2026-10-26; **pending** — not started, nothing probed yet.*
+
+- **Hypothesis:** an octree whose leaves are all hexahedra, graded with **hanging nodes** left in place, can be exported to Kratos MDPA with the hanging nodes tied to their parent corners by multi-point constraints (MPCs), and the extension can carry those constraints end to end: generate, view, export and re-open.
+- **Why this is a separate item.** Today's octree engines deliberately avoid hanging nodes: `engine: "octree"` uses the conforming `templates` transition (hexahedra plus pyramids and tetrahedra), and `engine: "octreemesh"` does not offer its `castellated` output because it keeps hanging nodes and surrogate boundary faces that no downstream reader here can interpret (see [the octree-mesh engine notes](/gmsh-integration#octreemesh-engine)). This item is the revival condition for that decision: a reader that understands constraints.
+- **What an MPC is here.** A hanging node on a coarse neighbour's edge is constrained to the average of that edge's two end nodes; one on a face centre to the four corners of that face. Linear constraints of this kind keep the displacement field continuous across the refinement jump without any transition elements.
+- **Evidence today:**
+  - Nothing in this repository models a constraint: `MeshResult`, `gmshElementTypes.ts`, `mdpaWriter.ts` and the handoff manifest carry nodes, elements and groups only.
+  - meshio++'s `octree` accepts other transitions and `octreeMesh` has the `castellated` output, but whether either reports which nodes are hanging and what they depend on is **unverified** — the probe must find out before any design is fixed.
+  - Kratos reads constraints from MDPA, but the exact block layout and constraint type names must be taken from Kratos' own `ModelPartIO` source, not assumed.
+- **Probe (M):**
+  1. On `block.stp` and `bull.stp`, list what meshio++ gives for an all-hex graded octree: are hanging nodes identifiable, with their parent nodes and weights, or must they be recovered geometrically from the leaf grid?
+  2. Recover the constraint set independently and check it by a patch test: a linear displacement field imposed on the master nodes must reproduce exactly at every slave node.
+  3. Confirm the MDPA constraint layout against Kratos' reader, and whether meshio++'s `mdpa` reader/writer preserve or drop a constraints block.
+- **Decision gate:**
+  - **Pass:** hanging nodes and their parents are recoverable exactly, the patch test is exact to round-off, and the block layout matches Kratos' reader.
+  - **Fail:** recorded here. The conforming `templates` octree stays the only hex-dominant option.
+- **If admitted (L), in this order:**
+  1. **Engine output.** An all-hex, hanging-node output for the octree engines (an `octreeMeshOutput`/`transition` choice, not a new engine), with the number of hanging nodes and constraints in the result facts.
+  2. **A constraint model.** A pure `MpcConstraint` type (slave node, master nodes, weights) carried through the mesh pipeline beside nodes and elements: `MeshResult`, the host-to-webview protocol, `HandoffFacts` and the manifest. Constraints are mesh data, not Parts or sidecar state, and are never rebound.
+  3. **MDPA export.** `mdpaWriter.ts` writes the constraints block, preserved per SubModelPart where a constraint's nodes all belong to one.
+  4. **Extension support for MPC.** Show slave–master links in the viewer (a toggle in the FE Mesh overlay), count them in the panel status line, and read them back when an `.mdpa` that carries constraints is opened, so the extension no longer silently drops them. The MCP tools report constraints as facts (`generate_mesh`, `export_mesh`, the handoff manifest).
+  5. **Honest refusals.** Every other export format has no constraint block: exporting a constrained mesh to `.msh`, VTK or the meshio++-bridged formats must warn that the constraints are lost, or refuse, never drop them silently. `compare_mesh_refinement` and quality checks state whether they include hanging nodes.
+- **Done when:** the probe passes; a graded all-hex octree of `block.stp` exports to MDPA with a constraints block whose patch test is exact; and the same file re-opens in the extension with the constraints shown and counted.
+- **Cross-repo:** the Kratos reading of the constraints block is VSCode-MDPA-Preview's and Kratos' concern; this repository owns generation, export and display. Name the other half when the item is admitted.
 
 #### 5. Platform probes {#platform-probes}
 
