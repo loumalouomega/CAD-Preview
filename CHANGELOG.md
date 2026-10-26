@@ -6,6 +6,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/); thi
 
 ## [Unreleased]
 
+## [3.30.0] - 2026-10-26
+
 ### Added
 
 - **`splitFace.projectDir`: split a face along a curve that does not lie on it (roadmap project-a-curve probe).** An optional non-zero direction parallel-projects the splitting edge(s) onto the face (`BRepProj_Projection_1(wire, face, dir)`) before `BRepFeat_SplitShape`; the projection is trimmed to the face. Probe: a line over a sphere r = 10 lands within 2e-15 of the surface, a circle over a cylinder r = 5 within 6e-8 (a line crossing a cylinder yields several pieces — all are used), and a floating segment over a box top splits it 6 → 7 faces at unchanged volume/area. `mcp:smoke` pins the block.stp case with an unprojected control. A standalone `projectCurve` op was not added — the projection only matters as the splitting tool. Probes `occt-project-curve.ts`, `occt-project-curve-enum.ts`.
@@ -1005,6 +1007,7 @@ This release republishes v1.9.0's full changelog (below) unchanged; v1.9.0 itsel
 
 - Initial release: read-only 3D preview for CAD and mesh files (STEP, IGES, BREP, STL, OBJ, PLY, glTF) inside a VS Code custom editor, using OpenCascade.js (OCCT WASM) in the extension host for B-rep formats and Three.js in the webview for rendering.
 
+[3.30.0]: https://github.com/loumalouomega/CAD-Preview/compare/v3.29.0...v3.30.0
 [3.29.0]: https://github.com/loumalouomega/CAD-Preview/compare/v3.28.0...v3.29.0
 [3.28.0]: https://github.com/loumalouomega/CAD-Preview/compare/v3.27.0...v3.28.0
 [3.27.0]: https://github.com/loumalouomega/CAD-Preview/compare/v3.26.0...v3.27.0
