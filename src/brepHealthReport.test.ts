@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { capIssues, MAX_REPORTED_ISSUES, statusNameTable, statusNames, summarizeBrepHealth, type BrepHealthReport } from "./brepHealthReport";
+import { capFreeBoundaries, capIssues, MAX_REPORTED_FREE_BOUNDARIES, MAX_REPORTED_ISSUES, statusNameTable, statusNames, summarizeBrepHealth, type BrepHealthReport } from "./brepHealthReport";
 
 const ENUM = {
   values: {},
@@ -30,10 +30,27 @@ describe("brepHealthReport", () => {
   });
 
   it("summarizes facts, never a pass/fail of its own", () => {
-    const base: BrepHealthReport = { valid: true, counters: null, openBoundaryEdgeCount: 0, solids: [], issues: [], issueCount: 0, analyzedSubshapes: 1, elapsedMs: 1 };
+    const base: BrepHealthReport = { valid: true, counters: null, openBoundaryEdgeCount: 0, freeBoundaries: null, freeBoundaryCount: null, solids: [], issues: [], issueCount: 0, analyzedSubshapes: 1, elapsedMs: 1 };
     expect(summarizeBrepHealth(base)).toBe("valid per BRepCheck");
     expect(summarizeBrepHealth({ ...base, valid: false, issueCount: 5, openBoundaryEdgeCount: 4 })).toBe(
       "INVALID per BRepCheck · 5 subshape issue(s) · 4 open-boundary edge(s)"
     );
+    expect(
+      summarizeBrepHealth({
+        ...base,
+        openBoundaryEdgeCount: 48,
+        freeBoundaries: [{ closed: true, edgeCount: 4, length: 8 }, { closed: false, edgeCount: 2, length: 3 }],
+        freeBoundaryCount: 2,
+        solids: [{ solidId: "solid-0", valid: true, shellCount: 1, openShellCount: 0, openBoundaryEdgeCount: 0, signedVolume: -5 }],
+      })
+    ).toBe("valid per BRepCheck · 48 open-boundary edge(s) · 2 free boundaries (1 closed) · 1 reversed solid(s)");
+  });
+
+  it("caps free boundaries with closed wires first", () => {
+    const wires = Array.from({ length: MAX_REPORTED_FREE_BOUNDARIES + 5 }, (_, i) => ({ closed: i % 2 === 1, edgeCount: 1, length: i }));
+    const capped = capFreeBoundaries(wires);
+    expect(capped).toHaveLength(MAX_REPORTED_FREE_BOUNDARIES);
+    expect(capped[0].closed).toBe(true);
+    expect(capFreeBoundaries(wires.slice(0, 2)).map((w) => w.closed)).toEqual([true, false]);
   });
 });

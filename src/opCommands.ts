@@ -1,5 +1,5 @@
 import { BREP_ONLY_OPS, type EditOpKind, type EditOp } from "./editOps";
-import { OP_CATALOG, allCatalogEntries, type PanelOpId } from "./webview/opCatalog";
+import { OP_CATALOG, AGENT_ONLY_OPS, allCatalogEntries, type PanelOpId } from "./webview/opCatalog";
 
 /**
  * Pure, host- AND webview-safe command vocabulary shared by the MCP tools and
@@ -40,7 +40,7 @@ export const OP_PARAM_DOCS: Record<EditOpKind, string> = {
   unifySameDomain: '{} (no parameters): merge adjacent faces and edges that lie on the same underlying surface/curve — e.g. the seam a boolean union leaves between coplanar faces — via ShapeUpgrade_UnifySameDomain. Acts on the whole model; a model with nothing to merge is left unchanged and reported as not applied. Renumbers face/edge ids (Parts are rebound or dropped, never repointed)',
   defeature: '{faces: faceId[] (>=1): faces to remove as recognized features (fillets, chamfers) via BRepAlgoAPI_Defeaturing; the solid heals behind them}',
   splitByPlane: '{targets: solidId[], planePoint?: [x,y,z], planeNormal?: [x,y,z], planeId?: string (plane-N — XOR with planePoint/planeNormal and midplaneFaces; cache may ride alongside), midplaneFaces?: [faceId, faceId] (XOR with planePoint/planeNormal), keep: "both"|"positive"|"negative"}',
-  splitFace: '{face: faceId, edgeIds: edgeId[] (>=1, on the face) | points: [[x,y,z],[x,y,z]] (straight segment, distinct — exactly one of edgeIds/points): splits the face into two regions along the splitting edge via BRepFeat_SplitShape; the edge must lie on the face and reach its boundary, else the op is skipped with a diagnostic. Renumbers face/edge ids (Parts/annotations rebind; a Part on a split half is dropped with a warning when its centroid no longer matches)}',
+  splitFace: '{face: faceId, edgeIds: edgeId[] (>=1, on the face) | points: [[x,y,z],[x,y,z]] (straight segment, distinct — exactly one of edgeIds/points), projectDir?: [x,y,z] (non-zero; parallel-projects the splitting edge(s) onto the face along it first via BRepProj_Projection, so a curve floating above/over a curved face still splits it): splits the face into two regions along the splitting edge via BRepFeat_SplitShape; the edge must lie on the face and reach its boundary, else the op is skipped with a diagnostic. Renumbers face/edge ids (Parts/annotations rebind; a Part on a split half is dropped with a warning when its centroid no longer matches)}',
   rib: '{spineEdges: edgeId[] (open wire, assembled in any order), dir: [x,y,z], thin: n>0 (required; symmetric — thinOuter must be absent or exactly thin/2), upTo: faceId (planar terminator — wall runs to its plane plus one thin of embed, then fuses), blendRadius?: n>=0 (junction blend; default thin/4; 0 = fuse only)}',
   wrap: '{profile: faceId (flat sketch face — face-only, no profileEdges form; holed profiles supported, e.g. a letter with a counter — each hole is cut out of the developed shell), target: "cylinder"|"cone", axisPoint: [x,y,z], axisDir: [x,y,z], radius: n>0, halfAngleDeg?: 0<n<90 (cone only, required; refused on cylinder), thickness: n>0 (total, symmetric about the developed surface), variant: "emboss"|"engrave"|"standalone", targets?: solidId[] (required for emboss/engrave, refused for standalone)}',
   section: '{targets: solidId[], planePoint?: [x,y,z], planeNormal?: [x,y,z], planeId?: string (plane-N — XOR; cache may ride alongside), midplaneFaces?: [faceId, faceId] (XOR)}',
@@ -79,7 +79,9 @@ export const OP_PARAM_DOCS: Record<EditOpKind, string> = {
   addHelix: '{center: [x,y,z] | "point-N" (base), axis: [x,y,z], radius: n>0, pitch: n>0, turns: n>0}',
   addSurfaceFromLines: '{edges: edgeId[] (a single connected loop, or several disjoint closed loops forming exactly ONE outer boundary plus its holes — e.g. a letter "O"\'s outer ring + inner ring build one holed face; a set spanning more than one outer loop is refused)}',
   addVolumeFromSurfaces: '{faces: faceId[] (must sew into a closed shell)}',
+  addSurfaceFilling: '{edges: edgeId[] (>=3 boundary edges forming one closed loop; the face is a smooth, generally non-planar patch interpolating them — approximate, not an exact analytic surface)}',
   addEdgeSlot: '{edge: edgeId, width: n>0}',
+  filletProfile: '{edges: [edgeId, edgeId] (two adjacent straight segments of one sketch wire, e.g. an addPolyline — they meet at the corner), radius: n>0 (arc fillet) XOR chamfer: n>0 (bevel; distance along edges[0]), chamfer2?: n>0 (distance along edges[1]; chamfer only)}. Trims both segments and inserts the arc/bevel inside the same wire, so an extrude afterwards has the analytic area; apply once per corner. Radius/chamfer must be shorter than the adjacent segments (skipped with a diagnostic otherwise); straight segments only',
   align: '{targets: solidId[], axis: "x"|"y"|"z", extent: "min"|"center"|"max", to: n}',
   patternLinear: '{targets: solidId[], direction: [x,y,z], spacing: n!=0, count: int>=2 (total instances, incl. original)}',
   patternCircular: '{targets: solidId[], axisPoint?: [x,y,z], axisDir?: [x,y,z], midaxisOf?: [faceId|edgeId, faceId|edgeId] (parallel cylinder axes or straight edges — XOR with axisPoint/axisDir), angleDeg: n, count: int>=2 (total instances, incl. original)}',
@@ -177,6 +179,7 @@ export function editDistance(a: string, b: string): number {
 export function allOpKinds(): EditOpKind[] {
   const kinds = new Set<EditOpKind>();
   for (const entry of allCatalogEntries()) for (const k of entry.kinds) kinds.add(k);
+  for (const k of AGENT_ONLY_OPS) kinds.add(k);
   return [...kinds];
 }
 
@@ -246,7 +249,7 @@ function buildCommandTable(): CommandRow[] {
   return rows;
 }
 
-/** One row per panel button (57 today) — locked to `allCatalogEntries()` by `opCommands.test.ts`. */
+/** One row per panel button (59 today) — locked to `allCatalogEntries()` by `opCommands.test.ts`. */
 export const COMMAND_TABLE: readonly CommandRow[] = buildCommandTable();
 
 const COMMAND_LOOKUP: ReadonlyMap<string, CommandRow> = (() => {

@@ -2611,6 +2611,7 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
               },
               boundaryLayers: result.boundaryLayers,
               octree: result.octree,
+              octreeMesh: result.octreeMesh,
             });
           });
         } catch (err) {
@@ -4748,7 +4749,7 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
       const r = result.report;
       const summary =
         `${r.numFaces} faces (${r.numPlane} plane, ${r.numCylinder} cylinder, ${r.numSphere} sphere, ` +
-        `${r.numCone} cone, ${r.numTorus} torus), volume ratio ${r.volumeRatio.toFixed(4)}, ` +
+        `${r.numCone} cone, ${r.numTorus} torus), volume ratio ${r.volumeRatio === null ? "n/a" : r.volumeRatio.toFixed(4)}, ` +
         `max deviation ${r.maxDeviation.toExponential(2)}`;
       if (r.valid) {
         post({ type: "status", text: `Fitted to CAD: ${summary} — saved to ${saveUri.fsPath}` });

@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { validateEditOp, type EditOp } from "./editOps";
-import { allCatalogEntries } from "./webview/opCatalog";
+import { AGENT_ONLY_OPS, allCatalogEntries } from "./webview/opCatalog";
 import {
   COMMAND_TABLE, OP_PARAM_DOCS, allOpKinds, findCommand, parseCommandLine, buildCommandOp, quoteSelTokens,
   completeCommands, nearestCommand, commandForOp, echoCommandText, completeEntityId, commandIsBrepOnly,
@@ -11,11 +11,11 @@ const NO_SEL: SelectionIds = { solid: [], face: [], edge: [], point: [] };
 const sel = (over: Partial<SelectionIds>): SelectionIds => ({ ...NO_SEL, ...over });
 
 describe("command table", () => {
-  it("has exactly one command per panel button (57), in catalog order", () => {
+  it("has exactly one command per panel button (59), in catalog order", () => {
     const entries = allCatalogEntries();
     expect(COMMAND_TABLE).toHaveLength(entries.length);
     expect(COMMAND_TABLE.map((r) => r.panelId)).toEqual(entries.map((e) => e.id));
-    expect(entries.length).toBe(57);
+    expect(entries.length).toBe(59);
   });
 
   it("every command maps to a documented op kind and is reachable by its own name", () => {
@@ -29,7 +29,7 @@ describe("command table", () => {
 
   it("covers every op kind the catalog can emit", () => {
     const covered = new Set(COMMAND_TABLE.map((r) => r.kind));
-    for (const kind of allOpKinds()) expect(covered.has(kind), kind).toBe(true);
+    for (const kind of allOpKinds()) if (!AGENT_ONLY_OPS.has(kind)) expect(covered.has(kind), kind).toBe(true);
   });
 
   it("types the three booleans as union / subtract / intersect over the one boolean kind", () => {
@@ -73,7 +73,7 @@ describe("parseCommandLine", () => {
 
   it("completes by prefix, alphabetically", () => {
     expect(completeCommands("add").length).toBeGreaterThan(20);
-    expect(completeCommands("fil")).toEqual(["fillet"]);
+    expect(completeCommands("fil")).toEqual(["fillet", "filletProfile", "fillSurface"]);
     expect(completeCommands("sub")).toEqual(["subtract"]);
   });
 });

@@ -369,7 +369,12 @@ function collectBucketForOp(oc: any, before: any, after: any, index: number, op:
           if (afterFaces[i].IsSame(profileFace)) { roles.startCap = [`face-${i}`]; break; }
         }
       }
-      if (kind === "extrude") {
+      // An open profile extruded without `thin` is a sheet: one produced face
+      // per segment and no caps, so the cap/side split below would mislabel a
+      // side as `endCap`. A closed edge set always adds two caps (n + 2).
+      const profileEdges = (op as { profileEdges?: string[] }).profileEdges;
+      const isSheet = !isThin && profileEdges !== undefined && producedIdx.length === profileEdges.length;
+      if (kind === "extrude" && !isSheet) {
         const [dx, dy, dz] = (op as { dir: Vec3 }).dir;
         const len = Math.hypot(dx, dy, dz) || 1;
         let bestIdx = -1;
@@ -495,6 +500,8 @@ export function applyOneOp(oc: any, shape: any, op: EditOp, cleanup: Array<{ del
       return addProfile(oc, shape, op, cleanup, fail, guideCollector);
     case "addEdgeSlot":
       return addEdgeSlot(oc, shape, op, cleanup, fail);
+    case "filletProfile":
+      return filletProfile(oc, shape, op, cleanup, fail, guideCollector);
     case "addPoint":
     case "addLine":
     case "addArc":
@@ -507,6 +514,8 @@ export function applyOneOp(oc: any, shape: any, op: EditOp, cleanup: Array<{ del
       return addWireframePrimitive(oc, shape, op, cleanup, fail, guideCollector, pointRefSink);
     case "addSurfaceFromLines":
       return addSurfaceFromLines(oc, shape, op, cleanup, fail, guideCollector);
+    case "addSurfaceFilling":
+      return addSurfaceFilling(oc, shape, op, cleanup, fail, guideCollector);
     case "addVolumeFromSurfaces":
       return addVolumeFromSurfaces(oc, shape, op, cleanup, fail, guideCollector);
     case "align":
@@ -1793,6 +1802,17 @@ function featureProfileFaces(oc: any, shape: any, op: EditOp & { profile?: strin
   const section = resolveProfileSection(oc, shape, op.profile, op.profileEdges, cleanup, fail);
   if (!section) return null;
   const pick = op.pick;
+  // An open wire with no `thin` encloses no area: extrude/revolve sweep the
+  // wire itself into a sheet (a SHELL, one face per segment — probed live),
+  // so the builder is handed the wire instead of a face. Sweep/loft still
+  // need a cross-section and keep refusing below.
+  if (!section.closed && !thinSpecOf(op) && (op.op === "extrude" || op.op === "revolve") && (pick === undefined || pick === "outer")) {
+    if ((op as { upToFace?: string }).upToFace !== undefined) {
+      fail?.(`up-to-face extrusion needs a closed planar profile, and ${section.label} is an open wire`, "give an explicit `length` to extrude an open profile into a surface");
+      return null;
+    }
+    return [section.wire];
+  }
   if (thinSpecOf(op)) {
     if (pick !== undefined) { fail?.(`pick cannot combine with thin — thin walls build from the outer boundary alone`, "drop `pick` (the default already consumes the outer boundary) or drop `thin`"); return null; }
     const face = profileFaceFor(oc, section, op, cleanup, fail);
@@ -3577,6 +3597,135 @@ function addEdgeSlot(oc: any, shape: any, op: Extract<EditOp, { op: "addEdgeSlot
 }
 
 /**
+ * Rounds or bevels one corner of a sketch wire. Probed live
+ * (`occt-profile-fillet.ts`, `occt-profile-fillet-replace.ts`): the plane comes
+ * from the two segments (`gp_Pln_3(corner, normal)`, so a tilted sketch works),
+ * `ChFi2d_FilletAPI_3(e1, e2, pln).Perform(r)` + `Result(corner, e1Out, e2Out, -1)`
+ * gives the arc and the trimmed neighbours, and `ChFi2d_ChamferAPI_3(e1, e2)` +
+ * `Perform()` + `Result(e1Out, e2Out, d1, d2)` the bevel. The wire is rebuilt
+ * with `MakeWire_1` + `Add_1` and swapped into the compound in place. Radii and
+ * distances are validated BEFORE the call: an oversize fillet is only safe on a
+ * planar corner, and a skip must leave the shape untouched.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function filletProfile(oc: any, shape: any, op: Extract<EditOp, { op: "filletProfile" }>, cleanup: Array<{ delete(): void }>, fail: OutcomeFail | undefined, guideCollector?: GuideCollector): any {
+  const keep = <T extends { delete(): void }>(h: T): T => { cleanup.push(h); return h; };
+  try {
+    const all = collectEdges(oc, shape, cleanup);
+    const picked = op.edges.map((id) => all[edgeIndex(id)]);
+    if (picked.some((e) => !e)) { fail?.(`corner edges ${op.edges.join(", ")} did not both resolve`, "the ids may have been renumbered by an earlier topology-changing op — re-inspect the model"); return shape; }
+    if (picked.some((e) => isGuideHandle(e, guideCollector))) { fail?.("a corner edge is construction (guide) geometry — guide entities are excluded from feature resolution"); return shape; }
+    const ends = (edge: any): [Vec3, Vec3] | null => {
+      const curve = keep(new oc.BRepAdaptor_Curve_2(edge));
+      if (curve.GetType() !== oc.GeomAbs_CurveType.GeomAbs_Line) return null;
+      const a = keep(curve.Value(curve.FirstParameter()));
+      const b = keep(curve.Value(curve.LastParameter()));
+      return [[a.X(), a.Y(), a.Z()], [b.X(), b.Y(), b.Z()]];
+    };
+    const e0 = ends(picked[0]);
+    const e1 = ends(picked[1]);
+    if (!e0 || !e1) { fail?.("filletProfile rounds a corner between two straight segments", "a curved neighbour is not supported — fillet the other corners, or sketch the curve after rounding"); return shape; }
+    const dist = (p: Vec3, q: Vec3) => Math.hypot(p[0] - q[0], p[1] - q[1], p[2] - q[2]);
+    const TOL = 1e-6;
+    let corner: Vec3 | null = null;
+    let far0: Vec3 = e0[1];
+    let far1: Vec3 = e1[1];
+    for (const [i, p] of e0.entries()) {
+      for (const [j, q] of e1.entries()) {
+        if (!corner && dist(p, q) < TOL) { corner = p; far0 = e0[1 - i]; far1 = e1[1 - j]; }
+      }
+    }
+    if (!corner) { fail?.(`corner edges ${op.edges.join(", ")} do not meet at a shared endpoint`, "pick two segments that are adjacent in the sketch"); return shape; }
+    const d0: Vec3 = [far0[0] - corner[0], far0[1] - corner[1], far0[2] - corner[2]];
+    const d1: Vec3 = [far1[0] - corner[0], far1[1] - corner[1], far1[2] - corner[2]];
+    const len0 = Math.hypot(...d0);
+    const len1 = Math.hypot(...d1);
+    const nx = d0[1] * d1[2] - d0[2] * d1[1];
+    const ny = d0[2] * d1[0] - d0[0] * d1[2];
+    const nz = d0[0] * d1[1] - d0[1] * d1[0];
+    const nLen = Math.hypot(nx, ny, nz);
+    if (!(nLen > 1e-9 * len0 * len1)) { fail?.("the two corner segments are collinear — there is no corner to round"); return shape; }
+    const margin = 1 - 1e-6; // a trim that eats a whole segment would leave a zero-length edge
+    if (op.radius !== undefined) {
+      const cosA = (d0[0] * d1[0] + d0[1] * d1[1] + d0[2] * d1[2]) / (len0 * len1);
+      const half = Math.acos(Math.max(-1, Math.min(1, cosA))) / 2; // half the interior angle
+      const tangent = op.radius / Math.tan(half);
+      if (!(tangent < Math.min(len0, len1) * margin)) {
+        fail?.(`radius ${op.radius} does not fit this corner — it needs ${tangent.toFixed(4)} of each segment but the shorter one is ${Math.min(len0, len1).toFixed(4)}`, "use a smaller radius, or round a corner between longer segments");
+        return shape;
+      }
+    } else {
+      const c0 = op.chamfer as number;
+      const c1 = op.chamfer2 ?? c0;
+      if (!(c0 < len0 * margin) || !(c1 < len1 * margin)) {
+        fail?.(`chamfer ${c0}/${c1} does not fit this corner — the segments are ${len0.toFixed(4)} and ${len1.toFixed(4)} long`, "use shorter chamfer distances");
+        return shape;
+      }
+    }
+    const pl = keep(new oc.gp_Pln_3(keep(pnt(oc, corner)), keep(dir(oc, [nx / nLen, ny / nLen, nz / nLen]))));
+    const cornerPnt = keep(pnt(oc, corner));
+    const t0 = keep(oc.TopoDS.Edge_1(picked[0]));
+    const t1 = keep(oc.TopoDS.Edge_1(picked[1]));
+    const out0 = keep(new oc.TopoDS_Edge());
+    const out1 = keep(new oc.TopoDS_Edge());
+    let join: any;
+    if (op.radius !== undefined) {
+      const api = keep(new oc.ChFi2d_FilletAPI_3(t0, t1, pl));
+      if (!api.Perform(op.radius)) { fail?.(`the kernel could not round this corner at radius ${op.radius}`, "try a smaller radius"); return shape; }
+      join = keep(api.Result(cornerPnt, out0, out1, -1));
+    } else {
+      const api = keep(new oc.ChFi2d_ChamferAPI_3(t0, t1));
+      if (!api.Perform()) { fail?.("the kernel could not chamfer this corner"); return shape; }
+      join = keep(api.Result(out0, out1, op.chamfer as number, op.chamfer2 ?? (op.chamfer as number)));
+    }
+    if (!join || join.IsNull()) { fail?.("the corner builder returned no edge"); return shape; }
+
+    // The wire that holds both corner edges, and its other edges in order.
+    const wireEx = keep(new oc.TopExp_Explorer_2(shape, oc.TopAbs_ShapeEnum.TopAbs_WIRE, oc.TopAbs_ShapeEnum.TopAbs_SHAPE));
+    let target: any = null;
+    let rest: any[] = [];
+    for (; wireEx.More() && !target; wireEx.Next()) {
+      const w = keep(oc.TopoDS.Wire_1(wireEx.Current()));
+      const edgesOf: any[] = [];
+      const ex = keep(new oc.TopExp_Explorer_2(w, oc.TopAbs_ShapeEnum.TopAbs_EDGE, oc.TopAbs_ShapeEnum.TopAbs_SHAPE));
+      for (; ex.More(); ex.Next()) edgesOf.push(keep(oc.TopoDS.Edge_1(ex.Current())));
+      if (picked.every((p) => edgesOf.some((e) => e.IsSame(p)))) {
+        target = w;
+        rest = edgesOf.filter((e) => !picked.some((p) => e.IsSame(p)));
+      }
+    }
+    if (!target) { fail?.("the corner edges are not both in one free wire", "filletProfile edits a sketch polyline — a face or solid edge needs `fillet`/`chamfer` instead"); return shape; }
+    const mkWire = keep(new oc.BRepBuilderAPI_MakeWire_1());
+    for (const e of [out0, join, out1, ...rest]) mkWire.Add_1(e);
+    if (!mkWire.IsDone()) { fail?.("the rounded wire did not reconnect"); return shape; }
+    const newWire = keep(mkWire.Wire());
+
+    // Rebuild the compound tree with the new wire swapped in. Only compounds
+    // are descended; a wire inside a face or solid is not a free sketch.
+    const builder = keep(new oc.BRep_Builder());
+    let swapped = false;
+    const rebuild = (parent: any): any => {
+      const comp = keep(new oc.TopoDS_Compound());
+      builder.MakeCompound(comp);
+      const it = keep(new oc.TopoDS_Iterator_2(parent, true, true));
+      for (; it.More(); it.Next()) {
+        const child = keep(it.Value());
+        if (child.IsSame(target)) { builder.Add(comp, newWire); swapped = true; }
+        else if (child.ShapeType() === oc.TopAbs_ShapeEnum.TopAbs_COMPOUND) builder.Add(comp, rebuild(child));
+        else builder.Add(comp, child);
+      }
+      return comp;
+    };
+    const result = rebuild(shape);
+    if (!swapped) { fail?.("the corner wire is inside a face or solid, not a free sketch", "filletProfile edits a sketch polyline — use `fillet`/`chamfer` on solids"); return shape; }
+    return result;
+  } catch {
+    fail?.("filletProfile threw");
+    return shape;
+  }
+}
+
+/**
  * Wireframe primitive creation (Point/Line/Arc): builds a bare `TopoDS_Vertex`
  * or `TopoDS_Edge` — no existing operands, no thickness — and **appends** it,
  * same non-destructive `compound(existing shape + new vertex/edge)` pattern as
@@ -3884,6 +4033,50 @@ function addSurfaceFromLines(oc: any, shape: any, op: Extract<EditOp, { op: "add
   builder.Add(comp, shape);
   builder.Add(comp, face);
   return comp;
+}
+
+/**
+ * `addSurfaceFilling`: a smooth, generally non-planar face spanning a closed
+ * loop of picked edges (`BRepOffsetAPI_MakeFilling`, probe
+ * `scripts/probe/examples/occt-filling.ts`). Appended like `addSurfaceFromLines`
+ * (a free face under "Sketches"). The patch is an approximation: on a quarter
+ * cylinder boundary the face area is within 0.2 % and the surface within 0.7 %
+ * of the radius, so it is never presented as an exact analytic surface.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function addSurfaceFilling(oc: any, shape: any, op: Extract<EditOp, { op: "addSurfaceFilling" }>, cleanup: Array<{ delete(): void }>, fail?: OutcomeFail, guideCollector?: GuideCollector): any {
+  try {
+    const edges = collectEdges(oc, shape, cleanup);
+    const picked: any[] = [];
+    for (const id of op.edges) {
+      const e = edges[edgeIndex(id)];
+      if (!e) { fail?.(`edge ${id} no longer exists`, "re-pick the boundary edges"); return shape; }
+      if (guideCollector && isGuideHandle(e, guideCollector)) { fail?.(`edge ${id} is construction (guide) geometry — guide entities are excluded from surface resolution`); return shape; }
+      picked.push(e);
+    }
+    const mf = new oc.BRepOffsetAPI_MakeFilling(3, 15, 2, false, 1e-5, 1e-4, 1e-2, 0.1, 8, 9);
+    cleanup.push(mf);
+    for (const e of picked) mf.Add_1(oc.TopoDS.Edge_1(e), oc.GeomAbs_Shape.GeomAbs_C0, true);
+    mf.Build();
+    if (!mf.IsDone()) {
+      fail?.("the selected edges could not be filled", "pick a connected, closed loop of 3 or more edges");
+      return shape;
+    }
+    const face = mf.Shape();
+    cleanup.push(face);
+    if (face.IsNull()) { fail?.("the selected edges could not be filled", "pick a connected, closed loop of 3 or more edges"); return shape; }
+    const comp = new oc.TopoDS_Compound();
+    cleanup.push(comp);
+    const builder = new oc.BRep_Builder();
+    cleanup.push(builder);
+    builder.MakeCompound(comp);
+    builder.Add(comp, shape);
+    builder.Add(comp, face);
+    return comp;
+  } catch (err) {
+    fail?.(`addSurfaceFilling threw (${err instanceof Error ? err.message : String(err)})`.slice(0, 160), "the edges must form one closed loop");
+    return shape;
+  }
 }
 
 /**
@@ -4707,6 +4900,32 @@ function unifySameDomainShape(oc: any, shape: any, cleanup: Array<{ delete(): vo
  * the face, or may not reach the face boundary) rather than certifying a
  * no-op split.
  */
+/**
+ * Parallel-projects each edge onto `face` along `direction` with
+ * `BRepProj_Projection_1(wire, face, gp_Dir)` (probe 2026-10-26): the result is
+ * trimmed to the face and lies on its surface (sphere deviation 2e-15, cylinder
+ * 6e-8). A line over a cylinder can yield several pieces, so every edge of the
+ * result is returned. An edge that projects to nothing contributes nothing.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function projectEdgesOntoFace(oc: any, edges: any[], face: any, direction: Vec3, cleanup: Array<{ delete(): void }>): any[] {
+  const keep = <T extends { delete(): void }>(h: T): T => { cleanup.push(h); return h; };
+  const d = keep(dir(oc, direction));
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const out: any[] = [];
+  for (const e of edges) {
+    const mw = keep(new oc.BRepBuilderAPI_MakeWire_1());
+    mw.Add_1(e);
+    const wire = keep(mw.Wire());
+    const proj = keep(new oc.BRepProj_Projection_1(wire, face, d));
+    if (!proj.IsDone()) continue;
+    const res = keep(proj.Shape());
+    const ex = keep(new oc.TopExp_Explorer_2(res, oc.TopAbs_ShapeEnum.TopAbs_EDGE, oc.TopAbs_ShapeEnum.TopAbs_SHAPE));
+    for (; ex.More(); ex.Next()) out.push(keep(oc.TopoDS.Edge_1(ex.Current())));
+  }
+  return out;
+}
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function splitFaceByEdge(oc: any, shape: any, op: Extract<EditOp, { op: "splitFace" }>, cleanup: Array<{ delete(): void }>, fail?: OutcomeFail): any {
   const keep = <T extends { delete(): void }>(h: T): T => { cleanup.push(h); return h; };
@@ -4752,6 +4971,17 @@ function splitFaceByEdge(oc: any, shape: any, op: Extract<EditOp, { op: "splitFa
     } else {
       fail?.("splitFace needs edgeIds or points — one splitting edge, exactly one form");
       return shape;
+    }
+    if (op.projectDir !== undefined) {
+      const projected = projectEdgesOntoFace(oc, edges, target, op.projectDir, cleanup);
+      if (projected.length === 0) {
+        fail?.(
+          "projecting the splitting edge onto the face produced no edges",
+          "the edge must lie over the face along projectDir (a parallel projection) — check the direction"
+        );
+        return shape;
+      }
+      edges = projected;
     }
     const before = faces.length;
     const split = keep(new oc.BRepFeat_SplitShape_2(shape));

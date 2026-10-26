@@ -5,6 +5,7 @@ import { buildEntityReferenceIndex, QUERYABLE_PANEL_FORMS } from "./opCatalog";
 import { hoverContent, inspectorContent, summaryLine } from "./entityExplain";
 import { formatEntityReferences, producingBucketFor } from "./entityReference";
 import { UI_GLYPHS } from "../uiGlyphs";
+import { isTextEntryTarget, viewForKey } from "../viewShortcuts";
 import { MacrosPanel } from "./macrosPanel";
 import { selectionGroupsFor } from "./selectionGroups";
 import { loadMeshFromUrl } from "./meshLoaders";
@@ -428,7 +429,7 @@ function renderPlanesList(): void {
 
     const use = document.createElement("button");
     use.textContent = "Use";
-    use.title = "Clip along this plane";
+    use.title = "Cut along this plane";
     use.addEventListener("click", () => {
       if (!planesClipHandle) return;
       planesClipHandle.applyDerivedPlane(
@@ -1332,6 +1333,14 @@ const editsPanel = new EditsPanel(document.getElementById("edits-panel")!, {
     editsModel.push({ op: "addSurfaceFromLines", edges });
     setStatus("");
   },
+  onBuildSurfaceFilling: () => {
+    const edges = selection.list().filter((e) => e.entityType === "line").map((e) => e.entityId);
+    if (edges.length < 3) { setStatus("Select 3+ edges (Line mode) forming a closed boundary loop.", true); return; }
+    const guideEdge = edges.find((e) => guideEntityIds.has(e));
+    if (guideEdge) { setStatus(`${guideEdge} is guide (construction) geometry — guides are excluded from surface resolution.`, true); return; }
+    editsModel.push({ op: "addSurfaceFilling", edges });
+    setStatus("");
+  },
   onBuildVolumeFromSurfaces: () => {
     const faces = selection.list().filter((e) => e.entityType === "surface").map((e) => e.entityId);
     if (faces.length < 4) {
@@ -1348,6 +1357,23 @@ const editsPanel = new EditsPanel(document.getElementById("edits-panel")!, {
     if (edges.length !== 1) { setStatus("Select exactly one edge (Line mode) for the slot.", true); return; }
     if (!(width > 0)) { setStatus("Slot width must be positive.", true); return; }
     editsModel.push({ op: "addEdgeSlot", edge: edges[0], width });
+    setStatus("");
+  },
+  onBuildFilletProfile: (radius, chamfer, chamfer2) => {
+    const edges = selection.list().filter((e) => e.entityType === "line").map((e) => e.entityId);
+    if (edges.length !== 2) { setStatus("Select exactly two adjacent segments (Line mode) of one sketch.", true); return; }
+    const guide = edges.find((e) => guideEntityIds.has(e));
+    if (guide) { setStatus(`${guide} is guide (construction) geometry — guides are excluded from profile fillets.`, true); return; }
+    if (chamfer === undefined && chamfer2 !== undefined) { setStatus("Distance 2 needs a Distance (chamfer) value.", true); return; }
+    if (chamfer !== undefined && radius !== undefined) { setStatus("Give a Radius (round) or a Distance (chamfer), not both.", true); return; }
+    if (chamfer === undefined && radius === undefined) { setStatus("Enter a Radius (round) or a Distance (chamfer).", true); return; }
+    if ((chamfer !== undefined && !(chamfer > 0)) || (radius !== undefined && !(radius > 0)) || (chamfer2 !== undefined && !(chamfer2 > 0))) {
+      setStatus("Enter positive values.", true); return;
+    }
+    const op: EditOp = chamfer !== undefined
+      ? { op: "filletProfile", edges: [edges[0], edges[1]], chamfer, ...(chamfer2 !== undefined ? { chamfer2 } : {}) }
+      : { op: "filletProfile", edges: [edges[0], edges[1]], radius: radius! };
+    editsModel.push(op);
     setStatus("");
   },
   onFormChanged: updateGizmoForForm,
@@ -2580,6 +2606,8 @@ function tintForPanelOp(id: PanelOpId, wrapVariant?: "emboss" | "engrave" | "sta
     case "buildSurface":
     case "buildVolume":
     case "edgeSlot":
+    case "filletProfile":
+    case "fillSurface":
       return "ref";
     default:
       return undefined; // mirror, draft, align, fillet, chamfer — neutral
@@ -3244,6 +3272,10 @@ function buildOpForPanelCore(id: PanelOpId, rawDraft: Record<string, unknown>): 
       if (selEdges.length < 3) return { error: "Select 3+ lines (Line mode) forming a closed loop." };
       if (selEdges.some((e) => guideEntityIds.has(e))) return { error: "Guide (construction) edges are excluded from surface resolution." };
       return { op: { op: "addSurfaceFromLines", edges: selEdges } };
+    case "fillSurface":
+      if (selEdges.length < 3) return { error: "Select 3+ edges (Line mode) forming a closed boundary loop." };
+      if (selEdges.some((e) => guideEntityIds.has(e))) return { error: "Guide (construction) edges are excluded from surface resolution." };
+      return { op: { op: "addSurfaceFilling", edges: selEdges } };
     case "buildVolume":
       if (selFaces.length < 4) return { error: "Select 4+ surfaces (Surf mode) forming a closed shell." };
       if (selFaces.some((f) => guideEntityIds.has(f))) return { error: "Guide (construction) faces are excluded from volume resolution." };
@@ -4050,6 +4082,15 @@ function setupSelectionControls(): void {
   );
   document.addEventListener("keydown", (e) => {
     if (e.key === "Escape") closeMenu();
+  });
+  // View snaps (1-6 faces, i isometric). Typing in any input — including the
+  // command bar, which also stops propagation — must never move the camera.
+  document.addEventListener("keydown", (e) => {
+    if (e.defaultPrevented || isTextEntryTarget(e.target as HTMLElement | null)) return;
+    const view = viewForKey(e);
+    if (!view) return;
+    // The view-change hook already schedules the render.
+    viewer.setViewDirection(new THREE.Vector3(...view.direction));
   });
 }
 
@@ -4974,8 +5015,8 @@ function setupClippingControls(): ClippingControlsHandle {
     scheduleViewSave();
     setStatus(
       offsetFrac <= -0.999
-        ? `Clip normal from ${label} — drag the offset slider to cut.`
-        : `Clipping along ${label}.`
+        ? `Cut plane normal from ${label} — drag the offset slider to cut.`
+        : `Cutting along ${label}.`
     );
   };
 
@@ -4989,16 +5030,16 @@ function setupClippingControls(): ClippingControlsHandle {
       const ok = sourceKind === "brep" && faces.length === 1 && picked.length === 1;
       faceBtn.disabled = !ok;
       faceBtn.title = ok
-        ? `Clip along ${faces[0].entityId}`
+        ? `Cut along ${faces[0].entityId}`
         : sourceKind === "brep"
-          ? "Select exactly one planar face to clip along it"
-          : "Clipping along a face needs a B-rep source";
+          ? "Select exactly one planar face to cut along it"
+          : "Cutting along a face needs a B-rep source";
     }
     if (pointsBtn) {
       // Self-gating for mesh sources: they build no `point-N` sprites at all.
       const ok = points.length === 3 && picked.length === 3;
       pointsBtn.disabled = !ok;
-      pointsBtn.title = ok ? "Clip through the three selected points" : "Select exactly three points";
+      pointsBtn.title = ok ? "Cut through the three selected points" : "Select exactly three points";
     }
   };
 
@@ -6633,6 +6674,7 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
         worstElements: msg.worstElements,
         boundaryLayers: msg.boundaryLayers,
         octree: msg.octree,
+        octreeMesh: msg.octreeMesh,
       });
       break;
 

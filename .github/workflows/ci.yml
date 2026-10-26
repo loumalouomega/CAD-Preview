@@ -48,6 +48,11 @@ jobs:
       - name: Docs build (dead-link check)
         run: npm run docs:build
 
+      # Informational: prints UI token / icon drift against VSCode-MDPA-Preview.
+      # Exits 0 on drift or when the sibling is unreachable.
+      - name: UI drift check (shared design system)
+        run: npm run ui:drift
+
       # The webview and the VS Code host API used to have ZERO automated
       # coverage — every webview feature was verified by a manual F5 session or
       # not at all. These two steps are that gap's automated half; see

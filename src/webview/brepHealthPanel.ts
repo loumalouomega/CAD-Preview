@@ -82,6 +82,12 @@ export class BrepHealthPanel {
       }
     }
     this.row(overview, "Open-boundary edges", report.openBoundaryEdgeCount == null ? "—" : String(report.openBoundaryEdgeCount));
+    if (report.freeBoundaries && report.freeBoundaryCount) {
+      const closed = report.freeBoundaries.filter((w) => w.closed).length;
+      this.row(overview, "Free boundaries (closed)", `${report.freeBoundaryCount} (${closed})`);
+      const lengths = report.freeBoundaries.slice(0, 5).map((w) => `${w.length.toFixed(2)} mm`).join(", ");
+      this.row(overview, "Boundary lengths", report.freeBoundaryCount > 5 ? `${lengths}, …` : lengths);
+    }
     this.row(overview, "Subshapes checked", `${report.analyzedSubshapes} in ${(report.elapsedMs / 1000).toFixed(1)} s`);
     this.body.appendChild(overview);
 
@@ -94,6 +100,7 @@ export class BrepHealthPanel {
       group.appendChild(title);
       this.row(group, "Shells (open)", `${s.shellCount} (${s.openShellCount})`);
       this.row(group, "Open-boundary edges", s.openBoundaryEdgeCount == null ? "—" : String(s.openBoundaryEdgeCount));
+      this.row(group, "Signed volume", s.signedVolume == null ? "—" : `${s.signedVolume.toFixed(3)} mm³${s.signedVolume < 0 ? " (reversed)" : ""}`);
       this.body.appendChild(group);
     }
 

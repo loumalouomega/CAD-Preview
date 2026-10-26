@@ -15,6 +15,10 @@ describe("segmentMeshSurface option validation", () => {
     await expect(segmentMeshSurface(bytes, "stl", { types: ["blob" as never] })).rejects.toThrow(/Unknown primitive type/);
     await expect(segmentMeshSurface(bytes, "stl", { types: [] })).rejects.toThrow(/at least one/);
   });
+  it("rejects an unknown segmentation method and a non-positive primitive tolerance", async () => {
+    await expect(segmentMeshSurface(bytes, "stl", { method: "curvature" as never })).rejects.toThrow(/method must be/);
+    await expect(segmentMeshSurface(bytes, "stl", { method: "primitive", primitiveTolerance: 0 })).rejects.toThrow(/primitiveTolerance/);
+  });
   it("lists the five kinds in meshio++'s fit order", () => {
     expect([...FIT_PRIMITIVE_TYPES]).toEqual(["plane", "sphere", "cylinder", "cone", "torus"]);
   });

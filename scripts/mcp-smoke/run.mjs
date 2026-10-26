@@ -352,8 +352,8 @@ try {
   assert(capsText.length > 100, "resources/read cad-preview://capabilities returns JSON text");
 
   const tools = (await request("tools/list", {})).tools.map((t) => t.name);
-  assert(tools.length === 82, `tools/list exposes 82 tools (got ${tools.length}: ${tools.join(", ")})`);
-  for (const t of ["check_draft", "check_printability", "list_workspace_models", "check_interference_all", "generate_bom", "generate_hole_table", "render_ops_prefix", "check_tolerance", "inspect_meshio_fields", "pin_annotation", "import_svg", "save_mesh_preset", "list_mesh_presets", "apply_mesh_preset", "compare_mesh_refinement", "export_tessellated_stl", "estimate_mesh_budget", "analyze_passages", "measure_mesh_deviation", "save_sheet_template", "list_sheet_templates", "batch_export", "check_handoff_manifest", "generate_prep_report", "job_status", "job_cancel", "check_brep_health", "list_scad_parameters", "convert_scad", "list_layers", "set_layer", "assign_layer", "segment_mesh_surface", "fit_mesh_to_cad", "iga_sample", "iga_refine", "iga_evaluate", "check_mesh_quality"]) {
+  assert(tools.length === 83, `tools/list exposes 83 tools (got ${tools.length}: ${tools.join(", ")})`);
+  for (const t of ["check_draft", "check_printability", "list_workspace_models", "check_interference_all", "generate_bom", "generate_hole_table", "render_ops_prefix", "check_tolerance", "inspect_meshio_fields", "pin_annotation", "import_svg", "save_mesh_preset", "list_mesh_presets", "apply_mesh_preset", "compare_mesh_refinement", "export_tessellated_stl", "estimate_mesh_budget", "analyze_passages", "measure_mesh_deviation", "save_sheet_template", "list_sheet_templates", "batch_export", "check_handoff_manifest", "generate_prep_report", "job_status", "job_cancel", "check_brep_health", "list_scad_parameters", "convert_scad", "list_layers", "set_layer", "assign_layer", "segment_mesh_surface", "fit_mesh_to_cad", "mesh_cad_surface", "iga_sample", "iga_refine", "iga_evaluate", "check_mesh_quality"]) {
     assert(tools.includes(t), `tools/list exposes ${t}`);
   }
 
@@ -2909,6 +2909,16 @@ try {
     pistonHealth.report.counters.solids === 0 && pistonHealth.report.counters.shells === 7 && pistonHealth.report.openBoundaryEdgeCount === 48,
     `check_brep_health(piston.stp): 7 open shells, 48 open-boundary edges (got ${JSON.stringify({ c: pistonHealth.report.counters, o: pistonHealth.report.openBoundaryEdgeCount })})`
   );
+  const pistonWires = pistonHealth.report.freeBoundaries ?? [];
+  assert(
+    pistonHealth.report.freeBoundaryCount === 14 && pistonWires.length === 14 && pistonWires.every((w) => w.closed && w.length > 0) &&
+      pistonWires.reduce((n, w) => n + w.edgeCount, 0) === 48,
+    `check_brep_health(piston.stp): the 48 open edges group into 14 closed wires (got ${JSON.stringify({ n: pistonHealth.report.freeBoundaryCount, e: pistonWires.reduce((n, w) => n + w.edgeCount, 0) })})`
+  );
+  assert(
+    bullHealth.report.freeBoundaryCount === 0 && bullHealth.report.solids.every((sd) => sd.signedVolume > 0),
+    `check_brep_health(bull + edits): no free boundaries, positive signed volumes (got ${JSON.stringify(bullHealth.report.solids.map((sd) => sd.signedVolume))})`
+  );
   const meshBrepHealth = await call("check_brep_health", { path: cubeStl });
   assert(
     meshBrepHealth.supported === false && /check_mesh_health/.test(meshBrepHealth.warnings[0] ?? ""),
@@ -2959,6 +2969,57 @@ try {
     badFitExtension.error && /\.step\/\.stp/.test(badFitExtension.error),
     `fit_mesh_to_cad rejects a non-STEP outputPath (got: ${badFitExtension.error})`
   );
+  // meshio++ 17.9-17.12 knobs: segment `method:"primitive"` + `refine`, and
+  // fit_mesh_to_cad's backend / refineSegmentation / faceDeviation. The cube
+  // is six planes whichever way it is cut, so the analytic expectation holds.
+  const cubeSegRefined = await call("segment_mesh_surface", { path: cubeStl, method: "primitive", refine: true });
+  assert(
+    cubeSegRefined.numPatches === 6 && cubeSegRefined.fitCounts.plane === 6 && cubeSegRefined.refinement &&
+      cubeSegRefined.refinement.numPrimitive === 6 && cubeSegRefined.refinement.explainedAreaFraction === 1,
+    `segment_mesh_surface(cube.stl, primitive + refine): 6 planes, all explained, with a refinement block (got ${JSON.stringify({ n: cubeSegRefined.numPatches, f: cubeSegRefined.fitCounts, r: cubeSegRefined.refinement })})`
+  );
+  const cubeFitNative = await call("fit_mesh_to_cad", { path: cubeStl, outputPath: path.join(dir, "cube-native.step"), backend: "native" });
+  assert(
+    cubeFitNative.backend === "native" && cubeFitNative.brepChecked === false && cubeFitNative.volume === null && cubeFitNative.volumeRatio === null &&
+      cubeFitNative.numPlane === 6 && cubeFitNative.closed === true,
+    `fit_mesh_to_cad(backend native): 6 planes, closed, and NO volume / B-rep check claimed (got ${JSON.stringify({ b: cubeFitNative.backend, c: cubeFitNative.brepChecked, v: cubeFitNative.volume, p: cubeFitNative.numPlane })})`
+  );
+  const cubeFitDev = await call("fit_mesh_to_cad", {
+    path: cubeStl, outputPath: path.join(dir, "cube-dev.step"), backend: "occt", refineSegmentation: true, faceDeviation: true,
+  });
+  assert(
+    cubeFitDev.backend === "occt" && cubeFitDev.brepChecked === true && cubeFitDev.refined === true && cubeFitDev.faceHausdorffMax !== null &&
+      cubeFitDev.faceHausdorffMax < 1e-6 && Math.abs(cubeFitDev.volume - 1000) < 1,
+    `fit_mesh_to_cad(occt + refineSegmentation + faceDeviation): refined, B-rep checked, ~0 two-sided deviation (got ${JSON.stringify({ r: cubeFitDev.refined, h: cubeFitDev.faceHausdorffMax, v: cubeFitDev.volume })})`
+  );
+  const nativeDev = await callTolerant("fit_mesh_to_cad", { path: cubeStl, outputPath: path.join(dir, "cube-nd.step"), backend: "native", faceDeviation: true });
+  assert(nativeDev.error && /faceDeviation needs the OpenCASCADE backend/.test(nativeDev.error), `fit_mesh_to_cad refuses faceDeviation on the native backend (got: ${nativeDev.error})`);
+
+  // mesh_cad_surface: a kernel-free conforming skin of the B-rep. block.stp
+  // (3x4x5 = 60) closes with no open edge and encloses exactly its volume;
+  // the written STL is re-read by the independent mshCellVolumes-style sum.
+  const mcsBlock = path.join(dir, "mcs-block.stp");
+  fs.copyFileSync(path.join(ROOT, "examples", "STP", "block.stp"), mcsBlock);
+  const mcsMsh = path.join(dir, "mcs-block.msh");
+  const mcs = await call("mesh_cad_surface", { path: mcsBlock, outputPath: mcsMsh, targetSize: 0.5 });
+  assert(
+    mcs.supported === true && mcs.numFaces === 6 && mcs.numFailed === 0 && mcs.numOpenEdges === 0 && mcs.numNonManifoldEdges === 0 &&
+      mcs.numMisorientedEdges === 0 && mcs.numTriangles === 888,
+    `mesh_cad_surface(block.stp @0.5): 6 faces, closed and consistently wound, the probe's 888 triangles (got ${JSON.stringify({ f: mcs.numFaces, o: mcs.numOpenEdges, t: mcs.numTriangles })})`
+  );
+  const mcsText = fs.readFileSync(mcsMsh, "utf8");
+  assert(fs.existsSync(mcsMsh) && /\$Elements/.test(mcsText), "mesh_cad_surface wrote a Gmsh .msh");
+  const mcsStl = path.join(dir, "mcs-block.stl");
+  await call("mesh_cad_surface", { path: mcsBlock, outputPath: mcsStl, targetSize: 0.5 });
+  const mcsFacts = await call("get_mass_properties", { path: mcsStl });
+  assert(
+    Math.abs(mcsFacts.volume - 60) < 1e-6 && mcsFacts.watertight === true,
+    `the mesh_cad_surface STL encloses exactly 3x4x5 = 60 and is watertight (got ${JSON.stringify({ v: mcsFacts.volume, w: mcsFacts.watertight })})`
+  );
+  const mcsMeshSource = await call("mesh_cad_surface", { path: cubeStl, outputPath: path.join(dir, "mcs-cube.stl"), targetSize: 1 });
+  assert(mcsMeshSource.supported === false, "mesh_cad_surface refuses a mesh-format source (no B-rep faces)");
+  const mcsBad = await callTolerant("mesh_cad_surface", { path: mcsBlock, outputPath: path.join(dir, "mcs-block.step"), targetSize: 0.5 });
+  assert(mcsBad.error && /outputPath must end in/.test(mcsBad.error), `mesh_cad_surface rejects an unsupported outputPath extension (got: ${mcsBad.error})`);
   const softSnap = await call("render_snapshot", { path: cubeStl });
   assert(
     softSnap.supported === true && softSnap.engine === "meshio-software" && softSnap.images?.length === 4,
@@ -7371,6 +7432,65 @@ try {
     `export_mesh geoUnrolled rejects engine:"octree" with a specific error (got: ${(octGeo.content?.[0]?.text ?? "").slice(0, 160)})`
   );
 
+  // engine:"octreemesh" (meshio++ 17.13 octreeMesh): conforming graded tets or
+  // an all-hex mesh fitted to the tessellated skin. Sized by octreeMeshMaxSize
+  // + octreeMeshLevels, never sizeMax; no Parts; same refusals as the octree.
+  const ocmOpts = { engine: "octreemesh", octreeMeshMaxSize: 2, octreeMeshLevels: 2 };
+  const ocmTet = await call("generate_mesh", { path: octreeBlock, options: ocmOpts });
+  assert(
+    ocmTet.engineUsed === "octreemesh" && ocmTet.octreeMesh && ocmTet.octreeMesh.output === "tet" && ocmTet.octreeMesh.numInverted === 0 &&
+      ocmTet.octreeMesh.numTetrahedra === 6512 && ocmTet.elementCount === 6512,
+    `generate_mesh(engine:"octreemesh") on block.stp reports its facts and the probe's 6512 tets (got ${JSON.stringify({ e: ocmTet.engineUsed, n: ocmTet.elementCount, o: ocmTet.octreeMesh })})`
+  );
+  assert(ocmTet.octree === null, "...and no octree facts (they belong to the other engine)");
+  const ocmMsh = path.join(dir, "octreemesh-block.msh");
+  await call("export_mesh", { path: octreeBlock, format: "msh", outputPath: ocmMsh, options: ocmOpts });
+  const ocmVol = mshCellVolumes(fs.readFileSync(ocmMsh, "utf8"));
+  assert(
+    Math.abs(ocmVol.volume - 60) < 1e-6 && ocmVol.nonPositive === 0 && ocmVol.tet === 6512,
+    `the octreemesh tet .msh encloses exactly 60 with every tet positively oriented in Gmsh's node order (got ${JSON.stringify(ocmVol)})`
+  );
+  const ocmHexMsh = path.join(dir, "octreemesh-block-hex.msh");
+  await call("export_mesh", { path: octreeBlock, format: "msh", outputPath: ocmHexMsh, options: { ...ocmOpts, octreeMeshOutput: "hex" } });
+  const ocmHexVol = mshCellVolumes(fs.readFileSync(ocmHexMsh, "utf8"));
+  assert(
+    Math.abs(ocmHexVol.volume - 60) < 1e-6 && ocmHexVol.nonPositive === 0 && ocmHexVol.hex === 856 && ocmHexVol.tet === 0,
+    `the octreemesh hex .msh encloses exactly 60 with every hexahedron positive (got ${JSON.stringify(ocmHexVol)})`
+  );
+  await call("export_mesh", { path: cleanCubeStl, format: "msh", outputPath: path.join(dir, "octreemesh-cube.msh"), options: ocmOpts });
+  const ocmCubeVol = mshCellVolumes(fs.readFileSync(path.join(dir, "octreemesh-cube.msh"), "utf8"));
+  assert(
+    Math.abs(ocmCubeVol.volume - 1000) < 1e-6 && ocmCubeVol.nonPositive === 0,
+    `the octreemesh over cube.stl (a mesh source) encloses exactly 1000 (got ${JSON.stringify(ocmCubeVol)})`
+  );
+  const ocmMdpa = path.join(dir, "octreemesh-block.mdpa");
+  await call("export_mesh", { path: octreeBlock, format: "mdpaElements", outputPath: ocmMdpa, options: ocmOpts });
+  assert(fs.readFileSync(ocmMdpa, "utf8").includes("Begin Elements Element3D4N"), "export_mesh mdpaElements under engine:\"octreemesh\" writes Element3D4N");
+  for (const [what, options, needle] of [
+    ["elementOrder 2", { engine: "octreemesh", elementOrder: 2 }, /elementOrder/],
+    ["a periodic pair", { engine: "octreemesh", periodic: [{ slave: "a", master: "b", translation: [1, 0, 0] }] }, /periodic/],
+    ["a sizeField", { engine: "octreemesh", sizeField: [{ point: [0, 0, 0], size: 1 }] }, /sizeField/],
+  ]) {
+    const refused = await request("tools/call", { name: "generate_mesh", arguments: { path: octreeBlock, options } });
+    assert(
+      refused.isError === true && needle.test(refused.content?.[0]?.text ?? ""),
+      `generate_mesh(engine:"octreemesh") refuses ${what} by name (got: ${(refused.content?.[0]?.text ?? "").slice(0, 140)})`
+    );
+  }
+  const ocmDim2 = await call("generate_mesh", { path: octreeBlock, options: { engine: "octreemesh", dimension: 2, sizeMax: 1 } });
+  assert(
+    ocmDim2.engineUsed === "gmsh" && ocmDim2.warnings.some((w) => /octreemesh.*was requested/i.test(w)),
+    `generate_mesh(engine:"octreemesh") at dimension 2 falls back to gmsh with a warning (got ${ocmDim2.engineUsed})`
+  );
+  const ocmGeo = await request("tools/call", {
+    name: "export_mesh",
+    arguments: { path: octreeBlock, format: "geoUnrolled", outputPath: path.join(dir, "octreemesh.geo_unrolled"), options: { engine: "octreemesh" } },
+  });
+  assert(
+    ocmGeo.isError === true && /octreemesh/i.test(ocmGeo.content?.[0]?.text ?? ""),
+    `export_mesh geoUnrolled rejects engine:"octreemesh" with a specific error (got: ${(ocmGeo.content?.[0]?.text ?? "").slice(0, 160)})`
+  );
+
   // repair_mesh (roadmap "Robust volumetric meshing", Phase 3 — closes the
   // item's own originally-scoped "repair, then reuse the existing mesher"
   // shape, via fTetWild instead of the item's original SDF/MMG routes).
@@ -8312,12 +8432,91 @@ try {
       `two identical open sections loft to band x separation, ${(BAND * 10).toFixed(6)} (got ${openLoft})`
     );
 
-    // 6. the refusals, each naming its own cause rather than a generic failure.
-    const noThin = await wireSkip("open profile without thin", [
-      spine(20), { op: "extrude", profileEdges: ["edge-12", "edge-13"], dir: [0, 0, 1], length: 5 },
-    ]);
-    assert(/open wire, which encloses no area/i.test(noThin), `an open profile without thin is refused by name (got ${noThin})`);
+    // 5b. `filletProfile` rounds/bevels one corner of a closed polyline in
+    // place; extruding the result by 5 gives the analytic area x height. The
+    // 10 x 6 rectangle loses 1 - PI/4 to a unit fillet, 0.5 to a unit chamfer
+    // and 1 to a 2/1 chamfer (probe occt-profile-fillet.ts).
+    {
+      const box10x6 = { op: "addPolyline", points: [[0, 0, 20], [10, 0, 20], [10, 6, 20], [0, 6, 20]], closed: true };
+      const ALL6 = ["edge-12", "edge-13", "edge-14", "edge-15", "edge-16"]; // 4 edges become 5 (corner pair -> trim, arc, trim)
+      const extrudeAll = { op: "extrude", profileEdges: ALL6, dir: [0, 0, 1], length: 5 };
+      const rounded = await wireVolume("filleted corner extrudes", [box10x6, { op: "filletProfile", edges: ["edge-12", "edge-13"], radius: 1 }, extrudeAll]);
+      const roundedExpect = (60 - (1 - Math.PI / 4)) * 5;
+      assert(Math.abs(rounded - roundedExpect) / roundedExpect < 1e-6, `a unit fillet takes exactly 1 - PI/4 off the area, volume ${roundedExpect.toFixed(6)} (got ${rounded})`);
+      const chamfered = await wireVolume("chamfered corner extrudes", [box10x6, { op: "filletProfile", edges: ["edge-12", "edge-13"], chamfer: 1 }, extrudeAll]);
+      assert(Math.abs(chamfered - 59.5 * 5) < 1e-6, `a unit chamfer takes exactly 0.5 off the area, volume 297.5 (got ${chamfered})`);
+      const asym = await wireVolume("asymmetric chamfer extrudes", [box10x6, { op: "filletProfile", edges: ["edge-12", "edge-13"], chamfer: 2, chamfer2: 1 }, extrudeAll]);
+      assert(Math.abs(asym - 59 * 5) < 1e-6, `a 2/1 chamfer takes exactly 1 off the area, volume 295 (got ${asym})`);
+      const tooBig = await wireSkip("fillet radius too large", [box10x6, { op: "filletProfile", edges: ["edge-12", "edge-13"], radius: 8 }]);
+      assert(/does not fit this corner/i.test(tooBig), `an oversize radius is refused by name (got ${tooBig})`);
+      const apart = await wireSkip("non-adjacent corner edges", [box10x6, { op: "filletProfile", edges: ["edge-12", "edge-14"], radius: 1 }]);
+      assert(/do not meet at a shared endpoint/i.test(apart), `non-adjacent edges are refused by name (got ${apart})`);
+      const solidEdge = await wireSkip("fillet profile on a solid edge", [{ op: "filletProfile", edges: ["edge-0", "edge-1"], radius: 0.5 }]);
+      assert(/not both in one free wire|do not meet at a shared endpoint|inside a face or solid/i.test(solidEdge), `a solid's edges are refused by name (got ${solidEdge})`);
+    }
 
+    // 5c. `addSurfaceFilling` fills a closed loop of picked edges with a smooth
+    // face (BRepOffsetAPI_MakeFilling, probe occt-filling.ts). A planar square
+    // is the analytic case: the filled face must be area 10 x 10, found as the
+    // newest free face (the loop's four edges stay as wires).
+    {
+      resetWire();
+      const sq = { op: "addPolyline", points: [[0, 0, 20], [10, 0, 20], [10, 10, 20], [0, 10, 20]], closed: true };
+      const res = await callWithCleanRetry("apply_edit_ops", { path: wireModel, ops: [sq, { op: "addSurfaceFilling", edges: ["edge-12", "edge-13", "edge-14", "edge-15"] }] }, resetWire);
+      assert(res.applied === 2 && (res.notApplied ?? 0) === 0, `a closed four-edge loop fills (got ${JSON.stringify(res.report)})`);
+      const filled = await callWithCleanRetry("inspect", { path: wireModel, entityId: "face-6" }, resetWire);
+      assert(Math.abs((filled.area ?? 0) - 100) < 1e-3, `the filled planar square has the analytic area 100 (got ${filled.area})`);
+      resetWire();
+      const open = await wireSkip("fill with a missing edge", [sq, { op: "addSurfaceFilling", edges: ["edge-12", "edge-13", "edge-99"] }]);
+      assert(/no longer exists/i.test(open), `an unknown boundary edge is refused by name (got ${open})`);
+    }
+
+    // 5d. `splitFace.projectDir` (roadmap project-a-curve probe, BRepProj_Projection_1):
+    // a segment floating 7.5 above block.stp's top face (z = 2.5) splits it only
+    // after being projected down onto it. Control: the same segment without
+    // projectDir does not lie on the face, so the face count must NOT rise.
+    {
+      resetWire();
+      let topId = null;
+      for (let i = 0; i < 6 && !topId; i++) {
+        const f = await callWithCleanRetry("inspect", { path: wireModel, entityId: `face-${i}` }, resetWire);
+        if (f.center && Math.abs(f.center[2] - 2.5) < 1e-6 && Math.abs((f.area ?? 0) - 12) < 1e-3) topId = `face-${i}`;
+      }
+      assert(topId !== null, "block.stp has a 3 x 4 top face at z = 2.5");
+      const seg = [[-5, 1, 10], [5, 1, 10]];
+      const projected = await callWithCleanRetry("apply_edit_ops", { path: wireModel, ops: [{ op: "splitFace", face: topId, points: seg, projectDir: [0, 0, -1] }] }, resetWire);
+      assert(projected.applied === 1 && (projected.notApplied ?? 0) === 0, `a projected segment splits the top face (got ${JSON.stringify(projected.report)})`);
+      // The y = 1 cut leaves 3 x 3 = 9 and 3 x 1 = 3 on the 3 x 4 face; ids renumber, so scan all 7 faces.
+      const areas = [];
+      for (let i = 0; i < 7; i++) areas.push((await callWithCleanRetry("inspect", { path: wireModel, entityId: `face-${i}` }, resetWire)).area ?? 0);
+      assert(areas.some((a) => Math.abs(a - 9) < 1e-3) && areas.some((a) => Math.abs(a - 3) < 1e-3), `the split leaves halves of area 9 and 3 among 7 faces (got ${JSON.stringify(areas)})`);
+      const vol = await call("get_mass_properties", { path: wireModel, entityId: "solid-0" });
+      assert(Math.abs(vol.volume - 60) / 60 < 1e-6, `projection split leaves volume 60 (got ${vol.volume})`);
+      resetWire();
+      const control = await wireSkip("same segment without projectDir", [{ op: "splitFace", face: topId, points: seg }]);
+      assert(/not split|did not complete|threw/i.test(control), `without projectDir the floating segment is refused (got ${control})`);
+    }
+
+    // 6. the refusals, each naming its own cause rather than a generic failure.
+    // An open profile without `thin` is a SURFACE for extrude/revolve (two
+    // 5-long segments x 5 = area 50 over face-6 + face-7, no volume change);
+    // sweep/loft still refuse it by name.
+    {
+      resetWire();
+      const sheetOps = [spine(20), { op: "extrude", profileEdges: ["edge-12", "edge-13"], dir: [0, 0, 1], length: 5 }];
+      const res = await callWithCleanRetry("apply_edit_ops", { path: wireModel, ops: sheetOps }, resetWire);
+      assert(res.applied === sheetOps.length && (res.notApplied ?? 0) === 0, `an open profile without thin extrudes to a sheet (got ${JSON.stringify(res.report)})`);
+      const a6 = await call("inspect", { path: wireModel, entityId: "face-6" });
+      const a7 = await call("inspect", { path: wireModel, entityId: "face-7" });
+      const sheetArea = (a6.area ?? 0) + (a7.area ?? 0);
+      assert(Math.abs(sheetArea - 50) < 1e-6, `the sheet's area is the analytic 50, 2 x (5 x 5) (got ${sheetArea})`);
+      const blockVol = await call("get_mass_properties", { path: wireModel, entityId: "solid-0" });
+      assert(Math.abs(blockVol.volume - 60) < 1e-6, `the sheet adds no volume to the block (got ${blockVol.volume})`);
+      const upTo = await wireSkip("open profile up-to-face", [
+        spine(20), { op: "extrude", profileEdges: ["edge-12", "edge-13"], dir: [0, 0, 1], upToFace: "face-0" },
+      ]);
+      assert(/up-to-face extrusion needs a closed planar profile/i.test(upTo), `an open profile with upToFace is refused by name (got ${upTo})`);
+    }
     const badOuter = await wireSkip("open profile with thinOuter", [
       spine(20), { op: "extrude", profileEdges: ["edge-12", "edge-13"], dir: [0, 0, 1], length: 5, thin: 2, thinOuter: 0.5 },
     ]);

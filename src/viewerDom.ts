@@ -552,15 +552,15 @@ export function viewerBodyHtml(): string {
       </div>
       <span class="vc-div" aria-hidden="true"></span>
       <div class="vc-inline-group">
-        <span class="vc-label">Clip</span>
-        <button id="clip-toggle" title="Toggle clipping">Off</button>
-        <div class="vc-segments" role="group" aria-label="Clip axis">
+        <span class="vc-label">Cut Plane</span>
+        <button id="clip-toggle" title="Toggle cut plane">Off</button>
+        <div class="vc-segments" role="group" aria-label="Cut plane axis">
           <button class="clip-axis active" data-axis="x">X</button>
           <button class="clip-axis" data-axis="y">Y</button>
           <button class="clip-axis" data-axis="z">Z</button>
-          <button class="clip-axis" id="clip-custom" hidden title="Custom clip normal">N</button>
+          <button class="clip-axis" id="clip-custom" hidden title="Custom cut plane normal">N</button>
         </div>
-        <input type="range" id="clip-offset" class="meshing-slider" min="-100" max="100" value="0" title="Clip plane offset along the active normal">
+        <input type="range" id="clip-offset" class="meshing-slider" min="-100" max="100" value="0" title="Cut plane offset along the active normal">
       </div>
       <span class="vc-div" aria-hidden="true"></span>
       <button id="vc-ortho" title="Toggle orthographic/perspective projection">Persp</button>
@@ -616,10 +616,10 @@ export function viewerBodyHtml(): string {
             </div>
           </div>
           <div class="vc-group">
-            <span class="vc-label">Clip from geometry</span>
+            <span class="vc-label">Cut plane from geometry</span>
             <div class="vc-row">
-              <button id="clip-from-face" title="Clip along the selected planar face">Face</button>
-              <button id="clip-from-points" title="Clip through three selected points">3 Pts</button>
+              <button id="clip-from-face" title="Cut along the selected planar face">Face</button>
+              <button id="clip-from-points" title="Cut through three selected points">3 Pts</button>
             </div>
           </div>
           <!-- Saved construction planes. They sat INSIDE the Clip group back when

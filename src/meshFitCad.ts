@@ -20,8 +20,9 @@
  * (naming the open edges) — `check_mesh_health` reads those facts first and
  * `repair_mesh` can rebuild a watertight skin.
  *
- * Needs the full artifact (`getMeshio` loads it): the lean pair has no
- * OpenCASCADE and `fitCad` itself would throw naming `{full: true}`.
+ * The full artifact (`getMeshio` loads it) supplies the OpenCASCADE backend;
+ * since meshio++ 17.9 `backend: "native"` also builds a solid without it (no
+ * volume and no B-rep check, both reported as such).
  */
 
 import { getMeshio, componentMesh, wrapMeshioFault } from "./meshioService";
@@ -50,6 +51,8 @@ export interface FitMeshToCadOptions {
   minInlierFraction?: number;
   /** Primitive kinds a patch may be fitted with. Default all five. */
   types?: FitPrimitiveType[];
+  /** Patch boundaries for the segmentation stage: `"angle"` (default) or `"primitive"` (meshio++ 17.9). */
+  segmentMethod?: FitSegmentMethod;
   // --- fitCad (builds the solid) --------------------------------------------
   /** Largest distance an analytic face may lie from the skin; ≤ 0 is automatic. */
   cadTolerance?: number;
@@ -75,19 +78,43 @@ export interface FitMeshToCadOptions {
   threads?: boolean;
   /** Also serialize the solid's B-rep (`cad_json`) into the result. */
   cadJson?: boolean;
+  // --- meshio++ 17.9-17.12 ----------------------------------------------------
+  /**
+   * The engine that builds the solid: `"occt"` (the full artifact's OpenCASCADE,
+   * sewn and B-rep-checked), `"native"` (kernel-free: fitted patches become
+   * analytic faces, the rest coplanar polygons; no volume or B-rep check) or
+   * `"auto"` (default, OpenCASCADE when linked in).
+   */
+  backend?: "auto" | "occt" | "native";
+  /** Merge faces on one surface once the solid is built (default true). */
+  mergeFaces?: boolean;
+  /**
+   * First refine the patches (`refinePatches`, variational shape approximation)
+   * inside `fitCad`. Measured on a tessellated `bull.stp`: explained area 52 %
+   * → 97 %, volume ratio 0.955 → 1.0004, max deviation 1.75 → 0.144, faceted
+   * faces 4770 → 3778 (at ~1.2x the time).
+   */
+  refineSegmentation?: boolean;
+  /** Freeform B-spline treatment: `"legacy"` (default), `"adaptive"`, `"network"` or `"auto"`. */
+  freeformMode?: "legacy" | "adaptive" | "network" | "auto";
+  /** Measure each face's two-sided distance to the skin (OpenCASCADE backend only). */
+  faceDeviation?: boolean;
 }
+
+/** Segmentation boundaries for the `segment` stage (meshio++ 17.9). */
+export type FitSegmentMethod = "angle" | "primitive";
 
 export interface FitMeshToCadReport {
   /** Whether the sewn solid passed OpenCASCADE's B-rep check. */
   valid: boolean;
   /** The face tolerance actually used (automatic unless `cadTolerance` was given). */
   tolerance: number;
-  /** The solid's volume. */
-  volume: number;
+  /** The solid's volume; `null` from the native backend, which builds no solid to measure. */
+  volume: number | null;
   /** The closed skin's own volume (divergence theorem over its triangles). */
   skinVolume: number;
   /** `volume / skinVolume` — 1 means the fit preserved the enclosed volume. */
-  volumeRatio: number;
+  volumeRatio: number | null;
   /** Symmetric Hausdorff distance, skin to re-meshed solid. */
   maxDeviation: number;
   numFaces: number;
@@ -122,6 +149,23 @@ export interface FitMeshToCadReport {
   numVariablePitchThread: number;
   /** The segmentation's own per-kind fitted-patch counts that fed the fit. */
   fitCounts: Record<FitPrimitiveType | "unfitted", number> & { merged: number };
+  /** The engine that built the solid. */
+  backend: "occt" | "native";
+  /** Whether OpenCASCADE's B-rep check ran (false from the native backend). */
+  brepChecked: boolean;
+  /** Whether every shell is closed (every edge borders two faces). */
+  closed: boolean;
+  /** Whether `refineSegmentation` refined the patches, and whether that solid was kept. */
+  refined: boolean;
+  refinementKept: boolean;
+  /** Area share primitives explain before and after the refinement (0 when it did not run). */
+  initialExplainedAreaFraction: number;
+  explainedAreaFraction: number;
+  /** Share of the result's area on faceted faces. */
+  facetAreaFraction: number;
+  /** With `faceDeviation`: two-sided Hausdorff distance and RMS between solid and skin; `null` when not measured. */
+  faceHausdorffMax: number | null;
+  faceHausdorffRms: number | null;
   warnings: string[];
 }
 
@@ -153,6 +197,13 @@ function finiteOrUndefined(name: string, value: number | undefined, extra?: (v: 
   return value;
 }
 
+/** `null`/`undefined`/NaN → `null` (`Number(null)` would silently be 0). */
+function nullableNumber(v: unknown): number | null {
+  if (v === null || v === undefined) return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
 export async function fitMeshToCad(
   bytes: Uint8Array,
   format: MeshParseFormat,
@@ -162,6 +213,18 @@ export async function fitMeshToCad(
   const featureAngle = options.featureAngle ?? 30;
   if (!(Number.isFinite(featureAngle) && featureAngle >= 0 && featureAngle <= 180)) {
     throw new Error(`featureAngle must be within 0..180 degrees (got ${options.featureAngle})`);
+  }
+  if (options.backend !== undefined && !["auto", "occt", "native"].includes(options.backend)) {
+    throw new Error(`backend must be "auto", "occt" or "native" (got ${String(options.backend)})`);
+  }
+  if (options.freeformMode !== undefined && !["legacy", "adaptive", "network", "auto"].includes(options.freeformMode)) {
+    throw new Error(`freeformMode must be "legacy", "adaptive", "network" or "auto" (got ${String(options.freeformMode)})`);
+  }
+  if (options.faceDeviation && options.backend === "native") {
+    throw new Error('faceDeviation needs the OpenCASCADE backend — drop it or use backend "occt".');
+  }
+  if (options.segmentMethod !== undefined && options.segmentMethod !== "angle" && options.segmentMethod !== "primitive") {
+    throw new Error(`segmentMethod must be "angle" or "primitive" (got ${String(options.segmentMethod)})`);
   }
   const types = assertTypes("types", options.types);
   const cadTypes = assertTypes("cadTypes", options.cadTypes);
@@ -186,7 +249,10 @@ export async function fitMeshToCad(
   const m = await getMeshio();
   try {
     const { mesh } = componentMesh(positions, indices, Array.from({ length: triCount }, (_, i) => i));
-    const seg = m.segment(mesh, featureAngle, 0, 0, options.minPatchCells ?? 1, "", "patch");
+    const seg =
+      options.segmentMethod === "primitive"
+        ? m.segment(mesh, featureAngle, 0, 0, options.minPatchCells ?? 1, "", "patch", "primitive", 0.01)
+        : m.segment(mesh, featureAngle, 0, 0, options.minPatchCells ?? 1, "", "patch");
     const fit = m.fitPrimitives(
       seg.mesh,
       "segment:patch",
@@ -210,6 +276,11 @@ export async function fitMeshToCad(
     if (options.freeformSplit !== undefined) cadOptions.freeformSplit = options.freeformSplit;
     if (options.fillets !== undefined) cadOptions.fillets = options.fillets;
     if (options.threads !== undefined) cadOptions.threads = options.threads;
+    if (options.backend !== undefined) cadOptions.backend = options.backend;
+    if (options.mergeFaces !== undefined) cadOptions.mergeFaces = options.mergeFaces;
+    if (options.refineSegmentation !== undefined) cadOptions.refineSegmentation = options.refineSegmentation;
+    if (options.freeformMode !== undefined) cadOptions.freeformMode = options.freeformMode;
+    if (options.faceDeviation !== undefined) cadOptions.faceDeviation = options.faceDeviation;
 
     let r: Record<string, unknown>;
     try {
@@ -230,6 +301,9 @@ export async function fitMeshToCad(
     }
 
     const warnings: string[] = [];
+    if (r.backend === "native") {
+      warnings.push("The native backend built the solid without OpenCASCADE: no B-rep check ran (brepChecked: false) and volume/volumeRatio are null.");
+    }
     if (!r.valid) {
       warnings.push("The sewn solid failed OpenCASCADE's B-rep check (valid: false) — the written STEP is unverified; the counts below describe what was built.");
     }
@@ -243,9 +317,9 @@ export async function fitMeshToCad(
     const report: FitMeshToCadReport = {
       valid: Boolean(r.valid),
       tolerance: Number(r.tolerance),
-      volume: Number(r.volume),
+      volume: nullableNumber(r.volume),
       skinVolume: Number(r.skinVolume),
-      volumeRatio: Number(r.volumeRatio),
+      volumeRatio: nullableNumber(r.volumeRatio),
       maxDeviation: Number(r.maxDeviation),
       numFaces: Number(r.numFaces),
       numPlane: Number(r.numPlane),
@@ -280,6 +354,16 @@ export async function fitMeshToCad(
         unfitted: fit.numUnfitted,
         merged: seg.numMerged,
       },
+      backend: r.backend === "native" ? "native" : "occt",
+      brepChecked: Boolean(r.brepChecked),
+      closed: Boolean(r.closed),
+      refined: Boolean(r.refined),
+      refinementKept: Boolean(r.refinementKept),
+      initialExplainedAreaFraction: Number(r.initialExplainedAreaFraction ?? 0),
+      explainedAreaFraction: Number(r.explainedAreaFraction ?? 0),
+      facetAreaFraction: Number(r.facetAreaFraction ?? 0),
+      faceHausdorffMax: nullableNumber(r.hausdorffMax),
+      faceHausdorffRms: nullableNumber(r.hausdorffRms),
       warnings,
     };
     return { stepBytes, ...(cadJsonBytes ? { cadJsonBytes } : {}), report };

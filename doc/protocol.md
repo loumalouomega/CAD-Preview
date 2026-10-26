@@ -196,8 +196,10 @@ type EditOp =
   //   profile / profiles            a face-N (a sketch, or any face)
   //   profileEdges / profileEdgeSets  edge-N ids assembled into one wire,
   //                       which is how an OPEN sketch is consumed. An open
-  //                       wire encloses no area, so it REQUIRES `thin` and
-  //                       refuses `thinOuter` (it has no inside or outside).
+  //                       wire encloses no area: extrude/revolve without `thin` build a
+  //                       SURFACE (sheet, no caps, no volume); sweep/loft and any
+  //                       `thin` build REQUIRE `thin` and refuse `thinOuter`
+  //                       (it has no inside or outside).
   // The single-profile three (not loft) also take an optional region pick:
   //   pick?: 'outer' | 'all' | number[]   which enclosed regions of a
   //                       multi-region profile to consume (0 = outer boundary,
@@ -217,6 +219,9 @@ type EditOp =
   | { op: 'defeature'; faces: string[] }   // removes faces as recognized features; solid heals behind them
   | { op: 'unifySameDomain' }   // parameter-free, whole model: merges same-surface faces/edges
   | { op: 'addEdgeSlot'; edge: string; width: number }               // stadium slot face around an existing edge
+  | { op: 'addSurfaceFilling'; edges: string[] }                      // smooth, generally non-planar face filling a closed edge loop
+  | { op: 'filletProfile'; edges: [string, string]; radius?: number; chamfer?: number; chamfer2?: number }
+                                                                  // round (radius) or bevel (chamfer, optional chamfer2) one corner of a sketch polyline; exactly one of radius/chamfer
   | { op: 'splitByPlane'; targets: string[]; planePoint?: Vec3; planeNormal?: Vec3; planeId?: string; midplaneFaces?: [string, string]; keep: 'both' | 'positive' | 'negative' }
   | { op: 'splitFace'; face: string; edgeIds?: string[]; points?: [Vec3, Vec3] }   // exactly one of edgeIds/points: splits one face into two regions along a splitting edge on it (boundary-condition regions); an edge that misses the face or stops short is skipped with a diagnostic
   | { op: 'section'; targets: string[]; planePoint?: Vec3; planeNormal?: Vec3; planeId?: string; midplaneFaces?: [string, string] }
@@ -720,6 +725,8 @@ Sent in reply to `meshingGenerate` (and internally by `meshingExport` when the t
 
 `octree` (optional — only present when the octree engine ran) carries `{maxLevel, snap, numLeaves, numHanging, finestLevel, numSnapped, numRefused, elementMix: {hexahedra, pyramids, tetrahedra}}`; the panel's status line renders it, and says Parts are not preserved.
 
+`octreeMesh` (optional — only present when the `octreemesh` engine ran) carries `{output, maxSize, minSize, numLeaves, numTetrahedra, numHexahedra, numInverted, minDihedral, maxDihedral, minScaledJacobian, hausdorffToSkin, numFeatureChains, numFeatureChainsMissed, numWarpRefused, warnings}`; the panel's status line renders it. The `meshingOptions` payload gains the additive fields `octreeMeshOutput` (`"tet"` | `"hex"`), `octreeMeshMaxSize` (mm, `0` = automatic) and `octreeMeshLevels` (1–4), and `engine` may now be `"octreemesh"`.
+
 `worstElements` (optional — only ever present for a **3D** generate with at least one element below `threshold`) is a highlight overlay of the mesh's worst-quality elements: `indices` is those elements' own full boundary, ready to index into the SAME `positions` buffer `meshingResult.indices` uses. The webview calls `viewer.setWorstElementsOverlay(buildWorstElementsHighlight(msg.positions, msg.worstElements.indices))`, rendered with a depth-test-disabled "ghost" material (mirroring the Hidden Lines display mode's ghost-line technique) so it stays visible through occluding geometry regardless of true 3D depth — closing the roadmap gap where bad tets are frequently interior and invisible in the boundary-only overlay above. `shownCount`/`belowThresholdCount` differ only when the highlight was capped (`MAX_WORST_ELEMENTS`, prioritizing the lowest-quality elements first); the panel reports both, e.g. "showing worst 2000 of 5300".
 
 ```json
@@ -856,7 +863,7 @@ The saved-macro library for the document's folder (`cad-preview-macros.json` —
 
 Sent in reply to `entityFactsRequest` — **B-rep sources only** (a triangle mesh has no analytic surface type; a fine-faceted prism and a cylinder are identical in triangles), same gate as `massPropertiesResult`. Carries `EntityFacts` verbatim from the existing `getEntityFacts` pipeline function — the interactive geometry inspector card is a new protocol pair over existing kernel surface, not new geometry work; the same function backs the `inspect` MCP tool.
 
-**Two consumers share this round trip**, each latched on its own request id: the inspector card, and the view-controls **Clip ▸ Face** button, which reads the reply's `normal` + `planeOrigin` to derive an arbitrary clip plane. The clip path issues its own request rather than reusing the card's last result — group/query selection never triggers a card fetch, so that cache can be empty or stale for a face selected that way.
+**Two consumers share this round trip**, each latched on its own request id: the inspector card, and the view-controls **Cut Plane ▸ Face** button, which reads the reply's `normal` + `planeOrigin` to derive an arbitrary clip plane. The clip path issues its own request rather than reusing the card's last result — group/query selection never triggers a card fetch, so that cache can be empty or stale for a face selected that way.
 
 Driven by **selection, not hover**: `getEntityFacts` has no shape cache, so every call re-reads the source bytes and replays the whole op list. The hover tooltip is deliberately pure-webview for the same reason.
 
@@ -896,10 +903,10 @@ Sent in reply to `measureExactRequest` — **B-rep sources only**, same gate as 
 
 ### `brepHealthResult` / `brepHealthError`
 
-Sent in reply to `brepHealthRequest` (webview → host, below) — roadmap "B-rep validity report". `report` is a `BrepHealthReport` (`src/brepHealthReport.ts`): the whole-shape `valid` verdict from OCCT's `BRepCheck_Analyzer`, `counters` (`ShapeAnalysis_ShapeContents`), `openBoundaryEdgeCount`, one `BrepSolidHealth` per solid, and up to 200 `issues` (`{id, statuses, valid}`, ids `solid-N`/`face-N`/`edge-N` or report-local `shell-N`) with `issueCount` the true total. Facts only; nothing is repaired. `brepHealthError` is sent for a non-B-rep source or a kernel failure.
+Sent in reply to `brepHealthRequest` (webview → host, below) — roadmap "B-rep validity report". `report` is a `BrepHealthReport` (`src/brepHealthReport.ts`): the whole-shape `valid` verdict from OCCT's `BRepCheck_Analyzer`, `counters` (`ShapeAnalysis_ShapeContents`), `openBoundaryEdgeCount`, `freeBoundaries` (open-boundary edges chained into wires by `ShapeAnalysis_FreeBounds`: `{closed, edgeCount, length}`, closed first, at most 100; `freeBoundaryCount` the true total), one `BrepSolidHealth` per solid (with `signedVolume`, mm³, negative for a reversed solid), and up to 200 `issues` (`{id, statuses, valid}`, ids `solid-N`/`face-N`/`edge-N` or report-local `shell-N`) with `issueCount` the true total. Facts only; nothing is repaired. `brepHealthError` is sent for a non-B-rep source or a kernel failure.
 
 ```json
-{ "type": "brepHealthResult", "requestId": "1234-0.56", "report": { "valid": false, "counters": { "solids": 1, "shells": 1, "faces": 175, "edges": 990, "looseEdges": 0, "looseFaces": 0, "looseWires": 0, "solidsWithVoids": 0 }, "openBoundaryEdgeCount": 0, "solids": [{ "solidId": "solid-0", "valid": false, "shellCount": 1, "openShellCount": 0, "openBoundaryEdgeCount": 0 }], "issues": [{ "id": "face-13", "statuses": ["UnorientableShape"], "valid": false }], "issueCount": 7, "analyzedSubshapes": 673, "elapsedMs": 1926 } }
+{ "type": "brepHealthResult", "requestId": "1234-0.56", "report": { "valid": false, "counters": { "solids": 1, "shells": 1, "faces": 175, "edges": 990, "looseEdges": 0, "looseFaces": 0, "looseWires": 0, "solidsWithVoids": 0 }, "openBoundaryEdgeCount": 0, "freeBoundaries": [], "freeBoundaryCount": 0, "solids": [{ "solidId": "solid-0", "valid": false, "shellCount": 1, "openShellCount": 0, "openBoundaryEdgeCount": 0, "signedVolume": 178448.05 }], "issues": [{ "id": "face-13", "statuses": ["UnorientableShape"], "valid": false }], "issueCount": 7, "analyzedSubshapes": 673, "elapsedMs": 1926 } }
 ```
 
 ```json

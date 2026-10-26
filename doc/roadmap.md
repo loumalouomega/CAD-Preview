@@ -47,6 +47,16 @@ Existing implementation references were checked against the repository where not
 
 **Closed 2026-10-22.** Extension, not a planning review: nothing was re-ranked. 2.25 (The entity-point snap must reach the committed op) shipped: for exactly one target the Move form now carries the snapped delta (`snapped - base`), so Apply commits the position the preview showed; a multi-target drag stays preview-only and says so in the form hint and `OP_PARAM_DOCS`. The `gizmo-point-snap` case now pins the snapped commit (and its registry `closedBy` title moved with it), while the grid-snap behaviour is unchanged.
 
+**Closed 2026-10-25.** Extension, not a planning review: nothing was re-ranked and no other open ID changed. The shared UI design system item (formerly 2.2) shipped on this side and left the list: keyboard view snaps (`1`–`6`, `i`), the label-only renames Clip → "Cut Plane" and BACK → "REAR" (the `clip` view-state key, protocol messages and the `back` named view are unchanged), and `npm run ui:drift`, an informational CI step diffing the `--ui-*` tokens and icon ids against VSCode-MDPA-Preview's `webview/design-system.css` and `src/toolbarIcons.ts`. The sibling repository's half (its stale licence line, its own copy of the key order) is its to do.
+
+**Closed 2026-10-25 (B-rep repair probe).** Extension, not a planning review: nothing was re-ranked. The B-rep repair probe (formerly 3.2) **failed its decision gate** and left the list; the facts are under Kernel-blocked and `CLAUDE.md`'s dead-API list. Remaining probe IDs were not renumbered.
+
+**Closed 2026-10-25 (profile probes).** Extension, not a planning review: the open-profile surface probe (formerly 3.4) and the profile fillet/chamfer probe (formerly 3.7) both **passed** and moved to Ready product work; the open-profile surface item has since shipped, and the fillet/chamfer item is now 2.4. Remaining probe IDs were not renumbered.
+
+**Closed 2026-10-25 (Round Corner panel form).** Extension, not a planning review: the panel form for `filletProfile` (formerly 2.4) shipped as Build from selection ▸ **Round Corner** and left the list.
+
+**Closed 2026-10-25 (N-sided surface filling).** Extension, not a planning review: the `BRepOffsetAPI_MakeFilling` probe (formerly 3.5) **passed** and the `addSurfaceFilling` op shipped (Build from selection ▸ Fill Surface) in the same change; it left the list. Remaining probe IDs were not renumbered.
+
 Everything previously shipped is tracked in `CHANGELOG.md`, and `CLAUDE.md` holds the invariants, traps and verified kernel facts that a future change could break (not per-feature history, which lives in git) — this page is for what's **not** built yet, plus the Non-goals that record why a direction was rejected so it isn't re-proposed.
 
 ## How this file works
@@ -123,6 +133,8 @@ Known MMG facts that the sibling project established the hard way, and which the
 
 **meshio++ 17.8.0 surface, triaged (2026-10-20).** The release adds `octree` and its conforming transitions (upstream `doc/octree.md`). It is adopted as the engine behind `MeshOptions.engine: "octree"` (`doc/gmsh-integration.md#octree-engine`): `transition: "templates"` yields hexahedra, pyramids and tetrahedra — classes meshio++'s MDPA writer already covers — so it routes around the blocked type-140 connector instead of reviving it. `snap`, `balance` and `fill: "inside"` are part of that probe; the rest of the octree options (curvature, feature-angle and size-array refinement, 2-D quadtree) are not in the first increment. Adopted 2026-10-20 for the 4.10 probe (compat 78/78, `compat:vsix` clean, `mcp:smoke` green); the probe passed and the engine shipped on 2026-10-21.
 
+**meshio++ 17.9–17.13 surface, triaged (2026-10-23, the 17.13.0 bump).** Adopted: **`octreeMesh`** as `MeshOptions.engine: "octreemesh"` (graded conforming tetrahedra or all-hexahedra fitted to the tessellated skin, `doc/gmsh-integration.md#octreemesh-engine`; the castellated output is deliberately not offered — hanging nodes); **`meshCadSurface`** as the `mesh_cad_surface` tool (a B-rep → watertight conforming surface mesh with no CAD kernel: `block.stp` closes with 0 open edges at exactly 60, `bull.stp`'s 36 faces in ~100 ms); `segment`'s `method: "primitive"` and **`refinePatches`** as `segment_mesh_surface`'s `method`/`refine`; `fitCad`'s `backend` (native = kernel-free, no volume or B-rep check), `mergeFaces`, **`refineSegmentation`** (on a tessellated `bull.stp`: explained area 52 % → 97 %, volume ratio 0.955 → 1.0004, max deviation 1.75 → 0.144), `freeformMode` and `faceDeviation` as `fit_mesh_to_cad` options with the new report fields. Probe-confirmed and recorded, not built: **KaHIP** now links into the FULL artifact (see 4.9 — passes its gate on the tetrahedra alone). Not adopted: the thirteen mesh **generators** (`rectangle`, `box`, `disk`, `uvSphere`, `icosaSphere`, `cylinder`, `referenceTriangle`, `ngon`, `annulus`, `lshape`, `plateWithHole`, `honeycomb`, `referenceCells`) — they build test fixtures, not CAD-derived meshes, and no workflow here consumes them; `fitCad`'s `freeformGeneral`/`snapJunctions`/`extendSurfaces`/`sewTolerance` and the network/layout freeform tuning (`extraordinaryVertex`, `localRefine`, `layoutTargetPatchSize`, …) — expert knobs with no measured benefit on the fixtures; `octreeMesh`'s `cleaving` conformity, `sizeArray` and `gapCells` sizing (the engine ships `maxSize` + `levels` only, so a `sizeField` request is still refused by name — mapping a view-driven field onto `sizeArray` is a candidate follow-up).
+
 ### Kernel capability review — 2026-09-24 {#kernel-capability-review}
 
 This review lists every capability that is **bound in a shipped kernel but never called** from `src/`, and asks which of them would serve a real workflow. "Bound" means green in the OCCT manifest (`node_modules/opencascade.js/dist/Supported APIs.md`), or declared in gmsh-wasm's `dist/gmsh.d.ts`. That is necessary but not sufficient. The following have been proven broken despite being green, and should not be re-probed:
@@ -130,6 +142,7 @@ This review lists every capability that is **bound in a shipped kernel but never
 | Proven broken despite being green | What happened | Recorded in |
 | --- | --- | --- |
 | `ShapeFix_Shape`, `ShapeFix_Shell`, `ShapeFix_Wireframe` | Only `ShapeFix_Solid` works | `src/meshHeal.ts` |
+| `ShapeFix_Face`, `ShapeFix_Wire`, `ShapeFix_FixSmallFace` | Construct and run, but clear no real finding (see Kernel-blocked) | `scripts/probe/examples/occt-shapefix.ts` |
 | `BRepAlgoAPI_Section` | No accessible constructor | `src/occtOperations.ts` |
 | `BRepExtrema_DistanceSS` in maximum mode | Constructs, but never computes | `src/entityFacts.ts` (`measureExact`) |
 | `BRepOffsetAPI_DraftAngle.Build()` | Throws on real geometry | `src/occtOperations.ts` (`draftFaces`) |
@@ -140,11 +153,10 @@ This review lists every capability that is **bound in a shipped kernel but never
 
 | Classes | Would enable | Item |
 | --- | --- | --- |
-| `ShapeFix_Face`, `ShapeFix_Wire`, `ShapeFix_FixSmallFace`, `ShapeFix_FixSmallSolid` | An explicit repair step after `check_brep_health` | [B-rep repair as an explicit op](#b-rep-repair-as-an-explicit-op) |
 | `BRepExtrema_SelfIntersection`, `ShapeAnalysis_FreeBounds` | Self-intersection and free-boundary facts in the validity report | [More facts in the B-rep validity report](#more-facts-in-the-b-rep-validity-report) |
-| `BRepOffsetAPI_MakeFilling` | An N-sided, non-planar surface from boundary edges | [N-sided surface filling](#n-sided-surface-filling) |
-| `ChFi2d_FilletAPI`, `ChFi2d_ChamferAPI` | Rounding and chamfering sketch-profile corners before extrusion | [Fillets and chamfers on 2D profiles](#fillets-and-chamfers-on-2d-profiles) |
-| `BRepProj_Projection` | Projecting a curve onto a face | [Project a curve onto a face](#project-a-curve-onto-a-face) |
+| `BRepOffsetAPI_MakeFilling` | An N-sided, non-planar surface from boundary edges | N-sided surface filling (shipped as `addSurfaceFilling`) |
+| `ChFi2d_FilletAPI`, `ChFi2d_ChamferAPI` | Rounding and chamfering sketch-profile corners before extrusion | Fillets and chamfers on 2D profiles (shipped) |
+| `BRepProj_Projection` | Projecting a curve onto a face | Shipped as `splitFace.projectDir` |
 | `STEPCAFControl_GDTProperty`, `XCAFDoc_DimTolTool`, `XCAFDoc_LayerTool`, `XCAFDoc_MaterialTool`, `XCAFPrs_DocumentExplorer` | Reading STEP AP242 PMI, layers and materials, plus a second route to colours that bypasses the dead `XCAFDoc_ColorTool` getter | [Read PMI, layers and materials from STEP](#read-pmi-layers-and-materials-from-step) |
 | `VrmlAPI_Writer` | B-rep → VRML export, the one extra B-rep writer in the binding | [VRML export](#vrml-export) |
 
@@ -175,7 +187,7 @@ CAD-Preview is embedded in [KKSS](https://github.com/loumalouomega/KKSS) as its 
 | Every new capability reachable through this repository's MCP server, since that is the only way the KKSS assistant sees it | KKSS roadmap | Already a house rule ("Shared capabilities must reach both consumers" above) |
 | A small, reproducible structural example that a geometry-to-results tutorial can reuse | KKSS roadmap | [Canonical worked example](#canonical-worked-example-for-the-simulation-tutorial) (the page ships; the cross-repo check remains) |
 | Performance baselines covering more than the OCCT and Gmsh paths | KKSS roadmap | Shipped; see `CLAUDE.md` |
-| One UI vocabulary across both extensions: view snaps 1–6 and `i` proposed for upstreaming, and "Cut Plane" / "REAR" renames pending | VSCode-MDPA-Preview `doc/ui-design-system.md` | [Shared UI design system](#shared-ui-design-system-with-vscode-mdpa-preview) |
+| One UI vocabulary across both extensions: view snaps 1–6 and `i`, and the "Cut Plane" / "REAR" renames | VSCode-MDPA-Preview `doc/ui-design-system.md` | Shipped here (`viewShortcuts.ts`, label-only renames, `npm run ui:drift`); the sibling's own half is its to do |
 | A scheduled job that compares dependency pins with npm | VSCode-MDPA-Preview roadmap | Shipped; see `CLAUDE.md` |
 | Consume CAD's mesh handoff manifest | VSCode-MDPA-Preview roadmap | Already shipped on this side (`export_mesh {manifest: true}`); the consuming half is theirs |
 
@@ -242,7 +254,7 @@ It does **not** admit AGPL code, so TetGen stays rejected. Every new bundled dep
 | Upkeep | The base stays current and trustworthy | Done: the dependency watch, "Verify the dependency watch on GitHub", has run — it published issue #84 and re-dispatching reported `unchanged`. The verification-debt gate has shipped and **24 claims are closed** (the ten webview ones, the first ten host-side ones, and the fourteen of the second host-side increment — six of which the harnesses already proved); the host-side halves (1.1) are next again, now with only look-and-feel claims left in the registry; recoverable B-rep saves (1.4) shipped and left the list; the dependency-watch close-out (1.6) shipped and left the list too — two live `workflow_dispatch` runs closed #92 with the dated comment and the second run was a `current` no-op | The verification debt count keeps falling by closure |
 | Parity | Everything an agent can do, a user can do, and the reverse | Done: headless mesh-edit replay closed the last listed gap (as did the hole-table, refinement-sweep, free-text-note and mesh-source FE-export gaps). Justified remainders: meshio `inspect` (compare/mass/measure now read its boundary surface; `inspect` itself stays B-rep/mesh-parser only), `promote_mesh_to_brep` and `repair_mesh` read the raw file (their ids and outputs are defined over it; `save_model` bakes first), and glTF has no own-format save (its exporter emits only `.glb`) | Headless tools see the same edited mesh the viewer shows, or each remaining difference is justified |
 | Meshing probes | Decide on remeshing and on conformal assemblies | MMG core probe is closed with a partial outcome: volume/surface/transport work, unconditional optimisation failed. MMG remeshing has shipped: shared service, MCP tool and panel with real-pipeline screenshots and packaged-runtime verification. Conformal multi-body meshing and Gmsh mesh optimisation have shipped, each with probe-measured results and a decision. Manifold mesh booleans have shipped, and so have periodic face pairs; pre-mesh healing and the hex-dominant MDPA split were probed and rejected (see Non-goals), and the size callback works but nothing ships on it. Structured meshing per Part has shipped as `Part.meshStructured` with exact-count smoke coverage. Metric-driven adaptive remeshing has shipped as **Adapt to field** on remesh (scalar metric; the tensor metric was probed and not worth shipping). Hausdorff-bounded surface coarsening has shipped as the `autoDecimate` backend (mmgs; the earlier negative result was a mis-scaled `hausd`). Anisotropic 2-D boundary layers have shipped as `Part.meshBoundaryLayer` (the recorded blocker did not reproduce). Achieved rows are now measured from the generated nodes (`boundaryLayerMeasurement.ts`; generate result, panel Layer row and handoff manifest, with a shortfall warning), closing 2.22. View-driven mesh sizing has shipped as `MeshOptions.sizeField` (list-based `SP` view + `PostView` field, `bull.stp` worst deviation 3.3× down at 11.7× elements, Parts and physical groups survive, no view left behind). The octree hex-dominant engine shipped as `engine: "octree"` (3522 cells enclosing exactly 60 on `block.stp`, MDPA with all three cell classes). Left: KaHIP partitioning (blocked on a meshio++ build that compiles KaHIP; re-checked on meshio++ 17.8.0 — the declarations still say it is never compiled in — and the SFC baseline is recorded) | Each probe filed with measured results and a decision |
-| Geometry probes | Decide which never-called OCCT capabilities become ops | B-rep repair (3.2); the face-region split passed its probe, shipped as the `splitFace` op, and left the list; variable-radius fillets passed theirs and shipped as `FilletOp.radius2` (see `CLAUDE.md`'s Fillet/chamfer call shapes) | Each probe filed with measured results and a decision |
+| Geometry probes | Decide which never-called OCCT capabilities become ops | B-rep repair probed and **failed** (no `ShapeFix_*` fixer clears a real finding; see Kernel-blocked) and left the list; the face-region split passed its probe, shipped as the `splitFace` op, and left the list; variable-radius fillets passed theirs and shipped as `FilletOp.radius2` (see `CLAUDE.md`'s Fillet/chamfer call shapes) | Each probe filed with measured results and a decision |
 | Agent ergonomics | An agent can tell a retryable failure from a model error, and two writers cannot silently clobber each other | Done: OpenSCAD diagnostics (document-derived OpenSCAD text now reaches an agent only inside untrusted-text markers), coded MCP errors (a failure carries a code and `retryable`; an undeclared parameter is warned about) and the MCP revision guard (a stale `expectedRevision` is refused with `stale-revision`). Mark agent-made edits has shipped too. Next: the Upkeep items (1.1, 1.2) and the remaining Ready product work | An agent's change is visible and refusable |
 | Strategic | Remove the kernel ceiling | The self-built OCCT WASM probe (6.1) | The existing test suites pass unchanged against the new build |
 
@@ -280,22 +292,6 @@ These are outcome groupings, not release numbers. Independent small items can sh
 
 *Admission: no kernel unknown remains. Either a probe passed and its call shapes are in `CLAUDE.md`, or the work only reuses shipped machinery. The estimate is firm.*
 
-#### 2.2 Shared UI design system with VSCode-MDPA-Preview {#shared-ui-design-system-with-vscode-mdpa-preview}
-
-*Area: Ecosystem.*
-
-- **Evidence:**
-  - VSCode-MDPA-Preview's `doc/ui-design-system.md` maps both extensions' vocabularies.
-  - It proposes upstreaming its view snaps (keys 1–6 for the six faces, `i` for isometric) into this repository.
-  - It leaves two renames pending: Clip → "Cut Plane", and the orientation cube's BACK → "REAR".
-  - This repository's chrome passes already use `--ui-*` metric tokens beside the theme colours, which is the part both extensions could share.
-- **First useful increment (M):**
-  - Adopt the view snaps. They go through the existing named-view vocabulary in `viewDirections.ts`, so they need no new camera code.
-  - Decide the two renames with the maintainer of both repositories, and apply the decision here.
-  - Add a drift-check script that compares the shared token block and icon names between the two repositories and prints the differences.
-- **Done when:** the snaps work in both extensions, the renames are settled, and the drift check runs in this repository's CI.
-- **Other repository's half:** the matching change in VSCode-MDPA-Preview, and its stale licence line.
-
 #### 2.3 Canonical worked example for the simulation tutorial {#canonical-worked-example-for-the-simulation-tutorial}
 
 *Area: Ecosystem. Effort: S.*
@@ -331,89 +327,12 @@ Probes are grouped by area. Each group has its own order table. The order is the
 
 | ID | Item | Needs | Why here |
 | --- | --- | --- | --- |
-| 3.2 | B-rep repair as an explicit op | the shipped validity report | Turns `check_brep_health`'s findings into something the user can act on |
-| 3.3 | More facts in the B-rep validity report | — | Cheap, read-only, and it sharpens the repair probe's before/after |
-| 3.4 | Open-profile surface output | — | Exercises the free-face invariant every `face-N` operand depends on; structurally cheap |
-| 3.5 | N-sided surface filling | — | Closes the gap `addSurfaceFromLines` leaves for non-planar boundaries |
 | 3.6 | Read PMI, layers and materials from STEP | — | May also reopen colours through a different API than the dead one |
-| 3.7 | Fillets and chamfers on 2D profiles | — | Small, self-contained, and it removes a common reason to hand-edit profiles |
 | 3.8 | Small-detail edge suppression | screenshot pipeline | Webview-side and independent; the risk is judgement, not bindings |
-| 3.9 | Project a curve onto a face | — | Useful mostly as an input to other features |
 | 3.10 | Loft takeoff by resampled intermediates | — | The measurement design is the hard part |
 | 3.11 | VRML export | — | Cheap but low value |
 
 None of these depends on another's result.
-
-##### 3.2 B-rep repair as an explicit op {#b-rep-repair-as-an-explicit-op}
-
-*Area: Geometry.*
-
-- **Hypothesis:** of the `ShapeFix_*` family, `ShapeFix_Face`, `ShapeFix_Wire`, `ShapeFix_FixSmallFace` and `ShapeFix_FixSmallSolid` (green, never called) fix the problems `check_brep_health` reports on real fixtures. They do this without the failures recorded for `ShapeFix_Shape` / `Shell` / `Wireframe`.
-- **Evidence today:**
-  - `check_brep_health` reports facts and repairs nothing.
-  - On `examples/STP/daratech.stp` it names five faces flagged `UnorientableShape`; `examples/STP/piston.stp` is seven open shells with 48 open-boundary edges.
-  - Only `ShapeFix_Solid` is known to work.
-- **Probe (S):**
-  1. Apply `ShapeFix_Face` to each of daratech's five flagged faces, then re-run the validity report on the result. Record whether the five findings clear and whether the volume moves.
-  2. Apply `ShapeFix_Wire` and `ShapeFix_FixSmallFace` to piston's shells, and report the open-edge count before and after.
-  3. Confirm that `bull.stp`, which is valid, comes out byte-identical through each fixer.
-- **Decision gate:**
-  - **Pass:** at least one fixer clears real findings without changing a valid shape.
-  - **Fail:** no fixer changes anything, or valid shapes change → Kernel-blocked beside the existing `ShapeFix_*` note.
-- **If admitted (M):**
-  - A `repairBrep` edit op: explicit, undoable, never automatic.
-  - A **Repair** button in the B-rep Health panel that proposes it.
-  - The report before and after, shown side by side.
-- **Out of scope:** sewing an open shell into a solid; the mesh-to-B-rep promotion already covers the closable case.
-
-##### 3.3 More facts in the B-rep validity report {#more-facts-in-the-b-rep-validity-report}
-
-*Area: Geometry.*
-
-- **Hypothesis:** `BRepExtrema_SelfIntersection` detects self-intersecting faces, and `ShapeAnalysis_FreeBounds` returns open boundaries as closed or open wires. Both are green and never called, and both can join `check_brep_health`'s report as facts.
-- **Evidence today:** the report detects open-boundary edges (through `ShapeAnalysis_Shell`), but not their grouping into holes, and it cannot see self-intersection at all.
-- **Addendum (2026-10-12):** text-to-cad also checks each solid's signed volume, because a reversed solid can pass topology checks while reporting a negative volume. That fact needs no new binding — the adaptive `BRepGProp` wrappers in `src/brepGProp.ts` already compute it — so it can join the report alongside the two above, as a per-solid `signedVolume` fact.
-- **Probe (S):**
-  1. Build a deliberately self-intersecting solid by translating one face of a box through the opposite face. Confirm `BRepExtrema_SelfIntersection` reports the overlapping face pair, and that a clean box reports none.
-  2. On `piston.stp`, confirm `ShapeAnalysis_FreeBounds` groups the 48 open edges into closed wires (holes), and report their count and lengths.
-  3. Record timing on `turbine.stp`, since the report is already about 9 s there.
-- **Decision gate:**
-  - **Pass:** correct detections, and timing acceptable for an explicit action.
-  - **Fail:** no detection, or runaway time → recorded, with the report unchanged.
-- **If admitted (S):** two more fact fields in `check_brep_health` and the panel. Self-intersection is opt-in if timing demands it.
-
-##### 3.4 Open-profile surface output {#open-profile-surface-output}
-
-*Area: Geometry.*
-
-- **Hypothesis:** prisming an open wire directly with `BRepPrimAPI_MakePrism_1` — the already-verified call shape, applied to the wire instead of a face — yields a ruled *surface* the existing free-face pass displays and enumerates with stable `face-N` ids, with no new kernel binding.
-- **Evidence today:** the refusal is `openProfileNeedsThin` in `occtOperations.ts`, reached from `profileFaceFor`, `regionFacesFor` and the loft branch. Everything downstream is more permissive than that refusal implies: `featureModel` appends whatever `buildFeatureSolid` returns with no `TopAbs_SOLID` check (the same five `BRep_Builder` lines `addSurfaceFromLines` uses); `tessellateByGroup`'s free-face pass already groups un-owned faces as "Sketches" and `collectFaces` mirrors it; `computeMassProperties` already returns `volume: null` for a `face-N`; `STEPControl_AsIs` writes shells. The two real blockers are `finishThin`/`orientPositiveVolume`, which rejects a near-zero-volume result (a surface path must bypass it), and the id scheme — `solid-N`/`face-N`/`edge-N`/`point-N`, no `shell-N`.
-- **Probe (S):**
-  1. On `block.stp`, append an `addLine` (one segment) and an open three-point `addPolyline`; resolve their edges through `collectEdges` into a wire; `BRepPrimAPI_MakePrism_1(wire, vec, false, true).Shape()`.
-  2. Assert `ShapeType()` is a shell (or a compound of faces), face count equals segment count, `surfacePropertiesAdaptive` area equals the sum of segment length × extrude length to 1e-9, and a `BRepBuilderAPI_Sewing` pass reports `2·segments + 2` free edges — an open sheet by construction.
-  3. Append the result to the model compound exactly as `featureModel` would; run `tessellateByGroup` and `collectFaces` and assert the new faces land in "Sketches" at the same contiguous `face-N` positions in both — the invariant every `face-N` operand depends on.
-  4. Export to STEP at `/o.step`, re-read, and repeat step 2 on the reread shape; run `computeMassProperties` on one new face and assert `volume: null` with a matching `area`.
-  5. Then revolve the same open wire through `BRepPrimAPI_MakeRevol_1`: area equals Pappus (arc length × 2π × centroid radius) for a full sweep.
-- **Decision gate:** *pass* — analytic area, stable ids, a clean STEP round trip. *Fail* — the wire prism is refused, or the free-face pass and `collectFaces` disagree on the new faces' positions → Kernel-blocked (the wire prism specifically), with the refusal recorded.
-- **If admitted:** Phase 1 (**S**) — `extrude` and `revolve` accept an open profile without `thin` and produce a surface: the op outcome and bucket record the generic `produced` role, `finishThin` is bypassed, `featureModel` is unchanged, the faces are ordinary free faces (no new id kind), and consumers that need a closed volume (`addVolumeFromSurfaces`, mass volume) refuse them by name. The panel hint and `OP_PARAM_DOCS` say "surface, not solid". Phase 2 (**M**, only if a real need appears) — `sweep`/`loft` surfaces and a `shell-N` entity id; deferred deliberately, since that id touches `entityIdScheme`, the picker, rebinding and every sidecar reader.
-- **Out of scope:** any change to `collectFaces`'s claiming algorithm — the probe verifies the new faces fit it as-is.
-
-##### 3.5 N-sided surface filling {#n-sided-surface-filling}
-
-*Area: Geometry.*
-
-- **Hypothesis:** `BRepOffsetAPI_MakeFilling` (green, never called) builds a smooth, non-planar face bounded by three or more picked edges.
-- **Evidence today:**
-  - `addSurfaceFromLines` builds planar faces only, and refuses non-coplanar loops by name.
-  - Closing a curved gap, or skinning between existing edges, has no op today.
-- **Probe (S):**
-  1. Fill a four-edge boundary taken from a cylinder's side, and check the face lies on the cylinder to a stated tolerance by sampling points.
-  2. Fill a three-edge non-planar triangle.
-  3. Confirm the new face can be sewn to the neighbouring faces into a closed shell, so `addVolumeFromSurfaces` can use it.
-- **Decision gate:**
-  - **Pass:** faces within tolerance that sew closed.
-  - **Fail:** no face, or no closure.
-- **If admitted (M):** an `addSurfaceFilling` op beside `addSurfaceFromLines`, taking edge ids, with a guide-aware refusal like the other profile-building ops.
 
 ##### 3.6 Read PMI, layers and materials from STEP {#read-pmi-layers-and-materials-from-step}
 
@@ -439,21 +358,6 @@ None of these depends on another's result.
 
   Each ships with its own verification.
 
-##### 3.7 Fillets and chamfers on 2D profiles {#fillets-and-chamfers-on-2d-profiles}
-
-*Area: Geometry.*
-
-- **Hypothesis:** `ChFi2d_FilletAPI` and `ChFi2d_ChamferAPI` (green, never called) round or chamfer the corners of a planar wire, so a profile can be rounded before it is extruded.
-- **Evidence today:** rounding a profile's corners is done today by filleting the extruded solid's edges afterwards. That costs an extra topology-changing op, and it is fragile once more features follow.
-- **Probe (S):**
-  1. Fillet one corner of a 10 × 6 rectangle profile at radius 1. Assert the area drops by exactly (1 − π/4).
-  2. Chamfer one corner at 1, and assert the area drops by exactly 0.5.
-  3. Confirm the result is still one closed wire that `extrude` accepts.
-- **Decision gate:**
-  - **Pass:** exact areas.
-  - **Fail:** the calls are rejected.
-- **If admitted (S–M):** an optional corner-radius or corner-chamfer field on the rectangle and polygon profile ops, plus a `filletProfile` op for arbitrary polylines.
-
 ##### 3.8 Optional small-detail edge suppression {#optional-small-detail-edge-suppression}
 
 *Area: Geometry.*
@@ -467,21 +371,6 @@ None of these depends on another's result.
 - **Decision gate:** *pass* — some τ hides at least 30 % of fillet-band seams on two or more fixtures while hiding no cylindrical hole rim and no large-extent face's edges. *Fail* — every τ that removes clutter also removes a hole rim → Rejected scope, with the tables kept.
 - **If admitted:** Phase 1 (**S**) — `detail: boolean` beside `smooth` on the wire format (never a filter: `edge-N` enumeration untouched), a `#hide-detail-edges` View item through `applyEdgeVisibility`, opt-in, the threshold a `cadPreview.*` setting defaulting to the probe's τ; and fix the documented "edge visibility does not survive a model rebuild" limitation for *both* flags in the same change, since a second toggle would double that bug's surface.
 - **Out of scope:** any default-on suppression; area alone as the criterion — surface type and extent are part of the test.
-
-##### 3.9 Project a curve onto a face {#project-a-curve-onto-a-face}
-
-*Area: Geometry.*
-
-- **Hypothesis:** `BRepProj_Projection` (green, never called) projects an edge or wire onto a face along a direction, giving edges that lie on that face.
-- **Evidence today:** `wrap` develops a sketch onto a cylinder or cone. Placing a path on an arbitrary face, for engraving, a split line or a sweep path, has no op today.
-- **Probe (S):**
-  1. Project a straight line onto a sphere, and check every sampled point lies on the sphere to 1e-6.
-  2. Project a circle onto a cylinder along its axis.
-  3. Use the projected edges as the splitting tool for the shipped `splitFace` op.
-- **Decision gate:**
-  - **Pass:** on-surface edges that the split probe accepts.
-  - **Fail:** recorded.
-- **If admitted (M):** a `projectCurve` op producing guide-able edges, most useful as input to the split-face op.
 
 ##### 3.10 Loft takeoff by resampled intermediates {#loft-takeoff-by-resampled-intermediates}
 
@@ -519,7 +408,7 @@ None of these depends on another's result.
 
 | ID | Item | Needs | Why here |
 | --- | --- | --- | --- |
-| 4.9 | KaHIP partitioning for Kratos MPI export | a meshio++ build with KaHIP | Lowest value; no user has asked for partitioned output yet, and the build lacks KaHIP |
+| 4.9 | KaHIP partitioning for Kratos MPI export | none — unblocked by meshio++ 17.13 (probe passed) | Lowest value; no user has asked for partitioned output yet |
 
 The MMG core probe is complete; its working volume/surface paths and negative optimisation result are recorded in `CLAUDE.md`. MMG remeshing has shipped (shared `remeshMesh` service, `remesh_mesh` MCP tool and FE-panel action, with memory admission, documentation, real-pipeline screenshots and packaged-runtime verification). Conformal multi-body meshing has shipped as the default-on `conformal` mesh option with handoff-manifest recording, Gmsh mesh optimisation has shipped as the `optimize` enum, and structured meshing per Part has shipped as `Part.meshStructured` — probe numbers and findings are in `doc/gmsh-integration.md`. Field-driven adaptation has shipped on that same volume path (the **Adapt to field** option of remesh). Hausdorff-bounded surface coarsening (formerly 4.1) has shipped as the `autoDecimate` backend, with mmgs; its record lives in `CHANGELOG.md` and `CLAUDE.md`. Anisotropic boundary layers (formerly 4.3) have shipped as `Part.meshBoundaryLayer` on 2-D generates (`doc/gmsh-integration.md#anisotropic-boundary-layers`); the recorded blocker (a background size field voiding the layer) does not reproduce, and `scripts/probe/examples/gmsh-boundary-layer.ts` is the committed probe that shows it. IDs in this section were made continuous on 2026-10-08 (see the header).
 
@@ -528,16 +417,17 @@ The MMG core probe is complete; its working volume/surface paths and negative op
 *Area: Meshing. Replaces the earlier METIS-through-Gmsh framing (2026-10-18): the partitioner lives in meshio++, which already has the API and the output plumbing.*
 
 - **Hypothesis:** meshio++'s `partition` / `partitionLabels` with `method: "kahip"` produces a better domain decomposition than its space-filling-curve default — fewer interface nodes at the same balance — and the pieces can be written one MDPA file per rank, each with its interface nodes identified. KaHIP is MIT-licensed, so it is GPL-compatible.
-- **Blocked on:** the published `@meshioplusplus/wasm` build. Its type declarations say so outright: "KaHIP is never compiled into the WASM build, so `'kahip'` always throws and `'auto'` = `'sfc'`", and the call throws `partition: method 'kahip' requires a build with -DMESHIOPLUSPLUS_WITH_KAHIP=ON`. **What meshio++ must supply:** a WASM artifact built with `-DMESHIOPLUSPLUS_WITH_KAHIP=ON`, with `'auto'` selecting KaHIP when present, and the same single-file-next-to-the-package layout as today (the FULL artifact is the only one staged). Verify the added size and that the VSIX inventory (`scripts/runtimeAssets.mjs`, `compat:vsix`) still passes before bumping.
+- **Unblocked (meshio++ 17.13.0, 2026-10-23).** The FULL artifact now links KaHIP: `hasKahip()` is `true` and `partition(..., "kahip")` runs (the lean artifact still refuses it). Nothing else about the package layout changed (`compat:vsix` clean).
 - **Evidence today:**
   - `mdpaWriter.ts` writes a single serial file; Kratos' own MPI workflow usually partitions at load time (its `metis_partitioning` process), so the value here is unproven.
   - meshio++ **SFC** already works (probe below), including a halo: `partition(mesh, n, "sfc", …, recordIds, ghostLayers)` returns balanced pieces keyed by `partition:original_cell_id` with `partition:ghost` cell data.
   - Gmsh also partitions (`gmsh.model.mesh.partition`, METIS linked in), which is why the earlier version of this item was written against it. That route passes on the mechanism too (below), but it renumbers entities and writes `$PartitionedEntities`, which no reader here consumes; meshio++ is the route that fits the existing pipeline.
 - **Probe result, baseline (2026-10-18, meshio++ 17.3.0, `bull.stp` at `sizeMax` = diagonal/20, 2 735 tets, 895 tet nodes; `scripts/probe/examples/meshio-partition.ts`):** SFC covers every cell exactly once with max/mean balance 1.005, 1.062 and 1.144 for 2, 4 and 8 parts, but the interface is large: **51, 257 and 345 interface nodes (5.7 %, 28.7 %, 38.5 % of all nodes)**. These are the numbers a graph partitioner must beat. `method: "kahip"` throws the message above on every n; `"auto"` silently runs SFC. Not probed: KaHIP quality itself (it is not in the build). **Re-checked 2026-10-20: `@meshioplusplus/wasm` 17.8.0's type declarations still say "KaHIP is never compiled into the WASM build, so `'kahip'` always throws and `'auto'` = `'sfc'`"**, so the item stays blocked.
 - **Probe result, Gmsh alternative (2026-10-18, gmsh-wasm 0.3.0; `scripts/probe/examples/gmsh-partition.ts`):** `partition(n)` for n = 2, 4, 8 takes 83–106 ms, every element sits in exactly one partitioned entity (no duplicates, element-tag set identical to the serial mesh), max/mean 1.0004, 1.0004 and 1.0033, and `unpartition` restores the serial mesh. Recorded as the fallback if meshio++ never builds KaHIP; METIS being linked into this Gmsh is already in the README licensing notes.
-- **Probe (S), once a KaHIP-enabled build exists:** run `meshio-partition.ts` unchanged and read `kahip` instead of the error. Gate: for each of n = 2, 4, 8, every cell exactly once, max/mean ≤ 1.05 at the default imbalance, and **interface nodes below the SFC numbers above**; also record `mode` ("fast"/"eco"/"strong") against time, and that a fixed `seed` reproduces the labels. **Fail:** KaHIP is no better than SFC on this mesh → close with the numbers; SFC with a halo remains available through `transform_mesh`.
+- **Probe result, KaHIP (2026-10-23, meshio++ 17.13.0, same `bull.stp` mesh, `scripts/probe/examples/meshio-partition.ts`):** **passes the gate on the tetrahedra alone, fails it on the whole `Mesh.SaveAll` mesh.** On the tet-only mesh with `imbalance` 0.03, `mode` `eco`, `seed` 1: every cell exactly once, max/mean **1.011 / 1.025 / 1.018** for 2 / 4 / 8 parts against SFC's 1.005 / 1.062 / 1.144, and **34 / 109 / 167 interface nodes against SFC's 51 / 257 / 345** (3.8 %, 12.2 %, 18.7 % of nodes; `strong` is lower again at 32 / 88 / 153 for 171–412 ms, `fast` is 35 / 114 / 172 in 14–40 ms). A fixed seed reproduces the labels. **Trap:** called on the mesh as `generate` leaves it — vertex, line and triangle blocks beside the tetra — with defaults, KaHIP partitions the graph of *all* those cells and comes back **1.77–1.79 unbalanced with empty parts** (e.g. `[1206, 1217, 0, 312]` tets for 4 parts); passing the explicit imbalance helps only a little (1.76 at 0.01). Any shipped partitioner must hand it the volume block alone (and report balance over volume cells), never the SaveAll mesh.
+- **What is left (M):** the export itself — see *If admitted* below. Nothing user-facing ships from this probe; the numbers say the work is worth doing if a Kratos MPI user asks for pre-partitioned output.
 - **Rejected regardless of the probe** if Kratos users confirm that load-time partitioning is what they use; no user has asked for pre-partitioned output.
-- **If admitted (M):** partitioned MDPA export, one file per rank, with SubModelParts preserved per rank and the interface nodes listed, built on `partition` with `ghostLayers`; reuse `meshExportFormats.ts` (a rank count option) rather than a new tool. This is the lowest-value meshing item.
+- **If admitted (M, no longer blocked):** partitioned MDPA export, one file per rank, with SubModelParts preserved per rank and the interface nodes listed, built on `partition` with `ghostLayers`; reuse `meshExportFormats.ts` (a rank count option) rather than a new tool. This is the lowest-value meshing item.
 
 #### 5. Platform probes {#platform-probes}
 
@@ -709,6 +599,8 @@ Three groups, three different revival rules. Each says what would change our min
 
   Recorded by the [kernel capability review](#kernel-capability-review).
 
+- **`ShapeFix_Face` / `ShapeFix_Wire` / `ShapeFix_FixSmallFace` / `ShapeFix_FixSmallSolid` (B-rep repair).** Probed live (opencascade.js 1.1.1, 2026-10-25, `scripts/probe/examples/occt-shapefix.ts`). Call shapes: `ShapeFix_Face_2(face)` → `Perform()` → `Face()`; `ShapeFix_Wire_2(wire, face, prec)` → `Perform()`; `ShapeFix_FixSmallFace` and `ShapeFix_FixSmallSolid` have **no `_N` constructors, only the plain `new`** (`FixSmallFace`: `Init(shape)`/`Perform()`/`FixShape()`; `FixSmallSolid.Remove` takes 2 arguments). Results: on `daratech.stp` all five faces `check_brep_health` flags (`face-13/54/58/70/71`, `UnorientableShape`) stay invalid — `ShapeFix_Face.Perform()` returns `false` on each, `ShapeFix_Wire` reports nothing fixed, volume unchanged; fixing every face changes one face and still leaves five bad. On `piston.stp` `ShapeFix_FixSmallFace` leaves the 48 open-boundary edges and the face count untouched (`ShapeFix_Face` likewise). Control `bull.stp` is unchanged by every fixer (volume equal to 1e-8 relative, `FixSmallFace` BREP text identical), so the fixers are safe but inert here. `FixSmallSolid` was only constructed (no fixture contains a small solid). **Revive only** with a fixture where a fixer demonstrably clears a `check_brep_health` finding, or a build that binds `ShapeFix_Shell`/`ShapeFix_Shape`; `check_brep_health` stays facts-only.
+- **`BRepExtrema_SelfIntersection` (face self-intersection).** Probed live (opencascade.js 1.1.1, 2026-10-25, `scripts/probe/examples/occt-brep-health-facts.ts`): the prototype is empty and both `_1(tol)` and `_2(shape, tol)` constructors throw `Cannot construct … due to unbound types: 25BRepExtrema_ElementFilter`, so a box with a face pushed through the opposite face cannot be tested. `check_brep_health` therefore reports no self-intersection fact. **Revive only** with a build that binds `BRepExtrema_ElementFilter` (the self-built OCCT probe re-checks it).
 - **Hidden-line removal through OCCT's own `HLRBRep_*` family.** Every class is red in this build: `HLRBRep_Algo`, `HLRBRep_PolyAlgo`, `HLRBRep_HLRToShape`, `HLRBRep_PolyHLRToShape`. `HLRAlgo_Projector` is green but is a low-level internal only reachable through them.
 
   **The narrow survivor, `HLRAppli_ReflectLines`, was probed and is not the way in either — and it is this file's canonical example of green-but-useless.** The binding genuinely works: the unsuffixed constructor takes a `TopoDS_Shape`, and `SetAxes`/`Perform`/`GetResult` are all bound and functional (249 ms on `bull.stp`, returning a non-null compound this codebase's own `enumerateEdges` reads as 25 edges). It was rejected on the *drawing*, which is only visible by looking at it: rendered side by side against a tessellation-derived silhouette of the same view, `GetResult()` produced the outer boundary and a few fragments while missing the part's circular holes and interior cutout entirely. `GetResult()` returns reflect lines only; sharp feature edges live behind `GetCompoundOf3dEdges(type, …)`, whose `type` argument is an `HLRBRep_TypeOfResultingEdge` — from the entirely-red family above — so calling it throws. The one filter that would make the kernel path competitive is unreachable.

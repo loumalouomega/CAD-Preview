@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { OP_CATALOG, allCatalogEntries, describeOp, referencedEntities, buildEntityReferenceIndex, QUERYABLE_PANEL_FORMS } from "./opCatalog";
+import { OP_CATALOG, AGENT_ONLY_OPS, allCatalogEntries, describeOp, referencedEntities, buildEntityReferenceIndex, QUERYABLE_PANEL_FORMS } from "./opCatalog";
 import { OP_ICONS } from "./opIcons";
 import { BREP_ONLY_OPS, QUERYABLE_OPERAND_FIELDS, type EditOp, type EditOpKind } from "../editOps";
 
@@ -53,9 +53,11 @@ const REPRESENTATIVE_OPS: Record<EditOpKind, EditOp> = {
   addBezier: { op: "addBezier", controlPoints: [[0, 0, 0], [5, 10, 0], [10, 0, 0]] },
   addEllipseArc: { op: "addEllipseArc", center: [0, 0, 0], normal: [0, 0, 1], up: [1, 0, 0], radiusX: 8, radiusY: 5, startAngleDeg: 0, endAngleDeg: 90 },
   addHelix: { op: "addHelix", center: [0, 0, 0], axis: [0, 0, 1], radius: 5, pitch: 3, turns: 2 },
+  addSurfaceFilling: { op: "addSurfaceFilling", edges: ["edge-0", "edge-1", "edge-2"] },
   addSurfaceFromLines: { op: "addSurfaceFromLines", edges: ["edge-0", "edge-1", "edge-2"] },
   addVolumeFromSurfaces: { op: "addVolumeFromSurfaces", faces: ["face-0", "face-1", "face-2", "face-3"] },
   addEdgeSlot: { op: "addEdgeSlot", edge: "edge-0", width: 2 },
+  filletProfile: { op: "filletProfile", edges: ["edge-0", "edge-1"], radius: 1 },
   align: { op: "align", targets: ["solid-0"], axis: "z", extent: "min", to: 0 },
   patternLinear: { op: "patternLinear", targets: ["solid-0"], direction: [1, 0, 0], spacing: 10, count: 4 },
   patternCircular: { op: "patternCircular", targets: ["solid-0"], axisPoint: [0, 0, 0], axisDir: [0, 0, 1], angleDeg: 60, count: 6 },
@@ -91,6 +93,7 @@ describe("OP_CATALOG", () => {
   it("reaches every EditOp kind from at least one button", () => {
     const reachable = new Set(allCatalogEntries().flatMap((e) => e.kinds));
     for (const kind of Object.keys(REPRESENTATIVE_OPS) as EditOpKind[]) {
+      if (AGENT_ONLY_OPS.has(kind)) continue;
       expect(reachable.has(kind), `button emitting ${kind}`).toBe(true);
     }
   });

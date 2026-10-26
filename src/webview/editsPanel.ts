@@ -207,6 +207,10 @@ export interface EditsPanelCallbacks {
   onBuildVolumeFromSurfaces: () => void;
   /** Build a stadium slot face from the currently-selected edge (Line mode, B-rep only). */
   onBuildEdgeSlot: (width: number) => void;
+  /** Fill the selected closed edge loop with a smooth, generally non-planar face (B-rep only). */
+  onBuildSurfaceFilling: () => void;
+  /** Round (`radius`) or bevel (`chamfer`, optional `chamfer2`) the corner between the two selected sketch segments. */
+  onBuildFilletProfile: (radius?: number, chamfer?: number, chamfer2?: number) => void;
   /** Fired whenever the open param form changes (a different op button
    * clicked, or the form collapsed — `null`). Lets `main.ts` show/hide/
    * retarget the Transform Gizmo for `"translate"`/`"rotate"`/`"scale"`
@@ -1442,6 +1446,10 @@ export class EditsPanel {
         f.appendChild(this.hint("Select 3+ lines forming a closed loop (Line mode)"));
         this.applyButtonDraft("Build", "Build a flat face from the selected lines", () => ({}), () => this.cb.onBuildSurfaceFromLines());
         break;
+      case "fillSurface":
+        f.appendChild(this.hint("Select 3+ edges (Line mode) forming a closed boundary. Builds a smooth, generally non-planar face through them (an approximation, not an exact analytic surface)"));
+        this.applyButtonDraft("Build", "Fill the selected boundary with a smooth face", () => ({}), () => this.cb.onBuildSurfaceFilling());
+        break;
       case "buildVolume":
         f.appendChild(this.hint("Select 4+ surfaces forming a closed shell (Surf mode)"));
         this.applyButtonDraft("Build", "Build a solid by sewing the selected surfaces", () => ({}), () => this.cb.onBuildVolumeFromSurfaces());
@@ -1452,6 +1460,23 @@ export class EditsPanel {
         this.applyButtonDraft("Build", "Build a stadium slot around the selected edge", () => ({}) as any, () => {
           const width = this.readNum("width");
           this.cb.onBuildEdgeSlot(width);
+        });
+        break;
+
+      case "filletProfile":
+        f.appendChild(this.hint("Select the two adjacent segments of a sketch polyline (Line mode, in order). Radius rounds the corner; fill in Distance (and optionally Distance 2 along the second segment) to bevel it instead"));
+        f.appendChild(this.numField("radius", "Radius", 1));
+        f.appendChild(this.numField("chamfer", "Distance", 1));
+        f.appendChild(this.numField("chamfer2", "Distance 2", 1));
+        this.clearNumField("chamfer");
+        this.clearNumField("chamfer2");
+        this.applyButtonDraft("Build", "Round or bevel the corner between the two selected segments", () => ({}) as any, () => {
+          // A filled Distance selects the bevel; Radius keeps its default otherwise.
+          const bevel = this.hasNumValue("chamfer");
+          this.cb.onBuildFilletProfile(
+            !bevel && this.hasNumValue("radius") ? this.readNum("radius") : undefined,
+            bevel ? this.readNum("chamfer") : undefined,
+            bevel && this.hasNumValue("chamfer2") ? this.readNum("chamfer2") : undefined);
         });
         break;
 
