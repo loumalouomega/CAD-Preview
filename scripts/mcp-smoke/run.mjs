@@ -8486,9 +8486,10 @@ try {
       const seg = [[-5, 1, 10], [5, 1, 10]];
       const projected = await callWithCleanRetry("apply_edit_ops", { path: wireModel, ops: [{ op: "splitFace", face: topId, points: seg, projectDir: [0, 0, -1] }] }, resetWire);
       assert(projected.applied === 1 && (projected.notApplied ?? 0) === 0, `a projected segment splits the top face (got ${JSON.stringify(projected.report)})`);
-      // The y = 1 cut leaves 3 x 3 = 9 and 3 x 1 = 3 on the 3 x 4 face; the new face is the last one.
-      const half = await callWithCleanRetry("inspect", { path: wireModel, entityId: "face-6" }, resetWire);
-      assert(Math.abs((half.area ?? 0) - 9) < 1e-3 || Math.abs((half.area ?? 0) - 3) < 1e-3, `the new face-6 is one split half, area 9 or 3 (got ${half.area})`);
+      // The y = 1 cut leaves 3 x 3 = 9 and 3 x 1 = 3 on the 3 x 4 face; ids renumber, so scan all 7 faces.
+      const areas = [];
+      for (let i = 0; i < 7; i++) areas.push((await callWithCleanRetry("inspect", { path: wireModel, entityId: `face-${i}` }, resetWire)).area ?? 0);
+      assert(areas.some((a) => Math.abs(a - 9) < 1e-3) && areas.some((a) => Math.abs(a - 3) < 1e-3), `the split leaves halves of area 9 and 3 among 7 faces (got ${JSON.stringify(areas)})`);
       const vol = await call("get_mass_properties", { path: wireModel, entityId: "solid-0" });
       assert(Math.abs(vol.volume - 60) / 60 < 1e-6, `projection split leaves volume 60 (got ${vol.volume})`);
       resetWire();
