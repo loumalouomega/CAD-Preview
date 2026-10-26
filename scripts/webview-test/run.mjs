@@ -8007,6 +8007,92 @@ test("FE Mesh: the Octree engine greys the Gmsh-only fields, enables its own, an
   );
 });
 
+test("FE Mesh: the Mesh-CAD engine enables its own fields, keeps Element order live, posts its options and renders its facts", async (page) => {
+  await populate(page);
+  await page.evaluate(() => {
+    const adv = [...document.querySelectorAll("#meshing-body details, #meshing-body .meshing-advanced")];
+    for (const d of adv) d.open = true;
+  });
+  const fields = () =>
+    page.evaluate(() => {
+      const byLabel = (text) => {
+        const row = [...document.querySelectorAll("#meshing-body .meshing-field")].find((r) => r.querySelector(".meshing-label")?.textContent === text);
+        return row?.querySelector("input, select") ?? null;
+      };
+      const engine = byLabel("Engine");
+      const own = ["Mesh-CAD min angle (°)", "Mesh-CAD smoothing passes", "Mesh-CAD curvature deviation (mm)", "Mesh-CAD cells across gaps", "Mesh-CAD grading"];
+      return {
+        options: engine ? [...engine.options].map((o) => o.value) : null,
+        value: engine?.value ?? null,
+        ownDisabled: own.map((l) => byLabel(l)?.disabled ?? null),
+        sizeMinDisabled: byLabel("Size min")?.disabled ?? null,
+        sizeMaxDisabled: byLabel("Size max")?.disabled ?? null,
+        shapeDisabled: byLabel("Element shape")?.disabled ?? null,
+        orderDisabled: byLabel("Element order")?.disabled ?? null,
+        levelDisabled: byLabel("Octree max level")?.disabled ?? null,
+      };
+    });
+  const before = await fields();
+  assert(before.options?.includes("meshcad"), `the Engine select offers meshcad (got ${JSON.stringify(before.options)})`);
+  assert(before.ownDisabled.length === 5 && before.ownDisabled.every((d) => d === true), `under Gmsh the five Mesh-CAD fields are greyed (got ${JSON.stringify(before.ownDisabled)})`);
+  await page.evaluate(() => (window.__sent.length = 0));
+  await page.evaluate(() => {
+    const row = [...document.querySelectorAll("#meshing-body .meshing-field")].find((r) => r.querySelector(".meshing-label")?.textContent === "Engine");
+    const sel = row.querySelector("select");
+    sel.value = "meshcad";
+    sel.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+  await sleep(150);
+  const after = await fields();
+  assert(after.value === "meshcad", `the select reflects the change (got ${after.value})`);
+  assert(after.ownDisabled.every((d) => d === false), `under Mesh-CAD its own fields are enabled (got ${JSON.stringify(after.ownDisabled)})`);
+  assert(
+    after.sizeMinDisabled === true && after.shapeDisabled === true && after.levelDisabled === true && after.orderDisabled === false && after.sizeMaxDisabled === false,
+    `Size max and Element order stay live (it sizes by Size max and writes triangle6), the Gmsh-only Size min / Element shape and the octree field are greyed (got ${JSON.stringify(after)})`
+  );
+  await page.evaluate(() => {
+    const row = [...document.querySelectorAll("#meshing-body .meshing-field")].find((r) => r.querySelector(".meshing-label")?.textContent === "Mesh-CAD min angle (°)");
+    const input = row.querySelector("input");
+    input.value = "25";
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+  await sleep(150);
+  const sent = await page.evaluate(() => (window.__sent ?? []).filter((m) => m.type === "meshingChanged").at(-1) ?? null);
+  assert(
+    sent?.options?.engine === "meshcad" && sent.options.meshcadMinAngle === 25 && sent.options.meshcadSmoothIterations === 0,
+    `the change posts engine meshcad with the typed min angle and the default smoothing (got ${JSON.stringify(sent?.options)})`
+  );
+  // A bound the model cannot reach is rejected back to off rather than posted.
+  await page.evaluate(() => {
+    const row = [...document.querySelectorAll("#meshing-body .meshing-field")].find((r) => r.querySelector(".meshing-label")?.textContent === "Mesh-CAD min angle (°)");
+    const input = row.querySelector("input");
+    input.value = "75";
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+  await sleep(150);
+  const sent2 = await page.evaluate(() => (window.__sent ?? []).filter((m) => m.type === "meshingChanged").at(-1) ?? null);
+  assert(sent2?.options?.meshcadMinAngle === 0, `a min angle of 75° (no triangulation can guarantee it) is posted as off (got ${JSON.stringify(sent2?.options?.meshcadMinAngle)})`);
+  // A result carrying mesh-CAD facts renders them, naming the missed bound and the loss of Parts.
+  const sentBefore = await page.evaluate(() => window.__sent.length);
+  await page.evaluate(() => document.getElementById("meshing-generate")?.click());
+  await page.waitForFunction((n) => window.__sent.slice(n).some((m) => m.type === "meshingGenerate"), sentBefore, { timeout: 5000 });
+  const requestId = await page.evaluate((n) => window.__sent.slice(n).findLast((m) => m.type === "meshingGenerate").requestId, sentBefore);
+  await post(page, {
+    type: "meshingResult", requestId, positions: "", indices: "", edges: "", nodeCount: 148, elementCount: 292, elementGroups: [], elapsedMs: 56,
+    meshcad: {
+      targetSize: 1, order: 1, numFaces: 6, numFailed: 0, numTriangles: 292, numPoints: 148, numOpenEdges: 0, numNonManifoldEdges: 0, numMisorientedEdges: 0,
+      minAngleDeg: 26.565, maxAngleDeg: 111.5, minEdge: 0.5, maxEdge: 1.36, numRefinementPoints: 30, numFacesBelowBound: 2, numSmoothed: 0, numCurvedStraightened: 0, warnings: [],
+    },
+  });
+  await post(page, { type: "meshingJobSettled", requestId });
+  await sleep(300);
+  const text = await page.evaluate(() => document.getElementById("meshing-status")?.textContent ?? "");
+  assert(
+    text.includes("Mesh-CAD surface: 292 tri · min angle 26.6° · closed · 2 face(s) below the angle bound · Parts not preserved"),
+    `the result row names the triangle count, the closure, the missed bound and the loss of Parts (got ${JSON.stringify(text)})`
+  );
+});
+
 test("FE Mesh: the fTetWild engine enables its own fields, greys the Gmsh-only ones, and posts the engine", async (page) => {
   await populate(page);
   await page.evaluate(() => {

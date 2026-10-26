@@ -6675,6 +6675,7 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
         boundaryLayers: msg.boundaryLayers,
         octree: msg.octree,
         octreeMesh: msg.octreeMesh,
+        meshcad: msg.meshcad,
       });
       break;
 

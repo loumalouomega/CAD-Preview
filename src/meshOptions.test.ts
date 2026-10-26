@@ -3,6 +3,7 @@ import {
   validateMeshOptions,
   octreeSummary,
   octreeMeshSummary,
+  meshcadSummary,
   OCTREE_MAX_LEVEL_LIMIT,
   OCTREE_MESH_LEVELS_LIMIT,
   validateMeshGrading,
@@ -47,6 +48,11 @@ describe("validateMeshOptions", () => {
       octreeMeshOutput: "hex" as const,
       octreeMeshMaxSize: 1.5,
       octreeMeshLevels: 3,
+      meshcadMinAngle: 25,
+      meshcadSmoothIterations: 2,
+      meshcadCurvatureDeviation: 0.05,
+      meshcadCellsAcrossGaps: 2,
+      meshcadGrading: 1.3,
       conformal: true,
     };
     expect(validateMeshOptions(opts)).toEqual(opts);
@@ -136,7 +142,7 @@ describe("validateMeshOptions", () => {
     expect(validateMeshOptions({ optimize: 1 })?.optimize).toBe(DEFAULT_MESH_OPTIONS.optimize);
   });
 
-  it("defaults engine unless it is exactly 'gmsh', 'ftetwild', 'octree' or 'octreemesh'", () => {
+  it("defaults engine unless it is exactly 'gmsh', 'ftetwild', 'octree', 'octreemesh' or 'meshcad'", () => {
     expect(validateMeshOptions({ engine: "octree" })?.engine).toBe("octree");
     expect(validateMeshOptions({ engine: "octreemesh" })?.engine).toBe("octreemesh");
     expect(validateMeshOptions({ engine: "octreeMesh" })?.engine).toBe("gmsh");
@@ -427,8 +433,42 @@ describe("DEFAULT_MESH_OPTIONS", () => {
       octreeMeshOutput: "tet",
       octreeMeshMaxSize: 0,
       octreeMeshLevels: 2,
+      meshcadMinAngle: 0,
+      meshcadSmoothIterations: 0,
+      meshcadCurvatureDeviation: 0,
+      meshcadCellsAcrossGaps: 0,
+      meshcadGrading: 0,
       conformal: true,
     });
+  });
+
+  it("validates the mesh-CAD fields to their documented ranges", () => {
+    expect(validateMeshOptions({ engine: "meshcad" })?.engine).toBe("meshcad");
+    expect(validateMeshOptions({ engine: "meshCad" })?.engine).toBe("gmsh");
+    expect(validateMeshOptions({ meshcadMinAngle: 25 })?.meshcadMinAngle).toBe(25);
+    // below 0 and at/above 60 can never be met by a triangulation: back to off
+    for (const bad of [-1, 60, 90, Number.NaN, "25"]) expect(validateMeshOptions({ meshcadMinAngle: bad })?.meshcadMinAngle).toBe(0);
+    expect(validateMeshOptions({ meshcadSmoothIterations: 3.4 })?.meshcadSmoothIterations).toBe(3);
+    expect(validateMeshOptions({ meshcadSmoothIterations: 5000 })?.meshcadSmoothIterations).toBe(100);
+    expect(validateMeshOptions({ meshcadSmoothIterations: -2 })?.meshcadSmoothIterations).toBe(0);
+    expect(validateMeshOptions({ meshcadCurvatureDeviation: 0.05 })?.meshcadCurvatureDeviation).toBe(0.05);
+    expect(validateMeshOptions({ meshcadCurvatureDeviation: -1 })?.meshcadCurvatureDeviation).toBe(0);
+    expect(validateMeshOptions({ meshcadCellsAcrossGaps: 2 })?.meshcadCellsAcrossGaps).toBe(2);
+    expect(validateMeshOptions({ meshcadGrading: 1.3 })?.meshcadGrading).toBe(1.3);
+    // |grad h| <= grading - 1: anything in (0, 1] is meaningless
+    for (const bad of [0.5, 1, -1]) expect(validateMeshOptions({ meshcadGrading: bad })?.meshcadGrading).toBe(0);
+  });
+
+  it("summarises a mesh-CAD generate in one line, naming open edges and missed bounds", () => {
+    const stats = {
+      targetSize: 1, order: 1 as const, numFaces: 6, numFailed: 0, numTriangles: 252, numPoints: 128,
+      numOpenEdges: 0, numNonManifoldEdges: 0, numMisorientedEdges: 0, minAngleDeg: 23.79, maxAngleDeg: 105,
+      minEdge: 0.5, maxEdge: 1.2, numRefinementPoints: 0, numFacesBelowBound: 0, numSmoothed: 0, numCurvedStraightened: 0, warnings: [],
+    };
+    expect(meshcadSummary(stats)).toBe("Mesh-CAD surface: 252 tri · min angle 23.8° · closed · Parts not preserved");
+    expect(meshcadSummary({ ...stats, numOpenEdges: 4, numFacesBelowBound: 2, numFailed: 1 })).toBe(
+      "Mesh-CAD surface: 252 tri · min angle 23.8° · 4 open edges · 2 face(s) below the angle bound · 1 face(s) failed · Parts not preserved"
+    );
   });
 
   it("defaults the fTetWild flags unless real booleans", () => {

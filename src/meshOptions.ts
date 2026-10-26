@@ -49,13 +49,53 @@ export type MeshElementShape = "simplex" | "subdivided" | "hexDominant";
  * Gmsh-only options are refused by name — see `gmshService.ts`'s
  * `octreeUnsupportedOptions`.
  */
-export type MeshEngine = "gmsh" | "ftetwild" | "octree" | "octreemesh";
+export type MeshEngine = "gmsh" | "ftetwild" | "octree" | "octreemesh" | "meshcad";
+
+/** Facts an `engine: "meshcad"` generate reports — the subset of meshio++'s
+ * `meshCadSurface` report that says how good the surface is. Parts are never
+ * preserved; quality bounds are facts, never promises. */
+export interface MeshCadStats {
+  /** Resolved target edge length (mm) — `sizeMax`, or bbox diagonal / 20 when unset. */
+  targetSize: number;
+  /** 1 linear, 2 `triangle6`, 3 `triangle10`. */
+  order: 1 | 2 | 3;
+  numFaces: number;
+  numFailed: number;
+  numTriangles: number;
+  numPoints: number;
+  /** 0/0/0 = a watertight, consistently wound surface. */
+  numOpenEdges: number;
+  numNonManifoldEdges: number;
+  numMisorientedEdges: number;
+  minAngleDeg: number;
+  maxAngleDeg: number;
+  minEdge: number;
+  maxEdge: number;
+  numRefinementPoints: number;
+  /** Faces whose `minAngle` bound a sharp corner made unreachable. */
+  numFacesBelowBound: number;
+  numSmoothed: number;
+  numCurvedStraightened: number;
+  /** meshio++'s own warnings plus this engine's, verbatim. */
+  warnings: string[];
+}
+
+/** One-line readout of a meshcad generate for the panel status line. */
+export function meshcadSummary(stats: MeshCadStats): string {
+  const closed = stats.numOpenEdges + stats.numNonManifoldEdges + stats.numMisorientedEdges === 0 ? "closed" : `${stats.numOpenEdges} open edges`;
+  const below = stats.numFacesBelowBound > 0 ? ` · ${stats.numFacesBelowBound} face(s) below the angle bound` : "";
+  const failed = stats.numFailed > 0 ? ` · ${stats.numFailed} face(s) failed` : "";
+  return `Mesh-CAD surface: ${stats.numTriangles} tri · min angle ${stats.minAngleDeg.toFixed(1)}° · ${closed}${below}${failed} · Parts not preserved`;
+}
 
 /** Outputs of meshio++ 17.13's `octreeMesh` (`engine: "octreemesh"`). The
  * castellated output has hanging nodes and surrogate boundary faces, which no
  * downstream reader here accepts as a conforming mesh, so it is NOT offered. */
 export type OctreeMeshOutput = "tet" | "hex";
 export const OCTREE_MESH_OUTPUTS: readonly OctreeMeshOutput[] = ["tet", "hex"];
+
+/** Most `meshcadSmoothIterations` offered. */
+export const MESHCAD_SMOOTH_LIMIT = 100;
 
 /** Deepest `octreeMeshLevels` offered (leaf edge = maxSize / 2^levels). */
 export const OCTREE_MESH_LEVELS_LIMIT = 4;
@@ -190,6 +230,23 @@ export interface MeshOptions {
    * maxSize / 2^levels), 1..{@link OCTREE_MESH_LEVELS_LIMIT}. Only meaningful
    * when `engine === "octreemesh"`. */
   octreeMeshLevels: number;
+  /** Mesh-CAD: refine until every triangle's smallest angle is at least this
+   * (degrees, 0 ≤ x < 60); `0` keeps the unrefined mesh. Only meaningful when
+   * `engine === "meshcad"`. */
+  meshcadMinAngle: number;
+  /** Mesh-CAD: passes of guarded smoothing (integer ≥ 0). Only meaningful when
+   * `engine === "meshcad"`. */
+  meshcadSmoothIterations: number;
+  /** Mesh-CAD: size each region so a chord sits at most this far (mm) from the
+   * surface; `0` is off. Only meaningful when `engine === "meshcad"`. */
+  meshcadCurvatureDeviation: number;
+  /** Mesh-CAD: size each region so at least this many elements span its local
+   * feature size; `0` is off. Only meaningful when `engine === "meshcad"`. */
+  meshcadCellsAcrossGaps: number;
+  /** Mesh-CAD: largest size growth, `|grad h| ≤ grading − 1`; `0` is upstream's
+   * 1.5. Acts only with curvature deviation or cells-across-gaps. Only
+   * meaningful when `engine === "meshcad"`. */
+  meshcadGrading: number;
   /**
    * Conformal multi-body meshing: call
    * `gmsh.model.occ.fragment` over every imported solid before meshing, so
@@ -460,6 +517,11 @@ export const DEFAULT_MESH_OPTIONS: MeshOptions = {
   octreeMeshOutput: "tet",
   octreeMeshMaxSize: 0,
   octreeMeshLevels: 2, // cube.stl at maxSize 2, levels 2: 44 832 tets, min dihedral 35° (probe)
+  meshcadMinAngle: 0,
+  meshcadSmoothIterations: 0,
+  meshcadCurvatureDeviation: 0,
+  meshcadCellsAcrossGaps: 0,
+  meshcadGrading: 0,
   conformal: true,
 };
 
@@ -550,7 +612,7 @@ export function validateMeshOptions(raw: unknown): MeshOptions | null {
   const stlAngle =
     isFiniteNumber(o.stlAngle) && o.stlAngle > 0 && o.stlAngle < 180 ? o.stlAngle : DEFAULT_MESH_OPTIONS.stlAngle;
 
-  const engine: MeshOptions["engine"] = o.engine === "gmsh" || o.engine === "ftetwild" || o.engine === "octree" || o.engine === "octreemesh" ? o.engine : DEFAULT_MESH_OPTIONS.engine;
+  const engine: MeshOptions["engine"] = o.engine === "gmsh" || o.engine === "ftetwild" || o.engine === "octree" || o.engine === "octreemesh" || o.engine === "meshcad" ? o.engine : DEFAULT_MESH_OPTIONS.engine;
 
   const ftetwildEpsRel =
     isFiniteNumber(o.ftetwildEpsRel) && o.ftetwildEpsRel > 0
@@ -580,6 +642,17 @@ export function validateMeshOptions(raw: unknown): MeshOptions | null {
       ? Math.min(OCTREE_MESH_LEVELS_LIMIT, Math.round(o.octreeMeshLevels))
       : DEFAULT_MESH_OPTIONS.octreeMeshLevels;
 
+  const nonNegative = (v: unknown, fallback: number): number => (isFiniteNumber(v) && v >= 0 ? v : fallback);
+  const meshcadMinAngle = isFiniteNumber(o.meshcadMinAngle) && o.meshcadMinAngle >= 0 && o.meshcadMinAngle < 60 ? o.meshcadMinAngle : DEFAULT_MESH_OPTIONS.meshcadMinAngle;
+  const meshcadSmoothIterations =
+    isFiniteNumber(o.meshcadSmoothIterations) && o.meshcadSmoothIterations >= 0
+      ? Math.min(MESHCAD_SMOOTH_LIMIT, Math.round(o.meshcadSmoothIterations))
+      : DEFAULT_MESH_OPTIONS.meshcadSmoothIterations;
+  const meshcadCurvatureDeviation = nonNegative(o.meshcadCurvatureDeviation, DEFAULT_MESH_OPTIONS.meshcadCurvatureDeviation);
+  const meshcadCellsAcrossGaps = nonNegative(o.meshcadCellsAcrossGaps, DEFAULT_MESH_OPTIONS.meshcadCellsAcrossGaps);
+  // 0 (upstream default) or above 1: |grad h| <= grading - 1 makes anything in (0, 1] meaningless.
+  const meshcadGrading = isFiniteNumber(o.meshcadGrading) && (o.meshcadGrading === 0 || o.meshcadGrading > 1) ? o.meshcadGrading : DEFAULT_MESH_OPTIONS.meshcadGrading;
+
   const conformal = typeof o.conformal === "boolean" ? o.conformal : DEFAULT_MESH_OPTIONS.conformal;
 
   const out: MeshOptions = {
@@ -602,6 +675,11 @@ export function validateMeshOptions(raw: unknown): MeshOptions | null {
     octreeMeshOutput,
     octreeMeshMaxSize,
     octreeMeshLevels,
+    meshcadMinAngle,
+    meshcadSmoothIterations,
+    meshcadCurvatureDeviation,
+    meshcadCellsAcrossGaps,
+    meshcadGrading,
     conformal,
   };
   // Optional and omitted when absent, so an untouched sidecar stays byte-stable.

@@ -56,6 +56,11 @@ describe("parseMeshPresetsJson", () => {
     expect(lib.weird.options.sizeMax).toBe(3);
   });
 
+  it("keeps a pinned meshcad engine instead of falling back to gmsh", () => {
+    const text = JSON.stringify({ version: 1, presets: { skin: { name: "skin", engine: "meshcad", options: {} } } });
+    expect(parseMeshPresetsJson(text).skin.engine).toBe("meshcad");
+  });
+
   it("keeps a pinned octreemesh engine instead of falling back to gmsh", () => {
     const text = JSON.stringify({ version: 1, presets: { tets: { name: "tets", engine: "octreemesh", options: {} } } });
     expect(parseMeshPresetsJson(text).tets.engine).toBe("octreemesh");

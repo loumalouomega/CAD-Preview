@@ -6,6 +6,15 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/); thi
 
 ## [Unreleased]
 
+### Added
+
+- **`engine: "meshcad"`: a kernel-free B-rep surface mesher, from meshio++'s `meshCadSurface`.** A fifth engine beside Gmsh, fTetWild and the two octrees, and the first that meshes a surface: with `dimension: 2` on a B-rep source it triangulates the exact faces (edges sampled once and shared, so the surface is watertight whenever the B-rep is) without OpenCASCADE or Gmsh geometry. Sized by `sizeMax` (unset = bbox diagonal / 20) and refined by `meshcadMinAngle`, `meshcadSmoothIterations`, `meshcadCurvatureDeviation`, `meshcadCellsAcrossGaps` and `meshcadGrading`; `elementOrder: 2` writes curved `triangle6`. `block.stp` at size 1 is 252 closed triangles of total area exactly 94; `meshcadMinAngle: 25` lifts the minimum angle from 23.8° to 26.6°. Quality is reported, not promised (on `bull.stp` the same bound stops after 16 rounds with 6 faces below it, and says so). Parts and physical groups are not preserved; `periodic`, `sizeField` and non-simplex shapes are refused by name; a mesh-format source or `dimension !== 2` falls back to Gmsh with a warning. Panel select + five fields, `generate_mesh`/`export_mesh`/handoff-manifest facts (`meshcad`), refinement sweeps supported. Pure `surfaceToMsh41` writes the ASCII MSH 4.1 (meshio++'s own `gmsh` writer is binary and unreadable by Gmsh's 32-bit WASM); probes `meshio-meshcad-1721.ts` and `meshcad-engine.ts`.
+- **`mesh_cad_surface` gains the meshio++ 17.14–17.20 quality controls.** `minAngle`, `smoothIterations`/`smoothMethod`, `order` 1–3 (`triangle6`/`triangle10`, `.msh`/`.vtk`/`.vtu` only), `grading`, `curvatureDeviation`, `cellsAcrossGaps`, `poleRings`, `faceSizes`/`edgeSizes`, `metric`, `virtualEdges`, `virtualFaces`, `modelTolerances`, `reparamConditionNumber` and `lopCorners`, with the new report facts (`numRefinementPoints`, `numFacesBelowBound`, `numSmoothed`, `numCurvedStraightened`, `angleHistogram`, per-face `belowBound`/`boundDeg`, the capped virtual-edge / merged-face / tolerance / lopped-corner lists). A default call forwards exactly what it did on 17.13.
+
+### Changed
+
+- **Adopted `@meshioplusplus/wasm` 17.21.0 (pinned; was 17.13.0).** The API surface and the format list are identical apart from `meshCadSurface`'s options and report (every other export and `availableFormats()` verified equal); the FULL WASM grew 30.4 → 30.8 MB. Not adopted: `meshCadSurface`'s `background` size-field mesh (no clean file route yet).
+
 ## [3.30.0] - 2026-10-26
 
 ### Added

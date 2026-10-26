@@ -287,6 +287,29 @@ function mshCellVolumes(mshText) {
   return { volume, nonPositive, ...counts };
 }
 
+/** Total area and per-type counts of the 2-D cells (Gmsh types 2 triangle, 9 triangle6, 21 triangle10 — the
+ * three corner nodes are the flat triangle) in an MSH 4.1 file, with the count of degenerate (zero-area) cells.
+ * Pins what a mesh-CAD surface encloses: block.stp's six faces total exactly 94. */
+function mshTriangleArea(mshText) {
+  const { coords } = mshVolumeNodes(mshText);
+  const elementLines = (mshText.split("$Elements\n")[1]?.split("$EndElements")[0] ?? "").trim().split("\n");
+  const byType = {};
+  let area = 0, degenerate = 0, cursor = 1;
+  for (let b = 0, blocks = Number(elementLines[0]?.split(/\s+/)[0]); b < blocks; b++) {
+    const [dim, , elType, n] = elementLines[cursor++].trim().split(/\s+/).map(Number);
+    for (let i = 0; i < n; i++, cursor++) {
+      if (dim !== 2) continue;
+      const [A, B, C] = elementLines[cursor].trim().split(/\s+/).map(Number).slice(1, 4).map((t) => coords.get(t));
+      const u = B.map((x, k) => x - A[k]), v = C.map((x, k) => x - A[k]);
+      const a2 = Math.hypot(u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]) / 2;
+      byType[elType] = (byType[elType] ?? 0) + 1;
+      if (a2 < 1e-12) degenerate++;
+      area += a2;
+    }
+  }
+  return { area, degenerate, byType };
+}
+
 /** Top-dimensional node-tag sets keyed by Gmsh volume tag, plus node positions.
  * Unlike comparing coincident coordinates, intersecting tags proves two
  * volumes actually share the SAME mesh nodes at their interface. */
@@ -3020,6 +3043,43 @@ try {
   assert(mcsMeshSource.supported === false, "mesh_cad_surface refuses a mesh-format source (no B-rep faces)");
   const mcsBad = await callTolerant("mesh_cad_surface", { path: mcsBlock, outputPath: path.join(dir, "mcs-block.step"), targetSize: 0.5 });
   assert(mcsBad.error && /outputPath must end in/.test(mcsBad.error), `mesh_cad_surface rejects an unsupported outputPath extension (got: ${mcsBad.error})`);
+  // meshio++ 17.14-17.20 options (probe meshio-meshcad-1721.ts): angle-bound refinement, curved
+  // order, per-face sizes, and the honest failure to reach a bound a sharp corner forbids.
+  const mcsAngle = await call("mesh_cad_surface", { path: mcsBlock, outputPath: path.join(dir, "mcs-angle.msh"), targetSize: 1, minAngle: 25 });
+  assert(
+    mcsAngle.numOpenEdges === 0 && mcsAngle.numRefinementPoints === 30 && mcsAngle.numTriangles === 292 && mcsAngle.numFacesBelowBound === 0 &&
+      mcsAngle.minAngleDeg > 26.5 && Array.isArray(mcsAngle.angleHistogram) && mcsAngle.angleHistogram.length === 18,
+    `mesh_cad_surface(minAngle 25) refines block.stp: 30 added points, 292 triangles, min angle above 26.5, an 18-bin histogram (got ${JSON.stringify({ r: mcsAngle.numRefinementPoints, t: mcsAngle.numTriangles, a: mcsAngle.minAngleDeg })})`
+  );
+  const mcsBase = await call("mesh_cad_surface", { path: mcsBlock, outputPath: path.join(dir, "mcs-base.msh"), targetSize: 1 });
+  assert(
+    mcsBase.numTriangles === 252 && mcsBase.numRefinementPoints === 0 && mcsBase.minAngleDeg < mcsAngle.minAngleDeg,
+    `...and the unrefined control has 252 triangles, no refinement points and a smaller min angle (got ${JSON.stringify({ t: mcsBase.numTriangles, a: mcsBase.minAngleDeg })})`
+  );
+  const mcsO2Msh = path.join(dir, "mcs-order2.msh");
+  const mcsO2 = await call("mesh_cad_surface", { path: mcsBlock, outputPath: mcsO2Msh, targetSize: 1, order: 2 });
+  const mcsO2Area = mshTriangleArea(fs.readFileSync(mcsO2Msh, "utf8"));
+  assert(
+    mcsO2.numOpenEdges === 0 && mcsO2.numTriangles === 252 && Math.abs(mcsO2Area.area - 94) < 1e-6 && mcsO2Area.byType[9] === 252,
+    `mesh_cad_surface(order 2) writes 252 triangle6 cells (Gmsh type 9) of total area exactly 94 (got ${JSON.stringify(mcsO2Area)})`
+  );
+  const mcsO2Stl = await callTolerant("mesh_cad_surface", { path: mcsBlock, outputPath: path.join(dir, "mcs-order2.stl"), targetSize: 1, order: 2 });
+  assert(mcsO2Stl.error && /only \.msh, \.vtk, \.vtu can hold/.test(mcsO2Stl.error), `mesh_cad_surface refuses a curved order for .stl by name (got: ${mcsO2Stl.error})`);
+  const mcsBadAngle = await callTolerant("mesh_cad_surface", { path: mcsBlock, outputPath: path.join(dir, "mcs-bad.msh"), targetSize: 1, minAngle: 60 });
+  assert(mcsBadAngle.error && /minAngle must be below 60/.test(mcsBadAngle.error), `mesh_cad_surface refuses minAngle 60 (got: ${mcsBadAngle.error})`);
+  const mcsFace = await call("mesh_cad_surface", { path: mcsBlock, outputPath: path.join(dir, "mcs-face.msh"), targetSize: 1, faceSizes: { 0: 1 / 3 } });
+  assert(
+    mcsFace.numOpenEdges === 0 && mcsFace.numTriangles === 742 && mcsFace.numTriangles > mcsBase.numTriangles,
+    `mesh_cad_surface(faceSizes {0: 1/3}) refines one face: 742 triangles, still closed (got ${JSON.stringify({ t: mcsFace.numTriangles, o: mcsFace.numOpenEdges })})`
+  );
+  const mcsBull = path.join(dir, "mcs-bull.stp");
+  fs.copyFileSync(path.join(ROOT, "examples", "STP", "bull.stp"), mcsBull);
+  const mcsBullAngle = await call("mesh_cad_surface", { path: mcsBull, outputPath: path.join(dir, "mcs-bull.msh"), targetSize: 3, minAngle: 25 });
+  assert(
+    mcsBullAngle.numOpenEdges === 0 && mcsBullAngle.numFacesBelowBound > 0 && mcsBullAngle.minAngleDeg < 25 &&
+      mcsBullAngle.faces.some((f) => f.belowBound) && mcsBullAngle.warnings.some((w) => /could not reach the requested minAngle/.test(w)),
+    `mesh_cad_surface(bull.stp, minAngle 25) reports the bound it could not reach instead of promising it (got ${JSON.stringify({ b: mcsBullAngle.numFacesBelowBound, a: mcsBullAngle.minAngleDeg })})`
+  );
   const softSnap = await call("render_snapshot", { path: cubeStl });
   assert(
     softSnap.supported === true && softSnap.engine === "meshio-software" && softSnap.images?.length === 4,
@@ -7489,6 +7549,69 @@ try {
   assert(
     ocmGeo.isError === true && /octreemesh/i.test(ocmGeo.content?.[0]?.text ?? ""),
     `export_mesh geoUnrolled rejects engine:"octreemesh" with a specific error (got: ${(ocmGeo.content?.[0]?.text ?? "").slice(0, 160)})`
+  );
+
+  // engine:"meshcad" (meshio++ 17.21 meshCadSurface through the Gmsh merge seam): a kernel-free
+  // SURFACE mesh of the B-rep, dimension 2 only. Sized by sizeMax + the angle/curvature fields; no Parts.
+  const mcdOpts = { engine: "meshcad", dimension: 2, sizeMax: 1 };
+  const mcd = await call("generate_mesh", { path: octreeBlock, options: mcdOpts });
+  assert(
+    mcd.engineUsed === "meshcad" && mcd.meshcad && mcd.meshcad.numFaces === 6 && mcd.meshcad.numFailed === 0 && mcd.meshcad.numOpenEdges === 0 &&
+      mcd.meshcad.numNonManifoldEdges === 0 && mcd.meshcad.numMisorientedEdges === 0 && mcd.meshcad.numTriangles === 252 && mcd.elementCount === 252 &&
+      mcd.meshcad.targetSize === 1 && mcd.meshcad.order === 1,
+    `generate_mesh(engine:"meshcad") on block.stp reports its facts and the probe's 252 closed triangles (got ${JSON.stringify({ e: mcd.engineUsed, n: mcd.elementCount, m: mcd.meshcad })})`
+  );
+  assert(mcd.octree === null && mcd.octreeMesh === null, "...and no octree facts (they belong to the other engines)");
+  const mcdMsh = path.join(dir, "meshcad-block.msh");
+  await call("export_mesh", { path: octreeBlock, format: "msh", outputPath: mcdMsh, options: mcdOpts });
+  const mcdArea = mshTriangleArea(fs.readFileSync(mcdMsh, "utf8"));
+  assert(
+    Math.abs(mcdArea.area - 94) < 1e-9 && mcdArea.degenerate === 0 && mcdArea.byType[2] === 252,
+    `the meshcad .msh is 252 triangles of total area exactly 94 = block.stp's six faces (got ${JSON.stringify(mcdArea)})`
+  );
+  const mcdO2Msh = path.join(dir, "meshcad-block-o2.msh");
+  await call("export_mesh", { path: octreeBlock, format: "msh", outputPath: mcdO2Msh, options: { ...mcdOpts, elementOrder: 2 } });
+  const mcdO2Area = mshTriangleArea(fs.readFileSync(mcdO2Msh, "utf8"));
+  assert(
+    Math.abs(mcdO2Area.area - 94) < 1e-9 && mcdO2Area.byType[9] === 252,
+    `the meshcad elementOrder 2 .msh holds 252 triangle6 cells (Gmsh type 9) of area exactly 94 (got ${JSON.stringify(mcdO2Area)})`
+  );
+  const mcdAngle = await call("generate_mesh", { path: octreeBlock, options: { ...mcdOpts, meshcadMinAngle: 25 } });
+  assert(
+    mcdAngle.meshcad.numTriangles === 292 && mcdAngle.meshcad.numRefinementPoints === 30 && mcdAngle.meshcad.minAngleDeg > 26.5,
+    `meshcadMinAngle 25 reaches the engine: 292 triangles, 30 refinement points, min angle above 26.5 (got ${JSON.stringify(mcdAngle.meshcad)})`
+  );
+  const mcdMdpa = path.join(dir, "meshcad-block.mdpa");
+  await call("export_mesh", { path: octreeBlock, format: "mdpaElements", outputPath: mcdMdpa, options: mcdOpts });
+  assert(fs.readFileSync(mcdMdpa, "utf8").includes("Begin Elements Element2D3N"), "export_mesh mdpaElements under engine:\"meshcad\" writes Element2D3N");
+  for (const [what, options, needle] of [
+    ["a periodic pair", { ...mcdOpts, periodic: [{ slave: "a", master: "b", translation: [1, 0, 0] }] }, /periodic/],
+    ["a sizeField", { ...mcdOpts, sizeField: [{ point: [0, 0, 0], size: 1 }] }, /sizeField/],
+    ["a non-simplex shape", { ...mcdOpts, elementShape: "subdivided" }, /elementShape/],
+  ]) {
+    const refused = await request("tools/call", { name: "generate_mesh", arguments: { path: octreeBlock, options } });
+    assert(
+      refused.isError === true && needle.test(refused.content?.[0]?.text ?? ""),
+      `generate_mesh(engine:"meshcad") refuses ${what} by name (got: ${(refused.content?.[0]?.text ?? "").slice(0, 140)})`
+    );
+  }
+  const mcdDim3 = await call("generate_mesh", { path: octreeBlock, options: { engine: "meshcad", dimension: 3, sizeMax: 1 } });
+  assert(
+    mcdDim3.engineUsed === "gmsh" && mcdDim3.warnings.some((w) => /meshcad.*was requested/i.test(w)),
+    `generate_mesh(engine:"meshcad") at dimension 3 falls back to gmsh with a warning (got ${mcdDim3.engineUsed})`
+  );
+  const mcdStl = await call("generate_mesh", { path: cleanCubeStl, options: { engine: "meshcad", dimension: 2, sizeMax: 2 } });
+  assert(
+    mcdStl.engineUsed === "gmsh" && mcdStl.warnings.some((w) => /meshcad.*no B-rep faces/i.test(w)),
+    `generate_mesh(engine:"meshcad") on a mesh-format source falls back to gmsh with a warning (got ${mcdStl.engineUsed})`
+  );
+  const mcdGeo = await request("tools/call", {
+    name: "export_mesh",
+    arguments: { path: octreeBlock, format: "geoUnrolled", outputPath: path.join(dir, "meshcad.geo_unrolled"), options: mcdOpts },
+  });
+  assert(
+    mcdGeo.isError === true && /meshcad/i.test(mcdGeo.content?.[0]?.text ?? ""),
+    `export_mesh geoUnrolled rejects engine:"meshcad" with a specific error (got: ${(mcdGeo.content?.[0]?.text ?? "").slice(0, 160)})`
   );
 
   // repair_mesh (roadmap "Robust volumetric meshing", Phase 3 — closes the

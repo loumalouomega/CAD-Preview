@@ -2,7 +2,7 @@ import type { CadFormat } from "./fileRouter";
 import type { QualityGateResult } from "./meshQualityGate";
 import type { EditOp } from "./editOps";
 import type { ParamVariable } from "./editVariables";
-import type { MeshOptions, MeshGrading, MeshStructured, MeshBoundaryLayer, MeshEngine, OctreeStats, OctreeMeshStats } from "./meshOptions";
+import type { MeshOptions, MeshGrading, MeshStructured, MeshBoundaryLayer, MeshEngine, OctreeStats, OctreeMeshStats, MeshCadStats } from "./meshOptions";
 import type { MeshExportFormatId } from "./meshExportFormats";
 import type { ViewerDefaults } from "./viewerDefaults";
 import type { MassProperties } from "./massProperties";
@@ -577,6 +577,9 @@ export type HostToWebview =
       /** Octree-mesh facts (output, resolved sizes, dihedral/Jacobian, inverted
        * count) when the octreemesh engine ran; absent otherwise. */
       octreeMesh?: OctreeMeshStats;
+      /** Mesh-CAD surface facts (resolved size, closure counts, angle bounds,
+       * refinement/bound facts) when the meshcad engine ran; absent otherwise. */
+      meshcad?: MeshCadStats;
     }
   | { type: "meshingError"; requestId: string; message: string }
   /** FE Mesh panel's refinement sweep (roadmap Tier 1 "Parity gaps") — the

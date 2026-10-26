@@ -2612,6 +2612,7 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
               boundaryLayers: result.boundaryLayers,
               octree: result.octree,
               octreeMesh: result.octreeMesh,
+              meshcad: result.meshcad,
             });
           });
         } catch (err) {

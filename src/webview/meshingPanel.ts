@@ -1,4 +1,4 @@
-import { SIZE_MAX_SENTINEL, DEFAULT_MESH_OPTIONS, boundaryLayerPlan, validateMeshBoundaryLayer, validateMeshGrading, validateMeshStructured, octreeSummary, octreeMeshSummary, OCTREE_MAX_LEVEL_LIMIT, OCTREE_MESH_LEVELS_LIMIT, type OctreeStats, type OctreeMeshStats, type MeshOptions, type MeshGrading, type MeshStructured, type MeshBoundaryLayer } from "../meshOptions";
+import { SIZE_MAX_SENTINEL, DEFAULT_MESH_OPTIONS, boundaryLayerPlan, validateMeshBoundaryLayer, validateMeshGrading, validateMeshStructured, octreeSummary, octreeMeshSummary, meshcadSummary, OCTREE_MAX_LEVEL_LIMIT, OCTREE_MESH_LEVELS_LIMIT, MESHCAD_SMOOTH_LIMIT, type OctreeStats, type OctreeMeshStats, type MeshCadStats, type MeshOptions, type MeshGrading, type MeshStructured, type MeshBoundaryLayer } from "../meshOptions";
 import type { QualitySummary } from "../meshQuality";
 import type { BoundaryLayerAchieved } from "../boundaryLayerMeasurement";
 import { describeGateCheck, type QualityGateResult } from "../meshQualityGate";
@@ -42,6 +42,8 @@ export interface MeshingStats {
   octree?: OctreeStats;
   /** Octree-mesh facts — shown only when the octreemesh engine ran. */
   octreeMesh?: OctreeMeshStats;
+  /** Mesh-CAD surface facts — shown only when the meshcad engine ran. */
+  meshcad?: MeshCadStats;
 }
 
 /** Failure readout: a human-readable error message from the host. */
@@ -192,6 +194,11 @@ export class MeshingPanel {
   private readonly octreeMeshOutputSelect: HTMLSelectElement;
   private readonly octreeMeshMaxSizeInput: HTMLInputElement;
   private readonly octreeMeshLevelsInput: HTMLInputElement;
+  private readonly meshcadMinAngleInput: HTMLInputElement;
+  private readonly meshcadSmoothInput: HTMLInputElement;
+  private readonly meshcadCurvatureInput: HTMLInputElement;
+  private readonly meshcadGapsInput: HTMLInputElement;
+  private readonly meshcadGradingInput: HTMLInputElement;
 
   /** Mesh-ops section (meshio++ sources only) — one operation per Run. */
   private readonly meshOpsSection: HTMLElement;
@@ -387,6 +394,7 @@ export class MeshingPanel {
       ["ftetwild", "fTetWild (robust)"],
       ["octree", "Octree (hex-dominant)"],
       ["octreemesh", "Octree-mesh (graded tets / hex)"],
+      ["meshcad", "Mesh-CAD (B-rep surface)"],
     ]);
     this.engineSelect.title =
       "Gmsh is fast but needs a watertight/manifold/well-oriented boundary. " +
@@ -396,7 +404,9 @@ export class MeshingPanel {
       "Octree builds a hex-dominant volume (hexahedra, pyramids, tetrahedra) from the tessellated skin of any 3D " +
       "source, sized by its max level — Parts and physical groups are not preserved. " +
       "Octree-mesh fits conforming graded tetrahedra (or all hexahedra) to the same skin, sized by a largest leaf edge " +
-      "and a number of refinement levels — Parts and physical groups are not preserved either.";
+      "and a number of refinement levels — Parts and physical groups are not preserved either. " +
+      "Mesh-CAD triangulates a B-rep's exact faces without a CAD kernel (set Dimension to 2; edges are shared, so the surface is watertight) — " +
+      "sized by Size max plus the angle/curvature controls; Parts are not preserved.";
     this.engineSelect.addEventListener("change", () => {
       cb.onOptionsChange({ engine: this.engineSelect.value as MeshOptions["engine"] });
     });
@@ -694,6 +704,54 @@ export class MeshingPanel {
     this.octreeMeshLevelsInput.addEventListener("change", () => {
       const raw = Number(this.octreeMeshLevelsInput.value);
       cb.onOptionsChange({ octreeMeshLevels: raw >= 1 ? Math.min(OCTREE_MESH_LEVELS_LIMIT, Math.round(raw)) : DEFAULT_MESH_OPTIONS.octreeMeshLevels });
+    });
+
+    this.meshcadMinAngleInput = this.numberField(form, "Mesh-CAD min angle (°)", DEFAULT_MESH_OPTIONS.meshcadMinAngle);
+    this.meshcadMinAngleInput.title =
+      "Refine until every triangle's smallest angle is at least this (0-60°); 0 keeps the unrefined mesh. " +
+      "A sharp model corner can make the bound unreachable — the status line then reports the faces below it. Only used by engine: Mesh-CAD.";
+    this.meshcadMinAngleInput.min = "0";
+    this.meshcadMinAngleInput.max = "59.9";
+    this.meshcadMinAngleInput.addEventListener("change", () => {
+      const raw = Number(this.meshcadMinAngleInput.value);
+      cb.onOptionsChange({ meshcadMinAngle: raw > 0 && raw < 60 ? raw : DEFAULT_MESH_OPTIONS.meshcadMinAngle });
+    });
+
+    this.meshcadSmoothInput = this.numberField(form, "Mesh-CAD smoothing passes", DEFAULT_MESH_OPTIONS.meshcadSmoothIterations);
+    this.meshcadSmoothInput.title = `Passes of guarded smoothing (0-${MESHCAD_SMOOTH_LIMIT}). Only used by engine: Mesh-CAD.`;
+    this.meshcadSmoothInput.step = "1";
+    this.meshcadSmoothInput.min = "0";
+    this.meshcadSmoothInput.max = String(MESHCAD_SMOOTH_LIMIT);
+    this.meshcadSmoothInput.addEventListener("change", () => {
+      const raw = Number(this.meshcadSmoothInput.value);
+      cb.onOptionsChange({ meshcadSmoothIterations: raw >= 1 ? Math.min(MESHCAD_SMOOTH_LIMIT, Math.round(raw)) : DEFAULT_MESH_OPTIONS.meshcadSmoothIterations });
+    });
+
+    this.meshcadCurvatureInput = this.numberField(form, "Mesh-CAD curvature deviation (mm)", DEFAULT_MESH_OPTIONS.meshcadCurvatureDeviation);
+    this.meshcadCurvatureInput.title =
+      "Size each region so a chord sits at most this far from the surface; 0 is off. Smaller is finer on curved faces. Only used by engine: Mesh-CAD.";
+    this.meshcadCurvatureInput.min = "0";
+    this.meshcadCurvatureInput.addEventListener("change", () => {
+      const raw = Number(this.meshcadCurvatureInput.value);
+      cb.onOptionsChange({ meshcadCurvatureDeviation: raw > 0 ? raw : DEFAULT_MESH_OPTIONS.meshcadCurvatureDeviation });
+    });
+
+    this.meshcadGapsInput = this.numberField(form, "Mesh-CAD cells across gaps", DEFAULT_MESH_OPTIONS.meshcadCellsAcrossGaps);
+    this.meshcadGapsInput.title =
+      "Size each region so at least this many elements span its local feature size (a wall's thickness, a slot's width); 0 is off. Only used by engine: Mesh-CAD.";
+    this.meshcadGapsInput.min = "0";
+    this.meshcadGapsInput.addEventListener("change", () => {
+      const raw = Number(this.meshcadGapsInput.value);
+      cb.onOptionsChange({ meshcadCellsAcrossGaps: raw > 0 ? raw : DEFAULT_MESH_OPTIONS.meshcadCellsAcrossGaps });
+    });
+
+    this.meshcadGradingInput = this.numberField(form, "Mesh-CAD grading", DEFAULT_MESH_OPTIONS.meshcadGrading);
+    this.meshcadGradingInput.title =
+      "Largest size growth between neighbours, |grad h| ≤ grading − 1: 0 is the default 1.5, otherwise above 1. Acts only with curvature deviation or cells across gaps. Only used by engine: Mesh-CAD.";
+    this.meshcadGradingInput.min = "0";
+    this.meshcadGradingInput.addEventListener("change", () => {
+      const raw = Number(this.meshcadGradingInput.value);
+      cb.onOptionsChange({ meshcadGrading: raw > 1 ? raw : DEFAULT_MESH_OPTIONS.meshcadGrading });
     });
 
     const resetBtn = document.createElement("button");
@@ -1023,6 +1081,12 @@ export class MeshingPanel {
     if (hexDominantOpt) hexDominantOpt.disabled = options.dimension !== 3;
     this.elementShapeSelect.value = options.elementShape;
     this.optimizeSelect.value = options.optimize;
+    this.meshcadMinAngleInput.value = String(options.meshcadMinAngle);
+    this.meshcadSmoothInput.value = String(options.meshcadSmoothIterations);
+    this.meshcadCurvatureInput.value = String(options.meshcadCurvatureDeviation);
+    this.meshcadGapsInput.value = String(options.meshcadCellsAcrossGaps);
+    this.meshcadGradingInput.value = String(options.meshcadGrading);
+
     this.conformalCheckbox.checked = options.conformal;
     this.stlAngleInput.value = String(options.stlAngle);
     this.budgetInput.value = options.budgetElements ? String(options.budgetElements) : "";
@@ -1048,12 +1112,14 @@ export class MeshingPanel {
     const ftetwild = options.engine === "ftetwild";
     const octree = options.engine === "octree";
     const octreeMesh = options.engine === "octreemesh";
-    const notGmsh = ftetwild || octree || octreeMesh;
+    const meshcad = options.engine === "meshcad";
+    const notGmsh = ftetwild || octree || octreeMesh || meshcad;
     this.sizeMinInput.disabled = notGmsh;
     this.sizeMaxInput.disabled = octree || octreeMesh;
     this.algorithm2DSelect.disabled = notGmsh;
     this.algorithm3DSelect.disabled = notGmsh;
-    this.elementOrderSelect.disabled = notGmsh;
+    // Mesh-CAD writes curved triangle6 elements, so the order stays live; it makes triangles only.
+    this.elementOrderSelect.disabled = notGmsh && !meshcad;
     this.elementShapeSelect.disabled = notGmsh;
     this.optimizeSelect.disabled = notGmsh;
     this.stlAngleInput.disabled = notGmsh;
@@ -1067,6 +1133,11 @@ export class MeshingPanel {
     this.octreeMeshOutputSelect.disabled = !octreeMesh;
     this.octreeMeshMaxSizeInput.disabled = !octreeMesh;
     this.octreeMeshLevelsInput.disabled = !octreeMesh;
+    this.meshcadMinAngleInput.disabled = !meshcad;
+    this.meshcadSmoothInput.disabled = !meshcad;
+    this.meshcadCurvatureInput.disabled = !meshcad;
+    this.meshcadGapsInput.disabled = !meshcad;
+    this.meshcadGradingInput.disabled = !meshcad;
 
     this.syncSlider();
 
@@ -1087,7 +1158,8 @@ export class MeshingPanel {
       const elapsed = status.elapsedMs != null ? ` · ${formatElapsed(status.elapsedMs)}` : "";
       const octreeNote = status.octree ? ` · ${octreeSummary(status.octree)}` : "";
       const octreeMeshNote = status.octreeMesh ? ` · ${octreeMeshSummary(status.octreeMesh)}` : "";
-      this.statusEl.textContent = `Nodes: ${status.nodeCount} · Elements: ${status.elementCount}${elapsed}${octreeNote}${octreeMeshNote}`;
+      const meshcadNote = status.meshcad ? ` · ${meshcadSummary(status.meshcad)}` : "";
+      this.statusEl.textContent = `Nodes: ${status.nodeCount} · Elements: ${status.elementCount}${elapsed}${octreeNote}${octreeMeshNote}${meshcadNote}`;
       this.renderQuality(status.quality, status.worstElements);
       this.renderLayerAchieved(status.boundaryLayers);
     }
@@ -1299,7 +1371,7 @@ export class MeshingPanel {
     // Conformal fragmentation only runs on the B-rep OCC-import path; a mesh
     // source ignores the option, so grey it out exactly like the fTetWild
     // row above greys Gmsh-only fields (render() applies the same rule).
-    this.conformalCheckbox.disabled = kind === "mesh" || this.lastOptions?.engine === "ftetwild" || this.lastOptions?.engine === "octree" || this.lastOptions?.engine === "octreemesh";
+    this.conformalCheckbox.disabled = kind === "mesh" || this.lastOptions?.engine === "ftetwild" || this.lastOptions?.engine === "octree" || this.lastOptions?.engine === "octreemesh" || this.lastOptions?.engine === "meshcad";
   }
 
   /**
