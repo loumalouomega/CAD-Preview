@@ -3058,10 +3058,16 @@ try {
   );
   const mcsO2Msh = path.join(dir, "mcs-order2.msh");
   const mcsO2 = await call("mesh_cad_surface", { path: mcsBlock, outputPath: mcsO2Msh, targetSize: 1, order: 2 });
-  const mcsO2Area = mshTriangleArea(fs.readFileSync(mcsO2Msh, "utf8"));
+  // meshio++'s own .msh writer is binary, so the file is re-read through the independent meshio++ boundary
+  // (get_mass_properties, surfaceDerived) rather than parsed here; the order-1 file is the control that the
+  // order-2 file really carries the extra mid-edge nodes.
+  const mcsO2Facts = await call("get_mass_properties", { path: mcsO2Msh });
+  const mcsBaseBytes = fs.statSync(path.join(dir, "mcs-base.msh")).size;
+  const mcsO2Bytes = fs.statSync(mcsO2Msh).size;
   assert(
-    mcsO2.numOpenEdges === 0 && mcsO2.numTriangles === 252 && Math.abs(mcsO2Area.area - 94) < 1e-6 && mcsO2Area.byType[9] === 252,
-    `mesh_cad_surface(order 2) writes 252 triangle6 cells (Gmsh type 9) of total area exactly 94 (got ${JSON.stringify(mcsO2Area)})`
+    mcsO2.numOpenEdges === 0 && mcsO2.numTriangles === 252 && mcsO2.numPoints === 506 && Math.abs(mcsO2Facts.area - 94) < 1e-6 &&
+      Math.abs(mcsO2Facts.volume - 60) < 1e-6 && mcsO2Facts.watertight === true && mcsO2Bytes > 1.5 * mcsBaseBytes,
+    `mesh_cad_surface(order 2) writes 252 curved triangles on 506 points (128 corners + 378 edge nodes); the re-read file is watertight, area 94, volume 60, and larger than the order-1 control (got ${JSON.stringify({ n: mcsO2.numPoints, a: mcsO2Facts.area, v: mcsO2Facts.volume, o2: mcsO2Bytes, o1: mcsBaseBytes })})`
   );
   const mcsO2Stl = await callTolerant("mesh_cad_surface", { path: mcsBlock, outputPath: path.join(dir, "mcs-order2.stl"), targetSize: 1, order: 2 });
   assert(mcsO2Stl.error && /only \.msh, \.vtk, \.vtu can hold/.test(mcsO2Stl.error), `mesh_cad_surface refuses a curved order for .stl by name (got: ${mcsO2Stl.error})`);
