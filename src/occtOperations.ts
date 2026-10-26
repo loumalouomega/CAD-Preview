@@ -4900,6 +4900,32 @@ function unifySameDomainShape(oc: any, shape: any, cleanup: Array<{ delete(): vo
  * the face, or may not reach the face boundary) rather than certifying a
  * no-op split.
  */
+/**
+ * Parallel-projects each edge onto `face` along `direction` with
+ * `BRepProj_Projection_1(wire, face, gp_Dir)` (probe 2026-10-26): the result is
+ * trimmed to the face and lies on its surface (sphere deviation 2e-15, cylinder
+ * 6e-8). A line over a cylinder can yield several pieces, so every edge of the
+ * result is returned. An edge that projects to nothing contributes nothing.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function projectEdgesOntoFace(oc: any, edges: any[], face: any, direction: Vec3, cleanup: Array<{ delete(): void }>): any[] {
+  const keep = <T extends { delete(): void }>(h: T): T => { cleanup.push(h); return h; };
+  const d = keep(dir(oc, direction));
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const out: any[] = [];
+  for (const e of edges) {
+    const mw = keep(new oc.BRepBuilderAPI_MakeWire_1());
+    mw.Add_1(e);
+    const wire = keep(mw.Wire());
+    const proj = keep(new oc.BRepProj_Projection_1(wire, face, d));
+    if (!proj.IsDone()) continue;
+    const res = keep(proj.Shape());
+    const ex = keep(new oc.TopExp_Explorer_2(res, oc.TopAbs_ShapeEnum.TopAbs_EDGE, oc.TopAbs_ShapeEnum.TopAbs_SHAPE));
+    for (; ex.More(); ex.Next()) out.push(keep(oc.TopoDS.Edge_1(ex.Current())));
+  }
+  return out;
+}
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function splitFaceByEdge(oc: any, shape: any, op: Extract<EditOp, { op: "splitFace" }>, cleanup: Array<{ delete(): void }>, fail?: OutcomeFail): any {
   const keep = <T extends { delete(): void }>(h: T): T => { cleanup.push(h); return h; };
@@ -4945,6 +4971,17 @@ function splitFaceByEdge(oc: any, shape: any, op: Extract<EditOp, { op: "splitFa
     } else {
       fail?.("splitFace needs edgeIds or points — one splitting edge, exactly one form");
       return shape;
+    }
+    if (op.projectDir !== undefined) {
+      const projected = projectEdgesOntoFace(oc, edges, target, op.projectDir, cleanup);
+      if (projected.length === 0) {
+        fail?.(
+          "projecting the splitting edge onto the face produced no edges",
+          "the edge must lie over the face along projectDir (a parallel projection) — check the direction"
+        );
+        return shape;
+      }
+      edges = projected;
     }
     const before = faces.length;
     const split = keep(new oc.BRepFeat_SplitShape_2(shape));

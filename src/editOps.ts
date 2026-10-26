@@ -291,7 +291,7 @@ export interface SplitByPlaneOp { op: "splitByPlane"; targets: string[]; planePo
  * rebind through the existing path (a Part on a split half is dropped with a
  * warning when its centroid no longer matches, never repointed).
  */
-export interface SplitFaceOp { op: "splitFace"; face: string; edgeIds?: string[]; points?: [Vec3, Vec3]; }
+export interface SplitFaceOp { op: "splitFace"; face: string; edgeIds?: string[]; points?: [Vec3, Vec3]; /** Project the splitting edge(s) onto the face along this direction first (BRepProj_Projection), so they need not lie on it. */ projectDir?: Vec3; }
 /** Append the planar cross-section of the target solids with the plane (`planePoint`, `planeNormal`), the saved construction plane `planeId` (`plane-N`), or the midplane of `midplaneFaces` as a standalone face (under "Sketches"), leaving the solids untouched. `planePoint`/`planeNormal` may ride alongside `planeId` as the resolved cache. */
 export interface SectionOp { op: "section"; targets: string[]; planePoint?: Vec3; planeNormal?: Vec3; planeId?: string; midplaneFaces?: [string, string]; }
 /**
@@ -1249,17 +1249,20 @@ function validateEditOpCore(raw: unknown): EditOp | null {
     case "splitFace": {
       const face = asFaceId(o.face);
       if (!face) return null;
+      const projectDir = o.projectDir === undefined ? undefined : asNonZeroVec3(o.projectDir);
+      if (o.projectDir !== undefined && !projectDir) return null;
+      const withDir = <T extends SplitFaceOp>(op: T): T => (projectDir ? { ...op, projectDir } : op);
       const hasEdges = o.edgeIds !== undefined;
       const hasPoints = o.points !== undefined;
       if (hasEdges === hasPoints) return null; // exactly one of the two forms
       if (hasEdges) {
         const edgeIds = asEdgeIdArray(o.edgeIds);
         if (!edgeIds) return null;
-        return { op: "splitFace", face, edgeIds };
+        return withDir({ op: "splitFace", face, edgeIds });
       }
       const points = asVec3Array(o.points, 2);
       if (!points || points.length !== 2 || vecEqual(points[0], points[1])) return null;
-      return { op: "splitFace", face, points: [points[0], points[1]] };
+      return withDir({ op: "splitFace", face, points: [points[0], points[1]] });
     }
     case "section": {
       const targets = asIdArray(o.targets);

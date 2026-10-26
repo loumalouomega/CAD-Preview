@@ -206,6 +206,9 @@ describe("validateEditOp", () => {
       .toEqual({ op: "splitFace", face: "face-0", edgeIds: ["edge-1", "edge-2"] });
     expect(validateEditOp({ op: "splitFace", face: "face-0", points: [[-1.5, 0, 2.5], [1.5, 0, 2.5]] }))
       .toEqual({ op: "splitFace", face: "face-0", points: [[-1.5, 0, 2.5], [1.5, 0, 2.5]] });
+    expect(validateEditOp({ op: "splitFace", face: "face-0", points: [[-9, 1, 9], [9, 1, 9]], projectDir: [0, 0, -1] }))
+      .toEqual({ op: "splitFace", face: "face-0", points: [[-9, 1, 9], [9, 1, 9]], projectDir: [0, 0, -1] });
+    expect(validateEditOp({ op: "splitFace", face: "face-0", edgeIds: ["edge-1"], projectDir: [0, 0, 0] })).toBeNull();
   });
 
   it("rejects malformed modify ops", () => {

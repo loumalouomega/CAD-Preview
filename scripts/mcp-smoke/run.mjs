@@ -8471,6 +8471,31 @@ try {
       assert(/no longer exists/i.test(open), `an unknown boundary edge is refused by name (got ${open})`);
     }
 
+    // 5d. `splitFace.projectDir` (roadmap project-a-curve probe, BRepProj_Projection_1):
+    // a segment floating 7.5 above block.stp's top face (z = 2.5) splits it only
+    // after being projected down onto it. Control: the same segment without
+    // projectDir does not lie on the face, so the face count must NOT rise.
+    {
+      resetWire();
+      let topId = null;
+      for (let i = 0; i < 6 && !topId; i++) {
+        const f = await callWithCleanRetry("inspect", { path: wireModel, entityId: `face-${i}` }, resetWire);
+        if (f.center && Math.abs(f.center[2] - 2.5) < 1e-6 && Math.abs((f.area ?? 0) - 12) < 1e-3) topId = `face-${i}`;
+      }
+      assert(topId !== null, "block.stp has a 3 x 4 top face at z = 2.5");
+      const seg = [[-5, 1, 10], [5, 1, 10]];
+      const projected = await callWithCleanRetry("apply_edit_ops", { path: wireModel, ops: [{ op: "splitFace", face: topId, points: seg, projectDir: [0, 0, -1] }] }, resetWire);
+      assert(projected.applied === 1 && (projected.notApplied ?? 0) === 0, `a projected segment splits the top face (got ${JSON.stringify(projected.report)})`);
+      // The y = 1 cut leaves 3 x 3 = 9 and 3 x 1 = 3 on the 3 x 4 face; the new face is the last one.
+      const half = await callWithCleanRetry("inspect", { path: wireModel, entityId: "face-6" }, resetWire);
+      assert(Math.abs((half.area ?? 0) - 9) < 1e-3 || Math.abs((half.area ?? 0) - 3) < 1e-3, `the new face-6 is one split half, area 9 or 3 (got ${half.area})`);
+      const vol = await call("get_mass_properties", { path: wireModel, entityId: "solid-0" });
+      assert(Math.abs(vol.volume - 60) / 60 < 1e-6, `projection split leaves volume 60 (got ${vol.volume})`);
+      resetWire();
+      const control = await wireSkip("same segment without projectDir", [{ op: "splitFace", face: topId, points: seg }]);
+      assert(/not split|did not complete|threw/i.test(control), `without projectDir the floating segment is refused (got ${control})`);
+    }
+
     // 6. the refusals, each naming its own cause rather than a generic failure.
     // An open profile without `thin` is a SURFACE for extrude/revolve (two
     // 5-long segments x 5 = area 50 over face-6 + face-7, no volume change);
