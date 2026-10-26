@@ -98,6 +98,10 @@ export function generateGeoScript(sourceName: string, options: MeshOptions): str
         `// this script's own "Mesh ${options.dimension};" would mesh via Gmsh's\n` +
         "// classifySurfaces path instead — a different result, not a re-run of\n" +
         "// what this extension actually did — so it is deliberately omitted."
+      : options.engine === "meshcad"
+        ? "// engine: meshcad — this document was surface-meshed by meshio++'s meshCadSurface (the B-rep's\n" +
+          "// exact faces triangulated without a CAD kernel), not Gmsh's mesher, so there is no Gmsh\n" +
+          "// directive that reproduces it; \"Mesh " + options.dimension + ";\" is deliberately omitted."
       : options.engine === "octreemesh"
         ? "// engine: octreemesh — this document was volume-meshed by meshio++'s octreeMesh (graded\n" +
           "// tetrahedra or hexahedra fitted to the tessellated skin), not Gmsh's mesher, so\n" +

@@ -34,7 +34,7 @@ import * as path from "path";
 // the "cjs" output, which Node resolves at actual runtime (honoring the
 // package's "require" export condition), sidestepping both problems above.
 import initialize from "@loumalouomega/gmsh-wasm";
-import { boundaryLayerAlgorithmProblem, gmshShapeOptions, SIZE_MAX_SENTINEL, DEFAULT_MESH_OPTIONS, type MeshOptions, type MeshEngine, type OctreeStats, type OctreeMeshStats } from "./meshOptions";
+import { boundaryLayerAlgorithmProblem, gmshShapeOptions, SIZE_MAX_SENTINEL, DEFAULT_MESH_OPTIONS, type MeshOptions, type MeshEngine, type OctreeStats, type OctreeMeshStats, type MeshCadStats } from "./meshOptions";
 import { measureBoundaryLayerRows, type BoundaryLayerAchieved, type BoundaryLayerWall } from "./boundaryLayerMeasurement";
 import { summarizeQuality, type QualitySummary } from "./meshQuality";
 import type { Part, MeshElementGroup } from "./protocol";
@@ -46,6 +46,7 @@ import { boundsOfTriangles, boundsDiagonal, weldedMeshToStlBytes } from "./meshC
 import { tetrahedralize, tetsToMsh41 } from "./ftetwildService";
 import { octreeMesh, brepSkinStlBytes } from "./octreeService";
 import { octreeMeshVolume } from "./octreeMeshService";
+import { meshcadSurfaceMesh } from "./meshcadService";
 import type { MeshParseFormat } from "./fileRouter";
 import type { GltfExternalBuffers } from "./gltfParser";
 import {
@@ -260,6 +261,8 @@ export interface MeshResult {
   octree?: OctreeStats;
   /** Octree-mesh facts — only set when `engineUsed === "octreemesh"`. */
   octreeMesh?: OctreeMeshStats;
+  /** Mesh-CAD surface facts — only set when `engineUsed === "meshcad"`. */
+  meshcad?: MeshCadStats;
 }
 
 /** A highlight overlay of the worst-quality elements, closing the
@@ -459,6 +462,24 @@ function effectiveEngine(input: MeshGenerationInput, options: MeshOptions): { en
     }
     return { engine: "octree", warnings: [] };
   }
+  if (options.engine === "meshcad") {
+    // Meshes the B-rep's exact faces — a mesh-format source has none.
+    if (input.kind !== "brep") {
+      return {
+        engine: "gmsh",
+        warnings: ['Engine "meshcad" was requested but this is a mesh-format source with no B-rep faces — meshio++ triangulates exact CAD faces only, so Gmsh was used instead.'],
+      };
+    }
+    if (options.dimension !== 2) {
+      return {
+        engine: "gmsh",
+        warnings: [
+          `Engine "meshcad" was requested but dimension is ${options.dimension} — mesh-cad only produces 2D surface meshes (set dimension 2, or use an octree/fTetWild/Gmsh engine for volumes), so Gmsh was used instead.`,
+        ],
+      };
+    }
+    return { engine: "meshcad", warnings: [] };
+  }
   if (options.engine === "octreemesh") {
     // Like octree, works on a B-rep through its tessellated skin.
     if (options.dimension !== 3) {
@@ -521,6 +542,29 @@ export function octreeUnsupportedOptions(options: MeshOptions, parts: readonly P
 }
 
 /**
+ * What `engine: "meshcad"` cannot honor — same contract as
+ * {@link octreeUnsupportedOptions}. Refused: requests that would hand back a
+ * mesh that quietly differs from what was asked for (quad/recombined output,
+ * periodic faces, view-driven sizing). Ignored with a warning: settings that
+ * only lose their effect (Gmsh's optimizer, Part sizing and physical groups —
+ * the surface mesh has no face correlation to Parts, and `sizeMin` has no
+ * meshio++ counterpart).
+ */
+export function meshcadUnsupportedOptions(options: MeshOptions, parts: readonly Part[]): { refuse: string[]; ignored: string[] } {
+  const refuse: string[] = [];
+  const ignored: string[] = [];
+  if (options.elementShape !== DEFAULT_MESH_OPTIONS.elementShape) refuse.push(`elementShape "${options.elementShape}" (mesh-cad makes triangles only)`);
+  if ((options.periodic?.length ?? 0) > 0) refuse.push("periodic (mesh-cad has no face correlation)");
+  if ((options.sizeField?.length ?? 0) > 0) refuse.push("sizeField (mesh-cad sizes by Max size, curvature deviation and cells-across-gaps)");
+  if (options.sizeMin !== DEFAULT_MESH_OPTIONS.sizeMin) ignored.push(`sizeMin ${options.sizeMin}`);
+  if (options.optimize !== DEFAULT_MESH_OPTIONS.optimize && options.optimize !== "none") ignored.push(`optimize "${options.optimize}"`);
+  if (parts.length > 0) {
+    ignored.push(`${parts.length} Part(s) — names, sizes, grading, structured divisions, boundary layers and physical groups are not preserved`);
+  }
+  return { refuse, ignored };
+}
+
+/**
  * Populates `gmsh`'s CURRENT model with a finished volume mesh, dispatching
  * on `options.engine` (as resolved by {@link effectiveEngine}) — the single
  * seam every meshing/export entry point below (`generateMesh`,
@@ -567,8 +611,35 @@ async function populateMeshedModel(
   input: MeshGenerationInput,
   options: MeshOptions,
   parts: Part[]
-): Promise<{ tmpPath: string | null; groupMaps: PartGroupMaps | null; engineUsed: MeshEngine; warnings: string[]; conformalApplied: boolean; octree?: OctreeStats; octreeMesh?: OctreeMeshStats }> {
+): Promise<{ tmpPath: string | null; groupMaps: PartGroupMaps | null; engineUsed: MeshEngine; warnings: string[]; conformalApplied: boolean; octree?: OctreeStats; octreeMesh?: OctreeMeshStats; meshcad?: MeshCadStats }> {
   const { engine, warnings } = effectiveEngine(input, options);
+
+  if (engine === "meshcad") {
+    const unsupported = meshcadUnsupportedOptions(options, parts);
+    if (unsupported.refuse.length > 0) {
+      throw new Error(`engine "meshcad" cannot honor: ${unsupported.refuse.join("; ")}. Remove them or switch the engine to "gmsh".`);
+    }
+    for (const note of unsupported.ignored) warnings.push(`Ignored under engine "meshcad": ${note}.`);
+    // effectiveEngine only returns "meshcad" for a B-rep source.
+    const brepInput = input as Extract<MeshGenerationInput, { kind: "brep" }>;
+    const { mshText, stats } = await meshcadSurfaceMesh(brepInput.stepBytes, {
+      sizeMax: options.sizeMax,
+      order: options.elementOrder,
+      minAngle: options.meshcadMinAngle,
+      smoothIterations: options.meshcadSmoothIterations,
+      curvatureDeviation: options.meshcadCurvatureDeviation,
+      cellsAcrossGaps: options.meshcadCellsAcrossGaps,
+      grading: options.meshcadGrading,
+    });
+    gmsh.clear();
+    gmsh.model.add(`model-${++_modelCounter}`);
+    const tmpPath = "/i.msh";
+    gmsh.FS.writeFile(tmpPath, mshText);
+    gmsh.merge(tmpPath);
+    gmsh.option.setNumber("Mesh.SaveAll", 1);
+    for (const w of stats.warnings) warnings.push(`Mesh-CAD: ${w}`);
+    return { tmpPath, groupMaps: null, engineUsed: "meshcad", warnings, conformalApplied: false, meshcad: stats };
+  }
 
   if (engine === "octreemesh") {
     const unsupported = octreeUnsupportedOptions(options, parts);
@@ -820,6 +891,7 @@ export async function generateMesh(
       boundaryLayers: measured.results.length > 0 ? measured.results : undefined,
       ...(loaded.octree ? { octree: loaded.octree } : {}),
       ...(loaded.octreeMesh ? { octreeMesh: loaded.octreeMesh } : {}),
+      ...(loaded.meshcad ? { meshcad: loaded.meshcad } : {}),
     };
   } finally {
     if (tmpPath) {
@@ -933,6 +1005,11 @@ export async function exportGeoUnrolled(
   if (engine === "ftetwild") {
     throw new Error(
       '.geo_unrolled export is not available under engine "ftetwild" — it represents Gmsh\'s own geometry import, and fTetWild never runs one. Export a mesh format (e.g. .msh) instead, or switch the engine to "gmsh".'
+    );
+  }
+  if (engine === "meshcad") {
+    throw new Error(
+      '.geo_unrolled export is not available under engine "meshcad" — it represents Gmsh\'s own geometry import, and mesh-cad never runs one. Export a mesh format (e.g. .msh) instead, or switch the engine to "gmsh".'
     );
   }
   if (engine === "octreemesh") {
@@ -1116,6 +1193,8 @@ export interface HandoffFacts {
   octree?: OctreeStats;
   /** Octree-mesh facts — only set when `engineUsed === "octreemesh"`. */
   octreeMesh?: OctreeMeshStats;
+  /** Mesh-CAD surface facts — only set when `engineUsed === "meshcad"`. */
+  meshcad?: MeshCadStats;
 }
 
 /**
@@ -1197,6 +1276,7 @@ export async function computeHandoffFacts(
       boundaryLayers: measured.results.length > 0 ? measured.results : undefined,
       ...(loaded.octree ? { octree: loaded.octree } : {}),
       ...(loaded.octreeMesh ? { octreeMesh: loaded.octreeMesh } : {}),
+      ...(loaded.meshcad ? { meshcad: loaded.meshcad } : {}),
     };
   } finally {
     if (tmpPath) {

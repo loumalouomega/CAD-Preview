@@ -5,6 +5,7 @@ import {
   WORST_ELEMENT_QUALITY_THRESHOLD,
   MAX_WORST_ELEMENTS,
   octreeUnsupportedOptions,
+  meshcadUnsupportedOptions,
 } from "./gmshService";
 import { DEFAULT_MESH_OPTIONS } from "./meshOptions";
 import type { PartGroupInfo, PartGroupMaps } from "./gmshPartsMap";
@@ -323,6 +324,36 @@ describe("computeQualityAndWorstElements", () => {
     const indexSet = new Set(worstElements!.indices);
     expect(indexSet.has(9_000_000)).toBe(true); // the single worst element must survive the cap
     expect(indexSet.has(8_000_000)).toBe(false); // the least-bad-of-the-bad element must be the one dropped
+  });
+});
+
+describe("meshcadUnsupportedOptions", () => {
+  it("is silent for defaults and no Parts", () => {
+    expect(meshcadUnsupportedOptions(DEFAULT_MESH_OPTIONS, [])).toEqual({ refuse: [], ignored: [] });
+  });
+
+  it("keeps a quadratic order (mesh-CAD writes triangle6) but refuses what it can never honor", () => {
+    expect(meshcadUnsupportedOptions({ ...DEFAULT_MESH_OPTIONS, elementOrder: 2 }, []).refuse).toEqual([]);
+    const { refuse } = meshcadUnsupportedOptions(
+      {
+        ...DEFAULT_MESH_OPTIONS,
+        elementShape: "subdivided",
+        periodic: [{ slave: "a", master: "b", translation: [1, 0, 0] }],
+        sizeField: [{ point: [0, 0, 0], size: 1 }],
+      },
+      []
+    );
+    expect(refuse.map((r) => r.split(" ")[0])).toEqual(["elementShape", "periodic", "sizeField"]);
+  });
+
+  it("only warns about sizeMin, an optimizer pass that did something and Parts", () => {
+    expect(meshcadUnsupportedOptions({ ...DEFAULT_MESH_OPTIONS, optimize: "none" }, []).ignored).toEqual([]);
+    const { refuse, ignored } = meshcadUnsupportedOptions({ ...DEFAULT_MESH_OPTIONS, sizeMin: 0.5, optimize: "netgen" }, [{ name: "wall" } as never]);
+    expect(refuse).toEqual([]);
+    expect(ignored).toHaveLength(3);
+    expect(ignored[0]).toContain("sizeMin 0.5");
+    expect(ignored[1]).toContain("netgen");
+    expect(ignored[2]).toMatch(/1 Part\(s\).*not preserved/);
   });
 });
 

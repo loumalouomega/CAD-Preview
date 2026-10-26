@@ -156,7 +156,7 @@ function validatePresetEntry(key: string, value: unknown): MeshPreset | null {
     typeof raw.unit === "string" && (DISPLAY_UNITS as readonly string[]).includes(raw.unit)
       ? (raw.unit as DisplayUnit)
       : "mm";
-  const engine: MeshEngine = raw.engine === "ftetwild" || raw.engine === "octree" || raw.engine === "octreemesh" ? raw.engine : "gmsh";
+  const engine: MeshEngine = raw.engine === "ftetwild" || raw.engine === "octree" || raw.engine === "octreemesh" || raw.engine === "meshcad" ? raw.engine : "gmsh";
 
   const entry: MeshPreset = { name, unit, engine, options };
   if (typeof raw.description === "string") entry.description = raw.description;
@@ -219,6 +219,15 @@ const OCTREE_ONLY_FIELDS: readonly (keyof MeshOptions)[] = ["octreeMaxLevel", "o
 /** Octree-mesh-only fields — ignored by every other engine. */
 const OCTREE_MESH_ONLY_FIELDS: readonly (keyof MeshOptions)[] = ["octreeMeshOutput", "octreeMeshMaxSize", "octreeMeshLevels"];
 
+/** Mesh-CAD-only fields — ignored by every other engine. */
+const MESHCAD_ONLY_FIELDS: readonly (keyof MeshOptions)[] = [
+  "meshcadMinAngle",
+  "meshcadSmoothIterations",
+  "meshcadCurvatureDeviation",
+  "meshcadCellsAcrossGaps",
+  "meshcadGrading",
+];
+
 /** Gmsh-only fields the octree merely ignores. `elementOrder`, `elementShape`
  * and `periodic` are absent on purpose: the octree REFUSES those at generate
  * (`octreeUnsupportedOptions`), so "ignored" would be the wrong word. */
@@ -246,14 +255,16 @@ const FTETWILD_ONLY_FIELDS: readonly (keyof MeshOptions)[] = [
 export function inapplicablePresetFields(preset: MeshPreset): (keyof MeshOptions)[] {
   const ignored =
     preset.engine === "ftetwild"
-      ? [...GMSH_ONLY_FIELDS, ...OCTREE_ONLY_FIELDS, ...OCTREE_MESH_ONLY_FIELDS]
+      ? [...GMSH_ONLY_FIELDS, ...OCTREE_ONLY_FIELDS, ...OCTREE_MESH_ONLY_FIELDS, ...MESHCAD_ONLY_FIELDS]
       : preset.engine === "gmsh"
-        ? [...FTETWILD_ONLY_FIELDS, ...OCTREE_ONLY_FIELDS, ...OCTREE_MESH_ONLY_FIELDS]
+        ? [...FTETWILD_ONLY_FIELDS, ...OCTREE_ONLY_FIELDS, ...OCTREE_MESH_ONLY_FIELDS, ...MESHCAD_ONLY_FIELDS]
         : preset.engine === "octree"
-          ? [...OCTREE_IGNORED_GMSH_FIELDS, ...FTETWILD_ONLY_FIELDS, ...OCTREE_MESH_ONLY_FIELDS]
+          ? [...OCTREE_IGNORED_GMSH_FIELDS, ...FTETWILD_ONLY_FIELDS, ...OCTREE_MESH_ONLY_FIELDS, ...MESHCAD_ONLY_FIELDS]
           : preset.engine === "octreemesh"
-            ? [...OCTREE_IGNORED_GMSH_FIELDS, ...FTETWILD_ONLY_FIELDS, ...OCTREE_ONLY_FIELDS]
-            : [];
+            ? [...OCTREE_IGNORED_GMSH_FIELDS, ...FTETWILD_ONLY_FIELDS, ...OCTREE_ONLY_FIELDS, ...MESHCAD_ONLY_FIELDS]
+            : preset.engine === "meshcad"
+              ? [...OCTREE_IGNORED_GMSH_FIELDS, ...FTETWILD_ONLY_FIELDS, ...OCTREE_ONLY_FIELDS, ...OCTREE_MESH_ONLY_FIELDS]
+              : [];
   return ignored.filter(
     (f) => JSON.stringify(preset.options[f]) !== JSON.stringify(DEFAULT_MESH_OPTIONS[f])
   );
@@ -285,7 +296,7 @@ export function effectivePresetOptions(preset: MeshPreset): EffectivePresetOptio
   }
   const options: MeshOptions = { ...validated, sizeMin, sizeMax, engine: preset.engine };
   for (const field of inapplicablePresetFields(preset)) {
-    const other = preset.engine === "ftetwild" ? "fTetWild" : preset.engine === "octree" ? "the octree" : preset.engine === "octreemesh" ? "the octree-mesh engine" : "Gmsh";
+    const other = preset.engine === "ftetwild" ? "fTetWild" : preset.engine === "octree" ? "the octree" : preset.engine === "octreemesh" ? "the octree-mesh engine" : preset.engine === "meshcad" ? "the mesh-CAD engine" : "Gmsh";
     warnings.push(`"${field}" is ${JSON.stringify(preset.options[field])} in the preset but is ignored by ${other} — it has no effect under this preset's engine.`);
   }
   return { options, warnings };

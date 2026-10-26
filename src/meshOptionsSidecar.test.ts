@@ -29,6 +29,11 @@ describe("parseMeshJson", () => {
       octreeMeshOutput: "tet",
       octreeMeshMaxSize: 0,
       octreeMeshLevels: 2,
+      meshcadMinAngle: 0,
+      meshcadSmoothIterations: 0,
+      meshcadCurvatureDeviation: 0,
+      meshcadCellsAcrossGaps: 0,
+      meshcadGrading: 0,
       conformal: true,
     };
     const text = JSON.stringify({ version: 1, source: "bull.stp", options });
@@ -93,6 +98,11 @@ describe("generateGeoScript", () => {
       octreeMeshOutput: "tet",
       octreeMeshMaxSize: 0,
       octreeMeshLevels: 2,
+      meshcadMinAngle: 0,
+      meshcadSmoothIterations: 0,
+      meshcadCurvatureDeviation: 0,
+      meshcadCellsAcrossGaps: 0,
+      meshcadGrading: 0,
       conformal: true,
     };
     const script = generateGeoScript("bull.stp", options);

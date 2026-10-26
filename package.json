@@ -505,7 +505,7 @@
     "@loumalouomega/gmsh-wasm": "^0.4.0",
     "@loumalouomega/mmg-wasm": "0.1.0",
     "@loumalouomega/openscad-wasm": "^0.3.1",
-    "@meshioplusplus/wasm": "17.13.0",
+    "@meshioplusplus/wasm": "17.21.0",
     "@modelcontextprotocol/sdk": "^1.32.1",
     "draco3d": "^1.5.9",
     "fflate": "^0.8.3",
