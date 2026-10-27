@@ -5,6 +5,7 @@ import {
   octreeMeshSummary,
   meshcadSummary,
   OCTREE_MAX_LEVEL_LIMIT,
+  MAX_MDPA_RANKS,
   OCTREE_MESH_LEVELS_LIMIT,
   validateMeshGrading,
   validateMeshStructured,
@@ -653,5 +654,27 @@ describe("octree-mesh options", () => {
     );
     const hex = octreeMeshSummary({ ...tet, output: "hex", numTetrahedra: 0, numHexahedra: 7776, numFeatureChains: 0, numFeatureChainsMissed: 0 });
     expect(hex).toBe("Octree-mesh hex: 7776 hex · min Jacobian 0.24 · 0 inverted · Parts not preserved");
+  });
+});
+
+describe("mdpaRanks / mdpaPartitionMethod", () => {
+  it("is absent by default, so an untouched sidecar stays byte-stable", () => {
+    const v = validateMeshOptions({}) ?? {};
+    expect("mdpaRanks" in v).toBe(false);
+    expect("mdpaPartitionMethod" in v).toBe(false);
+  });
+  it("keeps a rank count of at least 2, rounded and clamped to the limit", () => {
+    expect(validateMeshOptions({ mdpaRanks: 4 })?.mdpaRanks).toBe(4);
+    expect(validateMeshOptions({ mdpaRanks: 3.6 })?.mdpaRanks).toBe(4);
+    expect(validateMeshOptions({ mdpaRanks: 10_000 })?.mdpaRanks).toBe(MAX_MDPA_RANKS);
+  });
+  it("drops a count that means a single file or is not a number", () => {
+    for (const bad of [1, 0, -3, 1.4, NaN, "4", null]) expect("mdpaRanks" in (validateMeshOptions({ mdpaRanks: bad }) ?? {}), String(bad)).toBe(false);
+  });
+  it("keeps kahip / sfc, and drops auto (the default) and unknown names", () => {
+    expect(validateMeshOptions({ mdpaPartitionMethod: "kahip" })?.mdpaPartitionMethod).toBe("kahip");
+    expect(validateMeshOptions({ mdpaPartitionMethod: "sfc" })?.mdpaPartitionMethod).toBe("sfc");
+    expect("mdpaPartitionMethod" in (validateMeshOptions({ mdpaPartitionMethod: "auto" }) ?? {})).toBe(false);
+    expect("mdpaPartitionMethod" in (validateMeshOptions({ mdpaPartitionMethod: "metis" }) ?? {})).toBe(false);
   });
 });

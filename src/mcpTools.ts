@@ -182,6 +182,7 @@ import { MAX_HEALABLE_TRIANGLES } from "./meshHeal";
 import { AUTO_DECIMATE_TARGET_TRIANGLES, isHealableSizeError, stlBytesForHeal, decimatedInfo, decimatedSentence } from "./meshioService";
 import { weldedMeshToStlBytes } from "./meshComponents";
 import type { exportSvgSilhouette, exportDrawingSheet } from "./svgSilhouetteHost";
+import { rankFileName, partitionManifestName, partitionManifestJson, partitionWarnings, PARTITION_LAYOUT_NOTE } from "./mdpaPartition";
 import { normalizeTessellationQuality, type TessellationQuality } from "./tessellationQuality";
 import { SVG_VIEWS, type DimensionSource } from "./svgSilhouette";
 import type { hitTest } from "./hitTestService";
@@ -193,6 +194,7 @@ import type {
   generateMesh,
   exportMeshFormat,
   exportMdpa,
+  exportMdpaPartitioned,
   computeHandoffFacts,
   HandoffFacts,
   exportGeoUnrolled,
@@ -277,6 +279,7 @@ export interface Pipeline {
   generateMesh: typeof generateMesh;
   exportMeshFormat: typeof exportMeshFormat;
   exportMdpa: typeof exportMdpa;
+  exportMdpaPartitioned: typeof exportMdpaPartitioned;
   computeHandoffFacts: typeof computeHandoffFacts;
   exportGeoUnrolled: typeof exportGeoUnrolled;
   computeMassProperties: typeof computeMassProperties;
@@ -458,6 +461,7 @@ export function describeCapabilities() {
     meshOptions: {
       defaults: DEFAULT_MESH_OPTIONS,
       notes: [
+        'mdpaRanks (optional, 2-64; absent or 1 = one file) and mdpaPartitionMethod ("auto" = KaHIP when linked else sfc, "kahip", "sfc") apply only to export_mesh with mdpaElements/mdpaGeometries: the DOMAIN cells (never the boundary cells) are split over that many MPI ranks and written as <stem>_<rank>.mdpa plus <stem>.partition.json (balance, interface nodes, per-neighbour shared node ids). Node and cell ids are global across the files and each file carries an InterfaceNodes SubModelPart; the layout is NOT Kratos\' native CommunicatorData one. A hanging-node octree, more ranks than domain cells, and a 1-D mesh are refused by name.',
         `sizeMax = ${SIZE_MAX_SENTINEL} is the "unbounded" sentinel (no explicit target size); set a real value for predictable element counts.`,
         'elementShape "simplex" = triangles/tetrahedra, "subdivided" = all-quad/all-hex, "hexDominant" = mixed tet/hex (3D only, RTree recombiner) — NOT exportable to Kratos MDPA (export_mesh throws a clear error; other formats like msh/vtk are unaffected). elementOrder 2 adds mid-side nodes (quadratic).',
         "algorithm3D defaults to 1 (Delaunay, Gmsh's own default) — a wasm32 stack-overflow that used to make it hang/produce an empty mesh on re-imported CAD was fixed upstream in gmsh-wasm 0.3.0. Frontal (4) and HXT (10) remain valid alternatives.",
@@ -5982,7 +5986,7 @@ export async function exportMeshTool(
     const result = await ctx.jobControl.runOwnedJob({ ownerId: params.ownerId, requestId: params.requestId, jobId }, execute);
     receipt.state = "succeeded";
     receipt.updatedAt = new Date().toISOString();
-    receipt.artifacts = await collectExecutionArtifacts(outputPath, format.id, manifestPath);
+    receipt.artifacts = await collectExecutionArtifacts(outputPath, format.id, manifestPath, result.written.map((w) => w.path));
     await writeJsonAtomic(receiptPath, receipt);
     return { ...result, execution: receipt };
   } catch (error) {
@@ -5999,9 +6003,14 @@ export async function exportMeshTool(
 async function collectExecutionArtifacts(
   outputPath: string,
   format: string,
-  handoffPath?: string
+  handoffPath?: string,
+  /** Every file the writer reported — a partitioned MDPA export has no file at `outputPath` itself. */
+  written: string[] = []
 ): Promise<ExecutionReceiptV1["artifacts"]> {
-  const outputs = [outputPath, ...(format === "geoUnrolled" ? [`${outputPath}.xao`] : []), ...(handoffPath ? [handoffPath] : [])];
+  const outputs = [
+    ...new Set([outputPath, ...written, ...(format === "geoUnrolled" ? [`${outputPath}.xao`] : [])]),
+    ...(handoffPath ? [handoffPath] : []),
+  ];
   const artifacts: ExecutionReceiptV1["artifacts"] = [];
   for (const file of outputs) {
     try {
@@ -6296,6 +6305,29 @@ async function writeMeshExportFormat(
       await fs.writeFile(outputPath, geo.text, "utf8");
       written.push(outputPath);
     }
+  } else if ((format.id === "mdpaElements" || format.id === "mdpaGeometries") && (options.mdpaRanks ?? 1) >= 2) {
+    // One file per MPI rank (`<stem>_<rank>.mdpa`) plus `<stem>.partition.json` — a rank count of 1 (the
+    // default) falls through to the single-file branch below, byte-identical to before.
+    const dir = path.dirname(outputPath);
+    const stem = path.basename(outputPath, path.extname(outputPath));
+    const split = await ctx.pipeline.exportMdpaPartitioned(
+      ctx.extensionPath,
+      input,
+      options,
+      parts,
+      format.id === "mdpaElements" ? "elements" : "geometries",
+      stem
+    );
+    const targets = [
+      ...split.files.map((f) => ({ file: path.join(dir, rankFileName(stem, f.rank)), text: f.text })),
+      { file: path.join(dir, partitionManifestName(stem)), text: partitionManifestJson(split.report, { source: path.basename(modelPath), format: format.id }) },
+    ];
+    for (const t of targets) assertNotSourcePath(modelPath, t.file);
+    for (const t of targets) {
+      await fs.writeFile(t.file, t.text, "utf8");
+      written.push(t.file);
+    }
+    warnings.push(...partitionWarnings(split.report), PARTITION_LAYOUT_NOTE);
   } else if (format.id === "mdpaElements" || format.id === "mdpaGeometries") {
     const text = await ctx.pipeline.exportMdpa(
       ctx.extensionPath,

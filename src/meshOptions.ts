@@ -332,7 +332,23 @@ export interface MeshOptions {
    * never blocks a generate. Optional: absent means no budget.
    */
   budgetElements?: number;
+  /**
+   * Partitioned Kratos MDPA export (roadmap "KaHIP partitioning"): the number
+   * of MPI ranks to split the domain cells over, one `<stem>_<rank>.mdpa` per
+   * rank plus a `<stem>.partition.json` manifest. Only the two MDPA export
+   * formats read it. Optional and kept only when ≥ 2 (absent = one serial file,
+   * byte-stable sidecar), at most {@link MAX_MDPA_RANKS}.
+   */
+  mdpaRanks?: number;
+  /** Partitioner for {@link MeshOptions.mdpaRanks}; absent means `"auto"` (KaHIP when linked, else SFC). */
+  mdpaPartitionMethod?: MdpaPartitionMethod;
 }
+
+/** Most MPI ranks one partitioned MDPA export may ask for. */
+export const MAX_MDPA_RANKS = 64;
+
+export type MdpaPartitionMethod = "auto" | "kahip" | "sfc";
+export const MDPA_PARTITION_METHODS: readonly MdpaPartitionMethod[] = ["auto", "kahip", "sfc"];
 
 /** One periodic face pair, by Part name; see {@link MeshOptions.periodic}. */
 export interface PeriodicPair {
@@ -747,6 +763,10 @@ export function validateMeshOptions(raw: unknown): MeshOptions | null {
   if (periodic.length > 0) out.periodic = periodic;
   const sizeField = validateSizeField(o.sizeField);
   if (sizeField !== undefined) out.sizeField = sizeField;
+  if (isFiniteNumber(o.mdpaRanks) && o.mdpaRanks >= 2) out.mdpaRanks = Math.min(MAX_MDPA_RANKS, Math.round(o.mdpaRanks));
+  if (MDPA_PARTITION_METHODS.includes(o.mdpaPartitionMethod as MdpaPartitionMethod) && o.mdpaPartitionMethod !== "auto") {
+    out.mdpaPartitionMethod = o.mdpaPartitionMethod as MdpaPartitionMethod;
+  }
   return out;
 }
 

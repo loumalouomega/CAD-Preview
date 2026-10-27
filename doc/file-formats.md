@@ -456,6 +456,8 @@ The **FE Mesh** panel's finite-element mesh generation settings (via [Gmsh](http
 
 An optional `budgetElements` (a positive integer) records the advisory element budget the FE Mesh panel and `estimate_mesh_budget`/`generate_mesh` warn against — it never blocks a generate and is omitted entirely when unset, so an untouched sidecar stays byte-stable. It is not a Gmsh option and never reaches the `.geo` script.
 
+Optional `mdpaRanks` (an integer 2–64) and `mdpaPartitionMethod` (`"kahip"` or `"sfc"`; absent means auto) record the partitioned Kratos MDPA export request ([Partitioned MDPA](./gmsh-integration.md#partitioned-mdpa)). Both are omitted unless set — a rank count of 1 and `"auto"` are never written — and neither is a Gmsh option or reaches the `.geo` script.
+
 **Drawing-sheet templates** (`cad-preview-sheet-templates.json` beside the model, shared by every model in the folder; plus the bundled `dist/sheet-templates/starter-templates.json`) are `{ "version": 1, "templates": { "<name>": { "name", "description"?, "views"?, "projection"?, "paper"?, "scale"?, "title"?, "fields"?, "format"?, "sections"?, "viewSections"? } } }` — settings only, never geometry. Parsing is tolerant: a malformed entry or field is dropped, never the file.
 
 **Mesh presets** (`cad-preview-mesh-presets.json`, and the bundled `dist/mesh-presets/starter-presets.json`) may carry an optional per-preset `stlExport` block — `{ "targetCellSize": 1, "chordalFraction": 0.1, "angularDeg": 20 }`, in the preset's own `unit` — the mesh-aware STL tolerance `export_tessellated_stl`'s `preset` parameter applies. A malformed block is dropped without dropping the preset.

@@ -222,6 +222,34 @@ const FAKE_BREP_RESULT: BRepResult = {
   guideIds: [],
 };
 
+const FAKE_PARTITIONED_MDPA = {
+  files: [
+    { rank: 0, text: "Begin Nodes\nEnd Nodes\n" },
+    { rank: 1, text: "Begin Nodes\nEnd Nodes\n" },
+  ],
+  report: {
+    ranks: 2,
+    method: "auto" as const,
+    methodUsed: "kahip" as const,
+    seed: 1,
+    volumeCells: 4,
+    balanceMaxOverMean: 1,
+    emptyRanks: [],
+    interfaceNodes: 4,
+    interfaceFraction: 0.2,
+    orphanSurfaceCells: 0,
+    perRank: [0, 1].map((rank) => ({
+      rank,
+      file: `model_${rank}.mdpa`,
+      volumeCells: 2,
+      surfaceCells: 1,
+      nodes: 12,
+      interfaceNodes: 4,
+      neighbours: [{ rank: 1 - rank, sharedNodeIds: [3, 8, 13, 18] }],
+    })),
+  },
+};
+
 const FAKE_MESH_RESULT: MeshResult = {
   positions: new Float32Array(),
   indices: new Uint32Array(),
@@ -427,6 +455,7 @@ function fakePipeline(overrides: Partial<Pipeline> = {}): Pipeline {
     generateMesh: vi.fn(async () => FAKE_MESH_RESULT),
     exportMeshFormat: vi.fn(async () => "vtk-content"),
     exportMdpa: vi.fn(async () => "Begin Nodes\nEnd Nodes\n"),
+    exportMdpaPartitioned: vi.fn(async () => FAKE_PARTITIONED_MDPA),
     computeHandoffFacts: vi.fn(async () => ({
       engineUsed: "gmsh" as const,
       nodeCount: 10,
@@ -4704,6 +4733,30 @@ describe("export_mesh", () => {
     await exportMeshTool(c, { path: stpModel, format: "vtk", outputPath: path.join(dir, "o.vtk") });
     expect(vi.mocked(c.pipeline.exportMeshFormat).mock.lastCall![4]).toBe("vtk");
     expect(await fs.readFile(path.join(dir, "o.vtk"), "utf8")).toBe("vtk-content");
+  });
+
+  it("writes one MDPA per rank plus the partition manifest when mdpaRanks >= 2, and nothing at the base path", async () => {
+    const c = ctx();
+    const out = path.join(dir, "split.mdpa");
+    const result = await exportMeshTool(c, { path: stpModel, format: "mdpaElements", outputPath: out, options: { mdpaRanks: 2 } });
+    expect(c.pipeline.exportMdpa).not.toHaveBeenCalled();
+    const call = vi.mocked(c.pipeline.exportMdpaPartitioned).mock.lastCall!;
+    expect(call[4]).toBe("elements");
+    expect(call[5]).toBe("split");
+    expect((call[2] as { mdpaRanks: number }).mdpaRanks).toBe(2);
+    expect(result.written.map((w) => path.basename(w.path))).toEqual(["split_0.mdpa", "split_1.mdpa", "split.partition.json"]);
+    await expect(fs.access(out)).rejects.toThrow();
+    const manifest = JSON.parse(await fs.readFile(path.join(dir, "split.partition.json"), "utf8"));
+    expect(manifest).toMatchObject({ version: 1, format: "mdpaElements", ranks: 2, methodUsed: "kahip" });
+    expect(manifest.layout).toMatch(/CommunicatorData/);
+    expect(result.warnings.join("\n")).toMatch(/No Kratos reader has been run/);
+  });
+
+  it("keeps a single MDPA file for mdpaRanks 1", async () => {
+    const c = ctx();
+    await exportMeshTool(c, { path: stpModel, format: "mdpaElements", outputPath: path.join(dir, "one.mdpa"), options: { mdpaRanks: 1 } });
+    expect(c.pipeline.exportMdpaPartitioned).not.toHaveBeenCalled();
+    expect(c.pipeline.exportMdpa).toHaveBeenCalledTimes(1);
   });
 
   it("rejects unknown formats and refuses to overwrite the source", async () => {

@@ -4903,6 +4903,53 @@ test("mesh budget: the FE Mesh readout shows a calibrated element range with its
   assert(/budget/.test(after.warning), `a budget below the estimate shows the budget warning (got ${JSON.stringify(after.warning)})`);
 });
 
+test("MDPA ranks: the rank controls follow the export format and a typed count is posted (1 or empty posts none)", async (page) => {
+  await populate(page);
+  const state = () =>
+    page.evaluate(() => ({
+      format: document.getElementById("meshing-export-format").value,
+      ranksDisabled: document.getElementById("meshing-mdpa-ranks").disabled,
+      methodDisabled: document.getElementById("meshing-mdpa-method").disabled,
+    }));
+  const change = (id, value) =>
+    page.evaluate(
+      ([i, v]) => {
+        const el = document.getElementById(i);
+        el.value = v;
+        el.dispatchEvent(new Event("change", { bubbles: true }));
+      },
+      [id, value]
+    );
+  const lastOptions = () => page.evaluate(() => (window.__sent ?? []).filter((m) => m.type === "meshingChanged").at(-1)?.options ?? null);
+  const base = fixture("meshingOptions").options;
+
+  await change("meshing-export-format", "mdpaElements");
+  let st = await state();
+  assert(st.ranksDisabled === false, `the rank count is live for a Kratos MDPA target (got ${JSON.stringify(st)})`);
+  assert(st.methodDisabled === true, "the partitioner stays greyed until a rank count of 2 or more is set");
+
+  await page.evaluate(() => (window.__sent.length = 0));
+  await change("meshing-mdpa-ranks", "4");
+  assert((await lastOptions())?.mdpaRanks === 4, `typing 4 posts mdpaRanks 4 (got ${JSON.stringify(await lastOptions())})`);
+  await post(page, { type: "meshingOptions", options: { ...base, mdpaRanks: 4 } });
+  await sleep(150);
+  st = await state();
+  assert(st.methodDisabled === false, `a rank count of 4 enables the partitioner (got ${JSON.stringify(st)})`);
+  assert(await page.evaluate(() => document.getElementById("meshing-mdpa-ranks").value === "4"), "the echoed count is shown");
+
+  await change("meshing-mdpa-method", "sfc");
+  assert((await lastOptions())?.mdpaPartitionMethod === "sfc", "choosing the space-filling curve posts it");
+  await change("meshing-mdpa-method", "auto");
+  assert(!(await lastOptions())?.mdpaPartitionMethod, "Auto posts no explicit method (the default stays absent)");
+
+  await change("meshing-mdpa-ranks", "1");
+  assert(!(await lastOptions())?.mdpaRanks, "a count of 1 means one file, so no mdpaRanks is posted");
+
+  await change("meshing-export-format", "vtk");
+  st = await state();
+  assert(st.ranksDisabled === true && st.methodDisabled === true, `a non-MDPA format greys both controls (got ${JSON.stringify(st)})`);
+});
+
 test("bookmarks: hydrating two bookmarks renders two rows with their names", async (page) => {
   await populate(page);
   await postBookmarks(page, [

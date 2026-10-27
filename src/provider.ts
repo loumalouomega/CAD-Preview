@@ -84,6 +84,7 @@ import { writeCustomBackup, restoreCustomBackup } from "./customBackup";
 import type { MeshGenerationInput } from "./gmshService";
 import type { MeshioMetadataSummary } from "./meshioService";
 import { meshExportFormat, companionSaveName, constraintExportWarning, MESH_EXPORT_FORMATS, type MeshExportFormatId } from "./meshExportFormats";
+import { rankFileName, partitionManifestName, partitionManifestJson, partitionWarnings, PARTITION_LAYOUT_NOTE } from "./mdpaPartition";
 import { SIZE_MAX_SENTINEL, applyStlPartSizeOverride, scaleMeshOptionsForUnit, scalePartsMeshSizeForUnit } from "./meshOptions";
 import type { MeshOptions } from "./meshOptions";
 import { viewerBodyHtml } from "./viewerDom";
@@ -5369,6 +5370,50 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
             }),
             post
           );
+        } else if ((target === "mdpaElements" || target === "mdpaGeometries") && (options.mdpaRanks ?? 1) >= 2) {
+          // One MDPA per MPI rank plus a manifest (`mdpaPartition.ts`). The save dialog names the STEM; the
+          // files are `<stem>_<rank>.mdpa` beside it, so ask first and mesh only once the user has committed.
+          const format = meshExportFormat(target)!;
+          const baseName = uri.path.slice(uri.path.lastIndexOf("/") + 1).replace(/\.[^.]+$/, "");
+          const saveUri = await vscode.window.showSaveDialog({
+            defaultUri: vscode.Uri.joinPath(uri, "..", `${baseName}.${format.extension}`),
+            filters: { [`${format.filterLabel} — one file per rank`]: [format.extension] },
+          });
+          if (saveUri) {
+            const saveName = saveUri.path.slice(saveUri.path.lastIndexOf("/") + 1);
+            const stem = saveName.replace(/\.mdpa$/i, "");
+            const split = await this.docPipeline(uri).exportMdpaPartitioned(
+              this.context.extensionPath,
+              input,
+              options,
+              parts,
+              target === "mdpaElements" ? "elements" : "geometries",
+              stem
+            );
+            const sourceName = uri.path.slice(uri.path.lastIndexOf("/") + 1);
+            const outputs = [
+              ...split.files.map((f) => ({ uri: vscode.Uri.joinPath(saveUri, "..", rankFileName(stem, f.rank)), bytes: Buffer.from(f.text, "utf8") })),
+              { uri: vscode.Uri.joinPath(saveUri, "..", partitionManifestName(stem)), bytes: Buffer.from(partitionManifestJson(split.report, { source: sourceName, format: target }), "utf8") },
+            ];
+            // The save dialog only confirmed ONE name; the siblings must not be replaced unasked.
+            const existing: string[] = [];
+            for (const o of outputs) {
+              try {
+                await vscode.workspace.fs.stat(o.uri);
+                existing.push(o.uri.path.slice(o.uri.path.lastIndexOf("/") + 1));
+              } catch { /* absent: nothing to overwrite */ }
+            }
+            const overwrite = "Overwrite";
+            if (existing.length === 0 || (await vscode.window.showWarningMessage(`${existing.length} existing file${existing.length === 1 ? "" : "s"} would be replaced: ${existing.join(", ")}`, { modal: true }, overwrite)) === overwrite) {
+              for (const o of outputs) await writeCompanion(o.uri, o.bytes);
+              const r = split.report;
+              post({
+                type: "status",
+                text: `Exported ${r.ranks} rank files (${rankFileName(stem, 0)} … ${rankFileName(stem, r.ranks - 1)}) and ${partitionManifestName(stem)} — ${r.methodUsed.toUpperCase()}, balance ${r.balanceMaxOverMean.toFixed(3)}, ${r.interfaceNodes} interface nodes (${(r.interfaceFraction * 100).toFixed(1)} %).`,
+              });
+              for (const w of [...partitionWarnings(r), PARTITION_LAYOUT_NOTE]) post({ type: "status", text: w });
+            }
+          }
         } else if (target === "mdpaElements" || target === "mdpaGeometries") {
           // Kratos MDPA is hand-serialized (no gmsh.write() support at all — see
           // exportMdpa's doc comment), unlike every other format below.

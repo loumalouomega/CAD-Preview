@@ -48,6 +48,8 @@ export const KERNELS_BY_FUNCTION: Record<keyof DocumentPipeline, readonly Kernel
   generateMesh: G,
   exportMeshFormat: G,
   exportMdpa: G,
+  // Gmsh meshes; the domain cells are then labelled by the meshio++ partitioner.
+  exportMdpaPartitioned: [...G, ...M],
   computeHandoffFacts: G,
   exportGeoUnrolled: G,
   computeMassProperties: O,

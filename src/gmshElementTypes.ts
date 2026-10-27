@@ -212,6 +212,20 @@ const KIND_FAMILY: Record<MdpaCellKind, keyof typeof FAMILY_FACES | null> = {
 };
 
 /**
+ * The boundary of a Kratos-ordered cell as rings of CORNER local indices: faces
+ * for a volume kind, edges (a ring of two) for a 2-D tri/quad kind, `[]` for a
+ * line. The corner block is identical to gmsh's, so these index a cell's
+ * `nodeTags` directly. Used to match a boundary condition to its parent cell.
+ */
+export function cellBoundaryRings(kind: MdpaCellKind): ReadonlyArray<readonly number[]> {
+  const family = KIND_FAMILY[kind];
+  if (family) return FAMILY_FACES[family];
+  const n = MDPA_KIND_INFO[kind].numCorners;
+  if (kind.startsWith("tri") || kind.startsWith("quad")) return Array.from({ length: n }, (_, i) => [i, (i + 1) % n]);
+  return [];
+}
+
+/**
  * Signed volume of a cell from its first-`numCorners` corner coordinates (in
  * Kratos node order — which keeps the corner block identical to gmsh's), via
  * the divergence theorem over the kind's OUTWARD-wound boundary faces. Positive

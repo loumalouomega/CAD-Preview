@@ -732,6 +732,12 @@
       "section": "All-hexahedra octree with multi-point constraints in MDPA (roadmap item, closed)",
       "gap": "no Kratos installation was available in this environment, so a hanging-node octree's exported MDPA (`Begin Constraints LinearMasterSlaveConstraint` blocks plus a `HangingNodes` SubModelPart) was checked only against Kratos' own reader SOURCE (`ModelPartIO::ReadConstraintsBlock`, model_part_io.cpp), against VSCode-MDPA-Preview's writer/reader of the same layout, and by an independent parse + patch test in `mcp:smoke` \u2014 never by actually reading the file into Kratos and solving with it.",
       "status": "open"
+    },
+    {
+      "id": "partitioned-mdpa-kratos",
+      "section": "Partitioned Kratos MDPA export (roadmap item, closed)",
+      "gap": "no Kratos installation was available, so the per-rank files (global node/cell ids, an `InterfaceNodes` SubModelPart, neighbour lists only in `<stem>.partition.json`) were checked only against the single-file export of the same mesh (every element id once, node union and coordinates identical \u2014 `scripts/probe/examples/mdpa-partition.ts` and `mcp:smoke`), never by reading them into a Kratos MPI run; they are NOT Kratos' native `CommunicatorData` layout. The FE Mesh panel's save-dialog \u2192 sibling-files \u2192 overwrite-confirmation flow in `provider.ts` was not driven in a real Extension Development Host session either (the panel's controls are covered by `test:webview`, the headless writer by `mcp:smoke`).",
+      "status": "open"
     }
   ]
 }

@@ -40,6 +40,18 @@ import { summarizeQuality, type QualitySummary } from "./meshQuality";
 import type { Part, MeshElementGroup } from "./protocol";
 import { applyPartsToGmshModel, type PartGroupInfo, type PartGroupMaps } from "./gmshPartsMap";
 import { meshExportFormat, type MeshExportFormatId } from "./meshExportFormats";
+import {
+  buildPartitionInput,
+  cellRankFromLabels,
+  planPartition,
+  partitionReport,
+  partitionRefusal,
+  writePartitionedMdpa,
+  HANGING_PARTITION_REFUSAL,
+  MDPA_PARTITION_SEED,
+  type PartitionReport,
+} from "./mdpaPartition";
+import { partitionVolumeCells } from "./mdpaPartitionService";
 import { writeMdpa, type MdpaMesh, type MdpaMode, type MdpaNode, type MdpaCell, type MdpaGroup } from "./mdpaWriter";
 import { parseToWeldedMesh } from "./meshHeal";
 import { boundsOfTriangles, boundsDiagonal, weldedMeshToStlBytes } from "./meshComponents";
@@ -1200,24 +1212,7 @@ export async function exportMdpa(
       mesh.constraintVariables = loaded.octreeMpc.variables;
     }
 
-    if (mode === "elements") {
-      for (const cell of mesh.volumeCells) {
-        if (mesh.dimension !== 2 && MDPA_KIND_INFO[cell.kind].elementName === null) {
-          throw new Error(
-            `Kratos MDPA "Elements" mode has no confirmed Element name for a ${cell.kind} cell. ` +
-              'Export in "Geometries" mode instead (its geometry names are certain).'
-          );
-        }
-      }
-      for (const cell of mesh.surfaceCells) {
-        if (MDPA_KIND_INFO[cell.kind].conditionName === null) {
-          throw new Error(
-            `Kratos MDPA "Elements" mode has no confirmed Condition name for a ${cell.kind} cell. ` +
-              'Export in "Geometries" mode instead (its geometry names are certain).'
-          );
-        }
-      }
-    }
+    assertMdpaModeSupported(mesh, mode);
 
     return writeMdpa(mesh, mode, (msg) => console.warn(`[CAD-Preview MDPA] ${msg}`));
   } finally {
@@ -1225,6 +1220,82 @@ export async function exportMdpa(
       try { gmsh.FS.unlink(tmpPath); } catch { /* ignore */ }
     }
   }
+}
+
+/** Elements mode needs a confirmed Kratos name for every kind; geometries mode's names are certain. */
+function assertMdpaModeSupported(mesh: MdpaMesh, mode: MdpaMode): void {
+  if (mode !== "elements") return;
+  for (const cell of mesh.volumeCells) {
+    if (mesh.dimension !== 2 && MDPA_KIND_INFO[cell.kind].elementName === null) {
+      throw new Error(
+        `Kratos MDPA "Elements" mode has no confirmed Element name for a ${cell.kind} cell. ` +
+          'Export in "Geometries" mode instead (its geometry names are certain).'
+      );
+    }
+  }
+  for (const cell of mesh.surfaceCells) {
+    if (MDPA_KIND_INFO[cell.kind].conditionName === null) {
+      throw new Error(
+        `Kratos MDPA "Elements" mode has no confirmed Condition name for a ${cell.kind} cell. ` +
+          'Export in "Geometries" mode instead (its geometry names are certain).'
+      );
+    }
+  }
+}
+
+/**
+ * Like {@link exportMdpa}, but splits the domain cells over `options.mdpaRanks`
+ * MPI ranks and returns one MDPA text per rank plus the partition facts. Node
+ * and cell ids are global (see `mdpaPartition.ts`); the caller writes
+ * `<stem>_<rank>.mdpa` beside a `<stem>.partition.json` manifest.
+ *
+ * Only the domain cells reach the partitioner. A request that can never be
+ * honoured (hanging-node constraints, more ranks than cells) throws by name.
+ */
+export async function exportMdpaPartitioned(
+  extensionPath: string,
+  input: MeshGenerationInput,
+  options: MeshOptions,
+  parts: Part[],
+  mode: MdpaMode,
+  stem: string
+): Promise<PartitionedMdpa> {
+  const ranks = options.mdpaRanks ?? 1;
+  if (ranks < 2) throw new Error("exportMdpaPartitioned needs mdpaRanks of at least 2 — use exportMdpa for a single file.");
+  // Refuse before paying for the mesh when the options already decide it.
+  if (options.engine === "octree" && options.octreeTransition === "hanging") throw new Error(HANGING_PARTITION_REFUSAL);
+  const gmsh = await getGmsh(extensionPath);
+  let tmpPath: string | null = null;
+  try {
+    const loaded = await populateMeshedModel(extensionPath, gmsh, input, options, parts);
+    tmpPath = loaded.tmpPath;
+    const mesh = extractMdpaMesh(gmsh, loaded.groupMaps, options.dimension);
+    if (loaded.octreeMpc) {
+      mesh.constraints = loaded.octreeMpc.result.constraints;
+      mesh.constraintVariables = loaded.octreeMpc.variables;
+    }
+    const refusal = partitionRefusal(mesh, ranks);
+    if (refusal) throw new Error(refusal);
+    assertMdpaModeSupported(mesh, mode);
+
+    const method = options.mdpaPartitionMethod ?? "auto";
+    const partInput = buildPartitionInput(mesh);
+    const { labels, methodUsed } = await partitionVolumeCells(partInput, ranks, method);
+    const plan = planPartition(mesh, cellRankFromLabels(partInput, labels, mesh.volumeCells.length, ranks), ranks);
+    const report = partitionReport(mesh, plan, { method, methodUsed, seed: MDPA_PARTITION_SEED, stem });
+    const texts = writePartitionedMdpa(mesh, mode, plan, (msg) => console.warn(`[CAD-Preview MDPA] ${msg}`));
+    return { files: texts.map((text, rank) => ({ rank, text })), report };
+  } finally {
+    if (tmpPath) {
+      try { gmsh.FS.unlink(tmpPath); } catch { /* ignore */ }
+    }
+  }
+}
+
+/** One partitioned export: a text per rank and the facts about the split. */
+export interface PartitionedMdpa {
+  files: Array<{ rank: number; text: string }>;
+  report: PartitionReport;
 }
 
 /** One Gmsh physical group as it exists in the generated model. */

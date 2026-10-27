@@ -447,6 +447,26 @@ Verified end-to-end against the live WASM build on `examples/STP/angle1.stp` wit
 
 Re-verified end-to-end after the element-shape/order extension, on `angle1.stp` across all four `{simplex, subdivided} × {order 1, 2}` combos (`Mesh.Algorithm3D=1`): every combo produced a **watertight** overlay (zero odd boundary edges — `simplex` → tet4/tri3 & tet10/tri6, `subdivided` → hex8/quad4 & hex27/quad9), no `orientCell` warnings, no negative tets, and both MDPA modes emitted every expected block name with all connectivity ids in range. Corner-only overlay display makes the boundary-triangle count identical between order 1 and order 2 of the same shape.
 
+### Partitioned MDPA: one file per MPI rank {#partitioned-mdpa}
+
+Set `mdpaRanks` to 2 or more (FE Mesh panel ▸ Advanced **MDPA ranks**, or `options.mdpaRanks` on `export_mesh`) and either MDPA format splits the **domain cells** over that many ranks and writes one file each, named `<stem>_<rank>.mdpa` (the save dialog, or `outputPath`, supplies `<stem>`), plus a `<stem>.partition.json` manifest. 1, empty or absent keeps the single-file export byte-identical. `mdpaPartitionMethod` is `auto` (default: KaHIP when the meshio++ build links it, else the space-filling curve), `kahip` or `sfc`.
+
+- **Which cells are partitioned.** Only the domain cells (`MdpaMesh.volumeCells`: tetrahedra, hexahedra, prisms, pyramids; triangles and quadrilaterals in 2-D). KaHIP handed the whole `Mesh.SaveAll` mesh, with its vertex, line and triangle blocks, partitions the graph of all of them and returns ~1.8× unbalanced parts with empty ones (measured on `bull.stp`), so the boundary cells are never given to it. They follow their parent domain cell (matched by the sorted corner nodes of a face, or an edge in 2-D; the lowest-index parent when two cells share it), so a face on a rank interface lands in exactly one file.
+- **Ids are global.** Node and cell ids are assigned once over the whole mesh and each rank file is a filtered view of that numbering, so node 417 is node 417 in every file that lists it, and the union of the files' elements is exactly the single-file export's. A free point that no cell uses stays in rank 0.
+- **Per rank.** Its own nodes, cells and conditions; every Part restricted to the rank (a Part with nothing on the rank is omitted); and an `InterfaceNodes` SubModelPart listing the nodes it shares with another rank (renamed `InterfaceNodes_2` if a Part already has that name). The header carries `// Rank r of N`.
+- **Manifest.** `ranks`, requested `method` and `methodUsed`, the fixed `seed`, `balanceMaxOverMean` (largest rank's domain-cell count over the mean), `emptyRanks`, total `interfaceNodes` and `interfaceFraction`, and per rank its `file`, counts and each neighbour's `sharedNodeIds`. Facts only — no pass/fail.
+- **Measured** (`scripts/probe/examples/mdpa-partition.ts`, real Gmsh + meshio++ 17.21.0, every rank file checked against the single-file export of the same mesh: each element id appears once, the node union is the serial node set, shared nodes carry identical coordinates):
+
+  | Mesh | Ranks | KaHIP balance / interface nodes | SFC balance / interface nodes |
+  | --- | --- | --- | --- |
+  | `bull.stp`, 3 375 elements | 2 | 1.004 / 41 | 1.000 / 70 |
+  | | 4 | 1.018 / 108 | 1.000 / 297 |
+  | | 8 | 1.022 / 183 | 1.000 / 385 |
+  | `block.stp`, 1 282 elements | 4 | 1.020 / 82 | 1.002 / 129 |
+
+- **Refused by name.** A hanging-node octree (its constraints tie nodes the partition would put on different ranks), more ranks than domain cells, and a 1-D mesh. A rank count above 64 is clamped. Refinement sweeps (`compare_mesh_refinement`) write the partitioned set for every row.
+- **Not Kratos' native pre-partitioned layout.** There is no `CommunicatorData` (`NEIGHBOURS_INDICES`, `LOCAL_MESH`, `GHOST_MESH`, `INTERFACE_MESH`) and no ghost layer: meshio++'s `ghostLayers` halo would duplicate cells across files and only means something with those blocks. The neighbour lists are in the manifest. Kratos' own MPI workflow usually partitions at load time, and no Kratos reader has been run against these files (tracked in `scripts/verification-gaps/registry.json`).
+
 ### The meshio++ bridge (MED, CGNS, XDMF, GiD — not `gmsh.write()` formats either)
 
 Like MDPA above, MED/CGNS/XDMF export never calls `gmsh.write()` — but unlike MDPA, they're not hand-serialized either. `src/meshioService.ts`'s `exportViaMeshio()` re-encodes an already-generated mesh through a **second, independent** WASM module, [`@meshioplusplus/wasm`](https://github.com/loumalouomega/meshioplusplus) (MIT-licensed; see the README's Licensing section), which this gmsh-wasm build simply doesn't have writers for at all.

@@ -27,7 +27,7 @@ console.debug = console.error.bind(console);
 
 import { loadBRep, exportBRep, loadBRepCached, disposeBRepCache, resolveAssemblyTree, type BRepCacheEntry, type BRepResult } from "./occtService";
 import type { TreeNode } from "./protocol";
-import { generateMesh, exportMeshFormat, exportMdpa, computeHandoffFacts, exportGeoUnrolled, repairMesh } from "./gmshService";
+import { generateMesh, exportMeshFormat, exportMdpa, exportMdpaPartitioned, computeHandoffFacts, exportGeoUnrolled, repairMesh } from "./gmshService";
 import { computeMassProperties, computeBom, computeHoleTable } from "./massProperties";
 import { getEntityFacts, measureEntities, measureExact, checkInterference, checkInterferenceAll, rebindPartsAcrossOps, rebindPartsAcrossSave, resolveBucketSelector, synthesizeSelector, resolvePartSelectors } from "./entityFacts";
 import { renderSnapshot, isRenderAvailable } from "./renderService";
@@ -142,6 +142,7 @@ const handlers: Record<keyof DocumentPipeline, Handler> = {
   generateMesh: generateMesh as Handler,
   exportMeshFormat: exportMeshFormat as Handler,
   exportMdpa: exportMdpa as Handler,
+  exportMdpaPartitioned: exportMdpaPartitioned as Handler,
   computeHandoffFacts: computeHandoffFacts as Handler,
   exportGeoUnrolled: exportGeoUnrolled as Handler,
   computeMassProperties: computeMassProperties as Handler,

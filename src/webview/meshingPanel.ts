@@ -1,4 +1,4 @@
-import { SIZE_MAX_SENTINEL, DEFAULT_MESH_OPTIONS, boundaryLayerPlan, validateMeshBoundaryLayer, validateMeshGrading, validateMeshStructured, octreeSummary, octreeMeshSummary, meshcadSummary, validateMpcVariables, OCTREE_MAX_LEVEL_LIMIT, OCTREE_MESH_LEVELS_LIMIT, MESHCAD_SMOOTH_LIMIT, type OctreeStats, type OctreeMeshStats, type MeshCadStats, type MeshOptions, type MeshGrading, type MeshStructured, type MeshBoundaryLayer } from "../meshOptions";
+import { SIZE_MAX_SENTINEL, DEFAULT_MESH_OPTIONS, boundaryLayerPlan, validateMeshBoundaryLayer, validateMeshGrading, validateMeshStructured, octreeSummary, octreeMeshSummary, meshcadSummary, validateMpcVariables, OCTREE_MAX_LEVEL_LIMIT, OCTREE_MESH_LEVELS_LIMIT, MAX_MDPA_RANKS, type MdpaPartitionMethod, MESHCAD_SMOOTH_LIMIT, type OctreeStats, type OctreeMeshStats, type MeshCadStats, type MeshOptions, type MeshGrading, type MeshStructured, type MeshBoundaryLayer } from "../meshOptions";
 import type { QualitySummary } from "../meshQuality";
 import type { BoundaryLayerAchieved } from "../boundaryLayerMeasurement";
 import { describeGateCheck, type QualityGateResult } from "../meshQualityGate";
@@ -179,6 +179,8 @@ export class MeshingPanel {
   private sourceKind: "brep" | "mesh" = "brep";
   private readonly stlAngleInput: HTMLInputElement;
   private readonly budgetInput: HTMLInputElement;
+  private readonly mdpaRanksInput: HTMLInputElement;
+  private readonly mdpaMethodSelect: HTMLSelectElement;
   private deviationBtn: HTMLButtonElement | null = null;
   private deviationTolInput: HTMLInputElement | null = null;
   /** Displayed model's volume (null = not a closed volume) / area, for the budget estimate. */
@@ -622,6 +624,33 @@ export class MeshingPanel {
       const raw = Number(this.budgetInput.value);
       cb.onOptionsChange({ budgetElements: this.budgetInput.value.trim() !== "" && raw >= 1 ? Math.round(raw) : undefined });
     });
+
+    this.mdpaRanksInput = this.numberField(form, "MDPA ranks", 1);
+    this.mdpaRanksInput.id = "meshing-mdpa-ranks";
+    this.mdpaRanksInput.value = "";
+    this.mdpaRanksInput.placeholder = "1 (one file)";
+    this.mdpaRanksInput.step = "1";
+    this.mdpaRanksInput.max = String(MAX_MDPA_RANKS);
+    this.mdpaRanksInput.title =
+      "Kratos MDPA export only. 2 or more splits the domain cells over that many MPI ranks and writes <name>_<rank>.mdpa " +
+      "per rank plus <name>.partition.json (global node/cell ids, an InterfaceNodes SubModelPart per rank). Empty or 1 = one file.";
+    this.mdpaRanksInput.addEventListener("change", () => {
+      const raw = Number(this.mdpaRanksInput.value);
+      cb.onOptionsChange({ mdpaRanks: this.mdpaRanksInput.value.trim() !== "" && raw >= 2 ? Math.min(MAX_MDPA_RANKS, Math.round(raw)) : undefined });
+    });
+    this.mdpaMethodSelect = this.select(form, "MDPA partitioner", [
+      ["auto", "Auto (KaHIP)"],
+      ["kahip", "KaHIP"],
+      ["sfc", "Space-filling curve"],
+    ]);
+    this.mdpaMethodSelect.id = "meshing-mdpa-method";
+    this.mdpaMethodSelect.title =
+      "KaHIP cuts fewer interface nodes than the space-filling curve at the same balance (bull.stp, 4 ranks: 108 vs 297). Auto uses KaHIP.";
+    this.mdpaMethodSelect.addEventListener("change", () => {
+      const method = this.mdpaMethodSelect.value as MdpaPartitionMethod;
+      cb.onOptionsChange({ mdpaPartitionMethod: method === "auto" ? undefined : method });
+    });
+    this.exportFormatSelect.addEventListener("change", () => this.syncMdpaFields());
 
     this.deviationTolInput = this.numberField(form, "Deviation tolerance (mm)", 0);
     this.deviationTolInput.id = "meshing-deviation-tol";
@@ -1114,6 +1143,9 @@ export class MeshingPanel {
     this.conformalCheckbox.checked = options.conformal;
     this.stlAngleInput.value = String(options.stlAngle);
     this.budgetInput.value = options.budgetElements ? String(options.budgetElements) : "";
+    this.mdpaRanksInput.value = options.mdpaRanks ? String(options.mdpaRanks) : "";
+    this.mdpaMethodSelect.value = options.mdpaPartitionMethod ?? "auto";
+    this.syncMdpaFields();
     this.ftetwildEpsRelInput.value = String(options.ftetwildEpsRel);
     this.ftetwildManifoldSurfaceCheckbox.checked = options.ftetwildManifoldSurface;
     this.ftetwildCoarsenCheckbox.checked = options.ftetwildCoarsen;
@@ -2082,6 +2114,13 @@ export class MeshingPanel {
     row.appendChild(input);
     parent.appendChild(row);
     return input;
+  }
+
+  /** The rank controls only matter for the two Kratos MDPA export targets; grey them elsewhere. */
+  private syncMdpaFields(): void {
+    const mdpa = this.exportFormatSelect.value.startsWith("mdpa");
+    this.mdpaRanksInput.disabled = !mdpa;
+    this.mdpaMethodSelect.disabled = !mdpa || !this.lastOptions?.mdpaRanks;
   }
 
   private numberField(parent: HTMLElement, label: string, def: number): HTMLInputElement {

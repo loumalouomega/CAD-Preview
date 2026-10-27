@@ -7577,6 +7577,50 @@ try {
   assert(Math.abs(hangCubeVol.volume - 1000) < 1e-6 && hangCubeVol.nonPositive === 0, `the hanging octree over cube.stl (a mesh source) encloses exactly 1000 (got ${JSON.stringify(hangCubeVol)})`);
 
 
+  // Partitioned MDPA (roadmap KaHIP partitioning): `mdpaRanks` >= 2 writes one MDPA per MPI rank + a manifest.
+  // Every rank file is checked against the single-file export of the SAME mesh (Gmsh is single-threaded and
+  // deterministic here): each element id once, the node union equal, shared nodes identical, KaHIP < SFC interface.
+  {
+    const partOpts = { sizeMin: 0, sizeMax: 1 };
+    const serialOut = path.join(dir, "part-serial.mdpa");
+    await call("export_mesh", { path: octreeBlock, format: "mdpaElements", outputPath: serialOut, options: partOpts });
+    const elementIds = (text) => [...text.matchAll(/^Begin Elements \w+\n([\s\S]*?)^End Elements/gm)].flatMap((m) => m[1].trim().split("\n").map((l) => Number(l.trim().split(/\s+/)[0])));
+    const nodeLines = (text) => new Map(text.slice(text.indexOf("Begin Nodes") + 12, text.indexOf("End Nodes")).trim().split("\n").map((l) => [Number(l.split(" ")[0]), l]));
+    const serialText = fs.readFileSync(serialOut, "utf8");
+    const serialIds = elementIds(serialText).sort((x, y) => x - y);
+    const serialNodes = nodeLines(serialText);
+    assert(serialIds.length === 1282, `block.stp at sizeMax 1 is the probe's 1282 tets (got ${serialIds.length})`);
+    const interfaceByMethod = {};
+    for (const method of ["kahip", "sfc"]) {
+      const stem = path.join(dir, `part-${method}`);
+      const out = await call("export_mesh", { path: octreeBlock, format: "mdpaElements", outputPath: `${stem}.mdpa`, options: { ...partOpts, mdpaRanks: 4, mdpaPartitionMethod: method } });
+      assert(!fs.existsSync(`${stem}.mdpa`), `${method}: nothing is written at outputPath itself`);
+      assert(
+        out.written.map((w) => path.basename(w.path)).join() === [0, 1, 2, 3].map((r) => `part-${method}_${r}.mdpa`).concat(`part-${method}.partition.json`).join(),
+        `${method}: four rank files and the manifest are written (got ${out.written.map((w) => path.basename(w.path))})`
+      );
+      assert(out.warnings.some((w) => /CommunicatorData/.test(w) && /No Kratos reader/.test(w)), `${method}: the layout caveat is returned, not buried`);
+      const texts = [0, 1, 2, 3].map((r) => fs.readFileSync(`${stem}_${r}.mdpa`, "utf8"));
+      const all = texts.flatMap(elementIds).sort((x, y) => x - y);
+      assert(all.length === serialIds.length && all.every((id, i) => id === serialIds[i]), `${method}: every element id appears in exactly one rank file and the union is the single-file export's`);
+      const union = new Map();
+      let mismatch = 0;
+      for (const t of texts) for (const [id, line] of nodeLines(t)) { if (union.has(id) && union.get(id) !== line) mismatch++; union.set(id, line); }
+      assert(mismatch === 0 && union.size === serialNodes.size && [...union].every(([id, l]) => serialNodes.get(id) === l), `${method}: the node union is the serial node set with identical ids and coordinates`);
+      assert(texts.every((t, r) => t.includes(`// Rank ${r} of 4`) && /Begin SubModelPart InterfaceNodes/.test(t)), `${method}: each file names its rank and carries an InterfaceNodes SubModelPart`);
+      const manifest = JSON.parse(fs.readFileSync(`${stem}.partition.json`, "utf8"));
+      assert(manifest.ranks === 4 && manifest.methodUsed === method && manifest.volumeCells === 1282 && manifest.emptyRanks.length === 0 && manifest.perRank.reduce((n, r) => n + r.volumeCells, 0) === 1282,
+        `${method}: the manifest accounts for every domain cell (got ${JSON.stringify({ r: manifest.ranks, m: manifest.methodUsed, v: manifest.volumeCells })})`);
+      assert(manifest.balanceMaxOverMean < 1.05, `${method}: balance max/mean under 1.05 (got ${manifest.balanceMaxOverMean})`);
+      interfaceByMethod[method] = manifest.interfaceNodes;
+    }
+    assert(interfaceByMethod.kahip < interfaceByMethod.sfc, `KaHIP cuts fewer interface nodes than SFC at 4 ranks (got ${JSON.stringify(interfaceByMethod)})`);
+    const hang = await callTolerant("export_mesh", { path: octreeBlock, format: "mdpaElements", outputPath: path.join(dir, "part-hang.mdpa"), options: { engine: "octree", octreeTransition: "hanging", mdpaRanks: 2 } });
+    assert(/hanging-node constraints/.test(hang.error ?? ""), `a partitioned export of a hanging-node octree is refused by name (got ${JSON.stringify(hang)})`);
+    const one = await call("export_mesh", { path: octreeBlock, format: "mdpaElements", outputPath: path.join(dir, "part-one.mdpa"), options: { ...partOpts, mdpaRanks: 1 } });
+    assert(one.written.length === 1 && fs.readFileSync(path.join(dir, "part-one.mdpa"), "utf8") === serialText, "mdpaRanks 1 is the single-file export, byte-identical");
+  }
+
   // engine:"octreemesh" (meshio++ 17.13 octreeMesh): conforming graded tets or
   // an all-hex mesh fitted to the tessellated skin. Sized by octreeMeshMaxSize
   // + octreeMeshLevels, never sizeMax; no Parts; same refusals as the octree.
