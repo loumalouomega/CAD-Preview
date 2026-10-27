@@ -24,6 +24,7 @@
   --cad-mesh: #4ea1ff;
   --cad-mesh-wire: #1a3d66;
   --cad-worst-element: #ff3b30;
+  --cad-constraint-link: #ff9f0a;
   --cad-hidden-line-ghost: #8fa8c9;
   --cad-geometry-edge: #5aa9ff;
   --cad-background: #1e1e1e;
@@ -1966,6 +1967,11 @@ body:not(:has(#side.visible)) #status {
 #meshing-worst-toggle.active {
   opacity: 1;
   color: var(--vscode-errorForeground, #f48771);
+  border-color: currentColor;
+}
+#meshing-links-toggle.active {
+  opacity: 1;
+  color: var(--cad-constraint-link, #ff9f0a);
   border-color: currentColor;
 }
 
@@ -4361,6 +4367,11 @@ input[type="range"].meshing-slider:focus {
 }
 #meshing-worst-toggle.active {
   color: var(--vscode-errorForeground, #f48771);
+  border-color: currentColor;
+}
+#meshing-links-toggle.active {
+  opacity: 1;
+  color: var(--cad-constraint-link, #ff9f0a); /* the amber of the lines it shows */
   border-color: currentColor;
 }
 

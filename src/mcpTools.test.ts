@@ -989,6 +989,20 @@ describe("load_model", () => {
     expect(result.warnings).toHaveLength(1); // only the "meshable via generate_mesh" one
   });
 
+  it("reports an .mdpa's multi-point constraints as facts instead of dropping them silently", async () => {
+    const mdpa = path.join(dir, "hanging.mdpa");
+    await fs.copyFile(path.join(__dirname, "..", "examples", "MDPA", "hanging-two-level.mdpa"), mdpa);
+    const result = await loadModel(ctx(), { path: mdpa });
+    const note = result.warnings.find((w) => /multi-point constraint/.test(w))!;
+    expect(note).toContain("15 multi-point constraint row(s) on 5 slave node(s)");
+    expect(note).toContain("DISPLACEMENT_X");
+    expect(note).toMatch(/not applied/);
+    // Control: a deck without a Constraints block says nothing of the kind.
+    const plain = path.join(dir, "plain.mdpa");
+    await fs.writeFile(plain, "Begin Nodes\n1 0 0 0\nEnd Nodes\n", "utf8");
+    expect((await loadModel(ctx(), { path: plain })).warnings.join(" ")).not.toMatch(/multi-point/);
+  });
+
   it("never calls readMeshioMetadata for a non-meshio mesh source (e.g. STL)", async () => {
     const c = ctx();
     await loadModel(c, { path: stlModel });
@@ -4538,6 +4552,18 @@ describe("export_mesh", () => {
     expect(result.written.map((w) => w.path)).toEqual([out]);
   });
 
+  it("warns that a hanging-node octree's constraints are lost in every format but MDPA", async () => {
+    const c = ctx();
+    const options = { engine: "octree" as const, octreeTransition: "hanging" as const };
+    const msh = await exportMeshTool(c, { path: stpModel, format: "msh", outputPath: path.join(dir, "hang.msh"), options });
+    expect(msh.warnings.join(" ")).toMatch(/cannot carry multi-point constraints/);
+    const mdpa = await exportMeshTool(c, { path: stpModel, format: "mdpaElements", outputPath: path.join(dir, "hang.mdpa"), options });
+    expect(mdpa.warnings.join(" ")).not.toMatch(/multi-point constraints/);
+    // Control: the same export without the hanging transition says nothing.
+    const plain = await exportMeshTool(c, { path: stpModel, format: "msh", outputPath: path.join(dir, "plain.msh") });
+    expect(plain.warnings.join(" ")).not.toMatch(/multi-point constraints/);
+  });
+
   it.each([2, 1, 0, -1])("records factual mesh replay provenance (%i applied)", async (applied) => {
     const c = ctx();
     const ops: EditOp[] = [0, 1].map(() => ({ op: "translate", targets: ["node-0"], vec: [1, 0, 0] }));
@@ -4954,6 +4980,22 @@ describe("check_mesh_quality", () => {
     expect(r.checks[0].worstCell).toBe(4);
     expect(r.require).toBe("scaled_jacobian >= 0.2");
     expect(r.warnings.join(" ")).not.toMatch(/vacuous|No `require`/);
+  });
+
+  it("says a hanging-node octree is scored as ordinary nodes, and stays silent for any other mesh", async () => {
+    const hangingMesh = {
+      ...FAKE_MESH_RESULT,
+      octree: {
+        maxLevel: 4, snap: false, transition: "hanging" as const, numLeaves: 1450, numHanging: 378, finestLevel: 4, numSnapped: 0, numRefused: 0,
+        elementMix: { hexahedra: 1450, pyramids: 0, tetrahedra: 0 },
+        constraints: { hangingNodes: 378, constraints: 1134, chained: 0, variables: ["DISPLACEMENT_X"] },
+      },
+    };
+    const c = ctx(fakePipeline({ generateMesh: vi.fn(async () => hangingMesh) }));
+    const r = await checkMeshQualityTool(c, { path: stpModel, require: "scaled_jacobian >= 0.2" });
+    expect(r.warnings.join(" ")).toMatch(/378 hanging nodes are scored as ordinary nodes/);
+    const plain = await checkMeshQualityTool(ctx(), { path: stpModel, require: "scaled_jacobian >= 0.2" });
+    expect(plain.warnings.join(" ")).not.toMatch(/hanging/);
   });
 
   it("reports a clause that applied to no cell as vacuous, and a missing threshold text", async () => {

@@ -48,6 +48,9 @@ export interface Palette {
   meshWire: number;
   /** Worst-quality-element highlight — an alarming hue in every theme. */
   worstElement: number;
+  /** Hanging-node constraint links (slave→master segments) — an amber that reads
+   * on the mesh fill and on every theme background, and is not the alarm red. */
+  constraintLink: number;
   /** Hidden-Lines display mode's ghost lines. */
   hiddenLineGhost: number;
   /** Geometry display mode's edge lines. */
@@ -80,6 +83,7 @@ export const PALETTE_FALLBACKS: Readonly<Palette> = Object.freeze({
   mesh: 0x4ea1ff,
   meshWire: 0x1a3d66,
   worstElement: 0xff3b30,
+  constraintLink: 0xff9f0a,
   hiddenLineGhost: 0x8fa8c9,
   geometryEdge: 0x5aa9ff,
   background: 0x1e1e1e,
@@ -100,6 +104,7 @@ const CSS_VAR_NAMES: Readonly<Record<keyof Palette, string>> = Object.freeze({
   mesh: "--cad-mesh",
   meshWire: "--cad-mesh-wire",
   worstElement: "--cad-worst-element",
+  constraintLink: "--cad-constraint-link",
   hiddenLineGhost: "--cad-hidden-line-ghost",
   geometryEdge: "--cad-geometry-edge",
   background: "--cad-background",

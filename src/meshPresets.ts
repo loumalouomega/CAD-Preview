@@ -214,7 +214,7 @@ const GMSH_ONLY_FIELDS: readonly (keyof MeshOptions)[] = [
 ];
 
 /** Octree-only fields — ignored by the other two engines. */
-const OCTREE_ONLY_FIELDS: readonly (keyof MeshOptions)[] = ["octreeMaxLevel", "octreeSnap"];
+const OCTREE_ONLY_FIELDS: readonly (keyof MeshOptions)[] = ["octreeMaxLevel", "octreeSnap", "octreeTransition", "mpcVariables"];
 
 /** Octree-mesh-only fields — ignored by every other engine. */
 const OCTREE_MESH_ONLY_FIELDS: readonly (keyof MeshOptions)[] = ["octreeMeshOutput", "octreeMeshMaxSize", "octreeMeshLevels"];

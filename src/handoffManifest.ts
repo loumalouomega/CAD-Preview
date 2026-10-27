@@ -117,6 +117,13 @@ export function buildHandoffManifest(input: ManifestInput): HandoffManifest {
   if (facts.octree) {
     notes.push("Octree mesh — a single unnamed region: Parts, physical groups and SubModelParts are not preserved.");
   }
+  if (facts.octree?.constraints) {
+    const c = facts.octree.constraints;
+    notes.push(
+      `Hanging-node octree — ${c.hangingNodes} hanging node(s) tied by ${c.constraints} multi-point constraint(s) on ${c.variables.join(", ")}` +
+        `${c.chained > 0 ? ` (${c.chained} resolved through another hanging node)` : ""}; present only in Kratos MDPA, absent from every other format.`
+    );
+  }
   if (facts.octreeMesh) {
     notes.push("Octree-mesh — a single unnamed region: Parts, physical groups and SubModelParts are not preserved.");
   }

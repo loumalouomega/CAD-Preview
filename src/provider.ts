@@ -29,6 +29,7 @@ import { validateMmgOptions } from "./mmgOptions";
 import { remeshedParts } from "./mmgParts";
 import { buildMeshProvenanceNotes } from "./meshProvenanceNotes";
 import { meshioCompanionCandidates } from "./meshioCompanions";
+import { dropInterfaceFacets, mdpaConstraintSummary, parseMdpaConstraintLinks } from "./mdpaConstraints";
 import type { MeshioCompanion } from "./meshioService";
 import {
   encodeBuffer,
@@ -82,7 +83,7 @@ import { readViewState, writeViewState, viewStateSidecarUri } from "./viewStateS
 import { writeCustomBackup, restoreCustomBackup } from "./customBackup";
 import type { MeshGenerationInput } from "./gmshService";
 import type { MeshioMetadataSummary } from "./meshioService";
-import { meshExportFormat, companionSaveName, MESH_EXPORT_FORMATS, type MeshExportFormatId } from "./meshExportFormats";
+import { meshExportFormat, companionSaveName, constraintExportWarning, MESH_EXPORT_FORMATS, type MeshExportFormatId } from "./meshExportFormats";
 import { SIZE_MAX_SENTINEL, applyStlPartSizeOverride, scaleMeshOptionsForUnit, scalePartsMeshSizeForUnit } from "./meshOptions";
 import type { MeshOptions } from "./meshOptions";
 import { viewerBodyHtml } from "./viewerDom";
@@ -2613,6 +2614,7 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
               octree: result.octree,
               octreeMesh: result.octreeMesh,
               meshcad: result.meshcad,
+              constraintLinks: result.constraintLinks ? encodeBuffer(result.constraintLinks) : undefined,
             });
           });
         } catch (err) {
@@ -4142,9 +4144,32 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
         isFoam ? null : this.docPipeline(uri).readMeshioProvenance(bytes!, format, basename, companions!),
         readParts(uri),
       ]);
+      // A Kratos deck with multi-point constraints (hanging nodes): meshio++ opened
+      // it with the constraint blocks stripped (`stageMeshioSource`); read them
+      // back here from the original bytes so the links can be drawn, and take the
+      // coarse/fine interface out of the displayed boundary.
+      let stlBytes = boundary.stlBytes;
+      let regions = boundary.regions;
+      let constraintLinks: ReturnType<typeof parseMdpaConstraintLinks>;
+      let interfaceNote: string | undefined;
+      if (format === "mdpa" && bytes) {
+        constraintLinks = parseMdpaConstraintLinks(new TextDecoder().decode(bytes));
+        if (constraintLinks && constraintLinks.interfaceQuads.length > 0) {
+          const dropped = dropInterfaceFacets(new TextDecoder().decode(stlBytes), constraintLinks.interfaceQuads);
+          if (dropped.declined) {
+            interfaceNote = "the model is too large to take the hanging-node interfaces out of the displayed surface — they are drawn as internal walls";
+          } else if (dropped.dropped > 0) {
+            stlBytes = new TextEncoder().encode(dropped.stl);
+            if (regions) {
+              const region = regions.triangleRegion.filter((_, i) => dropped.keep[i]);
+              regions = { regionNames: regions.regionNames, triangleRegion: Int32Array.from(region) };
+            }
+          }
+        }
+      }
       let parts = existingParts;
-      if (boundary.regions && existingParts.length === 0) {
-        const built = buildPartsFromMeshioRegions(boundary.stlBytes, boundary.regions);
+      if (regions && existingParts.length === 0) {
+        const built = buildPartsFromMeshioRegions(stlBytes, regions);
         if (built.length > 0) {
           parts = built;
           try {
@@ -4172,10 +4197,21 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
       post({
         type: "loadMeshBytes",
         sourceFormat: format,
-        dataBase64: Buffer.from(boundary.stlBytes).toString("base64"),
+        dataBase64: Buffer.from(stlBytes).toString("base64"),
         meshioMetadata: hasMetadata ? { ...metadata, arrays: arrays.length > 0 ? arrays : undefined } : undefined,
-        regionAssignment: boundary.regions
-          ? { regionNames: boundary.regions.regionNames, triangleRegionIndex: encodeBuffer(boundary.regions.triangleRegion) }
+        regionAssignment: regions
+          ? { regionNames: regions.regionNames, triangleRegionIndex: encodeBuffer(regions.triangleRegion) }
+          : undefined,
+        meshConstraints: constraintLinks
+          ? {
+              points: encodeBuffer(constraintLinks.points),
+              indices: encodeBuffer(constraintLinks.indices),
+              constraintCount: constraintLinks.constraintCount,
+              slaveCount: constraintLinks.slaveCount,
+              variables: constraintLinks.variables,
+              truncated: constraintLinks.truncated,
+              summary: [mdpaConstraintSummary(constraintLinks), ...constraintLinks.notes, ...(interfaceNote ? [interfaceNote] : [])].join(" · "),
+            }
           : undefined,
       });
       if (provenance) {
@@ -5419,6 +5455,14 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
             captured(async () => Buffer.from(text, "utf8")),
             post
           );
+        }
+        // A hanging-node octree's constraints exist only in MDPA: any other format
+        // is a non-conforming mesh — say so after the write, never drop them silently.
+        const lossFormat = meshExportFormat(target);
+        const lossWarning = lossFormat && writtenFiles.length > 0 ? constraintExportWarning(options, lossFormat) : null;
+        if (lossWarning) {
+          post({ type: "status", text: lossWarning });
+          void vscode.window.showWarningMessage(lossWarning);
         }
         if (manifest && writtenFiles.length > 0 && route) {
           this.assertMeshingJobActive();

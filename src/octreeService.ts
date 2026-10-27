@@ -3,7 +3,7 @@ import { getOcct, readShape, wrapOcctFault } from "./occtService";
 import { tessellateByGroup } from "./meshExtract";
 import { TESSELLATION_PRESETS } from "./tessellationQuality";
 import { weldTriangleSoup, weldedMeshToStlBytes } from "./meshComponents";
-import type { OctreeStats } from "./meshOptions";
+import type { OctreeStats, OctreeTransition } from "./meshOptions";
 
 export type { OctreeStats };
 
@@ -16,8 +16,11 @@ export type { OctreeStats };
 // as it does for fTetWild, so every downstream reader works unchanged.
 //
 // Fixed on purpose (probe `scripts/probe/examples/meshio-octree.ts`):
-// `transition: "templates"` — `"polyhedra"` emits `polyhedron` blocks the MDPA
-// writer refuses; `balance: "face"`, `fill: "inside"`. **Never call
+// `transition` is `"templates"` (conforming hex/pyramid/tet) or `"hanging"`
+// (all hexahedra, hanging nodes left in place — tied by MPCs downstream, see
+// `hangingConstraints.ts`; probe `meshio-octree-hanging.ts`) — `"polyhedra"`
+// emits `polyhedron` blocks the MDPA writer refuses; `balance: "face"`,
+// `fill: "inside"`. **Never call
 // `extractSkin` on the result**: it faults ("memory access out of bounds") on
 // a level-5 bull mesh. Node order already matches Gmsh's reference cells
 // (probe `meshio-octree-orientation.ts`: every hex/pyramid/tet of block.stp
@@ -26,8 +29,22 @@ export type { OctreeStats };
 export interface OctreeParams {
   /** Deepest refinement level (root cells split `maxLevel` times near the skin). */
   maxLevel: number;
-  /** Move leaf nodes onto the skin; refused snaps are counted, never forced. */
+  /** Move leaf nodes onto the skin; refused snaps are counted, never forced.
+   * Ignored under `transition: "hanging"` (see {@link octreeEffectiveSnap}). */
   snap: boolean;
+  /** Default `"templates"`. */
+  transition?: OctreeTransition;
+}
+
+/**
+ * The snap an octree run actually applies. A snapped hanging node leaves its
+ * parent edge or face, so its constraint no longer reproduces a linear field
+ * (probe: `bull.stp` at level 6 loses 95 of 3038 nodes to the geometric
+ * recovery and the rest reproduce only to ~1e-8, against 1e-14 unsnapped) —
+ * the hanging transition therefore always runs unsnapped.
+ */
+export function octreeEffectiveSnap(params: Pick<OctreeParams, "snap" | "transition">): boolean {
+  return params.transition === "hanging" ? false : params.snap;
 }
 
 /** One cell block of an octree result, in meshio++'s own vocabulary. */
@@ -64,7 +81,7 @@ export function octreeToMsh41(points: ArrayLike<number>, blocks: readonly Octree
   for (const b of used) {
     if (!OCTREE_CELLS[b.type]) {
       throw new Error(
-        `octree produced a "${b.type}" block, which the "templates" transition should never emit — refusing to drop it silently.`
+        `octree produced a "${b.type}" block, which the "templates" and "hanging" transitions never emit — refusing to drop it silently.`
       );
     }
   }
@@ -118,6 +135,8 @@ export function octreeElementMix(blocks: readonly OctreeBlock[]): OctreeStats["e
  */
 export async function octreeMesh(stlBytes: Uint8Array, params: OctreeParams): Promise<OctreeResult> {
   const m = await getMeshio();
+  const transition: OctreeTransition = params.transition ?? "templates";
+  const snap = octreeEffectiveSnap(params);
   // ≤10-char MEMFS path, like every other staged meshio++ file.
   const path = "/oct.stl";
   m.FS.writeFile(path, stlBytes);
@@ -125,7 +144,7 @@ export async function octreeMesh(stlBytes: Uint8Array, params: OctreeParams): Pr
     const skin = m.readMesh(path, "stl");
     const r = m.octree(
       skin, null, 0, params.maxLevel, null, undefined, undefined, 3, undefined,
-      "face", "inside", undefined, undefined, undefined, undefined, undefined, "templates", params.snap
+      "face", "inside", undefined, undefined, undefined, undefined, undefined, transition, snap
     );
     const blocks = r.mesh.cells as OctreeBlock[];
     const elementMix = octreeElementMix(blocks);
@@ -138,7 +157,8 @@ export async function octreeMesh(stlBytes: Uint8Array, params: OctreeParams): Pr
       mshText: octreeToMsh41(r.mesh.points as ArrayLike<number>, blocks),
       stats: {
         maxLevel: params.maxLevel,
-        snap: params.snap,
+        snap,
+        transition,
         numLeaves: r.numLeaves,
         numHanging: r.numHanging,
         finestLevel: r.finestLevel,

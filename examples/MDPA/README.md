@@ -20,7 +20,16 @@ Notes:
   reader (`"MDPA: unknown Kratos entity name …"`).
 - The MDPA reader accepts no top-level comment syntax; that is why this file's
   explanation lives here rather than in the deck itself.
-- A deck carrying a Kratos `Table`/`Properties`/`Geometries`/`Constraints`
-  block is still rejected by name (CAD-Preview does not opt into
-  `readMeshSelective`'s `lenient` mode) — see `doc/file-formats.md`'s
-  "Kratos MDPA note".
+- A deck carrying a Kratos `Table`/`Properties`/`Geometries` block is still
+  rejected by name (CAD-Preview does not opt into `readMeshSelective`'s
+  `lenient` mode) — see `doc/file-formats.md`'s "Kratos MDPA note". A
+  `Constraints` block is the exception: CAD-Preview strips it before meshio++
+  reads the deck and reads it back itself (`src/mdpaConstraints.ts`).
+
+`hanging-two-level.mdpa` — one coarse 2x2x2 hexahedron beside eight unit
+hexahedra (a 2:1 interface), with the five hanging nodes tied by 15
+`LinearMasterSlaveConstraint` rows (3 variables) and a `HangingNodes`
+SubModelPart. Copied from VSCode-MDPA-Preview's fixture of the same layout. It
+must open (the Constraints blocks are stripped for meshio++), report 15
+constraints on 5 slave nodes, and show a 50-facet surface (25 quads — the
+interface wall is removed).

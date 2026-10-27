@@ -284,3 +284,73 @@ describe('writeMdpa — planar domain and line boundaries', () => {
     expect(text).toContain('Begin Geometries Line2D2\n2 1 2');
   });
 });
+
+describe("writeMdpa — hanging-node constraints", () => {
+  // Writer-only: the geometry is irrelevant, node TAGS map to output ids 10→1 … 50→5.
+  const edge = { slave: 30, masters: [20, 10], weights: [0.5, 0.5] }; // C tied to A,B  → "3 | 1 2"
+  const face = { slave: 50, masters: [40, 30, 20, 10], weights: [0.25, 0.25, 0.25, 0.25] }; // E → "5 | 1 2 3 4"
+
+  it("writes one block per variable and master count, after the cells and before the SubModelParts", () => {
+    const text = writeMdpa(mesh({ constraints: [face, edge], groups: [{ name: "all", volumeCellIndices: [0, 1], surfaceCellIndices: [], extraNodeTags: [] }] }), "elements");
+    const x2 = "Begin Constraints LinearMasterSlaveConstraint DISPLACEMENT_X DISPLACEMENT_X DISPLACEMENT_X";
+    const x4 = "Begin Constraints LinearMasterSlaveConstraint " + Array(5).fill("DISPLACEMENT_X").join(" ");
+    expect(extractBlock(text, x2, "End Constraints")).toEqual(["1 0.0 [0.5, 0.5] 3 1 2"]);
+    expect(extractBlock(text, x4, "End Constraints")).toEqual(["2 0.0 [0.25, 0.25, 0.25, 0.25] 5 1 2 3 4"]);
+    // Ids keep running across variables: Y = 3,4 and Z = 5,6.
+    expect(text).toContain("  3 0.0 [0.5, 0.5] 3 1 2");
+    expect(text).toContain("  6 0.0 [0.25, 0.25, 0.25, 0.25] 5 1 2 3 4");
+    expect(text.match(/^Begin Constraints /gm)).toHaveLength(6);
+    const at = (needle: string) => text.indexOf(needle);
+    expect(at("End Elements")).toBeLessThan(at("Begin Constraints"));
+    expect(at("End Conditions")).toBeLessThan(at("Begin Constraints"));
+    expect(at("Begin Constraints")).toBeLessThan(at("Begin SubModelPart "));
+  });
+
+  it("lists every constraint and its nodes in a HangingNodes SubModelPart", () => {
+    const text = writeMdpa(mesh({ constraints: [face, edge] }), "elements");
+    const block = text.slice(text.indexOf("Begin SubModelPart HangingNodes"));
+    expect(extractBlock(block, "Begin SubModelPartNodes", "End SubModelPartNodes")).toEqual(["1", "2", "3", "4", "5"]);
+    expect(extractBlock(block, "Begin SubModelPartConstraints", "End SubModelPartConstraints")).toEqual(["1", "2", "3", "4", "5", "6"]);
+  });
+
+  it("ties only the requested variables", () => {
+    const text = writeMdpa(mesh({ constraints: [edge], constraintVariables: ["TEMPERATURE"] }), "geometries");
+    expect(text.match(/^Begin Constraints .*$/gm)).toEqual(["Begin Constraints LinearMasterSlaveConstraint TEMPERATURE TEMPERATURE TEMPERATURE"]);
+    expect(text).not.toContain("DISPLACEMENT");
+  });
+
+  it("keeps a mesh without constraints byte-identical (no block, no HangingNodes part)", () => {
+    const text = writeMdpa(mesh(), "elements");
+    expect(text).not.toContain("Constraints");
+    expect(text).not.toContain("HangingNodes");
+  });
+
+  it("lists a constraint in a Part only when the Part holds all of its nodes", () => {
+    const groups: MdpaGroup[] = [
+      { name: "tet0", volumeCellIndices: [0], surfaceCellIndices: [], extraNodeTags: [] }, // A,B,C,D
+      { name: "tet1", volumeCellIndices: [1], surfaceCellIndices: [], extraNodeTags: [] }, // A,B,C,E
+    ];
+    const text = writeMdpa(mesh({ constraints: [edge, face], groups }), "elements"); // edge: A,B,C ; face: A,B,C,D,E
+    const part = (name: string) => text.slice(text.indexOf(`Begin SubModelPart ${name}\n`), text.indexOf("\nEnd SubModelPart\n", text.indexOf(`Begin SubModelPart ${name}\n`)));
+    // Both Parts hold A,B,C so both hold the edge constraint (ids 1,3,5 for X,Y,Z — edge sorts first by slave id); neither holds the face one (D and E are split).
+    for (const name of ["tet0", "tet1"]) {
+      expect(extractBlock(part(name), "Begin SubModelPartConstraints", "End SubModelPartConstraints")).toEqual(["1", "3", "5"]);
+    }
+  });
+
+  it("does not collide with a Part that is itself called HangingNodes", () => {
+    const groups: MdpaGroup[] = [{ name: "HangingNodes", volumeCellIndices: [0], surfaceCellIndices: [], extraNodeTags: [] }];
+    const text = writeMdpa(mesh({ constraints: [edge], groups }), "elements");
+    expect(text).toContain("Begin SubModelPart HangingNodes\n");
+    expect(text).toContain("Begin SubModelPart HangingNodes_2\n");
+  });
+
+  it("is deterministic regardless of the order the constraints arrive in", () => {
+    // Two constraints of the SAME master count, so their order is the writer's to fix.
+    const edge2 = { slave: 40, masters: [20, 10], weights: [0.5, 0.5] };
+    const a = writeMdpa(mesh({ constraints: [edge, edge2, face] }), "elements");
+    const b = writeMdpa(mesh({ constraints: [face, edge2, edge] }), "elements");
+    expect(b).toBe(a);
+    expect(a).toContain("  1 0.0 [0.5, 0.5] 3 1 2\n  2 0.0 [0.5, 0.5] 4 1 2");
+  });
+});

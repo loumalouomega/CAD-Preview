@@ -149,6 +149,7 @@ export function viewerBodyHtml(): string {
             <button id="meshing-generate" class="panel-primary-btn" title="Generate mesh">${glyph("play")} Generate</button>
             <button id="meshing-cancel" class="panel-icon-btn" title="Cancel meshing job" aria-label="Cancel meshing job" disabled hidden>×</button>
             <button id="meshing-worst-toggle" class="panel-icon-btn" title="Highlight worst-quality elements" hidden>${icon("warning")}</button>
+            <button id="meshing-links-toggle" class="panel-icon-btn" title="Show hanging-node constraint links (slave to master)" aria-pressed="false" hidden>${glyph("link")}</button>
             <button id="meshing-deviation" class="panel-icon-btn" title="Measure how far the mesh boundary deviates from the CAD surface (generates with the current options)">${glyph("gap")}</button>
             <button id="meshing-clear" class="panel-icon-btn" title="Clear generated mesh">${glyph("trash")}</button>
           </div>

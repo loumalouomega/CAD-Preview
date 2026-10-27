@@ -45,6 +45,8 @@ describe("validateMeshOptions", () => {
       ftetwildDisableFiltering: false,
       octreeMaxLevel: 5,
       octreeSnap: false,
+      octreeTransition: "hanging" as const,
+      mpcVariables: ["DISPLACEMENT_X", "TEMPERATURE"],
       octreeMeshOutput: "hex" as const,
       octreeMeshMaxSize: 1.5,
       octreeMeshLevels: 3,
@@ -430,6 +432,8 @@ describe("DEFAULT_MESH_OPTIONS", () => {
       ftetwildDisableFiltering: false,
       octreeMaxLevel: 4,
       octreeSnap: true,
+      octreeTransition: "templates",
+      mpcVariables: ["DISPLACEMENT_X", "DISPLACEMENT_Y", "DISPLACEMENT_Z"],
       octreeMeshOutput: "tet",
       octreeMeshMaxSize: 0,
       octreeMeshLevels: 2,
@@ -583,10 +587,35 @@ describe("octree options", () => {
   });
 
   it("summarizes an octree result for the status line, naming refusals and the Parts loss", () => {
-    const stats = { maxLevel: 4, snap: true, numLeaves: 3000, numHanging: 0, finestLevel: 4, numSnapped: 433, numRefused: 0, elementMix: { hexahedra: 1372, pyramids: 542, tetrahedra: 1608 } };
+    const stats = { maxLevel: 4, snap: true, transition: "templates" as const, numLeaves: 3000, numHanging: 0, finestLevel: 4, numSnapped: 433, numRefused: 0, elementMix: { hexahedra: 1372, pyramids: 542, tetrahedra: 1608 } };
     expect(octreeSummary(stats)).toBe("Octree L4: 1372 hex · 542 pyramid · 1608 tet · snapped 433 · Parts not preserved");
     expect(octreeSummary({ ...stats, numRefused: 81 })).toContain("snapped 433, refused 81");
     expect(octreeSummary({ ...stats, snap: false })).toContain("snap off");
+  });
+
+  it("takes octreeTransition only as templates or hanging (polyhedra is never offered)", () => {
+    expect(validateMeshOptions({ octreeTransition: "hanging" })?.octreeTransition).toBe("hanging");
+    expect(validateMeshOptions({ octreeTransition: "polyhedra" })?.octreeTransition).toBe("templates");
+    expect(validateMeshOptions({ octreeTransition: 1 })?.octreeTransition).toBe("templates");
+    expect(validateMeshOptions({})?.octreeTransition).toBe("templates");
+  });
+
+  it("cleans mpcVariables to unique identifiers, capped, falling back to the displacement set", () => {
+    expect(validateMeshOptions({ mpcVariables: ["TEMPERATURE", " PRESSURE ", "TEMPERATURE", "9bad", "a-b", 3] })?.mpcVariables).toEqual(["TEMPERATURE", "PRESSURE"]);
+    expect(validateMeshOptions({ mpcVariables: "VELOCITY_X, VELOCITY_Y" })?.mpcVariables).toEqual(["VELOCITY_X", "VELOCITY_Y"]);
+    expect(validateMeshOptions({ mpcVariables: [] })?.mpcVariables).toEqual(DEFAULT_MESH_OPTIONS.mpcVariables);
+    expect(validateMeshOptions({ mpcVariables: ["", "1x"] })?.mpcVariables).toEqual(DEFAULT_MESH_OPTIONS.mpcVariables);
+    expect(validateMeshOptions({ mpcVariables: Array.from({ length: 12 }, (_, i) => `V${i}`) })?.mpcVariables).toHaveLength(8);
+  });
+
+  it("summarizes a hanging run by its constraints, never by snap counts", () => {
+    const stats = {
+      maxLevel: 4, snap: false, transition: "hanging" as const, numLeaves: 1450, numHanging: 378, finestLevel: 4, numSnapped: 0, numRefused: 0,
+      elementMix: { hexahedra: 11600, pyramids: 0, tetrahedra: 0 },
+      constraints: { hangingNodes: 378, constraints: 1134, chained: 0, variables: ["DISPLACEMENT_X", "DISPLACEMENT_Y", "DISPLACEMENT_Z"] },
+    };
+    expect(octreeSummary(stats)).toBe("Octree L4 hanging: 11600 hex · 378 hanging nodes tied by 1134 MPCs · Parts not preserved");
+    expect(octreeSummary({ ...stats, constraints: undefined })).toContain("constraints not computed");
   });
 });
 

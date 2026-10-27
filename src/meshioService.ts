@@ -70,6 +70,7 @@ import * as path from "node:path";
 import { summarizeQuality, type QualitySummary } from "./meshQuality";
 import { parseStl } from "./stlParser";
 import { ensureNastranBulkHeader } from "./nastranDeck";
+import { stripMdpaConstraints } from "./mdpaConstraints";
 import { parseObj } from "./objParser";
 import { parsePly } from "./plyParser";
 import { parseGltf, type GltfExternalBuffers } from "./gltfParser";
@@ -226,7 +227,13 @@ function stageMeshioSource(
   const allPaths = [primaryPath];
   // Gmsh-written Nastran decks lack the `BEGIN BULK` line meshio++ requires
   // (see nastranDeck.ts) — normalize here, the single staging choke point.
-  m.FS.writeFile(primaryPath, meshioFormat === "nastran" ? ensureNastranBulkHeader(sourceBytes) : sourceBytes);
+  // A Kratos deck with `Begin Constraints` makes the mdpa reader throw ("needs
+  // an MdpaInfo to be kept") and the boundary funnel has no use for the rows;
+  // the host reads them back from the original bytes (`mdpaConstraints.ts`).
+  m.FS.writeFile(
+    primaryPath,
+    meshioFormat === "nastran" ? ensureNastranBulkHeader(sourceBytes) : meshioFormat === "mdpa" ? stripMdpaConstraints(sourceBytes) : sourceBytes
+  );
   for (const companion of companions ?? []) {
     const path = `/${companion.name}`;
     m.FS.writeFile(path, companion.bytes);

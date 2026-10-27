@@ -25,6 +25,7 @@ import {
   signedVolume,
   type MdpaCellKind,
 } from "./gmshElementTypes";
+import { DEFAULT_MPC_VARIABLES, type MpcConstraint } from "./hangingConstraints";
 
 export type MdpaMode = "elements" | "geometries";
 
@@ -65,7 +66,17 @@ export interface MdpaMesh {
   surfaceCells: MdpaCell[];
   /** Flat — this codebase's `Part[]` has no nesting concept. */
   groups: MdpaGroup[];
+  /** Hanging-node multi-point constraints (node TAGS, like `nodeTags`): written
+   * as `LinearMasterSlaveConstraint` blocks after the cells and listed in a
+   * `HangingNodes` SubModelPart plus every Part that holds all their nodes. */
+  constraints?: MpcConstraint[];
+  /** Variables each constraint is tied on (one block per variable and master
+   * count). Defaults to the three displacement components. */
+  constraintVariables?: readonly string[];
 }
+
+/** Name of the SubModelPart that owns every generated constraint. */
+export const HANGING_NODES_PART = "HangingNodes";
 
 interface Coord {
   x: number;
@@ -139,12 +150,21 @@ export function writeMdpa(mesh: MdpaMesh, mode: MdpaMode, onWarning?: (msg: stri
     }
   }
 
+  // Kratos resolves a constraint's node ids when the block is read and a
+  // SubModelPartConstraints list when its part is read, so both come after the
+  // nodes/cells and the constraints before the SubModelParts.
+  const mpc = buildMpcRows(mesh, nodeIdOf);
+  if (mpc) lines.push(...mpc.lines, "");
+
   const usedNames = new Set<string>();
   for (const group of mesh.groups) {
+    const nodeIds = groupNodeIds(group, nodeIdOf, volumeResolved, surfaceResolved);
+    const owned = mpc ? mpc.idsHeldBy(new Set(nodeIds)) : undefined;
     lines.push(
-      ...writeSubModelPartBlock(group, mode, nodeIdOf, volumeResolved, surfaceResolved, volumes.idOf, surfaces.idOf, usedNames)
+      ...writeSubModelPartBlock(group, mode, nodeIds, volumes.idOf, surfaces.idOf, usedNames, owned)
     );
   }
+  if (mpc) lines.push(...writeHangingNodesPart(mpc, usedNames));
 
   return lines.join("\n").trimEnd() + "\n";
 }
@@ -266,25 +286,14 @@ function writeCellBlock(
   return out;
 }
 
-function writeSubModelPartBlock(
+/** Every node a group's SubModelPart must list: its explicit point/curve nodes
+ * plus all nodes (incl. mid-side) of its cells — the node-consistency rule. */
+function groupNodeIds(
   group: MdpaGroup,
-  mode: MdpaMode,
   nodeIdOf: Map<number, number>,
   volumeResolved: number[][],
-  surfaceResolved: number[][],
-  volumeIdOf: Map<number, number>,
-  surfaceIdOf: Map<number, number>,
-  usedNames: Set<string>
-): string[] {
-  const name = sanitizeSubModelPartName(group.name, usedNames);
-  const out = [`Begin SubModelPart ${name}`];
-
-  const elementIds = group.volumeCellIndices.map((i) => volumeIdOf.get(i)!).sort((a, b) => a - b);
-  const conditionIds = group.surfaceCellIndices.map((i) => surfaceIdOf.get(i)!).sort((a, b) => a - b);
-
-  // Node-consistency rule: every node used by a grouped cell must also appear in
-  // this SubModelPart's SubModelPartNodes — (explicitly-selected nodes) ∪ (all
-  // nodes, incl. mid-side, of every grouped cell).
+  surfaceResolved: number[][]
+): number[] {
   const nodeIdSet = new Set<number>();
   for (const tag of group.extraNodeTags) {
     const id = nodeIdOf.get(tag);
@@ -292,7 +301,23 @@ function writeSubModelPartBlock(
   }
   for (const i of group.volumeCellIndices) for (const id of volumeResolved[i]) nodeIdSet.add(id);
   for (const i of group.surfaceCellIndices) for (const id of surfaceResolved[i]) nodeIdSet.add(id);
-  const nodeIds = [...nodeIdSet].sort((a, b) => a - b);
+  return [...nodeIdSet].sort((a, b) => a - b);
+}
+
+function writeSubModelPartBlock(
+  group: MdpaGroup,
+  mode: MdpaMode,
+  nodeIds: number[],
+  volumeIdOf: Map<number, number>,
+  surfaceIdOf: Map<number, number>,
+  usedNames: Set<string>,
+  constraintIds?: number[]
+): string[] {
+  const name = sanitizeSubModelPartName(group.name, usedNames);
+  const out = [`Begin SubModelPart ${name}`];
+
+  const elementIds = group.volumeCellIndices.map((i) => volumeIdOf.get(i)!).sort((a, b) => a - b);
+  const conditionIds = group.surfaceCellIndices.map((i) => surfaceIdOf.get(i)!).sort((a, b) => a - b);
 
   out.push("    Begin SubModelPartNodes");
   for (const id of nodeIds) out.push(`    ${id}`);
@@ -315,7 +340,84 @@ function writeSubModelPartBlock(
     out.push("    End SubModelPartGeometries");
   }
 
+  // Only when this part holds whole constraints: a mesh without any keeps the
+  // exact bytes it always had.
+  if (constraintIds && constraintIds.length > 0) {
+    out.push("    Begin SubModelPartConstraints");
+    for (const id of constraintIds) out.push(`    ${id}`);
+    out.push("    End SubModelPartConstraints");
+  }
+
   out.push("End SubModelPart");
+  return out;
+}
+
+/** A float column as Kratos files spell it: `0.0`, `0.5`, shortest round trip
+ * (no precision cut — the weights of one constraint must still sum to 1). */
+function constraintNum(x: number): string {
+  if (!Number.isFinite(x)) return "0.0";
+  return Number.isInteger(x) ? x.toFixed(1) : String(x);
+}
+
+interface MpcRows {
+  lines: string[];
+  /** Ids of the constraints whose slave AND masters are all in `nodeIds`. */
+  idsHeldBy(nodeIds: ReadonlySet<number>): number[];
+  /** Every constraint id and the nodes (output ids) it names. */
+  all: Array<{ id: number; nodes: number[] }>;
+}
+
+/**
+ * The `Begin Constraints` blocks for `mesh.constraints`, or undefined when there
+ * are none. One block per variable and per master count — Kratos fixes the dof
+ * count from the header (slave variable plus one per master, so the variable is
+ * repeated) and every row must match it. Ids run 1..n across all blocks; rows
+ * are ordered by slave output id so the text is deterministic.
+ */
+function buildMpcRows(mesh: MdpaMesh, nodeIdOf: Map<number, number>): MpcRows | undefined {
+  const constraints = mesh.constraints ?? [];
+  if (constraints.length === 0) return undefined;
+  const variables = mesh.constraintVariables?.length ? mesh.constraintVariables : DEFAULT_MPC_VARIABLES;
+  const resolved = constraints
+    .map((c) => ({
+      slave: nodeIdOf.get(c.slave)!,
+      masters: c.masters.map((m, i) => ({ id: nodeIdOf.get(m)!, w: c.weights[i] })).sort((a, b) => a.id - b.id),
+    }))
+    .sort((a, b) => a.slave - b.slave);
+  const counts = [...new Set(resolved.map((c) => c.masters.length))].sort((a, b) => a - b);
+  const lines: string[] = [];
+  const all: MpcRows["all"] = [];
+  let next = 0;
+  for (const variable of variables) {
+    for (const count of counts) {
+      const header = ["Begin Constraints LinearMasterSlaveConstraint", ...Array.from({ length: 1 + count }, () => variable)].join(" ");
+      lines.push(header);
+      for (const c of resolved.filter((r) => r.masters.length === count)) {
+        const id = ++next;
+        const weights = c.masters.map((m) => constraintNum(m.w)).join(", ");
+        lines.push(`  ${id} 0.0 [${weights}] ${c.slave} ${c.masters.map((m) => m.id).join(" ")}`);
+        all.push({ id, nodes: [c.slave, ...c.masters.map((m) => m.id)] });
+      }
+      lines.push("End Constraints", "");
+    }
+  }
+  lines.pop(); // the caller appends the separating blank line
+  return {
+    lines,
+    all,
+    idsHeldBy: (nodeIds) => all.filter((c) => c.nodes.every((n) => nodeIds.has(n))).map((c) => c.id),
+  };
+}
+
+/** The `HangingNodes` SubModelPart: every constraint and the nodes they name. */
+function writeHangingNodesPart(mpc: MpcRows, usedNames: Set<string>): string[] {
+  const name = sanitizeSubModelPartName(HANGING_NODES_PART, usedNames);
+  const nodes = [...new Set(mpc.all.flatMap((c) => c.nodes))].sort((a, b) => a - b);
+  const out = [`Begin SubModelPart ${name}`, "    Begin SubModelPartNodes"];
+  for (const id of nodes) out.push(`    ${id}`);
+  out.push("    End SubModelPartNodes", "    Begin SubModelPartConstraints");
+  for (const c of mpc.all) out.push(`    ${c.id}`);
+  out.push("    End SubModelPartConstraints", "End SubModelPart");
   return out;
 }
 

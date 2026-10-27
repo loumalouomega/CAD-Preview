@@ -420,6 +420,109 @@ test("overlays: meshingResult lights the toggle and hides model faces; Clear rev
   assert(off === false, "Clear disposes the overlay and unlights the toggle");
 });
 
+/**
+ * E2. Hanging-node constraint links (octree `hanging` transition). The links
+ * button is the only way to see them, so it must (a) stay hidden until a result
+ * carries links, (b) be OFF by default, (c) toggle truthfully, and (d) retire
+ * with a plain generate or Clear. `[hidden]` hazard (CLAUDE.md): assert RENDERED
+ * visibility (`offsetParent`), never the attribute.
+ */
+test("overlays: hanging-node constraint links toggle is hidden until a result has links, off by default, and truthful", async (page) => {
+  await populate(page);
+  const state = () =>
+    page.evaluate(() => {
+      const b = document.getElementById("meshing-links-toggle");
+      return b ? { rendered: b.offsetParent !== null, active: b.classList.contains("active"), pressed: b.getAttribute("aria-pressed"), title: b.title } : null;
+    });
+  const before = await state();
+  assert(before && before.rendered === false, "the links button exists but is not rendered before any result");
+
+  // Slave→master index pairs into the fixture's 2685 points, far apart so the segments cross the model: 4 segments.
+  const links = Buffer.from(new Uint32Array([5, 2000, 100, 2500, 300, 2600, 700, 1900]).buffer).toString("base64");
+  const octree = {
+    maxLevel: 4, snap: false, transition: "hanging", numLeaves: 1450, numHanging: 378, finestLevel: 4, numSnapped: 0, numRefused: 0,
+    elementMix: { hexahedra: 1450, pyramids: 0, tetrahedra: 0 },
+    constraints: { hangingNodes: 378, constraints: 1134, chained: 0, variables: ["DISPLACEMENT_X", "DISPLACEMENT_Y", "DISPLACEMENT_Z"] },
+  };
+  const sentBefore = await page.evaluate(() => window.__sent?.length ?? 0);
+  await page.evaluate(() => document.getElementById("meshing-generate")?.click());
+  await page.waitForFunction((n) => window.__sent?.slice(n).some((m) => m.type === "meshingGenerate"), sentBefore, { timeout: 5000 });
+  const requestId = await page.evaluate((n) => window.__sent.slice(n).findLast((m) => m.type === "meshingGenerate").requestId, sentBefore);
+  await post(page, { ...fixture("meshingResult"), requestId, octree, constraintLinks: links });
+  await post(page, { type: "meshingJobSettled", requestId });
+  await sleep(500);
+
+  const shown = await state();
+  assert(shown && shown.rendered === true && shown.active === false && shown.pressed === "false", `a result with links renders the button, off by default (got ${JSON.stringify(shown)})`);
+  assert(/378 hanging nodes/.test(shown.title), `...and its title names the count (got ${JSON.stringify(shown.title)})`);
+  const status = await page.evaluate(() => document.getElementById("meshing-status")?.textContent ?? document.querySelector(".meshing-status")?.textContent ?? "");
+  assert(/378 hanging nodes tied by 1134 MPCs/.test(status), `...and the panel status line carries the constraint counts (got ${JSON.stringify(status)})`);
+
+  // The overlay is real geometry, not just a button: count --cad-constraint-link amber pixels in the viewport.
+  const amber = async () => {
+    await setPanelHidden(page, true);
+    const shot = (await shotWithoutToast(page, () => page.locator("#app").screenshot())).toString("base64");
+    await setPanelHidden(page, false);
+    return page.evaluate(async (b64) => {
+      const bmp = await createImageBitmap(await (await fetch(`data:image/png;base64,${b64}`)).blob());
+      const c = document.createElement("canvas");
+      c.width = bmp.width;
+      c.height = bmp.height;
+      c.getContext("2d").drawImage(bmp, 0, 0);
+      const { data } = c.getContext("2d").getImageData(0, 0, c.width, c.height);
+      let n = 0;
+      for (let i = 0; i < data.length; i += 4) if (data[i] > 235 && data[i + 1] > 145 && data[i + 1] < 175 && data[i + 2] < 35) n++;
+      return n;
+    }, shot);
+  };
+  const offPixels = await amber();
+  await page.click("#meshing-links-toggle");
+  const on = await state();
+  assert(on.active === true && on.pressed === "true", "clicking the button turns the links on");
+  await sleep(300);
+  const onPixels = await amber();
+  assert(onPixels > 40 && onPixels > offPixels + 40, `...and amber link pixels appear in the viewport (off ${offPixels}, on ${onPixels})`);
+  await page.click("#meshing-links-toggle");
+  assert((await state()).active === false, "clicking again turns them off");
+  await sleep(300);
+  const afterPixels = await amber();
+  assert(afterPixels <= offPixels + 10, `...and the amber pixels go away again (before ${offPixels}, on ${onPixels}, after ${afterPixels})`);
+
+  // A plain generate (no links) retires the button.
+  const sent2 = await page.evaluate(() => window.__sent?.length ?? 0);
+  await page.evaluate(() => document.getElementById("meshing-generate")?.click());
+  await page.waitForFunction((n) => window.__sent?.slice(n).some((m) => m.type === "meshingGenerate"), sent2, { timeout: 5000 });
+  const requestId2 = await page.evaluate((n) => window.__sent.slice(n).findLast((m) => m.type === "meshingGenerate").requestId, sent2);
+  await post(page, { ...fixture("meshingResult"), requestId: requestId2 });
+  await post(page, { type: "meshingJobSettled", requestId: requestId2 });
+  await sleep(400);
+  assert((await state()).rendered === false, "a result without links hides the button again");
+});
+
+test("meshio mdpa: a file's constraint links render a button, off by default, and the summary reaches the status line", async (page) => {
+  await populate(page);
+  const stl = Buffer.from(
+    "solid t\nfacet normal 0 0 1\nouter loop\nvertex 0 0 0\nvertex 1 0 0\nvertex 0 1 0\nendloop\nendfacet\nendsolid t\n"
+  ).toString("base64");
+  const points = Buffer.from(new Float32Array([0, 0, 0, 1, 0, 0, 0.5, 0, 0]).buffer).toString("base64");
+  const indices = Buffer.from(new Uint32Array([2, 0, 2, 1]).buffer).toString("base64");
+  await post(page, {
+    type: "loadMeshBytes", sourceFormat: "mdpa", dataBase64: stl,
+    meshConstraints: { points, indices, constraintCount: 1, slaveCount: 1, variables: ["DISPLACEMENT_X"], truncated: 0, summary: "1 constraint on 1 slave node (DISPLACEMENT_X)" },
+  });
+  await sleep(900);
+  const r = await page.evaluate(() => {
+    const b = document.getElementById("meshing-links-toggle");
+    return { rendered: !!b && b.offsetParent !== null, active: !!b && b.classList.contains("active"), title: b?.title ?? "" };
+  });
+  assert(r.rendered === true && r.active === false, `an opened .mdpa with constraints shows the links button, off by default (got ${JSON.stringify(r)})`);
+  assert(/1 constraint on 1 slave node/.test(r.title), `...its title carries the file's summary (got ${JSON.stringify(r.title)})`);
+  // Opening a deck WITHOUT constraints afterwards retires it.
+  await post(page, { type: "loadMeshBytes", sourceFormat: "mdpa", dataBase64: stl });
+  await sleep(900);
+  assert(await page.evaluate(() => document.getElementById("meshing-links-toggle")?.offsetParent === null), "the next document without constraints hides the button again");
+});
+
 const GATE_RESULT = {
   passed: false,
   numCells: 1966,

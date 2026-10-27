@@ -1,4 +1,4 @@
-import { SIZE_MAX_SENTINEL, DEFAULT_MESH_OPTIONS, boundaryLayerPlan, validateMeshBoundaryLayer, validateMeshGrading, validateMeshStructured, octreeSummary, octreeMeshSummary, meshcadSummary, OCTREE_MAX_LEVEL_LIMIT, OCTREE_MESH_LEVELS_LIMIT, MESHCAD_SMOOTH_LIMIT, type OctreeStats, type OctreeMeshStats, type MeshCadStats, type MeshOptions, type MeshGrading, type MeshStructured, type MeshBoundaryLayer } from "../meshOptions";
+import { SIZE_MAX_SENTINEL, DEFAULT_MESH_OPTIONS, boundaryLayerPlan, validateMeshBoundaryLayer, validateMeshGrading, validateMeshStructured, octreeSummary, octreeMeshSummary, meshcadSummary, validateMpcVariables, OCTREE_MAX_LEVEL_LIMIT, OCTREE_MESH_LEVELS_LIMIT, MESHCAD_SMOOTH_LIMIT, type OctreeStats, type OctreeMeshStats, type MeshCadStats, type MeshOptions, type MeshGrading, type MeshStructured, type MeshBoundaryLayer } from "../meshOptions";
 import type { QualitySummary } from "../meshQuality";
 import type { BoundaryLayerAchieved } from "../boundaryLayerMeasurement";
 import { describeGateCheck, type QualityGateResult } from "../meshQualityGate";
@@ -191,6 +191,8 @@ export class MeshingPanel {
   private readonly ftetwildDisableFilteringCheckbox: HTMLInputElement;
   private readonly octreeMaxLevelInput: HTMLInputElement;
   private readonly octreeSnapCheckbox: HTMLInputElement;
+  private readonly octreeTransitionSelect: HTMLSelectElement;
+  private readonly mpcVariablesInput: HTMLInputElement;
   private readonly octreeMeshOutputSelect: HTMLSelectElement;
   private readonly octreeMeshMaxSizeInput: HTMLInputElement;
   private readonly octreeMeshLevelsInput: HTMLInputElement;
@@ -675,6 +677,28 @@ export class MeshingPanel {
       cb.onOptionsChange({ octreeSnap: this.octreeSnapCheckbox.checked });
     });
 
+    this.octreeTransitionSelect = this.select(form, "Octree transition", [
+      ["templates", "Conforming (hex + pyramid + tet)"],
+      ["hanging", "All hexahedra (hanging nodes, MPCs)"],
+    ]);
+    this.octreeTransitionSelect.title =
+      "What the octree emits where a fine leaf meets a coarse one. 'Conforming' fills the gap with pyramids and tets. " +
+      "'All hexahedra' leaves the hanging nodes in place and ties each to its parent corners by multi-point constraints " +
+      "(Kratos MDPA only — other formats cannot carry them); it never snaps. Only used by engine: Octree.";
+    this.octreeTransitionSelect.addEventListener("change", () => {
+      cb.onOptionsChange({ octreeTransition: this.octreeTransitionSelect.value as MeshOptions["octreeTransition"] });
+    });
+
+    this.mpcVariablesInput = this.textField(form, "MPC variables", DEFAULT_MESH_OPTIONS.mpcVariables.join(", "));
+    this.mpcVariablesInput.title =
+      "Kratos variables the hanging-node constraints tie, comma separated (one Constraints block per variable and master count). " +
+      "Default is the three displacement components; use e.g. TEMPERATURE for a thermal model. Only used by the all-hexahedra transition.";
+    this.mpcVariablesInput.addEventListener("change", () => {
+      const cleaned = validateMpcVariables(this.mpcVariablesInput.value) ?? [...DEFAULT_MESH_OPTIONS.mpcVariables];
+      this.mpcVariablesInput.value = cleaned.join(", ");
+      cb.onOptionsChange({ mpcVariables: cleaned });
+    });
+
     this.octreeMeshOutputSelect = this.select(form, "Octree-mesh output", [
       ["tet", "Tetrahedra (graded)"],
       ["hex", "Hexahedra (all-hex)"],
@@ -1096,6 +1120,8 @@ export class MeshingPanel {
     this.ftetwildDisableFilteringCheckbox.checked = options.ftetwildDisableFiltering;
     this.octreeMaxLevelInput.value = String(options.octreeMaxLevel);
     this.octreeSnapCheckbox.checked = options.octreeSnap;
+    this.octreeTransitionSelect.value = options.octreeTransition;
+    this.mpcVariablesInput.value = options.mpcVariables.join(", ");
     this.octreeMeshOutputSelect.value = options.octreeMeshOutput;
     this.octreeMeshMaxSizeInput.value = String(options.octreeMeshMaxSize);
     this.octreeMeshLevelsInput.value = String(options.octreeMeshLevels);
@@ -1129,7 +1155,10 @@ export class MeshingPanel {
     this.ftetwildCoarsenCheckbox.disabled = !ftetwild;
     this.ftetwildDisableFilteringCheckbox.disabled = !ftetwild;
     this.octreeMaxLevelInput.disabled = !octree;
-    this.octreeSnapCheckbox.disabled = !octree;
+    const hanging = octree && options.octreeTransition === "hanging";
+    this.octreeSnapCheckbox.disabled = !octree || hanging; // the hanging transition never snaps
+    this.octreeTransitionSelect.disabled = !octree;
+    this.mpcVariablesInput.disabled = !hanging;
     this.octreeMeshOutputSelect.disabled = !octreeMesh;
     this.octreeMeshMaxSizeInput.disabled = !octreeMesh;
     this.octreeMeshLevelsInput.disabled = !octreeMesh;
@@ -2035,6 +2064,24 @@ export class MeshingPanel {
     row.appendChild(select);
     parent.appendChild(row);
     return select;
+  }
+
+  private textField(parent: HTMLElement, label: string, def: string): HTMLInputElement {
+    const row = document.createElement("label");
+    row.className = "meshing-field";
+    const span = document.createElement("span");
+    span.className = "meshing-label";
+    span.textContent = label;
+    row.appendChild(span);
+
+    const input = document.createElement("input");
+    input.type = "text";
+    input.className = "meshing-num";
+    input.value = def;
+    input.spellcheck = false;
+    row.appendChild(input);
+    parent.appendChild(row);
+    return input;
   }
 
   private numberField(parent: HTMLElement, label: string, def: number): HTMLInputElement {

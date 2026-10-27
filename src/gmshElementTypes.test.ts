@@ -242,3 +242,20 @@ describe("boundaryEdges", () => {
     expect(s.size).toBe(out.length / 2); // no duplicate line segments
   });
 });
+
+describe("boundaryFaceRings — skipRing", () => {
+  it("drops the once-seen faces the predicate rejects and keeps the rest", () => {
+    const els = { elementTypes: [5], nodeTags: [[0, 1, 2, 3, 4, 5, 6, 7]] };
+    expect(boundaryFaceRings(els)).toHaveLength(6);
+    // Reject the ring on corners 0,1,2,3 (the bottom face).
+    const dropped = boundaryFaceRings(els, (ring) => [0, 1, 2, 3].every((t) => ring.includes(t)));
+    expect(dropped).toHaveLength(5);
+    expect(dropped.some((r) => [0, 1, 2, 3].every((t) => r.includes(t)))).toBe(false);
+  });
+
+  it("is applied to triangulation and edges too", () => {
+    const els = { elementTypes: [5], nodeTags: [[0, 1, 2, 3, 4, 5, 6, 7]] };
+    const none = () => true;
+    expect(boundaryTriangles(els, new Map(Array.from({ length: 8 }, (_, i) => [i, i])), none)).toEqual([]);
+  });
+});

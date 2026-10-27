@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { MESH_EXPORT_FORMATS, meshExportFormat, companionSaveName } from "./meshExportFormats";
+import { MESH_EXPORT_FORMATS, meshExportFormat, companionSaveName, constraintExportWarning } from "./meshExportFormats";
 
 describe("MESH_EXPORT_FORMATS", () => {
   it("has no duplicate ids", () => {
@@ -104,5 +104,31 @@ describe("companionSaveName", () => {
   it("returns undefined for a format with no companion", () => {
     expect(companionSaveName("out.med", meshExportFormat("med")!)).toBeUndefined();
     expect(companionSaveName("out.msh", meshExportFormat("msh")!)).toBeUndefined();
+  });
+});
+
+describe("constraintExportWarning", () => {
+  const hanging = { engine: "octree", octreeTransition: "hanging", dimension: 3 };
+
+  it("warns for EVERY registered format except the two Kratos MDPA writers", () => {
+    for (const f of MESH_EXPORT_FORMATS) {
+      const w = constraintExportWarning(hanging, f);
+      if (f.id === "mdpaElements" || f.id === "mdpaGeometries") expect(w, f.id).toBeNull();
+      else expect(w, f.id).toContain(`${f.label} cannot carry multi-point constraints`);
+    }
+  });
+
+  it("names the hanging-node count when it is known", () => {
+    const w = constraintExportWarning(hanging, { id: "msh", label: "GMSH" }, 378)!;
+    expect(w).toContain("378 hanging nodes");
+    expect(constraintExportWarning(hanging, { id: "msh", label: "GMSH" }, 1)).toContain("1 hanging node of");
+    expect(w).toContain("Export Kratos MDPA to keep the constraints");
+  });
+
+  it("is silent when nothing is lost: conforming transition, another engine, or a non-3D mesh", () => {
+    const f = { id: "vtk", label: "VTK" };
+    expect(constraintExportWarning({ ...hanging, octreeTransition: "templates" }, f)).toBeNull();
+    expect(constraintExportWarning({ ...hanging, engine: "gmsh" }, f)).toBeNull();
+    expect(constraintExportWarning({ ...hanging, dimension: 2 }, f)).toBeNull();
   });
 });

@@ -14,7 +14,7 @@ import { COMPARABLE_MESH_FORMATS, type CadFormat, type MeshParseFormat } from ".
 import { bomTsv } from "../bomExport";
 import { holeTableTsv } from "../holeTable";
 import { exportModel } from "./meshExporters";
-import { buildGroupFromEncoded, buildFEMesh, buildWorstElementsHighlight, buildColorFieldOverlay } from "./geometryBuilder";
+import { buildGroupFromEncoded, buildFEMesh, buildWorstElementsHighlight, buildColorFieldOverlay, buildConstraintLinks, buildFileConstraintLinks } from "./geometryBuilder";
 import { viridisCssGradientStops } from "./colorMap";
 import { splitMeshesIntoFacets } from "./meshFacets";
 import { parseSvgDocument, svgSubpathsToPolylineOps } from "../svgImport";
@@ -1518,6 +1518,7 @@ const meshingPanel = new MeshingPanel(document.getElementById("meshing-panel")!,
     worstElementsShown = false;
     worstToggle?.classList.remove("active");
     if (worstToggle) worstToggle.hidden = true;
+    if (constraintLinksSource === "generated") setConstraintLinks(null, "generated", ""); // links of an opened .mdpa belong to the file, not the generated mesh
     meshingPanel.render(meshingModel.get());
   },
 });
@@ -5685,6 +5686,25 @@ let meshingToggle: HTMLElement | null = null;
 // the FE mesh shown without the (visually loud) highlight, or vice versa.
 let worstElementsShown = false;
 let worstToggle: HTMLElement | null = null;
+// Hanging-node constraint links: off by default (a graded octree has hundreds
+// of them), shown from the toggle that appears beside the worst-elements one.
+// `constraintLinksSource` says whose they are, so Clear only disposes links it
+// created (an opened `.mdpa` keeps its own).
+let constraintLinksShown = false;
+let constraintLinksToggle: HTMLElement | null = null;
+let constraintLinksSource: "generated" | "file" | null = null;
+function setConstraintLinks(obj: THREE.Object3D | null, source: "generated" | "file", title: string, opts?: { followModel?: boolean }): void {
+  viewer.setConstraintLinksOverlay(obj, opts);
+  constraintLinksSource = obj ? source : null;
+  constraintLinksShown = false;
+  viewer.setConstraintLinksVisible(false);
+  if (constraintLinksToggle) {
+    constraintLinksToggle.hidden = !obj;
+    constraintLinksToggle.classList.remove("active");
+    constraintLinksToggle.setAttribute("aria-pressed", "false");
+    if (obj) constraintLinksToggle.title = title;
+  }
+}
 try {
   meshingToggle = document.getElementById("meshing-toggle");
   meshingToggle?.addEventListener("click", () => {
@@ -5702,6 +5722,20 @@ try {
     worstElementsShown = !worstElementsShown;
     worstToggle?.classList.toggle("active", worstElementsShown);
     viewer.setWorstElementsOverlayVisible(worstElementsShown);
+  });
+
+  constraintLinksToggle = document.getElementById("meshing-links-toggle");
+  constraintLinksToggle?.addEventListener("click", () => {
+    // A model reload disposes the overlay (`Viewer.setModel`); a button that
+    // outlived it has nothing to show, so it retires itself.
+    if (!viewer.getConstraintLinksInfo()) {
+      setConstraintLinks(null, "generated", "");
+      return;
+    }
+    constraintLinksShown = !constraintLinksShown;
+    constraintLinksToggle?.classList.toggle("active", constraintLinksShown);
+    constraintLinksToggle?.setAttribute("aria-pressed", String(constraintLinksShown));
+    viewer.setConstraintLinksVisible(constraintLinksShown);
   });
 } catch (err) {
   const message = `Meshing controls failed to initialize: ${(err as Error).message}`;
@@ -5938,6 +5972,18 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
         } finally {
           URL.revokeObjectURL(blobUrl);
         }
+        // `setModel` cleared any overlay; a deck's own multi-point constraints
+        // (hanging nodes) come back as links in the file's coordinates.
+        if (msg.meshConstraints) {
+          setConstraintLinks(
+            buildFileConstraintLinks(msg.meshConstraints.points, msg.meshConstraints.indices),
+            "file",
+            `Show the file's constraint links (slave to master) — ${msg.meshConstraints.summary}`,
+            { followModel: true }
+          );
+        } else {
+          setConstraintLinks(null, "file", "");
+        }
         // Region names that correlated to boundary triangles (`regionAssignment`
         // present) became Parts host-side — see `provider.ts`'s `handleMeshio`
         // and CLAUDE.md's "meshio++ integration" section. Point/cell data array
@@ -5960,7 +6006,10 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
           const colorableNames = [...msg.meshioMetadata.pointDataNames, ...msg.meshioMetadata.cellDataNames];
           if (colorableNames.length > 0) bits.push(`data: ${colorableNames.join(", ")} (see "Colour by field")`);
           if (msg.meshioMetadata.fieldDataNames.length > 0) bits.push(`field data: ${msg.meshioMetadata.fieldDataNames.join(", ")} — not imported`);
+          if (msg.meshConstraints) bits.push(msg.meshConstraints.summary);
           if (bits.length > 0) setStatus(`Source file also declares ${bits.join(" · ")}.`);
+        } else if (msg.meshConstraints) {
+          setStatus(`Source file declares ${msg.meshConstraints.summary}.`);
         }
       } catch (err) {
         setStatus(`Failed to load model: ${(err as Error).message}`, true);
@@ -6666,6 +6715,13 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
         }
       }
       viewer.setWorstElementsOverlayVisible(worstElementsShown);
+      // Hanging-node constraints (octree `hanging` transition): the links share
+      // `positions`; a plain generate clears any from the previous result.
+      setConstraintLinks(
+        msg.constraintLinks ? buildConstraintLinks(msg.positions, msg.constraintLinks) : null,
+        "generated",
+        `Show hanging-node constraint links (slave to master)${msg.octree?.constraints ? ` — ${msg.octree.constraints.hangingNodes} hanging nodes` : ""}`
+      );
       meshingPanel.render(meshingModel.get(), {
         nodeCount: msg.nodeCount,
         elementCount: msg.elementCount,

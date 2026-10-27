@@ -17,7 +17,9 @@ export type { OctreeMeshStats };
 //
 // Fixed on purpose (probe `scripts/probe/examples/meshio-octreemesh.ts`):
 // `castellated` is NOT offered — it carries hanging nodes and surrogate
-// boundary faces, so it is not a conforming mesh for any downstream reader.
+// boundary faces, so it is not a conforming mesh for any downstream reader
+// (the hanging nodes WITH constraints are `engine: "octree"`'s `hanging`
+// transition, `hangingConstraints.ts`).
 // meshio++'s own sizing default is far too fine (a 10 mm cube → 516 432 tets
 // in 33 s; all-hex block.stp → `std::bad_alloc`), so the sizes are always
 // derived here from the skin's bounding box and the cell caps always passed.

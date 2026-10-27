@@ -7498,6 +7498,85 @@ try {
     `export_mesh geoUnrolled rejects engine:"octree" with a specific error (got: ${(octGeo.content?.[0]?.text ?? "").slice(0, 160)})`
   );
 
+  // transition:"hanging": an ALL-hexahedra graded octree whose hanging nodes are
+  // tied to their parent corners by multi-point constraints, carried into Kratos
+  // MDPA (the only format with a constraints block) and read back on open.
+  // Probe numbers (meshio-octree-hanging.ts, octree-hanging-engine.ts): block.stp at
+  // level 4 = 1450 hexahedra, 378 hanging nodes (252 on an edge, 126 on a face).
+  const hangOptions = { engine: "octree", octreeMaxLevel: 4, octreeTransition: "hanging" };
+  const hangGen = await call("generate_mesh", { path: octreeBlock, options: hangOptions });
+  const hc = hangGen.octree?.constraints;
+  assert(
+    hangGen.engineUsed === "octree" && hangGen.octree.transition === "hanging" && hangGen.octree.snap === false &&
+      hangGen.octree.elementMix.hexahedra === 1450 && hangGen.octree.elementMix.pyramids === 0 && hangGen.octree.elementMix.tetrahedra === 0,
+    `generate_mesh(octreeTransition:"hanging") is all hexahedra and never snaps (got ${JSON.stringify(hangGen.octree)})`
+  );
+  assert(
+    hc && hc.hangingNodes === 378 && hc.hangingNodes === hangGen.octree.numHanging && hc.constraints === 1134 && hc.chained === 0 &&
+      hc.variables.join() === "DISPLACEMENT_X,DISPLACEMENT_Y,DISPLACEMENT_Z",
+    `...and the geometrically recovered hanging-node count equals the kernel's numHanging (got ${JSON.stringify(hc)})`
+  );
+  assert(hangGen.warnings.some((w) => /ignores octreeSnap/.test(w)), "...with the default octreeSnap:true named as ignored, not silently dropped");
+  const hangMsh = path.join(dir, "octree-hanging.msh");
+  const hangMshOut = await call("export_mesh", { path: octreeBlock, format: "msh", outputPath: hangMsh, options: hangOptions });
+  assert(
+    hangMshOut.warnings.some((w) => /cannot carry multi-point constraints/.test(w) && /Export Kratos MDPA/.test(w)),
+    `a non-MDPA export of the hanging octree warns that the constraints are lost (got ${JSON.stringify(hangMshOut.warnings)})`
+  );
+  const hangVol = mshCellVolumes(fs.readFileSync(hangMsh, "utf8"));
+  assert(hangVol.hex === 1450 && hangVol.tet === 0 && hangVol.pyramid === 0 && hangVol.nonPositive === 0, `...the .msh is 1450 positively oriented hexahedra (got ${JSON.stringify(hangVol)})`);
+  const hangMdpa = path.join(dir, "octree-hanging.mdpa");
+  const hangMdpaOut = await call("export_mesh", { path: octreeBlock, format: "mdpaElements", outputPath: hangMdpa, options: hangOptions });
+  assert(!hangMdpaOut.warnings.some((w) => /multi-point constraints/.test(w)), "...but the MDPA export, which carries them, does not warn");
+  const hangText = fs.readFileSync(hangMdpa, "utf8");
+  // Parse the written file independently and run the patch test on it.
+  const hangNodes = new Map();
+  for (const m of hangText.matchAll(/^\s*(\d+)\s+(\S+)\s+(\S+)\s+(\S+)\s*$/gm)) {
+    if (hangText.indexOf(m[0]) < hangText.indexOf("End Nodes")) hangNodes.set(Number(m[1]), [Number(m[2]), Number(m[3]), Number(m[4])]);
+  }
+  const headers = hangText.match(/^Begin Constraints LinearMasterSlaveConstraint .*$/gm) ?? [];
+  const linear = (p) => 0.7 * p[0] - 1.3 * p[1] + 2.1 * p[2] + 0.45;
+  let rows = 0, worstPatch = 0, badRows = 0;
+  for (const block of hangText.matchAll(/^Begin Constraints LinearMasterSlaveConstraint (.*)$\n([\s\S]*?)^End Constraints/gm)) {
+    const nVars = block[1].trim().split(/\s+/).length; // slave + masters
+    for (const line of block[2].split("\n").map((l) => l.trim()).filter(Boolean)) {
+      const m = /^(\d+) (\S+) \[([^\]]*)\] (.*)$/.exec(line);
+      const w = m ? m[3].split(",").map(Number) : [];
+      const ids = m ? m[4].trim().split(/\s+/).map(Number) : [];
+      if (!m || ids.length !== nVars || w.length !== nVars - 1 || ids.some((i) => !hangNodes.has(i)) || Math.abs(w.reduce((a, b) => a + b, 0) - 1) > 1e-12) { badRows++; continue; }
+      rows++;
+      const expected = w.reduce((a, wi, k) => a + wi * linear(hangNodes.get(ids[k + 1])), 0);
+      worstPatch = Math.max(worstPatch, Math.abs(expected - linear(hangNodes.get(ids[0]))));
+    }
+  }
+  assert(
+    headers.length === 6 && rows === 1134 && badRows === 0 && worstPatch < 1e-12,
+    `the hanging octree's MDPA has 6 Constraints blocks (3 variables x edge/face), 1134 well-formed rows resolving to real nodes, and an exact patch test (got ${headers.length} blocks, ${rows} rows, ${badRows} bad, patch ${worstPatch})`
+  );
+  assert(
+    /Begin SubModelPart HangingNodes/.test(hangText) && (hangText.split("Begin SubModelPartConstraints")[1]?.split("End SubModelPartConstraints")[0].trim().split(/\s+/).length ?? 0) === 1134,
+    "...and a HangingNodes SubModelPart listing all 1134 constraints"
+  );
+  // Re-open: meshio++ cannot read a Constraints block, so the file opens with them stripped and the loss is reported.
+  const hangReopen = path.join(dir, "octree-hanging-reopen.mdpa");
+  fs.copyFileSync(hangMdpa, hangReopen);
+  const hangLoaded = await call("load_model", { path: hangReopen });
+  assert(
+    hangLoaded.warnings.some((w) => /1134 multi-point constraint row\(s\) on 378 slave node\(s\)/.test(w)),
+    `load_model of the exported hanging MDPA reports its constraints as facts (got ${JSON.stringify(hangLoaded.warnings)})`
+  );
+  const hangProps = await call("get_mass_properties", { path: hangReopen });
+  assert(
+    hangProps.supported === true && Math.abs(hangProps.volume - hangVol.volume) < 1e-4 * hangVol.volume,
+    `...and the re-opened deck encloses the same volume as the generated mesh (got ${hangProps.volume} vs ${hangVol.volume})`
+  );
+  // cube.stl: grid-aligned, so the unsnapped hanging octree encloses exactly 1000 and has no stray interface wall.
+  const hangCubeOut = path.join(dir, "octree-hanging-cube.msh");
+  await call("export_mesh", { path: cleanCubeStl, format: "msh", outputPath: hangCubeOut, options: hangOptions });
+  const hangCubeVol = mshCellVolumes(fs.readFileSync(hangCubeOut, "utf8"));
+  assert(Math.abs(hangCubeVol.volume - 1000) < 1e-6 && hangCubeVol.nonPositive === 0, `the hanging octree over cube.stl (a mesh source) encloses exactly 1000 (got ${JSON.stringify(hangCubeVol)})`);
+
+
   // engine:"octreemesh" (meshio++ 17.13 octreeMesh): conforming graded tets or
   // an all-hex mesh fitted to the tessellated skin. Sized by octreeMeshMaxSize
   // + octreeMeshLevels, never sizeMax; no Parts; same refusals as the octree.

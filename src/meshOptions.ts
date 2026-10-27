@@ -9,6 +9,7 @@
  */
 
 import type { Part } from "./protocol";
+import { DEFAULT_MPC_VARIABLES, type MpcFacts } from "./hangingConstraints";
 
 /**
  * The element *geometry* to generate. `"simplex"` is Gmsh's native
@@ -105,18 +106,54 @@ export const OCTREE_MESH_LEVELS_LIMIT = 4;
  * guard ends anything past it with a plain error. */
 export const OCTREE_MAX_LEVEL_LIMIT = 6;
 
+/** What `engine: "octree"` emits where a fine leaf meets a coarse one.
+ * `"templates"` = a conforming hex/pyramid/tet transition; `"hanging"` = all
+ * hexahedra, with the hanging nodes left in place and tied to their parent
+ * corners by multi-point constraints (MDPA/Kratos only — see
+ * `hangingConstraints.ts`). `"polyhedra"` is never offered: the MDPA writer
+ * refuses `polyhedron` blocks. */
+export type OctreeTransition = "templates" | "hanging";
+export const OCTREE_TRANSITIONS: readonly OctreeTransition[] = ["templates", "hanging"];
+
+/** Most variables one hanging-node constraint set can tie. */
+export const MPC_VARIABLES_LIMIT = 8;
+
+/** Kratos variable names: an identifier. */
+const MPC_VARIABLE_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+/** Cleans a caller's variable list: trimmed identifiers, de-duplicated in order,
+ * at most {@link MPC_VARIABLES_LIMIT}; `undefined` when nothing usable remains. */
+export function validateMpcVariables(raw: unknown): string[] | undefined {
+  const list = Array.isArray(raw) ? raw : typeof raw === "string" ? raw.split(/[\s,;]+/) : [];
+  const out: string[] = [];
+  for (const item of list) {
+    if (typeof item !== "string") continue;
+    const name = item.trim();
+    if (MPC_VARIABLE_RE.test(name) && !out.includes(name)) out.push(name);
+    if (out.length >= MPC_VARIABLES_LIMIT) break;
+  }
+  return out.length > 0 ? out : undefined;
+}
+
 /** Facts an octree generate reports (the type is here, not in `octreeService.ts`,
  * because the webview and the handoff manifest import it and that module
  * pulls in WASM services). Parts are never preserved by this engine. */
 export interface OctreeStats {
   maxLevel: number;
+  /** The snap actually applied: `false` under `transition: "hanging"`, whose
+   * constraints are exact only for unmoved nodes. */
   snap: boolean;
+  /** Which transition ran. */
+  transition: OctreeTransition;
   numLeaves: number;
   numHanging: number;
   finestLevel: number;
   numSnapped: number;
   numRefused: number;
   elementMix: { hexahedra: number; pyramids: number; tetrahedra: number };
+  /** Hanging-node constraints recovered from the leaf grid — set only for
+   * `transition: "hanging"`. Mesh data, not Parts: never persisted or rebound. */
+  constraints?: MpcFacts;
 }
 
 /** Facts an `engine: "octreemesh"` generate reports — the subset of meshio++'s
@@ -154,6 +191,11 @@ export function octreeMeshSummary(stats: OctreeMeshStats): string {
 /** One-line readout of an octree generate for the panel status line. */
 export function octreeSummary(stats: OctreeStats): string {
   const { hexahedra, pyramids, tetrahedra } = stats.elementMix;
+  if (stats.transition === "hanging") {
+    const c = stats.constraints;
+    const ties = c ? `${c.hangingNodes} hanging node${c.hangingNodes === 1 ? "" : "s"} tied by ${c.constraints} MPC${c.constraints === 1 ? "" : "s"}` : "constraints not computed";
+    return `Octree L${stats.maxLevel} hanging: ${hexahedra} hex · ${ties} · Parts not preserved`;
+  }
   const snaps = stats.snap
     ? `snapped ${stats.numSnapped}${stats.numRefused > 0 ? `, refused ${stats.numRefused}` : ""}`
     : "snap off";
@@ -217,6 +259,15 @@ export interface MeshOptions {
    * counted and reported, never forced. Only meaningful when
    * `engine === "octree"`. */
   octreeSnap: boolean;
+  /** Octree: what is emitted where a fine leaf meets a coarse one. `"hanging"`
+   * gives an all-hexahedra mesh whose hanging nodes are tied by multi-point
+   * constraints in MDPA; it forces `octreeSnap` off (a snapped hanging node
+   * leaves its parent edge, so its constraint stops being exact). Only
+   * meaningful when `engine === "octree"`. */
+  octreeTransition: OctreeTransition;
+  /** Kratos variables the hanging-node constraints tie (one block per variable
+   * in the MDPA). Only used when `octreeTransition === "hanging"`. */
+  mpcVariables: string[];
   /** Octree-mesh: `"tet"` = conforming graded tetrahedra fitted to the skin
    * (stuffing), `"hex"` = all-hexahedra by the octree dual. Only meaningful
    * when `engine === "octreemesh"`. */
@@ -514,6 +565,8 @@ export const DEFAULT_MESH_OPTIONS: MeshOptions = {
   ftetwildDisableFiltering: false,
   octreeMaxLevel: 4, // block.stp at level 4: 3522 cells, exactly its volume (probe)
   octreeSnap: true,
+  octreeTransition: "templates",
+  mpcVariables: [...DEFAULT_MPC_VARIABLES],
   octreeMeshOutput: "tet",
   octreeMeshMaxSize: 0,
   octreeMeshLevels: 2, // cube.stl at maxSize 2, levels 2: 44 832 tets, min dihedral 35° (probe)
@@ -631,6 +684,10 @@ export function validateMeshOptions(raw: unknown): MeshOptions | null {
       ? Math.min(OCTREE_MAX_LEVEL_LIMIT, Math.round(o.octreeMaxLevel))
       : DEFAULT_MESH_OPTIONS.octreeMaxLevel;
   const octreeSnap = typeof o.octreeSnap === "boolean" ? o.octreeSnap : DEFAULT_MESH_OPTIONS.octreeSnap;
+  const octreeTransition: OctreeTransition = OCTREE_TRANSITIONS.includes(o.octreeTransition as OctreeTransition)
+    ? (o.octreeTransition as OctreeTransition)
+    : DEFAULT_MESH_OPTIONS.octreeTransition;
+  const mpcVariables = validateMpcVariables(o.mpcVariables) ?? [...DEFAULT_MPC_VARIABLES];
 
   const octreeMeshOutput: OctreeMeshOutput = OCTREE_MESH_OUTPUTS.includes(o.octreeMeshOutput as OctreeMeshOutput)
     ? (o.octreeMeshOutput as OctreeMeshOutput)
@@ -672,6 +729,8 @@ export function validateMeshOptions(raw: unknown): MeshOptions | null {
     ftetwildDisableFiltering,
     octreeMaxLevel,
     octreeSnap,
+    octreeTransition,
+    mpcVariables,
     octreeMeshOutput,
     octreeMeshMaxSize,
     octreeMeshLevels,

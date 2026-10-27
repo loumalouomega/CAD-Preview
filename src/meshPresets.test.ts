@@ -159,6 +159,12 @@ describe("inapplicablePresetFields", () => {
     expect(inapplicablePresetFields(octree)).toEqual(["optimize", "ftetwildCoarsen"]);
   });
 
+  it("lists the hanging-node transition and MPC variables as octree-only fields", () => {
+    const withHanging = { ...DEFAULT_MESH_OPTIONS, octreeTransition: "hanging" as const, mpcVariables: ["TEMPERATURE"] };
+    expect(inapplicablePresetFields({ ...gmshPreset, options: withHanging })).toEqual(["octreeTransition", "mpcVariables"]);
+    expect(inapplicablePresetFields({ ...gmshPreset, engine: "octree", options: withHanging })).toEqual([]);
+  });
+
   it("is silent when every engine-foreign field is at its default", () => {
     expect(inapplicablePresetFields(gmshPreset)).toEqual([]);
     expect(

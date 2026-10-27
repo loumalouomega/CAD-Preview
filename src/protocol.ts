@@ -486,6 +486,24 @@ export type HostToWebview =
         regionNames: string[];
         triangleRegionIndex: string; // base64 Int32Array
       };
+      /** The multi-point constraints an opened `.mdpa` declares, as slave→master
+       * line geometry in the file's own coordinates (`src/mdpaConstraints.ts`).
+       * Present only when the file has a `Begin Constraints` block — and in THIS
+       * message rather than a following one so `setModel` (which clears overlays)
+       * cannot race it. Mesh data: never persisted or rebound. */
+      meshConstraints?: {
+        /** Base64 `Float32Array` xyz of the nodes the links touch. */
+        points: string;
+        /** Base64 `Uint32Array` index pairs into `points` (slave, master). */
+        indices: string;
+        constraintCount: number;
+        slaveCount: number;
+        variables: string[];
+        /** Links counted but not drawn (over the cap). */
+        truncated: number;
+        /** One status line: counts, variables, skipped rows, display caveats. */
+        summary: string;
+      };
     }
   | { type: "parts"; parts: Part[] }
   /** Full replacement of the document's layers — sent on the `ready`
@@ -580,6 +598,10 @@ export type HostToWebview =
       /** Mesh-CAD surface facts (resolved size, closure counts, angle bounds,
        * refinement/bound facts) when the meshcad engine ran; absent otherwise. */
       meshcad?: MeshCadStats;
+      /** Slave→master segments of the hanging-node constraints (base64
+       * `Uint32Array` index pairs into `positions`) — present only for the octree
+       * engine's `"hanging"` transition. The true counts are in `octree.constraints`. */
+      constraintLinks?: string;
     }
   | { type: "meshingError"; requestId: string; message: string }
   /** FE Mesh panel's refinement sweep (roadmap Tier 1 "Parity gaps") — the
