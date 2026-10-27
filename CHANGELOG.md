@@ -6,6 +6,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/); thi
 
 ## [Unreleased]
 
+## [3.31.0] - 2026-10-27
+
 ### Added
 
 - **Partitioned Kratos MDPA export: one file per MPI rank, split by KaHIP.** `MeshOptions.mdpaRanks` (2–64; FE Mesh panel ▸ Advanced **MDPA ranks**, or `options.mdpaRanks` on `export_mesh`) splits the domain cells over that many ranks and writes `<stem>_<rank>.mdpa` plus a `<stem>.partition.json` manifest; `mdpaPartitionMethod` picks `auto` (KaHIP, falling back to the space-filling curve), `kahip` or `sfc`. Node and cell ids are those of the whole mesh in every file, each Part is restricted to its rank, and an `InterfaceNodes` SubModelPart lists the nodes a rank shares with another. Only the domain cells are partitioned (KaHIP given the whole `Mesh.SaveAll` mesh comes back 1.8× unbalanced). On `bull.stp` at 4 ranks KaHIP leaves 108 interface nodes at balance 1.018 against the space-filling curve's 297 at 1.000; every rank file was checked against the single-file export of the same mesh. A hanging-node octree and more ranks than cells are refused by name; existing sibling files are confirmed before the panel replaces them. It is **not** Kratos' native `CommunicatorData` layout and no Kratos reader has been run against it — the export warns, and the gap is registered.
@@ -1021,6 +1023,7 @@ This release republishes v1.9.0's full changelog (below) unchanged; v1.9.0 itsel
 
 - Initial release: read-only 3D preview for CAD and mesh files (STEP, IGES, BREP, STL, OBJ, PLY, glTF) inside a VS Code custom editor, using OpenCascade.js (OCCT WASM) in the extension host for B-rep formats and Three.js in the webview for rendering.
 
+[3.31.0]: https://github.com/loumalouomega/CAD-Preview/compare/v3.30.0...v3.31.0
 [3.30.0]: https://github.com/loumalouomega/CAD-Preview/compare/v3.29.0...v3.30.0
 [3.29.0]: https://github.com/loumalouomega/CAD-Preview/compare/v3.28.0...v3.29.0
 [3.28.0]: https://github.com/loumalouomega/CAD-Preview/compare/v3.27.0...v3.28.0
