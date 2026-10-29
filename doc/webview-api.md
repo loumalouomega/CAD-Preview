@@ -40,6 +40,7 @@ The webview runs in a Chromium browser context. These modules are bundled into `
 | `src/webview/massPropertiesPanel.ts` | Mass Properties panel DOM — label/value readout, error/status messages |
 | `src/webview/clashPanel.ts` | Clash panel DOM — Part-vs-Part and check-all interference readout (roadmap Tier 1 "Clash panel") |
 | `src/webview/brepHealthPanel.ts` | B-rep Health panel DOM — Check button, OCCT verdict summary, per-solid shell/open-boundary rows, and one row per flagged subshape with its named statuses; hovering a face/edge/solid row highlights it through `renderSelection` without touching the working selection (roadmap "B-rep validity report") |
+| `src/webview/surfaceToolsPanel.ts` | Surface Tools panel DOM (STEP/IGES sources): the `project_to_cad` and `grow_prism_layers` actions and their label/value result card; the request/result round trip and `requestId` guard live in `main.ts` (`surfaceToolRequest` / `surfaceToolResult`) |
 | `src/webview/meshHealthPanel.ts` | Mesh Health panel DOM (roadmap "Mesh → B-rep promotion, diagnostic-first", Phase 1 — read-only report, no promotion) |
 | `src/webview/regionFitPanel.ts` | Region Fit panel DOM — Pick seed one-shot capture, per-candidate plane/cylinder/sphere rows with residuals, Save plane / Add cylinder / Add sphere actions (gated on which candidates fitted) |
 | `src/webview/draftPanel.ts` | Draft panel DOM — Check (pull, minimum draft, two-sided), facts rows by face id with hover highlight; the draft angle colours the view through the colour-field overlay |

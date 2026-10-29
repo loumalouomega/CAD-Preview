@@ -1709,6 +1709,69 @@ export async function checkMeshQuality(
   }
 }
 
+/** Facts `checkConformity` reports (meshio++ 17.23); `mesh` is dropped — the input is not modified. */
+export interface MeshConformityFacts {
+  /** 3 for volume cells, 2 for 2-D cells, 0 when nothing was examined. */
+  dimension: number;
+  /** Points on a volume cell's face or edge that the cell does not use. */
+  numHangingNodes: number;
+  /** Points on a 2-D cell's edge that the cell does not use. */
+  numTJunctions: number;
+  /** Pairs of unmatched facets in one plane that overlap over a positive area. */
+  numPartialOverlaps: number;
+  /** Pairs of coincident unmatched facets with different point ids. */
+  numUnweldedFacets: number;
+  numBoundaryFacets: number;
+  numNonManifoldFacets: number;
+  /** None of the four defects above. */
+  conforming: boolean;
+  /** The `findInterface` mode that suits the mesh. */
+  interfaceMode: string;
+  warnings: string[];
+}
+
+/**
+ * meshio++ `checkConformity` over a meshio-readable source: hanging nodes,
+ * T-junctions, partial overlaps and unwelded facets, facts only. `tolerance`
+ * is a fraction of the examined facets' bbox diagonal (meshio++ default 1e-9).
+ */
+export async function checkMeshConformity(
+  sourceBytes: Uint8Array,
+  meshioFormat: string,
+  sourceName?: string,
+  companions?: readonly MeshioCompanion[],
+  options?: { tolerance?: number } | null
+): Promise<MeshConformityFacts> {
+  const m = await getMeshio();
+  let allPaths: string[] = [];
+  try {
+    const staged = stageMeshioSource(m, sourceBytes, meshioFormat, sourceName, companions);
+    allPaths = staged.allPaths;
+    const mesh = m.readMesh(staged.primaryPath, meshioFormat);
+    const call: { attachFlags: boolean; tolerance?: number } = { attachFlags: false };
+    // `undefined` crosses the kernel IPC as `null`, so a default parameter would not catch it.
+    if (options?.tolerance !== undefined && options.tolerance !== null) call.tolerance = options.tolerance;
+    const r = m.checkConformity(mesh, call) as unknown as Record<string, unknown>;
+    const n = (k: string): number => Number(r[k] ?? 0);
+    return {
+      dimension: n("dimension"),
+      numHangingNodes: n("numHangingNodes"),
+      numTJunctions: n("numTJunctions"),
+      numPartialOverlaps: n("numPartialOverlaps"),
+      numUnweldedFacets: n("numUnweldedFacets"),
+      numBoundaryFacets: n("numBoundaryFacets"),
+      numNonManifoldFacets: n("numNonManifoldFacets"),
+      conforming: r.conforming === true,
+      interfaceMode: String(r.interfaceMode ?? ""),
+      warnings: Array.isArray(r.warnings) ? (r.warnings as unknown[]).map(String) : [],
+    };
+  } catch (err) {
+    throw wrapMeshioFault(err);
+  } finally {
+    unstageMeshioSource(m, allPaths);
+  }
+}
+
 export interface MeshioExportOptions {
   /** MEMFS write extension, from the registry entry. Defaults to `outMeshioFormat`. */
   extension?: string;

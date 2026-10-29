@@ -1,4 +1,4 @@
-import { SIZE_MAX_SENTINEL, DEFAULT_MESH_OPTIONS, boundaryLayerPlan, validateMeshBoundaryLayer, validateMeshGrading, validateMeshStructured, octreeSummary, octreeMeshSummary, meshcadSummary, validateMpcVariables, OCTREE_MAX_LEVEL_LIMIT, OCTREE_MESH_LEVELS_LIMIT, MAX_MDPA_RANKS, type MdpaPartitionMethod, MESHCAD_SMOOTH_LIMIT, type OctreeStats, type OctreeMeshStats, type MeshCadStats, type MeshOptions, type MeshGrading, type MeshStructured, type MeshBoundaryLayer } from "../meshOptions";
+import { SIZE_MAX_SENTINEL, DEFAULT_PRISM_LAYERS, PRISM_LAYERS_LIMIT, validateMeshPrismLayers, DEFAULT_MESH_OPTIONS, boundaryLayerPlan, validateMeshBoundaryLayer, validateMeshGrading, validateMeshStructured, octreeSummary, octreeMeshSummary, meshcadSummary, validateMpcVariables, OCTREE_MAX_LEVEL_LIMIT, OCTREE_MESH_LEVELS_LIMIT, MAX_MDPA_RANKS, type MdpaPartitionMethod, MESHCAD_SMOOTH_LIMIT, type OctreeStats, type OctreeMeshStats, type MeshCadStats, type MeshOptions, type MeshGrading, type MeshStructured, type MeshBoundaryLayer } from "../meshOptions";
 import type { QualitySummary } from "../meshQuality";
 import type { BoundaryLayerAchieved } from "../boundaryLayerMeasurement";
 import { describeGateCheck, type QualityGateResult } from "../meshQualityGate";
@@ -196,6 +196,7 @@ export class MeshingPanel {
   private readonly octreeTransitionSelect: HTMLSelectElement;
   private readonly mpcVariablesInput: HTMLInputElement;
   private readonly octreeMeshOutputSelect: HTMLSelectElement;
+  private readonly octreeMeshHexGradingSelect: HTMLSelectElement;
   private readonly octreeMeshMaxSizeInput: HTMLInputElement;
   private readonly octreeMeshLevelsInput: HTMLInputElement;
   private readonly meshcadMinAngleInput: HTMLInputElement;
@@ -203,6 +204,11 @@ export class MeshingPanel {
   private readonly meshcadCurvatureInput: HTMLInputElement;
   private readonly meshcadGapsInput: HTMLInputElement;
   private readonly meshcadGradingInput: HTMLInputElement;
+  private readonly prismEnabledCheckbox: HTMLInputElement;
+  private readonly prismHeightInput: HTMLInputElement;
+  private readonly prismLayersInput: HTMLInputElement;
+  private readonly prismGrowthInput: HTMLInputElement;
+  private readonly prismReverseCheckbox: HTMLInputElement;
 
   /** Mesh-ops section (meshio++ sources only) — one operation per Run. */
   private readonly meshOpsSection: HTMLElement;
@@ -738,6 +744,16 @@ export class MeshingPanel {
       cb.onOptionsChange({ octreeMeshOutput: this.octreeMeshOutputSelect.value as MeshOptions["octreeMeshOutput"] });
     });
 
+    this.octreeMeshHexGradingSelect = this.select(form, "Octree-mesh hex grading", [
+      ["uniform", "Uniform grid"],
+      ["graded", "Graded (octree's own)"],
+    ]);
+    this.octreeMeshHexGradingSelect.title =
+      "Hexahedral output only: one grid at the skin's size, or the octree's own grading through dual transition schemes (fewer cells).";
+    this.octreeMeshHexGradingSelect.addEventListener("change", () => {
+      cb.onOptionsChange({ octreeMeshHexGrading: this.octreeMeshHexGradingSelect.value === "graded" ? "graded" : undefined });
+    });
+
     this.octreeMeshMaxSizeInput = this.numberField(form, "Octree-mesh max size (mm)", DEFAULT_MESH_OPTIONS.octreeMeshMaxSize);
     this.octreeMeshMaxSizeInput.title =
       "Largest leaf edge in mm; 0 = automatic (one eighth of the model's bounding-box diagonal). Only used by engine: Octree-mesh.";
@@ -806,6 +822,41 @@ export class MeshingPanel {
       const raw = Number(this.meshcadGradingInput.value);
       cb.onOptionsChange({ meshcadGrading: raw > 1 ? raw : DEFAULT_MESH_OPTIONS.meshcadGrading });
     });
+
+    // Prism layers (meshio++ 3-D boundaryLayer) — NOT the Part's Gmsh 2-D boundary layer. Mesh-CAD only.
+    this.prismEnabledCheckbox = this.checkboxField(
+      form,
+      "Prism layers",
+      "Grow wedge layers over the Mesh-CAD surface (meshio++ boundaryLayer). The result is the layer shell only — the interior is not meshed — so the mesh dimension becomes 3. Only used by engine: Mesh-CAD."
+    );
+    this.prismHeightInput = this.numberField(form, "Prism first height (mm)", DEFAULT_PRISM_LAYERS.firstHeight);
+    this.prismHeightInput.title = "Thickness of the first layer. Total = first · (growth^layers − 1) / (growth − 1).";
+    this.prismHeightInput.min = "0";
+    this.prismLayersInput = this.numberField(form, "Prism layers", DEFAULT_PRISM_LAYERS.numLayers);
+    this.prismLayersInput.step = "1";
+    this.prismLayersInput.min = "1";
+    this.prismLayersInput.max = String(PRISM_LAYERS_LIMIT);
+    this.prismGrowthInput = this.numberField(form, "Prism growth ratio", DEFAULT_PRISM_LAYERS.growth);
+    this.prismGrowthInput.min = "1";
+    this.prismGrowthInput.max = "10";
+    this.prismReverseCheckbox = this.checkboxField(form, "Prism inward", "Grow against the surface normals — inward on a closed skin.");
+    const emitPrism = (): void => {
+      if (!this.prismEnabledCheckbox.checked) {
+        cb.onOptionsChange({ prismLayers: undefined });
+        return;
+      }
+      const next = validateMeshPrismLayers({
+        firstHeight: Number(this.prismHeightInput.value),
+        numLayers: Number(this.prismLayersInput.value),
+        growth: Number(this.prismGrowthInput.value),
+        reverse: this.prismReverseCheckbox.checked,
+      });
+      // An invalid field reverts to the last stored request via the next sync, never persists half a request.
+      cb.onOptionsChange({ prismLayers: next ?? { ...DEFAULT_PRISM_LAYERS } });
+    };
+    for (const el of [this.prismEnabledCheckbox, this.prismHeightInput, this.prismLayersInput, this.prismGrowthInput, this.prismReverseCheckbox]) {
+      el.addEventListener("change", emitPrism);
+    }
 
     const resetBtn = document.createElement("button");
     resetBtn.type = "button";
@@ -1139,6 +1190,12 @@ export class MeshingPanel {
     this.meshcadCurvatureInput.value = String(options.meshcadCurvatureDeviation);
     this.meshcadGapsInput.value = String(options.meshcadCellsAcrossGaps);
     this.meshcadGradingInput.value = String(options.meshcadGrading);
+    const prism = options.prismLayers;
+    this.prismEnabledCheckbox.checked = prism !== undefined;
+    this.prismHeightInput.value = String((prism ?? DEFAULT_PRISM_LAYERS).firstHeight);
+    this.prismLayersInput.value = String((prism ?? DEFAULT_PRISM_LAYERS).numLayers);
+    this.prismGrowthInput.value = String((prism ?? DEFAULT_PRISM_LAYERS).growth);
+    this.prismReverseCheckbox.checked = prism?.reverse === true;
 
     this.conformalCheckbox.checked = options.conformal;
     this.stlAngleInput.value = String(options.stlAngle);
@@ -1155,6 +1212,7 @@ export class MeshingPanel {
     this.octreeTransitionSelect.value = options.octreeTransition;
     this.mpcVariablesInput.value = options.mpcVariables.join(", ");
     this.octreeMeshOutputSelect.value = options.octreeMeshOutput;
+    this.octreeMeshHexGradingSelect.value = options.octreeMeshHexGrading ?? "uniform";
     this.octreeMeshMaxSizeInput.value = String(options.octreeMeshMaxSize);
     this.octreeMeshLevelsInput.value = String(options.octreeMeshLevels);
 
@@ -1192,6 +1250,7 @@ export class MeshingPanel {
     this.octreeTransitionSelect.disabled = !octree;
     this.mpcVariablesInput.disabled = !hanging;
     this.octreeMeshOutputSelect.disabled = !octreeMesh;
+    this.octreeMeshHexGradingSelect.disabled = !octreeMesh || options.octreeMeshOutput !== "hex";
     this.octreeMeshMaxSizeInput.disabled = !octreeMesh;
     this.octreeMeshLevelsInput.disabled = !octreeMesh;
     this.meshcadMinAngleInput.disabled = !meshcad;
@@ -1199,6 +1258,12 @@ export class MeshingPanel {
     this.meshcadCurvatureInput.disabled = !meshcad;
     this.meshcadGapsInput.disabled = !meshcad;
     this.meshcadGradingInput.disabled = !meshcad;
+    this.prismEnabledCheckbox.disabled = !meshcad;
+    const prismOn = meshcad && options.prismLayers !== undefined;
+    this.prismHeightInput.disabled = !prismOn;
+    this.prismLayersInput.disabled = !prismOn;
+    this.prismGrowthInput.disabled = !prismOn;
+    this.prismReverseCheckbox.disabled = !prismOn;
 
     this.syncSlider();
 

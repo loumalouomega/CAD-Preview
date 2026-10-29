@@ -40,6 +40,7 @@ import {
   exportViaMeshio,
   readMeshioMetadata,
   checkMeshQuality,
+  checkMeshConformity,
   readMeshioDataInfo,
   readMeshioProvenance,
   runMeshioOps,
@@ -54,6 +55,8 @@ import { fitMeshRegion } from "./meshRegionFit";
 import { segmentMeshSurface } from "./meshSegment";
 import { fitMeshToCad } from "./meshFitCad";
 import { meshCadSurfaceModel } from "./meshCadSurface";
+import { projectMeshToCad } from "./meshProjectCad";
+import { growPrismLayersModel } from "./prismLayers";
 import { igaSampleModel, igaRefineModel, igaEvaluateModel } from "./meshIga";
 import { renderMeshSoftware } from "./meshSoftwareRender";
 import { exportSvgSilhouette, exportDrawingSheet } from "./svgSilhouetteHost";
@@ -170,6 +173,7 @@ const handlers: Record<keyof DocumentPipeline, Handler> = {
   exportViaMeshio: exportViaMeshio as Handler,
   readMeshioMetadata: readMeshioMetadata as Handler,
   checkMeshQuality: checkMeshQuality as Handler,
+  checkMeshConformity: checkMeshConformity as Handler,
   readMeshioDataInfo: readMeshioDataInfo as Handler,
   readMeshioProvenance: readMeshioProvenance as Handler,
   coarsenStlBoundary: coarsenStlBoundary as Handler,
@@ -186,6 +190,8 @@ const handlers: Record<keyof DocumentPipeline, Handler> = {
   segmentMeshSurface: segmentMeshSurface as Handler,
   fitMeshToCad: fitMeshToCad as Handler,
   meshCadSurfaceModel: meshCadSurfaceModel as Handler,
+  projectMeshToCad: projectMeshToCad as Handler,
+  growPrismLayersModel: growPrismLayersModel as Handler,
   igaSampleModel: igaSampleModel as Handler,
   igaRefineModel: igaRefineModel as Handler,
   igaEvaluateModel: igaEvaluateModel as Handler,

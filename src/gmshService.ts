@@ -497,7 +497,8 @@ function effectiveEngine(input: MeshGenerationInput, options: MeshOptions): { en
         warnings: ['Engine "meshcad" was requested but this is a mesh-format source with no B-rep faces — meshio++ triangulates exact CAD faces only, so Gmsh was used instead.'],
       };
     }
-    if (options.dimension !== 2) {
+    // Prism layers turn the surface into a wedge shell (a volume mesh), so they lift the 2-D-only gate.
+    if (options.dimension !== 2 && !options.prismLayers) {
       return {
         engine: "gmsh",
         warnings: [
@@ -581,6 +582,7 @@ export function meshcadUnsupportedOptions(options: MeshOptions, parts: readonly 
   const refuse: string[] = [];
   const ignored: string[] = [];
   if (options.elementShape !== DEFAULT_MESH_OPTIONS.elementShape) refuse.push(`elementShape "${options.elementShape}" (mesh-cad makes triangles only)`);
+  if (options.prismLayers && options.elementOrder !== 1) refuse.push("prismLayers with elementOrder 2 (layers grow over linear triangles)");
   if ((options.periodic?.length ?? 0) > 0) refuse.push("periodic (mesh-cad has no face correlation)");
   if ((options.sizeField?.length ?? 0) > 0) refuse.push("sizeField (mesh-cad sizes by Max size, curvature deviation and cells-across-gaps)");
   if (options.sizeMin !== DEFAULT_MESH_OPTIONS.sizeMin) ignored.push(`sizeMin ${options.sizeMin}`);
@@ -666,6 +668,9 @@ async function populateMeshedModel(
   parts: Part[]
 ): Promise<{ tmpPath: string | null; groupMaps: PartGroupMaps | null; engineUsed: MeshEngine; warnings: string[]; conformalApplied: boolean; octree?: OctreeStats; octreeMpc?: OctreeMpc; octreeMesh?: OctreeMeshStats; meshcad?: MeshCadStats }> {
   const { engine, warnings } = effectiveEngine(input, options);
+  if (options.prismLayers && engine !== "meshcad") {
+    warnings.push(`Ignored: prismLayers only apply under engine "meshcad" with a B-rep source (this run used "${engine}").`);
+  }
 
   if (engine === "meshcad") {
     const unsupported = meshcadUnsupportedOptions(options, parts);
@@ -683,6 +688,7 @@ async function populateMeshedModel(
       curvatureDeviation: options.meshcadCurvatureDeviation,
       cellsAcrossGaps: options.meshcadCellsAcrossGaps,
       grading: options.meshcadGrading,
+      prismLayers: options.prismLayers,
     });
     gmsh.clear();
     gmsh.model.add(`model-${++_modelCounter}`);
@@ -705,6 +711,7 @@ async function populateMeshedModel(
     const stlBytes = input.kind === "stl" ? input.stlBytes : await brepSkinStlBytes(extensionPath, input.stepBytes);
     const { mshText, stats } = await octreeMeshVolume(stlBytes, {
       output: options.octreeMeshOutput,
+      hexGrading: options.octreeMeshHexGrading,
       maxSize: options.octreeMeshMaxSize,
       levels: options.octreeMeshLevels,
     });

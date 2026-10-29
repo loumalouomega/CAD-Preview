@@ -188,6 +188,14 @@ describe("applyStlPartSizeOverride", () => {
   });
 });
 
+describe("scaleMeshOptionsForUnit prismLayers", () => {
+  it("scales firstHeight with the unit but never the growth ratio or layer count", () => {
+    const o = { ...DEFAULT_MESH_OPTIONS, prismLayers: { firstHeight: 0.1, numLayers: 4, growth: 1.3 } };
+    expect(scaleMeshOptionsForUnit(o, 25.4).prismLayers).toEqual({ firstHeight: 0.1 * 25.4, numLayers: 4, growth: 1.3 });
+    expect(scaleMeshOptionsForUnit(DEFAULT_MESH_OPTIONS, 25.4)).not.toHaveProperty("prismLayers");
+  });
+});
+
 describe("scaleMeshOptionsForUnit", () => {
   it("returns options unchanged (same reference) for a factor of 1 (mm, no conversion)", () => {
     const options = { ...DEFAULT_MESH_OPTIONS, sizeMin: 1, sizeMax: 10 };
@@ -470,6 +478,9 @@ describe("DEFAULT_MESH_OPTIONS", () => {
       numOpenEdges: 0, numNonManifoldEdges: 0, numMisorientedEdges: 0, minAngleDeg: 23.79, maxAngleDeg: 105,
       minEdge: 0.5, maxEdge: 1.2, numRefinementPoints: 0, numFacesBelowBound: 0, numSmoothed: 0, numCurvedStraightened: 0, warnings: [],
     };
+    const prism = { numCells: 756, numWedges: 756, numPyramids: 0, numTetrahedra: 0, numShrunk: 0, numCollapsed: 0, numFewerLayers: 0, numFrontCrossings: 0, minScaledJacobian: 0.2727, minThickness: 0.182, maxThickness: 0.182, plannedThickness: 0.182, capClosed: true, warnings: [] };
+    expect(meshcadSummary({ ...stats, prismLayers: prism })).toBe("Mesh-CAD prism layers: 756 wedges · thickness 0.182–0.182 of 0.182 planned · min scaled Jacobian 0.27 · interior not meshed · Parts not preserved");
+    expect(meshcadSummary({ ...stats, prismLayers: { ...prism, numShrunk: 3 } })).toContain("thinner than planned in places");
     expect(meshcadSummary(stats)).toBe("Mesh-CAD surface: 252 tri · min angle 23.8° · closed · Parts not preserved");
     expect(meshcadSummary({ ...stats, numOpenEdges: 4, numFacesBelowBound: 2, numFailed: 1 })).toBe(
       "Mesh-CAD surface: 252 tri · min angle 23.8° · 4 open edges · 2 face(s) below the angle bound · 1 face(s) failed · Parts not preserved"
@@ -625,6 +636,21 @@ describe("octree-mesh options", () => {
     expect(validateMeshOptions({ octreeMeshOutput: "hex" })?.octreeMeshOutput).toBe("hex");
     expect(validateMeshOptions({ octreeMeshOutput: "castellated" })?.octreeMeshOutput).toBe("tet");
     expect(validateMeshOptions({ octreeMeshOutput: 3 })?.octreeMeshOutput).toBe("tet");
+    // prismLayers (meshio++ 17.23 3-D boundaryLayer): tolerant parse, optional fields omitted when default
+    expect(validateMeshOptions({ prismLayers: { firstHeight: 0.05, numLayers: 3, growth: 1.2 } })?.prismLayers).toEqual({ firstHeight: 0.05, numLayers: 3, growth: 1.2 });
+    expect(validateMeshOptions({ prismLayers: { firstHeight: 0.05, numLayers: 3, growth: 1.2, reverse: false, collapse: "points" } })?.prismLayers).toEqual({ firstHeight: 0.05, numLayers: 3, growth: 1.2 });
+    expect(validateMeshOptions({ prismLayers: { firstHeight: 0.05, reverse: true, collapse: "layers" } })?.prismLayers).toEqual({ firstHeight: 0.05, numLayers: 3, growth: 1.2, reverse: true, collapse: "layers" });
+    for (const bad of [{ firstHeight: 0 }, { firstHeight: 1, numLayers: 0 }, { firstHeight: 1, numLayers: 1001 }, { firstHeight: 1, growth: 0.5 }, { firstHeight: 1, growth: 11 }, "x", null]) {
+      expect("prismLayers" in (validateMeshOptions({ prismLayers: bad }) ?? {})).toBe(false);
+    }
+    // under meshcad the layer shell is a volume mesh, so dimension is normalised to 3; other engines keep theirs
+    expect(validateMeshOptions({ engine: "meshcad", dimension: 2, prismLayers: { firstHeight: 0.1 } })?.dimension).toBe(3);
+    expect(validateMeshOptions({ engine: "meshcad", dimension: 2 })?.dimension).toBe(2);
+    expect(validateMeshOptions({ engine: "gmsh", dimension: 2, prismLayers: { firstHeight: 0.1 } })?.dimension).toBe(2);
+    // 17.23 hexGrading: optional, kept only when "graded" (a sidecar stays byte-stable otherwise)
+    expect(validateMeshOptions({ octreeMeshHexGrading: "graded" })?.octreeMeshHexGrading).toBe("graded");
+    expect("octreeMeshHexGrading" in (validateMeshOptions({ octreeMeshHexGrading: "uniform" }) ?? {})).toBe(false);
+    expect("octreeMeshHexGrading" in (validateMeshOptions({ octreeMeshHexGrading: "bogus" }) ?? {})).toBe(false);
   });
 
   it("keeps a positive max size, and maps zero, negative and non-numbers to automatic (0)", () => {

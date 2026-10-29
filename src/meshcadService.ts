@@ -1,6 +1,7 @@
 import { getMeshio, wrapMeshioFault } from "./meshioService";
 import { buildMeshCadCall, readCadInfo, summarizeMeshCad, type RawMeshCadResult } from "./meshCadSurface";
-import { SIZE_MAX_SENTINEL, type MeshCadStats } from "./meshOptions";
+import { SIZE_MAX_SENTINEL, type MeshCadStats, type MeshPrismLayers } from "./meshOptions";
+import { buildPrismCall, summarizePrismLayers, wedgesToMsh41 } from "./prismLayers";
 
 export type { MeshCadStats };
 
@@ -35,6 +36,8 @@ export interface MeshCadEngineParams {
   curvatureDeviation: number;
   cellsAcrossGaps: number;
   grading: number;
+  /** Grow prism layers over the surface (order 1 only); the result is the wedge shell. */
+  prismLayers?: MeshPrismLayers;
 }
 
 export interface MeshCadEngineResult {
@@ -161,8 +164,20 @@ export async function meshcadSurfaceMesh(stepBytes: Uint8Array, params: MeshCadE
         `mesh-cad produced no triangles (${report.numFailed} of ${report.numFaces} faces failed${report.faces[0] ? `: ${report.faces[0].status} — ${report.faces[0].reason}` : ""}); try a smaller Max size.`
       );
     }
+    let prism: ReturnType<typeof summarizePrismLayers> | undefined;
+    let mshText: string;
+    if (params.prismLayers) {
+      if (order !== 1) throw new Error("mesh-cad: prism layers grow over linear triangles — set elementOrder 1.");
+      const { call: layerCall, firstHeight, numLayers, growth } = buildPrismCall(params.prismLayers);
+      const layered = (m as unknown as { boundaryLayer(mesh: unknown, o: unknown): Record<string, unknown> & { mesh: { points: ArrayLike<number>; cells: SurfaceBlock[] } } }).boundaryLayer(r.mesh, layerCall);
+      prism = summarizePrismLayers(layered, { firstHeight, numLayers, growth });
+      if (prism.numCells === 0) throw new Error(`mesh-cad: prism layers produced no cells${prism.warnings[0] ? ` (${prism.warnings[0]})` : ""} — the surface must be a closed triangle skin.`);
+      mshText = wedgesToMsh41(layered.mesh.points, layered.mesh.cells);
+    } else {
+      mshText = surfaceToMsh41(r.mesh.points, blocks);
+    }
     return {
-      mshText: surfaceToMsh41(r.mesh.points, blocks),
+      mshText,
       stats: {
         targetSize,
         order,
@@ -181,7 +196,8 @@ export async function meshcadSurfaceMesh(stepBytes: Uint8Array, params: MeshCadE
         numFacesBelowBound: report.numFacesBelowBound,
         numSmoothed: report.numSmoothed,
         numCurvedStraightened: report.numCurvedStraightened,
-        warnings: report.warnings,
+        ...(prism ? { prismLayers: prism } : {}),
+        warnings: prism ? [...report.warnings, ...prism.warnings] : report.warnings,
       },
     };
   } catch (err) {

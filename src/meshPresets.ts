@@ -217,7 +217,7 @@ const GMSH_ONLY_FIELDS: readonly (keyof MeshOptions)[] = [
 const OCTREE_ONLY_FIELDS: readonly (keyof MeshOptions)[] = ["octreeMaxLevel", "octreeSnap", "octreeTransition", "mpcVariables"];
 
 /** Octree-mesh-only fields — ignored by every other engine. */
-const OCTREE_MESH_ONLY_FIELDS: readonly (keyof MeshOptions)[] = ["octreeMeshOutput", "octreeMeshMaxSize", "octreeMeshLevels"];
+const OCTREE_MESH_ONLY_FIELDS: readonly (keyof MeshOptions)[] = ["octreeMeshOutput", "octreeMeshHexGrading", "octreeMeshMaxSize", "octreeMeshLevels"];
 
 /** Mesh-CAD-only fields — ignored by every other engine. */
 const MESHCAD_ONLY_FIELDS: readonly (keyof MeshOptions)[] = [
@@ -226,6 +226,7 @@ const MESHCAD_ONLY_FIELDS: readonly (keyof MeshOptions)[] = [
   "meshcadCurvatureDeviation",
   "meshcadCellsAcrossGaps",
   "meshcadGrading",
+  "prismLayers",
 ];
 
 /** Gmsh-only fields the octree merely ignores. `elementOrder`, `elementShape`

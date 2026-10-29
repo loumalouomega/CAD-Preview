@@ -803,6 +803,10 @@ export type HostToWebview =
    * the colour overlay; `max` is the colour-ramp top. */
   | { type: "meshDeviationResult"; requestId: string; report: DeviationReport; positions: string; distances: string; max: number }
   | { type: "meshDeviationError"; requestId: string; message: string }
+  /** Surface tools: label/value rows (facts only) of a finished action, the written path and the engine's warnings. */
+  | { type: "surfaceToolResult"; requestId: string; tool: SurfaceToolParams["tool"]; rows: Array<[string, string]>; written: string; warnings: string[] }
+  /** Surface tools: the action failed or the user cancelled a dialog (`cancelled`, no message shown as an error). */
+  | { type: "surfaceToolError"; requestId: string; tool: SurfaceToolParams["tool"]; message: string; cancelled?: boolean }
   /**
    * SpaceMouse 6DOF motion event — raw device units
    * (signed 16-bit per axis, full deflection ≈ ±350), NOT camera deltas.
@@ -1100,7 +1104,14 @@ export type WebviewToHost =
   /** FE Mesh ▸ Deviation: generate with these options (as Generate would) and
    * measure the boundary against the reference. `stl` as for meshingGenerate. */
   | { type: "meshDeviationRequest"; requestId: string; tolerance: number; options: MeshOptions; stl?: string }
+  /** Surface tools panel (B-rep sources, STEP/IGES): one of two one-shot, kernel-free surface operations on the OPEN document's CAD. The host owns the file dialogs (project: pick the mesh to snap, then a save path; prism: a save path), runs it in the kernel worker and replies with `surfaceToolResult` / `surfaceToolError`, correlated by `requestId`. Neither the CAD source nor the picked mesh is ever written. */
+  | ({ type: "surfaceToolRequest"; requestId: string } & SurfaceToolParams)
   | { type: "setCamerasLinked"; enabled: boolean };
+
+/** Parameters of the Surface tools panel's two actions (`surfaceToolRequest`). */
+export type SurfaceToolParams =
+  | { tool: "projectToCad"; maxDistance: number }
+  | { tool: "prismLayers"; targetSize: number; firstHeight: number; numLayers: number; growth: number; reverse: boolean };
 
 /** Encode a typed array to a base64 string for postMessage transport. */
 export function encodeBuffer(arr: Float32Array | Uint32Array | Int32Array): string {
