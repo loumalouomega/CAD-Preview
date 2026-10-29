@@ -132,7 +132,7 @@ Every section header reads chevron · icon · title, so a collapsed sidebar is s
 
 | Advanced ▸ | Sections |
 | --- | --- |
-| **Analysis** | Mass Properties, Clash, B-rep Health, Mesh Health, Region fit, Primitives, Passages, Printability |
+| **Analysis** | Mass Properties, Clash, B-rep Health, Mesh Health, Surface Tools, Region fit, Primitives, Passages, Printability |
 | **Library** | Macros, Standard Parts |
 
 Advanced starts collapsed. Its header carries a badge counting how many of its nine sections apply to the current file (`7 of 9` on a STEP/IGES/BREP source; `5 of 9` on a native STL/OBJ/PLY/glTF source; `3 of 9` on a meshio-converted source), so you can tell whether opening it is worth the click without opening it. Each section inside keeps its own chevron and collapses independently, exactly as before — the group simply adds one more level.
@@ -143,7 +143,7 @@ Every sidebar section — and the Advanced group itself — has a chevron at the
 
 The collapsed/expanded layout is remembered **per document**, in the same `<model>.view.json` sidecar that already stores the camera, display mode and clip plane, so reopening a file restores the sidebar exactly as you left it. Merely opening a document never creates that file — only an actual change does.
 
-Sections that don't apply to the current file (Clash, B-rep Health, Primitives and Passages are shown only for a STEP/IGES/BREP source, Printability for any source with host-measurable triangles (not 3MF, Collada, AMF, USD, VRML or FBX); Mesh Health and Region fit only for a native STL/OBJ/PLY/glTF source) are hidden entirely rather than collapsed, independently of this — the Advanced badge is what tells you how many were left out.
+Sections that don't apply to the current file (Clash, B-rep Health, Primitives and Passages are shown only for a STEP/IGES/BREP source, Surface Tools only for a STEP/IGES source, Printability for any source with host-measurable triangles (not 3MF, Collada, AMF, USD, VRML or FBX); Mesh Health and Region fit only for a native STL/OBJ/PLY/glTF source) are hidden entirely rather than collapsed, independently of this — the Advanced badge is what tells you how many were left out.
 
 ### Resizing the Sidebar
 
@@ -721,6 +721,17 @@ The **B-rep Health** panel (Advanced ▸ Analysis, STEP/IGES/BREP sources only) 
 3. Below it: solid/shell/face/edge counts, one row per solid (shells, how many are open, and the signed volume — negative flags a reversed solid that topology checks can miss), and one row per flagged subshape with the checker's named statuses — for example `face-13 — UnorientableShape` or `shell-0 — NotClosed`. Hover a face, edge or solid row to highlight it in the view.
 
 `shell-N` ids are local to this report; nothing else in CAD Preview names shells. A model that passes is not guaranteed to mesh in Gmsh — the checker and the mesher test different things. The same report is available headless as the `check_brep_health` MCP tool.
+
+### Surface Tools
+
+The **Surface Tools** panel (Advanced ▸ Analysis, STEP/IGES sources only) holds two one-shot operations over the open model's *exact* faces, both powered by meshio++ and neither touching the CAD file — the interactive counterparts of the `project_to_cad` and `grow_prism_layers` MCP tools. They read the file as saved, so pending edits are not baked.
+
+![The Surface Tools panel after Grow layers…: the project and prism-layer controls, with the result card listing 756 wedges, the achieved against planned thickness and the least scaled Jacobian.](/screenshots/surface-tools.png)
+
+| Action | What it does |
+| --- | --- |
+| **Project mesh…** | Pick a surface mesh that carries `cad:face` (a `mesh_cad_surface` `.msh`/`.vtk`/`.vtu`), then a new file. The mesh's points are snapped onto this model's NURBS faces (edge points onto the edge curves); `Max distance` leaves farther points where they are. The result card lists projected / on-edge / too-far / failed / outside-trim counts and the largest move. An untouched `mesh_cad_surface` skin moves ~0. |
+| **Grow layers…** | Meshes the model's exact surface at `Surface size`, grows wedge (prism) layers from it (`First height`, `Layers`, `Growth ratio`, `Grow inward`) and writes a new `.vtu`/`.vtk`/`.msh` of the layers plus the base skin and outer cap — **the interior is not meshed**. The card lists wedges, shrunk/collapsed points, achieved against planned thickness and the least scaled Jacobian. This is not the Gmsh *Part* boundary layer (2-D, in the FE Mesh panel); to feed layers into an FE mesh, use the **Prism layers** group under engine *Mesh-CAD* in the FE Mesh panel. |
 
 ### Mesh Health
 

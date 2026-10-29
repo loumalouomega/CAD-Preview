@@ -3550,7 +3550,7 @@ test("collapse: every sidebar section has a working chevron", async (page) => {
     "tree-panel", "parts-panel", "edits-panel", "scad-panel", "meshing-panel",
     "advanced-group",
     "mass-panel",
-    "clash-panel", "brep-health-panel",
+    "clash-panel", "brep-health-panel", "surface-tools-panel",
     "mesh-health-panel", "region-fit-panel", "primitives-panel", "macros-panel", "standard-parts-panel",
   ];
   const missing = await page.evaluate(
@@ -3627,7 +3627,7 @@ test("advanced: the group ships collapsed, hides its eleven children, and opens 
   // hold only the four sections that EDIT the document.
   const shut = await page.evaluate(() => {
     const ids = [
-      "mass-panel", "clash-panel", "brep-health-panel", "mesh-health-panel", "region-fit-panel",
+      "mass-panel", "clash-panel", "brep-health-panel", "mesh-health-panel", "surface-tools-panel", "region-fit-panel",
       "primitives-panel", "passages-panel", "printability-panel", "draft-panel", "macros-panel", "standard-parts-panel",
     ];
     return {
@@ -4627,6 +4627,66 @@ test("brep health: the hidden attribute genuinely hides the section", async (pag
     return el.getBoundingClientRect().height;
   });
   assert(height === 0, `#brep-health-panel[hidden] renders nothing (got ${height}px)`);
+});
+
+test("surface tools: each action posts a typed request, replies render facts, stale/cancelled replies behave, hidden hides", async (page) => {
+  await populate(page); // bull.stp — B-rep, eligible
+  await openAdvanced(page);
+  const shown = await page.evaluate(() => document.getElementById("surface-tools-panel")?.offsetParent !== null);
+  assert(shown, "the Surface Tools section is genuinely rendered for a B-rep source");
+  // Project
+  await page.evaluate(() => (window.__sent.length = 0));
+  await page.fill("#surface-project-maxdist", "0.25");
+  await page.click("#surface-project");
+  const proj = await page.evaluate(() => (window.__sent ?? []).filter((m) => m.type === "surfaceToolRequest").at(-1) ?? null);
+  assert(proj && proj.tool === "projectToCad" && proj.maxDistance === 0.25 && typeof proj.requestId === "string", `Project posts a typed request (got ${JSON.stringify(proj)})`);
+  const busy = await page.evaluate(() => document.getElementById("surface-project").disabled && document.getElementById("surface-prism").disabled);
+  assert(busy, "both actions disable while a request is in flight");
+  const rows = [["Projected", "128"], ["Max move", "0.0128 mm"]];
+  await page.evaluate(([rows]) => window.postMessage({ type: "surfaceToolResult", requestId: "stale", tool: "projectToCad", rows, written: "/x.vtu", warnings: [] }, "*"), [rows]);
+  await sleep(150);
+  assert(/Working/.test(await page.evaluate(() => document.getElementById("surface-tools-result").textContent)), "a stale reply renders nothing");
+  await page.evaluate(([id, rows]) => window.postMessage({ type: "surfaceToolResult", requestId: id, tool: "projectToCad", rows, written: "/tmp/out.vtu", warnings: ["2 point(s) could not be projected"] }, "*"), [proj.requestId, rows]);
+  await sleep(200);
+  const view = await page.evaluate(() => ({
+    text: document.getElementById("surface-tools-result").textContent,
+    rowCount: document.querySelectorAll(".surface-result-row").length,
+    enabled: !document.getElementById("surface-project").disabled && !document.getElementById("surface-prism").disabled,
+  }));
+  assert(view.rowCount === 2 && /Projected128/.test(view.text) && /Wrote \/tmp\/out\.vtu/.test(view.text) && /could not be projected/.test(view.text), `the reply renders its rows, path and warning (got ${JSON.stringify(view.text)})`);
+  assert(view.enabled, "both actions re-enable after the reply");
+  // Prism: validation happens in the webview, no request for a bad value
+  await page.evaluate(() => (window.__sent.length = 0));
+  await page.fill("#surface-prism-layers", "0");
+  await page.click("#surface-prism");
+  const none = await page.evaluate(() => (window.__sent ?? []).filter((m) => m.type === "surfaceToolRequest").length);
+  assert(none === 0, "an out-of-range layer count posts nothing");
+  assert(/Layers must be an integer/.test(await page.evaluate(() => document.getElementById("surface-tools-result").textContent)), "...and says why");
+  await page.fill("#surface-prism-layers", "4");
+  await page.fill("#surface-prism-height", "0.05");
+  await page.fill("#surface-prism-growth", "1.5");
+  await page.check("#surface-prism-reverse");
+  await page.click("#surface-prism");
+  const prism = await page.evaluate(() => (window.__sent ?? []).filter((m) => m.type === "surfaceToolRequest").at(-1) ?? null);
+  assert(
+    prism && prism.tool === "prismLayers" && prism.targetSize === 1 && prism.firstHeight === 0.05 && prism.numLayers === 4 && prism.growth === 1.5 && prism.reverse === true,
+    `Grow layers posts every field (got ${JSON.stringify(prism)})`
+  );
+  // A cancelled dialog clears the "Working…" message without an error; a real error is shown
+  await page.evaluate(([id]) => window.postMessage({ type: "surfaceToolError", requestId: id, tool: "prismLayers", message: "Cancelled.", cancelled: true }, "*"), [prism.requestId]);
+  await sleep(150);
+  assert((await page.evaluate(() => document.getElementById("surface-tools-result").textContent)) === "", "a cancelled dialog leaves no message");
+  await page.click("#surface-prism");
+  const again = await page.evaluate(() => (window.__sent ?? []).filter((m) => m.type === "surfaceToolRequest").at(-1));
+  await page.evaluate(([id]) => window.postMessage({ type: "surfaceToolError", requestId: id, tool: "prismLayers", message: "boom" }, "*"), [again.requestId]);
+  await sleep(150);
+  assert(/boom/.test(await page.evaluate(() => document.querySelector("#surface-tools-result .mesh-health-message-error")?.textContent ?? "")), "an error renders as an error message");
+  const height = await page.evaluate(() => {
+    const el = document.getElementById("surface-tools-panel");
+    el.hidden = true;
+    return el.getBoundingClientRect().height;
+  });
+  assert(height === 0, `#surface-tools-panel[hidden] renders nothing (got ${height}px)`);
 });
 
 // ── Tier 0 Phase 2: save-point-locked history ─────────────────────────────

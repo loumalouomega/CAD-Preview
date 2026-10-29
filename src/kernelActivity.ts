@@ -94,6 +94,8 @@ export const KERNELS_BY_FUNCTION: Record<keyof DocumentPipeline, readonly Kernel
   segmentMeshSurface: M,
   fitMeshToCad: M,
   meshCadSurfaceModel: M,
+  projectMeshToCad: M,
+  growPrismLayersModel: M,
   igaSampleModel: M,
   igaRefineModel: M,
   igaEvaluateModel: M,

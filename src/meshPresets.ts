@@ -226,6 +226,7 @@ const MESHCAD_ONLY_FIELDS: readonly (keyof MeshOptions)[] = [
   "meshcadCurvatureDeviation",
   "meshcadCellsAcrossGaps",
   "meshcadGrading",
+  "prismLayers",
 ];
 
 /** Gmsh-only fields the octree merely ignores. `elementOrder`, `elementShape`

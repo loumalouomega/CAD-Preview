@@ -327,6 +327,14 @@ describe("computeQualityAndWorstElements", () => {
   });
 });
 
+describe("meshcad prism layers gating", () => {
+  it("refuses a curved element order with prism layers and lifts the 2-D-only downgrade", () => {
+    const withLayers = { ...DEFAULT_MESH_OPTIONS, engine: "meshcad" as const, prismLayers: { firstHeight: 0.1, numLayers: 3, growth: 1.2 } };
+    expect(meshcadUnsupportedOptions(withLayers, []).refuse).toEqual([]);
+    expect(meshcadUnsupportedOptions({ ...withLayers, elementOrder: 2 }, []).refuse.join(" ")).toMatch(/prismLayers with elementOrder 2/);
+  });
+});
+
 describe("meshcadUnsupportedOptions", () => {
   it("is silent for defaults and no Parts", () => {
     expect(meshcadUnsupportedOptions(DEFAULT_MESH_OPTIONS, [])).toEqual({ refuse: [], ignored: [] });

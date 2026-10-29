@@ -77,6 +77,8 @@ import {
   remeshMeshTool,
   inspectMeshioFieldsTool,
   checkMeshConformityTool,
+  projectToCadTool,
+  growPrismLayersTool,
   pinAnnotation,
   promoteMeshToBrepTool,
   repairMeshTool,
@@ -1065,6 +1067,48 @@ server.registerTool(
     },
   },
   wrap((args: Parameters<typeof meshCadSurfaceTool>[1]) => meshCadSurfaceTool(ctx, args))
+);
+
+server.registerTool(
+  "project_to_cad",
+  {
+    description:
+      "Snap a surface mesh onto the exact faces of a CAD file (meshio++ projectToCad) and write a NEW mesh. `path` is the mesh -- it must carry the cad:face cell data (and cad:edge lines for edge snapping) that mesh_cad_surface writes, so use .msh/.vtk/.vtu; `cadPath` is the STEP/IGES/.cad.json that supplies the NURBS faces. Connectivity and cell data are unchanged; points move onto the faces, edge points onto the edge curves. Facts only: numProjected, numOnEdges, numOnCurves, numCorners, numAmbiguous, numTooFar (beyond maxDistance, left in place), numFailed, numOutsideTrim (+ outsideTrim point ids, capped), maxMove. An unperturbed mesh_cad_surface output moves ~1e-16. Reads the raw files (pending edits are not baked); neither input is written.",
+    inputSchema: {
+      path: modelPath,
+      cadPath: z.string().describe("The CAD file (.step/.stp/.iges/.igs/.cad.json) whose NURBS faces the mesh is snapped onto"),
+      outputPath: z.string().describe("New mesh file to write (.stl/.obj/.ply/.vtk/.vtu/.msh); must not be either input"),
+      faceArray: z.string().optional().describe("Cell data naming each triangle's CAD face (default cad:face)"),
+      edgeArray: z.string().optional().describe("Cell data naming each line's CAD edge (default cad:edge)"),
+      maxDistance: z.number().optional().describe("A point farther than this from its face stays put (model units; 0 = no limit, the default)"),
+      trimSamples: z.number().optional().describe("Samples per knot span when testing a face's trims (integer 1-1024, default 16)"),
+    },
+  },
+  wrap((args: Parameters<typeof projectToCadTool>[1]) => projectToCadTool(ctx, args))
+);
+
+server.registerTool(
+  "grow_prism_layers",
+  {
+    description:
+      "Grow prism (wedge) layers over a closed triangle surface (meshio++ 3-D boundaryLayer) and write a NEW layered mesh. `path` is a CAD source (.step/.stp/.iges/.igs/.cad.json, meshed first at targetSize) or a closed triangle mesh file (stl/obj/ply or a meshio++ surface format). Output (.vtk/.vtu/.msh) holds the wedges plus the base skin and the outer cap; the interior is NOT meshed. firstHeight (required), numLayers (default 3), growth (default 1.2), reverse (grow against the normals = inward on a closed skin), collapse points|layers, collisionFraction, smoothIterations, maxShrink, normalSmoothIterations, frontCheck. Facts only: numWedges (+ pyramids/tetrahedra where a point could not grow), numShrunk, numCollapsed, numFewerLayers, numFrontCrossings, minScaledJacobian, minThickness/maxThickness against plannedThickness, capClosed, meshio++'s warnings verbatim. This is NOT the Gmsh 2-D Part boundary layer. The same layers are available in generate_mesh/export_mesh via options.prismLayers with engine meshcad. block.stp at targetSize 1 / firstHeight 0.05 / 3 layers: 756 wedges, thickness 0.182. Source is untouched; pending edits are not baked.",
+    inputSchema: {
+      path: modelPath,
+      outputPath: z.string().describe("New layered mesh file to write (.vtk/.vtu/.msh); must not be the source"),
+      targetSize: z.number().optional().describe("Required for a CAD source: the surface edge length the layers grow from (model units)"),
+      firstHeight: z.number().describe("First layer thickness (model units, > 0)"),
+      numLayers: z.number().optional().describe("Layers (integer 1-1000, default 3)"),
+      growth: z.number().optional().describe("Each layer's thickness over the one before (1-10, default 1.2)"),
+      reverse: z.boolean().optional().describe("Grow against the faces' normals; on a closed skin that is inward (default false)"),
+      collapse: z.enum(["points", "layers"]).optional().describe("How a folding point gives way: halve then collapse its layers (points, default) or drop its top layer (layers)"),
+      collisionFraction: z.number().optional().describe("Fraction of the distance a point's ray hits, in (0, 1] (default 0.45)"),
+      smoothIterations: z.number().optional().describe("Smoothing passes (integer 0-1000, default 5)"),
+      maxShrink: z.number().optional().describe("Halvings of a point's layers before they collapse (integer 0-64, default 6)"),
+      normalSmoothIterations: z.number().optional().describe("Laplacian passes over the growth directions (integer 0-1000, default 0)"),
+      frontCheck: z.boolean().optional().describe("Test the last layer's faces against each other and the surface (default true)"),
+    },
+  },
+  wrap((args: Parameters<typeof growPrismLayersTool>[1]) => growPrismLayersTool(ctx, args))
 );
 
 server.registerTool(

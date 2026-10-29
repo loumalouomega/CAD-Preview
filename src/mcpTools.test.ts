@@ -22,6 +22,8 @@ import {
   repairMeshTool,
   inspectMeshioFieldsTool,
   checkMeshConformityTool,
+  projectToCadTool,
+  growPrismLayersTool,
   inspectEntity,
   measureTool,
   measureExactTool,
@@ -604,6 +606,15 @@ function fakePipeline(overrides: Partial<Pipeline> = {}): Pipeline {
       patches: [], adjacency: [], truncated: false, warnings: [],
     })),
     fitMeshToCad: vi.fn(async () => FAKE_FIT_RESULT),
+    projectMeshToCad: vi.fn(async () => ({
+      outputBytes: new Uint8Array([1]),
+      report: { numProjected: 8, numOnEdges: 2, numOnCurves: 2, numCorners: 1, numAmbiguous: 0, numTooFar: 0, numFailed: 0, numOutsideTrim: 0, maxMove: 0.01, outsideTrim: [], outsideTrimTruncated: false, warnings: [] },
+    })),
+    growPrismLayersModel: vi.fn(async () => ({
+      outputBytes: new Uint8Array([2]),
+      numSurfaceTriangles: 12,
+      report: { numCells: 36, numWedges: 36, numHexahedra: 0, numPyramids: 0, numTetrahedra: 0, numShrunk: 0, numCollapsed: 0, numNotVisible: 0, numFewerLayers: 0, numFrontCrossings: 0, minScaledJacobian: 0.4, minThickness: 0.18, maxThickness: 0.18, plannedThickness: 0.182, capClosed: true, warnings: [] },
+    })),
     meshCadSurfaceModel: vi.fn(async () => ({
       outputBytes: new TextEncoder().encode("solid cad\nendsolid cad\n"),
       report: {
@@ -2210,6 +2221,70 @@ describe("promote_mesh_to_brep", () => {
       promoteMeshToBrepTool(ctx(pipeline), { path: stlModel, outputPath: path.join(dir, "x.step"), autoDecimate: true })
     ).rejects.toThrow(/catastrophically/);
     expect(pipeline.coarsenStlBoundary).not.toHaveBeenCalled();
+  });
+});
+
+describe("project_to_cad", () => {
+  it("snaps a meshio mesh onto a STEP source and writes a NEW file with the facts", async () => {
+    const c = ctx();
+    const cad = path.join(dir, "pj-block.step");
+    const mesh = path.join(dir, "pj-surface.vtu");
+    await fs.writeFile(cad, "ISO-10303-21;");
+    await fs.writeFile(mesh, "<VTKFile/>");
+    const outputPath = path.join(dir, "pj-out.vtu");
+    const r = await projectToCadTool(c, { path: mesh, cadPath: cad, outputPath, maxDistance: 0.05 });
+    expect(c.pipeline.projectMeshToCad).toHaveBeenCalledWith(expect.any(Uint8Array), "vtu", expect.any(Uint8Array), "step", ".vtu", { maxDistance: 0.05 });
+    expect(r).toMatchObject({ supported: true, written: outputPath, numProjected: 8, numOnEdges: 2, maxMove: 0.01 });
+    expect(Array.from(await fs.readFile(outputPath))).toEqual([1]);
+  });
+
+  it("declines unsuitable inputs and refuses to overwrite either input, before the pipeline", async () => {
+    const c = ctx();
+    const cad = path.join(dir, "pj-block2.step");
+    const mesh = path.join(dir, "pj-surface2.vtu");
+    await fs.writeFile(cad, "ISO-10303-21;");
+    await fs.writeFile(mesh, "<VTKFile/>");
+    expect(await projectToCadTool(c, { path: cad, cadPath: cad, outputPath: path.join(dir, "o1.vtu") })).toMatchObject({ supported: false });
+    expect(await projectToCadTool(c, { path: mesh, cadPath: stlModel, outputPath: path.join(dir, "o2.vtu") })).toMatchObject({ supported: false });
+    await expect(projectToCadTool(c, { path: mesh, cadPath: cad, outputPath: path.join(dir, "o3.step") })).rejects.toThrow(/outputPath must end in/);
+    await expect(projectToCadTool(c, { path: mesh, cadPath: cad, outputPath: mesh })).rejects.toThrow(/overwrite the CAD source/);
+    // a CAD input is never a valid output either (the extension check catches it first)
+    const cadJson = path.join(dir, "pj-model.cad.json");
+    await fs.writeFile(cadJson, "{}");
+    await expect(projectToCadTool(c, { path: mesh, cadPath: cadJson, outputPath: cadJson })).rejects.toThrow(/outputPath must end in/);
+    expect(c.pipeline.projectMeshToCad).not.toHaveBeenCalled();
+  });
+});
+
+describe("grow_prism_layers", () => {
+  it("layers a CAD source (targetSize required) and a mesh source, writing a NEW file with the facts", async () => {
+    const c = ctx();
+    const cad = path.join(dir, "pl-block.step");
+    await fs.writeFile(cad, "ISO-10303-21;");
+    const outputPath = path.join(dir, "pl-out.vtu");
+    const r = await growPrismLayersTool(c, { path: cad, outputPath, targetSize: 1, firstHeight: 0.05, numLayers: 3 });
+    expect(c.pipeline.growPrismLayersModel).toHaveBeenCalledWith(
+      { kind: "cad", bytes: expect.any(Uint8Array), meshioFormat: "step", targetSize: 1 }, ".vtu", { firstHeight: 0.05, numLayers: 3 }
+    );
+    expect(r).toMatchObject({ supported: true, written: outputPath, numWedges: 36, numSurfaceTriangles: 12, plannedThickness: 0.182 });
+    expect(await fs.readFile(outputPath)).toHaveLength(1);
+    await growPrismLayersTool(c, { path: stlModel, outputPath: path.join(dir, "pl-stl.msh"), firstHeight: 0.1 });
+    expect(vi.mocked(c.pipeline.growPrismLayersModel).mock.lastCall![0]).toMatchObject({ kind: "mesh", meshioFormat: "stl" });
+  });
+
+  it("refuses by name before the pipeline: missing targetSize, a wedge-less writer, the source path, an unsupported source", async () => {
+    const c = ctx();
+    const cad = path.join(dir, "pl-block2.step");
+    await fs.writeFile(cad, "ISO-10303-21;");
+    await expect(growPrismLayersTool(c, { path: cad, outputPath: path.join(dir, "a.vtu"), firstHeight: 0.1 })).rejects.toThrow(/targetSize is required/);
+    await expect(growPrismLayersTool(c, { path: cad, outputPath: path.join(dir, "a.stl"), targetSize: 1, firstHeight: 0.1 })).rejects.toThrow(/outputPath must end in/);
+    const surf = path.join(dir, "pl-surface.vtu");
+    await fs.writeFile(surf, "<VTKFile/>");
+    await expect(growPrismLayersTool(c, { path: surf, outputPath: surf, firstHeight: 0.1 })).rejects.toThrow(/overwrite the CAD source/);
+    const brep = path.join(dir, "pl.brep");
+    await fs.writeFile(brep, "DBRep_DrawableShape");
+    expect(await growPrismLayersTool(c, { path: brep, outputPath: path.join(dir, "b.vtu"), targetSize: 1, firstHeight: 0.1 })).toMatchObject({ supported: false });
+    expect(c.pipeline.growPrismLayersModel).not.toHaveBeenCalled();
   });
 });
 

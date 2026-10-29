@@ -467,6 +467,8 @@ type HostToWebview =
   | { type: 'measureExactError'; requestId: string; message: string }
   | { type: 'meshHealResult'; requestId: string; report: MeshHealthReport }
   | { type: 'meshHealError'; requestId: string; message: string }
+  | { type: 'surfaceToolResult'; requestId: string; tool: 'projectToCad' | 'prismLayers'; rows: Array<[string, string]>; written: string; warnings: string[] }
+  | { type: 'surfaceToolError'; requestId: string; tool: 'projectToCad' | 'prismLayers'; message: string; cancelled?: boolean }
   | { type: 'brepHealthResult'; requestId: string; report: BrepHealthReport }
   | { type: 'brepHealthError'; requestId: string; message: string }
   | { type: 'meshioOpsResult'; requestId: string; steps: Array<{ op: string; applied: boolean; detail: string }>; warnings: string[] }
@@ -1125,6 +1127,9 @@ type WebviewToHost =
   | { type: 'measureExactRequest'; requestId: string; kind: ExactMeasureKind; entityIdA: string; entityIdB?: string }
   | { type: 'meshHealRequest'; requestId: string; autoDecimate?: boolean }
   | { type: 'brepHealthRequest'; requestId: string }
+  | ({ type: 'surfaceToolRequest'; requestId: string }
+      & ({ tool: 'projectToCad'; maxDistance: number }
+       | { tool: 'prismLayers'; targetSize: number; firstHeight: number; numLayers: number; growth: number; reverse: boolean }))
   | { type: 'bomRequest'; requestId: string }
   | { type: 'holeTableRequest'; requestId: string }
   | { type: 'fitRegionRequest'; requestId: string; point: [number, number, number] }
@@ -1542,6 +1547,31 @@ Sent when the B-rep Health panel's **Check** button is clicked — only reachabl
 
 ```json
 { "type": "brepHealthRequest", "requestId": "1234-0.56" }
+```
+
+### `surfaceToolRequest`
+
+Sent by the **Surface Tools** panel (Advanced ▸ Analysis; STEP/IGES sources only — the panel hides itself otherwise) — the interactive counterparts of the `project_to_cad` and `grow_prism_layers` MCP tools (meshio++ 17.23). `tool` selects the action:
+
+- `projectToCad` (`maxDistance`, `0` = no limit): the host opens a file dialog for the surface mesh to snap (`.msh`/`.vtk`/`.vtu` carrying the `cad:face` cell data `mesh_cad_surface` writes), then a save dialog, and snaps the mesh onto the open document's exact faces.
+- `prismLayers` (`targetSize`, `firstHeight`, `numLayers`, `growth`, `reverse`): the host opens a save dialog (`.vtu`/`.vtk`/`.msh`), meshes the document's exact surface at `targetSize`, grows the wedge layers and writes the layered shell (layers + base skin + cap; the interior is not meshed).
+
+Both read the file as saved (pending edits are **not** baked — the panel says so), run in the kernel worker, and never write the CAD source or the picked mesh. Answered with `surfaceToolResult` / `surfaceToolError`; a reply whose `requestId` is not the latest is ignored.
+
+```json
+{ "type": "surfaceToolRequest", "requestId": "1234-0.56", "tool": "prismLayers", "targetSize": 1, "firstHeight": 0.05, "numLayers": 3, "growth": 1.2, "reverse": false }
+```
+
+### `surfaceToolResult` / `surfaceToolError`
+
+Sent in reply to `surfaceToolRequest`. `rows` are label/value facts the host already formatted (projection: projected / on-edge / too-far+failed / outside-trim counts and the largest move; layers: wedge count over the surface triangles, shrunk and collapsed points, achieved against planned thickness, least scaled Jacobian, cap closed), `written` is the new file's path and `warnings` are meshio++'s own plus the shortfall notes, verbatim. Facts only — no pass/fail. `surfaceToolError` carries `cancelled: true` when the user dismissed a dialog (the panel clears its message instead of showing an error).
+
+```json
+{ "type": "surfaceToolResult", "requestId": "1234-0.56", "tool": "prismLayers", "rows": [["Wedges", "756 over 252 surface triangles"], ["Thickness", "0.182–0.182 mm of 0.182 planned"]], "written": "/models/block-layers.vtu", "warnings": [] }
+```
+
+```json
+{ "type": "surfaceToolError", "requestId": "1234-0.56", "tool": "projectToCad", "message": "meshio++: project_to_cad: the mesh has no cell data 'cad:face' naming each cell's CAD face (mesh_cad_surface writes it)" }
 ```
 
 ### `primitiveRecognizeRequest` / `decomposeExportClicked` / `decomposeSaveMacroClicked`

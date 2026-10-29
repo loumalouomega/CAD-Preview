@@ -323,6 +323,41 @@ const SHOTS = [
     target: { sel: "#mesh-health-panel" },
   },
   {
+    // Surface Tools needs a STEP/IGES source (populate() loads bull.stp). Click "Grow layers…", then answer the
+    // request with the facts the real pipeline returned for block.stp at size 1 (probe meshio-prism-project.ts).
+    file: "surface-tools.png",
+    setup: async (page) => {
+      await populate(page);
+      const collapsed = await page.evaluate(
+        () => document.getElementById("advanced-group")?.classList.contains("collapsed") ?? false
+      );
+      if (collapsed) await page.click("#advanced-header > .panel-chevron");
+      await sleep(120);
+      await page.fill("#surface-prism-height", "0.05");
+      await page.click("#surface-prism");
+      const requestId = await page.waitForFunction(() => {
+        const req = (window.__sent || []).findLast((m) => m.type === "surfaceToolRequest");
+        return req ? req.requestId : false;
+      }).then((h) => h.jsonValue());
+      await post(page, {
+        type: "surfaceToolResult",
+        requestId,
+        tool: "prismLayers",
+        rows: [
+          ["Wedges", "756 over 252 surface triangles"],
+          ["Shrunk / collapsed", "0 / 0"],
+          ["Thickness", "0.182–0.182 mm of 0.182 planned"],
+          ["Min scaled Jacobian", "0.2727"],
+          ["Cap closed", "yes"],
+        ],
+        written: "bull-layers.vtu",
+        warnings: [],
+      });
+      await sleep(200);
+    },
+    target: { sel: "#surface-tools-panel" },
+  },
+  {
     file: "edits-geometry.png",
     setup: async (page) => {
       await populate(page);

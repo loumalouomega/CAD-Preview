@@ -77,8 +77,71 @@ export interface MeshCadStats {
   numFacesBelowBound: number;
   numSmoothed: number;
   numCurvedStraightened: number;
+  /** Present when `MeshOptions.prismLayers` ran: the layer facts (the counts above describe the SURFACE the layers grew from). */
+  prismLayers?: PrismLayersStats;
   /** meshio++'s own warnings plus this engine's, verbatim. */
   warnings: string[];
+}
+
+/**
+ * Prism (wedge) layers over the `meshcad` surface (meshio++ 17.23 3-D
+ * `boundaryLayer`). NOT {@link MeshBoundaryLayer}, the Gmsh 2-D Part field.
+ * The result is the layer SHELL only — the interior is not meshed. Lengths are
+ * in the model's native mm (scaled for an export unit by
+ * {@link scaleMeshOptionsForUnit}; `growth` never).
+ */
+export interface MeshPrismLayers {
+  /** First layer thickness (mm, > 0). */
+  firstHeight: number;
+  /** Layers, 1–{@link PRISM_LAYERS_LIMIT}. */
+  numLayers: number;
+  /** Each layer's thickness over the one before, 1–10. */
+  growth: number;
+  /** Grow against the faces' normals (a closed skin then grows inward). Omitted when false. */
+  reverse?: boolean;
+  /** How a folding point gives way; omitted for the default `"points"`. */
+  collapse?: "points" | "layers";
+}
+
+export const PRISM_LAYERS_LIMIT = 1000;
+export const DEFAULT_PRISM_LAYERS: MeshPrismLayers = { firstHeight: 0.1, numLayers: 3, growth: 1.2 };
+
+/** Achieved-vs-planned facts of a prism-layer run (`MeshCadStats.prismLayers`). */
+export interface PrismLayersStats {
+  numCells: number;
+  numWedges: number;
+  numPyramids: number;
+  numTetrahedra: number;
+  numShrunk: number;
+  numCollapsed: number;
+  numFewerLayers: number;
+  numFrontCrossings: number;
+  minScaledJacobian: number;
+  minThickness: number;
+  maxThickness: number;
+  /** `firstHeight·(growth^n − 1)/(growth − 1)`. */
+  plannedThickness: number;
+  capClosed: boolean;
+  warnings: string[];
+}
+
+/**
+ * Tolerant parse of a stored/incoming prism-layer request: an out-of-range or
+ * non-object value is dropped (`undefined` = off), never a crash. Optional
+ * fields are omitted when default so a sidecar stays byte-stable.
+ */
+export function validateMeshPrismLayers(raw: unknown): MeshPrismLayers | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const o = raw as Record<string, unknown>;
+  if (!(isFiniteNumber(o.firstHeight) && o.firstHeight > 0)) return undefined;
+  const numLayers = isFiniteNumber(o.numLayers) ? Math.round(o.numLayers) : DEFAULT_PRISM_LAYERS.numLayers;
+  if (numLayers < 1 || numLayers > PRISM_LAYERS_LIMIT) return undefined;
+  const growth = isFiniteNumber(o.growth) ? o.growth : DEFAULT_PRISM_LAYERS.growth;
+  if (growth < 1 || growth > 10) return undefined;
+  const out: MeshPrismLayers = { firstHeight: o.firstHeight, numLayers, growth };
+  if (o.reverse === true) out.reverse = true;
+  if (o.collapse === "layers") out.collapse = "layers";
+  return out;
 }
 
 /** One-line readout of a meshcad generate for the panel status line. */
@@ -86,6 +149,11 @@ export function meshcadSummary(stats: MeshCadStats): string {
   const closed = stats.numOpenEdges + stats.numNonManifoldEdges + stats.numMisorientedEdges === 0 ? "closed" : `${stats.numOpenEdges} open edges`;
   const below = stats.numFacesBelowBound > 0 ? ` · ${stats.numFacesBelowBound} face(s) below the angle bound` : "";
   const failed = stats.numFailed > 0 ? ` · ${stats.numFailed} face(s) failed` : "";
+  if (stats.prismLayers) {
+    const p = stats.prismLayers;
+    const short = p.numShrunk + p.numCollapsed + p.numFewerLayers > 0 ? " · thinner than planned in places" : "";
+    return `Mesh-CAD prism layers: ${p.numWedges} wedges · thickness ${p.minThickness.toPrecision(3)}–${p.maxThickness.toPrecision(3)} of ${p.plannedThickness.toPrecision(3)} planned · min scaled Jacobian ${p.minScaledJacobian.toFixed(2)}${short} · interior not meshed · Parts not preserved`;
+  }
   return `Mesh-CAD surface: ${stats.numTriangles} tri · min angle ${stats.minAngleDeg.toFixed(1)}° · ${closed}${below}${failed} · Parts not preserved`;
 }
 
@@ -333,6 +401,8 @@ export interface MeshOptions {
    * Optional: absent means no view (byte-stable sidecar when unused).
    */
   sizeField?: SizeFieldSample[];
+  /** Prism (wedge) layers over the `meshcad` surface — optional, omitted when off so a sidecar stays byte-stable. Only the `meshcad` engine honours it. */
+  prismLayers?: MeshPrismLayers;
   /**
    * Advisory element budget (roadmap "Mesh size and memory budget preview"):
    * when the pre-generation estimate exceeds it the panel/tool WARNS — it
@@ -653,8 +723,11 @@ export function validateMeshOptions(raw: unknown): MeshOptions | null {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
   const o = raw as Record<string, unknown>;
 
-  const dimension: MeshOptions["dimension"] =
+  let dimension: MeshOptions["dimension"] =
     o.dimension === 1 || o.dimension === 2 || o.dimension === 3 ? o.dimension : DEFAULT_MESH_OPTIONS.dimension;
+  // Prism layers under the meshcad engine yield a wedge (volume) shell, so every downstream reader must see
+  // dimension 3 — normalised here, the one seam sidecar parse, the panel and the MCP tools all pass through.
+  if (o.engine === "meshcad" && validateMeshPrismLayers(o.prismLayers) !== undefined) dimension = 3;
 
   const elementOrder: MeshOptions["elementOrder"] =
     o.elementOrder === 1 || o.elementOrder === 2 ? o.elementOrder : DEFAULT_MESH_OPTIONS.elementOrder;
@@ -770,6 +843,8 @@ export function validateMeshOptions(raw: unknown): MeshOptions | null {
   if (periodic.length > 0) out.periodic = periodic;
   const sizeField = validateSizeField(o.sizeField);
   if (sizeField !== undefined) out.sizeField = sizeField;
+  const prismLayers = validateMeshPrismLayers(o.prismLayers);
+  if (prismLayers !== undefined) out.prismLayers = prismLayers;
   if (o.octreeMeshHexGrading === "graded") out.octreeMeshHexGrading = "graded";
   if (isFiniteNumber(o.mdpaRanks) && o.mdpaRanks >= 2) out.mdpaRanks = Math.min(MAX_MDPA_RANKS, Math.round(o.mdpaRanks));
   if (MDPA_PARTITION_METHODS.includes(o.mdpaPartitionMethod as MdpaPartitionMethod) && o.mdpaPartitionMethod !== "auto") {
@@ -827,6 +902,7 @@ export function scaleMeshOptionsForUnit(options: MeshOptions, factor: number): M
           })),
         }
       : {}),
+    ...(options.prismLayers ? { prismLayers: { ...options.prismLayers, firstHeight: options.prismLayers.firstHeight * factor } } : {}),
     ...(options.sizeField
       ? {
           sizeField: options.sizeField.map((s) => ({

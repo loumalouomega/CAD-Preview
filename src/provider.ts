@@ -2775,6 +2775,11 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
         return;
       }
 
+      if (msg.type === "surfaceToolRequest") {
+        if (route) void this.handleSurfaceTool(document.uri, route, msg, post);
+        return;
+      }
+
       if (msg.type === "fitMeshToCadButtonClicked") {
         if (route) void this.handleFitMeshToCad(document.uri, route, post);
         return;
@@ -4799,6 +4804,102 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
       }
     } catch (err) {
       post({ type: "error", message: `Fit to CAD failed: ${(err as Error).message}` });
+    }
+  }
+
+  /**
+   * Surface tools panel (meshio++ 17.23): `project_to_cad` and
+   * `grow_prism_layers` over the OPEN document's STEP/IGES source. The host owns
+   * the dialogs (project: the mesh to snap, then a save path; prism: a save
+   * path); the kernel worker does the work on raw bytes, so pending edits are
+   * NOT baked (the panel says so). Neither the CAD source nor the picked mesh is
+   * written. Replies `surfaceToolResult` (label/value facts) or `surfaceToolError`.
+   */
+  private async handleSurfaceTool(
+    uri: vscode.Uri,
+    route: FileRoute,
+    msg: Extract<WebviewToHost, { type: "surfaceToolRequest" }>,
+    post: (msg: HostToWebview) => void
+  ): Promise<void> {
+    const fail = (message: string, cancelled = false): void => post({ type: "surfaceToolError", requestId: msg.requestId, tool: msg.tool, message, cancelled });
+    if (route.format !== "step" && route.format !== "iges") {
+      fail("Surface tools need a STEP or IGES source (they read its exact NURBS faces).");
+      return;
+    }
+    const baseName = uri.path.slice(uri.path.lastIndexOf("/") + 1).replace(/\.[^.]+$/, "");
+    try {
+      const cadBytes = await vscode.workspace.fs.readFile(uri);
+      const pipeline = this.docPipeline(uri);
+      const sig = (n: number): string => (Number.isFinite(n) ? Number(n.toPrecision(4)).toString() : "n/a");
+      if (msg.tool === "projectToCad") {
+        const picked = await vscode.window.showOpenDialog({
+          canSelectMany: false,
+          openLabel: "Project this mesh",
+          title: "Mesh to snap onto this model (must carry cad:face — a mesh_cad_surface .msh / .vtk / .vtu)",
+          filters: { "Surface mesh": ["msh", "vtk", "vtu"] },
+        });
+        if (!picked || picked.length === 0) return fail("Cancelled.", true);
+        const meshUri = picked[0];
+        const meshRoute = routeFile(meshUri.fsPath);
+        if (!meshRoute || meshRoute.strategy !== "meshio") return fail("That file is not a meshio++-readable surface mesh.");
+        const saveUri = await vscode.window.showSaveDialog({
+          defaultUri: vscode.Uri.joinPath(uri, "..", `${baseName}-projected.vtu`),
+          filters: { "Surface mesh": ["vtu", "vtk", "msh"] },
+        });
+        if (!saveUri) return fail("Cancelled.", true);
+        if (saveUri.fsPath === uri.fsPath || saveUri.fsPath === meshUri.fsPath) return fail("Choose a new file — neither input is overwritten.");
+        const ext = saveUri.path.slice(saveUri.path.lastIndexOf(".")).toLowerCase();
+        const meshBytes = await vscode.workspace.fs.readFile(meshUri);
+        const options = msg.maxDistance > 0 ? { maxDistance: msg.maxDistance } : {};
+        const result = await pipeline.projectMeshToCad(meshBytes, meshRoute.format, cadBytes, route.format, ext, options);
+        await vscode.workspace.fs.writeFile(saveUri, result.outputBytes);
+        const r = result.report;
+        post({
+          type: "surfaceToolResult",
+          requestId: msg.requestId,
+          tool: "projectToCad",
+          written: saveUri.fsPath,
+          rows: [
+            ["Projected", String(r.numProjected)],
+            ["On edges", `${r.numOnEdges} (${r.numOnCurves} on curves, ${r.numCorners} corners)`],
+            ["Too far / failed", `${r.numTooFar} / ${r.numFailed}`],
+            ["Outside trim", String(r.numOutsideTrim)],
+            ["Max move", `${sig(r.maxMove)} mm`],
+          ],
+          warnings: r.warnings,
+        });
+        return;
+      }
+      const saveUri = await vscode.window.showSaveDialog({
+        defaultUri: vscode.Uri.joinPath(uri, "..", `${baseName}-layers.vtu`),
+        filters: { "Layered mesh": ["vtu", "vtk", "msh"] },
+      });
+      if (!saveUri) return fail("Cancelled.", true);
+      if (saveUri.fsPath === uri.fsPath) return fail("Choose a new file — the CAD source is never overwritten.");
+      const ext = saveUri.path.slice(saveUri.path.lastIndexOf(".")).toLowerCase();
+      const result = await pipeline.growPrismLayersModel(
+        { kind: "cad", bytes: cadBytes, meshioFormat: route.format, targetSize: msg.targetSize },
+        ext,
+        { firstHeight: msg.firstHeight, numLayers: msg.numLayers, growth: msg.growth, reverse: msg.reverse || undefined }
+      );
+      await vscode.workspace.fs.writeFile(saveUri, result.outputBytes);
+      const r = result.report;
+      post({
+        type: "surfaceToolResult",
+        requestId: msg.requestId,
+        tool: "prismLayers",
+        written: saveUri.fsPath,
+        rows: [
+          ["Wedges", `${r.numWedges} over ${result.numSurfaceTriangles} surface triangles`],
+          ["Shrunk / collapsed", `${r.numShrunk} / ${r.numCollapsed}`],
+          ["Thickness", `${sig(r.minThickness)}–${sig(r.maxThickness)} mm of ${sig(r.plannedThickness)} planned`],
+          ["Min scaled Jacobian", sig(r.minScaledJacobian)],
+          ["Cap closed", r.capClosed ? "yes" : "no"],
+        ],
+        warnings: r.warnings,
+      });
+    } catch (err) {
+      fail((err as Error).message);
     }
   }
 

@@ -50,6 +50,7 @@ import { MassPropertiesPanel, type MassPropertiesDisplay } from "./massPropertie
 import { ClashPanel, type ClashPairDisplay } from "./clashPanel";
 import { MeshHealthPanel } from "./meshHealthPanel";
 import { BrepHealthPanel } from "./brepHealthPanel";
+import { SurfaceToolsPanel } from "./surfaceToolsPanel";
 import { RegionFitPanel } from "./regionFitPanel";
 import { PrimitivePanel } from "./primitivePanel";
 import { ScadCustomizerPanel } from "./scadCustomizerPanel";
@@ -124,7 +125,7 @@ import { sanitizeBookmarks } from "../viewStateSidecar";
 import { MarkupModel, type MarkupStroke, type MarkupTool, type Point } from "./markupModel";
 import { redrawAll } from "./markupCanvas";
 import { setupDropdown } from "./dropdownMenu";
-import type { HostToWebview, WebviewToHost, TreeNode, EntityType, EditOp, ViewState, ViewBookmark, Annotation } from "../protocol";
+import type { HostToWebview, WebviewToHost, TreeNode, EntityType, EditOp, ViewState, ViewBookmark, Annotation, SurfaceToolParams } from "../protocol";
 import type { OpOutcome, RegionPick, PointRefs } from "../editOps";
 
 declare function acquireVsCodeApi(): { postMessage(msg: WebviewToHost): void };
@@ -2195,6 +2196,23 @@ const brepHealthPanel = new BrepHealthPanel(document.getElementById("brep-health
   },
 });
 
+// Surface Tools panel (meshio++ 17.23 project_to_cad / grow_prism_layers): the host owns the file
+// dialogs and the kernel call; the webview only correlates the reply. STEP/IGES sources only — the
+// host refuses other B-rep formats with a plain error.
+let surfaceToolRequestId: string | null = null;
+function startSurfaceTool(params: SurfaceToolParams): void {
+  if (sourceKind !== "brep") return;
+  const requestId = `${Date.now()}-${Math.random()}`;
+  surfaceToolRequestId = requestId;
+  surfaceToolsPanel.setBusy(true);
+  surfaceToolsPanel.renderMessage("Working…");
+  post({ type: "surfaceToolRequest", requestId, ...params });
+}
+const surfaceToolsPanel = new SurfaceToolsPanel(document.getElementById("surface-tools-panel")!, {
+  onProject: (p) => startSurfaceTool({ tool: "projectToCad", maxDistance: p.maxDistance }),
+  onPrism: (p) => startSurfaceTool({ tool: "prismLayers", ...p }),
+});
+
 /** Printability: any source with host-measurable triangles (a B-rep through its fine tessellation; STL/OBJ/PLY/glTF; a meshio boundary). Display-only formats (3MF/Collada/AMF/USD/VRML/FBX) have none. */
 function setPrintabilityEligible(eligible: boolean): void {
   printabilityPanel.setEligible(eligible);
@@ -2209,6 +2227,8 @@ function setPrimitivesEligible(eligible: boolean): void {
   setPassagesEligible(eligible); // same gate: exact analytic surfaces exist only for B-rep
   brepHealthPanel.setEligible(eligible); // same gate: only a B-rep has a B-rep to check
   if (!eligible) brepHealthRequestId = null;
+  surfaceToolsPanel.setEligible(eligible); // same gate: exact NURBS faces exist only for a B-rep
+  if (!eligible) surfaceToolRequestId = null;
   primitivePanel.setEligible(eligible);
   if (!eligible) {
     primitiveRecognizeRequestId = null;
@@ -6587,6 +6607,22 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
       brepHealthRequestId = null;
       brepHealthPanel.setBusy(false);
       brepHealthPanel.render(msg.report);
+      break;
+
+    case "surfaceToolResult":
+      if (msg.requestId !== surfaceToolRequestId) break; // stale — a newer run or a new document superseded it
+      surfaceToolRequestId = null;
+      surfaceToolsPanel.setBusy(false);
+      surfaceToolsPanel.renderResult(msg.rows, msg.written, msg.warnings);
+      setStatus(`${msg.tool === "projectToCad" ? "Projected mesh" : "Prism layers"} written to ${msg.written}`);
+      break;
+
+    case "surfaceToolError":
+      if (msg.requestId !== surfaceToolRequestId) break;
+      surfaceToolRequestId = null;
+      surfaceToolsPanel.setBusy(false);
+      if (msg.cancelled) surfaceToolsPanel.renderMessage("");
+      else surfaceToolsPanel.renderMessage(msg.message, true);
       break;
 
     case "brepHealthError":
