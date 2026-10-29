@@ -166,9 +166,8 @@ const SHOTS = [
     // the last entry off rather than failing the run. Two more rows landed
     // with Import/Export DXF (285 → 342), one more with Export Technical
     // Drawing (342 → 371), and one more plus a separator with New Blank Model
-    // (371 → 410), and one more with Export Drawing Sheet (410 → 439). 439 measured 441 under a different font stack (the
-    // list was not longer), so the clip now carries 6 px of slack.
-    target: { clip: { x: 0, y: 0, width: 320, height: 445 } },
+    // (371 → 410), and one more with Export Drawing Sheet (410 → 439).
+    target: { clip: { x: 0, y: 0, width: 320, height: 439 } },
   },
   // The toolbar's four dropdowns. `clip` rather than `sel: "#toolbar"` — a
   // locator screenshot clips to the element box, which would cut off the
@@ -325,7 +324,8 @@ const SHOTS = [
   },
   {
     // Surface Tools needs a STEP/IGES source (populate() loads bull.stp). Click "Grow layers…", then answer the
-    // request with the facts the real pipeline returned for block.stp at size 1 (probe meshio-prism-project.ts).
+    // request with the facts the real pipeline returns for bull.stp at the panel's defaults (size 1, first
+    // height 0.05, 3 layers, growth 1.2): 235389 wedges over 78472 surface triangles, 112 shrunk, 1 collapsed.
     file: "surface-tools.png",
     setup: async (page) => {
       await populate(page);
@@ -345,14 +345,17 @@ const SHOTS = [
         requestId,
         tool: "prismLayers",
         rows: [
-          ["Wedges", "756 over 252 surface triangles"],
-          ["Shrunk / collapsed", "0 / 0"],
-          ["Thickness", "0.182–0.182 mm of 0.182 planned"],
-          ["Min scaled Jacobian", "0.2727"],
+          ["Wedges", "235389 over 78472 surface triangles"],
+          ["Shrunk / collapsed", "112 / 1"],
+          ["Thickness", "0–0.182 mm of 0.182 planned"],
+          ["Min scaled Jacobian", "0.08166"],
           ["Cap closed", "yes"],
         ],
         written: "bull-layers.vtu",
-        warnings: [],
+        warnings: [
+          "1 points do not grow (their layers would fold or no direction sees all their faces); their cells are pyramids and tetrahedra",
+          "Prism layers fell short of the plan (0.1820 total): 112 point(s) grew a thinner stack than planned; 1 point(s) collapsed to the surface. The reported thickness range is 0.000–0.1820.",
+        ],
       });
       await sleep(200);
     },

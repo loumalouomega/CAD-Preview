@@ -1773,7 +1773,7 @@ test("dropdowns: clicking an open trigger's inner icon closes it", async (page) 
  * failure text rather than a guess. If one of these fails: measure, then update
  * BOTH this test and the clip in `capture.mjs` together.
  */
-const FILE_MENU_CLIP = { x: 0, y: 0, width: 320, height: 445 };
+const FILE_MENU_CLIP = { x: 0, y: 0, width: 320, height: 439 };
 const TOOLBAR_MENU_CLIP = { x: 750, y: 30, width: 610, height: 500 };
 
 const panelBox = (page, id) =>
