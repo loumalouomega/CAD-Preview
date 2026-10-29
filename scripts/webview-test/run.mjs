@@ -3644,13 +3644,13 @@ test("advanced: the group ships collapsed, hides its eleven children, and opens 
   assert(shut.collapsed, "the group starts collapsed");
   assert(shut.headerShown, "its header is still visible while collapsed");
   assert(!shut.bodyShown, "its body is hidden while collapsed");
-  assert(!shut.anyChildShown, "none of the eleven children render while it is collapsed");
+  assert(!shut.anyChildShown, "none of the twelve children render while it is collapsed");
   assert(shut.topLevel, "Components/Parts/Edits/FE Mesh stayed OUT of the group");
 
   // The badge must report availability, not the raw child count: on this
-  // B-rep fixture Mesh Health and Region fit gate themselves out.
+  // B-rep fixture Mesh Health and Region fit gate themselves out (Surface Tools shows for STEP).
   const badge = await page.evaluate(() => document.getElementById("advanced-count").textContent.trim());
-  assert(badge === "9 of 11", `the badge counts only the available children (got ${JSON.stringify(badge)})`);
+  assert(badge === "10 of 12", `the badge counts only the available children (got ${JSON.stringify(badge)})`);
 
   await openAdvanced(page);
   const open = await page.evaluate(() => ({
