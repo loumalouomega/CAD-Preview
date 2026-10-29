@@ -196,6 +196,7 @@ export class MeshingPanel {
   private readonly octreeTransitionSelect: HTMLSelectElement;
   private readonly mpcVariablesInput: HTMLInputElement;
   private readonly octreeMeshOutputSelect: HTMLSelectElement;
+  private readonly octreeMeshHexGradingSelect: HTMLSelectElement;
   private readonly octreeMeshMaxSizeInput: HTMLInputElement;
   private readonly octreeMeshLevelsInput: HTMLInputElement;
   private readonly meshcadMinAngleInput: HTMLInputElement;
@@ -738,6 +739,16 @@ export class MeshingPanel {
       cb.onOptionsChange({ octreeMeshOutput: this.octreeMeshOutputSelect.value as MeshOptions["octreeMeshOutput"] });
     });
 
+    this.octreeMeshHexGradingSelect = this.select(form, "Octree-mesh hex grading", [
+      ["uniform", "Uniform grid"],
+      ["graded", "Graded (octree's own)"],
+    ]);
+    this.octreeMeshHexGradingSelect.title =
+      "Hexahedral output only: one grid at the skin's size, or the octree's own grading through dual transition schemes (fewer cells).";
+    this.octreeMeshHexGradingSelect.addEventListener("change", () => {
+      cb.onOptionsChange({ octreeMeshHexGrading: this.octreeMeshHexGradingSelect.value === "graded" ? "graded" : undefined });
+    });
+
     this.octreeMeshMaxSizeInput = this.numberField(form, "Octree-mesh max size (mm)", DEFAULT_MESH_OPTIONS.octreeMeshMaxSize);
     this.octreeMeshMaxSizeInput.title =
       "Largest leaf edge in mm; 0 = automatic (one eighth of the model's bounding-box diagonal). Only used by engine: Octree-mesh.";
@@ -1155,6 +1166,7 @@ export class MeshingPanel {
     this.octreeTransitionSelect.value = options.octreeTransition;
     this.mpcVariablesInput.value = options.mpcVariables.join(", ");
     this.octreeMeshOutputSelect.value = options.octreeMeshOutput;
+    this.octreeMeshHexGradingSelect.value = options.octreeMeshHexGrading ?? "uniform";
     this.octreeMeshMaxSizeInput.value = String(options.octreeMeshMaxSize);
     this.octreeMeshLevelsInput.value = String(options.octreeMeshLevels);
 
@@ -1192,6 +1204,7 @@ export class MeshingPanel {
     this.octreeTransitionSelect.disabled = !octree;
     this.mpcVariablesInput.disabled = !hanging;
     this.octreeMeshOutputSelect.disabled = !octreeMesh;
+    this.octreeMeshHexGradingSelect.disabled = !octreeMesh || options.octreeMeshOutput !== "hex";
     this.octreeMeshMaxSizeInput.disabled = !octreeMesh;
     this.octreeMeshLevelsInput.disabled = !octreeMesh;
     this.meshcadMinAngleInput.disabled = !meshcad;

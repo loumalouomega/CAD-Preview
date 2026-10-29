@@ -705,6 +705,7 @@ async function populateMeshedModel(
     const stlBytes = input.kind === "stl" ? input.stlBytes : await brepSkinStlBytes(extensionPath, input.stepBytes);
     const { mshText, stats } = await octreeMeshVolume(stlBytes, {
       output: options.octreeMeshOutput,
+      hexGrading: options.octreeMeshHexGrading,
       maxSize: options.octreeMeshMaxSize,
       levels: options.octreeMeshLevels,
     });

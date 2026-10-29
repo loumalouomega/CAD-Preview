@@ -76,6 +76,7 @@ import {
   transformMeshTool,
   remeshMeshTool,
   inspectMeshioFieldsTool,
+  checkMeshConformityTool,
   pinAnnotation,
   promoteMeshToBrepTool,
   repairMeshTool,
@@ -857,6 +858,19 @@ server.registerTool(
 );
 
 server.registerTool(
+  "check_mesh_conformity",
+  {
+    description:
+      "Facts about whether a meshio++-readable mesh file is node-for-node conforming (meshio++ checkConformity): hanging nodes (points on a volume cell's face or edge the cell does not use), T-junctions (2-D), partially overlapping and unwelded facet pairs, boundary and non-manifold facet counts, and the findInterface mode that suits the mesh. Facts only -- an octree 'hanging' transition is non-conforming by design, a Gmsh or octreemesh tet mesh is conforming. Reads the raw file (pending mesh edits are not baked); a B-rep or mesh-parser source returns supported:false (export_mesh first).",
+    inputSchema: {
+      path: modelPath,
+      tolerance: z.number().optional().describe("Distances at or below this fraction of the examined facets' bounding-box diagonal count as zero (default 1e-9)"),
+    },
+  },
+  wrap((args: { path: string; tolerance?: number }) => checkMeshConformityTool(ctx, args))
+);
+
+server.registerTool(
   "inspect_meshio_fields",
   {
     description:
@@ -1043,8 +1057,11 @@ server.registerTool(
       virtualEdges: z.boolean().optional().describe("Sample chains of short edges meeting smoothly as one (default false); the chains are reported"),
       virtualFaces: z.boolean().optional().describe("Mesh a sliver face together with the neighbour it meets tangentially (default false); each sliver is reported in mergedFaces"),
       modelTolerances: z.boolean().optional().describe("Accept the gaps the model itself declares in its edges (default false); each use is reported in toleranceUses"),
-      reparamConditionNumber: z.number().optional().describe("Mesh a face whose metric's condition number passes this in a flattening of its coarse mesh; 0 (default) is off, otherwise above 1; order 1 only"),
+      reparamConditionNumber: z.number().optional().describe("Mesh a face whose metric's condition number passes this in a flattening of its coarse mesh; 0 (default) is off, otherwise above 1; at order 2 / 3 the curved nodes follow the flattening"),
       lopCorners: z.boolean().optional().describe("Lop acute corners in place of concentric shells (default false; needs minAngle). On bull.stp it left more refinement unfinished than the default -- check numFacesBelowBound and the warnings"),
+      untangle: z.boolean().optional().describe("With order 2 or 3, move a face's own high-order nodes on the surface to untangle a folded curved element (default false)"),
+      quads: z.enum(["none", "dominant", "all"]).optional().describe("none (default) triangles only; dominant recombines triangle pairs into quads where they make a good one; all splits the quad-dominant mesh into quads only (not with virtualEdges). Order 2/3 write quad9/quad16. Writers: .obj/.ply/.vtk/.vtu/.msh (not .stl)"),
+      quadPairs: z.enum(["matching", "greedy"]).optional().describe("How triangles pair into quads: matching (default, maximum matching of greatest total quality) or greedy (best pair first). Needs quads"),
     },
   },
   wrap((args: Parameters<typeof meshCadSurfaceTool>[1]) => meshCadSurfaceTool(ctx, args))

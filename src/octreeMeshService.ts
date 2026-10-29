@@ -1,6 +1,6 @@
 import { getMeshio, wrapMeshioFault } from "./meshioService";
 import { octreeToMsh41, type OctreeBlock } from "./octreeService";
-import type { OctreeMeshOutput, OctreeMeshStats } from "./meshOptions";
+import type { OctreeMeshHexGrading, OctreeMeshOutput, OctreeMeshStats } from "./meshOptions";
 
 export type { OctreeMeshStats };
 
@@ -26,6 +26,8 @@ export type { OctreeMeshStats };
 
 export interface OctreeMeshParams {
   output: OctreeMeshOutput;
+  /** Hexahedral output only (meshio++ 17.23): `"graded"` keeps the octree's grading; default uniform. */
+  hexGrading?: OctreeMeshHexGrading;
   /** Largest leaf edge in mm; 0 = automatic (see {@link octreeMeshSizes}). */
   maxSize: number;
   /** Refinement levels below `maxSize` (smallest leaf = maxSize / 2^levels). */
@@ -87,6 +89,7 @@ export async function octreeMeshVolume(stlBytes: Uint8Array, params: OctreeMeshP
       output: params.output,
       maxSize,
       minSize,
+      ...(params.output === "hex" && params.hexGrading === "graded" ? { hexGrading: "graded" } : {}),
       maxCells: OCTREE_MESH_MAX_LEAVES,
       maxTets: OCTREE_MESH_MAX_CELLS,
     });

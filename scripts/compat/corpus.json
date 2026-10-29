@@ -4,7 +4,7 @@
     "date": "2026-10-26",
     "opencascade.js": "1.1.1",
     "@loumalouomega/gmsh-wasm": "0.4.0",
-    "@meshioplusplus/wasm": "17.21.0",
+    "@meshioplusplus/wasm": "17.23.0",
     "float-tetwild-wasm": "0.2.0",
     "result": "82 pass"
   },

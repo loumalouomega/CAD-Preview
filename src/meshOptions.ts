@@ -94,6 +94,9 @@ export function meshcadSummary(stats: MeshCadStats): string {
  * downstream reader here accepts as a conforming mesh, so it is NOT offered. */
 export type OctreeMeshOutput = "tet" | "hex";
 export const OCTREE_MESH_OUTPUTS: readonly OctreeMeshOutput[] = ["tet", "hex"];
+/** Hexahedral octree-mesh grading (meshio++ 17.23): one grid at the skin's size, or the octree's own grading through dual transition schemes. */
+export type OctreeMeshHexGrading = "uniform" | "graded";
+export const OCTREE_MESH_HEX_GRADINGS: readonly OctreeMeshHexGrading[] = ["uniform", "graded"];
 
 /** Most `meshcadSmoothIterations` offered. */
 export const MESHCAD_SMOOTH_LIMIT = 100;
@@ -272,6 +275,10 @@ export interface MeshOptions {
    * (stuffing), `"hex"` = all-hexahedra by the octree dual. Only meaningful
    * when `engine === "octreemesh"`. */
   octreeMeshOutput: OctreeMeshOutput;
+  /** Octree-mesh hexahedral output: `"graded"` keeps the octree's own grading
+   * (fewer cells); absent means `"uniform"`. Optional and omitted when uniform
+   * so a sidecar stays byte-stable. */
+  octreeMeshHexGrading?: OctreeMeshHexGrading;
   /** Octree-mesh: largest leaf edge in mm; `0` = automatic (one eighth of the
    * skin's bounding-box diagonal). meshio++'s own default is far finer (a
    * 10 mm cube becomes 516k tets), so the engine never passes "unset". Only
@@ -763,6 +770,7 @@ export function validateMeshOptions(raw: unknown): MeshOptions | null {
   if (periodic.length > 0) out.periodic = periodic;
   const sizeField = validateSizeField(o.sizeField);
   if (sizeField !== undefined) out.sizeField = sizeField;
+  if (o.octreeMeshHexGrading === "graded") out.octreeMeshHexGrading = "graded";
   if (isFiniteNumber(o.mdpaRanks) && o.mdpaRanks >= 2) out.mdpaRanks = Math.min(MAX_MDPA_RANKS, Math.round(o.mdpaRanks));
   if (MDPA_PARTITION_METHODS.includes(o.mdpaPartitionMethod as MdpaPartitionMethod) && o.mdpaPartitionMethod !== "auto") {
     out.mdpaPartitionMethod = o.mdpaPartitionMethod as MdpaPartitionMethod;

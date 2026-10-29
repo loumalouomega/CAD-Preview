@@ -64,8 +64,20 @@ describe("buildMeshCadCall", () => {
     bad({ faceSizes: { 0: 0 } }, /faceSizes\[0\] must be a positive size/);
     bad({ edgeSizes: [1] }, /edgeSizes must be an object/);
     bad({ reparamConditionNumber: 1 }, /reparamConditionNumber must be 0 \(off\) or above 1/);
-    bad({ reparamConditionNumber: 5, order: 2 }, /order 1 only/);
+    bad({ quads: "x" }, /quads must be/);
+    bad({ quadPairs: "x", quads: "dominant" }, /quadPairs must be/);
+    bad({ quadPairs: "greedy" }, /quadPairs acts on the quad recombination/);
+    bad({ quads: "all", virtualEdges: true }, /cannot be combined with virtualEdges/);
+    bad({ untangle: true }, /untangle moves high-order nodes/);
     bad({ lopCorners: true }, /lopCorners acts on the minAngle refinement/);
+  });
+
+  it("forwards the 17.23 quad / untangle / curved-reparam options and refuses a writer without quads", () => {
+    const { call } = buildMeshCadCall({ targetSize: 1, order: 2, untangle: true, quads: "dominant", quadPairs: "greedy", reparamConditionNumber: 5 }, "gmsh", ".msh");
+    expect(call).toMatchObject({ order: 2, untangle: true, quads: "dominant", quadPairs: "greedy", reparamConditionNumber: 5 });
+    expect(Object.keys(buildMeshCadCall({ targetSize: 1 }, "gmsh", ".msh").call)).toEqual(["targetSize", "edges", "maxPoints"]);
+    expect(() => buildMeshCadCall({ targetSize: 1, quads: "all" }, "stl", ".stl")).toThrow(/quadrilateral cells.*got "\.stl"/);
+    expect(buildMeshCadCall({ targetSize: 1, quads: "all" }, "obj", ".obj").call.quads).toBe("all");
   });
 
   it("refuses a curved order for a writer that cannot hold triangle6 / triangle10", () => {

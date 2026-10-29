@@ -625,6 +625,10 @@ describe("octree-mesh options", () => {
     expect(validateMeshOptions({ octreeMeshOutput: "hex" })?.octreeMeshOutput).toBe("hex");
     expect(validateMeshOptions({ octreeMeshOutput: "castellated" })?.octreeMeshOutput).toBe("tet");
     expect(validateMeshOptions({ octreeMeshOutput: 3 })?.octreeMeshOutput).toBe("tet");
+    // 17.23 hexGrading: optional, kept only when "graded" (a sidecar stays byte-stable otherwise)
+    expect(validateMeshOptions({ octreeMeshHexGrading: "graded" })?.octreeMeshHexGrading).toBe("graded");
+    expect("octreeMeshHexGrading" in (validateMeshOptions({ octreeMeshHexGrading: "uniform" }) ?? {})).toBe(false);
+    expect("octreeMeshHexGrading" in (validateMeshOptions({ octreeMeshHexGrading: "bogus" }) ?? {})).toBe(false);
   });
 
   it("keeps a positive max size, and maps zero, negative and non-numbers to automatic (0)", () => {

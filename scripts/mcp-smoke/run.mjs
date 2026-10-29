@@ -375,8 +375,8 @@ try {
   assert(capsText.length > 100, "resources/read cad-preview://capabilities returns JSON text");
 
   const tools = (await request("tools/list", {})).tools.map((t) => t.name);
-  assert(tools.length === 83, `tools/list exposes 83 tools (got ${tools.length}: ${tools.join(", ")})`);
-  for (const t of ["check_draft", "check_printability", "list_workspace_models", "check_interference_all", "generate_bom", "generate_hole_table", "render_ops_prefix", "check_tolerance", "inspect_meshio_fields", "pin_annotation", "import_svg", "save_mesh_preset", "list_mesh_presets", "apply_mesh_preset", "compare_mesh_refinement", "export_tessellated_stl", "estimate_mesh_budget", "analyze_passages", "measure_mesh_deviation", "save_sheet_template", "list_sheet_templates", "batch_export", "check_handoff_manifest", "generate_prep_report", "job_status", "job_cancel", "check_brep_health", "list_scad_parameters", "convert_scad", "list_layers", "set_layer", "assign_layer", "segment_mesh_surface", "fit_mesh_to_cad", "mesh_cad_surface", "iga_sample", "iga_refine", "iga_evaluate", "check_mesh_quality"]) {
+  assert(tools.length === 84, `tools/list exposes 84 tools (got ${tools.length}: ${tools.join(", ")})`);
+  for (const t of ["check_draft", "check_printability", "list_workspace_models", "check_interference_all", "generate_bom", "generate_hole_table", "render_ops_prefix", "check_tolerance", "inspect_meshio_fields", "pin_annotation", "import_svg", "save_mesh_preset", "list_mesh_presets", "apply_mesh_preset", "compare_mesh_refinement", "export_tessellated_stl", "estimate_mesh_budget", "analyze_passages", "measure_mesh_deviation", "save_sheet_template", "list_sheet_templates", "batch_export", "check_handoff_manifest", "generate_prep_report", "job_status", "job_cancel", "check_brep_health", "list_scad_parameters", "convert_scad", "list_layers", "set_layer", "assign_layer", "segment_mesh_surface", "fit_mesh_to_cad", "mesh_cad_surface", "check_mesh_conformity", "iga_sample", "iga_refine", "iga_evaluate", "check_mesh_quality"]) {
     assert(tools.includes(t), `tools/list exposes ${t}`);
   }
 
@@ -3073,6 +3073,17 @@ try {
   assert(mcsO2Stl.error && /only \.msh, \.vtk, \.vtu can hold/.test(mcsO2Stl.error), `mesh_cad_surface refuses a curved order for .stl by name (got: ${mcsO2Stl.error})`);
   const mcsBadAngle = await callTolerant("mesh_cad_surface", { path: mcsBlock, outputPath: path.join(dir, "mcs-bad.msh"), targetSize: 1, minAngle: 60 });
   assert(mcsBadAngle.error && /minAngle must be below 60/.test(mcsBadAngle.error), `mesh_cad_surface refuses minAngle 60 (got: ${mcsBadAngle.error})`);
+  // meshio++ 17.23 quad recombination (probe meshio-1723.ts): block.stp at size 1 = 24 triangles + 114 quads
+  // (dominant), 128 quads (all); the unrecombined control above has 252 triangles and no quads.
+  const mcsQuadDom = await call("mesh_cad_surface", { path: mcsBlock, outputPath: path.join(dir, "mcs-quad.obj"), targetSize: 1, quads: "dominant" });
+  assert(
+    mcsQuadDom.numOpenEdges === 0 && mcsQuadDom.numTriangles === 24 && mcsQuadDom.numQuads === 114 && mcsBase.numQuads === 0,
+    `mesh_cad_surface(quads dominant) recombines block.stp into 24 triangles + 114 quads, closed; the control has 0 quads (got ${JSON.stringify({ t: mcsQuadDom.numTriangles, q: mcsQuadDom.numQuads, c: mcsBase.numQuads })})`
+  );
+  const mcsQuadAll = await call("mesh_cad_surface", { path: mcsBlock, outputPath: path.join(dir, "mcs-quadall.obj"), targetSize: 1, quads: "all" });
+  assert(mcsQuadAll.numTriangles === 0 && mcsQuadAll.numQuads === 128 && mcsQuadAll.numOpenEdges === 0, `mesh_cad_surface(quads all) gives 128 quads and no triangles (got ${JSON.stringify({ t: mcsQuadAll.numTriangles, q: mcsQuadAll.numQuads })})`);
+  const mcsQuadStl = await callTolerant("mesh_cad_surface", { path: mcsBlock, outputPath: path.join(dir, "mcs-quad.stl"), targetSize: 1, quads: "dominant" });
+  assert(mcsQuadStl.error && /quadrilateral cells/.test(mcsQuadStl.error), `mesh_cad_surface refuses quads for .stl by name (got: ${mcsQuadStl.error})`);
   const mcsFace = await call("mesh_cad_surface", { path: mcsBlock, outputPath: path.join(dir, "mcs-face.msh"), targetSize: 1, faceSizes: { 0: 1 / 3 } });
   assert(
     mcsFace.numOpenEdges === 0 && mcsFace.numTriangles === 742 && mcsFace.numTriangles > mcsBase.numTriangles,
@@ -7639,12 +7650,36 @@ try {
     Math.abs(ocmVol.volume - 60) < 1e-6 && ocmVol.nonPositive === 0 && ocmVol.tet === 6512,
     `the octreemesh tet .msh encloses exactly 60 with every tet positively oriented in Gmsh's node order (got ${JSON.stringify(ocmVol)})`
   );
+  // check_mesh_conformity (meshio++ 17.23 checkConformity) over the .msh just written: a stuffed tet mesh is
+  // conforming; a hanging-node octree's hexahedra are not (the control that the check can say no).
+  const confTet = await call("check_mesh_conformity", { path: ocmMsh });
+  assert(
+    confTet.supported === true && confTet.dimension === 3 && confTet.conforming === true && confTet.numHangingNodes === 0 && confTet.numBoundaryFacets > 0,
+    `check_mesh_conformity reports the octreemesh tet .msh as conforming with no hanging nodes (got ${JSON.stringify(confTet)})`
+  );
+  const confHangMsh = path.join(dir, "octree-hanging-conf.msh");
+  await call("export_mesh", { path: octreeBlock, format: "msh", outputPath: confHangMsh, options: { engine: "octree", octreeMaxLevel: 3, octreeTransition: "hanging" } });
+  const confHang = await call("check_mesh_conformity", { path: confHangMsh });
+  assert(
+    confHang.supported === true && confHang.conforming === false && confHang.numHangingNodes > 0,
+    `...and the hanging-node octree .msh is non-conforming with hanging nodes (got ${JSON.stringify({ c: confHang.conforming, h: confHang.numHangingNodes })})`
+  );
+  const confBrep = await call("check_mesh_conformity", { path: octreeBlock });
+  assert(confBrep.supported === false, "check_mesh_conformity declines a B-rep source (export a mesh first)");
   const ocmHexMsh = path.join(dir, "octreemesh-block-hex.msh");
   await call("export_mesh", { path: octreeBlock, format: "msh", outputPath: ocmHexMsh, options: { ...ocmOpts, octreeMeshOutput: "hex" } });
   const ocmHexVol = mshCellVolumes(fs.readFileSync(ocmHexMsh, "utf8"));
   assert(
     Math.abs(ocmHexVol.volume - 60) < 1e-6 && ocmHexVol.nonPositive === 0 && ocmHexVol.hex === 856 && ocmHexVol.tet === 0,
     `the octreemesh hex .msh encloses exactly 60 with every hexahedron positive (got ${JSON.stringify(ocmHexVol)})`
+  );
+  // meshio++ 17.23 hexGrading (probe meshio-1723.ts): the graded hex mesh has fewer cells (601 vs 856) than the uniform control.
+  const ocmGradedMsh = path.join(dir, "octreemesh-block-hex-graded.msh");
+  await call("export_mesh", { path: octreeBlock, format: "msh", outputPath: ocmGradedMsh, options: { ...ocmOpts, octreeMeshOutput: "hex", octreeMeshHexGrading: "graded" } });
+  const ocmGradedVol = mshCellVolumes(fs.readFileSync(ocmGradedMsh, "utf8"));
+  assert(
+    ocmGradedVol.hex === 601 && ocmGradedVol.hex < ocmHexVol.hex && ocmGradedVol.tet === 0 && ocmGradedVol.volume > 59 && ocmGradedVol.volume < 61,
+    `the octreemesh graded hex .msh has the probe's 601 hexahedra, fewer than the uniform control's 856, enclosing about 60 (got ${JSON.stringify(ocmGradedVol)})`
   );
   await call("export_mesh", { path: cleanCubeStl, format: "msh", outputPath: path.join(dir, "octreemesh-cube.msh"), options: ocmOpts });
   const ocmCubeVol = mshCellVolumes(fs.readFileSync(path.join(dir, "octreemesh-cube.msh"), "utf8"));

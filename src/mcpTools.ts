@@ -125,7 +125,8 @@ import type {
 } from "./stepPartsService";
 import type { compareModels, CompareSource } from "./modelDiffHost";
 import type { ModelDiff } from "./modelDiff";
-import type { convertToStlBoundary, convertToStlBoundaryWithRegions, convertFoamCaseToStlBoundary, exportViaMeshio, readMeshioMetadata, checkMeshQuality, readMeshioDataInfo, readMeshioProvenance, runMeshioOps, MeshioDataArrayInfo } from "./meshioService";
+import type { MeshConformityFacts } from "./meshioService";
+import type { convertToStlBoundary, convertToStlBoundaryWithRegions, convertFoamCaseToStlBoundary, exportViaMeshio, readMeshioMetadata, checkMeshQuality, checkMeshConformity, readMeshioDataInfo, readMeshioProvenance, runMeshioOps, MeshioDataArrayInfo } from "./meshioService";
 import { buildPartsFromMeshioRegions } from "./meshioRegionParts";
 import { buildPartsFromCsgColors, csgColorPartsNote, type CsgColorGroup } from "./csgColorParts";
 import { validateMmgOptions, type MmgOptions } from "./mmgOptions";
@@ -307,6 +308,7 @@ export interface Pipeline {
   exportViaMeshio: typeof exportViaMeshio;
   readMeshioMetadata: typeof readMeshioMetadata;
   checkMeshQuality: typeof checkMeshQuality;
+  checkMeshConformity: typeof checkMeshConformity;
   readMeshioDataInfo: typeof readMeshioDataInfo;
   readMeshioProvenance: typeof readMeshioProvenance;
   coarsenStlBoundary: typeof coarsenStlBoundary;
@@ -2626,6 +2628,45 @@ export async function inspectMeshioFieldsTool(
     warnings.push(`Source declares ${arrays.length} data array(s): ${names} (informational only).`);
   }
   return { format: route.format, supported: true, arrays, warnings };
+}
+
+/**
+ * `check_mesh_conformity` — facts about whether a meshio++-readable volume or
+ * surface mesh is node-for-node conforming (meshio++ `checkConformity`):
+ * hanging nodes, T-junctions, partial overlaps, unwelded facets. Facts only;
+ * the agent decides whether the mesh is acceptable. Read-only, raw file (no
+ * pending mesh edits are baked), meshio++ sources only — a B-rep or mesh-parser
+ * source returns `supported:false` (generate a mesh first).
+ */
+export async function checkMeshConformityTool(
+  ctx: ToolContext,
+  params: { path: string; tolerance?: number }
+): Promise<{ format: CadFormat; supported: boolean; warnings: string[] } & Partial<MeshConformityFacts>> {
+  const modelPath = params.path;
+  const route = requireRoute(modelPath);
+  if (route.strategy !== "meshio" || route.format === "openfoam") {
+    return {
+      format: route.format,
+      supported: false,
+      warnings: [
+        route.format === "openfoam"
+          ? "OpenFOAM source: geometry-only import, so there is no cell connectivity to check."
+          : `check_mesh_conformity operates on meshio++-readable mesh files (${MESHIO_FORMATS.join("/")}); ${route.format} is not one. Export a mesh with export_mesh first.`,
+      ],
+    };
+  }
+  if (params.tolerance !== undefined && !(Number.isFinite(params.tolerance) && params.tolerance >= 0)) {
+    throw new Error(`tolerance must be a non-negative number (got ${String(params.tolerance)}).`);
+  }
+  const bytes = await readModelBytes(modelPath);
+  const companions = await resolveMeshioCompanions(modelPath, route.format, bytes);
+  const facts = await ctx.pipeline.checkMeshConformity(
+    bytes, route.format, path.basename(modelPath), companions,
+    params.tolerance === undefined ? undefined : { tolerance: params.tolerance }
+  );
+  const warnings = facts.warnings.map((w) => envelope(w, "meshio warning"));
+  if (facts.dimension === 0) warnings.push("The mesh has no volume or 2-D cells, so nothing was examined.");
+  return { format: route.format, supported: true, ...facts, warnings };
 }
 
 export async function checkMeshHealthTool(

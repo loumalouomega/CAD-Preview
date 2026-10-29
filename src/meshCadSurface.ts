@@ -64,10 +64,16 @@ export interface MeshCadSurfaceOptions {
   virtualFaces?: boolean;
   /** Accept the gaps the model itself declares in its edges (default false). */
   modelTolerances?: boolean;
-  /** Mesh a face whose metric's condition number passes this in a flattening of its coarse mesh; 0 (default) is off, otherwise above 1; order 1 only. */
+  /** Mesh a face whose metric's condition number passes this in a flattening of its coarse mesh; 0 (default) is off, otherwise above 1 (curved nodes follow the flattening at order 2 / 3). */
   reparamConditionNumber?: number;
   /** Lop acute corners in place of concentric shells (default false); needs `minAngle`. */
   lopCorners?: boolean;
+  /** With `order` 2 / 3, move a face's own high-order nodes on the surface to untangle a folded curved element (default false). */
+  untangle?: boolean;
+  /** `none` (default) triangles only; `dominant` recombines triangle pairs into quads where they make a good one; `all` splits the quad-dominant mesh into quads only (no `virtualEdges`). Order 2 / 3 write quad9 / quad16. */
+  quads?: "none" | "dominant" | "all";
+  /** How triangles pair into quads: `matching` (default, maximum matching of greatest total quality) or `greedy` (best pair first). */
+  quadPairs?: "matching" | "greedy";
 }
 
 /** Writable surface-mesh formats: output extension → meshio++ format name. */
@@ -82,6 +88,9 @@ export const MESH_CAD_SURFACE_FORMATS: Readonly<Record<string, string>> = {
 
 /** Writers that can hold a curved `triangle6` / `triangle10` block. */
 export const MESH_CAD_CURVED_EXTENSIONS: readonly string[] = [".msh", ".vtk", ".vtu"];
+
+/** Writers that can hold a quad block (STL is triangles only and would drop it). */
+export const MESH_CAD_QUAD_EXTENSIONS: readonly string[] = [".obj", ".ply", ".vtk", ".vtu", ".msh"];
 
 export interface MeshCadFaceFact {
   face: number;
@@ -109,6 +118,8 @@ export interface MeshCadSurfaceReport {
   targetSize: number;
   numPoints: number;
   numTriangles: number;
+  /** Quadrilaterals from `quads` recombination (0 when off). */
+  numQuads: number;
   numEdgeSegments: number;
   numFaces: number;
   numFailed: number;
@@ -234,7 +245,19 @@ export function buildMeshCadCall(options: MeshCadSurfaceOptions, writerFormat: s
   const edgeSizes = indexSizes("edgeSizes", options.edgeSizes);
   const reparam = positive("reparamConditionNumber", options.reparamConditionNumber, true);
   if (reparam !== undefined && reparam !== 0 && reparam <= 1) throw new Error(`reparamConditionNumber must be 0 (off) or above 1 (got ${reparam}).`);
-  if (reparam !== undefined && reparam > 0 && order !== 1) throw new Error("reparamConditionNumber works with order 1 only.");
+  if (options.quads !== undefined && options.quads !== "none" && options.quads !== "dominant" && options.quads !== "all") {
+    throw new Error(`quads must be "none", "dominant" or "all" (got ${String(options.quads)})`);
+  }
+  if (options.quadPairs !== undefined && options.quadPairs !== "matching" && options.quadPairs !== "greedy") {
+    throw new Error(`quadPairs must be "matching" or "greedy" (got ${String(options.quadPairs)})`);
+  }
+  const wantsQuads = options.quads === "dominant" || options.quads === "all";
+  if (options.quadPairs !== undefined && !wantsQuads) throw new Error('quadPairs acts on the quad recombination — set quads to "dominant" or "all".');
+  if (options.quads === "all" && options.virtualEdges) throw new Error('quads "all" cannot be combined with virtualEdges.');
+  if (options.untangle && order === 1) throw new Error("untangle moves high-order nodes — set order to 2 or 3.");
+  if (wantsQuads && extension !== undefined && !MESH_CAD_QUAD_EXTENSIONS.includes(extension.toLowerCase())) {
+    throw new Error(`quads writes quadrilateral cells, which only ${MESH_CAD_QUAD_EXTENSIONS.join(", ")} can hold (got "${extension}").`);
+  }
   if (options.lopCorners && !(minAngle !== undefined && minAngle > 0)) throw new Error("lopCorners acts on the minAngle refinement — set minAngle above 0.");
   if (order > 1 && extension !== undefined && !MESH_CAD_CURVED_EXTENSIONS.includes(extension.toLowerCase())) {
     throw new Error(`order ${order} writes curved triangle6/triangle10 elements, which only ${MESH_CAD_CURVED_EXTENSIONS.join(", ")} can hold (got "${extension}").`);
@@ -272,6 +295,9 @@ export function buildMeshCadCall(options: MeshCadSurfaceOptions, writerFormat: s
   set("modelTolerances", options.modelTolerances);
   set("reparamConditionNumber", reparam);
   set("lopCorners", options.lopCorners);
+  set("untangle", options.untangle);
+  set("quads", options.quads);
+  set("quadPairs", options.quadPairs);
   return { call: o, targetSize, order, warnings };
 }
 
@@ -342,6 +368,7 @@ export function summarizeMeshCad(r: RawMeshCadResult, targetSize: number, warnin
     targetSize,
     numPoints: n("numPoints"),
     numTriangles: n("numTriangles"),
+    numQuads: n("numQuads"),
     numEdgeSegments: n("numEdgeSegments"),
     numFaces: n("numFaces"),
     numFailed,

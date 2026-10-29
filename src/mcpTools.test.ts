@@ -21,6 +21,7 @@ import {
   meshCadSurfaceTool,
   repairMeshTool,
   inspectMeshioFieldsTool,
+  checkMeshConformityTool,
   inspectEntity,
   measureTool,
   measureExactTool,
@@ -643,6 +644,10 @@ function fakePipeline(overrides: Partial<Pipeline> = {}): Pipeline {
     exportViaMeshio: vi.fn(async () => ({ bytes: new TextEncoder().encode("fake-meshio-bytes") })),
     readMeshioMetadata: vi.fn(async () => ({ regions: [], pointDataNames: [], cellDataNames: [], fieldDataNames: [] })),
     checkMeshQuality: vi.fn(async () => FAKE_QUALITY_GATE),
+    checkMeshConformity: vi.fn(async () => ({
+      dimension: 3, numHangingNodes: 0, numTJunctions: 0, numPartialOverlaps: 0, numUnweldedFacets: 0,
+      numBoundaryFacets: 12, numNonManifoldFacets: 0, conforming: true, interfaceMode: "conforming", warnings: [],
+    })),
     readMeshioDataInfo: vi.fn(async () => []),
     readMeshioProvenance: vi.fn(async () => null),
     runMeshioOps: vi.fn(async () => ({ bytes: new Uint8Array([1, 2, 3]), steps: [], warnings: [] })),
@@ -2377,6 +2382,23 @@ describe("inspect_meshio_fields", () => {
     await fs.writeFile(p, "MED placeholder — bytes never reach the fake pipeline", "utf8");
     return p;
   }
+
+  it("check_mesh_conformity passes the staged source to the pipeline and returns its facts; non-meshio sources are unsupported", async () => {
+    const c = ctx(fakePipeline({
+      checkMeshConformity: vi.fn(async () => ({
+        dimension: 3, numHangingNodes: 7, numTJunctions: 0, numPartialOverlaps: 0, numUnweldedFacets: 0,
+        numBoundaryFacets: 12, numNonManifoldFacets: 0, conforming: false, interfaceMode: "weld", warnings: ["x"],
+      })),
+    }));
+    const r = await checkMeshConformityTool(c, { path: await medModel(), tolerance: 1e-6 });
+    expect(c.pipeline.checkMeshConformity).toHaveBeenCalledWith(expect.any(Uint8Array), "med", "model.med", [], { tolerance: 1e-6 });
+    expect(r).toMatchObject({ supported: true, conforming: false, numHangingNodes: 7, interfaceMode: "weld" });
+    expect(r.warnings).toEqual(["⟦meshio warning: x⟧"]);
+    const stp = await checkMeshConformityTool(c, { path: stpModel });
+    expect(stp.supported).toBe(false);
+    expect(stp.warnings[0]).toMatch(/export_mesh first/);
+    await expect(checkMeshConformityTool(c, { path: await medModel(), tolerance: -1 })).rejects.toThrow(/tolerance must be/);
+  });
 
   it("returns the pipeline's per-array facts verbatim for a meshio source", async () => {
     const c = ctx(fakePipeline({

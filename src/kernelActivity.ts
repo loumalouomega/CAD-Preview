@@ -78,6 +78,7 @@ export const KERNELS_BY_FUNCTION: Record<keyof DocumentPipeline, readonly Kernel
   exportViaMeshio: M,
   readMeshioMetadata: M,
   checkMeshQuality: M,
+  checkMeshConformity: M,
   readMeshioDataInfo: M,
   readMeshioProvenance: M,
   coarsenStlBoundary: ["mmg"],
