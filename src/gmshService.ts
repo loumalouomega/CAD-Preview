@@ -34,18 +34,31 @@ import * as path from "path";
 // the "cjs" output, which Node resolves at actual runtime (honoring the
 // package's "require" export condition), sidestepping both problems above.
 import initialize from "@loumalouomega/gmsh-wasm";
-import { boundaryLayerAlgorithmProblem, gmshShapeOptions, SIZE_MAX_SENTINEL, DEFAULT_MESH_OPTIONS, type MeshOptions, type MeshEngine, type OctreeStats, type OctreeMeshStats } from "./meshOptions";
+import { boundaryLayerAlgorithmProblem, gmshShapeOptions, SIZE_MAX_SENTINEL, DEFAULT_MESH_OPTIONS, type MeshOptions, type MeshEngine, type OctreeStats, type OctreeMeshStats, type MeshCadStats } from "./meshOptions";
 import { measureBoundaryLayerRows, type BoundaryLayerAchieved, type BoundaryLayerWall } from "./boundaryLayerMeasurement";
 import { summarizeQuality, type QualitySummary } from "./meshQuality";
 import type { Part, MeshElementGroup } from "./protocol";
 import { applyPartsToGmshModel, type PartGroupInfo, type PartGroupMaps } from "./gmshPartsMap";
 import { meshExportFormat, type MeshExportFormatId } from "./meshExportFormats";
+import {
+  buildPartitionInput,
+  cellRankFromLabels,
+  planPartition,
+  partitionReport,
+  partitionRefusal,
+  writePartitionedMdpa,
+  HANGING_PARTITION_REFUSAL,
+  MDPA_PARTITION_SEED,
+  type PartitionReport,
+} from "./mdpaPartition";
+import { partitionVolumeCells } from "./mdpaPartitionService";
 import { writeMdpa, type MdpaMesh, type MdpaMode, type MdpaNode, type MdpaCell, type MdpaGroup } from "./mdpaWriter";
 import { parseToWeldedMesh } from "./meshHeal";
 import { boundsOfTriangles, boundsDiagonal, weldedMeshToStlBytes } from "./meshComponents";
 import { tetrahedralize, tetsToMsh41 } from "./ftetwildService";
 import { octreeMesh, brepSkinStlBytes } from "./octreeService";
 import { octreeMeshVolume } from "./octreeMeshService";
+import { meshcadSurfaceMesh } from "./meshcadService";
 import type { MeshParseFormat } from "./fileRouter";
 import type { GltfExternalBuffers } from "./gltfParser";
 import {
@@ -60,7 +73,17 @@ import {
   surfaceEdges,
   boundaryEdges,
   type GmshElementsResult,
+  type RingPredicate,
 } from "./gmshElementTypes";
+import {
+  DEFAULT_MPC_VARIABLES,
+  buildMpcLinks,
+  findHangingConstraints,
+  hangingInterfaceFilter,
+  mpcFacts,
+  type HangingResult,
+  type MpcNode,
+} from "./hangingConstraints";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type GmshApi = any;
@@ -255,11 +278,18 @@ export interface MeshResult {
    * (see `boundaryLayerMeasurement.ts`). Absent on a 3-D or mesh-source
    * generate, where the layer is not measured. */
   boundaryLayers?: BoundaryLayerAchieved[];
+  /** Slave→master segments of the hanging-node constraints, as index pairs
+   * into `positions` — only set for `octreeTransition: "hanging"` (see
+   * `hangingConstraints.ts`). Capped at `MAX_MPC_LINKS`; the facts in
+   * `octree.constraints` always carry the true counts. */
+  constraintLinks?: Uint32Array;
   /** Octree facts (level, snap counts, hex/pyramid/tet mix) — only set when
    * `engineUsed === "octree"`. Parts are never preserved by that engine. */
   octree?: OctreeStats;
   /** Octree-mesh facts — only set when `engineUsed === "octreemesh"`. */
   octreeMesh?: OctreeMeshStats;
+  /** Mesh-CAD surface facts — only set when `engineUsed === "meshcad"`. */
+  meshcad?: MeshCadStats;
 }
 
 /** A highlight overlay of the worst-quality elements, closing the
@@ -459,6 +489,25 @@ function effectiveEngine(input: MeshGenerationInput, options: MeshOptions): { en
     }
     return { engine: "octree", warnings: [] };
   }
+  if (options.engine === "meshcad") {
+    // Meshes the B-rep's exact faces — a mesh-format source has none.
+    if (input.kind !== "brep") {
+      return {
+        engine: "gmsh",
+        warnings: ['Engine "meshcad" was requested but this is a mesh-format source with no B-rep faces — meshio++ triangulates exact CAD faces only, so Gmsh was used instead.'],
+      };
+    }
+    // Prism layers turn the surface into a wedge shell (a volume mesh), so they lift the 2-D-only gate.
+    if (options.dimension !== 2 && !options.prismLayers) {
+      return {
+        engine: "gmsh",
+        warnings: [
+          `Engine "meshcad" was requested but dimension is ${options.dimension} — mesh-cad only produces 2D surface meshes (set dimension 2, or use an octree/fTetWild/Gmsh engine for volumes), so Gmsh was used instead.`,
+        ],
+      };
+    }
+    return { engine: "meshcad", warnings: [] };
+  }
   if (options.engine === "octreemesh") {
     // Like octree, works on a B-rep through its tessellated skin.
     if (options.dimension !== 3) {
@@ -521,6 +570,56 @@ export function octreeUnsupportedOptions(options: MeshOptions, parts: readonly P
 }
 
 /**
+ * What `engine: "meshcad"` cannot honor — same contract as
+ * {@link octreeUnsupportedOptions}. Refused: requests that would hand back a
+ * mesh that quietly differs from what was asked for (quad/recombined output,
+ * periodic faces, view-driven sizing). Ignored with a warning: settings that
+ * only lose their effect (Gmsh's optimizer, Part sizing and physical groups —
+ * the surface mesh has no face correlation to Parts, and `sizeMin` has no
+ * meshio++ counterpart).
+ */
+export function meshcadUnsupportedOptions(options: MeshOptions, parts: readonly Part[]): { refuse: string[]; ignored: string[] } {
+  const refuse: string[] = [];
+  const ignored: string[] = [];
+  if (options.elementShape !== DEFAULT_MESH_OPTIONS.elementShape) refuse.push(`elementShape "${options.elementShape}" (mesh-cad makes triangles only)`);
+  if (options.prismLayers && options.elementOrder !== 1) refuse.push("prismLayers with elementOrder 2 (layers grow over linear triangles)");
+  if ((options.periodic?.length ?? 0) > 0) refuse.push("periodic (mesh-cad has no face correlation)");
+  if ((options.sizeField?.length ?? 0) > 0) refuse.push("sizeField (mesh-cad sizes by Max size, curvature deviation and cells-across-gaps)");
+  if (options.sizeMin !== DEFAULT_MESH_OPTIONS.sizeMin) ignored.push(`sizeMin ${options.sizeMin}`);
+  if (options.optimize !== DEFAULT_MESH_OPTIONS.optimize && options.optimize !== "none") ignored.push(`optimize "${options.optimize}"`);
+  if (parts.length > 0) {
+    ignored.push(`${parts.length} Part(s) — names, sizes, grading, structured divisions, boundary layers and physical groups are not preserved`);
+  }
+  return { refuse, ignored };
+}
+
+/** The hanging-node constraints of an octree run, recovered from the merged
+ * Gmsh model (so they share its node tags with every downstream reader) plus
+ * the variables they are tied on. */
+export interface OctreeMpc {
+  result: HangingResult;
+  variables: string[];
+}
+
+function isDefaultMpcVariables(variables: readonly string[]): boolean {
+  return variables.length === DEFAULT_MPC_VARIABLES.length && variables.every((v, i) => v === DEFAULT_MPC_VARIABLES[i]);
+}
+
+/** Reads the merged octree model's nodes and hexahedra and recovers the MPCs. */
+function deriveOctreeMpc(gmsh: GmshApi, variables: string[]): OctreeMpc {
+  const raw = gmsh.model.mesh.getNodes() as { nodeTags: number[]; coord: number[] };
+  const nodes: MpcNode[] = raw.nodeTags.map((tag, i) => ({ tag, x: raw.coord[i * 3], y: raw.coord[i * 3 + 1], z: raw.coord[i * 3 + 2] }));
+  const els = gmsh.model.mesh.getElements(3) as { elementTypes: number[]; nodeTags: number[][] };
+  const hexes: number[][] = [];
+  els.elementTypes.forEach((type, t) => {
+    if (type !== 5) return; // hexahedron (Gmsh type 5): the only class the hanging transition emits
+    const tags = els.nodeTags[t];
+    for (let i = 0; i + 8 <= tags.length; i += 8) hexes.push(tags.slice(i, i + 8));
+  });
+  return { result: findHangingConstraints(nodes, hexes), variables: [...variables] };
+}
+
+/**
  * Populates `gmsh`'s CURRENT model with a finished volume mesh, dispatching
  * on `options.engine` (as resolved by {@link effectiveEngine}) — the single
  * seam every meshing/export entry point below (`generateMesh`,
@@ -567,8 +666,39 @@ async function populateMeshedModel(
   input: MeshGenerationInput,
   options: MeshOptions,
   parts: Part[]
-): Promise<{ tmpPath: string | null; groupMaps: PartGroupMaps | null; engineUsed: MeshEngine; warnings: string[]; conformalApplied: boolean; octree?: OctreeStats; octreeMesh?: OctreeMeshStats }> {
+): Promise<{ tmpPath: string | null; groupMaps: PartGroupMaps | null; engineUsed: MeshEngine; warnings: string[]; conformalApplied: boolean; octree?: OctreeStats; octreeMpc?: OctreeMpc; octreeMesh?: OctreeMeshStats; meshcad?: MeshCadStats }> {
   const { engine, warnings } = effectiveEngine(input, options);
+  if (options.prismLayers && engine !== "meshcad") {
+    warnings.push(`Ignored: prismLayers only apply under engine "meshcad" with a B-rep source (this run used "${engine}").`);
+  }
+
+  if (engine === "meshcad") {
+    const unsupported = meshcadUnsupportedOptions(options, parts);
+    if (unsupported.refuse.length > 0) {
+      throw new Error(`engine "meshcad" cannot honor: ${unsupported.refuse.join("; ")}. Remove them or switch the engine to "gmsh".`);
+    }
+    for (const note of unsupported.ignored) warnings.push(`Ignored under engine "meshcad": ${note}.`);
+    // effectiveEngine only returns "meshcad" for a B-rep source.
+    const brepInput = input as Extract<MeshGenerationInput, { kind: "brep" }>;
+    const { mshText, stats } = await meshcadSurfaceMesh(brepInput.stepBytes, {
+      sizeMax: options.sizeMax,
+      order: options.elementOrder,
+      minAngle: options.meshcadMinAngle,
+      smoothIterations: options.meshcadSmoothIterations,
+      curvatureDeviation: options.meshcadCurvatureDeviation,
+      cellsAcrossGaps: options.meshcadCellsAcrossGaps,
+      grading: options.meshcadGrading,
+      prismLayers: options.prismLayers,
+    });
+    gmsh.clear();
+    gmsh.model.add(`model-${++_modelCounter}`);
+    const tmpPath = "/i.msh";
+    gmsh.FS.writeFile(tmpPath, mshText);
+    gmsh.merge(tmpPath);
+    gmsh.option.setNumber("Mesh.SaveAll", 1);
+    for (const w of stats.warnings) warnings.push(`Mesh-CAD: ${w}`);
+    return { tmpPath, groupMaps: null, engineUsed: "meshcad", warnings, conformalApplied: false, meshcad: stats };
+  }
 
   if (engine === "octreemesh") {
     const unsupported = octreeUnsupportedOptions(options, parts);
@@ -581,6 +711,7 @@ async function populateMeshedModel(
     const stlBytes = input.kind === "stl" ? input.stlBytes : await brepSkinStlBytes(extensionPath, input.stepBytes);
     const { mshText, stats } = await octreeMeshVolume(stlBytes, {
       output: options.octreeMeshOutput,
+      hexGrading: options.octreeMeshHexGrading,
       maxSize: options.octreeMeshMaxSize,
       levels: options.octreeMeshLevels,
     });
@@ -603,7 +734,11 @@ async function populateMeshedModel(
     }
     for (const note of unsupported.ignored) warnings.push(`Ignored under engine "octree": ${note}.`);
     const stlBytes = input.kind === "stl" ? input.stlBytes : await brepSkinStlBytes(extensionPath, input.stepBytes);
-    const { mshText, stats } = await octreeMesh(stlBytes, { maxLevel: options.octreeMaxLevel, snap: options.octreeSnap });
+    const { mshText, stats } = await octreeMesh(stlBytes, {
+      maxLevel: options.octreeMaxLevel,
+      snap: options.octreeSnap,
+      transition: options.octreeTransition,
+    });
     gmsh.clear();
     gmsh.model.add(`model-${++_modelCounter}`);
     const tmpPath = "/i.msh";
@@ -613,7 +748,22 @@ async function populateMeshedModel(
     if (stats.numRefused > 0) {
       warnings.push(`Octree refused ${stats.numRefused} of ${stats.numSnapped + stats.numRefused} node snaps (left unsnapped, never forced).`);
     }
-    return { tmpPath, groupMaps: null, engineUsed: "octree", warnings, conformalApplied: false, octree: stats };
+    let octreeMpc: OctreeMpc | undefined;
+    if (stats.transition === "hanging") {
+      if (options.octreeSnap) {
+        warnings.push('Octree "hanging" transition ignores octreeSnap: a snapped hanging node leaves its parent edge, so its constraint would no longer be exact.');
+      }
+      octreeMpc = deriveOctreeMpc(gmsh, options.mpcVariables);
+      stats.constraints = mpcFacts(octreeMpc.result, octreeMpc.variables);
+      if (octreeMpc.result.constraints.length !== stats.numHanging) {
+        warnings.push(
+          `Octree reported ${stats.numHanging} hanging nodes but ${octreeMpc.result.constraints.length} were recovered from the leaf grid — the constraint set is incomplete; do not trust the MPCs.`
+        );
+      }
+    } else if (!isDefaultMpcVariables(options.mpcVariables)) {
+      warnings.push('Ignored: mpcVariables only apply to octreeTransition "hanging".');
+    }
+    return { tmpPath, groupMaps: null, engineUsed: "octree", warnings, conformalApplied: false, octree: stats, ...(octreeMpc ? { octreeMpc } : {}) };
   }
 
   if (engine === "gmsh") {
@@ -795,8 +945,14 @@ export async function generateMesh(
     const nodes = gmsh.model.mesh.getNodes() as { nodeTags: number[]; coord: number[] };
     const { positions, tagToIndex } = buildPositions(nodes);
 
-    const { indices, elementGroups } = buildIndices(gmsh, options.dimension, tagToIndex, loaded.groupMaps);
-    const edges = buildEdges(gmsh, options.dimension, tagToIndex);
+    // Hanging-node interfaces are no boundary: a coarse face and its fine
+    // neighbours never share a corner key, so the dedup would draw all of them.
+    const skipRing = loaded.octreeMpc ? hangingInterfaceFilter(loaded.octreeMpc.result) : undefined;
+    const { indices, elementGroups } = buildIndices(gmsh, options.dimension, tagToIndex, loaded.groupMaps, skipRing);
+    const edges = buildEdges(gmsh, options.dimension, tagToIndex, skipRing);
+    const links = loaded.octreeMpc ? buildMpcLinks(loaded.octreeMpc.result.constraints, tagToIndex) : undefined;
+    const warnings = [...loaded.warnings];
+    if (links && links.truncated > 0) warnings.push(`Constraint links truncated: ${links.truncated} slave→master segment(s) are not drawn (the counts in octree.constraints are complete).`);
 
     gmsh.write(outPath);
     const mshText = gmsh.FS.readFile(outPath, { encoding: "utf8" }) as string;
@@ -815,11 +971,13 @@ export async function generateMesh(
       quality,
       worstElements,
       engineUsed: loaded.engineUsed,
-      warnings: [...loaded.warnings, ...measured.warnings],
+      warnings: [...warnings, ...measured.warnings],
       conformalApplied: loaded.conformalApplied,
       boundaryLayers: measured.results.length > 0 ? measured.results : undefined,
+      ...(links ? { constraintLinks: links.indices } : {}),
       ...(loaded.octree ? { octree: loaded.octree } : {}),
       ...(loaded.octreeMesh ? { octreeMesh: loaded.octreeMesh } : {}),
+      ...(loaded.meshcad ? { meshcad: loaded.meshcad } : {}),
     };
   } finally {
     if (tmpPath) {
@@ -933,6 +1091,11 @@ export async function exportGeoUnrolled(
   if (engine === "ftetwild") {
     throw new Error(
       '.geo_unrolled export is not available under engine "ftetwild" — it represents Gmsh\'s own geometry import, and fTetWild never runs one. Export a mesh format (e.g. .msh) instead, or switch the engine to "gmsh".'
+    );
+  }
+  if (engine === "meshcad") {
+    throw new Error(
+      '.geo_unrolled export is not available under engine "meshcad" — it represents Gmsh\'s own geometry import, and mesh-cad never runs one. Export a mesh format (e.g. .msh) instead, or switch the engine to "gmsh".'
     );
   }
   if (engine === "octreemesh") {
@@ -1051,25 +1214,12 @@ export async function exportMdpa(
     tmpPath = loaded.tmpPath;
 
     const mesh = extractMdpaMesh(gmsh, loaded.groupMaps, options.dimension);
-
-    if (mode === "elements") {
-      for (const cell of mesh.volumeCells) {
-        if (mesh.dimension !== 2 && MDPA_KIND_INFO[cell.kind].elementName === null) {
-          throw new Error(
-            `Kratos MDPA "Elements" mode has no confirmed Element name for a ${cell.kind} cell. ` +
-              'Export in "Geometries" mode instead (its geometry names are certain).'
-          );
-        }
-      }
-      for (const cell of mesh.surfaceCells) {
-        if (MDPA_KIND_INFO[cell.kind].conditionName === null) {
-          throw new Error(
-            `Kratos MDPA "Elements" mode has no confirmed Condition name for a ${cell.kind} cell. ` +
-              'Export in "Geometries" mode instead (its geometry names are certain).'
-          );
-        }
-      }
+    if (loaded.octreeMpc) {
+      mesh.constraints = loaded.octreeMpc.result.constraints;
+      mesh.constraintVariables = loaded.octreeMpc.variables;
     }
+
+    assertMdpaModeSupported(mesh, mode);
 
     return writeMdpa(mesh, mode, (msg) => console.warn(`[CAD-Preview MDPA] ${msg}`));
   } finally {
@@ -1077,6 +1227,82 @@ export async function exportMdpa(
       try { gmsh.FS.unlink(tmpPath); } catch { /* ignore */ }
     }
   }
+}
+
+/** Elements mode needs a confirmed Kratos name for every kind; geometries mode's names are certain. */
+function assertMdpaModeSupported(mesh: MdpaMesh, mode: MdpaMode): void {
+  if (mode !== "elements") return;
+  for (const cell of mesh.volumeCells) {
+    if (mesh.dimension !== 2 && MDPA_KIND_INFO[cell.kind].elementName === null) {
+      throw new Error(
+        `Kratos MDPA "Elements" mode has no confirmed Element name for a ${cell.kind} cell. ` +
+          'Export in "Geometries" mode instead (its geometry names are certain).'
+      );
+    }
+  }
+  for (const cell of mesh.surfaceCells) {
+    if (MDPA_KIND_INFO[cell.kind].conditionName === null) {
+      throw new Error(
+        `Kratos MDPA "Elements" mode has no confirmed Condition name for a ${cell.kind} cell. ` +
+          'Export in "Geometries" mode instead (its geometry names are certain).'
+      );
+    }
+  }
+}
+
+/**
+ * Like {@link exportMdpa}, but splits the domain cells over `options.mdpaRanks`
+ * MPI ranks and returns one MDPA text per rank plus the partition facts. Node
+ * and cell ids are global (see `mdpaPartition.ts`); the caller writes
+ * `<stem>_<rank>.mdpa` beside a `<stem>.partition.json` manifest.
+ *
+ * Only the domain cells reach the partitioner. A request that can never be
+ * honoured (hanging-node constraints, more ranks than cells) throws by name.
+ */
+export async function exportMdpaPartitioned(
+  extensionPath: string,
+  input: MeshGenerationInput,
+  options: MeshOptions,
+  parts: Part[],
+  mode: MdpaMode,
+  stem: string
+): Promise<PartitionedMdpa> {
+  const ranks = options.mdpaRanks ?? 1;
+  if (ranks < 2) throw new Error("exportMdpaPartitioned needs mdpaRanks of at least 2 — use exportMdpa for a single file.");
+  // Refuse before paying for the mesh when the options already decide it.
+  if (options.engine === "octree" && options.octreeTransition === "hanging") throw new Error(HANGING_PARTITION_REFUSAL);
+  const gmsh = await getGmsh(extensionPath);
+  let tmpPath: string | null = null;
+  try {
+    const loaded = await populateMeshedModel(extensionPath, gmsh, input, options, parts);
+    tmpPath = loaded.tmpPath;
+    const mesh = extractMdpaMesh(gmsh, loaded.groupMaps, options.dimension);
+    if (loaded.octreeMpc) {
+      mesh.constraints = loaded.octreeMpc.result.constraints;
+      mesh.constraintVariables = loaded.octreeMpc.variables;
+    }
+    const refusal = partitionRefusal(mesh, ranks);
+    if (refusal) throw new Error(refusal);
+    assertMdpaModeSupported(mesh, mode);
+
+    const method = options.mdpaPartitionMethod ?? "auto";
+    const partInput = buildPartitionInput(mesh);
+    const { labels, methodUsed } = await partitionVolumeCells(partInput, ranks, method);
+    const plan = planPartition(mesh, cellRankFromLabels(partInput, labels, mesh.volumeCells.length, ranks), ranks);
+    const report = partitionReport(mesh, plan, { method, methodUsed, seed: MDPA_PARTITION_SEED, stem });
+    const texts = writePartitionedMdpa(mesh, mode, plan, (msg) => console.warn(`[CAD-Preview MDPA] ${msg}`));
+    return { files: texts.map((text, rank) => ({ rank, text })), report };
+  } finally {
+    if (tmpPath) {
+      try { gmsh.FS.unlink(tmpPath); } catch { /* ignore */ }
+    }
+  }
+}
+
+/** One partitioned export: a text per rank and the facts about the split. */
+export interface PartitionedMdpa {
+  files: Array<{ rank: number; text: string }>;
+  report: PartitionReport;
 }
 
 /** One Gmsh physical group as it exists in the generated model. */
@@ -1116,6 +1342,8 @@ export interface HandoffFacts {
   octree?: OctreeStats;
   /** Octree-mesh facts — only set when `engineUsed === "octreemesh"`. */
   octreeMesh?: OctreeMeshStats;
+  /** Mesh-CAD surface facts — only set when `engineUsed === "meshcad"`. */
+  meshcad?: MeshCadStats;
 }
 
 /**
@@ -1197,6 +1425,7 @@ export async function computeHandoffFacts(
       boundaryLayers: measured.results.length > 0 ? measured.results : undefined,
       ...(loaded.octree ? { octree: loaded.octree } : {}),
       ...(loaded.octreeMesh ? { octreeMesh: loaded.octreeMesh } : {}),
+      ...(loaded.meshcad ? { meshcad: loaded.meshcad } : {}),
     };
   } finally {
     if (tmpPath) {
@@ -1371,11 +1600,12 @@ function buildPositions(nodes: { nodeTags: number[]; coord: number[] }): {
 function buildEdges(
   gmsh: GmshApi,
   dimension: MeshOptions["dimension"],
-  tagToIndex: Map<number, number>
+  tagToIndex: Map<number, number>,
+  skipRing?: RingPredicate
 ): Uint32Array {
   if (dimension === 1) return new Uint32Array(0);
   const els = gmsh.model.mesh.getElements(dimension) as GmshElementsResult;
-  const edges = dimension === 3 ? boundaryEdges(els, tagToIndex) : surfaceEdges(els, tagToIndex);
+  const edges = dimension === 3 ? boundaryEdges(els, tagToIndex, skipRing) : surfaceEdges(els, tagToIndex);
   return new Uint32Array(edges);
 }
 
@@ -1418,7 +1648,8 @@ export function buildIndices(
   gmsh: GmshApi,
   dimension: MeshOptions["dimension"],
   tagToIndex: Map<number, number>,
-  groupMaps: PartGroupMaps | null
+  groupMaps: PartGroupMaps | null,
+  skipRing?: RingPredicate
 ): { indices: Uint32Array; elementGroups: MeshElementGroup[] } {
   if (dimension === 1) {
     return { indices: new Uint32Array(0), elementGroups: [] };
@@ -1426,7 +1657,7 @@ export function buildIndices(
   if (dimension === 2) {
     return buildIndices2D(gmsh, tagToIndex, groupMaps);
   }
-  return buildIndices3D(gmsh, tagToIndex, groupMaps);
+  return buildIndices3D(gmsh, tagToIndex, groupMaps, skipRing);
 }
 
 function buildIndices2D(
@@ -1484,10 +1715,11 @@ function appendTriangles2D(gmsh: GmshApi, tag: number | undefined, tagToIndex: M
 function buildIndices3D(
   gmsh: GmshApi,
   tagToIndex: Map<number, number>,
-  groupMaps: PartGroupMaps | null
+  groupMaps: PartGroupMaps | null,
+  skipRing?: RingPredicate
 ): { indices: Uint32Array; elementGroups: MeshElementGroup[] } {
   if (!groupMaps || (groupMaps.volumeTagToPart.size === 0 && groupMaps.surfaceTagToPart.size === 0)) {
-    const boundaryTris = extractBoundaryFaces(gmsh, undefined, tagToIndex);
+    const boundaryTris = extractBoundaryFaces(gmsh, undefined, tagToIndex, skipRing);
     return {
       indices: new Uint32Array(boundaryTris),
       elementGroups:
@@ -1558,9 +1790,9 @@ function buildIndices3D(
  * prisms/pyramids and any quadratic variant) via the shared `gmshElementTypes.ts`
  * table's per-cell boundary-face decomposition and corner-key shared-face dedup.
  * See {@link boundaryTriangles}. */
-function extractBoundaryFaces(gmsh: GmshApi, tag: number | undefined, tagToIndex: Map<number, number>): number[] {
+function extractBoundaryFaces(gmsh: GmshApi, tag: number | undefined, tagToIndex: Map<number, number>, skipRing?: RingPredicate): number[] {
   const els = gmsh.model.mesh.getElements(3, tag) as GmshElementsResult;
-  return boundaryTriangles(els, tagToIndex);
+  return boundaryTriangles(els, tagToIndex, skipRing);
 }
 
 /** Groups a tag->part map into per-part tag buckets, ordered by each part's

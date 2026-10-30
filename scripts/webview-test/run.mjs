@@ -420,6 +420,109 @@ test("overlays: meshingResult lights the toggle and hides model faces; Clear rev
   assert(off === false, "Clear disposes the overlay and unlights the toggle");
 });
 
+/**
+ * E2. Hanging-node constraint links (octree `hanging` transition). The links
+ * button is the only way to see them, so it must (a) stay hidden until a result
+ * carries links, (b) be OFF by default, (c) toggle truthfully, and (d) retire
+ * with a plain generate or Clear. `[hidden]` hazard (CLAUDE.md): assert RENDERED
+ * visibility (`offsetParent`), never the attribute.
+ */
+test("overlays: hanging-node constraint links toggle is hidden until a result has links, off by default, and truthful", async (page) => {
+  await populate(page);
+  const state = () =>
+    page.evaluate(() => {
+      const b = document.getElementById("meshing-links-toggle");
+      return b ? { rendered: b.offsetParent !== null, active: b.classList.contains("active"), pressed: b.getAttribute("aria-pressed"), title: b.title } : null;
+    });
+  const before = await state();
+  assert(before && before.rendered === false, "the links button exists but is not rendered before any result");
+
+  // Slave→master index pairs into the fixture's 2685 points, far apart so the segments cross the model: 4 segments.
+  const links = Buffer.from(new Uint32Array([5, 2000, 100, 2500, 300, 2600, 700, 1900]).buffer).toString("base64");
+  const octree = {
+    maxLevel: 4, snap: false, transition: "hanging", numLeaves: 1450, numHanging: 378, finestLevel: 4, numSnapped: 0, numRefused: 0,
+    elementMix: { hexahedra: 1450, pyramids: 0, tetrahedra: 0 },
+    constraints: { hangingNodes: 378, constraints: 1134, chained: 0, variables: ["DISPLACEMENT_X", "DISPLACEMENT_Y", "DISPLACEMENT_Z"] },
+  };
+  const sentBefore = await page.evaluate(() => window.__sent?.length ?? 0);
+  await page.evaluate(() => document.getElementById("meshing-generate")?.click());
+  await page.waitForFunction((n) => window.__sent?.slice(n).some((m) => m.type === "meshingGenerate"), sentBefore, { timeout: 5000 });
+  const requestId = await page.evaluate((n) => window.__sent.slice(n).findLast((m) => m.type === "meshingGenerate").requestId, sentBefore);
+  await post(page, { ...fixture("meshingResult"), requestId, octree, constraintLinks: links });
+  await post(page, { type: "meshingJobSettled", requestId });
+  await sleep(500);
+
+  const shown = await state();
+  assert(shown && shown.rendered === true && shown.active === false && shown.pressed === "false", `a result with links renders the button, off by default (got ${JSON.stringify(shown)})`);
+  assert(/378 hanging nodes/.test(shown.title), `...and its title names the count (got ${JSON.stringify(shown.title)})`);
+  const status = await page.evaluate(() => document.getElementById("meshing-status")?.textContent ?? document.querySelector(".meshing-status")?.textContent ?? "");
+  assert(/378 hanging nodes tied by 1134 MPCs/.test(status), `...and the panel status line carries the constraint counts (got ${JSON.stringify(status)})`);
+
+  // The overlay is real geometry, not just a button: count --cad-constraint-link amber pixels in the viewport.
+  const amber = async () => {
+    await setPanelHidden(page, true);
+    const shot = (await shotWithoutToast(page, () => page.locator("#app").screenshot())).toString("base64");
+    await setPanelHidden(page, false);
+    return page.evaluate(async (b64) => {
+      const bmp = await createImageBitmap(await (await fetch(`data:image/png;base64,${b64}`)).blob());
+      const c = document.createElement("canvas");
+      c.width = bmp.width;
+      c.height = bmp.height;
+      c.getContext("2d").drawImage(bmp, 0, 0);
+      const { data } = c.getContext("2d").getImageData(0, 0, c.width, c.height);
+      let n = 0;
+      for (let i = 0; i < data.length; i += 4) if (data[i] > 235 && data[i + 1] > 145 && data[i + 1] < 175 && data[i + 2] < 35) n++;
+      return n;
+    }, shot);
+  };
+  const offPixels = await amber();
+  await page.click("#meshing-links-toggle");
+  const on = await state();
+  assert(on.active === true && on.pressed === "true", "clicking the button turns the links on");
+  await sleep(300);
+  const onPixels = await amber();
+  assert(onPixels > 40 && onPixels > offPixels + 40, `...and amber link pixels appear in the viewport (off ${offPixels}, on ${onPixels})`);
+  await page.click("#meshing-links-toggle");
+  assert((await state()).active === false, "clicking again turns them off");
+  await sleep(300);
+  const afterPixels = await amber();
+  assert(afterPixels <= offPixels + 10, `...and the amber pixels go away again (before ${offPixels}, on ${onPixels}, after ${afterPixels})`);
+
+  // A plain generate (no links) retires the button.
+  const sent2 = await page.evaluate(() => window.__sent?.length ?? 0);
+  await page.evaluate(() => document.getElementById("meshing-generate")?.click());
+  await page.waitForFunction((n) => window.__sent?.slice(n).some((m) => m.type === "meshingGenerate"), sent2, { timeout: 5000 });
+  const requestId2 = await page.evaluate((n) => window.__sent.slice(n).findLast((m) => m.type === "meshingGenerate").requestId, sent2);
+  await post(page, { ...fixture("meshingResult"), requestId: requestId2 });
+  await post(page, { type: "meshingJobSettled", requestId: requestId2 });
+  await sleep(400);
+  assert((await state()).rendered === false, "a result without links hides the button again");
+});
+
+test("meshio mdpa: a file's constraint links render a button, off by default, and the summary reaches the status line", async (page) => {
+  await populate(page);
+  const stl = Buffer.from(
+    "solid t\nfacet normal 0 0 1\nouter loop\nvertex 0 0 0\nvertex 1 0 0\nvertex 0 1 0\nendloop\nendfacet\nendsolid t\n"
+  ).toString("base64");
+  const points = Buffer.from(new Float32Array([0, 0, 0, 1, 0, 0, 0.5, 0, 0]).buffer).toString("base64");
+  const indices = Buffer.from(new Uint32Array([2, 0, 2, 1]).buffer).toString("base64");
+  await post(page, {
+    type: "loadMeshBytes", sourceFormat: "mdpa", dataBase64: stl,
+    meshConstraints: { points, indices, constraintCount: 1, slaveCount: 1, variables: ["DISPLACEMENT_X"], truncated: 0, summary: "1 constraint on 1 slave node (DISPLACEMENT_X)" },
+  });
+  await sleep(900);
+  const r = await page.evaluate(() => {
+    const b = document.getElementById("meshing-links-toggle");
+    return { rendered: !!b && b.offsetParent !== null, active: !!b && b.classList.contains("active"), title: b?.title ?? "" };
+  });
+  assert(r.rendered === true && r.active === false, `an opened .mdpa with constraints shows the links button, off by default (got ${JSON.stringify(r)})`);
+  assert(/1 constraint on 1 slave node/.test(r.title), `...its title carries the file's summary (got ${JSON.stringify(r.title)})`);
+  // Opening a deck WITHOUT constraints afterwards retires it.
+  await post(page, { type: "loadMeshBytes", sourceFormat: "mdpa", dataBase64: stl });
+  await sleep(900);
+  assert(await page.evaluate(() => document.getElementById("meshing-links-toggle")?.offsetParent === null), "the next document without constraints hides the button again");
+});
+
 const GATE_RESULT = {
   passed: false,
   numCells: 1966,
@@ -3447,7 +3550,7 @@ test("collapse: every sidebar section has a working chevron", async (page) => {
     "tree-panel", "parts-panel", "edits-panel", "scad-panel", "meshing-panel",
     "advanced-group",
     "mass-panel",
-    "clash-panel", "brep-health-panel",
+    "clash-panel", "brep-health-panel", "surface-tools-panel",
     "mesh-health-panel", "region-fit-panel", "primitives-panel", "macros-panel", "standard-parts-panel",
   ];
   const missing = await page.evaluate(
@@ -3524,7 +3627,7 @@ test("advanced: the group ships collapsed, hides its eleven children, and opens 
   // hold only the four sections that EDIT the document.
   const shut = await page.evaluate(() => {
     const ids = [
-      "mass-panel", "clash-panel", "brep-health-panel", "mesh-health-panel", "region-fit-panel",
+      "mass-panel", "clash-panel", "brep-health-panel", "mesh-health-panel", "surface-tools-panel", "region-fit-panel",
       "primitives-panel", "passages-panel", "printability-panel", "draft-panel", "macros-panel", "standard-parts-panel",
     ];
     return {
@@ -3541,13 +3644,13 @@ test("advanced: the group ships collapsed, hides its eleven children, and opens 
   assert(shut.collapsed, "the group starts collapsed");
   assert(shut.headerShown, "its header is still visible while collapsed");
   assert(!shut.bodyShown, "its body is hidden while collapsed");
-  assert(!shut.anyChildShown, "none of the eleven children render while it is collapsed");
+  assert(!shut.anyChildShown, "none of the twelve children render while it is collapsed");
   assert(shut.topLevel, "Components/Parts/Edits/FE Mesh stayed OUT of the group");
 
   // The badge must report availability, not the raw child count: on this
-  // B-rep fixture Mesh Health and Region fit gate themselves out.
+  // B-rep fixture Mesh Health and Region fit gate themselves out (Surface Tools shows for STEP).
   const badge = await page.evaluate(() => document.getElementById("advanced-count").textContent.trim());
-  assert(badge === "9 of 11", `the badge counts only the available children (got ${JSON.stringify(badge)})`);
+  assert(badge === "10 of 12", `the badge counts only the available children (got ${JSON.stringify(badge)})`);
 
   await openAdvanced(page);
   const open = await page.evaluate(() => ({
@@ -4526,6 +4629,66 @@ test("brep health: the hidden attribute genuinely hides the section", async (pag
   assert(height === 0, `#brep-health-panel[hidden] renders nothing (got ${height}px)`);
 });
 
+test("surface tools: each action posts a typed request, replies render facts, stale/cancelled replies behave, hidden hides", async (page) => {
+  await populate(page); // bull.stp — B-rep, eligible
+  await openAdvanced(page);
+  const shown = await page.evaluate(() => document.getElementById("surface-tools-panel")?.offsetParent !== null);
+  assert(shown, "the Surface Tools section is genuinely rendered for a B-rep source");
+  // Project
+  await page.evaluate(() => (window.__sent.length = 0));
+  await page.fill("#surface-project-maxdist", "0.25");
+  await page.click("#surface-project");
+  const proj = await page.evaluate(() => (window.__sent ?? []).filter((m) => m.type === "surfaceToolRequest").at(-1) ?? null);
+  assert(proj && proj.tool === "projectToCad" && proj.maxDistance === 0.25 && typeof proj.requestId === "string", `Project posts a typed request (got ${JSON.stringify(proj)})`);
+  const busy = await page.evaluate(() => document.getElementById("surface-project").disabled && document.getElementById("surface-prism").disabled);
+  assert(busy, "both actions disable while a request is in flight");
+  const rows = [["Projected", "128"], ["Max move", "0.0128 mm"]];
+  await page.evaluate(([rows]) => window.postMessage({ type: "surfaceToolResult", requestId: "stale", tool: "projectToCad", rows, written: "/x.vtu", warnings: [] }, "*"), [rows]);
+  await sleep(150);
+  assert(/Working/.test(await page.evaluate(() => document.getElementById("surface-tools-result").textContent)), "a stale reply renders nothing");
+  await page.evaluate(([id, rows]) => window.postMessage({ type: "surfaceToolResult", requestId: id, tool: "projectToCad", rows, written: "/tmp/out.vtu", warnings: ["2 point(s) could not be projected"] }, "*"), [proj.requestId, rows]);
+  await sleep(200);
+  const view = await page.evaluate(() => ({
+    text: document.getElementById("surface-tools-result").textContent,
+    rowCount: document.querySelectorAll(".surface-result-row").length,
+    enabled: !document.getElementById("surface-project").disabled && !document.getElementById("surface-prism").disabled,
+  }));
+  assert(view.rowCount === 2 && /Projected128/.test(view.text) && /Wrote \/tmp\/out\.vtu/.test(view.text) && /could not be projected/.test(view.text), `the reply renders its rows, path and warning (got ${JSON.stringify(view.text)})`);
+  assert(view.enabled, "both actions re-enable after the reply");
+  // Prism: validation happens in the webview, no request for a bad value
+  await page.evaluate(() => (window.__sent.length = 0));
+  await page.fill("#surface-prism-layers", "0");
+  await page.click("#surface-prism");
+  const none = await page.evaluate(() => (window.__sent ?? []).filter((m) => m.type === "surfaceToolRequest").length);
+  assert(none === 0, "an out-of-range layer count posts nothing");
+  assert(/Layers must be an integer/.test(await page.evaluate(() => document.getElementById("surface-tools-result").textContent)), "...and says why");
+  await page.fill("#surface-prism-layers", "4");
+  await page.fill("#surface-prism-height", "0.05");
+  await page.fill("#surface-prism-growth", "1.5");
+  await page.check("#surface-prism-reverse");
+  await page.click("#surface-prism");
+  const prism = await page.evaluate(() => (window.__sent ?? []).filter((m) => m.type === "surfaceToolRequest").at(-1) ?? null);
+  assert(
+    prism && prism.tool === "prismLayers" && prism.targetSize === 1 && prism.firstHeight === 0.05 && prism.numLayers === 4 && prism.growth === 1.5 && prism.reverse === true,
+    `Grow layers posts every field (got ${JSON.stringify(prism)})`
+  );
+  // A cancelled dialog clears the "Working…" message without an error; a real error is shown
+  await page.evaluate(([id]) => window.postMessage({ type: "surfaceToolError", requestId: id, tool: "prismLayers", message: "Cancelled.", cancelled: true }, "*"), [prism.requestId]);
+  await sleep(150);
+  assert((await page.evaluate(() => document.getElementById("surface-tools-result").textContent)) === "", "a cancelled dialog leaves no message");
+  await page.click("#surface-prism");
+  const again = await page.evaluate(() => (window.__sent ?? []).filter((m) => m.type === "surfaceToolRequest").at(-1));
+  await page.evaluate(([id]) => window.postMessage({ type: "surfaceToolError", requestId: id, tool: "prismLayers", message: "boom" }, "*"), [again.requestId]);
+  await sleep(150);
+  assert(/boom/.test(await page.evaluate(() => document.querySelector("#surface-tools-result .mesh-health-message-error")?.textContent ?? "")), "an error renders as an error message");
+  const height = await page.evaluate(() => {
+    const el = document.getElementById("surface-tools-panel");
+    el.hidden = true;
+    return el.getBoundingClientRect().height;
+  });
+  assert(height === 0, `#surface-tools-panel[hidden] renders nothing (got ${height}px)`);
+});
+
 // ── Tier 0 Phase 2: save-point-locked history ─────────────────────────────
 //
 // Baked rows (ops already saved into the source file) render locked and
@@ -4798,6 +4961,53 @@ test("mesh budget: the FE Mesh readout shows a calibrated element range with its
   await sleep(300);
   const after = await read();
   assert(/budget/.test(after.warning), `a budget below the estimate shows the budget warning (got ${JSON.stringify(after.warning)})`);
+});
+
+test("MDPA ranks: the rank controls follow the export format and a typed count is posted (1 or empty posts none)", async (page) => {
+  await populate(page);
+  const state = () =>
+    page.evaluate(() => ({
+      format: document.getElementById("meshing-export-format").value,
+      ranksDisabled: document.getElementById("meshing-mdpa-ranks").disabled,
+      methodDisabled: document.getElementById("meshing-mdpa-method").disabled,
+    }));
+  const change = (id, value) =>
+    page.evaluate(
+      ([i, v]) => {
+        const el = document.getElementById(i);
+        el.value = v;
+        el.dispatchEvent(new Event("change", { bubbles: true }));
+      },
+      [id, value]
+    );
+  const lastOptions = () => page.evaluate(() => (window.__sent ?? []).filter((m) => m.type === "meshingChanged").at(-1)?.options ?? null);
+  const base = fixture("meshingOptions").options;
+
+  await change("meshing-export-format", "mdpaElements");
+  let st = await state();
+  assert(st.ranksDisabled === false, `the rank count is live for a Kratos MDPA target (got ${JSON.stringify(st)})`);
+  assert(st.methodDisabled === true, "the partitioner stays greyed until a rank count of 2 or more is set");
+
+  await page.evaluate(() => (window.__sent.length = 0));
+  await change("meshing-mdpa-ranks", "4");
+  assert((await lastOptions())?.mdpaRanks === 4, `typing 4 posts mdpaRanks 4 (got ${JSON.stringify(await lastOptions())})`);
+  await post(page, { type: "meshingOptions", options: { ...base, mdpaRanks: 4 } });
+  await sleep(150);
+  st = await state();
+  assert(st.methodDisabled === false, `a rank count of 4 enables the partitioner (got ${JSON.stringify(st)})`);
+  assert(await page.evaluate(() => document.getElementById("meshing-mdpa-ranks").value === "4"), "the echoed count is shown");
+
+  await change("meshing-mdpa-method", "sfc");
+  assert((await lastOptions())?.mdpaPartitionMethod === "sfc", "choosing the space-filling curve posts it");
+  await change("meshing-mdpa-method", "auto");
+  assert(!(await lastOptions())?.mdpaPartitionMethod, "Auto posts no explicit method (the default stays absent)");
+
+  await change("meshing-mdpa-ranks", "1");
+  assert(!(await lastOptions())?.mdpaRanks, "a count of 1 means one file, so no mdpaRanks is posted");
+
+  await change("meshing-export-format", "vtk");
+  st = await state();
+  assert(st.ranksDisabled === true && st.methodDisabled === true, `a non-MDPA format greys both controls (got ${JSON.stringify(st)})`);
 });
 
 test("bookmarks: hydrating two bookmarks renders two rows with their names", async (page) => {
@@ -8004,6 +8214,92 @@ test("FE Mesh: the Octree engine greys the Gmsh-only fields, enables its own, an
   assert(
     text.includes("Octree L4: 1372 hex · 542 pyramid · 1608 tet · snapped 433, refused 81 · Parts not preserved"),
     `the result row names the element mix, the snap counts and the loss of Parts (got ${JSON.stringify(text)})`
+  );
+});
+
+test("FE Mesh: the Mesh-CAD engine enables its own fields, keeps Element order live, posts its options and renders its facts", async (page) => {
+  await populate(page);
+  await page.evaluate(() => {
+    const adv = [...document.querySelectorAll("#meshing-body details, #meshing-body .meshing-advanced")];
+    for (const d of adv) d.open = true;
+  });
+  const fields = () =>
+    page.evaluate(() => {
+      const byLabel = (text) => {
+        const row = [...document.querySelectorAll("#meshing-body .meshing-field")].find((r) => r.querySelector(".meshing-label")?.textContent === text);
+        return row?.querySelector("input, select") ?? null;
+      };
+      const engine = byLabel("Engine");
+      const own = ["Mesh-CAD min angle (°)", "Mesh-CAD smoothing passes", "Mesh-CAD curvature deviation (mm)", "Mesh-CAD cells across gaps", "Mesh-CAD grading"];
+      return {
+        options: engine ? [...engine.options].map((o) => o.value) : null,
+        value: engine?.value ?? null,
+        ownDisabled: own.map((l) => byLabel(l)?.disabled ?? null),
+        sizeMinDisabled: byLabel("Size min")?.disabled ?? null,
+        sizeMaxDisabled: byLabel("Size max")?.disabled ?? null,
+        shapeDisabled: byLabel("Element shape")?.disabled ?? null,
+        orderDisabled: byLabel("Element order")?.disabled ?? null,
+        levelDisabled: byLabel("Octree max level")?.disabled ?? null,
+      };
+    });
+  const before = await fields();
+  assert(before.options?.includes("meshcad"), `the Engine select offers meshcad (got ${JSON.stringify(before.options)})`);
+  assert(before.ownDisabled.length === 5 && before.ownDisabled.every((d) => d === true), `under Gmsh the five Mesh-CAD fields are greyed (got ${JSON.stringify(before.ownDisabled)})`);
+  await page.evaluate(() => (window.__sent.length = 0));
+  await page.evaluate(() => {
+    const row = [...document.querySelectorAll("#meshing-body .meshing-field")].find((r) => r.querySelector(".meshing-label")?.textContent === "Engine");
+    const sel = row.querySelector("select");
+    sel.value = "meshcad";
+    sel.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+  await sleep(150);
+  const after = await fields();
+  assert(after.value === "meshcad", `the select reflects the change (got ${after.value})`);
+  assert(after.ownDisabled.every((d) => d === false), `under Mesh-CAD its own fields are enabled (got ${JSON.stringify(after.ownDisabled)})`);
+  assert(
+    after.sizeMinDisabled === true && after.shapeDisabled === true && after.levelDisabled === true && after.orderDisabled === false && after.sizeMaxDisabled === false,
+    `Size max and Element order stay live (it sizes by Size max and writes triangle6), the Gmsh-only Size min / Element shape and the octree field are greyed (got ${JSON.stringify(after)})`
+  );
+  await page.evaluate(() => {
+    const row = [...document.querySelectorAll("#meshing-body .meshing-field")].find((r) => r.querySelector(".meshing-label")?.textContent === "Mesh-CAD min angle (°)");
+    const input = row.querySelector("input");
+    input.value = "25";
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+  await sleep(150);
+  const sent = await page.evaluate(() => (window.__sent ?? []).filter((m) => m.type === "meshingChanged").at(-1) ?? null);
+  assert(
+    sent?.options?.engine === "meshcad" && sent.options.meshcadMinAngle === 25 && sent.options.meshcadSmoothIterations === 0,
+    `the change posts engine meshcad with the typed min angle and the default smoothing (got ${JSON.stringify(sent?.options)})`
+  );
+  // A bound the model cannot reach is rejected back to off rather than posted.
+  await page.evaluate(() => {
+    const row = [...document.querySelectorAll("#meshing-body .meshing-field")].find((r) => r.querySelector(".meshing-label")?.textContent === "Mesh-CAD min angle (°)");
+    const input = row.querySelector("input");
+    input.value = "75";
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+  await sleep(150);
+  const sent2 = await page.evaluate(() => (window.__sent ?? []).filter((m) => m.type === "meshingChanged").at(-1) ?? null);
+  assert(sent2?.options?.meshcadMinAngle === 0, `a min angle of 75° (no triangulation can guarantee it) is posted as off (got ${JSON.stringify(sent2?.options?.meshcadMinAngle)})`);
+  // A result carrying mesh-CAD facts renders them, naming the missed bound and the loss of Parts.
+  const sentBefore = await page.evaluate(() => window.__sent.length);
+  await page.evaluate(() => document.getElementById("meshing-generate")?.click());
+  await page.waitForFunction((n) => window.__sent.slice(n).some((m) => m.type === "meshingGenerate"), sentBefore, { timeout: 5000 });
+  const requestId = await page.evaluate((n) => window.__sent.slice(n).findLast((m) => m.type === "meshingGenerate").requestId, sentBefore);
+  await post(page, {
+    type: "meshingResult", requestId, positions: "", indices: "", edges: "", nodeCount: 148, elementCount: 292, elementGroups: [], elapsedMs: 56,
+    meshcad: {
+      targetSize: 1, order: 1, numFaces: 6, numFailed: 0, numTriangles: 292, numPoints: 148, numOpenEdges: 0, numNonManifoldEdges: 0, numMisorientedEdges: 0,
+      minAngleDeg: 26.565, maxAngleDeg: 111.5, minEdge: 0.5, maxEdge: 1.36, numRefinementPoints: 30, numFacesBelowBound: 2, numSmoothed: 0, numCurvedStraightened: 0, warnings: [],
+    },
+  });
+  await post(page, { type: "meshingJobSettled", requestId });
+  await sleep(300);
+  const text = await page.evaluate(() => document.getElementById("meshing-status")?.textContent ?? "");
+  assert(
+    text.includes("Mesh-CAD surface: 292 tri · min angle 26.6° · closed · 2 face(s) below the angle bound · Parts not preserved"),
+    `the result row names the triangle count, the closure, the missed bound and the loss of Parts (got ${JSON.stringify(text)})`
   );
 });
 

@@ -1,4 +1,4 @@
-import { SIZE_MAX_SENTINEL, DEFAULT_MESH_OPTIONS, boundaryLayerPlan, validateMeshBoundaryLayer, validateMeshGrading, validateMeshStructured, octreeSummary, octreeMeshSummary, OCTREE_MAX_LEVEL_LIMIT, OCTREE_MESH_LEVELS_LIMIT, type OctreeStats, type OctreeMeshStats, type MeshOptions, type MeshGrading, type MeshStructured, type MeshBoundaryLayer } from "../meshOptions";
+import { SIZE_MAX_SENTINEL, DEFAULT_PRISM_LAYERS, PRISM_LAYERS_LIMIT, validateMeshPrismLayers, DEFAULT_MESH_OPTIONS, boundaryLayerPlan, validateMeshBoundaryLayer, validateMeshGrading, validateMeshStructured, octreeSummary, octreeMeshSummary, meshcadSummary, validateMpcVariables, OCTREE_MAX_LEVEL_LIMIT, OCTREE_MESH_LEVELS_LIMIT, MAX_MDPA_RANKS, type MdpaPartitionMethod, MESHCAD_SMOOTH_LIMIT, type OctreeStats, type OctreeMeshStats, type MeshCadStats, type MeshOptions, type MeshGrading, type MeshStructured, type MeshBoundaryLayer } from "../meshOptions";
 import type { QualitySummary } from "../meshQuality";
 import type { BoundaryLayerAchieved } from "../boundaryLayerMeasurement";
 import { describeGateCheck, type QualityGateResult } from "../meshQualityGate";
@@ -42,6 +42,8 @@ export interface MeshingStats {
   octree?: OctreeStats;
   /** Octree-mesh facts — shown only when the octreemesh engine ran. */
   octreeMesh?: OctreeMeshStats;
+  /** Mesh-CAD surface facts — shown only when the meshcad engine ran. */
+  meshcad?: MeshCadStats;
 }
 
 /** Failure readout: a human-readable error message from the host. */
@@ -177,6 +179,8 @@ export class MeshingPanel {
   private sourceKind: "brep" | "mesh" = "brep";
   private readonly stlAngleInput: HTMLInputElement;
   private readonly budgetInput: HTMLInputElement;
+  private readonly mdpaRanksInput: HTMLInputElement;
+  private readonly mdpaMethodSelect: HTMLSelectElement;
   private deviationBtn: HTMLButtonElement | null = null;
   private deviationTolInput: HTMLInputElement | null = null;
   /** Displayed model's volume (null = not a closed volume) / area, for the budget estimate. */
@@ -189,9 +193,22 @@ export class MeshingPanel {
   private readonly ftetwildDisableFilteringCheckbox: HTMLInputElement;
   private readonly octreeMaxLevelInput: HTMLInputElement;
   private readonly octreeSnapCheckbox: HTMLInputElement;
+  private readonly octreeTransitionSelect: HTMLSelectElement;
+  private readonly mpcVariablesInput: HTMLInputElement;
   private readonly octreeMeshOutputSelect: HTMLSelectElement;
+  private readonly octreeMeshHexGradingSelect: HTMLSelectElement;
   private readonly octreeMeshMaxSizeInput: HTMLInputElement;
   private readonly octreeMeshLevelsInput: HTMLInputElement;
+  private readonly meshcadMinAngleInput: HTMLInputElement;
+  private readonly meshcadSmoothInput: HTMLInputElement;
+  private readonly meshcadCurvatureInput: HTMLInputElement;
+  private readonly meshcadGapsInput: HTMLInputElement;
+  private readonly meshcadGradingInput: HTMLInputElement;
+  private readonly prismEnabledCheckbox: HTMLInputElement;
+  private readonly prismHeightInput: HTMLInputElement;
+  private readonly prismLayersInput: HTMLInputElement;
+  private readonly prismGrowthInput: HTMLInputElement;
+  private readonly prismReverseCheckbox: HTMLInputElement;
 
   /** Mesh-ops section (meshio++ sources only) — one operation per Run. */
   private readonly meshOpsSection: HTMLElement;
@@ -387,6 +404,7 @@ export class MeshingPanel {
       ["ftetwild", "fTetWild (robust)"],
       ["octree", "Octree (hex-dominant)"],
       ["octreemesh", "Octree-mesh (graded tets / hex)"],
+      ["meshcad", "Mesh-CAD (B-rep surface)"],
     ]);
     this.engineSelect.title =
       "Gmsh is fast but needs a watertight/manifold/well-oriented boundary. " +
@@ -396,7 +414,9 @@ export class MeshingPanel {
       "Octree builds a hex-dominant volume (hexahedra, pyramids, tetrahedra) from the tessellated skin of any 3D " +
       "source, sized by its max level — Parts and physical groups are not preserved. " +
       "Octree-mesh fits conforming graded tetrahedra (or all hexahedra) to the same skin, sized by a largest leaf edge " +
-      "and a number of refinement levels — Parts and physical groups are not preserved either.";
+      "and a number of refinement levels — Parts and physical groups are not preserved either. " +
+      "Mesh-CAD triangulates a B-rep's exact faces without a CAD kernel (set Dimension to 2; edges are shared, so the surface is watertight) — " +
+      "sized by Size max plus the angle/curvature controls; Parts are not preserved.";
     this.engineSelect.addEventListener("change", () => {
       cb.onOptionsChange({ engine: this.engineSelect.value as MeshOptions["engine"] });
     });
@@ -611,6 +631,33 @@ export class MeshingPanel {
       cb.onOptionsChange({ budgetElements: this.budgetInput.value.trim() !== "" && raw >= 1 ? Math.round(raw) : undefined });
     });
 
+    this.mdpaRanksInput = this.numberField(form, "MDPA ranks", 1);
+    this.mdpaRanksInput.id = "meshing-mdpa-ranks";
+    this.mdpaRanksInput.value = "";
+    this.mdpaRanksInput.placeholder = "1 (one file)";
+    this.mdpaRanksInput.step = "1";
+    this.mdpaRanksInput.max = String(MAX_MDPA_RANKS);
+    this.mdpaRanksInput.title =
+      "Kratos MDPA export only. 2 or more splits the domain cells over that many MPI ranks and writes <name>_<rank>.mdpa " +
+      "per rank plus <name>.partition.json (global node/cell ids, an InterfaceNodes SubModelPart per rank). Empty or 1 = one file.";
+    this.mdpaRanksInput.addEventListener("change", () => {
+      const raw = Number(this.mdpaRanksInput.value);
+      cb.onOptionsChange({ mdpaRanks: this.mdpaRanksInput.value.trim() !== "" && raw >= 2 ? Math.min(MAX_MDPA_RANKS, Math.round(raw)) : undefined });
+    });
+    this.mdpaMethodSelect = this.select(form, "MDPA partitioner", [
+      ["auto", "Auto (KaHIP)"],
+      ["kahip", "KaHIP"],
+      ["sfc", "Space-filling curve"],
+    ]);
+    this.mdpaMethodSelect.id = "meshing-mdpa-method";
+    this.mdpaMethodSelect.title =
+      "KaHIP cuts fewer interface nodes than the space-filling curve at the same balance (bull.stp, 4 ranks: 108 vs 297). Auto uses KaHIP.";
+    this.mdpaMethodSelect.addEventListener("change", () => {
+      const method = this.mdpaMethodSelect.value as MdpaPartitionMethod;
+      cb.onOptionsChange({ mdpaPartitionMethod: method === "auto" ? undefined : method });
+    });
+    this.exportFormatSelect.addEventListener("change", () => this.syncMdpaFields());
+
     this.deviationTolInput = this.numberField(form, "Deviation tolerance (mm)", 0);
     this.deviationTolInput.id = "meshing-deviation-tol";
     this.deviationTolInput.value = "";
@@ -665,6 +712,28 @@ export class MeshingPanel {
       cb.onOptionsChange({ octreeSnap: this.octreeSnapCheckbox.checked });
     });
 
+    this.octreeTransitionSelect = this.select(form, "Octree transition", [
+      ["templates", "Conforming (hex + pyramid + tet)"],
+      ["hanging", "All hexahedra (hanging nodes, MPCs)"],
+    ]);
+    this.octreeTransitionSelect.title =
+      "What the octree emits where a fine leaf meets a coarse one. 'Conforming' fills the gap with pyramids and tets. " +
+      "'All hexahedra' leaves the hanging nodes in place and ties each to its parent corners by multi-point constraints " +
+      "(Kratos MDPA only — other formats cannot carry them); it never snaps. Only used by engine: Octree.";
+    this.octreeTransitionSelect.addEventListener("change", () => {
+      cb.onOptionsChange({ octreeTransition: this.octreeTransitionSelect.value as MeshOptions["octreeTransition"] });
+    });
+
+    this.mpcVariablesInput = this.textField(form, "MPC variables", DEFAULT_MESH_OPTIONS.mpcVariables.join(", "));
+    this.mpcVariablesInput.title =
+      "Kratos variables the hanging-node constraints tie, comma separated (one Constraints block per variable and master count). " +
+      "Default is the three displacement components; use e.g. TEMPERATURE for a thermal model. Only used by the all-hexahedra transition.";
+    this.mpcVariablesInput.addEventListener("change", () => {
+      const cleaned = validateMpcVariables(this.mpcVariablesInput.value) ?? [...DEFAULT_MESH_OPTIONS.mpcVariables];
+      this.mpcVariablesInput.value = cleaned.join(", ");
+      cb.onOptionsChange({ mpcVariables: cleaned });
+    });
+
     this.octreeMeshOutputSelect = this.select(form, "Octree-mesh output", [
       ["tet", "Tetrahedra (graded)"],
       ["hex", "Hexahedra (all-hex)"],
@@ -673,6 +742,16 @@ export class MeshingPanel {
       "Graded conforming tetrahedra fitted to the skin, or an all-hexahedra mesh by the octree dual. Only used by engine: Octree-mesh.";
     this.octreeMeshOutputSelect.addEventListener("change", () => {
       cb.onOptionsChange({ octreeMeshOutput: this.octreeMeshOutputSelect.value as MeshOptions["octreeMeshOutput"] });
+    });
+
+    this.octreeMeshHexGradingSelect = this.select(form, "Octree-mesh hex grading", [
+      ["uniform", "Uniform grid"],
+      ["graded", "Graded (octree's own)"],
+    ]);
+    this.octreeMeshHexGradingSelect.title =
+      "Hexahedral output only: one grid at the skin's size, or the octree's own grading through dual transition schemes (fewer cells).";
+    this.octreeMeshHexGradingSelect.addEventListener("change", () => {
+      cb.onOptionsChange({ octreeMeshHexGrading: this.octreeMeshHexGradingSelect.value === "graded" ? "graded" : undefined });
     });
 
     this.octreeMeshMaxSizeInput = this.numberField(form, "Octree-mesh max size (mm)", DEFAULT_MESH_OPTIONS.octreeMeshMaxSize);
@@ -695,6 +774,89 @@ export class MeshingPanel {
       const raw = Number(this.octreeMeshLevelsInput.value);
       cb.onOptionsChange({ octreeMeshLevels: raw >= 1 ? Math.min(OCTREE_MESH_LEVELS_LIMIT, Math.round(raw)) : DEFAULT_MESH_OPTIONS.octreeMeshLevels });
     });
+
+    this.meshcadMinAngleInput = this.numberField(form, "Mesh-CAD min angle (°)", DEFAULT_MESH_OPTIONS.meshcadMinAngle);
+    this.meshcadMinAngleInput.title =
+      "Refine until every triangle's smallest angle is at least this (0-60°); 0 keeps the unrefined mesh. " +
+      "A sharp model corner can make the bound unreachable — the status line then reports the faces below it. Only used by engine: Mesh-CAD.";
+    this.meshcadMinAngleInput.min = "0";
+    this.meshcadMinAngleInput.max = "59.9";
+    this.meshcadMinAngleInput.addEventListener("change", () => {
+      const raw = Number(this.meshcadMinAngleInput.value);
+      cb.onOptionsChange({ meshcadMinAngle: raw > 0 && raw < 60 ? raw : DEFAULT_MESH_OPTIONS.meshcadMinAngle });
+    });
+
+    this.meshcadSmoothInput = this.numberField(form, "Mesh-CAD smoothing passes", DEFAULT_MESH_OPTIONS.meshcadSmoothIterations);
+    this.meshcadSmoothInput.title = `Passes of guarded smoothing (0-${MESHCAD_SMOOTH_LIMIT}). Only used by engine: Mesh-CAD.`;
+    this.meshcadSmoothInput.step = "1";
+    this.meshcadSmoothInput.min = "0";
+    this.meshcadSmoothInput.max = String(MESHCAD_SMOOTH_LIMIT);
+    this.meshcadSmoothInput.addEventListener("change", () => {
+      const raw = Number(this.meshcadSmoothInput.value);
+      cb.onOptionsChange({ meshcadSmoothIterations: raw >= 1 ? Math.min(MESHCAD_SMOOTH_LIMIT, Math.round(raw)) : DEFAULT_MESH_OPTIONS.meshcadSmoothIterations });
+    });
+
+    this.meshcadCurvatureInput = this.numberField(form, "Mesh-CAD curvature deviation (mm)", DEFAULT_MESH_OPTIONS.meshcadCurvatureDeviation);
+    this.meshcadCurvatureInput.title =
+      "Size each region so a chord sits at most this far from the surface; 0 is off. Smaller is finer on curved faces. Only used by engine: Mesh-CAD.";
+    this.meshcadCurvatureInput.min = "0";
+    this.meshcadCurvatureInput.addEventListener("change", () => {
+      const raw = Number(this.meshcadCurvatureInput.value);
+      cb.onOptionsChange({ meshcadCurvatureDeviation: raw > 0 ? raw : DEFAULT_MESH_OPTIONS.meshcadCurvatureDeviation });
+    });
+
+    this.meshcadGapsInput = this.numberField(form, "Mesh-CAD cells across gaps", DEFAULT_MESH_OPTIONS.meshcadCellsAcrossGaps);
+    this.meshcadGapsInput.title =
+      "Size each region so at least this many elements span its local feature size (a wall's thickness, a slot's width); 0 is off. Only used by engine: Mesh-CAD.";
+    this.meshcadGapsInput.min = "0";
+    this.meshcadGapsInput.addEventListener("change", () => {
+      const raw = Number(this.meshcadGapsInput.value);
+      cb.onOptionsChange({ meshcadCellsAcrossGaps: raw > 0 ? raw : DEFAULT_MESH_OPTIONS.meshcadCellsAcrossGaps });
+    });
+
+    this.meshcadGradingInput = this.numberField(form, "Mesh-CAD grading", DEFAULT_MESH_OPTIONS.meshcadGrading);
+    this.meshcadGradingInput.title =
+      "Largest size growth between neighbours, |grad h| ≤ grading − 1: 0 is the default 1.5, otherwise above 1. Acts only with curvature deviation or cells across gaps. Only used by engine: Mesh-CAD.";
+    this.meshcadGradingInput.min = "0";
+    this.meshcadGradingInput.addEventListener("change", () => {
+      const raw = Number(this.meshcadGradingInput.value);
+      cb.onOptionsChange({ meshcadGrading: raw > 1 ? raw : DEFAULT_MESH_OPTIONS.meshcadGrading });
+    });
+
+    // Prism layers (meshio++ 3-D boundaryLayer) — NOT the Part's Gmsh 2-D boundary layer. Mesh-CAD only.
+    this.prismEnabledCheckbox = this.checkboxField(
+      form,
+      "Prism layers",
+      "Grow wedge layers over the Mesh-CAD surface (meshio++ boundaryLayer). The result is the layer shell only — the interior is not meshed — so the mesh dimension becomes 3. Only used by engine: Mesh-CAD."
+    );
+    this.prismHeightInput = this.numberField(form, "Prism first height (mm)", DEFAULT_PRISM_LAYERS.firstHeight);
+    this.prismHeightInput.title = "Thickness of the first layer. Total = first · (growth^layers − 1) / (growth − 1).";
+    this.prismHeightInput.min = "0";
+    this.prismLayersInput = this.numberField(form, "Prism layers", DEFAULT_PRISM_LAYERS.numLayers);
+    this.prismLayersInput.step = "1";
+    this.prismLayersInput.min = "1";
+    this.prismLayersInput.max = String(PRISM_LAYERS_LIMIT);
+    this.prismGrowthInput = this.numberField(form, "Prism growth ratio", DEFAULT_PRISM_LAYERS.growth);
+    this.prismGrowthInput.min = "1";
+    this.prismGrowthInput.max = "10";
+    this.prismReverseCheckbox = this.checkboxField(form, "Prism inward", "Grow against the surface normals — inward on a closed skin.");
+    const emitPrism = (): void => {
+      if (!this.prismEnabledCheckbox.checked) {
+        cb.onOptionsChange({ prismLayers: undefined });
+        return;
+      }
+      const next = validateMeshPrismLayers({
+        firstHeight: Number(this.prismHeightInput.value),
+        numLayers: Number(this.prismLayersInput.value),
+        growth: Number(this.prismGrowthInput.value),
+        reverse: this.prismReverseCheckbox.checked,
+      });
+      // An invalid field reverts to the last stored request via the next sync, never persists half a request.
+      cb.onOptionsChange({ prismLayers: next ?? { ...DEFAULT_PRISM_LAYERS } });
+    };
+    for (const el of [this.prismEnabledCheckbox, this.prismHeightInput, this.prismLayersInput, this.prismGrowthInput, this.prismReverseCheckbox]) {
+      el.addEventListener("change", emitPrism);
+    }
 
     const resetBtn = document.createElement("button");
     resetBtn.type = "button";
@@ -1023,16 +1185,34 @@ export class MeshingPanel {
     if (hexDominantOpt) hexDominantOpt.disabled = options.dimension !== 3;
     this.elementShapeSelect.value = options.elementShape;
     this.optimizeSelect.value = options.optimize;
+    this.meshcadMinAngleInput.value = String(options.meshcadMinAngle);
+    this.meshcadSmoothInput.value = String(options.meshcadSmoothIterations);
+    this.meshcadCurvatureInput.value = String(options.meshcadCurvatureDeviation);
+    this.meshcadGapsInput.value = String(options.meshcadCellsAcrossGaps);
+    this.meshcadGradingInput.value = String(options.meshcadGrading);
+    const prism = options.prismLayers;
+    this.prismEnabledCheckbox.checked = prism !== undefined;
+    this.prismHeightInput.value = String((prism ?? DEFAULT_PRISM_LAYERS).firstHeight);
+    this.prismLayersInput.value = String((prism ?? DEFAULT_PRISM_LAYERS).numLayers);
+    this.prismGrowthInput.value = String((prism ?? DEFAULT_PRISM_LAYERS).growth);
+    this.prismReverseCheckbox.checked = prism?.reverse === true;
+
     this.conformalCheckbox.checked = options.conformal;
     this.stlAngleInput.value = String(options.stlAngle);
     this.budgetInput.value = options.budgetElements ? String(options.budgetElements) : "";
+    this.mdpaRanksInput.value = options.mdpaRanks ? String(options.mdpaRanks) : "";
+    this.mdpaMethodSelect.value = options.mdpaPartitionMethod ?? "auto";
+    this.syncMdpaFields();
     this.ftetwildEpsRelInput.value = String(options.ftetwildEpsRel);
     this.ftetwildManifoldSurfaceCheckbox.checked = options.ftetwildManifoldSurface;
     this.ftetwildCoarsenCheckbox.checked = options.ftetwildCoarsen;
     this.ftetwildDisableFilteringCheckbox.checked = options.ftetwildDisableFiltering;
     this.octreeMaxLevelInput.value = String(options.octreeMaxLevel);
     this.octreeSnapCheckbox.checked = options.octreeSnap;
+    this.octreeTransitionSelect.value = options.octreeTransition;
+    this.mpcVariablesInput.value = options.mpcVariables.join(", ");
     this.octreeMeshOutputSelect.value = options.octreeMeshOutput;
+    this.octreeMeshHexGradingSelect.value = options.octreeMeshHexGrading ?? "uniform";
     this.octreeMeshMaxSizeInput.value = String(options.octreeMeshMaxSize);
     this.octreeMeshLevelsInput.value = String(options.octreeMeshLevels);
 
@@ -1048,12 +1228,14 @@ export class MeshingPanel {
     const ftetwild = options.engine === "ftetwild";
     const octree = options.engine === "octree";
     const octreeMesh = options.engine === "octreemesh";
-    const notGmsh = ftetwild || octree || octreeMesh;
+    const meshcad = options.engine === "meshcad";
+    const notGmsh = ftetwild || octree || octreeMesh || meshcad;
     this.sizeMinInput.disabled = notGmsh;
     this.sizeMaxInput.disabled = octree || octreeMesh;
     this.algorithm2DSelect.disabled = notGmsh;
     this.algorithm3DSelect.disabled = notGmsh;
-    this.elementOrderSelect.disabled = notGmsh;
+    // Mesh-CAD writes curved triangle6 elements, so the order stays live; it makes triangles only.
+    this.elementOrderSelect.disabled = notGmsh && !meshcad;
     this.elementShapeSelect.disabled = notGmsh;
     this.optimizeSelect.disabled = notGmsh;
     this.stlAngleInput.disabled = notGmsh;
@@ -1063,10 +1245,25 @@ export class MeshingPanel {
     this.ftetwildCoarsenCheckbox.disabled = !ftetwild;
     this.ftetwildDisableFilteringCheckbox.disabled = !ftetwild;
     this.octreeMaxLevelInput.disabled = !octree;
-    this.octreeSnapCheckbox.disabled = !octree;
+    const hanging = octree && options.octreeTransition === "hanging";
+    this.octreeSnapCheckbox.disabled = !octree || hanging; // the hanging transition never snaps
+    this.octreeTransitionSelect.disabled = !octree;
+    this.mpcVariablesInput.disabled = !hanging;
     this.octreeMeshOutputSelect.disabled = !octreeMesh;
+    this.octreeMeshHexGradingSelect.disabled = !octreeMesh || options.octreeMeshOutput !== "hex";
     this.octreeMeshMaxSizeInput.disabled = !octreeMesh;
     this.octreeMeshLevelsInput.disabled = !octreeMesh;
+    this.meshcadMinAngleInput.disabled = !meshcad;
+    this.meshcadSmoothInput.disabled = !meshcad;
+    this.meshcadCurvatureInput.disabled = !meshcad;
+    this.meshcadGapsInput.disabled = !meshcad;
+    this.meshcadGradingInput.disabled = !meshcad;
+    this.prismEnabledCheckbox.disabled = !meshcad;
+    const prismOn = meshcad && options.prismLayers !== undefined;
+    this.prismHeightInput.disabled = !prismOn;
+    this.prismLayersInput.disabled = !prismOn;
+    this.prismGrowthInput.disabled = !prismOn;
+    this.prismReverseCheckbox.disabled = !prismOn;
 
     this.syncSlider();
 
@@ -1087,7 +1284,8 @@ export class MeshingPanel {
       const elapsed = status.elapsedMs != null ? ` · ${formatElapsed(status.elapsedMs)}` : "";
       const octreeNote = status.octree ? ` · ${octreeSummary(status.octree)}` : "";
       const octreeMeshNote = status.octreeMesh ? ` · ${octreeMeshSummary(status.octreeMesh)}` : "";
-      this.statusEl.textContent = `Nodes: ${status.nodeCount} · Elements: ${status.elementCount}${elapsed}${octreeNote}${octreeMeshNote}`;
+      const meshcadNote = status.meshcad ? ` · ${meshcadSummary(status.meshcad)}` : "";
+      this.statusEl.textContent = `Nodes: ${status.nodeCount} · Elements: ${status.elementCount}${elapsed}${octreeNote}${octreeMeshNote}${meshcadNote}`;
       this.renderQuality(status.quality, status.worstElements);
       this.renderLayerAchieved(status.boundaryLayers);
     }
@@ -1299,7 +1497,7 @@ export class MeshingPanel {
     // Conformal fragmentation only runs on the B-rep OCC-import path; a mesh
     // source ignores the option, so grey it out exactly like the fTetWild
     // row above greys Gmsh-only fields (render() applies the same rule).
-    this.conformalCheckbox.disabled = kind === "mesh" || this.lastOptions?.engine === "ftetwild" || this.lastOptions?.engine === "octree" || this.lastOptions?.engine === "octreemesh";
+    this.conformalCheckbox.disabled = kind === "mesh" || this.lastOptions?.engine === "ftetwild" || this.lastOptions?.engine === "octree" || this.lastOptions?.engine === "octreemesh" || this.lastOptions?.engine === "meshcad";
   }
 
   /**
@@ -1963,6 +2161,31 @@ export class MeshingPanel {
     row.appendChild(select);
     parent.appendChild(row);
     return select;
+  }
+
+  private textField(parent: HTMLElement, label: string, def: string): HTMLInputElement {
+    const row = document.createElement("label");
+    row.className = "meshing-field";
+    const span = document.createElement("span");
+    span.className = "meshing-label";
+    span.textContent = label;
+    row.appendChild(span);
+
+    const input = document.createElement("input");
+    input.type = "text";
+    input.className = "meshing-num";
+    input.value = def;
+    input.spellcheck = false;
+    row.appendChild(input);
+    parent.appendChild(row);
+    return input;
+  }
+
+  /** The rank controls only matter for the two Kratos MDPA export targets; grey them elsewhere. */
+  private syncMdpaFields(): void {
+    const mdpa = this.exportFormatSelect.value.startsWith("mdpa");
+    this.mdpaRanksInput.disabled = !mdpa;
+    this.mdpaMethodSelect.disabled = !mdpa || !this.lastOptions?.mdpaRanks;
   }
 
   private numberField(parent: HTMLElement, label: string, def: number): HTMLInputElement {

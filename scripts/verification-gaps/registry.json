@@ -726,6 +726,30 @@
         "Compressed glTF (Draco and meshopt) loads under the real webview CSP"
       ],
       "note": "Seen green in CI run 39595473671 (master @ 0f46ebf) and in a local `test:integration` run on 2026-10-21. The case opens cube.amf, cube-inch.amf and the zipped cube-zip.amf through the real editor and exports each to STL, pinning the triangle count and that the viewer does not scale the AMF a second time. What is left is how an AMF file READS in the light and high-contrast themes \u2014 a look, not a claim a harness can assert."
+    },
+    {
+      "id": "hanging-octree-mpc-kratos",
+      "section": "All-hexahedra octree with multi-point constraints in MDPA (roadmap item, closed)",
+      "gap": "no Kratos installation was available in this environment, so a hanging-node octree's exported MDPA (`Begin Constraints LinearMasterSlaveConstraint` blocks plus a `HangingNodes` SubModelPart) was checked only against Kratos' own reader SOURCE (`ModelPartIO::ReadConstraintsBlock`, model_part_io.cpp), against VSCode-MDPA-Preview's writer/reader of the same layout, and by an independent parse + patch test in `mcp:smoke` \u2014 never by actually reading the file into Kratos and solving with it.",
+      "status": "open"
+    },
+    {
+      "id": "partitioned-mdpa-kratos",
+      "section": "Partitioned Kratos MDPA export (roadmap item, closed)",
+      "gap": "no Kratos installation was available, so the per-rank files (global node/cell ids, an `InterfaceNodes` SubModelPart, neighbour lists only in `<stem>.partition.json`) were checked only against the single-file export of the same mesh (every element id once, node union and coordinates identical \u2014 `scripts/probe/examples/mdpa-partition.ts` and `mcp:smoke`), never by reading them into a Kratos MPI run; they are NOT Kratos' native `CommunicatorData` layout. The FE Mesh panel's save-dialog \u2192 sibling-files \u2192 overwrite-confirmation flow in `provider.ts` was not driven in a real Extension Development Host session either (the panel's controls are covered by `test:webview`, the headless writer by `mcp:smoke`).",
+      "status": "open"
+    },
+    {
+      "id": "surface-tools-dialogs",
+      "section": "Surface Tools panel (meshio++ 17.23 project_to_cad / grow_prism_layers)",
+      "gap": "the webview round trip (request, stale/cancelled/error replies, hidden attribute) is covered by test:webview, and both kernel operations by mcp:smoke, but the HOST handler's real showOpenDialog/showSaveDialog chain (provider.ts handleSurfaceTool) has not been driven in a real Extension Development Host or by test:integration; a wrong dialog filter or default path would only show there.",
+      "status": "open"
+    },
+    {
+      "id": "prism-layers-kratos",
+      "section": "Surface Tools panel (meshio++ 17.23 project_to_cad / grow_prism_layers)",
+      "gap": "no Kratos was available to read the prism-layer shell's Element3D6N MDPA back; the element name is confirmed only against Kratos core registration, and the wedge node order is verified positive in Gmsh's type-6 order, not in a solver.",
+      "status": "open"
     }
   ]
 }

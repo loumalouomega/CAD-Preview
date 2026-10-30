@@ -52,6 +52,23 @@ describe("buildHandoffManifest", () => {
     expect(m.outputs[0].sha256).toMatch(/^[0-9a-f]{64}$/);
   });
 
+  it("records a hanging-node octree's constraints and says they exist only in MDPA", () => {
+    const octree = {
+      maxLevel: 4, snap: false, transition: "hanging" as const, numLeaves: 1450, numHanging: 378, finestLevel: 4, numSnapped: 0, numRefused: 0,
+      elementMix: { hexahedra: 1450, pyramids: 0, tetrahedra: 0 },
+      constraints: { hangingNodes: 378, constraints: 1134, chained: 2, variables: ["DISPLACEMENT_X", "DISPLACEMENT_Y", "DISPLACEMENT_Z"] },
+    };
+    const m = build({ facts: { ...facts, engineUsed: "octree", octree } });
+    const note = m.notes.find((n) => n.startsWith("Hanging-node octree"))!;
+    expect(note).toContain("378 hanging node(s) tied by 1134 multi-point constraint(s) on DISPLACEMENT_X, DISPLACEMENT_Y, DISPLACEMENT_Z");
+    expect(note).toContain("2 resolved through another hanging node");
+    expect(note).toContain("only in Kratos MDPA");
+    expect(m.octree).toEqual(octree);
+    // Control: the conforming transition carries no such note.
+    const plain = build({ facts: { ...facts, engineUsed: "octree", octree: { ...octree, transition: "templates", constraints: undefined } } });
+    expect(plain.notes.some((n) => n.startsWith("Hanging-node"))).toBe(false);
+  });
+
   it("records achieved boundary-layer rows when the export measured them", () => {
     const boundaryLayers = [{ part: "Wall", plannedRows: 6, achievedMin: 6, achievedMedian: 6, coverage: 1, stations: 9 }];
     const m = build({ facts: { ...facts, boundaryLayers } });

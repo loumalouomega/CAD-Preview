@@ -153,6 +153,10 @@ export function estimateMeshBudget(input: MeshBudgetInput): MeshBudget {
     downgrade("uncertain");
     assumptions.push("Octree sizes by octreeMaxLevel, not by the target size — this estimate does not model it.");
   }
+  if ((input.engine ?? "gmsh") === "meshcad") {
+    downgrade("uncertain");
+    assumptions.push("Mesh-CAD triangulates the B-rep's surface faces to the target size (a 2D mesh) — this volumetric estimate does not model it.");
+  }
   if ((input.engine ?? "gmsh") === "octreemesh") {
     downgrade("uncertain");
     assumptions.push("Octree-mesh sizes by octreeMeshMaxSize and octreeMeshLevels, not by the target size — this estimate does not model it.");

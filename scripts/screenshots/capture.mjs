@@ -323,6 +323,45 @@ const SHOTS = [
     target: { sel: "#mesh-health-panel" },
   },
   {
+    // Surface Tools needs a STEP/IGES source (populate() loads bull.stp). Click "Grow layers…", then answer the
+    // request with the facts the real pipeline returns for bull.stp at the panel's defaults (size 1, first
+    // height 0.05, 3 layers, growth 1.2): 235389 wedges over 78472 surface triangles, 112 shrunk, 1 collapsed.
+    file: "surface-tools.png",
+    setup: async (page) => {
+      await populate(page);
+      const collapsed = await page.evaluate(
+        () => document.getElementById("advanced-group")?.classList.contains("collapsed") ?? false
+      );
+      if (collapsed) await page.click("#advanced-header > .panel-chevron");
+      await sleep(120);
+      await page.fill("#surface-prism-height", "0.05");
+      await page.click("#surface-prism");
+      const requestId = await page.waitForFunction(() => {
+        const req = (window.__sent || []).findLast((m) => m.type === "surfaceToolRequest");
+        return req ? req.requestId : false;
+      }).then((h) => h.jsonValue());
+      await post(page, {
+        type: "surfaceToolResult",
+        requestId,
+        tool: "prismLayers",
+        rows: [
+          ["Wedges", "235389 over 78472 surface triangles"],
+          ["Shrunk / collapsed", "112 / 1"],
+          ["Thickness", "0–0.182 mm of 0.182 planned"],
+          ["Min scaled Jacobian", "0.08166"],
+          ["Cap closed", "yes"],
+        ],
+        written: "bull-layers.vtu",
+        warnings: [
+          "1 points do not grow (their layers would fold or no direction sees all their faces); their cells are pyramids and tetrahedra",
+          "Prism layers fell short of the plan (0.1820 total): 112 point(s) grew a thinner stack than planned; 1 point(s) collapsed to the surface. The reported thickness range is 0.000–0.1820.",
+        ],
+      });
+      await sleep(200);
+    },
+    target: { sel: "#surface-tools-panel" },
+  },
+  {
     file: "edits-geometry.png",
     setup: async (page) => {
       await populate(page);

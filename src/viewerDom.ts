@@ -149,6 +149,7 @@ export function viewerBodyHtml(): string {
             <button id="meshing-generate" class="panel-primary-btn" title="Generate mesh">${glyph("play")} Generate</button>
             <button id="meshing-cancel" class="panel-icon-btn" title="Cancel meshing job" aria-label="Cancel meshing job" disabled hidden>×</button>
             <button id="meshing-worst-toggle" class="panel-icon-btn" title="Highlight worst-quality elements" hidden>${icon("warning")}</button>
+            <button id="meshing-links-toggle" class="panel-icon-btn" title="Show hanging-node constraint links (slave to master)" aria-pressed="false" hidden>${glyph("link")}</button>
             <button id="meshing-deviation" class="panel-icon-btn" title="Measure how far the mesh boundary deviates from the CAD surface (generates with the current options)">${glyph("gap")}</button>
             <button id="meshing-clear" class="panel-icon-btn" title="Clear generated mesh">${glyph("trash")}</button>
           </div>
@@ -242,6 +243,32 @@ export function viewerBodyHtml(): string {
           </div>
         </div>
         <div id="mesh-health-body"></div>
+      </div>
+      <div id="surface-tools-panel" class="side-section" hidden>
+        <div id="surface-tools-header" class="panel-header">
+          <button class="panel-chevron" type="button" aria-expanded="true" title="Collapse section">${glyph("chevronDown")}</button>
+          <span class="panel-icon" aria-hidden="true">${glyph("layers")}</span>
+          <span id="surface-tools-title" class="panel-title">Surface Tools</span>
+        </div>
+        <div id="surface-tools-body">
+          <div class="surface-tool">
+            <div class="surface-tool-title">Project a mesh onto this model</div>
+            <div class="surface-tool-hint">Snaps a surface mesh that carries cad:face (a mesh_cad_surface .msh/.vtk/.vtu) onto this STEP/IGES file's exact faces and writes a new mesh. Reads the file as saved — pending edits are not baked.</div>
+            <label class="surface-field">Max distance (mm) <input id="surface-project-maxdist" type="number" min="0" step="any" placeholder="no limit" title="A point farther than this from its face stays where it is; empty is no limit"></label>
+            <button id="surface-project" title="Pick a surface mesh, then a new file to write the snapped mesh to — neither input is overwritten">Project mesh…</button>
+          </div>
+          <div class="surface-tool">
+            <div class="surface-tool-title">Grow prism layers</div>
+            <div class="surface-tool-hint">Meshes this model's exact surface, grows wedge layers over it and writes a new .vtu/.vtk/.msh (layers plus the base skin and outer cap; the interior is not meshed). Not the Gmsh Part boundary layer.</div>
+            <label class="surface-field">Surface size (mm) <input id="surface-prism-size" type="number" min="0" step="any" value="1" title="Edge length of the surface the layers grow from"></label>
+            <label class="surface-field">First height (mm) <input id="surface-prism-height" type="number" min="0" step="any" value="0.1" title="Thickness of the first layer"></label>
+            <label class="surface-field">Layers <input id="surface-prism-layers" type="number" min="1" max="1000" step="1" value="3"></label>
+            <label class="surface-field">Growth ratio <input id="surface-prism-growth" type="number" min="1" max="10" step="any" value="1.2" title="Each layer's thickness over the one before"></label>
+            <label class="surface-field"><input id="surface-prism-reverse" type="checkbox"> Grow inward</label>
+            <button id="surface-prism" title="Choose a new file to write the layered mesh to — the CAD file is never overwritten">Grow layers…</button>
+          </div>
+          <div id="surface-tools-result"></div>
+        </div>
       </div>
       <div id="region-fit-panel" class="side-section" hidden>
         <div id="region-fit-header" class="panel-header">

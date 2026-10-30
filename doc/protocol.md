@@ -295,6 +295,8 @@ interface MeshOptions {
   optimize: boolean
   stlAngle: number       // classifySurfaces angle, degrees
   budgetElements?: number // advisory element budget — warns, never blocks; omitted when unset
+  mdpaRanks?: number      // partitioned Kratos MDPA export: MPI ranks (2–64); omitted for one file
+  mdpaPartitionMethod?: 'kahip' | 'sfc' // omitted = auto (KaHIP when linked)
 }
 ```
 
@@ -465,6 +467,8 @@ type HostToWebview =
   | { type: 'measureExactError'; requestId: string; message: string }
   | { type: 'meshHealResult'; requestId: string; report: MeshHealthReport }
   | { type: 'meshHealError'; requestId: string; message: string }
+  | { type: 'surfaceToolResult'; requestId: string; tool: 'projectToCad' | 'prismLayers'; rows: Array<[string, string]>; written: string; warnings: string[] }
+  | { type: 'surfaceToolError'; requestId: string; tool: 'projectToCad' | 'prismLayers'; message: string; cancelled?: boolean }
   | { type: 'brepHealthResult'; requestId: string; report: BrepHealthReport }
   | { type: 'brepHealthError'; requestId: string; message: string }
   | { type: 'meshioOpsResult'; requestId: string; steps: Array<{ op: string; applied: boolean; detail: string }>; warnings: string[] }
@@ -596,6 +600,8 @@ An optional `regionAssignment` (`regionNames: string[]` + a base64 `Int32Array` 
 }
 ```
 
+An optional `meshConstraints` is present only for an `.mdpa` whose text has a `Begin Constraints` block (`src/mdpaConstraints.ts`; meshio++ cannot read such a block, so the host strips it from the bytes meshio++ sees and reads it back from the original): `{points, indices, constraintCount, slaveCount, variables, truncated, summary}` — `points` a base64 `Float32Array` xyz of the nodes the links touch (file coordinates, only those nodes), `indices` a base64 `Uint32Array` of slave→master pairs into it (one per distinct pair, capped at 200 000 with the rest counted in `truncated`), `summary` one status line (`15 constraints on 5 slave nodes (DISPLACEMENT_X, …)` plus skipped rows and display caveats). It rides THIS message rather than a following one because `setModel` clears overlays. The webview draws it with `buildFileConstraintLinks()` following the model's up-axis transform. When the file has hanging-node interfaces, the host also removes the coarse/fine interface facets from `dataBase64` (and the same triangles from `regionAssignment`). Mesh data: never persisted or rebound.
+
 ### `parts`
 
 Sent after geometry, once the host has read the parts sidecar (`<model>.parts.json`). Carries the saved part definitions (empty array when no sidecar exists). The webview loads them into `PartsModel`, recolours the model, and renders the Parts panel.
@@ -723,9 +729,13 @@ Every response echoes the webview's `requestId`; the webview ignores replies tha
 
 Sent in reply to `meshingGenerate` (and internally by `meshingExport` when the target is `"msh"`) on a successful GMSH run. `positions`/`indices`/`edges` are the base64 `Float32Array`/`Uint32Array` boundary triangulation + true element-edge line buffer, encoded exactly like `EncodedMesh`'s buffers — for a 3D mesh `indices` is the tetrahedra's boundary faces derived host-side, not the tetrahedra themselves. `nodeCount`/`elementCount` are the full node/element counts (not just the displayed boundary triangle count), and `elapsedMs` is the wall-clock duration of the generate call. `elementGroups` partitions `indices` into contiguous per-part runs (`{name, color, indexStart, indexCount}`, with a trailing `name`/`color` = `null` run for triangles not claimed by any part) so the overlay can be built multi-material with per-part colours. The webview calls `viewer.setMeshOverlay(buildFEMesh(msg.positions, msg.indices, msg.edges, msg.elementGroups))` and renders the stats (counts + time) in the panel's status line. `quality` (optional — omitted if it couldn't be computed, e.g. a 1D mesh) is a `{min, mean, histogram}` summary over the mesh's top-dimension elements' `minSICN` quality (via Gmsh's own `getElementQualities` — see `src/gmshService.ts`'s `computeQualityAndWorstElements` for the verified call shape), rendered as a small min/mean line + bar histogram below the FE Mesh panel's status line. For order-2 meshes it also carries `invalidElements` (elements with a negative Jacobian determinant at any tet10 node, via `getJacobians` — an independent analytic certifier that coincides exactly with `minSICN <= 0` on every measured fixture; rendered as an "N invalid" line, and already covered by the worst-elements overlay through the shared 0.2 threshold).
 
-`octree` (optional — only present when the octree engine ran) carries `{maxLevel, snap, numLeaves, numHanging, finestLevel, numSnapped, numRefused, elementMix: {hexahedra, pyramids, tetrahedra}}`; the panel's status line renders it, and says Parts are not preserved.
+`octree` (optional — only present when the octree engine ran) carries `{maxLevel, snap, transition, numLeaves, numHanging, finestLevel, numSnapped, numRefused, elementMix: {hexahedra, pyramids, tetrahedra}, constraints?}`; the panel's status line renders it, and says Parts are not preserved. `transition` is `"templates"` or `"hanging"`; for `"hanging"` (all hexahedra, `snap` is always `false`) `constraints` is `{hangingNodes, constraints, chained, variables}` — the hanging nodes recovered from the leaf grid, the constraint rows an MDPA export writes (`hangingNodes × variables.length`), how many were tied through another hanging node, and the tied Kratos variables. The `meshingOptions` payload gains the additive fields `octreeTransition` (`"templates"` | `"hanging"`) and `mpcVariables` (a list of identifiers, default `DISPLACEMENT_X/Y/Z`).
+
+`constraintLinks` (optional — only present for the `"hanging"` transition) is a base64 `Uint32Array` of slave→master index PAIRS into the same `positions` buffer, one per (hanging node, master); capped at 200 000 segments, while `octree.constraints` always carries the true counts. The webview draws it with `geometryBuilder.buildConstraintLinks()` as a hidden-until-toggled amber line overlay. The coarse/fine interface faces of such a mesh are already absent from `indices` and `edges`.
 
 `octreeMesh` (optional — only present when the `octreemesh` engine ran) carries `{output, maxSize, minSize, numLeaves, numTetrahedra, numHexahedra, numInverted, minDihedral, maxDihedral, minScaledJacobian, hausdorffToSkin, numFeatureChains, numFeatureChainsMissed, numWarpRefused, warnings}`; the panel's status line renders it. The `meshingOptions` payload gains the additive fields `octreeMeshOutput` (`"tet"` | `"hex"`), `octreeMeshMaxSize` (mm, `0` = automatic) and `octreeMeshLevels` (1–4), and `engine` may now be `"octreemesh"`.
+
+`meshcad` (optional — only present when the `meshcad` engine ran) carries `{targetSize, order, numFaces, numFailed, numTriangles, numPoints, numOpenEdges, numNonManifoldEdges, numMisorientedEdges, minAngleDeg, maxAngleDeg, minEdge, maxEdge, numRefinementPoints, numFacesBelowBound, numSmoothed, numCurvedStraightened, warnings}`; the panel's status line renders it. The `meshingOptions` payload gains the additive fields `meshcadMinAngle` (degrees, 0 ≤ x < 60), `meshcadSmoothIterations` (0–100), `meshcadCurvatureDeviation` (mm), `meshcadCellsAcrossGaps` and `meshcadGrading` (`0` or above 1), all `0` = off, and `engine` may now be `"meshcad"`.
 
 `worstElements` (optional — only ever present for a **3D** generate with at least one element below `threshold`) is a highlight overlay of the mesh's worst-quality elements: `indices` is those elements' own full boundary, ready to index into the SAME `positions` buffer `meshingResult.indices` uses. The webview calls `viewer.setWorstElementsOverlay(buildWorstElementsHighlight(msg.positions, msg.worstElements.indices))`, rendered with a depth-test-disabled "ghost" material (mirroring the Hidden Lines display mode's ghost-line technique) so it stays visible through occluding geometry regardless of true 3D depth — closing the roadmap gap where bad tets are frequently interior and invisible in the boundary-only overlay above. `shownCount`/`belowThresholdCount` differ only when the highlight was capped (`MAX_WORST_ELEMENTS`, prioritizing the lowest-quality elements first); the panel reports both, e.g. "showing worst 2000 of 5300".
 
@@ -1117,6 +1127,9 @@ type WebviewToHost =
   | { type: 'measureExactRequest'; requestId: string; kind: ExactMeasureKind; entityIdA: string; entityIdB?: string }
   | { type: 'meshHealRequest'; requestId: string; autoDecimate?: boolean }
   | { type: 'brepHealthRequest'; requestId: string }
+  | ({ type: 'surfaceToolRequest'; requestId: string }
+      & ({ tool: 'projectToCad'; maxDistance: number }
+       | { tool: 'prismLayers'; targetSize: number; firstHeight: number; numLayers: number; growth: number; reverse: boolean }))
   | { type: 'bomRequest'; requestId: string }
   | { type: 'holeTableRequest'; requestId: string }
   | { type: 'fitRegionRequest'; requestId: string; point: [number, number, number] }
@@ -1259,7 +1272,7 @@ Sent when the user clicks **▶ Generate** in the FE Mesh panel. Carries the cur
 
 ### `meshingExport`
 
-Sent when the user picks a format in the FE Mesh panel's export `<select>` and clicks **📤 Export**. `target` is a `MeshExportFormatId` (see `src/meshExportFormats.ts`'s `MESH_EXPORT_FORMATS` registry, the single source of truth shared by the host and the webview's `<select>` — `"mdpaElements"` is listed first and is therefore the default-selected format) selecting which output to write: `"msh"` runs `generateMesh` and saves the raw `.msh` text; `"geoUnrolled"` calls `exportGeoUnrolled` and saves the `.geo_unrolled` text (handling its XAO companion, see below); `"mdpaElements"`/`"mdpaGeometries"` run `exportMdpa`, a hand-written Kratos MDPA serializer with no `gmsh.write()` involved at all (see `doc/gmsh-integration.md`'s "Kratos MDPA" section); every other id (`"msh2"`, `"vtk"`, `"unv"`, `"inp"`, `"bdf"`, `"su2"`, `"mesh"`, `"stl"`, `"diff"`, `"off"`) runs `exportMeshFormat`, a generic mesh-then-`gmsh.write()` for whatever other Gmsh output formats this WASM build actually supports (confirmed by probing every format Gmsh's writer table recognizes — see `doc/gmsh-integration.md`). Same `options`/optional `stl` payload as `meshingGenerate`, plus an optional `unit` (`DisplayUnit`, default `"mm"`) from the panel's `#meshing-export-unit` `<select>` — a REAL geometric scale applied to the geometry before Gmsh ever sees it (B-rep sources via `exportBRep`'s `scaleFactor`, mesh-format sources via the new `scaleStlBytes`), with `MeshOptions.sizeMin`/`sizeMax` and any per-part `meshSize` proportionally rescaled to match (`scaleMeshOptionsForUnit`/ `scalePartsMeshSizeForUnit`, `src/meshOptions.ts`) — see CLAUDE.md's Meshing section for the full write-up. `unit` is scoped to this message only: `meshingGenerate` always meshes at native mm, since its overlay is display-only with no exported file whose numbers need to mean anything externally. The host prompts a save dialog (reusing the same `promptSaveAndWrite` helper Export uses) and writes the result directly — there is no `meshingResult` reply for this message; failures post the general `error` message instead of `meshingError`.
+Sent when the user picks a format in the FE Mesh panel's export `<select>` and clicks **📤 Export**. `target` is a `MeshExportFormatId` (see `src/meshExportFormats.ts`'s `MESH_EXPORT_FORMATS` registry, the single source of truth shared by the host and the webview's `<select>` — `"mdpaElements"` is listed first and is therefore the default-selected format) selecting which output to write: `"msh"` runs `generateMesh` and saves the raw `.msh` text; `"geoUnrolled"` calls `exportGeoUnrolled` and saves the `.geo_unrolled` text (handling its XAO companion, see below); `"mdpaElements"`/`"mdpaGeometries"` run `exportMdpa`, a hand-written Kratos MDPA serializer with no `gmsh.write()` involved at all (see `doc/gmsh-integration.md`'s "Kratos MDPA" section); every other id (`"msh2"`, `"vtk"`, `"unv"`, `"inp"`, `"bdf"`, `"su2"`, `"mesh"`, `"stl"`, `"diff"`, `"off"`) runs `exportMeshFormat`, a generic mesh-then-`gmsh.write()` for whatever other Gmsh output formats this WASM build actually supports (confirmed by probing every format Gmsh's writer table recognizes — see `doc/gmsh-integration.md`). Same `options`/optional `stl` payload as `meshingGenerate`, plus an optional `unit` (`DisplayUnit`, default `"mm"`) from the panel's `#meshing-export-unit` `<select>` — a REAL geometric scale applied to the geometry before Gmsh ever sees it (B-rep sources via `exportBRep`'s `scaleFactor`, mesh-format sources via the new `scaleStlBytes`), with `MeshOptions.sizeMin`/`sizeMax` and any per-part `meshSize` proportionally rescaled to match (`scaleMeshOptionsForUnit`/ `scalePartsMeshSizeForUnit`, `src/meshOptions.ts`) — see CLAUDE.md's Meshing section for the full write-up. `unit` is scoped to this message only: `meshingGenerate` always meshes at native mm, since its overlay is display-only with no exported file whose numbers need to mean anything externally. The host prompts a save dialog (reusing the same `promptSaveAndWrite` helper Export uses) and writes the result directly — there is no `meshingResult` reply for this message; failures post the general `error` message instead of `meshingError`. With `options.mdpaRanks` ≥ 2 an MDPA target asks for one save-dialog stem and writes `<stem>_<rank>.mdpa` per rank plus `<stem>.partition.json` beside it (existing siblings are confirmed first); the message shape is unchanged. See [Partitioned MDPA](./gmsh-integration.md#partitioned-mdpa).
 
 ```json
 { "type": "meshingExport", "requestId": "mesh-request-2", "target": "geoUnrolled", "options": { "dimension": 3, "sizeMin": 0, "sizeMax": 1e22, "algorithm2D": 6, "algorithm3D": 1, "elementOrder": 1, "optimize": true, "stlAngle": 40 }, "unit": "in" }
@@ -1534,6 +1547,31 @@ Sent when the B-rep Health panel's **Check** button is clicked — only reachabl
 
 ```json
 { "type": "brepHealthRequest", "requestId": "1234-0.56" }
+```
+
+### `surfaceToolRequest`
+
+Sent by the **Surface Tools** panel (Advanced ▸ Analysis; STEP/IGES sources only — the panel hides itself otherwise) — the interactive counterparts of the `project_to_cad` and `grow_prism_layers` MCP tools (meshio++ 17.23). `tool` selects the action:
+
+- `projectToCad` (`maxDistance`, `0` = no limit): the host opens a file dialog for the surface mesh to snap (`.msh`/`.vtk`/`.vtu` carrying the `cad:face` cell data `mesh_cad_surface` writes), then a save dialog, and snaps the mesh onto the open document's exact faces.
+- `prismLayers` (`targetSize`, `firstHeight`, `numLayers`, `growth`, `reverse`): the host opens a save dialog (`.vtu`/`.vtk`/`.msh`), meshes the document's exact surface at `targetSize`, grows the wedge layers and writes the layered shell (layers + base skin + cap; the interior is not meshed).
+
+Both read the file as saved (pending edits are **not** baked — the panel says so), run in the kernel worker, and never write the CAD source or the picked mesh. Answered with `surfaceToolResult` / `surfaceToolError`; a reply whose `requestId` is not the latest is ignored.
+
+```json
+{ "type": "surfaceToolRequest", "requestId": "1234-0.56", "tool": "prismLayers", "targetSize": 1, "firstHeight": 0.05, "numLayers": 3, "growth": 1.2, "reverse": false }
+```
+
+### `surfaceToolResult` / `surfaceToolError`
+
+Sent in reply to `surfaceToolRequest`. `rows` are label/value facts the host already formatted (projection: projected / on-edge / too-far+failed / outside-trim counts and the largest move; layers: wedge count over the surface triangles, shrunk and collapsed points, achieved against planned thickness, least scaled Jacobian, cap closed), `written` is the new file's path and `warnings` are meshio++'s own plus the shortfall notes, verbatim. Facts only — no pass/fail. `surfaceToolError` carries `cancelled: true` when the user dismissed a dialog (the panel clears its message instead of showing an error).
+
+```json
+{ "type": "surfaceToolResult", "requestId": "1234-0.56", "tool": "prismLayers", "rows": [["Wedges", "756 over 252 surface triangles"], ["Thickness", "0.182–0.182 mm of 0.182 planned"]], "written": "/models/block-layers.vtu", "warnings": [] }
+```
+
+```json
+{ "type": "surfaceToolError", "requestId": "1234-0.56", "tool": "projectToCad", "message": "meshio++: project_to_cad: the mesh has no cell data 'cad:face' naming each cell's CAD face (mesh_cad_surface writes it)" }
 ```
 
 ### `primitiveRecognizeRequest` / `decomposeExportClicked` / `decomposeSaveMacroClicked`

@@ -76,6 +76,9 @@ import {
   transformMeshTool,
   remeshMeshTool,
   inspectMeshioFieldsTool,
+  checkMeshConformityTool,
+  projectToCadTool,
+  growPrismLayersTool,
   pinAnnotation,
   promoteMeshToBrepTool,
   repairMeshTool,
@@ -857,6 +860,19 @@ server.registerTool(
 );
 
 server.registerTool(
+  "check_mesh_conformity",
+  {
+    description:
+      "Facts about whether a meshio++-readable mesh file is node-for-node conforming (meshio++ checkConformity): hanging nodes (points on a volume cell's face or edge the cell does not use), T-junctions (2-D), partially overlapping and unwelded facet pairs, boundary and non-manifold facet counts, and the findInterface mode that suits the mesh. Facts only -- an octree 'hanging' transition is non-conforming by design, a Gmsh or octreemesh tet mesh is conforming. Reads the raw file (pending mesh edits are not baked); a B-rep or mesh-parser source returns supported:false (export_mesh first).",
+    inputSchema: {
+      path: modelPath,
+      tolerance: z.number().optional().describe("Distances at or below this fraction of the examined facets' bounding-box diagonal count as zero (default 1e-9)"),
+    },
+  },
+  wrap((args: { path: string; tolerance?: number }) => checkMeshConformityTool(ctx, args))
+);
+
+server.registerTool(
   "inspect_meshio_fields",
   {
     description:
@@ -1018,7 +1034,7 @@ server.registerTool(
   "mesh_cad_surface",
   {
     description:
-      "B-rep -> conforming SURFACE mesh with no CAD kernel (meshio++ meshCadSurface): every face of a STEP/IGES file (or a Kratos .cad.json model) is triangulated to edges of about targetSize, and every B-rep edge is sampled ONCE and shared by its faces, so neighbouring faces meet node-for-node and the surface is watertight whenever the B-rep is (block.stp at 0.5 closes with 0 open edges and encloses exactly 60; bull.stp's 36 faces mesh in ~100 ms). Writes the mesh to a NEW file at outputPath (.stl/.obj/.ply/.vtk/.vtu/.msh; triangles carry cad:face, an optional line block of the B-rep edges carries cad:edge in the formats that hold cell data; OBJ drops the edge block). FACTS ONLY: numFaces/numFailed, numOpenEdges/numNonManifoldEdges/numMisorientedEdges (all 0 = closed, consistently wound), min/max edge length and triangle angle, maxEdgeGap, and per-face {status, reason} for every face that did not come back ok (a face that cannot be meshed is listed, never meshed wrong; strict:true throws instead). Not a replacement for generate_mesh: it makes a boundary SURFACE (no volume, no Parts) and does not need OpenCASCADE at all -- use it when you want an exact-geometry skin for a solver, a viewer or repair_mesh/octreemesh input without tessellate-and-weld. Mesh-format sources are refused (they have no B-rep faces).",
+      "B-rep -> conforming SURFACE mesh with no CAD kernel (meshio++ meshCadSurface): every face of a STEP/IGES file (or a Kratos .cad.json model) is triangulated to edges of about targetSize, and every B-rep edge is sampled ONCE and shared by its faces, so neighbouring faces meet node-for-node and the surface is watertight whenever the B-rep is (block.stp at 0.5 closes with 0 open edges and encloses exactly 60; bull.stp's 36 faces mesh in ~100 ms). Writes the mesh to a NEW file at outputPath (.stl/.obj/.ply/.vtk/.vtu/.msh; triangles carry cad:face, an optional line block of the B-rep edges carries cad:edge in the formats that hold cell data; OBJ drops the edge block). FACTS ONLY: numFaces/numFailed, numOpenEdges/numNonManifoldEdges/numMisorientedEdges (all 0 = closed, consistently wound), min/max edge length and triangle angle, maxEdgeGap, and per-face {status, reason} for every face that did not come back ok (a face that cannot be meshed is listed, never meshed wrong; strict:true throws instead). Not a replacement for generate_mesh: it makes a boundary SURFACE (no volume, no Parts) and does not need OpenCASCADE at all -- use it when you want an exact-geometry skin for a solver, a viewer or repair_mesh/octreemesh input without tessellate-and-weld. Mesh-format sources are refused (they have no B-rep faces). Quality controls (meshio++ 17.14-17.20): minAngle refinement, smoothing, curved order 2/3, curvature/gap/grading sizing, per-face and per-edge sizes, virtual edges/faces and model tolerances; every outcome is a fact in the response (numRefinementPoints, numFacesBelowBound, numSmoothed, numCurvedStraightened, angleHistogram, per-face belowBound/boundDeg, virtualEdges, mergedFaces, toleranceUses, loppedCorners). The same mesher is the generate_mesh engine \"meshcad\" (dimension 2).",
     inputSchema: {
       path: modelPath,
       outputPath: z.string().describe("Absolute path of the NEW surface mesh to write (.stl/.obj/.ply/.vtk/.vtu/.msh; must not be the source path)"),
@@ -1029,9 +1045,70 @@ server.registerTool(
       edges: z.boolean().optional().describe("Also write a line block of the B-rep edges with cad:edge (default true; dropped for OBJ)"),
       strict: z.boolean().optional().describe("Throw when any face cannot be meshed instead of listing it (default false)"),
       maxPoints: z.number().optional().describe("The most points in the result (default and ceiling 5 000 000)"),
+      minAngle: z.number().optional().describe("Refine until every triangle's smallest angle is at least this (degrees, 0 <= x < 60); 0 (default) keeps the unrefined mesh. A bound a sharp corner makes impossible is reported (numFacesBelowBound, faces[].belowBound), never promised"),
+      smoothIterations: z.number().optional().describe("Passes of guarded smoothing (integer, default 0)"),
+      smoothMethod: z.enum(["laplacian", "odt"]).optional().describe("How smoothing moves a point (default laplacian)"),
+      order: z.union([z.literal(1), z.literal(2), z.literal(3)]).optional().describe("1 (default) linear triangles; 2 / 3 curved triangle6 / triangle10 elements -- only .msh/.vtk/.vtu can hold them"),
+      grading: z.number().optional().describe("Largest size growth, |grad h| <= grading - 1; 0 (default) is 1.5, otherwise above 1. Acts only with curvatureDeviation or cellsAcrossGaps"),
+      curvatureDeviation: z.number().optional().describe("Size each region so a chord sits at most this far from the surface (model units); 0 (default) is off"),
+      cellsAcrossGaps: z.number().optional().describe("Size each region so at least this many elements span its local feature size (a wall's thickness, a slot's width); 0 (default) is off"),
+      poleRings: z.number().optional().describe("Rings of points seeded around each pole (integer 0-8; default 0)"),
+      faceSizes: z.record(z.string(), z.number()).optional().describe("Size per face, {\"<faceIndex>\": size} (0-based B-rep face indices as meshio++ reads the file): every point of the face is at most that size"),
+      edgeSizes: z.record(z.string(), z.number()).optional().describe("The same per B-rep edge, {\"<edgeIndex>\": size}"),
+      metric: z.enum(["mean", "varying"]).optional().describe("mean (default) meshes each face in its mean metric; varying follows its metric"),
+      virtualEdges: z.boolean().optional().describe("Sample chains of short edges meeting smoothly as one (default false); the chains are reported"),
+      virtualFaces: z.boolean().optional().describe("Mesh a sliver face together with the neighbour it meets tangentially (default false); each sliver is reported in mergedFaces"),
+      modelTolerances: z.boolean().optional().describe("Accept the gaps the model itself declares in its edges (default false); each use is reported in toleranceUses"),
+      reparamConditionNumber: z.number().optional().describe("Mesh a face whose metric's condition number passes this in a flattening of its coarse mesh; 0 (default) is off, otherwise above 1; at order 2 / 3 the curved nodes follow the flattening"),
+      lopCorners: z.boolean().optional().describe("Lop acute corners in place of concentric shells (default false; needs minAngle). On bull.stp it left more refinement unfinished than the default -- check numFacesBelowBound and the warnings"),
+      untangle: z.boolean().optional().describe("With order 2 or 3, move a face's own high-order nodes on the surface to untangle a folded curved element (default false)"),
+      quads: z.enum(["none", "dominant", "all"]).optional().describe("none (default) triangles only; dominant recombines triangle pairs into quads where they make a good one; all splits the quad-dominant mesh into quads only (not with virtualEdges). Order 2/3 write quad9/quad16. Writers: .obj/.ply/.vtk/.vtu/.msh (not .stl)"),
+      quadPairs: z.enum(["matching", "greedy"]).optional().describe("How triangles pair into quads: matching (default, maximum matching of greatest total quality) or greedy (best pair first). Needs quads"),
     },
   },
   wrap((args: Parameters<typeof meshCadSurfaceTool>[1]) => meshCadSurfaceTool(ctx, args))
+);
+
+server.registerTool(
+  "project_to_cad",
+  {
+    description:
+      "Snap a surface mesh onto the exact faces of a CAD file (meshio++ projectToCad) and write a NEW mesh. `path` is the mesh -- it must carry the cad:face cell data (and cad:edge lines for edge snapping) that mesh_cad_surface writes, so use .msh/.vtk/.vtu; `cadPath` is the STEP/IGES/.cad.json that supplies the NURBS faces. Connectivity and cell data are unchanged; points move onto the faces, edge points onto the edge curves. Facts only: numProjected, numOnEdges, numOnCurves, numCorners, numAmbiguous, numTooFar (beyond maxDistance, left in place), numFailed, numOutsideTrim (+ outsideTrim point ids, capped), maxMove. An unperturbed mesh_cad_surface output moves ~1e-16. Reads the raw files (pending edits are not baked); neither input is written.",
+    inputSchema: {
+      path: modelPath,
+      cadPath: z.string().describe("The CAD file (.step/.stp/.iges/.igs/.cad.json) whose NURBS faces the mesh is snapped onto"),
+      outputPath: z.string().describe("New mesh file to write (.stl/.obj/.ply/.vtk/.vtu/.msh); must not be either input"),
+      faceArray: z.string().optional().describe("Cell data naming each triangle's CAD face (default cad:face)"),
+      edgeArray: z.string().optional().describe("Cell data naming each line's CAD edge (default cad:edge)"),
+      maxDistance: z.number().optional().describe("A point farther than this from its face stays put (model units; 0 = no limit, the default)"),
+      trimSamples: z.number().optional().describe("Samples per knot span when testing a face's trims (integer 1-1024, default 16)"),
+    },
+  },
+  wrap((args: Parameters<typeof projectToCadTool>[1]) => projectToCadTool(ctx, args))
+);
+
+server.registerTool(
+  "grow_prism_layers",
+  {
+    description:
+      "Grow prism (wedge) layers over a closed triangle surface (meshio++ 3-D boundaryLayer) and write a NEW layered mesh. `path` is a CAD source (.step/.stp/.iges/.igs/.cad.json, meshed first at targetSize) or a closed triangle mesh file (stl/obj/ply or a meshio++ surface format). Output (.vtk/.vtu/.msh) holds the wedges plus the base skin and the outer cap; the interior is NOT meshed. firstHeight (required), numLayers (default 3), growth (default 1.2), reverse (grow against the normals = inward on a closed skin), collapse points|layers, collisionFraction, smoothIterations, maxShrink, normalSmoothIterations, frontCheck. Facts only: numWedges (+ pyramids/tetrahedra where a point could not grow), numShrunk, numCollapsed, numFewerLayers, numFrontCrossings, minScaledJacobian, minThickness/maxThickness against plannedThickness, capClosed, meshio++'s warnings verbatim. This is NOT the Gmsh 2-D Part boundary layer. The same layers are available in generate_mesh/export_mesh via options.prismLayers with engine meshcad. block.stp at targetSize 1 / firstHeight 0.05 / 3 layers: 756 wedges, thickness 0.182. Source is untouched; pending edits are not baked.",
+    inputSchema: {
+      path: modelPath,
+      outputPath: z.string().describe("New layered mesh file to write (.vtk/.vtu/.msh); must not be the source"),
+      targetSize: z.number().optional().describe("Required for a CAD source: the surface edge length the layers grow from (model units)"),
+      firstHeight: z.number().describe("First layer thickness (model units, > 0)"),
+      numLayers: z.number().optional().describe("Layers (integer 1-1000, default 3)"),
+      growth: z.number().optional().describe("Each layer's thickness over the one before (1-10, default 1.2)"),
+      reverse: z.boolean().optional().describe("Grow against the faces' normals; on a closed skin that is inward (default false)"),
+      collapse: z.enum(["points", "layers"]).optional().describe("How a folding point gives way: halve then collapse its layers (points, default) or drop its top layer (layers)"),
+      collisionFraction: z.number().optional().describe("Fraction of the distance a point's ray hits, in (0, 1] (default 0.45)"),
+      smoothIterations: z.number().optional().describe("Smoothing passes (integer 0-1000, default 5)"),
+      maxShrink: z.number().optional().describe("Halvings of a point's layers before they collapse (integer 0-64, default 6)"),
+      normalSmoothIterations: z.number().optional().describe("Laplacian passes over the growth directions (integer 0-1000, default 0)"),
+      frontCheck: z.boolean().optional().describe("Test the last layer's faces against each other and the surface (default true)"),
+    },
+  },
+  wrap((args: Parameters<typeof growPrismLayersTool>[1]) => growPrismLayersTool(ctx, args))
 );
 
 server.registerTool(
@@ -1837,7 +1914,7 @@ server.registerTool(
       name: z.string().describe("Unique name within the library; how apply_mesh_preset refers to it"),
       options: z.looseObject({}).describe("Partial MeshOptions, in `unit`"),
       unit: z.string().optional().describe("Unit the sizes were authored in: mm | cm | m | in | ft (default mm)"),
-      engine: z.string().optional().describe("Pinned engine: gmsh | ftetwild | octree | octreemesh (default gmsh)"),
+      engine: z.string().optional().describe("Pinned engine: gmsh | ftetwild | octree | octreemesh | meshcad (default gmsh)"),
       description: z.string().optional().describe("Free text shown by list_mesh_presets"),
       overwrite: z.boolean().optional().describe("Replace an existing preset of the same name (default false: a name collision is an error)"),
     },
@@ -2004,7 +2081,7 @@ server.registerTool(
   "export_mesh",
   {
     description:
-      "Generate a mesh and write it to outputPath in the given format (format ids from describe_capabilities: mdpaElements, mdpaGeometries, msh, msh2, geoUnrolled, vtk, unv, inp, bdf, su2, mesh, stl, diff, off). geoUnrolled also writes a required .xao companion beside the output for B-rep sources. Optional unit (mm|cm|m|in|ft, default mm) applies a real geometric scale to the meshed geometry BEFORE Gmsh ever sees it (mirroring export_brep's unit param), with sizeMin/sizeMax and any per-part meshSize proportionally rescaled to match — generate_mesh (and the interactive Generate button) always stay native mm; this only affects export_mesh's written file. Optional handoffPath writes a versioned simulation handoff contract for the selected export. For queue-managed dispatch, supply ownerId, requestId and receiptPath together: a durable receipt is written before dispatch, exposes artifact revisions and refuses duplicate receipt paths. Emits notifications/progress at start and completion if you set _meta.progressToken (start/done only — see generate_mesh's note).",
+      "Generate a mesh and write it to outputPath in the given format (format ids from describe_capabilities: mdpaElements, mdpaGeometries, msh, msh2, geoUnrolled, vtk, unv, inp, bdf, su2, mesh, stl, diff, off). geoUnrolled also writes a required .xao companion beside the output for B-rep sources. Optional unit (mm|cm|m|in|ft, default mm) applies a real geometric scale to the meshed geometry BEFORE Gmsh ever sees it (mirroring export_brep's unit param), with sizeMin/sizeMax and any per-part meshSize proportionally rescaled to match — generate_mesh (and the interactive Generate button) always stay native mm; this only affects export_mesh's written file. Optional options.mdpaRanks (2-64) on mdpaElements/mdpaGeometries writes one <stem>_<rank>.mdpa per MPI rank plus <stem>.partition.json instead of one file (nothing at outputPath itself; KaHIP unless options.mdpaPartitionMethod says sfc; global node/cell ids and an InterfaceNodes SubModelPart per rank — not Kratos' native CommunicatorData layout, which the warnings say). Optional handoffPath writes a versioned simulation handoff contract for the selected export. For queue-managed dispatch, supply ownerId, requestId and receiptPath together: a durable receipt is written before dispatch, exposes artifact revisions and refuses duplicate receipt paths. Emits notifications/progress at start and completion if you set _meta.progressToken (start/done only — see generate_mesh's note).",
     inputSchema: {
       path: modelPath,
       format: z.string().describe("Mesh export format id"),

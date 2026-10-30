@@ -29,6 +29,7 @@ import { validateMmgOptions } from "./mmgOptions";
 import { remeshedParts } from "./mmgParts";
 import { buildMeshProvenanceNotes } from "./meshProvenanceNotes";
 import { meshioCompanionCandidates } from "./meshioCompanions";
+import { dropInterfaceFacets, mdpaConstraintSummary, parseMdpaConstraintLinks } from "./mdpaConstraints";
 import type { MeshioCompanion } from "./meshioService";
 import {
   encodeBuffer,
@@ -82,7 +83,8 @@ import { readViewState, writeViewState, viewStateSidecarUri } from "./viewStateS
 import { writeCustomBackup, restoreCustomBackup } from "./customBackup";
 import type { MeshGenerationInput } from "./gmshService";
 import type { MeshioMetadataSummary } from "./meshioService";
-import { meshExportFormat, companionSaveName, MESH_EXPORT_FORMATS, type MeshExportFormatId } from "./meshExportFormats";
+import { meshExportFormat, companionSaveName, constraintExportWarning, MESH_EXPORT_FORMATS, type MeshExportFormatId } from "./meshExportFormats";
+import { rankFileName, partitionManifestName, partitionManifestJson, partitionWarnings, PARTITION_LAYOUT_NOTE } from "./mdpaPartition";
 import { SIZE_MAX_SENTINEL, applyStlPartSizeOverride, scaleMeshOptionsForUnit, scalePartsMeshSizeForUnit } from "./meshOptions";
 import type { MeshOptions } from "./meshOptions";
 import { viewerBodyHtml } from "./viewerDom";
@@ -2612,6 +2614,8 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
               boundaryLayers: result.boundaryLayers,
               octree: result.octree,
               octreeMesh: result.octreeMesh,
+              meshcad: result.meshcad,
+              constraintLinks: result.constraintLinks ? encodeBuffer(result.constraintLinks) : undefined,
             });
           });
         } catch (err) {
@@ -2768,6 +2772,11 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
 
       if (msg.type === "promoteToBrepButtonClicked") {
         if (route) void this.handlePromoteToBrep(document.uri, route, post, msg.mergeFacets === true);
+        return;
+      }
+
+      if (msg.type === "surfaceToolRequest") {
+        if (route) void this.handleSurfaceTool(document.uri, route, msg, post);
         return;
       }
 
@@ -4141,9 +4150,32 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
         isFoam ? null : this.docPipeline(uri).readMeshioProvenance(bytes!, format, basename, companions!),
         readParts(uri),
       ]);
+      // A Kratos deck with multi-point constraints (hanging nodes): meshio++ opened
+      // it with the constraint blocks stripped (`stageMeshioSource`); read them
+      // back here from the original bytes so the links can be drawn, and take the
+      // coarse/fine interface out of the displayed boundary.
+      let stlBytes = boundary.stlBytes;
+      let regions = boundary.regions;
+      let constraintLinks: ReturnType<typeof parseMdpaConstraintLinks>;
+      let interfaceNote: string | undefined;
+      if (format === "mdpa" && bytes) {
+        constraintLinks = parseMdpaConstraintLinks(new TextDecoder().decode(bytes));
+        if (constraintLinks && constraintLinks.interfaceQuads.length > 0) {
+          const dropped = dropInterfaceFacets(new TextDecoder().decode(stlBytes), constraintLinks.interfaceQuads);
+          if (dropped.declined) {
+            interfaceNote = "the model is too large to take the hanging-node interfaces out of the displayed surface — they are drawn as internal walls";
+          } else if (dropped.dropped > 0) {
+            stlBytes = new TextEncoder().encode(dropped.stl);
+            if (regions) {
+              const region = regions.triangleRegion.filter((_, i) => dropped.keep[i]);
+              regions = { regionNames: regions.regionNames, triangleRegion: Int32Array.from(region) };
+            }
+          }
+        }
+      }
       let parts = existingParts;
-      if (boundary.regions && existingParts.length === 0) {
-        const built = buildPartsFromMeshioRegions(boundary.stlBytes, boundary.regions);
+      if (regions && existingParts.length === 0) {
+        const built = buildPartsFromMeshioRegions(stlBytes, regions);
         if (built.length > 0) {
           parts = built;
           try {
@@ -4171,10 +4203,21 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
       post({
         type: "loadMeshBytes",
         sourceFormat: format,
-        dataBase64: Buffer.from(boundary.stlBytes).toString("base64"),
+        dataBase64: Buffer.from(stlBytes).toString("base64"),
         meshioMetadata: hasMetadata ? { ...metadata, arrays: arrays.length > 0 ? arrays : undefined } : undefined,
-        regionAssignment: boundary.regions
-          ? { regionNames: boundary.regions.regionNames, triangleRegionIndex: encodeBuffer(boundary.regions.triangleRegion) }
+        regionAssignment: regions
+          ? { regionNames: regions.regionNames, triangleRegionIndex: encodeBuffer(regions.triangleRegion) }
+          : undefined,
+        meshConstraints: constraintLinks
+          ? {
+              points: encodeBuffer(constraintLinks.points),
+              indices: encodeBuffer(constraintLinks.indices),
+              constraintCount: constraintLinks.constraintCount,
+              slaveCount: constraintLinks.slaveCount,
+              variables: constraintLinks.variables,
+              truncated: constraintLinks.truncated,
+              summary: [mdpaConstraintSummary(constraintLinks), ...constraintLinks.notes, ...(interfaceNote ? [interfaceNote] : [])].join(" · "),
+            }
           : undefined,
       });
       if (provenance) {
@@ -4765,6 +4808,102 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
   }
 
   /**
+   * Surface tools panel (meshio++ 17.23): `project_to_cad` and
+   * `grow_prism_layers` over the OPEN document's STEP/IGES source. The host owns
+   * the dialogs (project: the mesh to snap, then a save path; prism: a save
+   * path); the kernel worker does the work on raw bytes, so pending edits are
+   * NOT baked (the panel says so). Neither the CAD source nor the picked mesh is
+   * written. Replies `surfaceToolResult` (label/value facts) or `surfaceToolError`.
+   */
+  private async handleSurfaceTool(
+    uri: vscode.Uri,
+    route: FileRoute,
+    msg: Extract<WebviewToHost, { type: "surfaceToolRequest" }>,
+    post: (msg: HostToWebview) => void
+  ): Promise<void> {
+    const fail = (message: string, cancelled = false): void => post({ type: "surfaceToolError", requestId: msg.requestId, tool: msg.tool, message, cancelled });
+    if (route.format !== "step" && route.format !== "iges") {
+      fail("Surface tools need a STEP or IGES source (they read its exact NURBS faces).");
+      return;
+    }
+    const baseName = uri.path.slice(uri.path.lastIndexOf("/") + 1).replace(/\.[^.]+$/, "");
+    try {
+      const cadBytes = await vscode.workspace.fs.readFile(uri);
+      const pipeline = this.docPipeline(uri);
+      const sig = (n: number): string => (Number.isFinite(n) ? Number(n.toPrecision(4)).toString() : "n/a");
+      if (msg.tool === "projectToCad") {
+        const picked = await vscode.window.showOpenDialog({
+          canSelectMany: false,
+          openLabel: "Project this mesh",
+          title: "Mesh to snap onto this model (must carry cad:face — a mesh_cad_surface .msh / .vtk / .vtu)",
+          filters: { "Surface mesh": ["msh", "vtk", "vtu"] },
+        });
+        if (!picked || picked.length === 0) return fail("Cancelled.", true);
+        const meshUri = picked[0];
+        const meshRoute = routeFile(meshUri.fsPath);
+        if (!meshRoute || meshRoute.strategy !== "meshio") return fail("That file is not a meshio++-readable surface mesh.");
+        const saveUri = await vscode.window.showSaveDialog({
+          defaultUri: vscode.Uri.joinPath(uri, "..", `${baseName}-projected.vtu`),
+          filters: { "Surface mesh": ["vtu", "vtk", "msh"] },
+        });
+        if (!saveUri) return fail("Cancelled.", true);
+        if (saveUri.fsPath === uri.fsPath || saveUri.fsPath === meshUri.fsPath) return fail("Choose a new file — neither input is overwritten.");
+        const ext = saveUri.path.slice(saveUri.path.lastIndexOf(".")).toLowerCase();
+        const meshBytes = await vscode.workspace.fs.readFile(meshUri);
+        const options = msg.maxDistance > 0 ? { maxDistance: msg.maxDistance } : {};
+        const result = await pipeline.projectMeshToCad(meshBytes, meshRoute.format, cadBytes, route.format, ext, options);
+        await vscode.workspace.fs.writeFile(saveUri, result.outputBytes);
+        const r = result.report;
+        post({
+          type: "surfaceToolResult",
+          requestId: msg.requestId,
+          tool: "projectToCad",
+          written: saveUri.fsPath,
+          rows: [
+            ["Projected", String(r.numProjected)],
+            ["On edges", `${r.numOnEdges} (${r.numOnCurves} on curves, ${r.numCorners} corners)`],
+            ["Too far / failed", `${r.numTooFar} / ${r.numFailed}`],
+            ["Outside trim", String(r.numOutsideTrim)],
+            ["Max move", `${sig(r.maxMove)} mm`],
+          ],
+          warnings: r.warnings,
+        });
+        return;
+      }
+      const saveUri = await vscode.window.showSaveDialog({
+        defaultUri: vscode.Uri.joinPath(uri, "..", `${baseName}-layers.vtu`),
+        filters: { "Layered mesh": ["vtu", "vtk", "msh"] },
+      });
+      if (!saveUri) return fail("Cancelled.", true);
+      if (saveUri.fsPath === uri.fsPath) return fail("Choose a new file — the CAD source is never overwritten.");
+      const ext = saveUri.path.slice(saveUri.path.lastIndexOf(".")).toLowerCase();
+      const result = await pipeline.growPrismLayersModel(
+        { kind: "cad", bytes: cadBytes, meshioFormat: route.format, targetSize: msg.targetSize },
+        ext,
+        { firstHeight: msg.firstHeight, numLayers: msg.numLayers, growth: msg.growth, reverse: msg.reverse || undefined }
+      );
+      await vscode.workspace.fs.writeFile(saveUri, result.outputBytes);
+      const r = result.report;
+      post({
+        type: "surfaceToolResult",
+        requestId: msg.requestId,
+        tool: "prismLayers",
+        written: saveUri.fsPath,
+        rows: [
+          ["Wedges", `${r.numWedges} over ${result.numSurfaceTriangles} surface triangles`],
+          ["Shrunk / collapsed", `${r.numShrunk} / ${r.numCollapsed}`],
+          ["Thickness", `${sig(r.minThickness)}–${sig(r.maxThickness)} mm of ${sig(r.plannedThickness)} planned`],
+          ["Min scaled Jacobian", sig(r.minScaledJacobian)],
+          ["Cap closed", r.capClosed ? "yes" : "no"],
+        ],
+        warnings: r.warnings,
+      });
+    } catch (err) {
+      fail((err as Error).message);
+    }
+  }
+
+  /**
    * "Robust volumetric meshing from a skin mesh", Phase 3 (roadmap item,
    * closed) — the Mesh Health panel's **Repair (robust)** button. Writes a
    * NEW watertight STL file at a save-dialog-chosen path by tetrahedralizing
@@ -5332,6 +5471,50 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
             }),
             post
           );
+        } else if ((target === "mdpaElements" || target === "mdpaGeometries") && (options.mdpaRanks ?? 1) >= 2) {
+          // One MDPA per MPI rank plus a manifest (`mdpaPartition.ts`). The save dialog names the STEM; the
+          // files are `<stem>_<rank>.mdpa` beside it, so ask first and mesh only once the user has committed.
+          const format = meshExportFormat(target)!;
+          const baseName = uri.path.slice(uri.path.lastIndexOf("/") + 1).replace(/\.[^.]+$/, "");
+          const saveUri = await vscode.window.showSaveDialog({
+            defaultUri: vscode.Uri.joinPath(uri, "..", `${baseName}.${format.extension}`),
+            filters: { [`${format.filterLabel} — one file per rank`]: [format.extension] },
+          });
+          if (saveUri) {
+            const saveName = saveUri.path.slice(saveUri.path.lastIndexOf("/") + 1);
+            const stem = saveName.replace(/\.mdpa$/i, "");
+            const split = await this.docPipeline(uri).exportMdpaPartitioned(
+              this.context.extensionPath,
+              input,
+              options,
+              parts,
+              target === "mdpaElements" ? "elements" : "geometries",
+              stem
+            );
+            const sourceName = uri.path.slice(uri.path.lastIndexOf("/") + 1);
+            const outputs = [
+              ...split.files.map((f) => ({ uri: vscode.Uri.joinPath(saveUri, "..", rankFileName(stem, f.rank)), bytes: Buffer.from(f.text, "utf8") })),
+              { uri: vscode.Uri.joinPath(saveUri, "..", partitionManifestName(stem)), bytes: Buffer.from(partitionManifestJson(split.report, { source: sourceName, format: target }), "utf8") },
+            ];
+            // The save dialog only confirmed ONE name; the siblings must not be replaced unasked.
+            const existing: string[] = [];
+            for (const o of outputs) {
+              try {
+                await vscode.workspace.fs.stat(o.uri);
+                existing.push(o.uri.path.slice(o.uri.path.lastIndexOf("/") + 1));
+              } catch { /* absent: nothing to overwrite */ }
+            }
+            const overwrite = "Overwrite";
+            if (existing.length === 0 || (await vscode.window.showWarningMessage(`${existing.length} existing file${existing.length === 1 ? "" : "s"} would be replaced: ${existing.join(", ")}`, { modal: true }, overwrite)) === overwrite) {
+              for (const o of outputs) await writeCompanion(o.uri, o.bytes);
+              const r = split.report;
+              post({
+                type: "status",
+                text: `Exported ${r.ranks} rank files (${rankFileName(stem, 0)} … ${rankFileName(stem, r.ranks - 1)}) and ${partitionManifestName(stem)} — ${r.methodUsed.toUpperCase()}, balance ${r.balanceMaxOverMean.toFixed(3)}, ${r.interfaceNodes} interface nodes (${(r.interfaceFraction * 100).toFixed(1)} %).`,
+              });
+              for (const w of [...partitionWarnings(r), PARTITION_LAYOUT_NOTE]) post({ type: "status", text: w });
+            }
+          }
         } else if (target === "mdpaElements" || target === "mdpaGeometries") {
           // Kratos MDPA is hand-serialized (no gmsh.write() support at all — see
           // exportMdpa's doc comment), unlike every other format below.
@@ -5418,6 +5601,14 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
             captured(async () => Buffer.from(text, "utf8")),
             post
           );
+        }
+        // A hanging-node octree's constraints exist only in MDPA: any other format
+        // is a non-conforming mesh — say so after the write, never drop them silently.
+        const lossFormat = meshExportFormat(target);
+        const lossWarning = lossFormat && writtenFiles.length > 0 ? constraintExportWarning(options, lossFormat) : null;
+        if (lossWarning) {
+          post({ type: "status", text: lossWarning });
+          void vscode.window.showWarningMessage(lossWarning);
         }
         if (manifest && writtenFiles.length > 0 && route) {
           this.assertMeshingJobActive();

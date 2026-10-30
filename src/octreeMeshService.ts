@@ -1,6 +1,6 @@
 import { getMeshio, wrapMeshioFault } from "./meshioService";
 import { octreeToMsh41, type OctreeBlock } from "./octreeService";
-import type { OctreeMeshOutput, OctreeMeshStats } from "./meshOptions";
+import type { OctreeMeshHexGrading, OctreeMeshOutput, OctreeMeshStats } from "./meshOptions";
 
 export type { OctreeMeshStats };
 
@@ -17,13 +17,17 @@ export type { OctreeMeshStats };
 //
 // Fixed on purpose (probe `scripts/probe/examples/meshio-octreemesh.ts`):
 // `castellated` is NOT offered — it carries hanging nodes and surrogate
-// boundary faces, so it is not a conforming mesh for any downstream reader.
+// boundary faces, so it is not a conforming mesh for any downstream reader
+// (the hanging nodes WITH constraints are `engine: "octree"`'s `hanging`
+// transition, `hangingConstraints.ts`).
 // meshio++'s own sizing default is far too fine (a 10 mm cube → 516 432 tets
 // in 33 s; all-hex block.stp → `std::bad_alloc`), so the sizes are always
 // derived here from the skin's bounding box and the cell caps always passed.
 
 export interface OctreeMeshParams {
   output: OctreeMeshOutput;
+  /** Hexahedral output only (meshio++ 17.23): `"graded"` keeps the octree's grading; default uniform. */
+  hexGrading?: OctreeMeshHexGrading;
   /** Largest leaf edge in mm; 0 = automatic (see {@link octreeMeshSizes}). */
   maxSize: number;
   /** Refinement levels below `maxSize` (smallest leaf = maxSize / 2^levels). */
@@ -85,6 +89,7 @@ export async function octreeMeshVolume(stlBytes: Uint8Array, params: OctreeMeshP
       output: params.output,
       maxSize,
       minSize,
+      ...(params.output === "hex" && params.hexGrading === "graded" ? { hexGrading: "graded" } : {}),
       maxCells: OCTREE_MESH_MAX_LEAVES,
       maxTets: OCTREE_MESH_MAX_CELLS,
     });

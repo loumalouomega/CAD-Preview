@@ -1,10 +1,10 @@
 {
   "$comment": "Dependency and format compatibility corpus (npm run compat). Each row is one deterministic check against the real dist/mcp-server.js. 'load' opens a committed fixture; 'export' writes a mesh export from the seed model and (when 'reload' is true) re-opens it; 'brepExport' round-trips export_brep through load_model + get_mass_properties. A row with 'knownLimitation' asserts the CURRENT failure text — if it stops failing the row reports FIXED-UPSTREAM (a finding to record), never FAIL. 'verifiedAt' records the artifact versions the row was last checked against.",
   "verifiedAt": {
-    "date": "2026-10-23",
+    "date": "2026-10-26",
     "opencascade.js": "1.1.1",
     "@loumalouomega/gmsh-wasm": "0.4.0",
-    "@meshioplusplus/wasm": "17.13.0",
+    "@meshioplusplus/wasm": "17.23.0",
     "float-tetwild-wasm": "0.2.0",
     "result": "82 pass"
   },
@@ -34,6 +34,7 @@
     { "id": "load-med-two-region-hexes", "check": "load", "fixture": "MED/two-region-hexes.med", "expect": { "format": "med", "warningIncludes": "cell_tags" } },
     { "id": "load-med-single-hex-remesh", "check": "load", "fixture": "MED/single-hex.med", "expect": { "format": "med", "remesh": true } },
     { "id": "load-mdpa-gapped-ids", "check": "load", "fixture": "MDPA/gapped-ids.mdpa", "expect": { "format": "mdpa", "remesh": true } },
+    { "id": "load-mdpa-hanging-constraints", "check": "load", "fixture": "MDPA/hanging-two-level.mdpa", "expect": { "format": "mdpa", "warningIncludes": "15 multi-point constraint row(s) on 5 slave node(s)" } },
     { "id": "load-vtu-zstd", "check": "load", "fixture": "VTKXML/cube-zstd.vtu", "expect": { "format": "vtu", "remesh": true } },
     { "id": "load-vtu-lz4", "check": "load", "fixture": "VTKXML/cube-lz4.vtu", "expect": { "format": "vtu", "remesh": true } },
     { "id": "load-libmesh-xda", "check": "load", "fixture": "libMesh/two-tets.xda", "expect": { "format": "libmesh", "remesh": true } },

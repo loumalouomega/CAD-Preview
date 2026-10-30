@@ -9,6 +9,7 @@
  */
 
 import type { Part } from "./protocol";
+import { DEFAULT_MPC_VARIABLES, type MpcFacts } from "./hangingConstraints";
 
 /**
  * The element *geometry* to generate. `"simplex"` is Gmsh's native
@@ -49,13 +50,124 @@ export type MeshElementShape = "simplex" | "subdivided" | "hexDominant";
  * Gmsh-only options are refused by name — see `gmshService.ts`'s
  * `octreeUnsupportedOptions`.
  */
-export type MeshEngine = "gmsh" | "ftetwild" | "octree" | "octreemesh";
+export type MeshEngine = "gmsh" | "ftetwild" | "octree" | "octreemesh" | "meshcad";
+
+/** Facts an `engine: "meshcad"` generate reports — the subset of meshio++'s
+ * `meshCadSurface` report that says how good the surface is. Parts are never
+ * preserved; quality bounds are facts, never promises. */
+export interface MeshCadStats {
+  /** Resolved target edge length (mm) — `sizeMax`, or bbox diagonal / 20 when unset. */
+  targetSize: number;
+  /** 1 linear, 2 `triangle6`, 3 `triangle10`. */
+  order: 1 | 2 | 3;
+  numFaces: number;
+  numFailed: number;
+  numTriangles: number;
+  numPoints: number;
+  /** 0/0/0 = a watertight, consistently wound surface. */
+  numOpenEdges: number;
+  numNonManifoldEdges: number;
+  numMisorientedEdges: number;
+  minAngleDeg: number;
+  maxAngleDeg: number;
+  minEdge: number;
+  maxEdge: number;
+  numRefinementPoints: number;
+  /** Faces whose `minAngle` bound a sharp corner made unreachable. */
+  numFacesBelowBound: number;
+  numSmoothed: number;
+  numCurvedStraightened: number;
+  /** Present when `MeshOptions.prismLayers` ran: the layer facts (the counts above describe the SURFACE the layers grew from). */
+  prismLayers?: PrismLayersStats;
+  /** meshio++'s own warnings plus this engine's, verbatim. */
+  warnings: string[];
+}
+
+/**
+ * Prism (wedge) layers over the `meshcad` surface (meshio++ 17.23 3-D
+ * `boundaryLayer`). NOT {@link MeshBoundaryLayer}, the Gmsh 2-D Part field.
+ * The result is the layer SHELL only — the interior is not meshed. Lengths are
+ * in the model's native mm (scaled for an export unit by
+ * {@link scaleMeshOptionsForUnit}; `growth` never).
+ */
+export interface MeshPrismLayers {
+  /** First layer thickness (mm, > 0). */
+  firstHeight: number;
+  /** Layers, 1–{@link PRISM_LAYERS_LIMIT}. */
+  numLayers: number;
+  /** Each layer's thickness over the one before, 1–10. */
+  growth: number;
+  /** Grow against the faces' normals (a closed skin then grows inward). Omitted when false. */
+  reverse?: boolean;
+  /** How a folding point gives way; omitted for the default `"points"`. */
+  collapse?: "points" | "layers";
+}
+
+export const PRISM_LAYERS_LIMIT = 1000;
+export const DEFAULT_PRISM_LAYERS: MeshPrismLayers = { firstHeight: 0.1, numLayers: 3, growth: 1.2 };
+
+/** Achieved-vs-planned facts of a prism-layer run (`MeshCadStats.prismLayers`). */
+export interface PrismLayersStats {
+  numCells: number;
+  numWedges: number;
+  numPyramids: number;
+  numTetrahedra: number;
+  numShrunk: number;
+  numCollapsed: number;
+  numFewerLayers: number;
+  numFrontCrossings: number;
+  minScaledJacobian: number;
+  minThickness: number;
+  maxThickness: number;
+  /** `firstHeight·(growth^n − 1)/(growth − 1)`. */
+  plannedThickness: number;
+  capClosed: boolean;
+  warnings: string[];
+}
+
+/**
+ * Tolerant parse of a stored/incoming prism-layer request: an out-of-range or
+ * non-object value is dropped (`undefined` = off), never a crash. Optional
+ * fields are omitted when default so a sidecar stays byte-stable.
+ */
+export function validateMeshPrismLayers(raw: unknown): MeshPrismLayers | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const o = raw as Record<string, unknown>;
+  if (!(isFiniteNumber(o.firstHeight) && o.firstHeight > 0)) return undefined;
+  const numLayers = isFiniteNumber(o.numLayers) ? Math.round(o.numLayers) : DEFAULT_PRISM_LAYERS.numLayers;
+  if (numLayers < 1 || numLayers > PRISM_LAYERS_LIMIT) return undefined;
+  const growth = isFiniteNumber(o.growth) ? o.growth : DEFAULT_PRISM_LAYERS.growth;
+  if (growth < 1 || growth > 10) return undefined;
+  const out: MeshPrismLayers = { firstHeight: o.firstHeight, numLayers, growth };
+  if (o.reverse === true) out.reverse = true;
+  if (o.collapse === "layers") out.collapse = "layers";
+  return out;
+}
+
+/** One-line readout of a meshcad generate for the panel status line. */
+export function meshcadSummary(stats: MeshCadStats): string {
+  const closed = stats.numOpenEdges + stats.numNonManifoldEdges + stats.numMisorientedEdges === 0 ? "closed" : `${stats.numOpenEdges} open edges`;
+  const below = stats.numFacesBelowBound > 0 ? ` · ${stats.numFacesBelowBound} face(s) below the angle bound` : "";
+  const failed = stats.numFailed > 0 ? ` · ${stats.numFailed} face(s) failed` : "";
+  if (stats.prismLayers) {
+    const p = stats.prismLayers;
+    const short = p.numShrunk + p.numCollapsed + p.numFewerLayers > 0 ? " · thinner than planned in places" : "";
+    return `Mesh-CAD prism layers: ${p.numWedges} wedges · thickness ${p.minThickness.toPrecision(3)}–${p.maxThickness.toPrecision(3)} of ${p.plannedThickness.toPrecision(3)} planned · min scaled Jacobian ${p.minScaledJacobian.toFixed(2)}${short} · interior not meshed · Parts not preserved`;
+  }
+  return `Mesh-CAD surface: ${stats.numTriangles} tri · min angle ${stats.minAngleDeg.toFixed(1)}° · ${closed}${below}${failed} · Parts not preserved`;
+}
 
 /** Outputs of meshio++ 17.13's `octreeMesh` (`engine: "octreemesh"`). The
  * castellated output has hanging nodes and surrogate boundary faces, which no
  * downstream reader here accepts as a conforming mesh, so it is NOT offered. */
 export type OctreeMeshOutput = "tet" | "hex";
 export const OCTREE_MESH_OUTPUTS: readonly OctreeMeshOutput[] = ["tet", "hex"];
+/** Hexahedral octree-mesh grading (meshio++ 17.23): one grid at the skin's size, or the octree's own grading through dual transition schemes. */
+export type OctreeMeshHexGrading = "uniform" | "graded";
+export const OCTREE_MESH_HEX_GRADINGS: readonly OctreeMeshHexGrading[] = ["uniform", "graded"];
+
+/** Most `meshcadSmoothIterations` offered. */
+export const MESHCAD_SMOOTH_LIMIT = 100;
 
 /** Deepest `octreeMeshLevels` offered (leaf edge = maxSize / 2^levels). */
 export const OCTREE_MESH_LEVELS_LIMIT = 4;
@@ -65,18 +177,54 @@ export const OCTREE_MESH_LEVELS_LIMIT = 4;
  * guard ends anything past it with a plain error. */
 export const OCTREE_MAX_LEVEL_LIMIT = 6;
 
+/** What `engine: "octree"` emits where a fine leaf meets a coarse one.
+ * `"templates"` = a conforming hex/pyramid/tet transition; `"hanging"` = all
+ * hexahedra, with the hanging nodes left in place and tied to their parent
+ * corners by multi-point constraints (MDPA/Kratos only — see
+ * `hangingConstraints.ts`). `"polyhedra"` is never offered: the MDPA writer
+ * refuses `polyhedron` blocks. */
+export type OctreeTransition = "templates" | "hanging";
+export const OCTREE_TRANSITIONS: readonly OctreeTransition[] = ["templates", "hanging"];
+
+/** Most variables one hanging-node constraint set can tie. */
+export const MPC_VARIABLES_LIMIT = 8;
+
+/** Kratos variable names: an identifier. */
+const MPC_VARIABLE_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+/** Cleans a caller's variable list: trimmed identifiers, de-duplicated in order,
+ * at most {@link MPC_VARIABLES_LIMIT}; `undefined` when nothing usable remains. */
+export function validateMpcVariables(raw: unknown): string[] | undefined {
+  const list = Array.isArray(raw) ? raw : typeof raw === "string" ? raw.split(/[\s,;]+/) : [];
+  const out: string[] = [];
+  for (const item of list) {
+    if (typeof item !== "string") continue;
+    const name = item.trim();
+    if (MPC_VARIABLE_RE.test(name) && !out.includes(name)) out.push(name);
+    if (out.length >= MPC_VARIABLES_LIMIT) break;
+  }
+  return out.length > 0 ? out : undefined;
+}
+
 /** Facts an octree generate reports (the type is here, not in `octreeService.ts`,
  * because the webview and the handoff manifest import it and that module
  * pulls in WASM services). Parts are never preserved by this engine. */
 export interface OctreeStats {
   maxLevel: number;
+  /** The snap actually applied: `false` under `transition: "hanging"`, whose
+   * constraints are exact only for unmoved nodes. */
   snap: boolean;
+  /** Which transition ran. */
+  transition: OctreeTransition;
   numLeaves: number;
   numHanging: number;
   finestLevel: number;
   numSnapped: number;
   numRefused: number;
   elementMix: { hexahedra: number; pyramids: number; tetrahedra: number };
+  /** Hanging-node constraints recovered from the leaf grid — set only for
+   * `transition: "hanging"`. Mesh data, not Parts: never persisted or rebound. */
+  constraints?: MpcFacts;
 }
 
 /** Facts an `engine: "octreemesh"` generate reports — the subset of meshio++'s
@@ -114,6 +262,11 @@ export function octreeMeshSummary(stats: OctreeMeshStats): string {
 /** One-line readout of an octree generate for the panel status line. */
 export function octreeSummary(stats: OctreeStats): string {
   const { hexahedra, pyramids, tetrahedra } = stats.elementMix;
+  if (stats.transition === "hanging") {
+    const c = stats.constraints;
+    const ties = c ? `${c.hangingNodes} hanging node${c.hangingNodes === 1 ? "" : "s"} tied by ${c.constraints} MPC${c.constraints === 1 ? "" : "s"}` : "constraints not computed";
+    return `Octree L${stats.maxLevel} hanging: ${hexahedra} hex · ${ties} · Parts not preserved`;
+  }
   const snaps = stats.snap
     ? `snapped ${stats.numSnapped}${stats.numRefused > 0 ? `, refused ${stats.numRefused}` : ""}`
     : "snap off";
@@ -177,10 +330,23 @@ export interface MeshOptions {
    * counted and reported, never forced. Only meaningful when
    * `engine === "octree"`. */
   octreeSnap: boolean;
+  /** Octree: what is emitted where a fine leaf meets a coarse one. `"hanging"`
+   * gives an all-hexahedra mesh whose hanging nodes are tied by multi-point
+   * constraints in MDPA; it forces `octreeSnap` off (a snapped hanging node
+   * leaves its parent edge, so its constraint stops being exact). Only
+   * meaningful when `engine === "octree"`. */
+  octreeTransition: OctreeTransition;
+  /** Kratos variables the hanging-node constraints tie (one block per variable
+   * in the MDPA). Only used when `octreeTransition === "hanging"`. */
+  mpcVariables: string[];
   /** Octree-mesh: `"tet"` = conforming graded tetrahedra fitted to the skin
    * (stuffing), `"hex"` = all-hexahedra by the octree dual. Only meaningful
    * when `engine === "octreemesh"`. */
   octreeMeshOutput: OctreeMeshOutput;
+  /** Octree-mesh hexahedral output: `"graded"` keeps the octree's own grading
+   * (fewer cells); absent means `"uniform"`. Optional and omitted when uniform
+   * so a sidecar stays byte-stable. */
+  octreeMeshHexGrading?: OctreeMeshHexGrading;
   /** Octree-mesh: largest leaf edge in mm; `0` = automatic (one eighth of the
    * skin's bounding-box diagonal). meshio++'s own default is far finer (a
    * 10 mm cube becomes 516k tets), so the engine never passes "unset". Only
@@ -190,6 +356,23 @@ export interface MeshOptions {
    * maxSize / 2^levels), 1..{@link OCTREE_MESH_LEVELS_LIMIT}. Only meaningful
    * when `engine === "octreemesh"`. */
   octreeMeshLevels: number;
+  /** Mesh-CAD: refine until every triangle's smallest angle is at least this
+   * (degrees, 0 ≤ x < 60); `0` keeps the unrefined mesh. Only meaningful when
+   * `engine === "meshcad"`. */
+  meshcadMinAngle: number;
+  /** Mesh-CAD: passes of guarded smoothing (integer ≥ 0). Only meaningful when
+   * `engine === "meshcad"`. */
+  meshcadSmoothIterations: number;
+  /** Mesh-CAD: size each region so a chord sits at most this far (mm) from the
+   * surface; `0` is off. Only meaningful when `engine === "meshcad"`. */
+  meshcadCurvatureDeviation: number;
+  /** Mesh-CAD: size each region so at least this many elements span its local
+   * feature size; `0` is off. Only meaningful when `engine === "meshcad"`. */
+  meshcadCellsAcrossGaps: number;
+  /** Mesh-CAD: largest size growth, `|grad h| ≤ grading − 1`; `0` is upstream's
+   * 1.5. Acts only with curvature deviation or cells-across-gaps. Only
+   * meaningful when `engine === "meshcad"`. */
+  meshcadGrading: number;
   /**
    * Conformal multi-body meshing: call
    * `gmsh.model.occ.fragment` over every imported solid before meshing, so
@@ -218,13 +401,31 @@ export interface MeshOptions {
    * Optional: absent means no view (byte-stable sidecar when unused).
    */
   sizeField?: SizeFieldSample[];
+  /** Prism (wedge) layers over the `meshcad` surface — optional, omitted when off so a sidecar stays byte-stable. Only the `meshcad` engine honours it. */
+  prismLayers?: MeshPrismLayers;
   /**
    * Advisory element budget (roadmap "Mesh size and memory budget preview"):
    * when the pre-generation estimate exceeds it the panel/tool WARNS — it
    * never blocks a generate. Optional: absent means no budget.
    */
   budgetElements?: number;
+  /**
+   * Partitioned Kratos MDPA export (roadmap "KaHIP partitioning"): the number
+   * of MPI ranks to split the domain cells over, one `<stem>_<rank>.mdpa` per
+   * rank plus a `<stem>.partition.json` manifest. Only the two MDPA export
+   * formats read it. Optional and kept only when ≥ 2 (absent = one serial file,
+   * byte-stable sidecar), at most {@link MAX_MDPA_RANKS}.
+   */
+  mdpaRanks?: number;
+  /** Partitioner for {@link MeshOptions.mdpaRanks}; absent means `"auto"` (KaHIP when linked, else SFC). */
+  mdpaPartitionMethod?: MdpaPartitionMethod;
 }
+
+/** Most MPI ranks one partitioned MDPA export may ask for. */
+export const MAX_MDPA_RANKS = 64;
+
+export type MdpaPartitionMethod = "auto" | "kahip" | "sfc";
+export const MDPA_PARTITION_METHODS: readonly MdpaPartitionMethod[] = ["auto", "kahip", "sfc"];
 
 /** One periodic face pair, by Part name; see {@link MeshOptions.periodic}. */
 export interface PeriodicPair {
@@ -457,9 +658,16 @@ export const DEFAULT_MESH_OPTIONS: MeshOptions = {
   ftetwildDisableFiltering: false,
   octreeMaxLevel: 4, // block.stp at level 4: 3522 cells, exactly its volume (probe)
   octreeSnap: true,
+  octreeTransition: "templates",
+  mpcVariables: [...DEFAULT_MPC_VARIABLES],
   octreeMeshOutput: "tet",
   octreeMeshMaxSize: 0,
   octreeMeshLevels: 2, // cube.stl at maxSize 2, levels 2: 44 832 tets, min dihedral 35° (probe)
+  meshcadMinAngle: 0,
+  meshcadSmoothIterations: 0,
+  meshcadCurvatureDeviation: 0,
+  meshcadCellsAcrossGaps: 0,
+  meshcadGrading: 0,
   conformal: true,
 };
 
@@ -515,8 +723,11 @@ export function validateMeshOptions(raw: unknown): MeshOptions | null {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
   const o = raw as Record<string, unknown>;
 
-  const dimension: MeshOptions["dimension"] =
+  let dimension: MeshOptions["dimension"] =
     o.dimension === 1 || o.dimension === 2 || o.dimension === 3 ? o.dimension : DEFAULT_MESH_OPTIONS.dimension;
+  // Prism layers under the meshcad engine yield a wedge (volume) shell, so every downstream reader must see
+  // dimension 3 — normalised here, the one seam sidecar parse, the panel and the MCP tools all pass through.
+  if (o.engine === "meshcad" && validateMeshPrismLayers(o.prismLayers) !== undefined) dimension = 3;
 
   const elementOrder: MeshOptions["elementOrder"] =
     o.elementOrder === 1 || o.elementOrder === 2 ? o.elementOrder : DEFAULT_MESH_OPTIONS.elementOrder;
@@ -550,7 +761,7 @@ export function validateMeshOptions(raw: unknown): MeshOptions | null {
   const stlAngle =
     isFiniteNumber(o.stlAngle) && o.stlAngle > 0 && o.stlAngle < 180 ? o.stlAngle : DEFAULT_MESH_OPTIONS.stlAngle;
 
-  const engine: MeshOptions["engine"] = o.engine === "gmsh" || o.engine === "ftetwild" || o.engine === "octree" || o.engine === "octreemesh" ? o.engine : DEFAULT_MESH_OPTIONS.engine;
+  const engine: MeshOptions["engine"] = o.engine === "gmsh" || o.engine === "ftetwild" || o.engine === "octree" || o.engine === "octreemesh" || o.engine === "meshcad" ? o.engine : DEFAULT_MESH_OPTIONS.engine;
 
   const ftetwildEpsRel =
     isFiniteNumber(o.ftetwildEpsRel) && o.ftetwildEpsRel > 0
@@ -569,6 +780,10 @@ export function validateMeshOptions(raw: unknown): MeshOptions | null {
       ? Math.min(OCTREE_MAX_LEVEL_LIMIT, Math.round(o.octreeMaxLevel))
       : DEFAULT_MESH_OPTIONS.octreeMaxLevel;
   const octreeSnap = typeof o.octreeSnap === "boolean" ? o.octreeSnap : DEFAULT_MESH_OPTIONS.octreeSnap;
+  const octreeTransition: OctreeTransition = OCTREE_TRANSITIONS.includes(o.octreeTransition as OctreeTransition)
+    ? (o.octreeTransition as OctreeTransition)
+    : DEFAULT_MESH_OPTIONS.octreeTransition;
+  const mpcVariables = validateMpcVariables(o.mpcVariables) ?? [...DEFAULT_MPC_VARIABLES];
 
   const octreeMeshOutput: OctreeMeshOutput = OCTREE_MESH_OUTPUTS.includes(o.octreeMeshOutput as OctreeMeshOutput)
     ? (o.octreeMeshOutput as OctreeMeshOutput)
@@ -579,6 +794,17 @@ export function validateMeshOptions(raw: unknown): MeshOptions | null {
     isFiniteNumber(o.octreeMeshLevels) && o.octreeMeshLevels >= 1
       ? Math.min(OCTREE_MESH_LEVELS_LIMIT, Math.round(o.octreeMeshLevels))
       : DEFAULT_MESH_OPTIONS.octreeMeshLevels;
+
+  const nonNegative = (v: unknown, fallback: number): number => (isFiniteNumber(v) && v >= 0 ? v : fallback);
+  const meshcadMinAngle = isFiniteNumber(o.meshcadMinAngle) && o.meshcadMinAngle >= 0 && o.meshcadMinAngle < 60 ? o.meshcadMinAngle : DEFAULT_MESH_OPTIONS.meshcadMinAngle;
+  const meshcadSmoothIterations =
+    isFiniteNumber(o.meshcadSmoothIterations) && o.meshcadSmoothIterations >= 0
+      ? Math.min(MESHCAD_SMOOTH_LIMIT, Math.round(o.meshcadSmoothIterations))
+      : DEFAULT_MESH_OPTIONS.meshcadSmoothIterations;
+  const meshcadCurvatureDeviation = nonNegative(o.meshcadCurvatureDeviation, DEFAULT_MESH_OPTIONS.meshcadCurvatureDeviation);
+  const meshcadCellsAcrossGaps = nonNegative(o.meshcadCellsAcrossGaps, DEFAULT_MESH_OPTIONS.meshcadCellsAcrossGaps);
+  // 0 (upstream default) or above 1: |grad h| <= grading - 1 makes anything in (0, 1] meaningless.
+  const meshcadGrading = isFiniteNumber(o.meshcadGrading) && (o.meshcadGrading === 0 || o.meshcadGrading > 1) ? o.meshcadGrading : DEFAULT_MESH_OPTIONS.meshcadGrading;
 
   const conformal = typeof o.conformal === "boolean" ? o.conformal : DEFAULT_MESH_OPTIONS.conformal;
 
@@ -599,9 +825,16 @@ export function validateMeshOptions(raw: unknown): MeshOptions | null {
     ftetwildDisableFiltering,
     octreeMaxLevel,
     octreeSnap,
+    octreeTransition,
+    mpcVariables,
     octreeMeshOutput,
     octreeMeshMaxSize,
     octreeMeshLevels,
+    meshcadMinAngle,
+    meshcadSmoothIterations,
+    meshcadCurvatureDeviation,
+    meshcadCellsAcrossGaps,
+    meshcadGrading,
     conformal,
   };
   // Optional and omitted when absent, so an untouched sidecar stays byte-stable.
@@ -610,6 +843,13 @@ export function validateMeshOptions(raw: unknown): MeshOptions | null {
   if (periodic.length > 0) out.periodic = periodic;
   const sizeField = validateSizeField(o.sizeField);
   if (sizeField !== undefined) out.sizeField = sizeField;
+  const prismLayers = validateMeshPrismLayers(o.prismLayers);
+  if (prismLayers !== undefined) out.prismLayers = prismLayers;
+  if (o.octreeMeshHexGrading === "graded") out.octreeMeshHexGrading = "graded";
+  if (isFiniteNumber(o.mdpaRanks) && o.mdpaRanks >= 2) out.mdpaRanks = Math.min(MAX_MDPA_RANKS, Math.round(o.mdpaRanks));
+  if (MDPA_PARTITION_METHODS.includes(o.mdpaPartitionMethod as MdpaPartitionMethod) && o.mdpaPartitionMethod !== "auto") {
+    out.mdpaPartitionMethod = o.mdpaPartitionMethod as MdpaPartitionMethod;
+  }
   return out;
 }
 
@@ -662,6 +902,7 @@ export function scaleMeshOptionsForUnit(options: MeshOptions, factor: number): M
           })),
         }
       : {}),
+    ...(options.prismLayers ? { prismLayers: { ...options.prismLayers, firstHeight: options.prismLayers.firstHeight * factor } } : {}),
     ...(options.sizeField
       ? {
           sizeField: options.sizeField.map((s) => ({

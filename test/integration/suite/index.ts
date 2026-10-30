@@ -3036,6 +3036,46 @@ test("A Nastran .bdf opens through the meshio bridge with the right extents", as
   await closeAll();
 });
 
+test("A Kratos .mdpa with hanging-node constraints opens, with its links and without the interface wall", async () => {
+  // Host half of the multi-point-constraint read-back: meshio++ refuses a
+  // `Begin Constraints` block, so the provider strips it for meshio++, parses it
+  // back from the original bytes (`src/mdpaConstraints.ts`) and removes the
+  // coarse/fine interface facets from the surface it posts. The fixture is one
+  // coarse 2x2x2 hexahedron beside eight unit hexahedra: 25 outer quads = 50
+  // triangles (60 with the five interface quads meshio++ cannot cancel).
+  const api = await saveTestApi();
+  if (!api?.onDidPostMessage) return;
+  const source = path.join(ROOT, "examples", "MDPA", "hanging-two-level.mdpa");
+  const staged = stage(source);
+  type MeshBytes = {
+    type: string;
+    dataBase64?: string;
+    meshConstraints?: { points: string; indices: string; constraintCount: number; slaveCount: number; variables: string[]; truncated: number; summary: string };
+  };
+  const seen: MeshBytes[] = [];
+  const sub = api.onDidPostMessage((m) => void seen.push(m as MeshBytes));
+  try {
+    assert(await openDocument(staged), "the constrained .mdpa opens");
+    assert(
+      await waitFor(() => seen.some((m) => m.type === "loadMeshBytes" && !!m.dataBase64), 120000),
+      `the boundary posts for the constrained deck (saw ${JSON.stringify(seen.map((m) => m.type).slice(-6))})`
+    );
+    const msg = [...seen].reverse().find((m) => m.type === "loadMeshBytes" && !!m.dataBase64)!;
+    const stl = Buffer.from(msg.dataBase64!, "base64").toString("utf8");
+    assert((stl.match(/facet normal/g) ?? []).length === 50, `the interface wall is gone: 50 triangles (got ${(stl.match(/facet normal/g) ?? []).length})`);
+    const c = msg.meshConstraints;
+    assert(!!c, "the message carries the deck's constraints");
+    assert(c!.constraintCount === 15 && c!.slaveCount === 5 && c!.variables.join() === "DISPLACEMENT_X,DISPLACEMENT_Y,DISPLACEMENT_Z", `15 rows on 5 slave nodes over three variables (got ${JSON.stringify(c)})`);
+    const idx = Buffer.from(c!.indices, "base64");
+    assert(idx.byteLength / 4 === 24, `12 distinct slave→master links as index pairs (got ${idx.byteLength / 4} indices)`);
+    assert(/15 constraints on 5 slave nodes/.test(c!.summary), `the summary reads as a status line (got ${JSON.stringify(c!.summary)})`);
+  } finally {
+    sub.dispose();
+  }
+  assert(fs.readFileSync(staged).equals(fs.readFileSync(source)), "the deck source is byte-identical");
+  await closeAll();
+});
+
 test("Hole-table copy data comes from the host pipeline", async () => {
   // Parity gaps, hole-table half: the panel's Copy button reads the host's
   // `holeTableResult`, so this drives the request and pins the rows + TSV

@@ -21,6 +21,9 @@ import {
   meshCadSurfaceTool,
   repairMeshTool,
   inspectMeshioFieldsTool,
+  checkMeshConformityTool,
+  projectToCadTool,
+  growPrismLayersTool,
   inspectEntity,
   measureTool,
   measureExactTool,
@@ -220,6 +223,34 @@ const FAKE_BREP_RESULT: BRepResult = {
   opOutcomes: [],
   opBuckets: [],
   guideIds: [],
+};
+
+const FAKE_PARTITIONED_MDPA = {
+  files: [
+    { rank: 0, text: "Begin Nodes\nEnd Nodes\n" },
+    { rank: 1, text: "Begin Nodes\nEnd Nodes\n" },
+  ],
+  report: {
+    ranks: 2,
+    method: "auto" as const,
+    methodUsed: "kahip" as const,
+    seed: 1,
+    volumeCells: 4,
+    balanceMaxOverMean: 1,
+    emptyRanks: [],
+    interfaceNodes: 4,
+    interfaceFraction: 0.2,
+    orphanSurfaceCells: 0,
+    perRank: [0, 1].map((rank) => ({
+      rank,
+      file: `model_${rank}.mdpa`,
+      volumeCells: 2,
+      surfaceCells: 1,
+      nodes: 12,
+      interfaceNodes: 4,
+      neighbours: [{ rank: 1 - rank, sharedNodeIds: [3, 8, 13, 18] }],
+    })),
+  },
 };
 
 const FAKE_MESH_RESULT: MeshResult = {
@@ -427,6 +458,7 @@ function fakePipeline(overrides: Partial<Pipeline> = {}): Pipeline {
     generateMesh: vi.fn(async () => FAKE_MESH_RESULT),
     exportMeshFormat: vi.fn(async () => "vtk-content"),
     exportMdpa: vi.fn(async () => "Begin Nodes\nEnd Nodes\n"),
+    exportMdpaPartitioned: vi.fn(async () => FAKE_PARTITIONED_MDPA),
     computeHandoffFacts: vi.fn(async () => ({
       engineUsed: "gmsh" as const,
       nodeCount: 10,
@@ -574,6 +606,15 @@ function fakePipeline(overrides: Partial<Pipeline> = {}): Pipeline {
       patches: [], adjacency: [], truncated: false, warnings: [],
     })),
     fitMeshToCad: vi.fn(async () => FAKE_FIT_RESULT),
+    projectMeshToCad: vi.fn(async () => ({
+      outputBytes: new Uint8Array([1]),
+      report: { numProjected: 8, numOnEdges: 2, numOnCurves: 2, numCorners: 1, numAmbiguous: 0, numTooFar: 0, numFailed: 0, numOutsideTrim: 0, maxMove: 0.01, outsideTrim: [], outsideTrimTruncated: false, warnings: [] },
+    })),
+    growPrismLayersModel: vi.fn(async () => ({
+      outputBytes: new Uint8Array([2]),
+      numSurfaceTriangles: 12,
+      report: { numCells: 36, numWedges: 36, numHexahedra: 0, numPyramids: 0, numTetrahedra: 0, numShrunk: 0, numCollapsed: 0, numNotVisible: 0, numFewerLayers: 0, numFrontCrossings: 0, minScaledJacobian: 0.4, minThickness: 0.18, maxThickness: 0.18, plannedThickness: 0.182, capClosed: true, warnings: [] },
+    })),
     meshCadSurfaceModel: vi.fn(async () => ({
       outputBytes: new TextEncoder().encode("solid cad\nendsolid cad\n"),
       report: {
@@ -614,6 +655,10 @@ function fakePipeline(overrides: Partial<Pipeline> = {}): Pipeline {
     exportViaMeshio: vi.fn(async () => ({ bytes: new TextEncoder().encode("fake-meshio-bytes") })),
     readMeshioMetadata: vi.fn(async () => ({ regions: [], pointDataNames: [], cellDataNames: [], fieldDataNames: [] })),
     checkMeshQuality: vi.fn(async () => FAKE_QUALITY_GATE),
+    checkMeshConformity: vi.fn(async () => ({
+      dimension: 3, numHangingNodes: 0, numTJunctions: 0, numPartialOverlaps: 0, numUnweldedFacets: 0,
+      numBoundaryFacets: 12, numNonManifoldFacets: 0, conforming: true, interfaceMode: "conforming", warnings: [],
+    })),
     readMeshioDataInfo: vi.fn(async () => []),
     readMeshioProvenance: vi.fn(async () => null),
     runMeshioOps: vi.fn(async () => ({ bytes: new Uint8Array([1, 2, 3]), steps: [], warnings: [] })),
@@ -987,6 +1032,20 @@ describe("load_model", () => {
     await fs.writeFile(vtkModel, "not real vtk content", "utf8");
     const result = await loadModel(c, { path: vtkModel });
     expect(result.warnings).toHaveLength(1); // only the "meshable via generate_mesh" one
+  });
+
+  it("reports an .mdpa's multi-point constraints as facts instead of dropping them silently", async () => {
+    const mdpa = path.join(dir, "hanging.mdpa");
+    await fs.copyFile(path.join(__dirname, "..", "examples", "MDPA", "hanging-two-level.mdpa"), mdpa);
+    const result = await loadModel(ctx(), { path: mdpa });
+    const note = result.warnings.find((w) => /multi-point constraint/.test(w))!;
+    expect(note).toContain("15 multi-point constraint row(s) on 5 slave node(s)");
+    expect(note).toContain("DISPLACEMENT_X");
+    expect(note).toMatch(/not applied/);
+    // Control: a deck without a Constraints block says nothing of the kind.
+    const plain = path.join(dir, "plain.mdpa");
+    await fs.writeFile(plain, "Begin Nodes\n1 0 0 0\nEnd Nodes\n", "utf8");
+    expect((await loadModel(ctx(), { path: plain })).warnings.join(" ")).not.toMatch(/multi-point/);
   });
 
   it("never calls readMeshioMetadata for a non-meshio mesh source (e.g. STL)", async () => {
@@ -2165,6 +2224,70 @@ describe("promote_mesh_to_brep", () => {
   });
 });
 
+describe("project_to_cad", () => {
+  it("snaps a meshio mesh onto a STEP source and writes a NEW file with the facts", async () => {
+    const c = ctx();
+    const cad = path.join(dir, "pj-block.step");
+    const mesh = path.join(dir, "pj-surface.vtu");
+    await fs.writeFile(cad, "ISO-10303-21;");
+    await fs.writeFile(mesh, "<VTKFile/>");
+    const outputPath = path.join(dir, "pj-out.vtu");
+    const r = await projectToCadTool(c, { path: mesh, cadPath: cad, outputPath, maxDistance: 0.05 });
+    expect(c.pipeline.projectMeshToCad).toHaveBeenCalledWith(expect.any(Uint8Array), "vtu", expect.any(Uint8Array), "step", ".vtu", { maxDistance: 0.05 });
+    expect(r).toMatchObject({ supported: true, written: outputPath, numProjected: 8, numOnEdges: 2, maxMove: 0.01 });
+    expect(Array.from(await fs.readFile(outputPath))).toEqual([1]);
+  });
+
+  it("declines unsuitable inputs and refuses to overwrite either input, before the pipeline", async () => {
+    const c = ctx();
+    const cad = path.join(dir, "pj-block2.step");
+    const mesh = path.join(dir, "pj-surface2.vtu");
+    await fs.writeFile(cad, "ISO-10303-21;");
+    await fs.writeFile(mesh, "<VTKFile/>");
+    expect(await projectToCadTool(c, { path: cad, cadPath: cad, outputPath: path.join(dir, "o1.vtu") })).toMatchObject({ supported: false });
+    expect(await projectToCadTool(c, { path: mesh, cadPath: stlModel, outputPath: path.join(dir, "o2.vtu") })).toMatchObject({ supported: false });
+    await expect(projectToCadTool(c, { path: mesh, cadPath: cad, outputPath: path.join(dir, "o3.step") })).rejects.toThrow(/outputPath must end in/);
+    await expect(projectToCadTool(c, { path: mesh, cadPath: cad, outputPath: mesh })).rejects.toThrow(/overwrite the CAD source/);
+    // a CAD input is never a valid output either (the extension check catches it first)
+    const cadJson = path.join(dir, "pj-model.cad.json");
+    await fs.writeFile(cadJson, "{}");
+    await expect(projectToCadTool(c, { path: mesh, cadPath: cadJson, outputPath: cadJson })).rejects.toThrow(/outputPath must end in/);
+    expect(c.pipeline.projectMeshToCad).not.toHaveBeenCalled();
+  });
+});
+
+describe("grow_prism_layers", () => {
+  it("layers a CAD source (targetSize required) and a mesh source, writing a NEW file with the facts", async () => {
+    const c = ctx();
+    const cad = path.join(dir, "pl-block.step");
+    await fs.writeFile(cad, "ISO-10303-21;");
+    const outputPath = path.join(dir, "pl-out.vtu");
+    const r = await growPrismLayersTool(c, { path: cad, outputPath, targetSize: 1, firstHeight: 0.05, numLayers: 3 });
+    expect(c.pipeline.growPrismLayersModel).toHaveBeenCalledWith(
+      { kind: "cad", bytes: expect.any(Uint8Array), meshioFormat: "step", targetSize: 1 }, ".vtu", { firstHeight: 0.05, numLayers: 3 }
+    );
+    expect(r).toMatchObject({ supported: true, written: outputPath, numWedges: 36, numSurfaceTriangles: 12, plannedThickness: 0.182 });
+    expect(await fs.readFile(outputPath)).toHaveLength(1);
+    await growPrismLayersTool(c, { path: stlModel, outputPath: path.join(dir, "pl-stl.msh"), firstHeight: 0.1 });
+    expect(vi.mocked(c.pipeline.growPrismLayersModel).mock.lastCall![0]).toMatchObject({ kind: "mesh", meshioFormat: "stl" });
+  });
+
+  it("refuses by name before the pipeline: missing targetSize, a wedge-less writer, the source path, an unsupported source", async () => {
+    const c = ctx();
+    const cad = path.join(dir, "pl-block2.step");
+    await fs.writeFile(cad, "ISO-10303-21;");
+    await expect(growPrismLayersTool(c, { path: cad, outputPath: path.join(dir, "a.vtu"), firstHeight: 0.1 })).rejects.toThrow(/targetSize is required/);
+    await expect(growPrismLayersTool(c, { path: cad, outputPath: path.join(dir, "a.stl"), targetSize: 1, firstHeight: 0.1 })).rejects.toThrow(/outputPath must end in/);
+    const surf = path.join(dir, "pl-surface.vtu");
+    await fs.writeFile(surf, "<VTKFile/>");
+    await expect(growPrismLayersTool(c, { path: surf, outputPath: surf, firstHeight: 0.1 })).rejects.toThrow(/overwrite the CAD source/);
+    const brep = path.join(dir, "pl.brep");
+    await fs.writeFile(brep, "DBRep_DrawableShape");
+    expect(await growPrismLayersTool(c, { path: brep, outputPath: path.join(dir, "b.vtu"), targetSize: 1, firstHeight: 0.1 })).toMatchObject({ supported: false });
+    expect(c.pipeline.growPrismLayersModel).not.toHaveBeenCalled();
+  });
+});
+
 describe("mesh_cad_surface", () => {
   it("meshes a STEP source into a new file and spreads upstream's closure facts", async () => {
     const c = ctx();
@@ -2334,6 +2457,23 @@ describe("inspect_meshio_fields", () => {
     await fs.writeFile(p, "MED placeholder — bytes never reach the fake pipeline", "utf8");
     return p;
   }
+
+  it("check_mesh_conformity passes the staged source to the pipeline and returns its facts; non-meshio sources are unsupported", async () => {
+    const c = ctx(fakePipeline({
+      checkMeshConformity: vi.fn(async () => ({
+        dimension: 3, numHangingNodes: 7, numTJunctions: 0, numPartialOverlaps: 0, numUnweldedFacets: 0,
+        numBoundaryFacets: 12, numNonManifoldFacets: 0, conforming: false, interfaceMode: "weld", warnings: ["x"],
+      })),
+    }));
+    const r = await checkMeshConformityTool(c, { path: await medModel(), tolerance: 1e-6 });
+    expect(c.pipeline.checkMeshConformity).toHaveBeenCalledWith(expect.any(Uint8Array), "med", "model.med", [], { tolerance: 1e-6 });
+    expect(r).toMatchObject({ supported: true, conforming: false, numHangingNodes: 7, interfaceMode: "weld" });
+    expect(r.warnings).toEqual(["⟦meshio warning: x⟧"]);
+    const stp = await checkMeshConformityTool(c, { path: stpModel });
+    expect(stp.supported).toBe(false);
+    expect(stp.warnings[0]).toMatch(/export_mesh first/);
+    await expect(checkMeshConformityTool(c, { path: await medModel(), tolerance: -1 })).rejects.toThrow(/tolerance must be/);
+  });
 
   it("returns the pipeline's per-array facts verbatim for a meshio source", async () => {
     const c = ctx(fakePipeline({
@@ -4538,6 +4678,18 @@ describe("export_mesh", () => {
     expect(result.written.map((w) => w.path)).toEqual([out]);
   });
 
+  it("warns that a hanging-node octree's constraints are lost in every format but MDPA", async () => {
+    const c = ctx();
+    const options = { engine: "octree" as const, octreeTransition: "hanging" as const };
+    const msh = await exportMeshTool(c, { path: stpModel, format: "msh", outputPath: path.join(dir, "hang.msh"), options });
+    expect(msh.warnings.join(" ")).toMatch(/cannot carry multi-point constraints/);
+    const mdpa = await exportMeshTool(c, { path: stpModel, format: "mdpaElements", outputPath: path.join(dir, "hang.mdpa"), options });
+    expect(mdpa.warnings.join(" ")).not.toMatch(/multi-point constraints/);
+    // Control: the same export without the hanging transition says nothing.
+    const plain = await exportMeshTool(c, { path: stpModel, format: "msh", outputPath: path.join(dir, "plain.msh") });
+    expect(plain.warnings.join(" ")).not.toMatch(/multi-point constraints/);
+  });
+
   it.each([2, 1, 0, -1])("records factual mesh replay provenance (%i applied)", async (applied) => {
     const c = ctx();
     const ops: EditOp[] = [0, 1].map(() => ({ op: "translate", targets: ["node-0"], vec: [1, 0, 0] }));
@@ -4678,6 +4830,30 @@ describe("export_mesh", () => {
     await exportMeshTool(c, { path: stpModel, format: "vtk", outputPath: path.join(dir, "o.vtk") });
     expect(vi.mocked(c.pipeline.exportMeshFormat).mock.lastCall![4]).toBe("vtk");
     expect(await fs.readFile(path.join(dir, "o.vtk"), "utf8")).toBe("vtk-content");
+  });
+
+  it("writes one MDPA per rank plus the partition manifest when mdpaRanks >= 2, and nothing at the base path", async () => {
+    const c = ctx();
+    const out = path.join(dir, "split.mdpa");
+    const result = await exportMeshTool(c, { path: stpModel, format: "mdpaElements", outputPath: out, options: { mdpaRanks: 2 } });
+    expect(c.pipeline.exportMdpa).not.toHaveBeenCalled();
+    const call = vi.mocked(c.pipeline.exportMdpaPartitioned).mock.lastCall!;
+    expect(call[4]).toBe("elements");
+    expect(call[5]).toBe("split");
+    expect((call[2] as { mdpaRanks: number }).mdpaRanks).toBe(2);
+    expect(result.written.map((w) => path.basename(w.path))).toEqual(["split_0.mdpa", "split_1.mdpa", "split.partition.json"]);
+    await expect(fs.access(out)).rejects.toThrow();
+    const manifest = JSON.parse(await fs.readFile(path.join(dir, "split.partition.json"), "utf8"));
+    expect(manifest).toMatchObject({ version: 1, format: "mdpaElements", ranks: 2, methodUsed: "kahip" });
+    expect(manifest.layout).toMatch(/CommunicatorData/);
+    expect(result.warnings.join("\n")).toMatch(/No Kratos reader has been run/);
+  });
+
+  it("keeps a single MDPA file for mdpaRanks 1", async () => {
+    const c = ctx();
+    await exportMeshTool(c, { path: stpModel, format: "mdpaElements", outputPath: path.join(dir, "one.mdpa"), options: { mdpaRanks: 1 } });
+    expect(c.pipeline.exportMdpaPartitioned).not.toHaveBeenCalled();
+    expect(c.pipeline.exportMdpa).toHaveBeenCalledTimes(1);
   });
 
   it("rejects unknown formats and refuses to overwrite the source", async () => {
@@ -4954,6 +5130,22 @@ describe("check_mesh_quality", () => {
     expect(r.checks[0].worstCell).toBe(4);
     expect(r.require).toBe("scaled_jacobian >= 0.2");
     expect(r.warnings.join(" ")).not.toMatch(/vacuous|No `require`/);
+  });
+
+  it("says a hanging-node octree is scored as ordinary nodes, and stays silent for any other mesh", async () => {
+    const hangingMesh = {
+      ...FAKE_MESH_RESULT,
+      octree: {
+        maxLevel: 4, snap: false, transition: "hanging" as const, numLeaves: 1450, numHanging: 378, finestLevel: 4, numSnapped: 0, numRefused: 0,
+        elementMix: { hexahedra: 1450, pyramids: 0, tetrahedra: 0 },
+        constraints: { hangingNodes: 378, constraints: 1134, chained: 0, variables: ["DISPLACEMENT_X"] },
+      },
+    };
+    const c = ctx(fakePipeline({ generateMesh: vi.fn(async () => hangingMesh) }));
+    const r = await checkMeshQualityTool(c, { path: stpModel, require: "scaled_jacobian >= 0.2" });
+    expect(r.warnings.join(" ")).toMatch(/378 hanging nodes are scored as ordinary nodes/);
+    const plain = await checkMeshQualityTool(ctx(), { path: stpModel, require: "scaled_jacobian >= 0.2" });
+    expect(plain.warnings.join(" ")).not.toMatch(/hanging/);
   });
 
   it("reports a clause that applied to no cell as vacuous, and a missing threshold text", async () => {

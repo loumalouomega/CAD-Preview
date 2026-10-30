@@ -277,6 +277,29 @@ export function meshExportFormat(id: string): MeshExportFormat | undefined {
 }
 
 /**
+ * Whether exporting to `format` would drop the multi-point constraints of a
+ * hanging-node octree (`engine: "octree"`, `octreeTransition: "hanging"`, a 3-D
+ * generate), and the sentence that says so. Only the Kratos MDPA writers have a
+ * constraints block; every other format — Gmsh's own, the meshio++-bridged ones —
+ * would write the hanging nodes as ordinary nodes of a non-conforming mesh, so
+ * the export must warn, never drop them silently. `null` when nothing is lost.
+ * One function for the provider and the MCP tools so they cannot disagree.
+ */
+export function constraintExportWarning(
+  options: { engine: string; octreeTransition: string; dimension: number },
+  format: { id: string; label: string },
+  hangingNodes?: number
+): string | null {
+  if (options.engine !== "octree" || options.octreeTransition !== "hanging" || options.dimension !== 3) return null;
+  if (format.id === "mdpaElements" || format.id === "mdpaGeometries") return null;
+  const nodes = hangingNodes !== undefined ? `${hangingNodes} hanging node${hangingNodes === 1 ? "" : "s"}` : "the hanging nodes";
+  return (
+    `${format.label} cannot carry multi-point constraints: ${nodes} of the all-hexahedra octree are written as ordinary nodes of a ` +
+    "non-conforming mesh and nothing ties them to their parent corners. Export Kratos MDPA to keep the constraints."
+  );
+}
+
+/**
  * The filename a companion file must be written under, given the basename the
  * user actually chose for the primary file — or `undefined` for a format with
  * no companion.

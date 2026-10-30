@@ -40,6 +40,7 @@ The webview runs in a Chromium browser context. These modules are bundled into `
 | `src/webview/massPropertiesPanel.ts` | Mass Properties panel DOM — label/value readout, error/status messages |
 | `src/webview/clashPanel.ts` | Clash panel DOM — Part-vs-Part and check-all interference readout (roadmap Tier 1 "Clash panel") |
 | `src/webview/brepHealthPanel.ts` | B-rep Health panel DOM — Check button, OCCT verdict summary, per-solid shell/open-boundary rows, and one row per flagged subshape with its named statuses; hovering a face/edge/solid row highlights it through `renderSelection` without touching the working selection (roadmap "B-rep validity report") |
+| `src/webview/surfaceToolsPanel.ts` | Surface Tools panel DOM (STEP/IGES sources): the `project_to_cad` and `grow_prism_layers` actions and their label/value result card; the request/result round trip and `requestId` guard live in `main.ts` (`surfaceToolRequest` / `surfaceToolResult`) |
 | `src/webview/meshHealthPanel.ts` | Mesh Health panel DOM (roadmap "Mesh → B-rep promotion, diagnostic-first", Phase 1 — read-only report, no promotion) |
 | `src/webview/regionFitPanel.ts` | Region Fit panel DOM — Pick seed one-shot capture, per-candidate plane/cylinder/sphere rows with residuals, Save plane / Add cylinder / Add sphere actions (gated on which candidates fitted) |
 | `src/webview/draftPanel.ts` | Draft panel DOM — Check (pull, minimum draft, two-sided), facts rows by face id with hover highlight; the draft angle colours the view through the colour-field overlay |
@@ -117,7 +118,7 @@ Entry point for the webview bundle. Not exported — all logic runs at module le
 | `"meshingOptions"` | `MeshingModel.load(msg.options)` (hydration only) → `syncMeshSizeSeed()` → `MeshingPanel.render()` |
 | `"meshingPresets"` | `MeshingPanel.renderPresets(msg.presets)` (hydration only — the merged user + bundled-starter library, silent like `meshingOptions`; sent on `ready` and after every preset save/delete) |
 | `"viewState"` | Stores `msg.view` (`ViewState \| null`) as `pendingViewState`. Applies it (or the default isometric, if `null`) once geometry has ALSO arrived, via `applyInitialViewIfNeeded()` — a no-op after the document's first load. A LATER `"viewState"` (an external `.view.json` change reconciled by the host) applies immediately instead, via the shared `applyViewState()` helper |
-| `"meshingResult"` | `viewer.setMeshOverlay(buildFEMesh(msg.positions, msg.indices, msg.edges, msg.elementGroups))`; if `msg.worstElements` is present, `viewer.setWorstElementsOverlay(buildWorstElementsHighlight(msg.positions, msg.worstElements.indices))` and auto-show it (else clear it) → `MeshingPanel.render(..., { nodeCount, elementCount, elapsedMs, quality: msg.quality, worstElements: msg.worstElements })` |
+| `"meshingResult"` | `viewer.setMeshOverlay(buildFEMesh(msg.positions, msg.indices, msg.edges, msg.elementGroups))`; if `msg.constraintLinks` is present, `viewer.setConstraintLinksOverlay(buildConstraintLinks(msg.positions, msg.constraintLinks))` (hidden until the links button is toggled); if `msg.worstElements` is present, `viewer.setWorstElementsOverlay(buildWorstElementsHighlight(msg.positions, msg.worstElements.indices))` and auto-show it (else clear it) → `MeshingPanel.render(..., { nodeCount, elementCount, elapsedMs, quality: msg.quality, worstElements: msg.worstElements })` |
 | `"meshingError"` | `MeshingPanel.render(..., { error: msg.message })` |
 | `"remeshResult"` / `"remeshError"` | Guarded by `remeshRequestId`; `MeshingPanel.finishRemesh` renders counts, output path, warnings or cancellation/error and releases Run. The existing `meshingJobSettled` releases FE progress/Cancel |
 | `"viewerDefaults"` | `viewer.applyDefaults(msg)` (background/grid-axes apply immediately; up-axis stored for the next `setModel()`) → `meshSizePreset` feeds `syncMeshSizeSeed()`. Order-independent relative to `"geometry"`/`"loadUrl"` — arrives in the `ready` handshake alongside `"parts"`/`"meshingOptions"` |
@@ -351,6 +352,14 @@ setWorstElementsOverlayVisible(visible: boolean): void
 ```
 
 Same dispose/replace and show/hide-in-place pair as `setMeshOverlay`/ `setMeshOverlayVisible` above, for the worst-quality-elements highlight overlay (from `geometryBuilder.buildWorstElementsHighlight()`) — but deliberately **independent** of `meshOverlay`'s own lifecycle: clearing/ replacing the FE-mesh overlay does NOT implicitly clear this one; `main.ts`'s wiring calls both explicitly at every site that needs to (a fresh `"meshingResult"`, the panel's Clear button), the same way it already keeps `meshingEnabled`'s toggle state in sync alongside `setMeshOverlay` rather than `Viewer` inferring it internally. `setModel()` does clear it unconditionally (alongside `setMeshOverlay(null)`) as part of the "a previous overlay was computed from the old geometry" rule above. Unlike the base FE-mesh overlay, this one does **not** toggle the model's face visibility — it's meant to be seen *through* whatever else is displayed (see `buildWorstElementsHighlight` below), so there's nothing to hide/restore.
+
+```typescript
+setConstraintLinksOverlay(obj: THREE.Object3D | null, opts?: { followModel?: boolean }): void
+setConstraintLinksVisible(visible: boolean): void
+getConstraintLinksInfo(): { segments: number; visible: boolean } | null
+```
+
+The hanging-node constraint links (slave→master segments, from `geometryBuilder.buildConstraintLinks()` for a generated octree or `buildFileConstraintLinks()` for an opened `.mdpa`): the same dispose/replace and show/hide-in-place pair as the worst-elements overlay, independent of `meshOverlay`'s lifecycle and cleared by `setModel()`. `followModel` is for links in a source file's coordinates, which copy the model's up-axis position/rotation/scale exactly as the Geometry overlay does; links of a generated mesh share the FE-mesh overlay's positions and do not. Drawn through the model (`depthTest: false`) in `--cad-constraint-link` amber, re-coloured by `applyTheme()`. `main.ts` keeps the `#meshing-links-toggle` button (hidden until links exist, off by default) in step; its Clear only disposes links it created.
 
 ```typescript
 setColorFieldOverlay(obj: THREE.Object3D | null): void

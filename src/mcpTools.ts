@@ -85,7 +85,8 @@ import { convertScadToCsg, csgWarningDiagnostic, resolveEffectiveSource, ScadUna
 import { parseScadParameters, validateScadOverrides, type ScadParameter } from "./scadParams";
 import { validateSelectorQuery } from "./selectorQuery";
 import { clean, envelope } from "./untrustedText";
-import { MESH_EXPORT_FORMATS, meshExportFormat, companionSaveName, type MeshExportFormat } from "./meshExportFormats";
+import { parseMdpaConstraintLinks } from "./mdpaConstraints";
+import { MESH_EXPORT_FORMATS, meshExportFormat, companionSaveName, constraintExportWarning, type MeshExportFormat } from "./meshExportFormats";
 import { sweepTsv, sweepOutputName, runMeshSweep, validateSweepSizes, SWEEP_NOTE } from "./meshSweep";
 import { describeOp } from "./webview/opCatalog";
 import { resolveSnapshotDisplay, type SnapshotClipInput } from "./snapshotOptions";
@@ -124,7 +125,8 @@ import type {
 } from "./stepPartsService";
 import type { compareModels, CompareSource } from "./modelDiffHost";
 import type { ModelDiff } from "./modelDiff";
-import type { convertToStlBoundary, convertToStlBoundaryWithRegions, convertFoamCaseToStlBoundary, exportViaMeshio, readMeshioMetadata, checkMeshQuality, readMeshioDataInfo, readMeshioProvenance, runMeshioOps, MeshioDataArrayInfo } from "./meshioService";
+import type { MeshConformityFacts } from "./meshioService";
+import type { convertToStlBoundary, convertToStlBoundaryWithRegions, convertFoamCaseToStlBoundary, exportViaMeshio, readMeshioMetadata, checkMeshQuality, checkMeshConformity, readMeshioDataInfo, readMeshioProvenance, runMeshioOps, MeshioDataArrayInfo } from "./meshioService";
 import { buildPartsFromMeshioRegions } from "./meshioRegionParts";
 import { buildPartsFromCsgColors, csgColorPartsNote, type CsgColorGroup } from "./csgColorParts";
 import { validateMmgOptions, type MmgOptions } from "./mmgOptions";
@@ -141,6 +143,9 @@ import type { fitMeshRegion } from "./meshRegionFit";
 import type { segmentMeshSurface, SegmentMeshOptions } from "./meshSegment";
 import type { fitMeshToCad, FitMeshToCadOptions } from "./meshFitCad";
 import type { meshCadSurfaceModel, MeshCadSurfaceOptions } from "./meshCadSurface";
+import type { projectMeshToCad, ProjectCadOptions } from "./meshProjectCad";
+import { PRISM_LAYER_FORMATS } from "./prismLayers";
+import type { growPrismLayersModel, PrismLayersOptions } from "./prismLayers";
 import { MESH_CAD_SURFACE_FORMATS } from "./meshCadSurface";
 import type {
   igaSampleModel,
@@ -181,6 +186,7 @@ import { MAX_HEALABLE_TRIANGLES } from "./meshHeal";
 import { AUTO_DECIMATE_TARGET_TRIANGLES, isHealableSizeError, stlBytesForHeal, decimatedInfo, decimatedSentence } from "./meshioService";
 import { weldedMeshToStlBytes } from "./meshComponents";
 import type { exportSvgSilhouette, exportDrawingSheet } from "./svgSilhouetteHost";
+import { rankFileName, partitionManifestName, partitionManifestJson, partitionWarnings, PARTITION_LAYOUT_NOTE } from "./mdpaPartition";
 import { normalizeTessellationQuality, type TessellationQuality } from "./tessellationQuality";
 import { SVG_VIEWS, type DimensionSource } from "./svgSilhouette";
 import type { hitTest } from "./hitTestService";
@@ -192,6 +198,7 @@ import type {
   generateMesh,
   exportMeshFormat,
   exportMdpa,
+  exportMdpaPartitioned,
   computeHandoffFacts,
   HandoffFacts,
   exportGeoUnrolled,
@@ -276,6 +283,7 @@ export interface Pipeline {
   generateMesh: typeof generateMesh;
   exportMeshFormat: typeof exportMeshFormat;
   exportMdpa: typeof exportMdpa;
+  exportMdpaPartitioned: typeof exportMdpaPartitioned;
   computeHandoffFacts: typeof computeHandoffFacts;
   exportGeoUnrolled: typeof exportGeoUnrolled;
   computeMassProperties: typeof computeMassProperties;
@@ -303,6 +311,7 @@ export interface Pipeline {
   exportViaMeshio: typeof exportViaMeshio;
   readMeshioMetadata: typeof readMeshioMetadata;
   checkMeshQuality: typeof checkMeshQuality;
+  checkMeshConformity: typeof checkMeshConformity;
   readMeshioDataInfo: typeof readMeshioDataInfo;
   readMeshioProvenance: typeof readMeshioProvenance;
   coarsenStlBoundary: typeof coarsenStlBoundary;
@@ -315,6 +324,8 @@ export interface Pipeline {
   segmentMeshSurface: typeof segmentMeshSurface;
   fitMeshToCad: typeof fitMeshToCad;
   meshCadSurfaceModel: typeof meshCadSurfaceModel;
+  projectMeshToCad: typeof projectMeshToCad;
+  growPrismLayersModel: typeof growPrismLayersModel;
   igaSampleModel: typeof igaSampleModel;
   igaRefineModel: typeof igaRefineModel;
   igaEvaluateModel: typeof igaEvaluateModel;
@@ -457,6 +468,7 @@ export function describeCapabilities() {
     meshOptions: {
       defaults: DEFAULT_MESH_OPTIONS,
       notes: [
+        'mdpaRanks (optional, 2-64; absent or 1 = one file) and mdpaPartitionMethod ("auto" = KaHIP when linked else sfc, "kahip", "sfc") apply only to export_mesh with mdpaElements/mdpaGeometries: the DOMAIN cells (never the boundary cells) are split over that many MPI ranks and written as <stem>_<rank>.mdpa plus <stem>.partition.json (balance, interface nodes, per-neighbour shared node ids). Node and cell ids are global across the files and each file carries an InterfaceNodes SubModelPart; the layout is NOT Kratos\' native CommunicatorData one. A hanging-node octree, more ranks than domain cells, and a 1-D mesh are refused by name.',
         `sizeMax = ${SIZE_MAX_SENTINEL} is the "unbounded" sentinel (no explicit target size); set a real value for predictable element counts.`,
         'elementShape "simplex" = triangles/tetrahedra, "subdivided" = all-quad/all-hex, "hexDominant" = mixed tet/hex (3D only, RTree recombiner) — NOT exportable to Kratos MDPA (export_mesh throws a clear error; other formats like msh/vtk are unaffected). elementOrder 2 adds mid-side nodes (quadratic).',
         "algorithm3D defaults to 1 (Delaunay, Gmsh's own default) — a wasm32 stack-overflow that used to make it hang/produce an empty mesh on re-imported CAD was fixed upstream in gmsh-wasm 0.3.0. Frontal (4) and HXT (10) remain valid alternatives.",
@@ -466,8 +478,9 @@ export function describeCapabilities() {
         "conformal (default true) fragments every imported solid (gmsh.model.occ.fragment over all volumes) before meshing, so touching solids share interface nodes — Parts resolve after the renumbering, so physical groups and Kratos SubModelParts survive per body. Single-solid output is identical with and without it; mesh sources ignore it. generate_mesh reports conformalApplied; the handoff manifest records meshOptions.conformal plus the applied fact.",
         "sizeField (optional, B-rep sources, gmsh engine) is view-driven sizing: a list of {point:[x,y,z], size} samples steering the background mesh through a list-based SP view + PostView field joined into the shared Min background (the view is removed after generate, so no view is left behind). Refine where measure_mesh_deviation reports the worst error: sample that report's high-deviation region into sizes and regenerate in one pass — Parts, physical groups and the face-N correlation survive because the mesh is regenerated from CAD (unlike MMG field adaptation, which renumbers). Mesh sources and engine ftetwild ignore it with a warning; capped at 20000 samples (first N win).",
         'engine "gmsh" (default) is the classifySurfaces/createGeometry/addSurfaceLoop/addVolume path — fast, but needs a watertight/manifold/well-oriented boundary. engine "ftetwild" is an alternative volume mesher (fTetWild) for a dirty mesh-format 3D source that Gmsh rejects or silently produces no elements for (holes, self-intersections, non-manifold edges) — meaningless for a B-rep source (exact geometry already) or dimension !== 3, both of which silently fall back to "gmsh" with a warning rather than erroring. Only dimension/sizeMax (mapped to fTetWild\'s own target-edge-length fraction), ftetwildEpsRel (its envelope size, also a bbox-diagonal fraction), ftetwildManifoldSurface (force a manifold boundary), ftetwildCoarsen (fewer, larger tets), and ftetwildDisableFiltering (skip interior filtering — returns a hull fill, NOT the part interior; inspection only) apply under "ftetwild" — sizeMin/algorithm2D/algorithm3D/elementOrder/elementShape/stlAngle are all ignored. repair_mesh honors the stored options (still forcing engine/dimension). generate_mesh\'s response reports engineUsed and any fallback warnings.',
-        'engine "octree" is meshio++\'s octree: a conforming hex-dominant volume (hexahedra, pyramids and tetrahedra — the "templates" transition, which MDPA export accepts) fitted to the TESSELLATED skin, so it works on a B-rep source (tessellated on host OCCT) and on a mesh-format source alike. It is sized by octreeMaxLevel (1-6, default 4: a 3x4x5 block meshes to 3522 cells enclosing exactly its volume) and octreeSnap (default true; refused snaps are counted, never forced), NOT by sizeMax. It has no face correlation, so Parts, physical groups and SubModelParts are NOT preserved (Parts are ignored with a warning; the handoff manifest records a single unnamed region). A request it can never honor is refused by name rather than ignored: elementOrder 2, elementShape other than simplex, periodic and sizeField throw. optimize and Part settings are ignored with a named warning. dimension !== 3 falls back to "gmsh" with a warning. .geo_unrolled export is refused. generate_mesh reports octree {maxLevel, snap, numSnapped, numRefused, elementMix{hexahedra,pyramids,tetrahedra}}; the node/element quality summary covers all three classes.',
+        'engine "octree" is meshio++\'s octree: a conforming hex-dominant volume (hexahedra, pyramids and tetrahedra — the "templates" transition, which MDPA export accepts) fitted to the TESSELLATED skin, so it works on a B-rep source (tessellated on host OCCT) and on a mesh-format source alike. It is sized by octreeMaxLevel (1-6, default 4: a 3x4x5 block meshes to 3522 cells enclosing exactly its volume) and octreeSnap (default true; refused snaps are counted, never forced), NOT by sizeMax. It has no face correlation, so Parts, physical groups and SubModelParts are NOT preserved (Parts are ignored with a warning; the handoff manifest records a single unnamed region). A request it can never honor is refused by name rather than ignored: elementOrder 2, elementShape other than simplex, periodic and sizeField throw. optimize and Part settings are ignored with a named warning. dimension !== 3 falls back to "gmsh" with a warning. .geo_unrolled export is refused. generate_mesh reports octree {maxLevel, snap, transition, numSnapped, numRefused, elementMix{hexahedra,pyramids,tetrahedra}}; the node/element quality summary covers all three classes. octreeTransition "hanging" (default "templates") instead gives an ALL-hexahedra graded mesh whose hanging nodes are left in place and tied to their parent corners by multi-point constraints: block.stp at octreeMaxLevel 4 is 1450 hexahedra with 378 hanging nodes (252 on an edge midpoint, 126 on a face centre), recovered from the leaf grid and exact to round-off (a linear field imposed on the masters reproduces at every slave to ~1e-15). It never snaps (a snapped hanging node leaves its parent edge), so octreeSnap is ignored with a warning. generate_mesh then reports octree.constraints {hangingNodes, constraints (= hangingNodes x mpcVariables), chained, variables}; the constraints exist ONLY in Kratos MDPA export (mdpaElements/mdpaGeometries write one `Begin Constraints LinearMasterSlaveConstraint` block per variable and master count, plus a HangingNodes SubModelPart) — every other export format warns that they are lost (a non-conforming mesh), and check_mesh_quality scores the hanging nodes as ordinary nodes. mpcVariables (default DISPLACEMENT_X/Y/Z) names the Kratos variables tied.',
         'engine "octreemesh" is meshio++ 17.13\'s octreeMesh: a conforming GRADED tetrahedral mesh fitted to the tessellated skin (octreeMeshOutput "tet", the default; stuffing, feature edges and corners recovered, fit/untangle/optimise passes) or an all-hexahedra mesh by the octree dual (octreeMeshOutput "hex"). Like "octree" it works on a B-rep source (tessellated on host OCCT) and on a mesh source, has no face correlation (Parts, physical groups and SubModelParts are NOT preserved), is sized by octreeMeshMaxSize (largest leaf edge in mm; 0 = a bounding-box diagonal / 8) and octreeMeshLevels (1-4, default 2; smallest leaf = max/2^levels) rather than sizeMax, and refuses elementOrder 2, a non-simplex elementShape, periodic and sizeField by name. The castellated output is deliberately not offered (hanging nodes). block.stp at octreeMeshMaxSize 2 meshes to 6 512 tets (856 hex) enclosing exactly 60; cube.stl encloses exactly 1000. generate_mesh reports octreeMesh {output, maxSize, minSize, numLeaves, numTetrahedra, numHexahedra, numInverted, minDihedral, maxDihedral, minScaledJacobian, hausdorffToSkin, numFeatureChains, numFeatureChainsMissed, numWarpRefused, warnings}; meshio++\'s own warnings (feature chains not recovered, a small dihedral, a non-positive corner Jacobian after untangling) are copied into the response warnings verbatim — they are facts, read them before trusting a hex mesh of a curved part. .geo_unrolled export and refinement sweeps refuse the engine.',
+        'engine "meshcad" is meshio++\'s meshCadSurface: a kernel-free SURFACE mesh of a B-rep\'s exact faces (dimension 2 only; a mesh-format source or dimension 3 falls back to "gmsh" with a warning). Every edge is sampled once and shared by its faces, so the triangles meet node-for-node: block.stp closes with 0 open edges and a surface area of exactly 94. Sized by sizeMax (the target edge length; unset = bounding-box diagonal / 20) plus meshcadMinAngle (refine until every triangle angle is at least this, 0-60 degrees; a sharp corner can make it unreachable — reported as numFacesBelowBound, never promised), meshcadSmoothIterations, meshcadCurvatureDeviation (max chord-to-surface distance, mm), meshcadCellsAcrossGaps and meshcadGrading (all 0 = off); elementOrder 2 writes curved triangle6 elements (Element2D6N in MDPA). It has no face correlation, so Parts, physical groups and SubModelParts are NOT preserved (Parts are ignored with a warning); elementShape other than simplex, periodic and sizeField are refused by name. generate_mesh reports meshcad {targetSize, order, numFaces, numFailed, numTriangles, numOpenEdges, numNonManifoldEdges, numMisorientedEdges, minAngleDeg, maxAngleDeg, minEdge, maxEdge, numRefinementPoints, numFacesBelowBound, numSmoothed, numCurvedStraightened, warnings}. mesh_cad_surface exposes the full option set (faceSizes, edgeSizes, order 3, virtual edges/faces, lopCorners, quads, untangle, ...) and writes the surface to a file. options.prismLayers {firstHeight, numLayers, growth, reverse, collapse} grows 3-D wedge layers over the surface (meshio++ boundaryLayer; the result is the layer shell, the interior is not meshed; dimension becomes 3; elementOrder 2 is refused; reported as meshcad.prismLayers) -- not the Gmsh 2-D Part boundary layer. Standalone file routes: grow_prism_layers and project_to_cad. .geo_unrolled export is refused.',
         "save_mesh_preset / list_mesh_presets / apply_mesh_preset manage named, reusable option bundles (the macro library's bundled-plus-user pattern: bundled starters coarse-preview, balanced, fine-detail, robust-repair, plus your own caller-named file). A preset stores global options only — never Part sizing or entity assignments — with explicit authored units (converted to mm on apply) and a pinned engine. Preset names describe density intent, never a mesh-quality guarantee.",
         "compare_mesh_refinement meshes one model at several explicit sizes (max 8) with identical geometry and non-size options — each run a uniform mesh (sizeMin = sizeMax = size), reporting engine/nodes/elements/elapsed/quality per run plus a TSV, with failed runs as individual rows. Optional per-run output files in any export_mesh format; optional applyIndex persists one run's options. Rows describe meshing cost and element shape quality only — density/quality trends do NOT establish FE-solution convergence without a solver.",
       ],
@@ -871,6 +884,21 @@ export async function loadModel(ctx: ToolContext, params: { path: string }) {
         // header slot for one) simply yields no entry here.
         ctx.pipeline.readMeshioProvenance(bytes, route.format, path.basename(modelPath), companions),
       ]);
+      if (route.format === "mdpa") {
+        // meshio++ cannot read a Constraints block, so the file is opened with the
+        // blocks stripped (`mdpaConstraints.ts`); report what they said instead of
+        // dropping it silently. Variable names are the file author's text.
+        const links = parseMdpaConstraintLinks(new TextDecoder().decode(bytes));
+        if (links) {
+          const vars = links.variables.map((v) => envelope(v, "variable")).join(", ");
+          warnings.push(
+            `Source file declares ${links.constraintCount} multi-point constraint row(s) on ${links.slaveCount} slave node(s)${vars ? ` (${vars})` : ""} — ` +
+              "opened without them: they are not applied, and a coarse/fine hanging-node interface is part of the derived boundary surface " +
+              "(areas over-count it; enclosed volume is unaffected)." +
+              (links.skippedRows > 0 ? ` ${links.skippedRows} row(s) did not fit the supported layout.` : "")
+          );
+        }
+      }
       const dataNames = [...meta.pointDataNames, ...meta.cellDataNames, ...meta.fieldDataNames];
       if (meta.regions.length > 0 || dataNames.length > 0) {
         const bits: string[] = [];
@@ -2607,6 +2635,45 @@ export async function inspectMeshioFieldsTool(
   return { format: route.format, supported: true, arrays, warnings };
 }
 
+/**
+ * `check_mesh_conformity` — facts about whether a meshio++-readable volume or
+ * surface mesh is node-for-node conforming (meshio++ `checkConformity`):
+ * hanging nodes, T-junctions, partial overlaps, unwelded facets. Facts only;
+ * the agent decides whether the mesh is acceptable. Read-only, raw file (no
+ * pending mesh edits are baked), meshio++ sources only — a B-rep or mesh-parser
+ * source returns `supported:false` (generate a mesh first).
+ */
+export async function checkMeshConformityTool(
+  ctx: ToolContext,
+  params: { path: string; tolerance?: number }
+): Promise<{ format: CadFormat; supported: boolean; warnings: string[] } & Partial<MeshConformityFacts>> {
+  const modelPath = params.path;
+  const route = requireRoute(modelPath);
+  if (route.strategy !== "meshio" || route.format === "openfoam") {
+    return {
+      format: route.format,
+      supported: false,
+      warnings: [
+        route.format === "openfoam"
+          ? "OpenFOAM source: geometry-only import, so there is no cell connectivity to check."
+          : `check_mesh_conformity operates on meshio++-readable mesh files (${MESHIO_FORMATS.join("/")}); ${route.format} is not one. Export a mesh with export_mesh first.`,
+      ],
+    };
+  }
+  if (params.tolerance !== undefined && !(Number.isFinite(params.tolerance) && params.tolerance >= 0)) {
+    throw new Error(`tolerance must be a non-negative number (got ${String(params.tolerance)}).`);
+  }
+  const bytes = await readModelBytes(modelPath);
+  const companions = await resolveMeshioCompanions(modelPath, route.format, bytes);
+  const facts = await ctx.pipeline.checkMeshConformity(
+    bytes, route.format, path.basename(modelPath), companions,
+    params.tolerance === undefined ? undefined : { tolerance: params.tolerance }
+  );
+  const warnings = facts.warnings.map((w) => envelope(w, "meshio warning"));
+  if (facts.dimension === 0) warnings.push("The mesh has no volume or 2-D cells, so nothing was examined.");
+  return { format: route.format, supported: true, ...facts, warnings };
+}
+
 export async function checkMeshHealthTool(
   ctx: ToolContext,
   params: { path: string; autoDecimate?: boolean }
@@ -2913,6 +2980,120 @@ export async function meshCadSurfaceTool(
     warnings: [...warnings, ...result.report.warnings],
     note:
       "One-shot export: the source is untouched. Triangles carry cad:face (the B-rep face id) and, with edges, a line block carries cad:edge in formats that hold cell data (vtk/vtu/msh/ply). numOpenEdges, numNonManifoldEdges and numMisorientedEdges all 0 means a watertight, consistently wound surface. Facts only: whether the sizing suits a solver is the caller's call (check_mesh_quality / check_mesh_health read the written file).",
+  };
+}
+
+/**
+ * `project_to_cad` — snap a surface mesh onto the exact faces of a CAD file
+ * (meshio++ `projectToCad`). `path` is the mesh (it must carry the `cad:face`
+ * cell data, and `cad:edge` lines for edge snapping, that `mesh_cad_surface`
+ * writes: .msh/.vtk/.vtu); `cadPath` supplies the NURBS faces (STEP/IGES or
+ * .cad.json). A NEW mesh is written to `outputPath`; neither input is touched.
+ * Facts only: counts of projected / on-edge / too-far / failed / outside-trim
+ * points and the largest move — whether that is acceptable is the caller's call.
+ */
+export async function projectToCadTool(
+  ctx: ToolContext,
+  params: { path: string; cadPath: string; outputPath: string } & ProjectCadOptions
+) {
+  const meshPath = params.path;
+  const meshRoute = requireRoute(meshPath);
+  if (meshRoute.strategy !== "meshio" || meshRoute.format === "openfoam" || meshRoute.format === "cad_json") {
+    return {
+      format: meshRoute.format,
+      supported: false as const,
+      warnings: [`project_to_cad snaps a meshio++-readable surface mesh that carries cad:face (.msh/.vtk/.vtu from mesh_cad_surface); ${meshRoute.format} is not one.`],
+    };
+  }
+  const cadRoute = requireRoute(params.cadPath);
+  const gate = igaSourceGate(cadRoute, "project_to_cad (cadPath)");
+  if (gate) return gate;
+  const outputPath = path.resolve(params.outputPath);
+  const extension = path.extname(outputPath).toLowerCase();
+  if (!MESH_CAD_SURFACE_FORMATS[extension]) {
+    throw new Error(`outputPath must end in ${Object.keys(MESH_CAD_SURFACE_FORMATS).join(", ")} (got ${params.outputPath}).`);
+  }
+  assertNotSourcePath(meshPath, outputPath);
+  assertNotSourcePath(params.cadPath, outputPath);
+  const warnings: string[] = [];
+  for (const p of [meshPath, params.cadPath]) {
+    const { ops } = await readEditsResolved(p);
+    if (ops.length > 0) warnings.push(`${p}: pending edits are NOT baked in — project_to_cad reads the raw file.`);
+  }
+  const meshBytes = await readModelBytes(meshPath);
+  const cadBytes = await readModelBytes(params.cadPath);
+  const { path: _p, cadPath: _c, outputPath: _o, ...options } = params;
+  void _p;
+  void _c;
+  void _o;
+  const result = await ctx.pipeline.projectMeshToCad(meshBytes, meshRoute.format, cadBytes, cadRoute.format, extension, options);
+  await fs.writeFile(outputPath, result.outputBytes);
+  return {
+    format: meshRoute.format,
+    supported: true as const,
+    written: outputPath,
+    bytes: result.outputBytes.byteLength,
+    ...result.report,
+    warnings: [...warnings, ...result.report.warnings],
+    note:
+      "One-shot: both inputs are untouched. Points move onto the CAD faces (and edge curves where cad:edge lines exist); connectivity and cell data are unchanged. Facts only — maxMove is the largest displacement in model units; numTooFar / numFailed / numOutsideTrim list what stayed or looks wrong.",
+  };
+}
+
+/**
+ * `grow_prism_layers` — wedge layers over a closed triangle surface (meshio++
+ * 3-D `boundaryLayer`). `path` is a CAD source (STEP/IGES/.cad.json, meshed
+ * with `targetSize` first) or a closed triangle mesh file (stl/obj/ply or a
+ * meshio++ surface format). A NEW layered mesh (wedges + base + cap) is
+ * written to `outputPath` (.vtk/.vtu/.msh); the source is untouched. Facts
+ * only: cell counts, shrunk/collapsed points, least scaled Jacobian, achieved
+ * vs planned thickness. Not the Gmsh 2-D `Part.meshBoundaryLayer`.
+ */
+export async function growPrismLayersTool(
+  ctx: ToolContext,
+  params: { path: string; outputPath: string; targetSize?: number } & PrismLayersOptions
+) {
+  const route = requireRoute(params.path);
+  const isCad = ["cad_json", "step", "iges"].includes(route.format);
+  const isMesh = !isCad && (route.strategy === "meshio" || ["stl", "obj", "ply"].includes(route.format)) && route.format !== "openfoam";
+  if (!isCad && !isMesh) {
+    return {
+      format: route.format,
+      supported: false as const,
+      warnings: [`grow_prism_layers needs a CAD source (.step/.stp/.iges/.igs/.cad.json) or a closed triangle surface mesh; ${route.format} is neither.`],
+    };
+  }
+  const outputPath = path.resolve(params.outputPath);
+  const extension = path.extname(outputPath).toLowerCase();
+  if (!PRISM_LAYER_FORMATS[extension]) {
+    throw new Error(`outputPath must end in ${Object.keys(PRISM_LAYER_FORMATS).join(", ")} — layered meshes hold wedge cells (got ${params.outputPath}).`);
+  }
+  assertNotSourcePath(params.path, outputPath);
+  if (isCad && !(typeof params.targetSize === "number" && params.targetSize > 0)) {
+    throw new Error("targetSize is required for a CAD source (the surface edge length the layers grow from, in model units).");
+  }
+  const warnings: string[] = [];
+  const { ops } = await readEditsResolved(params.path);
+  if (ops.length > 0) warnings.push(`${params.path}: pending edits are NOT baked in — grow_prism_layers reads the raw file.`);
+  const bytes = await readModelBytes(params.path);
+  const { path: _p, outputPath: _o, targetSize, ...options } = params;
+  void _p;
+  void _o;
+  const source = isCad
+    ? ({ kind: "cad", bytes, meshioFormat: route.format, targetSize: targetSize as number } as const)
+    : ({ kind: "mesh", bytes, meshioFormat: route.format } as const);
+  const result = await ctx.pipeline.growPrismLayersModel(source, extension, options);
+  await fs.writeFile(outputPath, result.outputBytes);
+  return {
+    format: route.format,
+    supported: true as const,
+    written: outputPath,
+    bytes: result.outputBytes.byteLength,
+    numSurfaceTriangles: result.numSurfaceTriangles,
+    ...result.report,
+    warnings: [...warnings, ...result.report.warnings],
+    note:
+      "One-shot: the source is untouched. The file holds the wedge layers plus the base skin and the outer cap; the interior is NOT meshed. reverse grows against the normals (inward on a closed skin). Facts only — compare minThickness/maxThickness with plannedThickness and read minScaledJacobian before using the mesh.",
   };
 }
 
@@ -5356,14 +5537,14 @@ export async function saveMeshPreset(params: {
     typeof params.unit === "string" && (DISPLAY_UNITS as readonly string[]).includes(params.unit)
       ? (params.unit as MeshPreset["unit"])
       : "mm";
-  const engine: MeshPreset["engine"] = params.engine === "ftetwild" || params.engine === "octree" || params.engine === "octreemesh" ? params.engine : "gmsh";
+  const engine: MeshPreset["engine"] = params.engine === "ftetwild" || params.engine === "octree" || params.engine === "octreemesh" || params.engine === "meshcad" ? params.engine : "gmsh";
 
   const warnings: string[] = [];
   if (params.unit != null && unit !== params.unit) {
     warnings.push(`Unknown unit "${params.unit}" — valid: ${DISPLAY_UNITS.join(", ")}. Stored as "mm".`);
   }
   if (params.engine != null && engine !== params.engine) {
-    warnings.push(`Unknown engine "${params.engine}" — valid: gmsh, ftetwild, octree, octreemesh. Stored as "gmsh".`);
+    warnings.push(`Unknown engine "${params.engine}" — valid: gmsh, ftetwild, octree, octreemesh, meshcad. Stored as "gmsh".`);
   }
   for (const key of Object.keys(params.options)) {
     if (!(key in DEFAULT_MESH_OPTIONS)) warnings.push(`Unknown option "${key}" ignored.`);
@@ -5642,6 +5823,9 @@ export async function generateMeshTool(
     // Octree-mesh facts (output, resolved sizes, dihedral/Jacobian, inverted
     // count, Hausdorff to the skin) — null for any other engine.
     octreeMesh: result.octreeMesh ?? null,
+    // Mesh-CAD surface facts (resolved size, closure counts, angle bounds,
+    // refinement/bound facts) — null for any other engine.
+    meshcad: result.meshcad ?? null,
     // Read back from the generated nodes for a 2-D B-rep generate with a
     // Part.meshBoundaryLayer: the plan is what was requested, these are the
     // rows the mesh actually contains.
@@ -5780,6 +5964,12 @@ export async function checkMeshQualityTool(
   const { parts, options } = await resolveMeshPartsAndOptionsHeadless(modelPath, input, base, warnings);
   const meshed = await ctx.pipeline.generateMesh(ctx.extensionPath, input, options, parts);
   warnings.push(...meshed.warnings);
+  if (meshed.octree?.transition === "hanging") {
+    const n = meshed.octree.constraints?.hangingNodes ?? meshed.octree.numHanging;
+    warnings.push(
+      `Hanging-node octree: the ${n} hanging nodes are scored as ordinary nodes of the hexahedra that carry them — the multi-point constraints are not applied, so this is element-wise shape quality only.`
+    );
+  }
   const gate = await ctx.pipeline.checkMeshQuality(meshed.mshText, spec, {
     maxInverted: params.maxInverted,
     maxDegenerate: params.maxDegenerate,
@@ -5956,7 +6146,7 @@ export async function exportMeshTool(
     const result = await ctx.jobControl.runOwnedJob({ ownerId: params.ownerId, requestId: params.requestId, jobId }, execute);
     receipt.state = "succeeded";
     receipt.updatedAt = new Date().toISOString();
-    receipt.artifacts = await collectExecutionArtifacts(outputPath, format.id, manifestPath);
+    receipt.artifacts = await collectExecutionArtifacts(outputPath, format.id, manifestPath, result.written.map((w) => w.path));
     await writeJsonAtomic(receiptPath, receipt);
     return { ...result, execution: receipt };
   } catch (error) {
@@ -5973,9 +6163,14 @@ export async function exportMeshTool(
 async function collectExecutionArtifacts(
   outputPath: string,
   format: string,
-  handoffPath?: string
+  handoffPath?: string,
+  /** Every file the writer reported — a partitioned MDPA export has no file at `outputPath` itself. */
+  written: string[] = []
 ): Promise<ExecutionReceiptV1["artifacts"]> {
-  const outputs = [outputPath, ...(format === "geoUnrolled" ? [`${outputPath}.xao`] : []), ...(handoffPath ? [handoffPath] : [])];
+  const outputs = [
+    ...new Set([outputPath, ...written, ...(format === "geoUnrolled" ? [`${outputPath}.xao`] : [])]),
+    ...(handoffPath ? [handoffPath] : []),
+  ];
   const artifacts: ExecutionReceiptV1["artifacts"] = [];
   for (const file of outputs) {
     try {
@@ -6164,7 +6359,7 @@ async function writeHandoffManifest(
     options: manifest.meshOptions,
     engine: manifest.engineUsed,
     engineVersion:
-      (manifest.engineUsed === "octree" || manifest.engineUsed === "octreemesh" ? manifest.kernels["@meshioplusplus/wasm"] : manifest.kernels["@loumalouomega/gmsh-wasm"]) ?? "unavailable",
+      (manifest.engineUsed === "octree" || manifest.engineUsed === "octreemesh" || manifest.engineUsed === "meshcad" ? manifest.kernels["@meshioplusplus/wasm"] : manifest.kernels["@loumalouomega/gmsh-wasm"]) ?? "unavailable",
     engineVersionSource: "CAD Preview build kernel package metadata",
     artifacts: manifest.outputs.map((output) => ({
       role: "mesh" as const,
@@ -6243,6 +6438,9 @@ async function writeMeshExportFormat(
   deterministic = false
 ): Promise<string[]> {
   const written: string[] = [];
+  // A hanging-node octree's constraints exist only in MDPA — name the loss, never drop them silently.
+  const constraintLoss = constraintExportWarning(options, format, pregenerated?.octree?.constraints?.hangingNodes);
+  if (constraintLoss) warnings.push(constraintLoss);
   // Rewrites the fields a format was MEASURED to move (a no-op for every other format and role).
   const norm = (role: string, bytes: Uint8Array): Uint8Array => (deterministic ? normalizeMeshExport(format.id, role, bytes) : bytes);
   if (format.id === "msh") {
@@ -6267,6 +6465,29 @@ async function writeMeshExportFormat(
       await fs.writeFile(outputPath, geo.text, "utf8");
       written.push(outputPath);
     }
+  } else if ((format.id === "mdpaElements" || format.id === "mdpaGeometries") && (options.mdpaRanks ?? 1) >= 2) {
+    // One file per MPI rank (`<stem>_<rank>.mdpa`) plus `<stem>.partition.json` — a rank count of 1 (the
+    // default) falls through to the single-file branch below, byte-identical to before.
+    const dir = path.dirname(outputPath);
+    const stem = path.basename(outputPath, path.extname(outputPath));
+    const split = await ctx.pipeline.exportMdpaPartitioned(
+      ctx.extensionPath,
+      input,
+      options,
+      parts,
+      format.id === "mdpaElements" ? "elements" : "geometries",
+      stem
+    );
+    const targets = [
+      ...split.files.map((f) => ({ file: path.join(dir, rankFileName(stem, f.rank)), text: f.text })),
+      { file: path.join(dir, partitionManifestName(stem)), text: partitionManifestJson(split.report, { source: path.basename(modelPath), format: format.id }) },
+    ];
+    for (const t of targets) assertNotSourcePath(modelPath, t.file);
+    for (const t of targets) {
+      await fs.writeFile(t.file, t.text, "utf8");
+      written.push(t.file);
+    }
+    warnings.push(...partitionWarnings(split.report), PARTITION_LAYOUT_NOTE);
   } else if (format.id === "mdpaElements" || format.id === "mdpaGeometries") {
     const text = await ctx.pipeline.exportMdpa(
       ctx.extensionPath,

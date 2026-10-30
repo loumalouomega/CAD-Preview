@@ -56,6 +56,11 @@ describe("parseMeshPresetsJson", () => {
     expect(lib.weird.options.sizeMax).toBe(3);
   });
 
+  it("keeps a pinned meshcad engine instead of falling back to gmsh", () => {
+    const text = JSON.stringify({ version: 1, presets: { skin: { name: "skin", engine: "meshcad", options: {} } } });
+    expect(parseMeshPresetsJson(text).skin.engine).toBe("meshcad");
+  });
+
   it("keeps a pinned octreemesh engine instead of falling back to gmsh", () => {
     const text = JSON.stringify({ version: 1, presets: { tets: { name: "tets", engine: "octreemesh", options: {} } } });
     expect(parseMeshPresetsJson(text).tets.engine).toBe("octreemesh");
@@ -152,6 +157,12 @@ describe("inapplicablePresetFields", () => {
     };
     // elementOrder is REFUSED at generate rather than ignored, so it is not listed as "ignored".
     expect(inapplicablePresetFields(octree)).toEqual(["optimize", "ftetwildCoarsen"]);
+  });
+
+  it("lists the hanging-node transition and MPC variables as octree-only fields", () => {
+    const withHanging = { ...DEFAULT_MESH_OPTIONS, octreeTransition: "hanging" as const, mpcVariables: ["TEMPERATURE"] };
+    expect(inapplicablePresetFields({ ...gmshPreset, options: withHanging })).toEqual(["octreeTransition", "mpcVariables"]);
+    expect(inapplicablePresetFields({ ...gmshPreset, engine: "octree", options: withHanging })).toEqual([]);
   });
 
   it("is silent when every engine-foreign field is at its default", () => {

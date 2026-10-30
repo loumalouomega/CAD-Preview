@@ -212,6 +212,20 @@ const KIND_FAMILY: Record<MdpaCellKind, keyof typeof FAMILY_FACES | null> = {
 };
 
 /**
+ * The boundary of a Kratos-ordered cell as rings of CORNER local indices: faces
+ * for a volume kind, edges (a ring of two) for a 2-D tri/quad kind, `[]` for a
+ * line. The corner block is identical to gmsh's, so these index a cell's
+ * `nodeTags` directly. Used to match a boundary condition to its parent cell.
+ */
+export function cellBoundaryRings(kind: MdpaCellKind): ReadonlyArray<readonly number[]> {
+  const family = KIND_FAMILY[kind];
+  if (family) return FAMILY_FACES[family];
+  const n = MDPA_KIND_INFO[kind].numCorners;
+  if (kind.startsWith("tri") || kind.startsWith("quad")) return Array.from({ length: n }, (_, i) => [i, (i + 1) % n]);
+  return [];
+}
+
+/**
  * Signed volume of a cell from its first-`numCorners` corner coordinates (in
  * Kratos node order — which keeps the corner block identical to gmsh's), via
  * the divergence theorem over the kind's OUTWARD-wound boundary faces. Positive
@@ -275,9 +289,13 @@ export function surfaceTriangles(els: GmshElementsResult, tagToIndex: Map<number
  * face shared by e.g. a hex and an adjacent pyramid dedups correctly (same 4
  * corners). Unknown / non-3D types are skipped.
  */
-export function boundaryTriangles(els: GmshElementsResult, tagToIndex: Map<number, number>): number[] {
+export function boundaryTriangles(
+  els: GmshElementsResult,
+  tagToIndex: Map<number, number>,
+  skipRing?: RingPredicate
+): number[] {
   const out: number[] = [];
-  for (const ring of boundaryFaceRings(els)) {
+  for (const ring of boundaryFaceRings(els, skipRing)) {
     for (const tri of triangulateRing(ring, tagToIndex)) out.push(...tri);
   }
   return out;
@@ -304,12 +322,18 @@ export function faceRingKey(ring: readonly number[]): string {
   return [...ring].sort((a, b) => a - b).join("_");
 }
 
+/** True for a once-seen face that is NOT on the boundary after all — one side of
+ * a coarse/fine hanging-node interface (see `hangingConstraints.ts`'s
+ * `hangingInterfaceFilter`). Corner-key dedup cannot cancel those: a coarse
+ * face never shares its four corners with the four fine faces opposite it. */
+export type RingPredicate = (ring: readonly number[]) => boolean;
+
 /** The kept boundary faces of a volume mesh, each as its corner-tag ring — the
  * shared core of {@link boundaryTriangles} (which triangulates them) and
  * {@link boundaryEdges} (which takes their perimeters). A face keyed by its
  * sorted corner tags that appears exactly once is on the boundary; a face shared
  * by two cells (appears twice) is interior and dropped. */
-export function boundaryFaceRings(els: GmshElementsResult): number[][] {
+export function boundaryFaceRings(els: GmshElementsResult, skipRing?: RingPredicate): number[][] {
   const faceMap = new Map<string, { ring: number[]; count: number }>();
   for (let t = 0; t < els.elementTypes.length; t++) {
     const info = GMSH_ELEMENT_TYPES.get(els.elementTypes[t]);
@@ -326,7 +350,7 @@ export function boundaryFaceRings(els: GmshElementsResult): number[][] {
     }
   }
   const rings: number[][] = [];
-  for (const { ring, count } of faceMap.values()) if (count === 1) rings.push(ring);
+  for (const { ring, count } of faceMap.values()) if (count === 1 && !skipRing?.(ring)) rings.push(ring);
   return rings;
 }
 
@@ -353,8 +377,8 @@ function polygonEdges(rings: number[][], tagToIndex: Map<number, number>): numbe
 
 /** True element edges of a volume mesh's boundary (quad perimeters for hexes,
  * triangle edges for tets) — the wireframe counterpart of {@link boundaryTriangles}. */
-export function boundaryEdges(els: GmshElementsResult, tagToIndex: Map<number, number>): number[] {
-  return polygonEdges(boundaryFaceRings(els), tagToIndex);
+export function boundaryEdges(els: GmshElementsResult, tagToIndex: Map<number, number>, skipRing?: RingPredicate): number[] {
+  return polygonEdges(boundaryFaceRings(els, skipRing), tagToIndex);
 }
 
 /** True element edges of a surface mesh (quad perimeters for quads, triangle

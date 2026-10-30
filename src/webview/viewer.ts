@@ -149,6 +149,9 @@ export class Viewer {
    * material so it paints through occluding geometry. See
    * `setWorstElementsOverlay`. */
   private worstElementsOverlay: THREE.Object3D | null = null;
+  /** Hanging-node constraint links (slave→master segments) — see
+   * `setConstraintLinksOverlay`. */
+  private constraintLinksOverlay: THREE.Object3D | null = null;
   /** The "colour by scalar field" overlay (if any, meshio++ sources only) —
    * a scene sibling of `model`/`meshOverlay`. See `setColorFieldOverlay`. */
   private colorFieldOverlay: THREE.Object3D | null = null;
@@ -678,6 +681,7 @@ export class Viewer {
     // the old geometry) and must not linger either.
     this.setMeshOverlay(null);
     this.setWorstElementsOverlay(null);
+    this.setConstraintLinksOverlay(null);
     this.setColorFieldOverlay(null);
     this.setOpPreview(null); // a preview computed from the OLD geometry must not linger over the new model
     this.clearMeasurementOverlay();
@@ -874,6 +878,57 @@ export class Viewer {
       this.applyClippingPlane(); // fresh overlay material carries no clipping state yet
       this.requestRender();
     }
+  }
+
+  /**
+   * Replaces/clears the hanging-node constraint links. `followModel` is for links
+   * in the SOURCE file's coordinates (an opened `.mdpa`), which must follow the
+   * model's up-axis rotation exactly as the Geometry overlay does; links built
+   * from a generated mesh share the FE-mesh overlay's positions and do not.
+   * Created hidden-or-not by the caller via `setConstraintLinksVisible`.
+   */
+  setConstraintLinksOverlay(obj: THREE.Object3D | null, opts?: { followModel?: boolean }): void {
+    if (!this.constraintLinksOverlay && !obj) return;
+    if (this.constraintLinksOverlay) {
+      this.scene.remove(this.constraintLinksOverlay);
+      this.constraintLinksOverlay.traverse((o) => {
+        const line = o as THREE.LineSegments;
+        line.geometry?.dispose();
+        const mat = line.material as THREE.Material | THREE.Material[] | undefined;
+        if (Array.isArray(mat)) mat.forEach((m) => m.dispose());
+        else mat?.dispose();
+      });
+      this.constraintLinksOverlay = null;
+    }
+    if (obj) {
+      if (opts?.followModel && this.model) {
+        obj.position.copy(this.model.position);
+        obj.rotation.copy(this.model.rotation);
+        obj.scale.copy(this.model.scale);
+      }
+      this.constraintLinksOverlay = obj;
+      this.scene.add(obj);
+      this.applyClippingPlane();
+    }
+    this.requestRender();
+  }
+
+  /** Shows/hides the current constraint links in place (the panel's toggle). */
+  setConstraintLinksVisible(visible: boolean): void {
+    if (!this.constraintLinksOverlay) return;
+    this.constraintLinksOverlay.visible = visible;
+    this.requestRender();
+  }
+
+  /** Test/diagnostic accessor: how many link segments are drawn, and whether they are visible. */
+  getConstraintLinksInfo(): { segments: number; visible: boolean } | null {
+    if (!this.constraintLinksOverlay) return null;
+    let segments = 0;
+    this.constraintLinksOverlay.traverse((o) => {
+      const idx = (o as THREE.LineSegments).geometry?.index;
+      if (idx) segments += idx.count / 2;
+    });
+    return { segments, visible: this.constraintLinksOverlay.visible };
   }
 
   /** Shows/hides the *current* highlight overlay in place, without disposing
@@ -1551,6 +1606,7 @@ export class Viewer {
     this.model?.traverse(apply);
     this.meshOverlay?.traverse(apply);
     this.worstElementsOverlay?.traverse(apply);
+    this.constraintLinksOverlay?.traverse(apply);
     this.hiddenLineGhosts?.traverse(apply);
     this.geometryOverlay?.traverse(apply);
     this.colorFieldOverlay?.traverse(apply);
@@ -2165,6 +2221,11 @@ export class Viewer {
     this.worstElementsOverlay?.traverse((obj) => {
       if (obj instanceof THREE.Mesh) {
         (obj.material as THREE.MeshBasicMaterial).color.setHex(paletteColor("worstElement"));
+      }
+    });
+    this.constraintLinksOverlay?.traverse((obj) => {
+      if (obj instanceof THREE.LineSegments) {
+        (obj.material as THREE.LineBasicMaterial).color.setHex(paletteColor("constraintLink"));
       }
     });
 

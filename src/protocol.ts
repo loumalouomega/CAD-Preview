@@ -2,7 +2,7 @@ import type { CadFormat } from "./fileRouter";
 import type { QualityGateResult } from "./meshQualityGate";
 import type { EditOp } from "./editOps";
 import type { ParamVariable } from "./editVariables";
-import type { MeshOptions, MeshGrading, MeshStructured, MeshBoundaryLayer, MeshEngine, OctreeStats, OctreeMeshStats } from "./meshOptions";
+import type { MeshOptions, MeshGrading, MeshStructured, MeshBoundaryLayer, MeshEngine, OctreeStats, OctreeMeshStats, MeshCadStats } from "./meshOptions";
 import type { MeshExportFormatId } from "./meshExportFormats";
 import type { ViewerDefaults } from "./viewerDefaults";
 import type { MassProperties } from "./massProperties";
@@ -486,6 +486,24 @@ export type HostToWebview =
         regionNames: string[];
         triangleRegionIndex: string; // base64 Int32Array
       };
+      /** The multi-point constraints an opened `.mdpa` declares, as slave→master
+       * line geometry in the file's own coordinates (`src/mdpaConstraints.ts`).
+       * Present only when the file has a `Begin Constraints` block — and in THIS
+       * message rather than a following one so `setModel` (which clears overlays)
+       * cannot race it. Mesh data: never persisted or rebound. */
+      meshConstraints?: {
+        /** Base64 `Float32Array` xyz of the nodes the links touch. */
+        points: string;
+        /** Base64 `Uint32Array` index pairs into `points` (slave, master). */
+        indices: string;
+        constraintCount: number;
+        slaveCount: number;
+        variables: string[];
+        /** Links counted but not drawn (over the cap). */
+        truncated: number;
+        /** One status line: counts, variables, skipped rows, display caveats. */
+        summary: string;
+      };
     }
   | { type: "parts"; parts: Part[] }
   /** Full replacement of the document's layers — sent on the `ready`
@@ -577,6 +595,13 @@ export type HostToWebview =
       /** Octree-mesh facts (output, resolved sizes, dihedral/Jacobian, inverted
        * count) when the octreemesh engine ran; absent otherwise. */
       octreeMesh?: OctreeMeshStats;
+      /** Mesh-CAD surface facts (resolved size, closure counts, angle bounds,
+       * refinement/bound facts) when the meshcad engine ran; absent otherwise. */
+      meshcad?: MeshCadStats;
+      /** Slave→master segments of the hanging-node constraints (base64
+       * `Uint32Array` index pairs into `positions`) — present only for the octree
+       * engine's `"hanging"` transition. The true counts are in `octree.constraints`. */
+      constraintLinks?: string;
     }
   | { type: "meshingError"; requestId: string; message: string }
   /** FE Mesh panel's refinement sweep (roadmap Tier 1 "Parity gaps") — the
@@ -778,6 +803,10 @@ export type HostToWebview =
    * the colour overlay; `max` is the colour-ramp top. */
   | { type: "meshDeviationResult"; requestId: string; report: DeviationReport; positions: string; distances: string; max: number }
   | { type: "meshDeviationError"; requestId: string; message: string }
+  /** Surface tools: label/value rows (facts only) of a finished action, the written path and the engine's warnings. */
+  | { type: "surfaceToolResult"; requestId: string; tool: SurfaceToolParams["tool"]; rows: Array<[string, string]>; written: string; warnings: string[] }
+  /** Surface tools: the action failed or the user cancelled a dialog (`cancelled`, no message shown as an error). */
+  | { type: "surfaceToolError"; requestId: string; tool: SurfaceToolParams["tool"]; message: string; cancelled?: boolean }
   /**
    * SpaceMouse 6DOF motion event — raw device units
    * (signed 16-bit per axis, full deflection ≈ ±350), NOT camera deltas.
@@ -1075,7 +1104,14 @@ export type WebviewToHost =
   /** FE Mesh ▸ Deviation: generate with these options (as Generate would) and
    * measure the boundary against the reference. `stl` as for meshingGenerate. */
   | { type: "meshDeviationRequest"; requestId: string; tolerance: number; options: MeshOptions; stl?: string }
+  /** Surface tools panel (B-rep sources, STEP/IGES): one of two one-shot, kernel-free surface operations on the OPEN document's CAD. The host owns the file dialogs (project: pick the mesh to snap, then a save path; prism: a save path), runs it in the kernel worker and replies with `surfaceToolResult` / `surfaceToolError`, correlated by `requestId`. Neither the CAD source nor the picked mesh is ever written. */
+  | ({ type: "surfaceToolRequest"; requestId: string } & SurfaceToolParams)
   | { type: "setCamerasLinked"; enabled: boolean };
+
+/** Parameters of the Surface tools panel's two actions (`surfaceToolRequest`). */
+export type SurfaceToolParams =
+  | { tool: "projectToCad"; maxDistance: number }
+  | { tool: "prismLayers"; targetSize: number; firstHeight: number; numLayers: number; growth: number; reverse: boolean };
 
 /** Encode a typed array to a base64 string for postMessage transport. */
 export function encodeBuffer(arr: Float32Array | Uint32Array | Int32Array): string {

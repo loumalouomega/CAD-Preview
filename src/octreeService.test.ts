@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { octreeToMsh41, octreeElementMix } from "./octreeService";
+import { octreeToMsh41, octreeElementMix, octreeEffectiveSnap } from "./octreeService";
 
 /** Splits an MSH file into its `$Section ... $EndSection` bodies. */
 function sections(msh: string): Record<string, string[]> {
@@ -76,5 +76,24 @@ describe("octreeElementMix", () => {
         { type: "vertex", data: [0, 1] },
       ])
     ).toEqual({ hexahedra: 2, pyramids: 3, tetrahedra: 2 });
+  });
+});
+
+describe("octreeEffectiveSnap", () => {
+  it("never snaps under the hanging transition, whatever was asked", () => {
+    expect(octreeEffectiveSnap({ snap: true, transition: "hanging" })).toBe(false);
+    expect(octreeEffectiveSnap({ snap: false, transition: "hanging" })).toBe(false);
+  });
+
+  it("passes the request through for templates (the default)", () => {
+    expect(octreeEffectiveSnap({ snap: true })).toBe(true);
+    expect(octreeEffectiveSnap({ snap: false, transition: "templates" })).toBe(false);
+  });
+});
+
+describe("octreeToMsh41 — hanging transition", () => {
+  it("writes an all-hexahedron mesh as a single element block", () => {
+    const s = sections(octreeToMsh41(CUBE, [{ type: "hexahedron", data: HEX }]));
+    expect(s["Elements"]).toEqual(["1 1 1 1", "3 1 5 1", "1 1 2 3 4 5 6 7 8"]);
   });
 });

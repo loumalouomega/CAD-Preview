@@ -287,6 +287,29 @@ function mshCellVolumes(mshText) {
   return { volume, nonPositive, ...counts };
 }
 
+/** Total area and per-type counts of the 2-D cells (Gmsh types 2 triangle, 9 triangle6, 21 triangle10 — the
+ * three corner nodes are the flat triangle) in an MSH 4.1 file, with the count of degenerate (zero-area) cells.
+ * Pins what a mesh-CAD surface encloses: block.stp's six faces total exactly 94. */
+function mshTriangleArea(mshText) {
+  const { coords } = mshVolumeNodes(mshText);
+  const elementLines = (mshText.split("$Elements\n")[1]?.split("$EndElements")[0] ?? "").trim().split("\n");
+  const byType = {};
+  let area = 0, degenerate = 0, cursor = 1;
+  for (let b = 0, blocks = Number(elementLines[0]?.split(/\s+/)[0]); b < blocks; b++) {
+    const [dim, , elType, n] = elementLines[cursor++].trim().split(/\s+/).map(Number);
+    for (let i = 0; i < n; i++, cursor++) {
+      if (dim !== 2) continue;
+      const [A, B, C] = elementLines[cursor].trim().split(/\s+/).map(Number).slice(1, 4).map((t) => coords.get(t));
+      const u = B.map((x, k) => x - A[k]), v = C.map((x, k) => x - A[k]);
+      const a2 = Math.hypot(u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]) / 2;
+      byType[elType] = (byType[elType] ?? 0) + 1;
+      if (a2 < 1e-12) degenerate++;
+      area += a2;
+    }
+  }
+  return { area, degenerate, byType };
+}
+
 /** Top-dimensional node-tag sets keyed by Gmsh volume tag, plus node positions.
  * Unlike comparing coincident coordinates, intersecting tags proves two
  * volumes actually share the SAME mesh nodes at their interface. */
@@ -352,8 +375,8 @@ try {
   assert(capsText.length > 100, "resources/read cad-preview://capabilities returns JSON text");
 
   const tools = (await request("tools/list", {})).tools.map((t) => t.name);
-  assert(tools.length === 83, `tools/list exposes 83 tools (got ${tools.length}: ${tools.join(", ")})`);
-  for (const t of ["check_draft", "check_printability", "list_workspace_models", "check_interference_all", "generate_bom", "generate_hole_table", "render_ops_prefix", "check_tolerance", "inspect_meshio_fields", "pin_annotation", "import_svg", "save_mesh_preset", "list_mesh_presets", "apply_mesh_preset", "compare_mesh_refinement", "export_tessellated_stl", "estimate_mesh_budget", "analyze_passages", "measure_mesh_deviation", "save_sheet_template", "list_sheet_templates", "batch_export", "check_handoff_manifest", "generate_prep_report", "job_status", "job_cancel", "check_brep_health", "list_scad_parameters", "convert_scad", "list_layers", "set_layer", "assign_layer", "segment_mesh_surface", "fit_mesh_to_cad", "mesh_cad_surface", "iga_sample", "iga_refine", "iga_evaluate", "check_mesh_quality"]) {
+  assert(tools.length === 86, `tools/list exposes 86 tools (got ${tools.length}: ${tools.join(", ")})`);
+  for (const t of ["check_draft", "check_printability", "list_workspace_models", "check_interference_all", "generate_bom", "generate_hole_table", "render_ops_prefix", "check_tolerance", "inspect_meshio_fields", "pin_annotation", "import_svg", "save_mesh_preset", "list_mesh_presets", "apply_mesh_preset", "compare_mesh_refinement", "export_tessellated_stl", "estimate_mesh_budget", "analyze_passages", "measure_mesh_deviation", "save_sheet_template", "list_sheet_templates", "batch_export", "check_handoff_manifest", "generate_prep_report", "job_status", "job_cancel", "check_brep_health", "list_scad_parameters", "convert_scad", "list_layers", "set_layer", "assign_layer", "segment_mesh_surface", "fit_mesh_to_cad", "mesh_cad_surface", "check_mesh_conformity", "project_to_cad", "grow_prism_layers", "iga_sample", "iga_refine", "iga_evaluate", "check_mesh_quality"]) {
     assert(tools.includes(t), `tools/list exposes ${t}`);
   }
 
@@ -3020,6 +3043,60 @@ try {
   assert(mcsMeshSource.supported === false, "mesh_cad_surface refuses a mesh-format source (no B-rep faces)");
   const mcsBad = await callTolerant("mesh_cad_surface", { path: mcsBlock, outputPath: path.join(dir, "mcs-block.step"), targetSize: 0.5 });
   assert(mcsBad.error && /outputPath must end in/.test(mcsBad.error), `mesh_cad_surface rejects an unsupported outputPath extension (got: ${mcsBad.error})`);
+  // meshio++ 17.14-17.20 options (probe meshio-meshcad-1721.ts): angle-bound refinement, curved
+  // order, per-face sizes, and the honest failure to reach a bound a sharp corner forbids.
+  const mcsAngle = await call("mesh_cad_surface", { path: mcsBlock, outputPath: path.join(dir, "mcs-angle.msh"), targetSize: 1, minAngle: 25 });
+  assert(
+    mcsAngle.numOpenEdges === 0 && mcsAngle.numRefinementPoints === 30 && mcsAngle.numTriangles === 292 && mcsAngle.numFacesBelowBound === 0 &&
+      mcsAngle.minAngleDeg > 26.5 && Array.isArray(mcsAngle.angleHistogram) && mcsAngle.angleHistogram.length === 18,
+    `mesh_cad_surface(minAngle 25) refines block.stp: 30 added points, 292 triangles, min angle above 26.5, an 18-bin histogram (got ${JSON.stringify({ r: mcsAngle.numRefinementPoints, t: mcsAngle.numTriangles, a: mcsAngle.minAngleDeg })})`
+  );
+  const mcsBase = await call("mesh_cad_surface", { path: mcsBlock, outputPath: path.join(dir, "mcs-base.msh"), targetSize: 1 });
+  assert(
+    mcsBase.numTriangles === 252 && mcsBase.numRefinementPoints === 0 && mcsBase.minAngleDeg < mcsAngle.minAngleDeg,
+    `...and the unrefined control has 252 triangles, no refinement points and a smaller min angle (got ${JSON.stringify({ t: mcsBase.numTriangles, a: mcsBase.minAngleDeg })})`
+  );
+  const mcsO2Msh = path.join(dir, "mcs-order2.msh");
+  const mcsO2 = await call("mesh_cad_surface", { path: mcsBlock, outputPath: mcsO2Msh, targetSize: 1, order: 2 });
+  // meshio++'s own .msh writer is binary, so the file is re-read through the independent meshio++ boundary
+  // (get_mass_properties, surfaceDerived) rather than parsed here; the order-1 file is the control that the
+  // order-2 file really carries the extra mid-edge nodes.
+  const mcsO2Facts = await call("get_mass_properties", { path: mcsO2Msh });
+  const mcsBaseBytes = fs.statSync(path.join(dir, "mcs-base.msh")).size;
+  const mcsO2Bytes = fs.statSync(mcsO2Msh).size;
+  assert(
+    mcsO2.numOpenEdges === 0 && mcsO2.numTriangles === 252 && mcsO2.numPoints === 506 && Math.abs(mcsO2Facts.area - 94) < 1e-6 &&
+      Math.abs(mcsO2Facts.volume - 60) < 1e-6 && mcsO2Facts.watertight === true && mcsO2Bytes > 1.5 * mcsBaseBytes,
+    `mesh_cad_surface(order 2) writes 252 curved triangles on 506 points (128 corners + 378 edge nodes); the re-read file is watertight, area 94, volume 60, and larger than the order-1 control (got ${JSON.stringify({ n: mcsO2.numPoints, a: mcsO2Facts.area, v: mcsO2Facts.volume, o2: mcsO2Bytes, o1: mcsBaseBytes })})`
+  );
+  const mcsO2Stl = await callTolerant("mesh_cad_surface", { path: mcsBlock, outputPath: path.join(dir, "mcs-order2.stl"), targetSize: 1, order: 2 });
+  assert(mcsO2Stl.error && /only \.msh, \.vtk, \.vtu can hold/.test(mcsO2Stl.error), `mesh_cad_surface refuses a curved order for .stl by name (got: ${mcsO2Stl.error})`);
+  const mcsBadAngle = await callTolerant("mesh_cad_surface", { path: mcsBlock, outputPath: path.join(dir, "mcs-bad.msh"), targetSize: 1, minAngle: 60 });
+  assert(mcsBadAngle.error && /minAngle must be below 60/.test(mcsBadAngle.error), `mesh_cad_surface refuses minAngle 60 (got: ${mcsBadAngle.error})`);
+  // meshio++ 17.23 quad recombination (probe meshio-1723.ts): block.stp at size 1 = 24 triangles + 114 quads
+  // (dominant), 128 quads (all); the unrecombined control above has 252 triangles and no quads.
+  const mcsQuadDom = await call("mesh_cad_surface", { path: mcsBlock, outputPath: path.join(dir, "mcs-quad.obj"), targetSize: 1, quads: "dominant" });
+  assert(
+    mcsQuadDom.numOpenEdges === 0 && mcsQuadDom.numTriangles === 24 && mcsQuadDom.numQuads === 114 && mcsBase.numQuads === 0,
+    `mesh_cad_surface(quads dominant) recombines block.stp into 24 triangles + 114 quads, closed; the control has 0 quads (got ${JSON.stringify({ t: mcsQuadDom.numTriangles, q: mcsQuadDom.numQuads, c: mcsBase.numQuads })})`
+  );
+  const mcsQuadAll = await call("mesh_cad_surface", { path: mcsBlock, outputPath: path.join(dir, "mcs-quadall.obj"), targetSize: 1, quads: "all" });
+  assert(mcsQuadAll.numTriangles === 0 && mcsQuadAll.numQuads === 128 && mcsQuadAll.numOpenEdges === 0, `mesh_cad_surface(quads all) gives 128 quads and no triangles (got ${JSON.stringify({ t: mcsQuadAll.numTriangles, q: mcsQuadAll.numQuads })})`);
+  const mcsQuadStl = await callTolerant("mesh_cad_surface", { path: mcsBlock, outputPath: path.join(dir, "mcs-quad.stl"), targetSize: 1, quads: "dominant" });
+  assert(mcsQuadStl.error && /quadrilateral cells/.test(mcsQuadStl.error), `mesh_cad_surface refuses quads for .stl by name (got: ${mcsQuadStl.error})`);
+  const mcsFace = await call("mesh_cad_surface", { path: mcsBlock, outputPath: path.join(dir, "mcs-face.msh"), targetSize: 1, faceSizes: { 0: 1 / 3 } });
+  assert(
+    mcsFace.numOpenEdges === 0 && mcsFace.numTriangles === 742 && mcsFace.numTriangles > mcsBase.numTriangles,
+    `mesh_cad_surface(faceSizes {0: 1/3}) refines one face: 742 triangles, still closed (got ${JSON.stringify({ t: mcsFace.numTriangles, o: mcsFace.numOpenEdges })})`
+  );
+  const mcsBull = path.join(dir, "mcs-bull.stp");
+  fs.copyFileSync(path.join(ROOT, "examples", "STP", "bull.stp"), mcsBull);
+  const mcsBullAngle = await call("mesh_cad_surface", { path: mcsBull, outputPath: path.join(dir, "mcs-bull.msh"), targetSize: 3, minAngle: 25 });
+  assert(
+    mcsBullAngle.numOpenEdges === 0 && mcsBullAngle.numFacesBelowBound > 0 && mcsBullAngle.minAngleDeg < 25 &&
+      mcsBullAngle.faces.some((f) => f.belowBound) && mcsBullAngle.warnings.some((w) => /could not reach the requested minAngle/.test(w)),
+    `mesh_cad_surface(bull.stp, minAngle 25) reports the bound it could not reach instead of promising it (got ${JSON.stringify({ b: mcsBullAngle.numFacesBelowBound, a: mcsBullAngle.minAngleDeg })})`
+  );
   const softSnap = await call("render_snapshot", { path: cubeStl });
   assert(
     softSnap.supported === true && softSnap.engine === "meshio-software" && softSnap.images?.length === 4,
@@ -7432,6 +7509,129 @@ try {
     `export_mesh geoUnrolled rejects engine:"octree" with a specific error (got: ${(octGeo.content?.[0]?.text ?? "").slice(0, 160)})`
   );
 
+  // transition:"hanging": an ALL-hexahedra graded octree whose hanging nodes are
+  // tied to their parent corners by multi-point constraints, carried into Kratos
+  // MDPA (the only format with a constraints block) and read back on open.
+  // Probe numbers (meshio-octree-hanging.ts, octree-hanging-engine.ts): block.stp at
+  // level 4 = 1450 hexahedra, 378 hanging nodes (252 on an edge, 126 on a face).
+  const hangOptions = { engine: "octree", octreeMaxLevel: 4, octreeTransition: "hanging" };
+  const hangGen = await call("generate_mesh", { path: octreeBlock, options: hangOptions });
+  const hc = hangGen.octree?.constraints;
+  assert(
+    hangGen.engineUsed === "octree" && hangGen.octree.transition === "hanging" && hangGen.octree.snap === false &&
+      hangGen.octree.elementMix.hexahedra === 1450 && hangGen.octree.elementMix.pyramids === 0 && hangGen.octree.elementMix.tetrahedra === 0,
+    `generate_mesh(octreeTransition:"hanging") is all hexahedra and never snaps (got ${JSON.stringify(hangGen.octree)})`
+  );
+  assert(
+    hc && hc.hangingNodes === 378 && hc.hangingNodes === hangGen.octree.numHanging && hc.constraints === 1134 && hc.chained === 0 &&
+      hc.variables.join() === "DISPLACEMENT_X,DISPLACEMENT_Y,DISPLACEMENT_Z",
+    `...and the geometrically recovered hanging-node count equals the kernel's numHanging (got ${JSON.stringify(hc)})`
+  );
+  assert(hangGen.warnings.some((w) => /ignores octreeSnap/.test(w)), "...with the default octreeSnap:true named as ignored, not silently dropped");
+  const hangMsh = path.join(dir, "octree-hanging.msh");
+  const hangMshOut = await call("export_mesh", { path: octreeBlock, format: "msh", outputPath: hangMsh, options: hangOptions });
+  assert(
+    hangMshOut.warnings.some((w) => /cannot carry multi-point constraints/.test(w) && /Export Kratos MDPA/.test(w)),
+    `a non-MDPA export of the hanging octree warns that the constraints are lost (got ${JSON.stringify(hangMshOut.warnings)})`
+  );
+  const hangVol = mshCellVolumes(fs.readFileSync(hangMsh, "utf8"));
+  assert(hangVol.hex === 1450 && hangVol.tet === 0 && hangVol.pyramid === 0 && hangVol.nonPositive === 0, `...the .msh is 1450 positively oriented hexahedra (got ${JSON.stringify(hangVol)})`);
+  const hangMdpa = path.join(dir, "octree-hanging.mdpa");
+  const hangMdpaOut = await call("export_mesh", { path: octreeBlock, format: "mdpaElements", outputPath: hangMdpa, options: hangOptions });
+  assert(!hangMdpaOut.warnings.some((w) => /multi-point constraints/.test(w)), "...but the MDPA export, which carries them, does not warn");
+  const hangText = fs.readFileSync(hangMdpa, "utf8");
+  // Parse the written file independently and run the patch test on it.
+  const hangNodes = new Map();
+  for (const m of hangText.matchAll(/^\s*(\d+)\s+(\S+)\s+(\S+)\s+(\S+)\s*$/gm)) {
+    if (hangText.indexOf(m[0]) < hangText.indexOf("End Nodes")) hangNodes.set(Number(m[1]), [Number(m[2]), Number(m[3]), Number(m[4])]);
+  }
+  const headers = hangText.match(/^Begin Constraints LinearMasterSlaveConstraint .*$/gm) ?? [];
+  const linear = (p) => 0.7 * p[0] - 1.3 * p[1] + 2.1 * p[2] + 0.45;
+  let rows = 0, worstPatch = 0, badRows = 0;
+  for (const block of hangText.matchAll(/^Begin Constraints LinearMasterSlaveConstraint (.*)$\n([\s\S]*?)^End Constraints/gm)) {
+    const nVars = block[1].trim().split(/\s+/).length; // slave + masters
+    for (const line of block[2].split("\n").map((l) => l.trim()).filter(Boolean)) {
+      const m = /^(\d+) (\S+) \[([^\]]*)\] (.*)$/.exec(line);
+      const w = m ? m[3].split(",").map(Number) : [];
+      const ids = m ? m[4].trim().split(/\s+/).map(Number) : [];
+      if (!m || ids.length !== nVars || w.length !== nVars - 1 || ids.some((i) => !hangNodes.has(i)) || Math.abs(w.reduce((a, b) => a + b, 0) - 1) > 1e-12) { badRows++; continue; }
+      rows++;
+      const expected = w.reduce((a, wi, k) => a + wi * linear(hangNodes.get(ids[k + 1])), 0);
+      worstPatch = Math.max(worstPatch, Math.abs(expected - linear(hangNodes.get(ids[0]))));
+    }
+  }
+  assert(
+    headers.length === 6 && rows === 1134 && badRows === 0 && worstPatch < 1e-12,
+    `the hanging octree's MDPA has 6 Constraints blocks (3 variables x edge/face), 1134 well-formed rows resolving to real nodes, and an exact patch test (got ${headers.length} blocks, ${rows} rows, ${badRows} bad, patch ${worstPatch})`
+  );
+  assert(
+    /Begin SubModelPart HangingNodes/.test(hangText) && (hangText.split("Begin SubModelPartConstraints")[1]?.split("End SubModelPartConstraints")[0].trim().split(/\s+/).length ?? 0) === 1134,
+    "...and a HangingNodes SubModelPart listing all 1134 constraints"
+  );
+  // Re-open: meshio++ cannot read a Constraints block, so the file opens with them stripped and the loss is reported.
+  const hangReopen = path.join(dir, "octree-hanging-reopen.mdpa");
+  fs.copyFileSync(hangMdpa, hangReopen);
+  const hangLoaded = await call("load_model", { path: hangReopen });
+  assert(
+    hangLoaded.warnings.some((w) => /1134 multi-point constraint row\(s\) on 378 slave node\(s\)/.test(w)),
+    `load_model of the exported hanging MDPA reports its constraints as facts (got ${JSON.stringify(hangLoaded.warnings)})`
+  );
+  const hangProps = await call("get_mass_properties", { path: hangReopen });
+  assert(
+    hangProps.supported === true && Math.abs(hangProps.volume - hangVol.volume) < 1e-4 * hangVol.volume,
+    `...and the re-opened deck encloses the same volume as the generated mesh (got ${hangProps.volume} vs ${hangVol.volume})`
+  );
+  // cube.stl: grid-aligned, so the unsnapped hanging octree encloses exactly 1000 and has no stray interface wall.
+  const hangCubeOut = path.join(dir, "octree-hanging-cube.msh");
+  await call("export_mesh", { path: cleanCubeStl, format: "msh", outputPath: hangCubeOut, options: hangOptions });
+  const hangCubeVol = mshCellVolumes(fs.readFileSync(hangCubeOut, "utf8"));
+  assert(Math.abs(hangCubeVol.volume - 1000) < 1e-6 && hangCubeVol.nonPositive === 0, `the hanging octree over cube.stl (a mesh source) encloses exactly 1000 (got ${JSON.stringify(hangCubeVol)})`);
+
+
+  // Partitioned MDPA (roadmap KaHIP partitioning): `mdpaRanks` >= 2 writes one MDPA per MPI rank + a manifest.
+  // Every rank file is checked against the single-file export of the SAME mesh (Gmsh is single-threaded and
+  // deterministic here): each element id once, the node union equal, shared nodes identical, KaHIP < SFC interface.
+  {
+    const partOpts = { sizeMin: 0, sizeMax: 1 };
+    const serialOut = path.join(dir, "part-serial.mdpa");
+    await call("export_mesh", { path: octreeBlock, format: "mdpaElements", outputPath: serialOut, options: partOpts });
+    const elementIds = (text) => [...text.matchAll(/^Begin Elements \w+\n([\s\S]*?)^End Elements/gm)].flatMap((m) => m[1].trim().split("\n").map((l) => Number(l.trim().split(/\s+/)[0])));
+    const nodeLines = (text) => new Map(text.slice(text.indexOf("Begin Nodes") + 12, text.indexOf("End Nodes")).trim().split("\n").map((l) => [Number(l.split(" ")[0]), l]));
+    const serialText = fs.readFileSync(serialOut, "utf8");
+    const serialIds = elementIds(serialText).sort((x, y) => x - y);
+    const serialNodes = nodeLines(serialText);
+    assert(serialIds.length === 1282, `block.stp at sizeMax 1 is the probe's 1282 tets (got ${serialIds.length})`);
+    const interfaceByMethod = {};
+    for (const method of ["kahip", "sfc"]) {
+      const stem = path.join(dir, `part-${method}`);
+      const out = await call("export_mesh", { path: octreeBlock, format: "mdpaElements", outputPath: `${stem}.mdpa`, options: { ...partOpts, mdpaRanks: 4, mdpaPartitionMethod: method } });
+      assert(!fs.existsSync(`${stem}.mdpa`), `${method}: nothing is written at outputPath itself`);
+      assert(
+        out.written.map((w) => path.basename(w.path)).join() === [0, 1, 2, 3].map((r) => `part-${method}_${r}.mdpa`).concat(`part-${method}.partition.json`).join(),
+        `${method}: four rank files and the manifest are written (got ${out.written.map((w) => path.basename(w.path))})`
+      );
+      assert(out.warnings.some((w) => /CommunicatorData/.test(w) && /No Kratos reader/.test(w)), `${method}: the layout caveat is returned, not buried`);
+      const texts = [0, 1, 2, 3].map((r) => fs.readFileSync(`${stem}_${r}.mdpa`, "utf8"));
+      const all = texts.flatMap(elementIds).sort((x, y) => x - y);
+      assert(all.length === serialIds.length && all.every((id, i) => id === serialIds[i]), `${method}: every element id appears in exactly one rank file and the union is the single-file export's`);
+      const union = new Map();
+      let mismatch = 0;
+      for (const t of texts) for (const [id, line] of nodeLines(t)) { if (union.has(id) && union.get(id) !== line) mismatch++; union.set(id, line); }
+      assert(mismatch === 0 && union.size === serialNodes.size && [...union].every(([id, l]) => serialNodes.get(id) === l), `${method}: the node union is the serial node set with identical ids and coordinates`);
+      assert(texts.every((t, r) => t.includes(`// Rank ${r} of 4`) && /Begin SubModelPart InterfaceNodes/.test(t)), `${method}: each file names its rank and carries an InterfaceNodes SubModelPart`);
+      const manifest = JSON.parse(fs.readFileSync(`${stem}.partition.json`, "utf8"));
+      assert(manifest.ranks === 4 && manifest.methodUsed === method && manifest.volumeCells === 1282 && manifest.emptyRanks.length === 0 && manifest.perRank.reduce((n, r) => n + r.volumeCells, 0) === 1282,
+        `${method}: the manifest accounts for every domain cell (got ${JSON.stringify({ r: manifest.ranks, m: manifest.methodUsed, v: manifest.volumeCells })})`);
+      assert(manifest.balanceMaxOverMean < 1.05, `${method}: balance max/mean under 1.05 (got ${manifest.balanceMaxOverMean})`);
+      interfaceByMethod[method] = manifest.interfaceNodes;
+    }
+    assert(interfaceByMethod.kahip < interfaceByMethod.sfc, `KaHIP cuts fewer interface nodes than SFC at 4 ranks (got ${JSON.stringify(interfaceByMethod)})`);
+    const hang = await callTolerant("export_mesh", { path: octreeBlock, format: "mdpaElements", outputPath: path.join(dir, "part-hang.mdpa"), options: { engine: "octree", octreeTransition: "hanging", mdpaRanks: 2 } });
+    assert(/hanging-node constraints/.test(hang.error ?? ""), `a partitioned export of a hanging-node octree is refused by name (got ${JSON.stringify(hang)})`);
+    const one = await call("export_mesh", { path: octreeBlock, format: "mdpaElements", outputPath: path.join(dir, "part-one.mdpa"), options: { ...partOpts, mdpaRanks: 1 } });
+    assert(one.written.length === 1 && fs.readFileSync(path.join(dir, "part-one.mdpa"), "utf8") === serialText, "mdpaRanks 1 is the single-file export, byte-identical");
+  }
+
   // engine:"octreemesh" (meshio++ 17.13 octreeMesh): conforming graded tets or
   // an all-hex mesh fitted to the tessellated skin. Sized by octreeMeshMaxSize
   // + octreeMeshLevels, never sizeMax; no Parts; same refusals as the octree.
@@ -7450,12 +7650,36 @@ try {
     Math.abs(ocmVol.volume - 60) < 1e-6 && ocmVol.nonPositive === 0 && ocmVol.tet === 6512,
     `the octreemesh tet .msh encloses exactly 60 with every tet positively oriented in Gmsh's node order (got ${JSON.stringify(ocmVol)})`
   );
+  // check_mesh_conformity (meshio++ 17.23 checkConformity) over the .msh just written: a stuffed tet mesh is
+  // conforming; a hanging-node octree's hexahedra are not (the control that the check can say no).
+  const confTet = await call("check_mesh_conformity", { path: ocmMsh });
+  assert(
+    confTet.supported === true && confTet.dimension === 3 && confTet.conforming === true && confTet.numHangingNodes === 0 && confTet.numBoundaryFacets > 0,
+    `check_mesh_conformity reports the octreemesh tet .msh as conforming with no hanging nodes (got ${JSON.stringify(confTet)})`
+  );
+  const confHangMsh = path.join(dir, "octree-hanging-conf.msh");
+  await call("export_mesh", { path: octreeBlock, format: "msh", outputPath: confHangMsh, options: { engine: "octree", octreeMaxLevel: 3, octreeTransition: "hanging" } });
+  const confHang = await call("check_mesh_conformity", { path: confHangMsh });
+  assert(
+    confHang.supported === true && confHang.conforming === false && confHang.numHangingNodes > 0,
+    `...and the hanging-node octree .msh is non-conforming with hanging nodes (got ${JSON.stringify({ c: confHang.conforming, h: confHang.numHangingNodes })})`
+  );
+  const confBrep = await call("check_mesh_conformity", { path: octreeBlock });
+  assert(confBrep.supported === false, "check_mesh_conformity declines a B-rep source (export a mesh first)");
   const ocmHexMsh = path.join(dir, "octreemesh-block-hex.msh");
   await call("export_mesh", { path: octreeBlock, format: "msh", outputPath: ocmHexMsh, options: { ...ocmOpts, octreeMeshOutput: "hex" } });
   const ocmHexVol = mshCellVolumes(fs.readFileSync(ocmHexMsh, "utf8"));
   assert(
     Math.abs(ocmHexVol.volume - 60) < 1e-6 && ocmHexVol.nonPositive === 0 && ocmHexVol.hex === 856 && ocmHexVol.tet === 0,
     `the octreemesh hex .msh encloses exactly 60 with every hexahedron positive (got ${JSON.stringify(ocmHexVol)})`
+  );
+  // meshio++ 17.23 hexGrading (probe meshio-1723.ts): the graded hex mesh has fewer cells (601 vs 856) than the uniform control.
+  const ocmGradedMsh = path.join(dir, "octreemesh-block-hex-graded.msh");
+  await call("export_mesh", { path: octreeBlock, format: "msh", outputPath: ocmGradedMsh, options: { ...ocmOpts, octreeMeshOutput: "hex", octreeMeshHexGrading: "graded" } });
+  const ocmGradedVol = mshCellVolumes(fs.readFileSync(ocmGradedMsh, "utf8"));
+  assert(
+    ocmGradedVol.hex === 601 && ocmGradedVol.hex < ocmHexVol.hex && ocmGradedVol.tet === 0 && ocmGradedVol.volume > 59 && ocmGradedVol.volume < 61,
+    `the octreemesh graded hex .msh has the probe's 601 hexahedra, fewer than the uniform control's 856, enclosing about 60 (got ${JSON.stringify(ocmGradedVol)})`
   );
   await call("export_mesh", { path: cleanCubeStl, format: "msh", outputPath: path.join(dir, "octreemesh-cube.msh"), options: ocmOpts });
   const ocmCubeVol = mshCellVolumes(fs.readFileSync(path.join(dir, "octreemesh-cube.msh"), "utf8"));
@@ -7489,6 +7713,124 @@ try {
   assert(
     ocmGeo.isError === true && /octreemesh/i.test(ocmGeo.content?.[0]?.text ?? ""),
     `export_mesh geoUnrolled rejects engine:"octreemesh" with a specific error (got: ${(ocmGeo.content?.[0]?.text ?? "").slice(0, 160)})`
+  );
+
+  // engine:"meshcad" (meshio++ 17.21 meshCadSurface through the Gmsh merge seam): a kernel-free
+  // SURFACE mesh of the B-rep, dimension 2 only. Sized by sizeMax + the angle/curvature fields; no Parts.
+  const mcdOpts = { engine: "meshcad", dimension: 2, sizeMax: 1 };
+  const mcd = await call("generate_mesh", { path: octreeBlock, options: mcdOpts });
+  assert(
+    mcd.engineUsed === "meshcad" && mcd.meshcad && mcd.meshcad.numFaces === 6 && mcd.meshcad.numFailed === 0 && mcd.meshcad.numOpenEdges === 0 &&
+      mcd.meshcad.numNonManifoldEdges === 0 && mcd.meshcad.numMisorientedEdges === 0 && mcd.meshcad.numTriangles === 252 && mcd.elementCount === 252 &&
+      mcd.meshcad.targetSize === 1 && mcd.meshcad.order === 1,
+    `generate_mesh(engine:"meshcad") on block.stp reports its facts and the probe's 252 closed triangles (got ${JSON.stringify({ e: mcd.engineUsed, n: mcd.elementCount, m: mcd.meshcad })})`
+  );
+  assert(mcd.octree === null && mcd.octreeMesh === null, "...and no octree facts (they belong to the other engines)");
+  const mcdMsh = path.join(dir, "meshcad-block.msh");
+  await call("export_mesh", { path: octreeBlock, format: "msh", outputPath: mcdMsh, options: mcdOpts });
+  const mcdArea = mshTriangleArea(fs.readFileSync(mcdMsh, "utf8"));
+  assert(
+    Math.abs(mcdArea.area - 94) < 1e-9 && mcdArea.degenerate === 0 && mcdArea.byType[2] === 252,
+    `the meshcad .msh is 252 triangles of total area exactly 94 = block.stp's six faces (got ${JSON.stringify(mcdArea)})`
+  );
+  const mcdO2Msh = path.join(dir, "meshcad-block-o2.msh");
+  await call("export_mesh", { path: octreeBlock, format: "msh", outputPath: mcdO2Msh, options: { ...mcdOpts, elementOrder: 2 } });
+  const mcdO2Area = mshTriangleArea(fs.readFileSync(mcdO2Msh, "utf8"));
+  assert(
+    Math.abs(mcdO2Area.area - 94) < 1e-9 && mcdO2Area.byType[9] === 252,
+    `the meshcad elementOrder 2 .msh holds 252 triangle6 cells (Gmsh type 9) of area exactly 94 (got ${JSON.stringify(mcdO2Area)})`
+  );
+  const mcdAngle = await call("generate_mesh", { path: octreeBlock, options: { ...mcdOpts, meshcadMinAngle: 25 } });
+  assert(
+    mcdAngle.meshcad.numTriangles === 292 && mcdAngle.meshcad.numRefinementPoints === 30 && mcdAngle.meshcad.minAngleDeg > 26.5,
+    `meshcadMinAngle 25 reaches the engine: 292 triangles, 30 refinement points, min angle above 26.5 (got ${JSON.stringify(mcdAngle.meshcad)})`
+  );
+  const mcdMdpa = path.join(dir, "meshcad-block.mdpa");
+  await call("export_mesh", { path: octreeBlock, format: "mdpaElements", outputPath: mcdMdpa, options: mcdOpts });
+  assert(fs.readFileSync(mcdMdpa, "utf8").includes("Begin Elements Element2D3N"), "export_mesh mdpaElements under engine:\"meshcad\" writes Element2D3N");
+  for (const [what, options, needle] of [
+    ["a periodic pair", { ...mcdOpts, periodic: [{ slave: "a", master: "b", translation: [1, 0, 0] }] }, /periodic/],
+    ["a sizeField", { ...mcdOpts, sizeField: [{ point: [0, 0, 0], size: 1 }] }, /sizeField/],
+    ["a non-simplex shape", { ...mcdOpts, elementShape: "subdivided" }, /elementShape/],
+  ]) {
+    const refused = await request("tools/call", { name: "generate_mesh", arguments: { path: octreeBlock, options } });
+    assert(
+      refused.isError === true && needle.test(refused.content?.[0]?.text ?? ""),
+      `generate_mesh(engine:"meshcad") refuses ${what} by name (got: ${(refused.content?.[0]?.text ?? "").slice(0, 140)})`
+    );
+  }
+  // meshio++ 17.23 prism layers (probe meshio-prism-project.ts): block.stp at size 1, firstHeight 0.05, 3 layers
+  // @ growth 1.2 = 756 wedges over the 252-triangle skin, thickness 0.182 = 0.05·(1.2³−1)/0.2.
+  const prismOpts = { ...mcdOpts, prismLayers: { firstHeight: 0.05, numLayers: 3, growth: 1.2 } };
+  const mcdPrism = await call("generate_mesh", { path: octreeBlock, options: prismOpts });
+  assert(
+    mcdPrism.engineUsed === "meshcad" && mcdPrism.elementCount === 756 && mcdPrism.meshcad.prismLayers && mcdPrism.meshcad.prismLayers.numWedges === 756 &&
+      Math.abs(mcdPrism.meshcad.prismLayers.minThickness - 0.182) < 1e-9 && Math.abs(mcdPrism.meshcad.prismLayers.plannedThickness - 0.182) < 1e-9 &&
+      mcdPrism.meshcad.prismLayers.minScaledJacobian > 0.2 && mcdPrism.meshcad.prismLayers.numShrunk === 0 && mcdPrism.meshcad.prismLayers.capClosed === true,
+    `generate_mesh(meshcad + prismLayers) at dimension 2 is lifted to a 756-wedge layer shell with thickness 0.182 (got ${JSON.stringify({ e: mcdPrism.engineUsed, n: mcdPrism.elementCount, p: mcdPrism.meshcad?.prismLayers })})`
+  );
+  assert(mcdPrism.meshcad.prismLayers === undefined || mcd.meshcad.prismLayers === undefined, "...and the surface-only control carries no prism facts");
+  const prismMsh = path.join(dir, "meshcad-prism.msh");
+  await call("export_mesh", { path: octreeBlock, format: "msh", outputPath: prismMsh, options: prismOpts });
+  const prismText = fs.readFileSync(prismMsh, "utf8");
+  const prismWedges = [...prismText.matchAll(/^3 \d+ 6 (\d+)$/gm)].reduce((a, m) => a + Number(m[1]), 0);
+  assert(prismWedges === 756, `the prism .msh holds 756 wedge cells (Gmsh type 6) (got ${prismWedges})`);
+  const prismMdpa = path.join(dir, "meshcad-prism.mdpa");
+  await call("export_mesh", { path: octreeBlock, format: "mdpaElements", outputPath: prismMdpa, options: prismOpts });
+  assert(/Begin Elements Element3D6N/.test(fs.readFileSync(prismMdpa, "utf8")), "export_mesh mdpaElements writes the wedges as Element3D6N");
+  const prismCurved = await request("tools/call", { name: "generate_mesh", arguments: { path: octreeBlock, options: { ...prismOpts, elementOrder: 2 } } });
+  assert(prismCurved.isError === true && /prismLayers with elementOrder 2/.test(prismCurved.content?.[0]?.text ?? ""), "prism layers with a curved element order are refused by name");
+  const prismGmsh = await call("generate_mesh", { path: octreeBlock, options: { dimension: 3, sizeMax: 1, prismLayers: { firstHeight: 0.05 } } });
+  assert(prismGmsh.engineUsed === "gmsh" && prismGmsh.warnings.some((w) => /prismLayers only apply under engine "meshcad"/.test(w)), "prismLayers under the gmsh engine is ignored with a warning");
+
+  // project_to_cad: the unperturbed mesh_cad_surface output is already on the CAD faces (control: ~0 move), and
+  // projecting the SAME mesh onto a different model with a small maxDistance leaves its points where they were.
+  const pjMesh = path.join(dir, "pj-surface.vtu");
+  await call("mesh_cad_surface", { path: mcsBlock, outputPath: pjMesh, targetSize: 1 });
+  const pjOut = path.join(dir, "pj-out.vtu");
+  const pj = await call("project_to_cad", { path: pjMesh, cadPath: mcsBlock, outputPath: pjOut });
+  assert(
+    pj.supported === true && pj.numProjected === 128 && pj.numOnEdges === 44 && pj.numOnCurves === 44 && pj.numCorners === 8 && pj.numFailed === 0 && pj.numTooFar === 0 && pj.maxMove < 1e-9 && fs.existsSync(pjOut),
+    `project_to_cad: the unperturbed block.stp skin projects 128 points (44 on edges, 8 corners) with ~0 movement (got ${JSON.stringify({ p: pj.numProjected, e: pj.numOnEdges, c: pj.numCorners, f: pj.numFailed, m: pj.maxMove })})`
+  );
+  const pjWrong = await call("project_to_cad", { path: pjMesh, cadPath: model, outputPath: path.join(dir, "pj-wrong.vtu"), maxDistance: 0.05 });
+  assert(pjWrong.numTooFar > 0 && pjWrong.numProjected < pj.numProjected, `...and against a different model with maxDistance 0.05 points are left in place (control; got ${JSON.stringify({ far: pjWrong.numTooFar, p: pjWrong.numProjected })})`);
+  const pjStl = await call("project_to_cad", { path: cubeStl, cadPath: mcsBlock, outputPath: path.join(dir, "pj-stl.vtu") });
+  assert(pjStl.supported === false, "project_to_cad declines a mesh-parser (stl) input");
+  const pjBack = await callTolerant("project_to_cad", { path: pjMesh, cadPath: mcsBlock, outputPath: mcsBlock });
+  assert(pjBack.error, `project_to_cad refuses to write over a CAD input (got: ${pjBack.error})`);
+
+  // grow_prism_layers: the file route over a CAD source.
+  const gplOut = path.join(dir, "gpl-block.vtu");
+  const gpl = await call("grow_prism_layers", { path: mcsBlock, outputPath: gplOut, targetSize: 1, firstHeight: 0.05, numLayers: 3 });
+  assert(
+    gpl.supported === true && gpl.numWedges === 756 && gpl.numSurfaceTriangles === 252 && Math.abs(gpl.minThickness - 0.182) < 1e-9 && gpl.capClosed === true && fs.existsSync(gplOut),
+    `grow_prism_layers(block.stp @1): 756 wedges over 252 triangles, thickness 0.182 (got ${JSON.stringify({ w: gpl.numWedges, t: gpl.numSurfaceTriangles, th: gpl.minThickness })})`
+  );
+  const gplIn = await call("grow_prism_layers", { path: mcsBlock, outputPath: path.join(dir, "gpl-in.vtu"), targetSize: 1, firstHeight: 0.05, numLayers: 3, reverse: true });
+  assert(gplIn.numWedges === 756 && gplIn.minScaledJacobian < gpl.minScaledJacobian, `...and reverse grows inward with the probe's lower Jacobian than outward (got ${gplIn.minScaledJacobian} vs ${gpl.minScaledJacobian})`);
+  const gplNoSize = await callTolerant("grow_prism_layers", { path: mcsBlock, outputPath: path.join(dir, "gpl-x.vtu"), firstHeight: 0.05 });
+  assert(gplNoSize.error && /targetSize is required/.test(gplNoSize.error), `grow_prism_layers needs targetSize for a CAD source (got: ${gplNoSize.error})`);
+  const gplStl = await call("grow_prism_layers", { path: cubeStl, outputPath: path.join(dir, "gpl-cube.vtu"), firstHeight: 0.2, numLayers: 2 });
+  assert(gplStl.supported === true && gplStl.numWedges > 0 && gplStl.numSurfaceTriangles === 12, `grow_prism_layers over cube.stl (a closed 12-triangle mesh) grows wedges (got ${JSON.stringify({ w: gplStl.numWedges, t: gplStl.numSurfaceTriangles })})`);
+
+  const mcdDim3 = await call("generate_mesh", { path: octreeBlock, options: { engine: "meshcad", dimension: 3, sizeMax: 1 } });
+  assert(
+    mcdDim3.engineUsed === "gmsh" && mcdDim3.warnings.some((w) => /meshcad.*was requested/i.test(w)),
+    `generate_mesh(engine:"meshcad") at dimension 3 falls back to gmsh with a warning (got ${mcdDim3.engineUsed})`
+  );
+  const mcdStl = await call("generate_mesh", { path: cleanCubeStl, options: { engine: "meshcad", dimension: 2, sizeMax: 2 } });
+  assert(
+    mcdStl.engineUsed === "gmsh" && mcdStl.warnings.some((w) => /meshcad.*no B-rep faces/i.test(w)),
+    `generate_mesh(engine:"meshcad") on a mesh-format source falls back to gmsh with a warning (got ${mcdStl.engineUsed})`
+  );
+  const mcdGeo = await request("tools/call", {
+    name: "export_mesh",
+    arguments: { path: octreeBlock, format: "geoUnrolled", outputPath: path.join(dir, "meshcad.geo_unrolled"), options: mcdOpts },
+  });
+  assert(
+    mcdGeo.isError === true && /meshcad/i.test(mcdGeo.content?.[0]?.text ?? ""),
+    `export_mesh geoUnrolled rejects engine:"meshcad" with a specific error (got: ${(mcdGeo.content?.[0]?.text ?? "").slice(0, 160)})`
   );
 
   // repair_mesh (roadmap "Robust volumetric meshing", Phase 3 — closes the

@@ -272,6 +272,44 @@ export function buildWorstElementsHighlight(positionsB64: string, indicesB64: st
   return group;
 }
 
+/** Slave→master hanging-node constraint links — drawn through the model, like
+ * the worst-element highlight, since a hanging node sits on a coarse neighbour's
+ * edge or face and is often interior. */
+const constraintLinkMaterial = (): THREE.LineBasicMaterial =>
+  new THREE.LineBasicMaterial({ color: paletteColor("constraintLink"), transparent: true, opacity: 0.9, depthTest: false, depthWrite: false });
+
+function linkSegments(positions: Float32Array, indices: Uint32Array): THREE.Object3D | null {
+  if (indices.length === 0) return null;
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+  geometry.setIndex(new THREE.BufferAttribute(indices, 1));
+  const lines = new THREE.LineSegments(geometry, constraintLinkMaterial());
+  lines.userData.entityType = "mesh"; // not pickable, not Part-coloured
+  lines.renderOrder = 6;
+  const group = new THREE.Group();
+  group.name = "feMeshConstraintLinks";
+  group.add(lines);
+  return group;
+}
+
+/**
+ * The links of a generated hanging-node octree: `indicesB64` are slave/master
+ * index PAIRS into the same `positions` buffer `buildFEMesh` uses, so no
+ * geometry is copied. `null` when there are none, so
+ * `Viewer.setConstraintLinksOverlay(null)` clears a stale overlay.
+ */
+export function buildConstraintLinks(positionsB64: string, indicesB64: string): THREE.Object3D | null {
+  return linkSegments(decodeF32(positionsB64), decodeU32(indicesB64));
+}
+
+/**
+ * The links of an opened `.mdpa`: their own small point table (file coordinates)
+ * and index pairs into it — only the nodes the constraints name, not the mesh.
+ */
+export function buildFileConstraintLinks(pointsB64: string, indicesB64: string): THREE.Object3D | null {
+  return linkSegments(decodeF32(pointsB64), decodeU32(indicesB64));
+}
+
 /**
  * Builds the "colour by scalar field" overlay (roadmap item, closed) — a
  * scene sibling of `model`, same "never mutate the original geometry"

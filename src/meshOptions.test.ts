@@ -3,7 +3,9 @@ import {
   validateMeshOptions,
   octreeSummary,
   octreeMeshSummary,
+  meshcadSummary,
   OCTREE_MAX_LEVEL_LIMIT,
+  MAX_MDPA_RANKS,
   OCTREE_MESH_LEVELS_LIMIT,
   validateMeshGrading,
   validateMeshStructured,
@@ -44,9 +46,16 @@ describe("validateMeshOptions", () => {
       ftetwildDisableFiltering: false,
       octreeMaxLevel: 5,
       octreeSnap: false,
+      octreeTransition: "hanging" as const,
+      mpcVariables: ["DISPLACEMENT_X", "TEMPERATURE"],
       octreeMeshOutput: "hex" as const,
       octreeMeshMaxSize: 1.5,
       octreeMeshLevels: 3,
+      meshcadMinAngle: 25,
+      meshcadSmoothIterations: 2,
+      meshcadCurvatureDeviation: 0.05,
+      meshcadCellsAcrossGaps: 2,
+      meshcadGrading: 1.3,
       conformal: true,
     };
     expect(validateMeshOptions(opts)).toEqual(opts);
@@ -136,7 +145,7 @@ describe("validateMeshOptions", () => {
     expect(validateMeshOptions({ optimize: 1 })?.optimize).toBe(DEFAULT_MESH_OPTIONS.optimize);
   });
 
-  it("defaults engine unless it is exactly 'gmsh', 'ftetwild', 'octree' or 'octreemesh'", () => {
+  it("defaults engine unless it is exactly 'gmsh', 'ftetwild', 'octree', 'octreemesh' or 'meshcad'", () => {
     expect(validateMeshOptions({ engine: "octree" })?.engine).toBe("octree");
     expect(validateMeshOptions({ engine: "octreemesh" })?.engine).toBe("octreemesh");
     expect(validateMeshOptions({ engine: "octreeMesh" })?.engine).toBe("gmsh");
@@ -176,6 +185,14 @@ describe("applyStlPartSizeOverride", () => {
 
   it("no-ops on an empty parts list", () => {
     expect(applyStlPartSizeOverride(DEFAULT_MESH_OPTIONS, [])).toBe(DEFAULT_MESH_OPTIONS);
+  });
+});
+
+describe("scaleMeshOptionsForUnit prismLayers", () => {
+  it("scales firstHeight with the unit but never the growth ratio or layer count", () => {
+    const o = { ...DEFAULT_MESH_OPTIONS, prismLayers: { firstHeight: 0.1, numLayers: 4, growth: 1.3 } };
+    expect(scaleMeshOptionsForUnit(o, 25.4).prismLayers).toEqual({ firstHeight: 0.1 * 25.4, numLayers: 4, growth: 1.3 });
+    expect(scaleMeshOptionsForUnit(DEFAULT_MESH_OPTIONS, 25.4)).not.toHaveProperty("prismLayers");
   });
 });
 
@@ -424,11 +441,50 @@ describe("DEFAULT_MESH_OPTIONS", () => {
       ftetwildDisableFiltering: false,
       octreeMaxLevel: 4,
       octreeSnap: true,
+      octreeTransition: "templates",
+      mpcVariables: ["DISPLACEMENT_X", "DISPLACEMENT_Y", "DISPLACEMENT_Z"],
       octreeMeshOutput: "tet",
       octreeMeshMaxSize: 0,
       octreeMeshLevels: 2,
+      meshcadMinAngle: 0,
+      meshcadSmoothIterations: 0,
+      meshcadCurvatureDeviation: 0,
+      meshcadCellsAcrossGaps: 0,
+      meshcadGrading: 0,
       conformal: true,
     });
+  });
+
+  it("validates the mesh-CAD fields to their documented ranges", () => {
+    expect(validateMeshOptions({ engine: "meshcad" })?.engine).toBe("meshcad");
+    expect(validateMeshOptions({ engine: "meshCad" })?.engine).toBe("gmsh");
+    expect(validateMeshOptions({ meshcadMinAngle: 25 })?.meshcadMinAngle).toBe(25);
+    // below 0 and at/above 60 can never be met by a triangulation: back to off
+    for (const bad of [-1, 60, 90, Number.NaN, "25"]) expect(validateMeshOptions({ meshcadMinAngle: bad })?.meshcadMinAngle).toBe(0);
+    expect(validateMeshOptions({ meshcadSmoothIterations: 3.4 })?.meshcadSmoothIterations).toBe(3);
+    expect(validateMeshOptions({ meshcadSmoothIterations: 5000 })?.meshcadSmoothIterations).toBe(100);
+    expect(validateMeshOptions({ meshcadSmoothIterations: -2 })?.meshcadSmoothIterations).toBe(0);
+    expect(validateMeshOptions({ meshcadCurvatureDeviation: 0.05 })?.meshcadCurvatureDeviation).toBe(0.05);
+    expect(validateMeshOptions({ meshcadCurvatureDeviation: -1 })?.meshcadCurvatureDeviation).toBe(0);
+    expect(validateMeshOptions({ meshcadCellsAcrossGaps: 2 })?.meshcadCellsAcrossGaps).toBe(2);
+    expect(validateMeshOptions({ meshcadGrading: 1.3 })?.meshcadGrading).toBe(1.3);
+    // |grad h| <= grading - 1: anything in (0, 1] is meaningless
+    for (const bad of [0.5, 1, -1]) expect(validateMeshOptions({ meshcadGrading: bad })?.meshcadGrading).toBe(0);
+  });
+
+  it("summarises a mesh-CAD generate in one line, naming open edges and missed bounds", () => {
+    const stats = {
+      targetSize: 1, order: 1 as const, numFaces: 6, numFailed: 0, numTriangles: 252, numPoints: 128,
+      numOpenEdges: 0, numNonManifoldEdges: 0, numMisorientedEdges: 0, minAngleDeg: 23.79, maxAngleDeg: 105,
+      minEdge: 0.5, maxEdge: 1.2, numRefinementPoints: 0, numFacesBelowBound: 0, numSmoothed: 0, numCurvedStraightened: 0, warnings: [],
+    };
+    const prism = { numCells: 756, numWedges: 756, numPyramids: 0, numTetrahedra: 0, numShrunk: 0, numCollapsed: 0, numFewerLayers: 0, numFrontCrossings: 0, minScaledJacobian: 0.2727, minThickness: 0.182, maxThickness: 0.182, plannedThickness: 0.182, capClosed: true, warnings: [] };
+    expect(meshcadSummary({ ...stats, prismLayers: prism })).toBe("Mesh-CAD prism layers: 756 wedges · thickness 0.182–0.182 of 0.182 planned · min scaled Jacobian 0.27 · interior not meshed · Parts not preserved");
+    expect(meshcadSummary({ ...stats, prismLayers: { ...prism, numShrunk: 3 } })).toContain("thinner than planned in places");
+    expect(meshcadSummary(stats)).toBe("Mesh-CAD surface: 252 tri · min angle 23.8° · closed · Parts not preserved");
+    expect(meshcadSummary({ ...stats, numOpenEdges: 4, numFacesBelowBound: 2, numFailed: 1 })).toBe(
+      "Mesh-CAD surface: 252 tri · min angle 23.8° · 4 open edges · 2 face(s) below the angle bound · 1 face(s) failed · Parts not preserved"
+    );
   });
 
   it("defaults the fTetWild flags unless real booleans", () => {
@@ -543,10 +599,35 @@ describe("octree options", () => {
   });
 
   it("summarizes an octree result for the status line, naming refusals and the Parts loss", () => {
-    const stats = { maxLevel: 4, snap: true, numLeaves: 3000, numHanging: 0, finestLevel: 4, numSnapped: 433, numRefused: 0, elementMix: { hexahedra: 1372, pyramids: 542, tetrahedra: 1608 } };
+    const stats = { maxLevel: 4, snap: true, transition: "templates" as const, numLeaves: 3000, numHanging: 0, finestLevel: 4, numSnapped: 433, numRefused: 0, elementMix: { hexahedra: 1372, pyramids: 542, tetrahedra: 1608 } };
     expect(octreeSummary(stats)).toBe("Octree L4: 1372 hex · 542 pyramid · 1608 tet · snapped 433 · Parts not preserved");
     expect(octreeSummary({ ...stats, numRefused: 81 })).toContain("snapped 433, refused 81");
     expect(octreeSummary({ ...stats, snap: false })).toContain("snap off");
+  });
+
+  it("takes octreeTransition only as templates or hanging (polyhedra is never offered)", () => {
+    expect(validateMeshOptions({ octreeTransition: "hanging" })?.octreeTransition).toBe("hanging");
+    expect(validateMeshOptions({ octreeTransition: "polyhedra" })?.octreeTransition).toBe("templates");
+    expect(validateMeshOptions({ octreeTransition: 1 })?.octreeTransition).toBe("templates");
+    expect(validateMeshOptions({})?.octreeTransition).toBe("templates");
+  });
+
+  it("cleans mpcVariables to unique identifiers, capped, falling back to the displacement set", () => {
+    expect(validateMeshOptions({ mpcVariables: ["TEMPERATURE", " PRESSURE ", "TEMPERATURE", "9bad", "a-b", 3] })?.mpcVariables).toEqual(["TEMPERATURE", "PRESSURE"]);
+    expect(validateMeshOptions({ mpcVariables: "VELOCITY_X, VELOCITY_Y" })?.mpcVariables).toEqual(["VELOCITY_X", "VELOCITY_Y"]);
+    expect(validateMeshOptions({ mpcVariables: [] })?.mpcVariables).toEqual(DEFAULT_MESH_OPTIONS.mpcVariables);
+    expect(validateMeshOptions({ mpcVariables: ["", "1x"] })?.mpcVariables).toEqual(DEFAULT_MESH_OPTIONS.mpcVariables);
+    expect(validateMeshOptions({ mpcVariables: Array.from({ length: 12 }, (_, i) => `V${i}`) })?.mpcVariables).toHaveLength(8);
+  });
+
+  it("summarizes a hanging run by its constraints, never by snap counts", () => {
+    const stats = {
+      maxLevel: 4, snap: false, transition: "hanging" as const, numLeaves: 1450, numHanging: 378, finestLevel: 4, numSnapped: 0, numRefused: 0,
+      elementMix: { hexahedra: 11600, pyramids: 0, tetrahedra: 0 },
+      constraints: { hangingNodes: 378, constraints: 1134, chained: 0, variables: ["DISPLACEMENT_X", "DISPLACEMENT_Y", "DISPLACEMENT_Z"] },
+    };
+    expect(octreeSummary(stats)).toBe("Octree L4 hanging: 11600 hex · 378 hanging nodes tied by 1134 MPCs · Parts not preserved");
+    expect(octreeSummary({ ...stats, constraints: undefined })).toContain("constraints not computed");
   });
 });
 
@@ -555,6 +636,21 @@ describe("octree-mesh options", () => {
     expect(validateMeshOptions({ octreeMeshOutput: "hex" })?.octreeMeshOutput).toBe("hex");
     expect(validateMeshOptions({ octreeMeshOutput: "castellated" })?.octreeMeshOutput).toBe("tet");
     expect(validateMeshOptions({ octreeMeshOutput: 3 })?.octreeMeshOutput).toBe("tet");
+    // prismLayers (meshio++ 17.23 3-D boundaryLayer): tolerant parse, optional fields omitted when default
+    expect(validateMeshOptions({ prismLayers: { firstHeight: 0.05, numLayers: 3, growth: 1.2 } })?.prismLayers).toEqual({ firstHeight: 0.05, numLayers: 3, growth: 1.2 });
+    expect(validateMeshOptions({ prismLayers: { firstHeight: 0.05, numLayers: 3, growth: 1.2, reverse: false, collapse: "points" } })?.prismLayers).toEqual({ firstHeight: 0.05, numLayers: 3, growth: 1.2 });
+    expect(validateMeshOptions({ prismLayers: { firstHeight: 0.05, reverse: true, collapse: "layers" } })?.prismLayers).toEqual({ firstHeight: 0.05, numLayers: 3, growth: 1.2, reverse: true, collapse: "layers" });
+    for (const bad of [{ firstHeight: 0 }, { firstHeight: 1, numLayers: 0 }, { firstHeight: 1, numLayers: 1001 }, { firstHeight: 1, growth: 0.5 }, { firstHeight: 1, growth: 11 }, "x", null]) {
+      expect("prismLayers" in (validateMeshOptions({ prismLayers: bad }) ?? {})).toBe(false);
+    }
+    // under meshcad the layer shell is a volume mesh, so dimension is normalised to 3; other engines keep theirs
+    expect(validateMeshOptions({ engine: "meshcad", dimension: 2, prismLayers: { firstHeight: 0.1 } })?.dimension).toBe(3);
+    expect(validateMeshOptions({ engine: "meshcad", dimension: 2 })?.dimension).toBe(2);
+    expect(validateMeshOptions({ engine: "gmsh", dimension: 2, prismLayers: { firstHeight: 0.1 } })?.dimension).toBe(2);
+    // 17.23 hexGrading: optional, kept only when "graded" (a sidecar stays byte-stable otherwise)
+    expect(validateMeshOptions({ octreeMeshHexGrading: "graded" })?.octreeMeshHexGrading).toBe("graded");
+    expect("octreeMeshHexGrading" in (validateMeshOptions({ octreeMeshHexGrading: "uniform" }) ?? {})).toBe(false);
+    expect("octreeMeshHexGrading" in (validateMeshOptions({ octreeMeshHexGrading: "bogus" }) ?? {})).toBe(false);
   });
 
   it("keeps a positive max size, and maps zero, negative and non-numbers to automatic (0)", () => {
@@ -584,5 +680,27 @@ describe("octree-mesh options", () => {
     );
     const hex = octreeMeshSummary({ ...tet, output: "hex", numTetrahedra: 0, numHexahedra: 7776, numFeatureChains: 0, numFeatureChainsMissed: 0 });
     expect(hex).toBe("Octree-mesh hex: 7776 hex · min Jacobian 0.24 · 0 inverted · Parts not preserved");
+  });
+});
+
+describe("mdpaRanks / mdpaPartitionMethod", () => {
+  it("is absent by default, so an untouched sidecar stays byte-stable", () => {
+    const v = validateMeshOptions({}) ?? {};
+    expect("mdpaRanks" in v).toBe(false);
+    expect("mdpaPartitionMethod" in v).toBe(false);
+  });
+  it("keeps a rank count of at least 2, rounded and clamped to the limit", () => {
+    expect(validateMeshOptions({ mdpaRanks: 4 })?.mdpaRanks).toBe(4);
+    expect(validateMeshOptions({ mdpaRanks: 3.6 })?.mdpaRanks).toBe(4);
+    expect(validateMeshOptions({ mdpaRanks: 10_000 })?.mdpaRanks).toBe(MAX_MDPA_RANKS);
+  });
+  it("drops a count that means a single file or is not a number", () => {
+    for (const bad of [1, 0, -3, 1.4, NaN, "4", null]) expect("mdpaRanks" in (validateMeshOptions({ mdpaRanks: bad }) ?? {}), String(bad)).toBe(false);
+  });
+  it("keeps kahip / sfc, and drops auto (the default) and unknown names", () => {
+    expect(validateMeshOptions({ mdpaPartitionMethod: "kahip" })?.mdpaPartitionMethod).toBe("kahip");
+    expect(validateMeshOptions({ mdpaPartitionMethod: "sfc" })?.mdpaPartitionMethod).toBe("sfc");
+    expect("mdpaPartitionMethod" in (validateMeshOptions({ mdpaPartitionMethod: "auto" }) ?? {})).toBe(false);
+    expect("mdpaPartitionMethod" in (validateMeshOptions({ mdpaPartitionMethod: "metis" }) ?? {})).toBe(false);
   });
 });
