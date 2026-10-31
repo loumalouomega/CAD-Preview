@@ -57,6 +57,8 @@ Existing implementation references were checked against the repository where not
 
 **Closed 2026-10-25 (N-sided surface filling).** Extension, not a planning review: the `BRepOffsetAPI_MakeFilling` probe (formerly 3.5) **passed** and the `addSurfaceFilling` op shipped (Build from selection ▸ Fill Surface) in the same change; it left the list. Remaining probe IDs were not renumbered.
 
+**Extended 2026-10-31 (ElmerStudio review and Non-goal recovery).** Extension, not a planning review: nothing was re-ranked and no existing ID moved. The [ElmerStudio review](#elmerstudio-review) added [unit-aware document variables](#unit-aware-document-variables) (2.26), [rule-defined Part membership](#rule-defined-part-membership) (2.27), the [parametric-curve profile](#parametric-curve-profile) (2.28), [transport-agnostic 3D-mouse input](#transport-agnostic-3d-mouse-input) (2.29) and [Part rename and delete events for embedders](#part-rename-and-delete-events) (5.4). Four Non-goals were re-read against today's kernels (meshio++ 17.23.0 with `fitCad`, `checkConformity` and prism layers, Manifold, the OpenSCAD WASM) and re-opened as probes that route around the dead API rather than revive it: [sampled B-rep self-intersection](#sampled-brep-self-intersection) (3.14), [B-rep repair by refit](#brep-repair-by-refit) (3.15), [3D text through OpenSCAD](#text-through-openscad) (3.16) and [OpenSCAD library staging](#openscad-library-staging) (3.17); section 4 is recreated for [a volume behind the prism-layer shell](#volume-behind-prism-layers) (4.11) and [physics-calibrated size presets](#physics-calibrated-size-presets) (4.12). Each original Non-goal entry stays and points at its probe. Stale facts fixed in passing: the gmsh-wasm version in the kernel review, the meshio++ and `view.*` "never called" rows, two links to a closed validity-report item, and a hex-dominant link that pointed at the wrong Non-goal group.
+
 Everything previously shipped is tracked in `CHANGELOG.md`, and `CLAUDE.md` holds the invariants, traps and verified kernel facts that a future change could break (not per-feature history, which lives in git) — this page is for what's **not** built yet, plus the Non-goals that record why a direction was rejected so it isn't re-proposed.
 
 ## How this file works
@@ -104,7 +106,7 @@ product's integration as evidence. Other MMG features below remain probe-gated.
 | Library / capability | Licence | In the VSIX today? | What it adds | Outcome |
 | --- | --- | --- | --- | --- |
 | MMG — mmg3d / mmgs / mmg2d (`@loumalouomega/mmg-wasm`) | LGPL-3.0-or-later | Yes; mmg3d/mmgs exposed | Ordinary reference-preserving volume/surface remeshing (`hausd`/`hmin`/`hmax`/`hgrad`); metric/local-size/level-set APIs are not product features yet | Shipped (see `CLAUDE.md` and `doc/gmsh-integration.md#mmg-remeshing`), plus Hausdorff-bounded surface coarsening (the `autoDecimate` backend of Mesh Health and Promote) and metric-driven adaptive remeshing (shipped as **Adapt to field** on remesh) |
-| meshio++ 16.7.0 surface `remesh` (clustering), `estimateError` (ZZ), `interpolate` / `conservativeInterpolate`, `sampleDistance` | MIT | Yes, never called | A licence-free surface remesher to measure MMG against; an error estimator to drive adaptation; mass-preserving field transfer across a remesh | Baseline in the coarsening probe; the field-transfer half of adaptive remeshing |
+| meshio++ 16.7.0 surface `remesh` (clustering), `estimateError` (ZZ), `interpolate` / `conservativeInterpolate`, `sampleDistance` | MIT | Yes; `estimateError` and `conservativeInterpolate` are now called by **Adapt to field** (`meshioService.ts`), the rest still unused | A licence-free surface remesher to measure MMG against; an error estimator to drive adaptation; mass-preserving field transfer across a remesh | Baseline in the coarsening probe; the field-transfer half of adaptive remeshing |
 | Gmsh `mesh.optimize` (`"Netgen"`, `"HighOrder"`, `"HighOrderElastic"`, …) | GPL-2.0-or-later (Netgen linked in) | Yes; `optimize()` called via the `optimize` enum | Quality optimisation after generate; untangling curved quadratic elements | Shipped as `MeshOptions.optimize` (`none`/`default`/`netgen`/`highOrder`) — repeatable Netgen gain plus a partial HighOrderElastic untangle; `Relocate3D` probed a bit-identical no-op and is not offered (see `doc/gmsh-integration.md#mesh-optimisation`) |
 | Gmsh `setTransfiniteCurve/Surface/Volume/Automatic` + `setRecombine` | GPL-2.0-or-later | Yes; transfinite constraints applied via `Part.meshStructured` | Structured, mapped hex/quad meshes on regular regions | Shipped as `Part.meshStructured { divisions }` — exact mapped grids with a loud refuse on non-regular regions; `setTransfiniteAutomatic` accepts nothing on the surveyed fixture (see `doc/gmsh-integration.md#structured-meshing-per-part`) |
 | Gmsh `setSizeCallback` | GPL-2.0-or-later | Declared green in 0.3.0, never called | Sizing from a JS function, e.g. a sampled deviation or error field | Probed and recorded: the callback works (16 658 calls on the probe fixture) and **nothing ships on it** — no sizing source here outgrows Gmsh's declarative fields |
@@ -153,13 +155,13 @@ This review lists every capability that is **bound in a shipped kernel but never
 | `BRepExtrema_DistanceSS` in maximum mode | Constructs, but never computes | `src/entityFacts.ts` (`measureExact`) |
 | `BRepOffsetAPI_DraftAngle.Build()` | Throws on real geometry | `src/occtOperations.ts` (`draftFaces`) |
 
-**The OCCT build is old.** The installed `opencascade.js` 1.1.1 references OCCT `V7_4_0`. Its 2.0 beta dates from 2023 and has seen no release since. The bundled gmsh-wasm 0.3.0 statically links OCC 7.8.1 (its `General.BuildInfo`). So one extension carries two OCCT versions three minor releases apart, and the kernel-blocked Non-goals below are blocked by the older one. The [self-built OCCT WASM](#self-built-occt-wasm) strategic item addresses this.
+**The OCCT build is old.** The installed `opencascade.js` 1.1.1 references OCCT `V7_4_0`. Its 2.0 beta dates from 2023 and has seen no release since. The bundled gmsh-wasm 0.4.0 (the same Gmsh commit as 0.3.0) statically links OCC 7.8.1 (its `General.BuildInfo`). So one extension carries two OCCT versions three minor releases apart, and the kernel-blocked Non-goals below are blocked by the older one. The [self-built OCCT WASM](#self-built-occt-wasm) strategic item addresses this.
 
 **OCCT: bound, never called, and worth a probe.**
 
 | Classes | Would enable | Item |
 | --- | --- | --- |
-| `BRepExtrema_SelfIntersection`, `ShapeAnalysis_FreeBounds` | Self-intersection and free-boundary facts in the validity report | [More facts in the B-rep validity report](#more-facts-in-the-b-rep-validity-report) |
+| `BRepExtrema_SelfIntersection`, `ShapeAnalysis_FreeBounds` | Self-intersection and free-boundary facts in the validity report | Free boundaries shipped in `check_brep_health`; `BRepExtrema_SelfIntersection` is dead (see Kernel-blocked), so self-intersection is re-opened as [Sampled B-rep self-intersection](#sampled-brep-self-intersection) (probe) |
 | `BRepOffsetAPI_MakeFilling` | An N-sided, non-planar surface from boundary edges | N-sided surface filling (shipped as `addSurfaceFilling`) |
 | `ChFi2d_FilletAPI`, `ChFi2d_ChamferAPI` | Rounding and chamfering sketch-profile corners before extrusion | Fillets and chamfers on 2D profiles (shipped) |
 | `BRepProj_Projection` | Projecting a curve onto a face | Shipped as `splitFace.projectDir` |
@@ -168,7 +170,7 @@ This review lists every capability that is **bound in a shipped kernel but never
 
 **Gmsh: declared, never called, and worth a probe.** The table below is for `model.occ` and `model.mesh`. `model.mesh.embed` was in this table and has been **removed** — it was probed and shipped, but deliberately not used: Gmsh meshes a free 0D/1D model entity in its own right, so the node lands exactly without it, while calling `embed` measurably degrades the surrounding mesh (2-D minSICN 0.840 → 0.751) and produces an ill-shaped tetrahedron outright when a point on a face is embedded in a volume. A sixth "green but the wrong tool" finding alongside OCCT's; the numbers and the shipped alternative (create the entities in Gmsh's model via `model.occ.addPoint` / `addLine`) are in `CLAUDE.md` and `doc/gmsh-integration.md`. Two more parts of the binding are unused:
 
-- **`plugin.run` and `onelab`:** unused. gmsh-wasm 0.4.0 added the `view.*` namespace (`addModelData`, `getModelData`, `probe`, `write`, …), so a plugin's output no longer needs a written `.pos` file; nothing here calls it yet.
+- **`plugin.run` and `onelab`:** unused. gmsh-wasm 0.4.0 added the `view.*` namespace (`addModelData`, `getModelData`, `probe`, `write`, …), so a plugin's output no longer needs a written `.pos` file. `view.add`/`view.addListData` are now called by `MeshOptions.sizeField` (`gmshSizingFields.ts`); `plugin.run` and `onelab` remain unused.
 - **`model.occ.*` modelling calls** (`fuse`, `fillet`, …): deliberately unused, since OCCT owns modelling here.
 - **`model.occ.fragment` was likewise removed from the table below** — probed, passed, and shipped as the default-on `conformal` mesh option (touching solids share interface nodes; Parts resolve after the renumbering; see `doc/gmsh-integration.md#conformal-multi-body-meshing`). `model.mesh.optimize` is now also called (shipped as the `optimize` enum); only `Relocate3D` was probed a no-op and is not offered.
 - **`model.mesh.setCompound` was removed from the table below** — probed and *failed*: on `bull.stp`, compounding the four smooth-linked face groups ([4, 3, 2, 2] faces, all 36 faces correlated, physical group intact, valid `.msh`) repeatably *lowered* minimum quality (minSICN 0.0269 → 0.0104, bit-identical across three runs; mean 0.7289 → 0.7157) instead of raising it. The binding works; the quality promise does not. See Rejected scope.
@@ -232,7 +234,7 @@ Two projects built for AI agents were read for this extension:
 | dfm draft and undercuts | text-to-cad | Shipped: `check_draft` and the Draft panel |
 | Engineering-drawing hole callouts, CENTER layer | text-to-cad | Shipped: `holeCallouts` on `export_drawing_sheet`, the Export Sheet form and templates |
 | Byte-deterministic writers (mesh formats, manifest) | text-to-cad | Shipped — see `CLAUDE.md`'s "Reproducible exports" |
-| Per-solid signed-volume check | text-to-cad | Addendum to [More facts in the B-rep validity report](#more-facts-in-the-b-rep-validity-report) |
+| Per-solid signed-volume check | text-to-cad | Shipped: `check_brep_health` reports the signed volume per solid |
 | 3MF export with colour | Both | Shipped: Part and file colours are written per triangle as `basematerials`, and a 3MF's own colours (and declared unit) show on load |
 | STEP from a mesh with merged coplanar faces | ReOpenSCAD | Shipped as `promote_mesh_to_brep` `mergeFacets` and the Mesh Health panel's **Merge facets** checkbox: one planar face per near-coplanar facet, kept only where genuinely flat |
 | Kinematic mates, poses, animation | text-to-cad | [Kinematic mates and pose-swept clearance](#kinematic-mates-and-pose-sweeps) (strategic) |
@@ -240,6 +242,30 @@ Two projects built for AI agents were read for this extension:
 | DXF output, sheet templates, three-view sheets | text-to-cad | Already shipped (`export_drawing_sheet`, DXF layers) |
 | Slicing, printer hand-off, supplier ordering, URDF/SDF | text-to-cad | [Rejected](#rejected-scope) |
 | Hosted shared workspaces, HTTP transport, in-browser editor | ReOpenSCAD | [Rejected](#rejected-scope) |
+
+### ElmerStudio review — 2026-10-31 {#elmerstudio-review}
+
+One project, read at source level (no Elmer run):
+
+- **[ElmerStudio](https://github.com/loumalouomega/ElmerStudio)** (GPL-2.0-or-later, read at `b1be253`, 2026-10-30). A COMSOL-style Qt model builder for Elmer FEM: geometry through gmsh's OpenCASCADE, a Model Builder tree, unit-aware parameters, physics-controlled meshing, parametric sweeps and a results pipeline. Its geometry and meshing halves are the comparable ones; only ideas transfer, no code. The workflow and results halves are in the KKSS and VSCode-MDPA-Preview roadmaps.
+
+| Source feature | From | Status here |
+| --- | --- | --- |
+| Unit-aware expressions `10[mm]`, `20[degC]` with deduced-unit warnings that never reject the value (`core/units.py`: `expr_dims`, `unit_warnings`) | ElmerStudio | [Unit-aware document variables](#unit-aware-document-variables) (2.26) |
+| Parameters evaluated to a fixed point with named circular chains (`evaluate_parameters`, `_cycle_from`) | ElmerStudio | Already shipped in a stricter form: `editVariables.ts` allows references only to variables defined above, so a cycle is unrepresentable |
+| Selections that follow geometry edits: signature = owner-relative box centre/extent + measure, matched under a score limit, lost entities flagged (`core/geometry.py`: `signature`, `match`, `remap_selections`) | ElmerStudio | Already shipped for id bags (`entityRebind.ts`, `rebindPartsAcrossOps`); the rule-defined half is [Rule-defined Part membership](#rule-defined-part-membership) (2.27) |
+| Box Selections re-evaluated on every build and recorded per run (`_box_entities`, `meta["selections"]`) | ElmerStudio | [Rule-defined Part membership](#rule-defined-part-membership) (2.27) |
+| Selecting boundaries by position in scripts (`geo.select("boundary", xmax=0)`) | ElmerStudio | [Rule-defined Part membership](#rule-defined-part-membership) (2.27), headless half |
+| Parametric Curve + Convert to Solid | ElmerStudio | [Parametric-curve profile](#parametric-curve-profile) (2.28) |
+| Work planes (quick and face-parallel), 2D fillet/chamfer on clicked vertices, Form Union, Move/Copy/Rotate/Scale/Mirror/Array | ElmerStudio | Already shipped (construction planes, `filletProfile`, conformal meshing, the transform ops and `repeat`) |
+| Physics-controlled mesh: nine size levels as fractions of the model, flow halving, acoustics at c/(5·f_max) (`core/meshing.py`: `SIZE_PRESETS`, `acoustic_hmax`) | ElmerStudio | [Physics-calibrated size presets](#physics-calibrated-size-presets) (4.12) |
+| Maximum element growth rate as `Distance`+`MathEval` fields, h(d) = h + (g−1)·d (`grow_from`) | ElmerStudio | Partly shipped: the `meshcad` engine has `meshcadGrading`, and `Part.meshGrading` is a distance band (wall size → far size). The Gmsh engine has no growth-rate limit; it is a phase of [Physics-calibrated size presets](#physics-calibrated-size-presets) (4.12) |
+| Mapped meshes with graded distributions (geometric, symmetric, reversed); ElmerGrid structured blocks with a refusal reason per non-axis-aligned edge | ElmerStudio | Mapped meshes shipped (`Part.meshStructured { divisions }`, with its loud refusal on non-regular regions); graded (non-uniform) divisions are a phase of [Physics-calibrated size presets](#physics-calibrated-size-presets) (4.12) |
+| Boundary layers in 2D only (its own documented limit) | ElmerStudio | 2D shipped (`Part.meshBoundaryLayer`); 3D is [A volume behind the prism-layer shell](#volume-behind-prism-layers) (4.11) |
+| Mesh statistics and a quality plot per domain (gmsh `minSICN`) | ElmerStudio | Already shipped (`QualitySummary`, Mesh Health, `check_mesh_quality`) |
+| Identity pairs (mortar continuity) between touching domains | ElmerStudio | Covered differently: conformal multi-body meshing shares the interface nodes, and hanging-node MPCs ship for the octree engine |
+| Model tree "Used By" links and delete-in-use warnings (`core/deps.py`) | ElmerStudio | [Part rename and delete events for embedders](#part-rename-and-delete-events) (5.4); the cross-mode report itself is KKSS's |
+| Sketching with geometric constraints | (not offered by ElmerStudio either — it uses numeric primitives) | [Rejected](#rejected-scope), unchanged |
 
 ### What the GPL-3.0 relicense unlocks {#relicense-unlocks}
 
@@ -259,8 +285,8 @@ It does **not** admit AGPL code, so TetGen stays rejected. Every new bundled dep
 | --- | --- | --- | --- |
 | Upkeep | The base stays current and trustworthy | Done: the dependency watch, "Verify the dependency watch on GitHub", has run — it published issue #84 and re-dispatching reported `unchanged`. The verification-debt gate has shipped and **24 claims are closed** (the ten webview ones, the first ten host-side ones, and the fourteen of the second host-side increment — six of which the harnesses already proved); the host-side halves (1.1) are next again, now with only look-and-feel claims left in the registry; recoverable B-rep saves (1.4) shipped and left the list; the dependency-watch close-out (1.6) shipped and left the list too — two live `workflow_dispatch` runs closed #92 with the dated comment and the second run was a `current` no-op | The verification debt count keeps falling by closure |
 | Parity | Everything an agent can do, a user can do, and the reverse | Done: headless mesh-edit replay closed the last listed gap (as did the hole-table, refinement-sweep, free-text-note and mesh-source FE-export gaps). Justified remainders: meshio `inspect` (compare/mass/measure now read its boundary surface; `inspect` itself stays B-rep/mesh-parser only), `promote_mesh_to_brep` and `repair_mesh` read the raw file (their ids and outputs are defined over it; `save_model` bakes first), and glTF has no own-format save (its exporter emits only `.glb`) | Headless tools see the same edited mesh the viewer shows, or each remaining difference is justified |
-| Meshing probes | Decide on remeshing and on conformal assemblies | MMG core probe is closed with a partial outcome: volume/surface/transport work, unconditional optimisation failed. MMG remeshing has shipped: shared service, MCP tool and panel with real-pipeline screenshots and packaged-runtime verification. Conformal multi-body meshing and Gmsh mesh optimisation have shipped, each with probe-measured results and a decision. Manifold mesh booleans have shipped, and so have periodic face pairs; pre-mesh healing and the hex-dominant MDPA split were probed and rejected (see Non-goals), and the size callback works but nothing ships on it. Structured meshing per Part has shipped as `Part.meshStructured` with exact-count smoke coverage. Metric-driven adaptive remeshing has shipped as **Adapt to field** on remesh (scalar metric; the tensor metric was probed and not worth shipping). Hausdorff-bounded surface coarsening has shipped as the `autoDecimate` backend (mmgs; the earlier negative result was a mis-scaled `hausd`). Anisotropic 2-D boundary layers have shipped as `Part.meshBoundaryLayer` (the recorded blocker did not reproduce). Achieved rows are now measured from the generated nodes (`boundaryLayerMeasurement.ts`; generate result, panel Layer row and handoff manifest, with a shortfall warning), closing 2.22. View-driven mesh sizing has shipped as `MeshOptions.sizeField` (list-based `SP` view + `PostView` field, `bull.stp` worst deviation 3.3× down at 11.7× elements, Parts and physical groups survive, no view left behind). The octree hex-dominant engine shipped as `engine: "octree"` (3522 cells enclosing exactly 60 on `block.stp`, MDPA with all three cell classes). KaHIP-partitioned Kratos MDPA export has shipped as `MeshOptions.mdpaRanks` (`doc/gmsh-integration.md#partitioned-mdpa`: one file per rank, global ids, an interface-node SubModelPart; `bull.stp` at 4 ranks cuts 108 interface nodes against the space-filling curve's 297). Nothing is left in this wave | Each probe filed with measured results and a decision |
-| Geometry probes | Decide which never-called OCCT capabilities become ops | B-rep repair probed and **failed** (no `ShapeFix_*` fixer clears a real finding; see Kernel-blocked) and left the list; the face-region split passed its probe, shipped as the `splitFace` op, and left the list; variable-radius fillets passed theirs and shipped as `FilletOp.radius2` (see `CLAUDE.md`'s Fillet/chamfer call shapes) | Each probe filed with measured results and a decision |
+| Meshing probes | Decide on remeshing and on conformal assemblies | MMG core probe is closed with a partial outcome: volume/surface/transport work, unconditional optimisation failed. MMG remeshing has shipped: shared service, MCP tool and panel with real-pipeline screenshots and packaged-runtime verification. Conformal multi-body meshing and Gmsh mesh optimisation have shipped, each with probe-measured results and a decision. Manifold mesh booleans have shipped, and so have periodic face pairs; pre-mesh healing and the hex-dominant MDPA split were probed and rejected (see Non-goals), and the size callback works but nothing ships on it. Structured meshing per Part has shipped as `Part.meshStructured` with exact-count smoke coverage. Metric-driven adaptive remeshing has shipped as **Adapt to field** on remesh (scalar metric; the tensor metric was probed and not worth shipping). Hausdorff-bounded surface coarsening has shipped as the `autoDecimate` backend (mmgs; the earlier negative result was a mis-scaled `hausd`). Anisotropic 2-D boundary layers have shipped as `Part.meshBoundaryLayer` (the recorded blocker did not reproduce). Achieved rows are now measured from the generated nodes (`boundaryLayerMeasurement.ts`; generate result, panel Layer row and handoff manifest, with a shortfall warning), closing 2.22. View-driven mesh sizing has shipped as `MeshOptions.sizeField` (list-based `SP` view + `PostView` field, `bull.stp` worst deviation 3.3× down at 11.7× elements, Parts and physical groups survive, no view left behind). The octree hex-dominant engine shipped as `engine: "octree"` (3522 cells enclosing exactly 60 on `block.stp`, MDPA with all three cell classes). KaHIP-partitioned Kratos MDPA export has shipped as `MeshOptions.mdpaRanks` (`doc/gmsh-integration.md#partitioned-mdpa`: one file per rank, global ids, an interface-node SubModelPart; `bull.stp` at 4 ranks cuts 108 interface nodes against the space-filling curve's 297). Nothing was left in this wave until 2026-10-31, which re-opened it with [a volume behind the prism-layer shell](#volume-behind-prism-layers) (4.11) and [physics-calibrated size presets](#physics-calibrated-size-presets) (4.12) | Each probe filed with measured results and a decision |
+| Geometry probes | Decide which never-called OCCT capabilities become ops | B-rep repair probed and **failed** (no `ShapeFix_*` fixer clears a real finding; see Kernel-blocked) and left the list; the face-region split passed its probe, shipped as the `splitFace` op, and left the list; variable-radius fillets passed theirs and shipped as `FilletOp.radius2` (see `CLAUDE.md`'s Fillet/chamfer call shapes). Next (2026-10-31): the four route-around probes 3.14–3.17, each re-opening a Non-goal | Each probe filed with measured results and a decision |
 | Agent ergonomics | An agent can tell a retryable failure from a model error, and two writers cannot silently clobber each other | Done: OpenSCAD diagnostics (document-derived OpenSCAD text now reaches an agent only inside untrusted-text markers), coded MCP errors (a failure carries a code and `retryable`; an undeclared parameter is warned about) and the MCP revision guard (a stale `expectedRevision` is refused with `stale-revision`). Mark agent-made edits has shipped too. Next: the Upkeep items (1.1, 1.2) and the remaining Ready product work | An agent's change is visible and refusable |
 | Strategic | Remove the kernel ceiling | The self-built OCCT WASM probe (6.1) | The existing test suites pass unchanged against the new build |
 
@@ -306,6 +332,46 @@ These are outcome groupings, not release numbers. Independent small items can sh
 - **What is left (S):** the cross-repository check — open the exported `.mdpa` in VSCode-MDPA-Preview and confirm both SubModelParts populate. It needs that extension and is not exercised from this repository.
 - **Done when:** that check passes, and KKSS's tutorial links to the page.
 
+#### 2.26 Unit-aware document variables {#unit-aware-document-variables}
+
+*Area: Geometry, Parity. Effort: S–M.*
+
+- **Evidence today:** document variables (`src/editVariables.ts`, evaluated by `src/paramExpr.ts`) are plain numbers in the document's own length unit; `set_variables` and `read_sidecars` expose them headless. A value pasted from a drawing in inches, or an angle written in radians, is silently taken as millimetres or degrees. ElmerStudio's `core/units.py` (read at `b1be253`) shows a cheap, well-bounded design: `10[mm]`, `2[in]`, `5[deg]` bind a unit to the operand just before it, every value is reduced to SI, a deduced dimension (`Dim`, seven base exponents) is checked against what the field expects, and a mismatch **warns but is still applied** ("the SI value is used as it is") — it never rejects, so no existing document can stop loading.
+- **First useful increment (S):** a bracketed-unit suffix in `paramExpr.ts` limited to lengths and angles (`mm cm m in ft`, `deg rad`), converted into the document's declared unit (the same unit `scaleMeshOptionsForUnit` already reads) and into degrees for angle fields. Plain numbers keep today's meaning, so stored sidecars are byte-for-byte unchanged. The decimal-comma rule of [multilingual user interface](#multilingual-user-interface) applies first: a bracket never contains a comma.
+- **Then (S):** a dimension check per op field (length, angle, dimensionless count) reported as an Edits-panel warning and as a `warnings` entry on `apply_edit_ops`/`set_variables`, never as a refusal; `read_sidecars` returns each variable's `expr`, resolved value and deduced unit.
+- **Why now:** KKSS's geometry-parameter sweep drives these variables through `set_variables`; a unit-checked parameter table is what makes a swept row's value unambiguous in its provenance.
+- **Out of scope:** units on mesh sizes (they already follow the document unit), temperature offsets (`degC`), and any unit in the sidecar's stored numbers.
+- **Done when:** a variable `W = 2[in]` in a millimetre document resolves to 50.8 and drives an extrude; `W = 5[deg]` on a length field warns and still applies; a stored pre-change sidecar round-trips unchanged; MCP and the Edits panel report the same warning.
+
+#### 2.27 Rule-defined Part membership {#rule-defined-part-membership}
+
+*Area: Geometry, Meshing. Effort: M.*
+
+- **Evidence today:** a Part is an id bag (`face-N`, `edge-N`, …) carried across edits by `entityRebind.ts`/`rebindPartsAcrossOps`; an id the rebind cannot place is dropped with a note. That is the right shape for a hand-picked selection, but for the most common simulation selections — "every face on the plane x = 0", "the faces inside this box", "all cylindrical faces of radius 5" — the user's intent is a rule, and a parameter change (a longer plate, a moved hole) should *re-evaluate* the rule, not rebind its last answer. ElmerStudio's Box Selections (`core/geometry.py: _box_entities`, inside/intersects with a diagonal-relative tolerance, blank limits = unbounded, re-evaluated on every build and recorded per sweep run) and its scripting call `geo.select("boundary", xmax=0)` are the model.
+- **First useful increment (M):** an optional `rule` on a Part — `{kind: "box", min, max, mode: "inside"|"intersects"}`, `{kind: "plane", point, normal, tol}` and `{kind: "surfaceType", type, radius?}` — resolved host-side after every replay from the facts the host already computes (`collectAllEntitySignatures`, face bounding boxes, `faceSurfaceInfo`). Its resolved ids are written beside the rule so every existing consumer (meshing physical groups, BOM, layers, KKSS handoff) reads the same id list it reads today. A rule whose result changes posts a "Part X: 2 faces added, 1 lost" note.
+- **Then (S):** the Parts panel offers "Define by box/plane/type" from the current selection's extent; `set_part` takes `rule`; the handoff manifest records the rule beside the ids so a downstream mesh reader can say why a SubModelPart changed size.
+- **Out of scope:** expression predicates over arbitrary entity facts (the three rule kinds above cover the use cases seen), and rules on mesh sources (their ids are facets; mesh's formula seeds cover that side).
+- **Done when:** on the cantilever tutorial, `FixedEnd` defined as `plane x = −50` keeps exactly its end face after the beam is lengthened through a variable, an id-bag Part on the same face is reported as rebound, and the MDPA export of both is identical.
+
+#### 2.28 Parametric-curve profile {#parametric-curve-profile}
+
+*Area: Geometry. Effort: S–M.*
+
+- **Evidence today:** `addSpline` (approximating, endpoint-exact — this OCCT build binds no exact interpolator), `addPolyline`, `addSurfaceFromLines` and the profile ops exist, and `paramExpr.ts` already evaluates expressions over document variables. What is missing is a curve given as *functions*: a sinusoidal electrode, an airfoil thickness law, a cam. ElmerStudio offers exactly this as *Parametric Curve* + *Convert to Solid* and uses it for its wavy-anode verification case.
+- **First useful increment (S):** an `addParametricCurve` op — `{x, y, z?: expr in s, sMin, sMax, samples, plane?|planeId?, closed, as: "spline"|"polyline"}` — compiled at replay time into the existing `addSpline`/`addPolyline` (so its OCCT path is already verified), with `s` bound like a `repeat` index and document variables in scope.
+- **Then (S):** closing the curve with a straight segment and turning it into a face through `addSurfaceFromLines`, so it feeds `extrude`/`revolve` directly; an Edits-panel form and the command bar entry.
+- **Out of scope:** exact interpolation (kernel-bound) and 3D surfaces from two-parameter functions.
+- **Done when:** `x = s, y = 0.1*sin(2*pi*s)` on `s ∈ [0, 1]` extrudes into a solid whose volume matches the analytic integral within the spline's stated tolerance, and changing a variable re-evaluates the curve.
+
+#### 2.29 Transport-agnostic 3D-mouse input {#transport-agnostic-3d-mouse-input}
+
+*Area: Platform, Ecosystem. Effort: S.*
+
+- **Evidence today:** `src/spaceMouse.ts` reads a SpaceMouse through `node-hid`, required lazily, and relays motion to the webview. KKSS deliberately does not ship it, because `node-hid` would be its second native module (its Non-goals keep `node-pty` the only one). Electron exposes WebHID, so KKSS can read the device in a renderer with no native code — if the webview accepts motion from any host, not only from this extension's `node-hid` reader.
+- **First useful increment (S):** document and test the motion message the webview consumes as a public host→webview contract (axes, buttons, a dead-zone and sensitivity owned by the webview), with the `node-hid` reader as one producer of it.
+- **Out of scope:** WebHID inside VS Code's webview (VS Code's webview permission policy is not this project's), and any KKSS code — the WebHID reader is KKSS's half.
+- **Done when:** a test posts synthetic motion to the real webview bundle and the camera moves identically to a `node-hid`-sourced event, and KKSS's roadmap item can cite the contract.
+
 ### Probe-gated — establish feasibility before estimating
 
 *Admission: a specific hypothesis with a discriminating experiment. Each probe below is a small, self-contained piece of work with a firm **S** estimate of its own; the phases under "If admitted" are what ships if the probe passes, tagged provisionally. A method that accepts arguments but changes nothing is a failed probe.*
@@ -337,6 +403,10 @@ Probes are grouped by area. Each group has its own order table. The order is the
 | 3.8 | Small-detail edge suppression | screenshot pipeline | Webview-side and independent; the risk is judgement, not bindings |
 | 3.10 | Loft takeoff by resampled intermediates | — | The measurement design is the hard part |
 | 3.11 | VRML export | — | Cheap but low value |
+| 3.14 | Sampled B-rep self-intersection | — | Re-opens a Kernel-blocked entry by routing around it; facts only |
+| 3.15 | B-rep repair by refit | full meshio++ artifact | Re-opens the ShapeFix entry; the decision gate is a real fixture |
+| 3.16 | 3D text through OpenSCAD | — | Re-opens the font entry; first find out whether the WASM has a font |
+| 3.17 | OpenSCAD library staging | — | Re-opens part generators as sourced libraries, not kernel primitives |
 
 None of these depends on another's result.
 
@@ -410,7 +480,117 @@ None of these depends on another's result.
   - **Fail:** recorded.
 - **If admitted (S):** a VRML export target for B-rep sources. Low value: VRML is legacy, and glTF already covers display exchange.
 
+##### 3.14 Sampled B-rep self-intersection {#sampled-brep-self-intersection}
+
+*Area: Geometry.*
+
+- **Hypothesis:** a self-intersecting B-rep is detectable, and locatable to its faces, from a fine tessellation, without `BRepExtrema_SelfIntersection` (dead: its element filter is unbound — see Kernel-blocked).
+- **Evidence today:**
+  - meshio++ 17.23.0's `checkConformity` reports partial overlaps and unwelded facets of a triangle set, and `check_mesh_conformity` already ships on it for FE meshes.
+  - Manifold (shipped for mesh booleans) reports a non-manifold or self-intersecting input through its status.
+  - The tessellation keeps `face-N` provenance per triangle, so a triangle pair can be named as a face pair.
+- **Probe (S):**
+  1. Build the probe fixture the dead-API probe could not test (a box with one face pushed through the opposite face) plus `bull.stp`, `daratech.stp` and `as1_pe.stp` as negatives.
+  2. Tessellate at the viewer's chord tolerance and at 1/4 of it; run `checkConformity` on each, map intersecting triangle pairs back to face pairs, and drop pairs that share an edge in the B-rep topology.
+  3. Record found face pairs, false positives on the negatives and timing.
+- **Decision gate:** *pass* — the positive fixture reports its face pair at both tolerances and the negatives report none. *Fail* — a negative reports a pair at any tolerance → recorded beside the Kernel-blocked entry.
+- **If admitted (S):** a `selfIntersection` fact in `check_brep_health`, labelled `sampled` with the tolerance used (never "proven free of self-intersection"), and a Mesh Health row.
+- **Out of scope:** exact intersection curves, and any repair.
+
+##### 3.15 B-rep repair by refit {#brep-repair-by-refit}
+
+*Area: Geometry.*
+
+- **Hypothesis:** a dirty STEP that `ShapeFix_*` cannot clear (`daratech.stp`, `piston`) can be replaced by a valid solid through tessellate → heal the triangle surface → fit analytic faces back with meshio++ `fitCad`, which sews and checks with the full artifact's OpenCASCADE.
+- **Evidence today:**
+  - `fit_mesh_to_cad` ships the last step (planes, cylinders, cones, spheres, tori, freeform B-splines; `faceDeviation` measures the result against the skin), and `repair_mesh` (fTetWild) plus MMG ship the healing step.
+  - The ShapeFix probe failed on exactly these fixtures, with its findings recorded (see Kernel-blocked), so the gate has a ready-made baseline.
+- **Probe (S):**
+  1. `daratech.stp` and `piston`: tessellate, heal with `repair_mesh`, fit with `fit_mesh_to_cad`, and run `check_brep_health` on the result.
+  2. Record findings before/after, `volumeRatio`, `maxDeviation`/skin deviation, face count, and which faces came back freeform rather than analytic.
+- **Decision gate:** *pass* — `check_brep_health` clears the recorded findings on at least one fixture with the volume within 0.5 % and no freeform face where the source had an analytic one. *Partial* — valid but with freeform substitutions → admitted only as an explicit "rebuild solid from surface" export, never as "repair". *Fail* → recorded beside the ShapeFix entry.
+- **If admitted (S–M):** a Mesh Health / B-rep Health action "Rebuild valid solid…", which writes a **new** STEP and reports the deviation; the source is never overwritten (the No-silent-CAD-source-writes invariant).
+- **Out of scope:** preserving the source's face ids, names or colours.
+
+##### 3.16 3D text through OpenSCAD {#text-through-openscad}
+
+*Area: Geometry.*
+
+- **Hypothesis:** the bundled OpenSCAD WASM's `text()` produces glyph outlines that the `.csg` importer turns into ordinary profiles, giving real 3D text without OCCT's dead `Font_*` family.
+- **Evidence today:** `.scad`/`.csg` import ships WASM-first; SVG-outline text already ships through `svgImport.ts` and `addSurfaceFromLines`. Unknown: whether `@loumalouomega/openscad-wasm` bundles any font (not checked for this entry), and whether its MEMFS staging can mount one.
+- **Probe (S):**
+  1. Evaluate `linear_extrude(2) text("KKSS", size=10);` through `convertScadViaWasm` and record whether a font resolves, which one, and whether it declines with `ScadWasmFallbackError`.
+  2. If no font is bundled, stage one openly licensed font (e.g. Liberation, OFL/GPL-compatible) through the same MEMFS path as library files, and repeat.
+  3. Import the `.csg`, check that counters (the hole in "A") survive as holed faces, and record the triangle count.
+- **Decision gate:** *pass* — text with counters imports as a valid solid. *Fail* — no font can be mounted → recorded beside the Glyph entry, which keeps pointing at SVG outlines.
+- **If admitted (S):** an `addText` macro (not a kernel op) that writes the `.scad` snippet, plus the font's licence notice beside the other notices.
+- **Out of scope:** system-font discovery and text on curved paths.
+
+##### 3.17 OpenSCAD library staging {#openscad-library-staging}
+
+*Area: Geometry, Ecosystem.*
+
+- **Hypothesis:** parametric part generators (gears, threads, springs) can be *sourced* rather than authored by staging a user-chosen OpenSCAD library such as BOSL2 into the WASM's MEMFS, if the 20-file / 1 MB staging caps are lifted for a declared library folder.
+- **Evidence today:** the Rejected-scope entry on part generators rejects them as kernel geometry and keeps macros; the OpenSCAD WASM ships, and `CLAUDE.md` records that its staging caps decline large libraries, after which the binary fallback is used — so the capability exists today only for users with `openscad` installed.
+- **Probe (S):**
+  1. With `cadPreview.openscadLibraryPaths` pointing at a BOSL2 checkout, measure what `use <BOSL2/std.scad>` + one gear call stages (file count, bytes) and the WASM evaluation time.
+  2. Try a lazy loader (stage on `use`/`include` resolution) against a raised cap.
+- **Decision gate:** *pass* — a BOSL2 gear evaluates through WASM within the kernel watchdog with a bounded staging cost. *Fail* — recorded; the binary stays the route for large libraries.
+- **If admitted (S):** a cap that applies per declared library folder, reported in diagnostics; the Rejected-scope entry gains the pointer.
+- **Out of scope:** bundling any library in the VSIX.
+
+#### 4. Meshing probes {#meshing-probes}
+
+| ID | Item | Needs | Why here |
+| --- | --- | --- | --- |
+| 4.11 | A volume behind the prism-layer shell | — | Re-opens 3D boundary layers (the gmsh-wasm checklist's first row) by a route that needs no new Gmsh build |
+| 4.12 | Physics-calibrated size presets | mesh problemtype handoff | Decides whether a physics-derived size is worth a preset; cross-repo |
+
+Section 4 was emptied and removed when its last probe closed; it is recreated here for the two items below, keeping the highest ID used (4.10) behind them.
+
+##### 4.11 A volume behind the prism-layer shell {#volume-behind-prism-layers}
+
+*Area: Meshing.*
+
+- **Hypothesis:** a conformal 3D boundary-layer mesh (prisms on the wall, tetrahedra inside) can be produced without a new gmsh-wasm build, by meshing the volume enclosed by the inner cap of the shipped meshio++ prism layers with Gmsh's discrete-surface volume meshing, which keeps the given surface triangles as the boundary, and merging the two along that cap.
+- **Evidence today:**
+  - `MeshOptions.prismLayers` / `grow_prism_layers` (meshio++ 17.23.0, `meshcad` engine) ship the layer **shell** only; the meshio++ 17.23 follow-up in the [meshing library review](#meshing-library-review) records "Not done: meshing the interior behind the layers", because a tet fill needs a conforming inner-cap tetrahedralizer and meshio++ `tetrahedralize` has no Netgen in either artifact (`boundaryPreserved` is false).
+  - The gmsh-wasm checklist's first row asks for an OCC-side `extrudeBoundaryLayer` and is unchanged on 0.4.0.
+  - ElmerStudio documents the same gap ("boundary layers are meshed in 2D only") — 3D layers are the commonly missing piece, not a niche.
+- **Probe (S):**
+  1. `block.stp` and `bull.stp`: grow 3 layers, extract the inner cap as a closed triangle surface, mesh its interior with Gmsh (`classifySurfaces` + `createGeometry` + `generate(3)`) with surface remeshing off; as a control, record how far meshio++ `tetrahedralize` moves the cap (its `hausdorffToSurface`).
+  2. Check that the cap nodes coincide (zero hanging nodes via `check_mesh_conformity`), that prism + tet volumes sum to the solid's volume within 1e-6 relative, and that Parts on the wall survive as Condition groups.
+  3. Record minimum quality of both cell classes and timing.
+- **Decision gate:** *pass* — one route gives a conformal, volume-exact mesh on both fixtures. *Fail* — recorded under the gmsh-wasm checklist row, which stays the only route.
+- **If admitted (M):** `prismLayers` on the Gmsh engine's 3D path through the chosen route, MDPA/MED export of mixed prism + tet blocks, and the panel's Layer row for 3D.
+- **Out of scope:** hexahedral cores and layer collapse at sharp concave corners beyond what meshio++ already reports.
+
+##### 4.12 Physics-calibrated size presets {#physics-calibrated-size-presets}
+
+*Area: Meshing, Ecosystem.*
+
+- **Hypothesis:** a small set of named size presets derived from the physics the mesh is for — a wavelength rule (h ≤ λ/5 at the highest frequency), a wall rule (first size and growth for a target y⁺), and a model-relative ladder (extremely fine … extremely coarse) — gives better first meshes than one `size`, and can be handed in from the case rather than typed.
+- **Evidence today:**
+  - ElmerStudio's physics-controlled mesh (`core/meshing.py: SIZE_PRESETS`, nine levels as fractions of the largest side; flow halves sizes; acoustics uses c_min/(5·f_max)) and its maximum growth rate (`grow_from`, h(d) = h + (g−1)·d) are the model.
+  - Here, `estimate_mesh_budget`, `Part.meshGrading` (a distance band), `meshcadGrading` (meshcad engine only) and saved mesh presets exist; nothing derives a size from physics, and the Gmsh engine has no growth-rate limit.
+  - VSCode-MDPA-Preview already estimates time steps from the mesh and the case; the reverse direction (a size from the case) belongs to its problemtypes, and its roadmap tracks that half.
+- **Probe (S):**
+  1. On the cantilever and the wind-tunnel tutorial geometries, compare the ladder's "normal" level against the tutorials' hand-picked sizes (element count, minimum quality).
+  2. Implement h(d) = h + (g−1)·d as a Gmsh `MathEval` over a `Distance` field from all walls and measure whether it changes element count and quality against the shipped `meshGrading` band on `bull.stp`.
+  3. Define the handoff field (`recommendedSize`, `rule`, `source`) in the handoff manifest's v1 tolerance rules and check it round-trips.
+- **Decision gate:** *pass* — the ladder matches or beats the hand-picked sizes and the growth field measurably changes the mesh. *Fail* — recorded; presets stay user-saved.
+- **If admitted (M):** a "Size from physics…" preset source in the FE Mesh panel reading a `recommendedSize` the embedder (KKSS) hands in, the ladder as starter presets, `growthRate` on the Gmsh engine, and graded (non-uniform) `meshStructured` divisions.
+- **Out of scope:** any automatic re-meshing loop; adaptation stays explicit (Adapt to field).
+
 #### 5. Platform probes {#platform-probes}
+
+| ID | Item | Needs | Why here |
+| --- | --- | --- | --- |
+| 5.1 | Per-document kernel isolation | — | Memory is the only unknown |
+| 5.2 | Multilingual user interface | CI with VS Code download | Partial; step 2 is the remaining gate |
+| 5.3 | Inline 3D preview as an MCP App resource | two MCP-App hosts | Host support is the unknown |
+| 5.4 | Part rename and delete events for embedders | — | Cross-repo; KKSS owns the report |
+
 
 ##### 5.1 Per-document kernel isolation {#per-document-kernel-isolation}
 
@@ -488,6 +668,23 @@ None of these depends on another's result.
   - **Fail:** no host renders it, or the SDK cannot declare it → recorded; PNGs remain the answer.
 - **If admitted (M):** a `preview` resource offered beside `render_snapshot` (not replacing it — the PNGs are what an agent can *look at*), with a size cap that falls back to the images.
 - **Out of scope:** reporting the user's camera or selection back to the agent through the page (the shipped Copy reference is the cheap version).
+
+##### 5.4 Part rename and delete events for embedders {#part-rename-and-delete-events}
+
+*Area: Platform, Ecosystem.*
+
+- **Hypothesis:** an embedder can keep downstream references to Parts (a solver case's boundary conditions, saved monitors, sweep parameters) coherent if the host announces Part renames, deletions and membership changes as explicit events with stable Part ids, rather than leaving the embedder to diff exports.
+- **Evidence today:**
+  - KKSS keys a mesh case's boundary-condition assignments by SubModelPart path, i.e. by the Part *name* exported here; renaming a Part or deleting one silently orphans those assignments on the next export.
+  - ElmerStudio's dependency graph (`core/deps.py`: "Used By" links, a warning before deleting a node in use, lost entities flagged) shows the user-facing half; KKSS's roadmap owns that report.
+  - The handoff manifest already carries Part names and the source revision, so the receiving side can detect a change, but not distinguish a rename from a delete plus an add.
+- **Probe (S):**
+  1. Decide whether Parts already carry a stable internal id independent of their name (`partsSidecar.ts`); if not, define one and its migration rule for existing sidecars.
+  2. Add a host-side `partsChanged {renamed: [{id, from, to}], deleted, added, membershipChanged}` event and record it in the handoff manifest's v1 tolerance rules.
+  3. Check with KKSS's carry-over report that a rename keeps every assignment and a delete reports each orphan by name.
+- **Decision gate:** *pass* — rename and delete are distinguishable end to end. *Fail* — recorded; the embedder falls back to name diffing.
+- **If admitted (S):** the event, the manifest field, and `get_state` reporting Part ids.
+- **Out of scope:** any knowledge of the embedder's case format here.
 
 ### 6. Strategic — multi-phase bets {#strategic-—-multi-phase-bets}
 
@@ -580,8 +777,8 @@ Three groups, three different revival rules. Each says what would change our min
 
   Recorded by the [kernel capability review](#kernel-capability-review).
 
-- **`ShapeFix_Face` / `ShapeFix_Wire` / `ShapeFix_FixSmallFace` / `ShapeFix_FixSmallSolid` (B-rep repair).** Probed live (opencascade.js 1.1.1, 2026-10-25, `scripts/probe/examples/occt-shapefix.ts`). Call shapes: `ShapeFix_Face_2(face)` → `Perform()` → `Face()`; `ShapeFix_Wire_2(wire, face, prec)` → `Perform()`; `ShapeFix_FixSmallFace` and `ShapeFix_FixSmallSolid` have **no `_N` constructors, only the plain `new`** (`FixSmallFace`: `Init(shape)`/`Perform()`/`FixShape()`; `FixSmallSolid.Remove` takes 2 arguments). Results: on `daratech.stp` all five faces `check_brep_health` flags (`face-13/54/58/70/71`, `UnorientableShape`) stay invalid — `ShapeFix_Face.Perform()` returns `false` on each, `ShapeFix_Wire` reports nothing fixed, volume unchanged; fixing every face changes one face and still leaves five bad. On `piston.stp` `ShapeFix_FixSmallFace` leaves the 48 open-boundary edges and the face count untouched (`ShapeFix_Face` likewise). Control `bull.stp` is unchanged by every fixer (volume equal to 1e-8 relative, `FixSmallFace` BREP text identical), so the fixers are safe but inert here. `FixSmallSolid` was only constructed (no fixture contains a small solid). **Revive only** with a fixture where a fixer demonstrably clears a `check_brep_health` finding, or a build that binds `ShapeFix_Shell`/`ShapeFix_Shape`; `check_brep_health` stays facts-only.
-- **`BRepExtrema_SelfIntersection` (face self-intersection).** Probed live (opencascade.js 1.1.1, 2026-10-25, `scripts/probe/examples/occt-brep-health-facts.ts`): the prototype is empty and both `_1(tol)` and `_2(shape, tol)` constructors throw `Cannot construct … due to unbound types: 25BRepExtrema_ElementFilter`, so a box with a face pushed through the opposite face cannot be tested. `check_brep_health` therefore reports no self-intersection fact. **Revive only** with a build that binds `BRepExtrema_ElementFilter` (the self-built OCCT probe re-checks it).
+- **`ShapeFix_Face` / `ShapeFix_Wire` / `ShapeFix_FixSmallFace` / `ShapeFix_FixSmallSolid` (B-rep repair).** Probed live (opencascade.js 1.1.1, 2026-10-25, `scripts/probe/examples/occt-shapefix.ts`). Call shapes: `ShapeFix_Face_2(face)` → `Perform()` → `Face()`; `ShapeFix_Wire_2(wire, face, prec)` → `Perform()`; `ShapeFix_FixSmallFace` and `ShapeFix_FixSmallSolid` have **no `_N` constructors, only the plain `new`** (`FixSmallFace`: `Init(shape)`/`Perform()`/`FixShape()`; `FixSmallSolid.Remove` takes 2 arguments). Results: on `daratech.stp` all five faces `check_brep_health` flags (`face-13/54/58/70/71`, `UnorientableShape`) stay invalid — `ShapeFix_Face.Perform()` returns `false` on each, `ShapeFix_Wire` reports nothing fixed, volume unchanged; fixing every face changes one face and still leaves five bad. On `piston.stp` `ShapeFix_FixSmallFace` leaves the 48 open-boundary edges and the face count untouched (`ShapeFix_Face` likewise). Control `bull.stp` is unchanged by every fixer (volume equal to 1e-8 relative, `FixSmallFace` BREP text identical), so the fixers are safe but inert here. `FixSmallSolid` was only constructed (no fixture contains a small solid). **Revive only** with a fixture where a fixer demonstrably clears a `check_brep_health` finding, or a build that binds `ShapeFix_Shell`/`ShapeFix_Shape`; `check_brep_health` stays facts-only. **Re-opened 2026-10-31 as a probe that routes around these fixers rather than reviving them:** [B-rep repair by refit](#brep-repair-by-refit) (3.15).
+- **`BRepExtrema_SelfIntersection` (face self-intersection).** Probed live (opencascade.js 1.1.1, 2026-10-25, `scripts/probe/examples/occt-brep-health-facts.ts`): the prototype is empty and both `_1(tol)` and `_2(shape, tol)` constructors throw `Cannot construct … due to unbound types: 25BRepExtrema_ElementFilter`, so a box with a face pushed through the opposite face cannot be tested. `check_brep_health` therefore reports no self-intersection fact. **Revive only** with a build that binds `BRepExtrema_ElementFilter` (the self-built OCCT probe re-checks it). **Re-opened 2026-10-31 as a sampled, triangle-based fact:** [Sampled B-rep self-intersection](#sampled-brep-self-intersection) (3.14); this entry stays the record of the dead exact API.
 - **Hidden-line removal through OCCT's own `HLRBRep_*` family.** Every class is red in this build: `HLRBRep_Algo`, `HLRBRep_PolyAlgo`, `HLRBRep_HLRToShape`, `HLRBRep_PolyHLRToShape`. `HLRAlgo_Projector` is green but is a low-level internal only reachable through them.
 
   **The narrow survivor, `HLRAppli_ReflectLines`, was probed and is not the way in either — and it is this file's canonical example of green-but-useless.** The binding genuinely works: the unsuffixed constructor takes a `TopoDS_Shape`, and `SetAxes`/`Perform`/`GetResult` are all bound and functional (249 ms on `bull.stp`, returning a non-null compound this codebase's own `enumerateEdges` reads as 25 edges). It was rejected on the *drawing*, which is only visible by looking at it: rendered side by side against a tessellation-derived silhouette of the same view, `GetResult()` produced the outer boundary and a few fragments while missing the part's circular holes and interior cutout entirely. `GetResult()` returns reflect lines only; sharp feature edges live behind `GetCompoundOf3dEdges(type, …)`, whose `type` argument is an `HLRBRep_TypeOfResultingEdge` — from the entirely-red family above — so calling it throws. The one filter that would make the kernel path competitive is unreachable.
@@ -590,7 +787,7 @@ Three groups, three different revival rules. Each says what would change our min
 
   **Correction, recorded because this entry was stale for a while:** it used to say dimensions were also out of scope. They are not. `exportTechnicalDrawingTool` is a one-line wrapper over `exportSvgSilhouetteTool`, which reads `<model>.annotations.json` unconditionally, projects every pinned measurement through the export's own view basis, and returns `dimensionCount` — in SVG *and* on DXF's own `DIMENSIONS` layer, tolerance bands included. **A second correction, since closed in full:** this entry also used to name multi-view sheet layout as what remained unshipped. That has since closed too — `export_drawing_sheet`/File ▸ Export Drawing Sheet… place several views on one sheet at a shared scale with a title block, first- or third-angle projection (see `CLAUDE.md`'s "Multi-view drawing sheets"). Nothing is currently tracked as unshipped from this Non-goal.
 
-- **Glyph → `TopoDS_Shape` via OCCT fonts.** Every `Font_*` class is red: `Font_BRepFont`, `Font_BRepTextBuilder`, `Font_FTFont`, `Font_FTLibrary`, `Font_FontMgr`, `Font_SystemFont`, `Font_TextFormatter`. There is no path from a font file to a shape inside this build.
+- **Glyph → `TopoDS_Shape` via OCCT fonts.** Every `Font_*` class is red: `Font_BRepFont`, `Font_BRepTextBuilder`, `Font_FTFont`, `Font_FTLibrary`, `Font_FontMgr`, `Font_SystemFont`, `Font_TextFormatter`. There is no path from a font file to a shape inside this build. **Re-opened 2026-10-31 by a different route:** [3D text through OpenSCAD](#text-through-openscad) (3.16), which needs a font inside the OpenSCAD WASM rather than OCCT's `Font_*` family.
 
   **Narrowed twice, and this entry used to overstate itself.** It was titled "3D text, engraving, and embossing" — but engraving and embossing **ship**, as `wrap`'s `emboss`/`engrave` variants, and have nothing to do with fonts. And the text half is not kernel-blocked either, only *font*-blocked: outlines that arrive as SVG paths become ordinary sketch geometry — "3D text via outline import" (the ready-product-work item this entry used to point at) has since closed in full: `svgImport.ts` now composes ancestor `transform`s (so a real "convert text to outlines" export, typically wrapped in `<g transform="...">` groups, lands correctly), `addSurfaceFromLines` accepts several disjoint loops forming one outer boundary plus its holes (a letter with a counter, e.g. an "O", builds as one holed face), `wrap` develops a holed profile onto a cylinder/cone (each hole cut out of the shell), and `import_svg` exposes the whole pipeline headlessly. Nothing is currently tracked as unshipped from this Non-goal.
 
@@ -605,7 +802,7 @@ Three groups, three different revival rules. Each says what would change our min
 | Priority | What is required | Why we need it | Gate that a new build must pass |
 | --- | --- | --- | --- |
 | 1 | **A usable 3D boundary layer on OCC-imported solids.** Either a `model.occ` twin of `geo.extrudeBoundaryLayer` (the typings have none), or confirmation that the `geo` version accepts an OCC-imported surface and yields prismatic layers that mesh with the volume. Today it accepts the surface and returns entities, but nothing shows the volume mesh uses them. | 3-D boundary layers: the shipped 2-D `Part.meshBoundaryLayer` does not extend to 3-D without it (a 3-D generate ignores the layer with a warning). | On `block.stp`, extruding one face yields wedge/hex layers of the requested heights, `generate(3)` produces a conformal tet + prism mesh with no volume loss (sum equals 60), and the Part physical groups survive. |
-| 2 | **Documented, closing type-140 geometry.** `getElementProperties(140)` throws, so the node layout of the hex-dominant trihedron connector cannot be confirmed; no reading of the 4-node cells closes the model volume (60 → 60.73 / 63.4). | Lets [hex-dominant Kratos MDPA export](#kernel-blocked) revive, and lets `Recombine3DAll` meshes be exported at all. | `getElementProperties(140)` returns a name, dimension and node count; on `block.stp` (`Algorithm3D` 9, `Recombine3DAll`, size 1) tets + hexes + 140-cells sum to the model volume within 1e-6 with consistent orientation. |
+| 2 | **Documented, closing type-140 geometry.** `getElementProperties(140)` throws, so the node layout of the hex-dominant trihedron connector cannot be confirmed; no reading of the 4-node cells closes the model volume (60 → 60.73 / 63.4). | Lets [hex-dominant Kratos MDPA export](#rejected-scope) revive, and lets `Recombine3DAll` meshes be exported at all. | `getElementProperties(140)` returns a name, dimension and node count; on `block.stp` (`Algorithm3D` 9, `Recombine3DAll`, size 1) tets + hexes + 140-cells sum to the model volume within 1e-6 with consistent orientation. |
 | 3 | **`occ.healShapes` that does not delete a volume.** On `daratech.stp` it removes the only volume (1 → 0) instead of repairing the "segment and facet intersect" defect that stops 3D meshing. | A cheap pre-mesh repair for dirty STEP, in place of routing everything through fTetWild. | `daratech.stp` after `removeAllDuplicates` + `healShapes` still has 1 volume and meshes to its true volume; `block.stp` keeps 6 faces and volume 60. |
 | 4 | **An `optimize("Relocate3D")` that changes the mesh.** The call is accepted and is bit-identical to no optimisation (minSICN 0.027591537627954913 on `bull.stp` both runs), while Netgen and HighOrderElastic move it. Likely a stubbed or unreachable pass in the build. | A third optimisation mode for the `optimize` enum. | `bull.stp` at the smoke-test size: worst-element minSICN and mean both increase, on two runs. |
 | 5 | **`mesh.setCompound` that raises minimum quality.** It is accepted but lowered minSICN on `bull.stp` (0.0269 → 0.0104). Probably Gmsh behaviour rather than the build; reproduce natively first. | A "merge smooth patches" meshing option. | A fixture where compounding raises minimum quality with Parts intact (the `bull.stp` harness in `gmsh-section4.ts`). |
@@ -624,7 +821,7 @@ Three groups, three different revival rules. Each says what would change our min
 
 **Re-run on 0.4.0, 2026-10-19** (`Packaged by: gmsh-wasm-0.4.0 (gmsh-commit 29726e7…)` — the same Gmsh commit as 0.3.0, so a changed Gmsh behaviour was not expected):
 
-- **Boundary layers** — flipped, but not by the build: 0.3.0 and 0.4.0 give identical results, and both compose a layer with a `Distance`+`Threshold`+`Min` background in either call order (the shipped `Part.meshBoundaryLayer`). Not shipped: 3-D layers (row 1 above).
+- **Boundary layers** — flipped, but not by the build: 0.3.0 and 0.4.0 give identical results, and both compose a layer with a `Distance`+`Threshold`+`Min` background in either call order (the shipped `Part.meshBoundaryLayer`). Not shipped: 3-D layers (row 1 above). Re-opened 2026-10-31 by a route that needs no new build: [A volume behind the prism-layer shell](#volume-behind-prism-layers) (4.11).
 - **Type 140** — unchanged: `getElementProperties(140)` still throws, and a hex-dominant `block.stp` still yields types `[4, 5, 140]`.
 - **`healShapes`** — unchanged: `block.stp` keeps 6 faces and volume 60, `daratech.stp` still goes 1 volume → 0 (175 faces unchanged) and "meshes" to 0 tets.
 - **`Relocate3D`** — unchanged: on `bull.stp` (diagonal / 15, Algorithm3D 1) the worst-element minSICN is bit-identical before and after (0.010410970049001995, two runs, mean +0.0019) while the `Netgen` control moves it (min 0.0398, mean 0.7553).
@@ -649,7 +846,7 @@ Three groups, three different revival rules. Each says what would change our min
 
 - **Parametric part generators as kernel primitives (involute gears, thread forms, springs)** — rejected as *kernel geometry*. Standard parts are something this tool should mostly *source*, not author: `search_standard_parts`/`download_standard_part` fetch real, verified geometry from step.parts as ordinary STEP files the existing pipeline opens, and the interactive sidebar does the same. Authoring an involute tooth-flank generator in `occtOperations.ts` is modeling-application scope.
 
-  **What survived the reframing:** the same shapes as *macros* — closed as the "bundled starter macro library" item (`spring`, `bolt-circle-flange`, `hex-bolt` in `macros/starter-library.json`, served when `libraryPath` is omitted). `addHelix` + `sweep` + `repeat` loops + degree trig already express a spring and a thread profile with no new kernel code — the gap was data and a path resolver, not geometry, and step.parts will not hand you a spring at *your* wire diameter anyway.
+  **What survived the reframing:** the same shapes as *macros* — closed as the "bundled starter macro library" item (`spring`, `bolt-circle-flange`, `hex-bolt` in `macros/starter-library.json`, served when `libraryPath` is omitted). `addHelix` + `sweep` + `repeat` loops + degree trig already express a spring and a thread profile with no new kernel code — the gap was data and a path resolver, not geometry, and step.parts will not hand you a spring at *your* wire diameter anyway. **Re-opened 2026-10-31 as sourced libraries, not kernel primitives:** [OpenSCAD library staging](#openscad-library-staging) (3.17).
 
 - **Other meshing kernels: TetGen, CGAL meshers, ParMmg, standalone Netgen** — rejected, recorded so they are not proposed again. The [meshing library review](#meshing-library-review) covers what is proposed instead.
   - **TetGen** is AGPL-3.0: a stronger copyleft than anything bundled so far. It adds nothing fTetWild (robust tets from dirty input) and Gmsh (constrained Delaunay, which already uses tetgen-derived boundary recovery) do not already cover.
@@ -665,7 +862,7 @@ Three groups, three different revival rules. Each says what would change our min
 
 - **Reimplementing the OpenSCAD language** — rejected, recorded from the [agent-CAD comparison](#agent-cad-comparison). ReOpenSCAD rewrote the lexer, parser, evaluator and CSG kernel from scratch to avoid OpenSCAD's code entirely. The cost is fidelity: no `import()`, `surface()` or `roof()`, no user library paths (so no BOSL2), one built-in stroke font, and a sampled fallback mesher with its own "will not match OpenSCAD" warning. This extension evaluates `.scad` through the real OpenSCAD engine — the bundled WASM port first, the installed `openscad` binary as the fallback — so the install is optional and the engine is not reimplemented. **Revive only** if both the WASM path and the binary path are ruled out.
 
-- **Hosted, shared workspaces and an HTTP MCP transport** — rejected. ReOpenSCAD serves its MCP over HTTP, with the workspace URL itself granting edit access. This extension's MCP server is a local stdio process that reads and writes files the user already owns; a network listener would be a new attack surface with nothing local to gain. What survives: registering the server with VS Code (shipped — the MCP server-definition provider and the **Connect an agent…** snippets) and copyable client snippets. **Revive only** for a concrete embedding request that cannot spawn a process (for example, a KKSS deployment that runs the server remotely), with authentication designed in from the start.
+- **Hosted, shared workspaces and an HTTP MCP transport** — rejected. ReOpenSCAD serves its MCP over HTTP, with the workspace URL itself granting edit access. This extension's MCP server is a local stdio process that reads and writes files the user already owns; a network listener would be a new attack surface with nothing local to gain. What survives: registering the server with VS Code (shipped — the MCP server-definition provider and the **Connect an agent…** snippets) and copyable client snippets. **Revive only** for a concrete embedding request that cannot spawn a process (for example, a KKSS deployment that runs the server remotely), with authentication designed in from the start. **Status 2026-10-31:** the embedding case this entry anticipated (a KKSS deployment that cannot spawn the server locally) is served on the KKSS side — its bearer-token, Host-checked HTTP meta server re-exposes these tools over loopback — so nothing is owed here and the rejection stands.
 
 - **Slicing, printer hand-off, supplier ordering and robot-description export** — rejected. text-to-cad ships skills that slice with OrcaSlicer, open Bambu Studio, preflight a SendCutSend order and write URDF/SDF. These are manufacturing and robotics execution, outside a tool for previewing, inspecting and preparing models. What survives is the fact-only analysis these skills start from: the printability facts report (shipped as `check_printability` and the Advanced ▸ Analysis **Printability** panel) and draft and undercut analysis (shipped as `check_draft` and the **Draft** panel). **Revive only** if a downstream tool needs a file format this extension cannot already export (3MF is tracked separately).
 
