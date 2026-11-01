@@ -8,6 +8,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/); thi
 
 ### Added
 
+- The `"spacemouse"` host→webview message is now a documented, producer-agnostic contract (axes, dead-zone, buttons) and its payload is sanitised: a malformed message from a foreign producer is dropped instead of throwing in the handler.
 - Step through the entities under the cursor: when a view ray crosses several faces/edges/solids the status line shows `k of n under the cursor`, **↑/↓** (or **+/−**) step front to back, and the next click picks the stepped entity.
 - Bracketed units in parametric expressions: `2[in]`, `10[mm]`, `1.5[ft]`, `5[deg]`, `0.5[rad]` (`mm cm m in ft`, `deg rad`) convert to the pipeline's millimetres / degrees, so a value pasted from an inch drawing no longer reads as millimetres. Plain numbers keep their meaning and stored sidecars are unchanged; an unknown unit is a specific error.
 

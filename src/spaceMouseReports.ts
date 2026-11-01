@@ -145,3 +145,24 @@ export function motionToVelocity(
     orbitPol: channel(m.rx, deadzone, max),
   };
 }
+
+/**
+ * Tolerance gate for the host→webview `"spacemouse"` message, which is a public
+ * contract any producer may speak (this extension's `node-hid` reader, or an
+ * embedder reading the device over WebHID). A missing or non-finite axis reads
+ * as rest (0) — it must never throw inside the message handler or move the
+ * camera by NaN — and a payload with no motion object at all is dropped.
+ * `buttons` is kept only as a non-negative integer bitmask.
+ */
+export function sanitizeSpaceMouseMessage(
+  motion: unknown,
+  buttons: unknown
+): { motion: SpaceMouseMotion; buttons: number | undefined } | null {
+  if (!motion || typeof motion !== "object" || Array.isArray(motion)) return null;
+  const m = motion as Record<string, unknown>;
+  const axis = (v: unknown): number => (typeof v === "number" && Number.isFinite(v) ? v : 0);
+  return {
+    motion: { tx: axis(m.tx), ty: axis(m.ty), tz: axis(m.tz), rx: axis(m.rx), ry: axis(m.ry), rz: axis(m.rz) },
+    buttons: typeof buttons === "number" && Number.isInteger(buttons) && buttons >= 0 ? buttons : undefined,
+  };
+}

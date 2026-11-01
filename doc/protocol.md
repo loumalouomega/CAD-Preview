@@ -817,6 +817,8 @@ SpaceMouse 6DOF motion event (closed roadmap item), pushed by the host at HID re
 { "type": "spacemouse", "motion": { "tx": 120, "ty": 0, "tz": -40, "rx": 0, "ry": 60, "rz": 0 } }
 ```
 
+**Producer-agnostic contract.** The message is public: this extension's `node-hid` reader (`src/spaceMouse.ts`) is one producer, and an embedder may post the same message from any other transport (for example WebHID in its own renderer) and get identical camera behaviour, because the dead-zone (raw 8), full deflection (±350), per-second speeds and the delta-time clamp all live in the webview (`spaceMouseReports.ts`, `webview/spaceMouseDispatch.ts`). Axes: `tx` pans right, `ty` pans up, `tz` zooms in (positive pushes into the scene), `ry` orbits right, `rx` tilts up; `rz` (twist) is accepted and ignored. A missing or non-finite axis reads as rest, a payload without a `motion` object is dropped, and `buttons` counts only as a non-negative integer (`sanitizeSpaceMouseMessage`) — a foreign producer can never throw in the handler or move the camera by NaN. A message whose axes are all inside the dead-zone changes nothing and renders no frame. `test:webview` posts synthetic motion to the real bundle to pin all of this.
+
 ### `zoomToSelection`
 
 Sent by the host when the `cad-preview.zoomToSelection` focused-editor command runs — the same choke point as the Select menu's **Zoom to selection** button (`main.ts`'s `zoomToSelection()`), so both surfaces stay in lockstep. Fire-and-forget, no `requestId`: the webview frames its transient selection in the focused pane via `Viewer.frameSelection` (orientation-preserving, both projections), with guidance on the status line for an empty or hidden/stale selection.

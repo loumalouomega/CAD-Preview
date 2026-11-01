@@ -36,6 +36,7 @@ import { EditsPanel, type TransformDraft, type FeatureDraft, type ModifyDraft, t
 import { OpPreviewScheduler } from "./opPreviewScheduler";
 import { draftBucketFor, bandFaceIds, previewBandLegend, tintDisplayName } from "./opPreviewBands";
 import { applySpaceMouseInput } from "./spaceMouseDispatch";
+import { sanitizeSpaceMouseMessage } from "../spaceMouseReports";
 import type { PanelOpId } from "./opCatalog";
 import { VariablesModel } from "./variablesModel";
 import { VariablesPanel } from "./variablesPanel";
@@ -6180,10 +6181,14 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
       // view-state autosave and render-on-demand invalidation compose for
       // free (both ride controls.update() → "change"). Acts on the focused
       // pane under split view, like every other no-argument camera API.
+      // The message is a public contract (any producer may post it), so the payload is
+      // sanitised first: a malformed one is dropped, never thrown on.
+      const input = sanitizeSpaceMouseMessage(msg.motion, msg.buttons);
+      if (!input) break;
       const now = performance.now();
       const dtMs = lastSpaceMouseAt === 0 ? 16 : now - lastSpaceMouseAt;
       lastSpaceMouseAt = now;
-      lastSpaceMouseButtons = applySpaceMouseInput(viewer, msg.motion, msg.buttons, lastSpaceMouseButtons, dtMs);
+      lastSpaceMouseButtons = applySpaceMouseInput(viewer, input.motion, input.buttons, lastSpaceMouseButtons, dtMs);
       break;
     }
 

@@ -5122,6 +5122,43 @@ test("bookmarks: saving the current view posts viewChanged carrying the bookmark
   assert(rows === 1, `the menu shows the new row (got ${rows})`);
 });
 
+test("spacemouse: synthetic motion posted to the webview moves the camera; rest and malformed payloads do not", async (page) => {
+  await populate(page);
+  const lastDir = async () =>
+    page.evaluate(() => (window.__sent ?? []).filter((m) => m.type === "viewChanged").at(-1)?.view?.viewDirection ?? null);
+  const moved = (a, b) => Array.isArray(a) && Array.isArray(b) && a.some((c, i) => Math.abs(c - b[i]) > 1e-3);
+  const burst = async (motion, buttons) => {
+    for (let i = 0; i < 8; i++) {
+      await page.evaluate(([m, b]) => window.postMessage({ type: "spacemouse", motion: m, buttons: b }, "*"), [motion, buttons]);
+      await sleep(25);
+    }
+    await sleep(800);
+  };
+  // Establish a baseline direction (the first view post can lag the first frame).
+  await burst({ tx: 0, ty: 0, tz: 0, rx: 0, ry: 200, rz: 0 });
+  const base = await lastDir();
+  assert(Array.isArray(base), "a baseline camera direction was reported");
+
+  await page.evaluate(() => (window.__sent.length = 0));
+  await burst({ tx: 0, ty: 0, tz: 0, rx: 0, ry: 0, rz: 0 });
+  await burst({ tx: 3, ty: -4, tz: 2, rx: 1, ry: -5, rz: 300 }); // all inside the dead-zone; twist (rz) is unmapped
+  assert((await lastDir()) === null, "rest and sub-dead-zone motion post no view change (render-on-demand stays idle)");
+
+  await burst({ tx: 0, ty: 0, tz: 0, rx: 0, ry: 300, rz: 0 });
+  const orbited = await lastDir();
+  assert(moved(orbited, base), `a deflected ry orbits the camera (${JSON.stringify(base)} -> ${JSON.stringify(orbited)})`);
+
+  const errors = [];
+  page.on("pageerror", (e) => errors.push(String(e)));
+  await page.evaluate(() => (window.__sent.length = 0));
+  for (const bad of [{}, { motion: null }, { motion: "x" }, { motion: { ry: NaN, tx: Infinity } }]) {
+    await page.evaluate((m) => window.postMessage({ type: "spacemouse", ...m }, "*"), bad);
+  }
+  await sleep(600);
+  assert((await lastDir()) === null, "malformed payloads move nothing");
+  assert(errors.length === 0, `malformed payloads never throw in the handler (got ${JSON.stringify(errors)})`);
+});
+
 test("view snaps: 5 looks from the top, 3 from the right, and typing in a text field never moves the camera", async (page) => {
   await populate(page);
   const lastDir = async () =>

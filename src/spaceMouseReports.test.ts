@@ -102,3 +102,24 @@ describe("motionToVelocity", () => {
     expect(v.orbitPol).toBeGreaterThan(0);
   });
 });
+
+import { sanitizeSpaceMouseMessage } from "./spaceMouseReports";
+
+describe("sanitizeSpaceMouseMessage", () => {
+  it("passes a well-formed message through", () => {
+    expect(sanitizeSpaceMouseMessage({ tx: 120, ty: 0, tz: -40, rx: 0, ry: 60, rz: 0 }, 3)).toEqual({
+      motion: { tx: 120, ty: 0, tz: -40, rx: 0, ry: 60, rz: 0 },
+      buttons: 3,
+    });
+  });
+  it("reads a missing or non-finite axis as rest", () => {
+    const r = sanitizeSpaceMouseMessage({ tx: 5, ty: NaN, tz: Infinity, rx: "9", ry: null }, undefined);
+    expect(r).toEqual({ motion: { tx: 5, ty: 0, tz: 0, rx: 0, ry: 0, rz: 0 }, buttons: undefined });
+  });
+  it("drops a payload with no motion object and bad buttons", () => {
+    for (const bad of [undefined, null, 5, "x", [1, 2]]) expect(sanitizeSpaceMouseMessage(bad, 0)).toBeNull();
+    for (const b of [-1, 1.5, NaN, "1", null]) {
+      expect(sanitizeSpaceMouseMessage({}, b)?.buttons).toBeUndefined();
+    }
+  });
+});
