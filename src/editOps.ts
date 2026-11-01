@@ -248,6 +248,14 @@ export interface AddPolylineOp {
   /** What to do when a raw (non-`point-N`) endpoint coincides with an existing `point-N` within the model tolerance: `"reuse"` snaps it to that point and shares its vertex (no new `point-N`); `"independent"`/unset builds its own vertex there, as before, and notes the coincidence. Recorded on the op so replay is deterministic. */
   coincident?: "reuse" | "independent";
 }
+/**
+ * A curve given as functions of a parameter `s` over [`sMin`, `sMax`], sampled at `samples` points. `x`/`y`/`z` (default `"0"`) are expressions in `s` and the document variables. Expanded on read into an `addSpline` (or an `addPolyline`, which may be `closed`) — see `parametricCurve.ts` — so the kernel never sees this kind and a changed variable re-evaluates the curve.
+ */
+export interface AddParametricCurveOp {
+  op: "addParametricCurve"; x: string; y: string; z?: string;
+  sMin: number; sMax: number; samples: number;
+  as?: "spline" | "polyline"; closed?: boolean; guide?: boolean;
+}
 /** Add a standalone circular-arc edge through three points (must not be collinear — a collinear triple is skipped by the engine). */
 export interface AddThreePointArcOp {
   op: "addThreePointArc"; p1: Vec3; p2: Vec3; p3: Vec3; guide?: boolean;
@@ -337,7 +345,7 @@ export type EditOp = (
   | AddCircleProfileOp | AddRectangleProfileOp | AddPolygonProfileOp
   | AddEllipseProfileOp | AddRoundedRectangleProfileOp | AddSlotProfileOp | AddTrapezoidProfileOp
   | AddPointOp | AddLineOp | AddArcOp
-  | AddPolylineOp | AddThreePointArcOp | AddSplineOp | AddBezierOp | AddEllipseArcOp | AddHelixOp
+  | AddPolylineOp | AddThreePointArcOp | AddSplineOp | AddBezierOp | AddEllipseArcOp | AddHelixOp | AddParametricCurveOp
   | AddEdgeSlotOp
   | AddSurfaceFromLinesOp | AddSurfaceFillingOp |  AddVolumeFromSurfacesOp | FilletProfileOp
   | AlignOp | PatternLinearOp | PatternCircularOp | DrillOp
@@ -472,7 +480,7 @@ export const QUERYABLE_OPERAND_FIELDS: Record<EditOpKind, readonly string[]> = {
   addCircleProfile: [], addRectangleProfile: [], addPolygonProfile: [],
   addEllipseProfile: [], addRoundedRectangleProfile: [], addSlotProfile: [], addTrapezoidProfile: [],
   addPoint: [], addLine: [], addArc: [],
-  addPolyline: [], addThreePointArc: [], addSpline: [], addBezier: [], addEllipseArc: [], addHelix: [],
+  addPolyline: [], addThreePointArc: [], addSpline: [], addBezier: [], addEllipseArc: [], addHelix: [], addParametricCurve: [],
   addEdgeSlot: ["edge"],
   addSurfaceFromLines: ["edges"], addVolumeFromSurfaces: ["faces"], filletProfile: ["edges"], addSurfaceFilling: ["edges"],
   align: ["targets"], patternLinear: ["targets"], patternCircular: ["targets"],
@@ -550,7 +558,7 @@ export const BREP_ONLY_OPS: ReadonlySet<EditOpKind> = new Set([
   "addCircleProfile", "addRectangleProfile", "addPolygonProfile",
   "addEllipseProfile", "addRoundedRectangleProfile", "addSlotProfile", "addTrapezoidProfile",
   "addPoint", "addLine", "addArc",
-  "addPolyline", "addThreePointArc", "addSpline", "addBezier", "addEllipseArc", "addHelix",
+  "addPolyline", "addThreePointArc", "addSpline", "addBezier", "addEllipseArc", "addHelix", "addParametricCurve",
   "addSurfaceFromLines", "addSurfaceFilling", "addVolumeFromSurfaces", "addEdgeSlot", "filletProfile", "drill",
 ]);
 
@@ -1541,6 +1549,23 @@ function validateEditOpCore(raw: unknown): EditOp | null {
     case "addSpline": {
       const points = asVec3Array(o.points, 2);
       return points ? { op: "addSpline", points } : null;
+    }
+    case "addParametricCurve": {
+      const expr = (v: unknown): string | null => (typeof v === "string" && v.trim() !== "" && v.length <= 256 ? v : null);
+      const x = expr(o.x);
+      const y = expr(o.y);
+      const z = o.z === undefined ? undefined : expr(o.z);
+      const as = o.as === "polyline" ? "polyline" : "spline";
+      const closed = o.closed === true;
+      if (!x || !y || z === null) return null;
+      if (!isFiniteNumber(o.sMin) || !isFiniteNumber(o.sMax) || o.sMax <= o.sMin) return null;
+      if (!Number.isInteger(o.samples) || (o.samples as number) < 2 || (o.samples as number) > 2000) return null;
+      if (closed && (as !== "polyline" || (o.samples as number) < 3)) return null;
+      return {
+        op: "addParametricCurve", x, y, ...(z !== undefined ? { z } : {}),
+        sMin: o.sMin, sMax: o.sMax, samples: o.samples as number,
+        ...(as === "polyline" ? { as } : {}), ...(closed ? { closed } : {}),
+      };
     }
     case "addBezier": {
       const controlPoints = asVec3Array(o.controlPoints, 2, false);

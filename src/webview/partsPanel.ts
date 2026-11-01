@@ -1,6 +1,7 @@
 import type { Part } from "../protocol";
 import { UI_GLYPHS } from "../uiGlyphs";
 import type { VisibilityState } from "./visibilityState";
+import { describeRule, type RuleKind } from "../ruleFromSelection";
 
 export interface PartsPanelCallbacks {
   onCreate: () => void;
@@ -11,6 +12,8 @@ export interface PartsPanelCallbacks {
   /** Sets (a positive g/cm³ number) or clears (`undefined`) the part's material density. */
   onSetDensity: (index: number, density: number | undefined) => void;
   onRemoveEntity: (index: number, entityType: "volume" | "surface" | "line" | "point", entityId: string) => void;
+  /** Defines the part's rule from the current face selection, or clears it (`"clear"`). */
+  onDefineRule: (index: number, kind: RuleKind | "clear") => void;
   onSelectPart: (index: number | null) => void;
   /** Toggles whether this part's entities are hidden (display-only, never persisted). */
   onToggleVisible: (index: number) => void;
@@ -174,6 +177,32 @@ export class PartsPanel {
     });
     density.addEventListener("click", (e) => e.stopPropagation());
     row.appendChild(density);
+
+    const rule = document.createElement("select");
+    rule.className = "part-rule";
+    rule.title = "Define this part by a rule taken from the selected faces (kept as the model changes)";
+    rule.setAttribute("aria-label", "Define part by rule");
+    const current = describeRule(part.selector);
+    rule.classList.toggle("has-rule", current !== null);
+    for (const [value, label] of [
+      ["", current ? `Rule: ${current}` : "Rule…"],
+      ["plane", "On the selected plane"],
+      ["box", "Inside the selection's box"],
+      ["type", "Same surface type and radius"],
+      ...(current ? [["clear", "Clear rule"]] : []),
+    ]) {
+      const o = document.createElement("option");
+      o.value = value;
+      o.textContent = label;
+      rule.appendChild(o);
+    }
+    rule.addEventListener("change", () => {
+      const v = rule.value;
+      rule.value = "";
+      if (v) this.cb.onDefineRule(index, v as RuleKind | "clear");
+    });
+    rule.addEventListener("click", (e) => e.stopPropagation());
+    row.appendChild(rule);
 
     const badge = document.createElement("span");
     badge.className = "part-badge";

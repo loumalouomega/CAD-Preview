@@ -65,6 +65,25 @@ export class PartsModel {
     this.onChange();
   }
 
+  /**
+   * Defines (or, with `undefined`, clears) the Part's scene rule. The faces
+   * the rule matched right now become the cached membership; the host
+   * re-evaluates the rule after every replay.
+   */
+  setRule(index: number, rule: { query: Part["selector"]; surfaces: string[] } | undefined): void {
+    const p = this.parts[index];
+    if (!p) return;
+    if (rule && rule.query) {
+      p.selector = rule.query;
+      p.selectorOpKind = "scene";
+      p.surfaces = [...rule.surfaces];
+    } else {
+      delete p.selector;
+      delete p.selectorOpKind;
+    }
+    this.onChange();
+  }
+
   setMeshSize(index: number, size: number | undefined): void {
     const p = this.parts[index];
     if (!p) return;

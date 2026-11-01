@@ -11,6 +11,7 @@
  */
 
 import { EditOp, validateEditOp } from "./editOps";
+import { compileParametricCurve } from "./parametricCurve";
 import { evalExpr, exprDimension, isValidVariableName, parseFieldPath, setNumericField, type ExprDim } from "./paramExpr";
 
 export interface ParamVariable {
@@ -86,7 +87,26 @@ export function resolveEditOps(
   values: Record<string, number>
 ): { ops: EditOp[]; issues: string[] } {
   const issues: string[] = [];
-  const resolved = ops.map((op, index) => {
+  /** `addParametricCurve` → the plain curve op it denotes (after its own `exprs`, e.g. `sMax`, resolve). */
+  const expandCurve = (op: EditOp, index: number): EditOp => {
+    if (op.op !== "addParametricCurve") return op;
+    let source: EditOp = op;
+    if (op.exprs) {
+      const clone = JSON.parse(JSON.stringify(op)) as EditOp;
+      for (const [key, expr] of Object.entries(op.exprs)) {
+        const path = parseFieldPath(key);
+        const r = path ? evalExpr(expr, values) : null;
+        if (path && r?.ok) setNumericField(clone, path, r.value);
+      }
+      source = validateEditOp(clone) ?? op;
+    }
+    const r = compileParametricCurve(source as Extract<EditOp, { op: "addParametricCurve" }>, values);
+    if (r.ok) return r.op;
+    issues.push(`edit ${index + 1} (addParametricCurve): ${r.error}; the curve is not drawn`);
+    return op;
+  };
+  const resolved = ops.map((original, index) => {
+    const op = expandCurve(original, index);
     if (!op.exprs) return op;
     const clone = JSON.parse(JSON.stringify(op)) as EditOp;
     for (const [key, expr] of Object.entries(op.exprs)) {

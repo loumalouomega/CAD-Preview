@@ -295,6 +295,10 @@ Two op-model conventions worth knowing (the "Cheap thin-wrapper ops" feature):
 
 ## Parametric scripts
 
+### Parametric curves
+
+`addParametricCurve` draws a curve given as functions of a parameter `s` — a sinusoidal electrode, an airfoil thickness law, a cam: `{"op": "addParametricCurve", "x": "s", "y": "A*sin(360*s)", "sMin": 0, "sMax": 1, "samples": 64}` (`z` defaults to `"0"`; trig is in degrees like every angle here). `x`/`y`/`z` may use `s` and the document variables (`set_variables`), and `sMin`/`sMax` can carry `exprs` like any numeric field. The op is expanded on read into an `addSpline` (the approximating, endpoint-exact fit) or, with `"as": "polyline"`, an `addPolyline` (which may be `closed`), so the kernel path is the one already verified for those ops, `edge-N` ids behave identically, and changing `A` re-evaluates the curve on the next replay. An expression that fails to evaluate is reported in `warnings` and the curve is skipped. Closing the curve into a face for `extrude`/`revolve` is done with the ordinary `addLine`/`addPolyline` + `addSurfaceFromLines` ops; there is no panel form yet.
+
 ### Technical drawings, and the Non-goal they un-block
 
 `doc/roadmap.md`'s Non-goals section records 2D hidden-line drawings as **kernel-blocked**: every

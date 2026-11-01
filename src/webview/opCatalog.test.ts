@@ -52,6 +52,7 @@ const REPRESENTATIVE_OPS: Record<EditOpKind, EditOp> = {
   addSpline: { op: "addSpline", points: [[0, 0, 0], [5, 5, 0], [10, 0, 0]] },
   addBezier: { op: "addBezier", controlPoints: [[0, 0, 0], [5, 10, 0], [10, 0, 0]] },
   addEllipseArc: { op: "addEllipseArc", center: [0, 0, 0], normal: [0, 0, 1], up: [1, 0, 0], radiusX: 8, radiusY: 5, startAngleDeg: 0, endAngleDeg: 90 },
+  addParametricCurve: { op: "addParametricCurve", x: "s", y: "sin(s)", sMin: 0, sMax: 1, samples: 8 },
   addHelix: { op: "addHelix", center: [0, 0, 0], axis: [0, 0, 1], radius: 5, pitch: 3, turns: 2 },
   addSurfaceFilling: { op: "addSurfaceFilling", edges: ["edge-0", "edge-1", "edge-2"] },
   addSurfaceFromLines: { op: "addSurfaceFromLines", edges: ["edge-0", "edge-1", "edge-2"] },
