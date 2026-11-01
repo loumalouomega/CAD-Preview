@@ -490,14 +490,9 @@ None of these depends on another's result.
 
 *Area: Geometry.*
 
-- **Hypothesis:** the bundled OpenSCAD WASM's `text()` produces glyph outlines that the `.csg` importer turns into ordinary profiles, giving real 3D text without OCCT's dead `Font_*` family.
-- **Evidence today:** `.scad`/`.csg` import ships WASM-first; SVG-outline text already ships through `svgImport.ts` and `addSurfaceFromLines`. Unknown: whether `@loumalouomega/openscad-wasm` bundles any font (not checked for this entry), and whether its MEMFS staging can mount one.
-- **Probe (S):**
-  1. Evaluate `linear_extrude(2) text("KKSS", size=10);` through `convertScadViaWasm` and record whether a font resolves, which one, and whether it declines with `ScadWasmFallbackError`.
-  2. If no font is bundled, stage one openly licensed font (e.g. Liberation, OFL/GPL-compatible) through the same MEMFS path as library files, and repeat.
-  3. Import the `.csg`, check that counters (the hole in "A") survive as holed faces, and record the triangle count.
-- **Decision gate:** *pass* — text with counters imports as a valid solid. *Fail* — no font can be mounted → recorded beside the Glyph entry, which keeps pointing at SVG outlines.
-- **If admitted (S):** an `addText` macro (not a kernel op) that writes the `.scad` snippet, plus the font's licence notice beside the other notices.
+- **Probe result (2026-11-01, `scripts/probe/examples/scad-text.ts`; `@loumalouomega/openscad-wasm`):** the package ships **no font** (its notices say so). Without a mounted font `text()` makes the render exit with status 1. With one mounted (`render(scad, {fonts: {"X.ttf": bytes}})`; an OFL face was used from disk and not bundled), `text("KKSS A", size=10)` evaluates in about 200 ms. **The `.csg` route cannot carry it:** `format: "csg"` writes the unevaluated `text(...)` node, which the `.csg` importer has no outline for. **The SVG route can:** `format: "svg"` on the 2D `text()` returns one `<path>` of 7 closed subpaths (6 contours reported for "KKSS A", counter of the A included), which is exactly what `svgImport.ts` and the multi-loop `addSurfaceFromLines` path already turn into holed faces.
+- **Partial pass; stays here, narrowed:** text with counters is reachable as SVG outlines, so the whole feature is "render `text()` to SVG with a mounted font, then `import_svg`". What is not decided is the font: shipping one needs a choice (an OFL face is GPL-compatible as separate data, with its licence text beside the other notices) and a size budget in the VSIX. Until that choice is made, the SVG-outline import remains the supported route for text.
+- **If admitted (S–M):** an `add_text` tool/macro that renders the SVG through the worker with the chosen bundled font and imports it, plus the font's licence notice. No kernel op, no system-font discovery.
 - **Out of scope:** system-font discovery and text on curved paths.
 
 ##### 3.17 OpenSCAD library staging {#openscad-library-staging}
