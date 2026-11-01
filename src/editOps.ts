@@ -255,6 +255,8 @@ export interface AddParametricCurveOp {
   op: "addParametricCurve"; x: string; y: string; z?: string;
   sMin: number; sMax: number; samples: number;
   as?: "spline" | "polyline"; closed?: boolean; guide?: boolean;
+  /** Sketch plane: sample (x, y, z) map to `origin + x·u + y·v + z·n`, with n = `normal`, u = `up` made perpendicular to n, v = n × u. Absent = the world XYZ frame. */
+  plane?: { origin: Vec3; normal: Vec3; up: Vec3 };
 }
 /** Add a standalone circular-arc edge through three points (must not be collinear — a collinear triple is skipped by the engine). */
 export interface AddThreePointArcOp {
@@ -1561,10 +1563,19 @@ function validateEditOpCore(raw: unknown): EditOp | null {
       if (!isFiniteNumber(o.sMin) || !isFiniteNumber(o.sMax) || o.sMax <= o.sMin) return null;
       if (!Number.isInteger(o.samples) || (o.samples as number) < 2 || (o.samples as number) > 2000) return null;
       if (closed && (as !== "polyline" || (o.samples as number) < 3)) return null;
+      let plane: AddParametricCurveOp["plane"];
+      if (o.plane !== undefined) {
+        const pl = o.plane as Record<string, unknown> | null;
+        const origin = pl && typeof pl === "object" ? asVec3(pl.origin) : null;
+        const normal = pl && typeof pl === "object" ? asNonZeroVec3(pl.normal) : null;
+        const up = pl && typeof pl === "object" ? asNonZeroVec3(pl.up) : null;
+        if (!origin || !normal || !up || !notParallel(normal, up)) return null;
+        plane = { origin, normal, up };
+      }
       return {
         op: "addParametricCurve", x, y, ...(z !== undefined ? { z } : {}),
         sMin: o.sMin, sMax: o.sMax, samples: o.samples as number,
-        ...(as === "polyline" ? { as } : {}), ...(closed ? { closed } : {}),
+        ...(as === "polyline" ? { as } : {}), ...(closed ? { closed } : {}), ...(plane ? { plane } : {}),
       };
     }
     case "addBezier": {

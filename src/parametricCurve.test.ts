@@ -27,6 +27,15 @@ describe("addParametricCurve", () => {
     expect(r.ok && r.op.op === "addPolyline" && r.op.closed).toBe(true);
     expect(wave({ closed: true })).toBeNull();
   });
+  it("places the sketch on a plane: x along up, y along normal × up", () => {
+    // Plane z = 5 faced +Z, up = +X: identity mapping lifted to z = 5.
+    const up = compileParametricCurve(wave({ plane: { origin: [0, 0, 5], normal: [0, 0, 1], up: [1, 0, 0] } }), { A: 1 });
+    expect(up.ok && up.op.op === "addSpline" && up.op.points[1].map((c) => Math.round(c * 1e9) / 1e9)).toEqual([0.25, 1, 5]);
+    // Plane x = 2 faced +X, up = +Y: sketch x -> world Y, sketch y -> world Z (X × Y = Z).
+    const side = compileParametricCurve(wave({ plane: { origin: [2, 0, 0], normal: [1, 0, 0], up: [0, 1, 0] } }), { A: 1 });
+    expect(side.ok && side.op.op === "addSpline" && side.op.points[1].map((c) => Math.round(c * 1e9) / 1e9)).toEqual([2, 0.25, 1]);
+    expect(wave({ plane: { origin: [0, 0, 0], normal: [0, 0, 1], up: [0, 0, 2] } })).toBeNull();
+  });
   it("is gated: bad expressions, ranges and sample counts are dropped", () => {
     expect(wave({ sMax: 0 })).toBeNull();
     expect(wave({ samples: 1 })).toBeNull();

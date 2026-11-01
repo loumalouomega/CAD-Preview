@@ -343,8 +343,8 @@ These are outcome groupings, not release numbers. Independent small items can sh
 
 *Area: Geometry. Effort: S.*
 
-- **Done so far (2026-11-01):** the `addParametricCurve` op shipped (agent-authored): `x`/`y`/`z` expressions in `s` and the document variables, expanded on read into `addSpline`/`addPolyline` (`parametricCurve.ts`), so a changed variable re-evaluates the curve; `mcp:smoke` pins the closed-face area and its re-evaluation.
-- **What is left (S):** `plane`/`planeId` placement, closing the curve with a straight segment into a face through `addSurfaceFromLines` so it feeds `extrude`/`revolve` directly, and an Edits-panel form with a command-bar entry (needs a generated icon).
+- **Done so far (2026-11-01):** the `addParametricCurve` op shipped (agent-authored), including inline `plane` placement (`planeId` references are not supported): `x`/`y`/`z` expressions in `s` and the document variables, expanded on read into `addSpline`/`addPolyline` (`parametricCurve.ts`), so a changed variable re-evaluates the curve; `mcp:smoke` pins the closed-face area and its re-evaluation.
+- **What is left (S):** closing the curve with a straight segment into a face through `addSurfaceFromLines` so it feeds `extrude`/`revolve` directly, and an Edits-panel form with a command-bar entry (needs a generated icon).
 - **Out of scope:** exact interpolation (kernel-bound) and 3D surfaces from two-parameter functions.
 - **Done when:** `x = s, y = 0.1*sin(360*s)` on `s ∈ [0, 1]` extrudes into a solid whose volume matches the analytic integral within the spline's tolerance, from the panel.
 

@@ -73,7 +73,7 @@ export const OP_PARAM_DOCS: Record<EditOpKind, string> = {
   addPolyline: '{points: ([x,y,z] | "point-N")[] (>=2; >=3 when closed), closed: boolean}',
   addThreePointArc: '{p1, p2, p3: each [x,y,z] | "point-N" (non-collinear)}',
   addSpline: '{points: ([x,y,z] | "point-N")[] (>=2; approximating fit, endpoint-exact)}',
-  addParametricCurve: '{x: expr, y: expr, z?: expr (default "0") — expressions in the parameter s and the document variables; sMin: n, sMax: n (> sMin), samples: integer 2..2000, as?: "spline"|"polyline" (default spline; approximating fit, endpoint-exact), closed?: boolean (polyline only, >=3 samples)} — expanded on read into addSpline/addPolyline, so a changed variable re-evaluates the curve',
+  addParametricCurve: '{x: expr, y: expr, z?: expr (default "0") — expressions in the parameter s and the document variables; sMin: n, sMax: n (> sMin), samples: integer 2..2000, as?: "spline"|"polyline" (default spline; approximating fit, endpoint-exact), closed?: boolean (polyline only, >=3 samples), plane?: {origin: [x,y,z], normal: [x,y,z], up: [x,y,z]} (sketch plane: world = origin + x·u + y·v + z·n; default the world XYZ frame)} — expanded on read into addSpline/addPolyline, so a changed variable re-evaluates the curve',
   addBezier: '{controlPoints: ([x,y,z] | "point-N")[] (>=2)}',
   addEllipseArc:
     '{center: [x,y,z] | "point-N", normal: [x,y,z], up: [x,y,z], radiusX: n>0, radiusY: n>0, startAngleDeg: n, endAngleDeg: n}',
