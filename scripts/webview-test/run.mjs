@@ -2496,6 +2496,61 @@ test("hover: moving over geometry shows the entity id and which ops mention it",
   );
 });
 
+test("hover: stepping under the cursor reaches the face behind and the next click picks it", async (page) => {
+  await populate(page);
+  await page.click("#select-menu");
+  await page.click("#sel-toggle");
+  await page.click('.sel-mode[data-mode="surface"]');
+  await page.click("#select-menu");
+  await sleep(150);
+  const box = await viewportBox(page);
+  const cx = box.x + box.width / 2;
+  const cy = box.y + box.height / 2;
+  const tip = () =>
+    page.evaluate(() => {
+      const el = document.getElementById("hover-tip");
+      return el && el.offsetParent !== null ? (el.textContent ?? "").split("\n")[0] : null;
+    });
+  const status = () => page.evaluate(() => document.getElementById("status")?.textContent ?? "");
+
+  await page.mouse.move(cx - 3, cy);
+  await page.mouse.move(cx, cy);
+  await sleep(250);
+  const front = await tip();
+  const m = /^1 of (\d+) under the cursor/.exec(await status());
+  assert(front !== null && m !== null && Number(m[1]) >= 2, `a solid's centre ray crosses at least two faces and says so (tip ${front}, status ${JSON.stringify(await status())})`);
+
+  await page.keyboard.press("ArrowDown");
+  await sleep(150);
+  const behind = await tip();
+  assert(behind !== null && behind !== front, `ArrowDown steps to a different face (${front} -> ${behind})`);
+  assert(/^2 of \d+ under the cursor/.test(await status()), "the status counts 2 of n after one step");
+
+  await page.keyboard.press("ArrowUp");
+  await sleep(150);
+  assert((await tip()) === front, "ArrowUp steps back to the front face");
+  await page.keyboard.press("ArrowDown");
+  await sleep(150);
+
+  // The click at the same spot picks the stepped face, not the front one.
+  await page.mouse.click(cx, cy);
+  await sleep(250);
+  await page.click("#parts-new");
+  await sleep(250);
+  await page.evaluate(() => {
+    const rows = document.querySelectorAll("#parts-body .part-row");
+    const row = rows[rows.length - 1];
+    [...row.querySelectorAll("button.part-btn")].find((b) => b.title?.startsWith("Assign"))?.click();
+  });
+  await sleep(250);
+  const picked = await page.evaluate(() => {
+    const msg = (window.__sent || []).findLast((x) => x.type === "partsChanged");
+    const added = msg?.parts[msg.parts.length - 1];
+    return added ? [...(added.surfaces ?? [])] : null;
+  });
+  assert(JSON.stringify(picked) === JSON.stringify([behind]), `the click picked the stepped face (got ${JSON.stringify(picked)}, wanted ${behind})`);
+});
+
 test("hover: the tooltip never intercepts a click meant for the geometry", async (page) => {
   // It tracks the cursor, so without pointer-events:none it would sit directly
   // under the pointer and swallow the very click it is describing.

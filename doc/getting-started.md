@@ -300,6 +300,8 @@ Two small readouts report facts about the open document without asking you to do
 
 With a pick mode active (**Select ▾**), two things explain what you are pointing at.
 
+**Stepping under the cursor:** when more than one entity lies under the pointer (a solid's front and back faces, say), the status line reads `k of n under the cursor`. **↑/↓** (or **+/−**) step through them front to back and the tooltip follows; the next click within the drag tolerance picks the stepped entity. The keys do nothing when only one entity is under the cursor.
+
 **Hovering** shows a small tooltip with the entity's id (`face-12`, `edge-3`, `solid-0`) and which
 of your applied ops mention that id. This is the quickest way to read your own `.edits.json`: the
 ids in the sidecar are exactly the ids under your cursor. It says *mentions*, not *acts on*,

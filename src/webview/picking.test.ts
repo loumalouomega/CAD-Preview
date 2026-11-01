@@ -188,3 +188,34 @@ describe("collectMeasureTargets", () => {
     expect(collectMeasureTargets(root).map((o) => o.userData.entityId)).toEqual(["face-0", "point-0"]);
   });
 });
+
+import { distinctPicks, candidateSignature, stepCandidateIndex } from "./picking";
+
+describe("stepping under the cursor", () => {
+  const hit = (entityId: string, groupId: string) => ({ object: { userData: { entityType: "surface", entityId, groupId } } });
+  const line = { object: { userData: { entityType: "line", entityId: "edge-1" } } };
+
+  it("lists each entity once, front to back, skipping non-matching hits", () => {
+    const c = distinctPicks([hit("face-1", "solid-1"), line, hit("face-1", "solid-1"), hit("face-9", "solid-2")], "surface");
+    expect(c.map((r) => r.entityId)).toEqual(["face-1", "face-9"]);
+  });
+
+  it("collapses faces of one solid in volume mode", () => {
+    const c = distinctPicks([hit("face-1", "solid-1"), hit("face-2", "solid-1"), hit("face-9", "solid-2")], "volume");
+    expect(c.map((r) => r.entityId)).toEqual(["solid-1", "solid-2"]);
+  });
+
+  it("steps cyclically both ways and never moves a stack of one", () => {
+    expect(stepCandidateIndex(0, 3, 1)).toBe(1);
+    expect(stepCandidateIndex(2, 3, 1)).toBe(0);
+    expect(stepCandidateIndex(0, 3, -1)).toBe(2);
+    expect(stepCandidateIndex(0, 1, 1)).toBe(0);
+    expect(stepCandidateIndex(0, 0, -1)).toBe(0);
+  });
+
+  it("signatures distinguish different stacks", () => {
+    const a = distinctPicks([hit("face-1", "s")], "surface");
+    const b = distinctPicks([hit("face-2", "s")], "surface");
+    expect(candidateSignature(a)).not.toBe(candidateSignature(b));
+  });
+});

@@ -3591,6 +3591,25 @@ viewer.setEntityHoverHandler((result) => {
   showHoverTip(result.entityId, lastHoverPointer.x, lastHoverPointer.y);
 });
 
+// "k of n under the cursor": ArrowUp/ArrowDown (or + / -) step through every entity the
+// view ray crosses; the next click picks the stepped one. Does nothing unless more than
+// one entity is under the cursor.
+let candidateStatusShown = false;
+viewer.setCandidateStepHandler((index, count) => {
+  if (count > 1) {
+    setStatus(`${index} of ${count} under the cursor — ↑/↓ to step, click to pick`);
+    candidateStatusShown = true;
+  } else if (candidateStatusShown) {
+    candidateStatusShown = false;
+    setStatus("");
+  }
+});
+document.addEventListener("keydown", (e) => {
+  if (e.defaultPrevented || e.ctrlKey || e.metaKey || e.altKey || isTextEntryTarget(e.target as HTMLElement | null)) return;
+  const delta = e.key === "ArrowDown" || e.key === "-" ? 1 : e.key === "ArrowUp" || e.key === "+" || e.key === "=" ? -1 : 0;
+  if (delta !== 0 && viewer.stepHoverCandidate(delta)) e.preventDefault();
+});
+
 // The dock's live cursor coordinates. Independent of pick mode — the hover tooltip
 // above only exists in selection mode, but a position readout is not a picking
 // feature and must work with selection off, which is the normal state.

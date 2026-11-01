@@ -104,3 +104,35 @@ export function resolveMeasurePick(userData: EntityUserData): PickResult | null 
   }
   return null;
 }
+
+/**
+ * Every distinct entity a view ray crosses, front to back: the raycaster's
+ * distance-sorted hits resolved through {@link resolvePick}, with repeats of
+ * the same entity (a solid hit through several of its faces, an edge polyline
+ * hit twice) collapsed to the nearest. The first element is what a plain
+ * click picks; the rest are what stepping under the cursor can reach.
+ */
+export function distinctPicks(hits: ReadonlyArray<{ object: { userData: unknown } }>, mode: EntityType): PickResult[] {
+  const seen = new Set<string>();
+  const out: PickResult[] = [];
+  for (const h of hits) {
+    const r = resolvePick(h.object.userData as EntityUserData, mode);
+    if (!r) continue;
+    const key = `${r.entityType}:${r.entityId}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(r);
+  }
+  return out;
+}
+
+/** Identity of a candidate stack — equal strings mean the same entities in the same order. */
+export function candidateSignature(c: readonly PickResult[]): string {
+  return c.map((r) => `${r.entityType}:${r.entityId}`).join("|");
+}
+
+/** Cyclic step through `count` candidates; a stack of one (or none) never moves. */
+export function stepCandidateIndex(index: number, count: number, delta: number): number {
+  if (count <= 1) return 0;
+  return (((index + delta) % count) + count) % count;
+}
