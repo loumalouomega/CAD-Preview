@@ -672,6 +672,35 @@ export const DEFAULT_MESH_OPTIONS: MeshOptions = {
 };
 
 /**
+ * Fields whose introduction CHANGED behaviour, each with the value that
+ * reproduces the behaviour from before the field existed. `serializeMeshJson`
+ * writes every field, so a key that is ABSENT from an existing sidecar's
+ * `options` object can only mean the file predates it; `parseMeshJsonWithNotes`
+ * then applies this value (not today's default) and reports `note`. A new
+ * sidecar keeps today's defaults. Every key of {@link DEFAULT_MESH_OPTIONS}
+ * must appear here or in {@link NO_BEHAVIOUR_CHANGE_FIELDS}
+ * (`meshOptions.test.ts` fails otherwise).
+ */
+export const LEGACY_MESH_DEFAULTS: {
+  readonly [K in keyof MeshOptions]?: { value: MeshOptions[K]; note: string };
+} = {
+  conformal: {
+    value: false,
+    note:
+      "this sidecar predates conformal meshing; it keeps non-conformal meshing (touching solids mesh independently) — tick Conformal to change",
+  },
+};
+
+/** Fields added with a default that reproduces the old behaviour (or that only matter once opted in). */
+export const NO_BEHAVIOUR_CHANGE_FIELDS: readonly (keyof MeshOptions)[] = [
+  "dimension", "sizeMin", "sizeMax", "algorithm2D", "algorithm3D", "elementOrder", "elementShape", "optimize",
+  "stlAngle", "engine", "ftetwildEpsRel", "ftetwildManifoldSurface", "ftetwildCoarsen", "ftetwildDisableFiltering",
+  "octreeMaxLevel", "octreeSnap", "octreeTransition", "mpcVariables", "octreeMeshOutput", "octreeMeshMaxSize",
+  "octreeMeshLevels", "meshcadMinAngle", "meshcadSmoothIterations", "meshcadCurvatureDeviation",
+  "meshcadCellsAcrossGaps", "meshcadGrading",
+];
+
+/**
  * Maps an {@link MeshElementShape} to the Gmsh recombination/subdivision/
  * algorithm option values, given the mesh `dimension`. Shared by
  * `gmshService.ts`'s `loadGeometryAndApplyOptions` (live meshing) and
