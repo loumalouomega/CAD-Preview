@@ -61,6 +61,8 @@ Existing implementation references were checked against the repository where not
 
 **Extended 2026-10-31 (ElmerStudio review and Non-goal recovery).** Extension, not a planning review: nothing was re-ranked and no existing ID moved. The [ElmerStudio review](#elmerstudio-review) added [unit-aware document variables](#unit-aware-document-variables) (2.26), rule-defined Part membership (2.27, since shipped and removed), the parametric-curve profile (2.28, first increment shipped as `addParametricCurve`), transport-agnostic 3D-mouse input (since shipped and removed) and [Part rename and delete events for embedders](#part-rename-and-delete-events) (5.4); a second pass over its picking code the same day added stepping through entities under the cursor (2.30, since shipped and removed), and a third pass over its model-format history added sidecar fields that arrived after the file was written (since shipped and removed). Four Non-goals were re-read against today's kernels (meshio++ 17.23.0 with `fitCad`, `checkConformity` and prism layers, Manifold, the OpenSCAD WASM) and re-opened as probes that route around the dead API rather than revive it: [sampled B-rep self-intersection](#sampled-brep-self-intersection) (3.14), [B-rep repair by refit](#brep-repair-by-refit) (3.15), [3D text through OpenSCAD](#text-through-openscad) (3.16) and [OpenSCAD library staging](#openscad-library-staging) (3.17); section 4 is recreated for [a volume behind the prism-layer shell](#volume-behind-prism-layers) (4.11) and [physics-calibrated size presets](#physics-calibrated-size-presets) (4.12). Each original Non-goal entry stays and points at its probe. Stale facts fixed in passing: the gmsh-wasm version in the kernel review, the meshio++ and `view.*` "never called" rows, two links to a closed validity-report item, and a hex-dominant link that pointed at the wrong Non-goal group.
 
+**Extended 2026-11-01 (SolidCraft review).** Extension, not a planning review: nothing was re-ranked and no existing ID moved. The [SolidCraft review](#solidcraft-review) compared this extension's interface against a full parametric modeller's, and added fourteen items to Ready product work and four probes. The Ready product work items are [the parameters table](#parameters-table) (2.31), [variable "Used by" lists and expression autocomplete](#variable-used-by-and-autocomplete) (2.32), [configurations](#configurations-design-table) (2.33), [command search and keyboard-first commands](#command-search-and-keyboard-commands) (2.34), [a ribbon command strip](#ribbon-command-strip) (2.35), [a two-tone icon set](#two-tone-icon-set) (2.36), [history timeline depth](#history-timeline-depth) (2.37), [a unified Browser tree](#unified-browser-tree) (2.38), [navigation upgrades](#navigation-upgrades) (2.39), [zebra stripes and a centre-of-mass marker](#zebra-stripes-and-centre-of-mass-marker) (2.40), [feature form ergonomics](#feature-form-ergonomics) (2.41), [named materials in the Parts panel](#named-materials-in-parts) (2.42), [an issue draft from a failure](#issue-draft-from-a-failure) (2.43) and [a welcome walkthrough with samples](#welcome-walkthrough-and-samples) (2.44). The probes are [curvature, minimum radius and isocurve overlays](#curvature-and-isocurve-overlays) (3.18), [sheet-metal flat patterns of an imported part](#sheet-metal-flat-pattern) (3.19), [frame members along wireframe edges](#frame-members-along-edges) (3.20) and [on-canvas parameter handles](#on-canvas-parameter-handles) (5.5). Section 2 resumes at 2.31: 2.29 and 2.30 belonged to items that have shipped and left the list, and 2.30 is still cited for stepping through entities under the cursor, so neither number is reused. A new area tag, *Interface*, covers items whose main product is the webview's interaction design. One new Rejected-scope entry was added: a photoreal render workspace. The constraint-sketcher rejection was re-read against SolidCraft and stands.
+
 Everything previously shipped is tracked in `CHANGELOG.md`, and `CLAUDE.md` holds the invariants, traps and verified kernel facts that a future change could break (not per-feature history, which lives in git) — this page is for what's **not** built yet, plus the Non-goals that record why a direction was rejected so it isn't re-proposed.
 
 ## How this file works
@@ -70,7 +72,7 @@ Everything previously shipped is tracked in `CHANGELOG.md`, and `CLAUDE.md` hold
   - **2. Ready product work:** no kernel unknown remains, whether because a probe passed or because the work only reuses shipped machinery. The estimate is firm. (Called "Tier 1" in older text.)
   - **3–5. Probe-gated:** a hypothesis with a discriminating experiment, grouped by area — geometry, meshing and platform.
   - **6. Strategic:** multi-phase bets that gate other items or reopen Non-goals.
-- **Each item carries an area tag** — *Geometry*, *Meshing*, *Formats*, *Drawings*, *Parity*, *Platform* or *Ecosystem* — so the file can be read by area as well as by tier.
+- **Each item carries an area tag** — *Geometry*, *Meshing*, *Formats*, *Drawings*, *Parity*, *Interface*, *Platform* or *Ecosystem* — so the file can be read by area as well as by tier.
 - **A closed item is removed from this list entirely**, not struck through — only what a future change could break (invariants, traps, verified call shapes) moves to `CLAUDE.md`; the write-up and verification narrative stay in the commit message, `CHANGELOG.md` and git. **Every item has a task ID `S.N`** (section, then position within it — `1.1`, `2.3`, `2.11`), shown in its heading and in the order tables, so a task can be named in an issue, a commit or a conversation. **IDs are renumbered at each planning review**, when items close and sections shift, so an ID is only meaningful against the review date at the top of this page. Positions within a section run without gaps after each renumbering. Code and other documents therefore still cite an item by **name** (the `docRoadmapRefs` gate enforces this), and headings keep an explicit `{#anchor}` so name-based links survive the numbering.
 - **Probe-gated items are hypotheses, not implementation-ready work.** Evidence may be a binding-manifest entry, an upstream API, or a proposed geometric construction. Green in `node_modules/opencascade.js/dist/Supported APIs.md` is **necessary but not sufficient** — both the STEP-unit and the IGES-writer findings started green and only resolved (one negative, one positive) under a real probe, and `HLRAppli_ReflectLines` was green, functional, *and still the wrong tool*. Each probe carries a firm **S** estimate of its own; the implementation phases listed under an item's *If admitted* are conditional, tagged provisionally, and re-estimated once the probe establishes useful output, failure behaviour and cost.
 - **Non-goals are not one thing.** They are split into three groups below because each has a different revival rule, and each group says plainly **what would change our mind**. A rejection nobody re-checks is how a capability stays "permanently out of reach" long after it stopped being — four entries in this file were found stale exactly that way.
@@ -274,6 +276,48 @@ One project, read at source level (no Elmer run):
 | Verifying a backend by solving the same model through two of them (`tests/test_nastran.py: test_same_model_as_elmer`) — third pass | ElmerStudio | Covered by `mcp:smoke`'s exact per-engine pins on `block.stp` (enclosed volume for the octree and octreemesh engines, triangle count and area for meshcad); no item |
 | Sketching with geometric constraints | (not offered by ElmerStudio either — it uses numeric primitives) | [Rejected](#rejected-scope), unchanged |
 
+### SolidCraft review — 2026-11-01 {#solidcraft-review}
+
+One project, read from its documentation and a screenshot. Nothing was built or run.
+
+- **[SolidCraft](https://github.com/tangency-labs/solidcraft)** (MIT OR Apache-2.0, read on 2026-11-01 from `README.md`, `ROADMAP.md`, `docs/features.md`, `docs/capabilities.md` and `ATTRIBUTION.md`, plus a v0.29.0 screenshot of its Parameters dialog over a sample plate). It is a parametric CAD application written in Rust, with an egui interface, sketch-constraint-timeline modelling, assemblies, sheet metal, plastics, weldments and a render workspace, and an MCP server and CLI that run the same commands as the desktop app.
+- **What transfers is the interface, not the modelling scope.** Its window is a workspace-tab ribbon with labelled command groups (Sketch · Create · Modify · Arrange · Configure · Construct), a Browser tree (Document Settings, Named Views, Origin, Bodies, Sketches, Features, each row with a visibility eye), a clickable axis triad, a bottom navigation bar, a command search with shortcuts, and docked feature dialogs. Its Parameters dialog is the most directly useful piece. User parameters sit in a table of Name / Unit / Expression / Value / Comment with a favourite star, up/down reorder and delete; there is a Filter box, Import… / Export CSV… / Export JSON…, and an "apply each change as you leave its field" toggle. A **Model parameters** section lists every feature's dimensions by feature (`BASE ▸ d1 = width`).
+- **Icons are a style reference only.** Its icons are original SolidCraft artwork under MIT OR Apache-2.0 (per `ATTRIBUTION.md`: a single-colour application set and a two-tone modelling set on a 64 grid), which would be GPL-3.0-compatible. The [two-tone icon set](#two-tone-icon-set) nevertheless redraws in this repository's own TikZ pipeline rather than vendoring them, so the icon build keeps one source format and needs no new attribution rows.
+- **Scope rules unchanged.** The constraint sketcher, the render workspace and robot-description export stay out (see the last rows). Sheet metal, weldments and on-canvas handles were re-read against this tool's preparation workflow, and each is opened as a probe whose framing keeps it on the inspect/prepare side.
+
+| Source feature | From | Status here |
+| --- | --- | --- |
+| Parameters dialog: Unit and Comment columns, favourite, reorder, filter, CSV/JSON import and export, apply-on-leave toggle | SolidCraft | [Parameters table](#parameters-table) (2.31) |
+| Model parameters: every feature's dimensions listed by feature, each one able to reference a user parameter (`d1 = width`) | SolidCraft | [Parameters table](#parameters-table) (2.31), its "Model parameters" section |
+| `parameters.list_users`, the parameter graph, and expression autocomplete (arrow keys, Enter/Tab, Escape) | SolidCraft | [Variable "Used by" and autocomplete](#variable-used-by-and-autocomplete) (2.32) |
+| Configurations and the Config Table (rows of parameter values, ordered rules, per-row suppression) | SolidCraft | [Configurations](#configurations-design-table) (2.33) |
+| Search commands (shortcut shown), single-letter command keys, Shift+R to repeat the last command | SolidCraft | [Command search and keyboard-first commands](#command-search-and-keyboard-commands) (2.34) |
+| Workspace-tab ribbon with labelled groups, toolbar overflow, a "hide ribbon labels" preference | SolidCraft | [Ribbon command strip](#ribbon-command-strip) (2.35) |
+| Two-tone modelling icons on a 64 grid | SolidCraft | [Two-tone icon set](#two-tone-icon-set) (2.36), redrawn in TikZ |
+| Timeline: suppress, rename, feature folders, drag reorder with dependency checks, delete that lists dependents, hover highlights of modified faces | SolidCraft | [History timeline depth](#history-timeline-depth) (2.37). Already shipped: the jump rollback (click a history row), per-row delete, and click-to-highlight of produced faces |
+| Browser tree (Document Settings, Named Views, Origin, Bodies, Sketches, Features; eye per row; Expand/Collapse All) | SolidCraft | [Unified Browser tree](#unified-browser-tree) (2.38). Already shipped in pieces: the Components tree, the Parts and Layers panels, and view bookmarks |
+| Clickable X/Y/Z axis tips, 26 snapped standard and diagonal views, Normal to Selection, navigation presets (Touchpad, Fusion, OpenSCAD) | SolidCraft | [Navigation upgrades](#navigation-upgrades) (2.39) |
+| Zebra analysis; centre of mass shown in the view | SolidCraft | [Zebra stripes and a centre-of-mass marker](#zebra-stripes-and-centre-of-mass-marker) (2.40) |
+| Curvature map and comb, isocurves, minimum radius, continuity | SolidCraft | [Curvature, minimum radius and isocurve overlays](#curvature-and-isocurve-overlays) (3.18, probe); continuity is out of that probe's scope |
+| Feature dialogs docked on the right; collapsible header that keeps its values; OK/Cancel outside the scroll area | SolidCraft | [Feature form ergonomics](#feature-form-ergonomics) (2.41). Already shipped: the live preview (an intent-coloured overlay, debounced) |
+| Named appearances and material assignment | SolidCraft | [Named materials in Parts](#named-materials-in-parts) (2.42); textures and PBR looks are not proposed |
+| "Report a bug" in the header; Create Issue from a feature error as an editable draft; crash reports that are never sent automatically | SolidCraft | [Issue draft from a failure](#issue-draft-from-a-failure) (2.43) |
+| Start view with sample cards and recent items | SolidCraft | [Welcome walkthrough and samples](#welcome-walkthrough-and-samples) (2.44). VS Code supplies recent files |
+| Sheet metal: unfold, flat pattern, DXF and bend-table export | SolidCraft | [Sheet-metal flat pattern](#sheet-metal-flat-pattern) (3.19, probe), framed as unfolding an *imported* part; authoring flanges, hems and reliefs is not proposed |
+| Weldments: frame members along a skeleton, from a profile library | SolidCraft | [Frame members along wireframe edges](#frame-members-along-edges) (3.20, probe) |
+| On-canvas drag handles with value boxes (extrude distance, fillet radius, shell thickness, hole depth) | SolidCraft | [On-canvas parameter handles](#on-canvas-parameter-handles) (5.5, probe). Already shipped: the transform gizmo, which sets the precedent |
+| Joints, motion studies, contact sets | SolidCraft | [Kinematic mates and pose-swept clearance](#kinematic-mates-and-pose-sweeps) (6.3), which now cites SolidCraft as evidence too |
+| Plastic-part features (boss, lip, snap fit) | SolidCraft | Not an item. These are parametric shapes, so they belong to the starter macro library or a sourced OpenSCAD library ([OpenSCAD library staging](#openscad-library-staging), 3.17), not to kernel ops |
+| Named Views, standard views (Ctrl+1–7), Fit, Home, view cube | SolidCraft | Already shipped: view bookmarks (View ▾ Save current view…), the orientation cube, keys `1`–`6` and `i`, and the view-controls dock |
+| Interference, section, draft analysis, mass properties | SolidCraft | Already shipped: Clash (with clearance), Cut Plane with a solid cap, the Draft panel, Mass Properties |
+| Selection filter, right-click menu, status and selection feedback | SolidCraft | Already shipped: Select ▾ filters, the context menu, the status bar and selection pill |
+| Autosave, crash recovery, atomic saves | SolidCraft | Already shipped in this tool's shape: sidecar autosave, hot-exit backup, the save journal and temp-file-plus-rename source writes |
+| Ctrl/Cmd +/− and 0 change the UI scale | SolidCraft | Not an item: VS Code's own zoom already scales the webview |
+| Settings profiles; a Design Properties metadata dialog | SolidCraft | Not an item: VS Code settings profiles cover the first; the drawing-sheet title block and the handoff manifest already carry the metadata that has a consumer |
+| Sketch with geometric constraints | SolidCraft | [Rejected](#rejected-scope), unchanged after re-reading: expression-driven profile forms remain the design |
+| Render workspace (lights, environments, PBR materials, image export) | SolidCraft | [Rejected](#rejected-scope): photoreal rendering |
+| URDF export, send to slicer | SolidCraft | [Rejected](#rejected-scope), unchanged |
+
 ### What the GPL-3.0 relicense unlocks {#relicense-unlocks}
 
 CAD-Preview moved from `GPL-2.0-or-later` to `GPL-3.0-or-later` on 2026-09-24. Besides the OpenSCAD port it was made for, this admits Apache-2.0 dependencies: under GPLv2 they were incompatible, and under GPLv3 they are compatible. One of them serves an open item directly (the other, `draco3d`, shipped with compressed glTF):
@@ -295,6 +339,7 @@ It does **not** admit AGPL code, so TetGen stays rejected. Every new bundled dep
 | Meshing probes | Decide on remeshing and on conformal assemblies | MMG core probe is closed with a partial outcome: volume/surface/transport work, unconditional optimisation failed. MMG remeshing has shipped: shared service, MCP tool and panel with real-pipeline screenshots and packaged-runtime verification. Conformal multi-body meshing and Gmsh mesh optimisation have shipped, each with probe-measured results and a decision. Manifold mesh booleans have shipped, and so have periodic face pairs; pre-mesh healing and the hex-dominant MDPA split were probed and rejected (see Non-goals), and the size callback works but nothing ships on it. Structured meshing per Part has shipped as `Part.meshStructured` with exact-count smoke coverage. Metric-driven adaptive remeshing has shipped as **Adapt to field** on remesh (scalar metric; the tensor metric was probed and not worth shipping). Hausdorff-bounded surface coarsening has shipped as the `autoDecimate` backend (mmgs; the earlier negative result was a mis-scaled `hausd`). Anisotropic 2-D boundary layers have shipped as `Part.meshBoundaryLayer` (the recorded blocker did not reproduce). Achieved rows are now measured from the generated nodes (`boundaryLayerMeasurement.ts`; generate result, panel Layer row and handoff manifest, with a shortfall warning), closing 2.22. View-driven mesh sizing has shipped as `MeshOptions.sizeField` (list-based `SP` view + `PostView` field, `bull.stp` worst deviation 3.3× down at 11.7× elements, Parts and physical groups survive, no view left behind). The octree hex-dominant engine shipped as `engine: "octree"` (3522 cells enclosing exactly 60 on `block.stp`, MDPA with all three cell classes). KaHIP-partitioned Kratos MDPA export has shipped as `MeshOptions.mdpaRanks` (`doc/gmsh-integration.md#partitioned-mdpa`: one file per rank, global ids, an interface-node SubModelPart; `bull.stp` at 4 ranks cuts 108 interface nodes against the space-filling curve's 297). Nothing was left in this wave until 2026-10-31, which re-opened it with [a volume behind the prism-layer shell](#volume-behind-prism-layers) (4.11) and [physics-calibrated size presets](#physics-calibrated-size-presets) (4.12) | Each probe filed with measured results and a decision |
 | Geometry probes | Decide which never-called OCCT capabilities become ops | B-rep repair probed and **failed** (no `ShapeFix_*` fixer clears a real finding; see Kernel-blocked) and left the list; the face-region split passed its probe, shipped as the `splitFace` op, and left the list; variable-radius fillets passed theirs and shipped as `FilletOp.radius2` (see `CLAUDE.md`'s Fillet/chamfer call shapes). Next (2026-10-31): the four route-around probes 3.14–3.17, each re-opening a Non-goal | Each probe filed with measured results and a decision |
 | Agent ergonomics | An agent can tell a retryable failure from a model error, and two writers cannot silently clobber each other | Done: OpenSCAD diagnostics (document-derived OpenSCAD text now reaches an agent only inside untrusted-text markers), coded MCP errors (a failure carries a code and `retryable`; an undeclared parameter is warned about) and the MCP revision guard (a stale `expectedRevision` is refused with `stale-revision`). Mark agent-made edits has shipped too. Next: the Upkeep items (1.1, 1.2; sidecar later-added fields, formerly 1.7, shipped) and the remaining Ready product work | An agent's change is visible and refusable |
+| Interface depth | The webview reads like a CAD application: parameters, commands and history are discoverable without opening the right panel first | From the [SolidCraft review](#solidcraft-review): the parameters table (2.31), then variable "Used by" lists and autocomplete (2.32) and command search (2.34), which reuse its data; the ribbon (2.35) and two-tone icons (2.36) are best done together, because the ribbon is the icons' main consumer and both change every screenshot | Each item's `test:webview` case is bug-injected and the screenshots are regenerated and inspected |
 | Strategic | Remove the kernel ceiling | The self-built OCCT WASM probe (6.1) | The existing test suites pass unchanged against the new build |
 
 These are outcome groupings, not release numbers. Independent small items can ship between waves; a failed probe must not block unrelated work.
@@ -348,6 +393,229 @@ These are outcome groupings, not release numbers. Independent small items can sh
 - **Out of scope:** exact interpolation (kernel-bound) and 3D surfaces from two-parameter functions.
 - **Done when:** `x = s, y = 0.1*sin(360*s)` on `s ∈ [0, 1]` extrudes into a solid whose volume matches the analytic integral within the spline's tolerance, from the panel.
 
+#### 2.31 Parameters table {#parameters-table}
+
+*Area: Interface, Parity. Effort: M.*
+
+- **Today:** the Edits panel's Variables table has three columns: name, expression and computed value, plus a delete button (`src/webview/variablesPanel.ts`). An edit applies on `change`, so it already applies when you leave the field, and there is no switch for that. Variables cannot be reordered (`doc/getting-started.md`, "Parametric Variables"), because a variable may reference only those above it. A unit can be written inline (`2[in]`) but has no column. Nothing lists the numbers each op holds.
+- **Inspiration:** SolidCraft's Parameters dialog (see the [review](#solidcraft-review)).
+- **First increment (M):**
+  - **User parameters:** columns Name · Unit · Expression · Value · Comment, a favourite star that pins a row to the top of the view, up/down reorder, and a Filter box.
+    - The Unit column is a selector that writes the existing bracket syntax into the expression. It never adds a second unit store. The deduced unit shown beside it comes from `get_state`'s `unit`.
+    - Reorder is refused, with a message naming the variable, when it would move a variable above one it references. The define-above rule in `editVariables.ts` keeps cycles unrepresentable, and that guarantee must not move.
+  - **Import… / Export CSV… / Export JSON…:** Name, Expression and Comment columns. An import runs through `editVariables.ts`' tolerance gate and reports each rejected row (bad name, duplicate, forward reference, unparsable expression). It never imports half a row silently.
+  - **"Apply each change as you leave its field":** on by default, which is today's behaviour. When it is off, an Apply/Revert pair commits the whole table in one `writeEdits`.
+  - **Model parameters:** a section below the user parameters, listing the numeric fields of each op in the history, grouped by op row (`#3 extrude ▸ length = 10`). Each field is editable in place (the edit goes through the same path as the op form) and has a **Promote to variable** action. The action creates a user parameter and rewrites the field as an `exprs` annotation, because the stored op keeps its last-good value cache, as `CLAUDE.md`'s parametric-variable rules require. Rows below the save point are read-only, like 🔒 history rows.
+- **Storage:** `comment` and `favourite` are additive optional fields on `ParamVariable` in `.edits.json`, so no version bump is needed. They must be added to the `src/mcpSidecars.ts` twin in the same change. Display order is the array order, which is also the evaluation order.
+- **Parity:** `set_variables` accepts `comment`/`favourite`, and `get_state` returns them. CSV import and export are panel-only, because an agent already writes the JSON array.
+- **Out of scope:** per-variable unit *storage*, and model parameters named automatically (`d1`, `d2`). An op field is addressed by its op index and field path, which is stable within the current history, not by a generated name.
+- **Done when:**
+  - a `test:webview` case round-trips a five-variable CSV (one row deliberately invalid and reported);
+  - reordering refuses a move across a dependency;
+  - promoting an extrude's length re-evaluates the model when the new variable changes;
+  - a sidecar written before this change still parses unchanged.
+
+#### 2.32 Variable "Used by" list and expression autocomplete {#variable-used-by-and-autocomplete}
+
+*Area: Interface. Effort: S.*
+
+- **Today:** the variables panel counts how many ops reference a variable, but shows that count only in the delete button's warning tooltip. Op form fields are free text. The command bar has Tab completion, but form fields do not.
+- **First increment (S):**
+  - **Used by:** a per-variable disclosure that lists the referencing op rows and other variables. Clicking a row selects that history row. "Used by" is right here, unlike entity references ("Mentioned by op N"), because a variable reference is a *name* stored in `exprs`, not a positional id.
+  - **Autocomplete:** in every numeric op field and in variable expressions, suggest variable names (only those defined above, in the variables table) and the `paramExpr.ts` functions. Arrow keys move, Enter or Tab accept, Escape dismisses. The suggestion list comes from the same source as the command bar's completion.
+- **Parity:** webview-only. An agent reads references from `get_state`.
+- **Done when:** a `test:webview` case accepts a completion with Tab and with Enter, Escape leaves the field unchanged, and the Used-by list matches the delete warning's count.
+
+#### 2.33 Configurations (design table) {#configurations-design-table}
+
+*Area: Parity, Interface. Effort: M.*
+
+- **Today:** a model has one set of variable values. Producing an M6 and an M8 variant means editing the variables, exporting, and editing them back. `batchExport.ts` iterates over *files*, not over value sets.
+- **First increment (M):**
+  - **Storage:** named configurations in `.edits.json`. Each one is a sparse map from variable name to an expression override. An `activeConfiguration` names the one currently applied. Resolution overlays the active configuration onto the variables before the existing resolve-on-read, so stored ops never change.
+  - **Config Table:** a grid with configurations as rows and variables as columns. Picking a row makes it the active configuration. A cell that breaks evaluation freezes, like any variable failure. It never crashes.
+  - **Parity:** a `set_configuration` tool and an optional `configuration` parameter on the export and meshing tools. That parameter evaluates without changing the stored active configuration.
+  - **Batch export across configurations:** a Batch Export mode that writes one file per configuration (`<stem>-<config>.<ext>`), through the same writers.
+- **Later phase:** feature suppression per configuration, after [History timeline depth](#history-timeline-depth) (2.37) gives ops a suppressed state.
+- **Out of scope:** configurations of Parts, mesh options or layers. Variables are the only thing a configuration changes.
+- **Done when:**
+  - `mcp:smoke` exports two configurations of a parametric box and pins both volumes analytically;
+  - the table switches the viewer between them;
+  - a sidecar with no configurations behaves exactly as today.
+
+#### 2.34 Command search and keyboard-first commands {#command-search-and-keyboard-commands}
+
+*Area: Interface. Effort: M.*
+
+- **Today:**
+  - The command bar Tab-completes op names and entity ids, and a bare op name opens its form. It shows no list and no shortcuts.
+  - The only single-key shortcuts are the view snaps `1`–`6` and `i` (`src/viewShortcuts.ts`).
+  - Nothing repeats the last command.
+- **First increment (M):**
+  - **Search commands (Ctrl+K, or `/` in the viewer):** a fuzzy list over three sources: every `opCatalog.ts` entry (labels and `COMMAND_TABLE` names), every toolbar and dropdown action, and every Advanced panel. Each result shows its group, icon and shortcut, so the list doubles as the shortcut reference. Choosing an op opens its form. Choosing a panel expands and scrolls to it.
+  - **Single-letter op keys, opt-in:** a `cadPreview.singleKeyCommands` setting that is off by default, because single keys collide with typing habits inside VS Code. Proposed keys: E extrude, R revolve, F fillet, C chamfer, H hole, M move, S shell, P pattern, Q measure. The keys never take `1`–`6` or `i`, and never fire while focus is in a field.
+  - **Shift+R repeats the last command:** it reopens the last op form with its last values, without applying it.
+- **Single source:** shortcuts are declared once, beside the catalog entry. `opCatalog.test.ts` is extended to refuse a duplicate key or one that collides with a view snap.
+- **Parity:** webview-only (interaction).
+- **Done when:** a `test:webview` case finds Fillet by typing `fil`, opens its form with Enter, and repeats it with Shift+R; with the setting off, `e` does nothing.
+
+#### 2.35 Ribbon command strip {#ribbon-command-strip}
+
+*Area: Interface. Effort: M–L.*
+
+- **Today:** the toolbar is a row of dropdowns (File, View, Select, Measure, Markup) with Fit, Tree and FE Mesh buttons. Modelling commands live in the Edits panel's GEOMETRY/EDIT button grid, and analysis lives in the collapsed Advanced group. A user who has not opened the right panel cannot see what the tool can do.
+- **Proposal:** a SolidCraft-style command strip under the menu bar, with workspace tabs (**View · Model · Inspect · Mesh · Export**). Each tab is a row of large icon-over-label buttons in labelled groups:
+  - **Model:** the `opCatalog.ts` categories (Sketch, Primitives, Holes, Build, Modify, Arrange, Assembly).
+  - **Inspect:** Measure, Mass Properties, Clash, Draft, Printability, B-rep Health and the [zebra overlay](#zebra-stripes-and-centre-of-mass-marker).
+  - **Mesh:** FE Mesh, Mesh Health, Surface Tools.
+  - **Export:** formats, drawing sheets, batch export.
+  
+  A button opens the existing form or panel. The strip adds no new feature surface.
+- **Single source:** the strip is generated from `opCatalog.ts` plus a small table of non-op actions, so `opCatalog.test.ts`' one-to-one coverage extends to it, and no button can exist without a form.
+- **Layout rules:**
+  - An overflow ▸ menu appears when the editor is narrow.
+  - A compact preference hides the labels.
+  - The tab choice is persisted in `ViewState` (additive).
+  - The Edits panel keeps its history and form area, and its button grid collapses behind a toggle once the strip covers it.
+  - Every toggled element gets an explicit `#id[hidden]{display:none}` override (`CLAUDE.md`'s `[hidden]` hazard).
+- **Cost to plan for:** every screenshot changes, and the fixed clips in `capture.mjs` must be re-checked. Toolbar specificity rules (`#toolbar > button`, `.tb-dropdown`) need a scoped selector for the strip.
+- **Done when:**
+  - `test:webview` asserts rendered visibility of each tab's groups at a wide and at a narrow width (overflow menu used);
+  - every catalog op is reachable from the strip;
+  - screenshots are regenerated and inspected.
+
+#### 2.36 Two-tone icon set {#two-tone-icon-set}
+
+*Area: Interface. Effort: M.*
+
+- **Today:** icons are generated from TikZ (`icons/`, `pdftocairo -svg`, `svgIconPostProcess.mjs`). Black maps to `currentColor`, and a `gray!N` fill maps to `currentColor` with a fill opacity. That gives one hue and translucent fills, line-drawn and mostly flat.
+- **Proposal:** a filled, isometric, two-tone style like SolidCraft's modelling set. A neutral body is used for the solid, and an accent tone is used for the part the command acts on (the extruded face, the filleted edge, the hole). The style reference is SolidCraft's; nothing is vendored (see the [review](#solidcraft-review)).
+  - `svgIconPostProcess.mjs` maps a second reserved TikZ colour (for example `blue`) to `var(--ui-icon-accent, currentColor)`.
+  - A new `--ui-icon-accent` property is set from the VS Code theme's button or focus colour. It falls back to `currentColor` in high-contrast themes, so those themes stay monochrome.
+  - Strokes keep mapping to `currentColor`.
+- **Order:** the op icons first (`src/webview/opIcons.ts`; the ribbon's large buttons are their main consumer), then the toolbar icons. Rebuild only the changed ids (`make svg-ops/<id>.svg`), never a bare `make ts`.
+- **Rules kept:** no hand-edited SVG. The icons still read at 1em. There are no magenta or violet accents (`CLAUDE.md`'s theme rule).
+- **Done when:**
+  - the post-process unit test pins the accent mapping;
+  - light, dark and high-contrast screenshots of the ribbon show the accent in the first two themes and none in high contrast;
+  - the F5 check of the three themes is recorded in the gap registry.
+
+#### 2.37 History timeline depth {#history-timeline-depth}
+
+*Area: Interface, Parity. Effort: M.*
+
+- **Today:** a history row can be jumped to (rows after the marker dim), deleted, and clicked to highlight the faces its op produced. There is no suppress, rename, folder or reorder. Deleting a row that later ops reference gives no warning, even though those references stop resolving.
+- **First increment (M):**
+  - **Suppress:** an additive `suppressed: true` on the stored op. Replay skips it, and its `OpOutcome` reads `applied: false` with a "suppressed" note.
+    - Suppressing or unsuppressing is a topology change, so it goes through `rebindPartsAcrossOps` exactly as a removal and re-insertion would.
+    - It is refused across the save point, like remove and undo.
+    - `remove_edit_op` stays the only way to delete an op.
+  - **Rename:** an additive `label` shown instead of `describeOp`'s text. The op `kind` is never touched.
+  - **Folders:** display-only groups stored as `{name, from, to}` index ranges beside the ops in `.edits.json`. Collapsing a folder hides its rows and changes nothing in replay.
+  - **Delete with dependents:** before a delete, list everything that would stop resolving: `pointRefs` and `planeId` users, stored `targetQueries`, and Parts whose ids the op produced.
+  - **Hover highlight:** hovering a row tints the faces its op produced, reusing the click-highlight chip's bucket lookup.
+- **Later phase (S–M):** drag reorder, allowed only when the dependency check above finds no reference that crosses the move. It is rebound as a non-append change (one direct whole-shape match).
+- **Parity:** `set_edit_op_state {index, suppressed?, label?}`, and `get_state` reports both fields.
+- **Done when:**
+  - `test:integration` suppresses a fillet, sees the edge count change and a Part keep its faces, then unsuppresses back to an identical `opOutcomes` list;
+  - the dependents list names a `pointRefs` user;
+  - an old sidecar parses unchanged.
+
+#### 2.38 Unified Browser tree {#unified-browser-tree}
+
+*Area: Interface. Effort: M.*
+
+- **Today:** the information is shipped but scattered. There is the Components tree (with a filter and per-row eyes), the Parts and Layers panels, construction planes in the dock popover, sketch geometry only in the viewport, and view bookmarks in View ▾.
+- **Proposal:** one **Browser** section at the top of the sidebar, with groups:
+  - **Document:** units, tessellation quality, source format and save state.
+  - **Named Views.**
+  - **Origin:** the world axes and planes, plus the construction planes.
+  - **Bodies:** `solid-N`, with Part colour.
+  - **Sketches:** faces and wires from profile ops, with guide geometry dimmed.
+  - **Features:** the history, the same rows as the Edits panel.
+  - **Parts** and **Layers.**
+
+  Each group and row has a visibility eye. There are Expand All and Collapse All, and a filter.
+- **Rule:** the Browser is a *view* over the existing models (`PartsModel`, layers, planes, bookmarks, `EditsModel`, the component tree). It stores no new state and adds no sidecar. A row action calls the same function as the panel it mirrors.
+- **Layout:** visibility composes through `applyVisibilityState()`, the one place where Part hide and isolate and layer visibility already meet. Tree group rows expand to descendant leaves (`treeGroups.ts`).
+- **Done when:** a `test:webview` case hides a body from the Browser and the Components tree reflects it; restoring a view from the Browser and from View ▾ yields the same camera.
+
+#### 2.39 Navigation upgrades {#navigation-upgrades}
+
+*Area: Interface. Effort: S–M.*
+
+- **Today:** the orientation cube snaps to its six faces, `1`–`6` and `i` give the standard views, and the view-controls dock carries reset, fit, zoom and display mode. The axis helper is not clickable. Mouse mapping is fixed: left-drag orbits, right-drag pans, the wheel zooms.
+- **First increment (S):**
+  - **Clickable axis tips** on the triad: click +X/−X/+Y/−Y/+Z/−Z to look along that axis.
+  - **26 snapped views:** the cube's 12 edges and 8 corners become hit regions beside its 6 faces, as in SolidCraft. These are pure camera targets in `orientationCube.ts`, and its tests extend to them.
+  - **Look at selection:** from the context menu, view along a selected planar face's normal. Clip ▸ Face already computes that normal.
+- **Second increment (S):**
+  - **Navigation presets:** a `cadPreview.navigationPreset` setting with Default, Fusion (middle-drag pan, Shift+middle orbit), OpenSCAD and Touchpad (two-finger pan, pinch zoom). One mapping table drives every preset. SpaceMouse input is unaffected.
+  - Free orbit with roll stays off. The trackball is not proposed.
+- **Done when:** `test:webview` snaps to a corner view and pins the camera direction (±1e-6). Each preset maps one scripted gesture to the expected camera change.
+
+#### 2.40 Zebra stripes and a centre-of-mass marker {#zebra-stripes-and-centre-of-mass-marker}
+
+*Area: Interface, Parity. Effort: S.*
+
+- **Today:** there is no surface-continuity overlay. Mass Properties reports the centroid as a number only.
+- **First increment (S):**
+  - **Zebra:** a display overlay that colours faces by `step(fract(k · reflect(view, normal) · axis))`, a stripe environment mapped through the shading normal. It works on the shared tessellation, so on B-rep and mesh sources alike. Stripe count and direction are dock controls.
+    - It is a material swap that composes with Part colours. It never writes `mat.color` (`CLAUDE.md`'s theme rule).
+    - It stays live during a drag through `requestRender()`.
+    - Stripe continuity across an edge is a fact about the *tessellation's* normals, and the overlay says so. It is sampled, not certified, like the deviation map.
+  - **Centre-of-mass marker:** a sprite at the centroid Mass Properties already computes, for the selected solid or the whole model, removed when the panel closes.
+- **Parity:** zebra is webview-only, and the closest headless view is `render_snapshot`. The display mode is added to the snapshot `display` enum only if the shader runs in the snapshot harness, and is recorded as webview-only otherwise.
+- **Done when:** a `test:webview` pixel probe shows continuous stripes across a tangent fillet edge and broken stripes across a sharp box edge on the same model; the marker sits at block.stp's origin (±1e-6).
+
+#### 2.41 Feature form ergonomics {#feature-form-ergonomics}
+
+*Area: Interface. Effort: S.*
+
+- **Today:** op forms open inline in the Edits panel, below the button grid. A long form (sweep, loft, wrap) scrolls its Apply button out of view. A collapsed panel loses the form's place.
+- **First increment (S):**
+  - **Sticky footer:** Apply, Cancel and the live-preview toggle are pinned outside the scrolling area.
+  - **Collapsible form header:** the header shows the op name and its intent tint, and collapsing it keeps every value.
+  - **Optional placement:** a setting docks forms as a right-hand overlay on the viewport, as in SolidCraft. The overlay has the same DOM and moves, never duplicates. It obeys the one-WebGL-context rule and never covers the orientation cube.
+- **Rules kept:**
+  - The preview is still cancelled on form switch, on selection change and before commit.
+  - Escape restores before it blurs.
+  - Every toggled element gets its `[hidden]` override.
+- **Done when:** `test:webview` asserts that Apply is visible (`offsetParent !== null`) on the longest form at the smallest supported height; collapsing and expanding keeps typed values; the docked placement passes the same cases.
+
+#### 2.42 Named materials in the Parts panel {#named-materials-in-parts}
+
+*Area: Interface, Parity. Effort: S.*
+
+- **Today:** headless `set_part` accepts a `material` name and stores the resolved density (`materialDensity.ts`' `MATERIALS`). The Parts panel only has a numeric density field and a colour swatch, so a user cannot do what an agent can.
+- **First increment (S):** a material picker on each Part row, built from the same `MATERIALS` table. Picking an entry sets the density, and offers that entry's suggested colour if the Part has none. As headless, only the number is stored: the name is presentation, so editing the density by hand clears the shown name.
+- **Out of scope:** textures, PBR looks, and an editable library. A user library can follow the macros and mesh-presets pattern later, with the caller's entries winning.
+- **Done when:** a `test:webview` case picks "Steel", the BOM mass equals the volume × 7.85 / 1000, and the sidecar holds no material name.
+
+#### 2.43 Issue draft from a failure {#issue-draft-from-a-failure}
+
+*Area: Platform. Effort: S.*
+
+- **Today:** a failed op shows a ⚠ history row with its diagnostic and hint, and a kernel crash shows a coded notification. Reporting either upstream means copying text by hand, and the versions that matter (extension, kernels, VS Code) are not in that text.
+- **First increment (S):**
+  - **Report issue…** appears on ⚠ rows, on kernel-crash notifications and in the File menu.
+  - It assembles a draft: the op kind and parameters, the `OpOutcome` diagnostic, the extension and kernel package versions, VS Code and the OS.
+  - The draft opens in an editor tab for review, then goes to a prefilled `issues/new` URL through `vscode.env.openExternal`.
+  - **Nothing is sent automatically.** Absolute paths are redacted to the file's basename. Model bytes are never attached; the draft says how to attach a file deliberately.
+- **Parity:** an MCP `diagnostics_report` tool returns the same text for an agent to show its user. It never opens a URL.
+- **Done when:** a unit test pins the redaction (no home path, no workspace path in the output); `test:integration` drives the command from a forced op failure and captures the URL through a stub.
+
+#### 2.44 Welcome walkthrough and sample gallery {#welcome-walkthrough-and-samples}
+
+*Area: Ecosystem. Effort: S.*
+
+- **Today:** the empty Models view offers Open and New Blank Model. There is a What's New tab (`src/whatsNew.ts`), but no `walkthroughs` contribution and no way to open the bundled `examples/` without cloning the repository.
+- **First increment (S):**
+  - **A VS Code walkthrough:** open a model, edit and save, generate a mesh, connect an agent. Its steps call existing commands.
+  - **Open Sample…:** a gallery of a few small, licence-clear fixtures, for example `block.stp`, `bull.stp`, `cube.stl`, a `.csg` and the cantilever tutorial. Each one is copied into a folder the user picks, because opening a sample must never write sidecars inside the extension directory.
+- **Cost:** sample size counts against the VSIX. Prefer fixtures under 100 KB, and record the total in `compat:vsix`.
+- **Done when:** `test:integration` opens a sample through the command, finds its copy in the chosen folder, and finds no sidecar beside the bundled original.
+
 ### Probe-gated — establish feasibility before estimating
 
 *Admission: a specific hypothesis with a discriminating experiment. Each probe below is a small, self-contained piece of work with a firm **S** estimate of its own; the phases under "If admitted" are what ships if the probe passes, tagged provisionally. A method that accepts arguments but changes nothing is a failed probe.*
@@ -383,6 +651,9 @@ Probes are grouped by area. Each group has its own order table. The order is the
 | 3.15 | B-rep repair by refit | full meshio++ artifact | Re-opens the ShapeFix entry; the decision gate is a real fixture |
 | 3.16 | 3D text through OpenSCAD | — | Re-opens the font entry; first find out whether the WASM has a font |
 | 3.17 | OpenSCAD library staging | — | Re-opens part generators as sourced libraries, not kernel primitives |
+| 3.18 | Curvature, minimum radius and isocurve overlays | — | The curvature accessors have never been called; analytic fixtures decide it |
+| 3.19 | Sheet-metal flat pattern of an imported part | — | Reuses `wrap`'s develop step; the bend detection is the unknown |
+| 3.20 | Frame members along wireframe edges | — | Sweeps and booleans are verified; corner trims are the unknown |
 
 None of these depends on another's result.
 
@@ -500,6 +771,70 @@ None of these depends on another's result.
 - **If admitted (S):** a cap that applies per declared library folder, reported in diagnostics; the Rejected-scope entry gains the pointer.
 - **Out of scope:** bundling any library in the VSIX.
 
+##### 3.18 Curvature, minimum radius and isocurve overlays {#curvature-and-isocurve-overlays}
+
+*Area: Geometry, Interface.*
+
+- **Hypothesis:** OCCT's surface-property evaluator can give principal curvatures at every tessellation vertex of a B-rep face fast enough for an interactive colour overlay. The same pass yields minimum-radius facts (the smallest |1/κ| per face) and iso-parameter lines for display.
+- **Evidence today:**
+  - `GeomLProp_SLProps_1` is already constructed for edge pcurve normals (`CLAUDE.md`, face/curve classification). Its curvature accessors (`MaxCurvature`, `MinCurvature`, `MeanCurvature`, `GaussianCurvature`, `IsCurvatureDefined`) have never been called.
+  - The Draft panel shows the overlay pattern: per-vertex scalars and a colour map in the webview.
+  - SolidCraft lists curvature map, comb, isocurve and minimum-radius analyses.
+- **Probe (S):**
+  1. On `bull.stp` and a sphere-plus-cylinder fixture with known radii, evaluate the curvatures at each vertex's UV, as stored by the tessellation, and compare them with the analytic 1/r. Plane: 0. Cylinder: 1/r and 0. Sphere: 1/r twice. Tolerance 1e-6 relative.
+  2. Time the pass on the largest perf fixture, against a starting budget of 1 s to be confirmed with the maintainer.
+  3. Build an iso-U and iso-V curve on one face (`GeomAdaptor`/`Geom_Surface.UIso`/`VIso`, or sampled points in UV) and check that it lies on the surface.
+  4. Record behaviour at singular points (the sphere poles), where the curvature may be undefined.
+- **Decision gate:**
+  - **Pass:** analytic match and within budget.
+  - **Partial:** curvature works but iso-lines do not. Ship the map only.
+  - **Fail:** recorded under Kernel-blocked with the failing call.
+- **If admitted (S–M):** a Curvature panel in Advanced ▸ Analysis (Gaussian, mean, max and min colour maps, and a minimum-radius list per face with "select"), an iso-line display toggle, and a `check_curvature` facts tool (minimum radius per face, with `face-N` ids).
+- **Out of scope:** curvature on mesh sources (a discrete estimate, which would be a separate item), the curvature comb on edges, and G2/G3 continuity verdicts.
+
+##### 3.19 Sheet-metal flat pattern of an imported part {#sheet-metal-flat-pattern}
+
+*Area: Geometry, Drawings.*
+
+- **Hypothesis:** a constant-thickness B-rep built from planar faces joined by cylindrical bends, as any sheet-metal CAD exports to STEP, can be unfolded into a flat pattern with a K-factor bend allowance. The pattern would be emitted as DXF through the drawing writer. This is *preparing an existing part for manufacture*, not authoring sheet metal.
+- **Evidence today:**
+  - `wrap` already develops cylindrical and conical faces to the plane and back, and records the analytic parameters.
+  - The DXF writer, with layers, is shipped (`drawingSheet.ts`).
+  - `check_brep_health` and face classification (`BRepAdaptor_Surface_2(...).GetType()`) can tell planes from cylinders.
+  - SolidCraft's sheet metal covers unfold, flat pattern, DXF and bend-table export.
+- **Probe (S):**
+  1. Build a test L-bracket and a U-channel with the existing ops: box, `shell` and fillets of the inner radius r with thickness t. Detect the "A-side" face set and the bends, where each bend is a pair of coaxial cylinders whose radii differ by t.
+  2. Unfold. Each bend becomes a strip of width (r + K·t)·θ, and the flanges rotate rigidly about the bend lines (`BRepBuilderAPI_Transform_2`, the verified call shape).
+  3. Compare the flat outline's length with the analytic flat length for K = 0.33 and K = 0.5 (±1e-6).
+  4. Refuse with a reason: variable thickness, a non-cylindrical bend, or a pattern that overlaps itself.
+- **Decision gate:**
+  - **Pass:** analytic lengths on both fixtures, and clean refusals on a non-sheet part (`bull.stp`).
+  - **Fail:** recorded under Rejected scope with the case that broke it.
+- **If admitted (M):** an `unfold_sheet_metal` tool (facts: thickness, bend count, radii, angles, flat bounding box) with DXF output, bend lines on their own layer and a bend table. An Advanced ▸ Analysis panel that previews the flat pattern as a drawing.
+- **Out of scope:** flanges, hems, reliefs, rips, refold, and sheet-metal rules as authoring features.
+
+##### 3.20 Frame members along wireframe edges {#frame-members-along-edges}
+
+*Area: Geometry.*
+
+- **Hypothesis:** a weldment-style frame can be built from a skeleton of wireframe edges (`addLine`/`addPolyline`) by sweeping a standard profile along each edge and trimming where members meet. That needs no new kernel family: `sweep` with `profileEdges`, `addSurfaceFromLines` and booleans are all verified.
+- **Evidence today:**
+  - Sweep along an edge ships.
+  - Standard-profile geometry would be data, as macros or a profile table, not code.
+  - SolidCraft's weldments ship frame members and a profile library.
+  - The unknown is the corner. Mitre and butt trims need a cutting half-space per joint, and a joint where three members meet is not a plane.
+- **Probe (S):**
+  1. On a closed 100 × 60 rectangle of lines, sweep a 20 × 20 × 2 square tube along each edge and mitre each corner with a bisector-plane `splitByPlane` cut.
+  2. Fuse, then check the volume against the analytic frame volume (±1e-6 relative) and that `NbFreeEdges() === 0`.
+  3. Repeat with butt joints: one member cut to the other's face.
+  4. Try a three-member corner (a cube skeleton) and record what happens.
+- **Decision gate:**
+  - **Pass:** both two-member corner styles match analytically.
+  - **Partial:** a three-member corner fails, so the probe ships two-member joints only, and refuses the rest with a fail diagnostic.
+  - **Fail:** recorded under Rejected scope.
+- **If admitted (M, provisional):** a `frameMembers` macro or op (`edgeIds`, profile name, orientation angle, corner style), a small profile table (square/rectangular tube, angle, channel) shipped like `mesh-presets/`, and a cut list in the BOM (length per member).
+- **Out of scope:** weld beads, end caps and gussets as authoring features. Standard-profile sourcing beyond the bundled table goes through step.parts.
+
 #### 4. Meshing probes {#meshing-probes}
 
 | ID | Item | Needs | Why here |
@@ -551,6 +886,7 @@ Section 4 was emptied and removed when its last probe closed; it is recreated he
 | 5.2 | Multilingual user interface | CI with VS Code download | Partial; step 2 is the remaining gate |
 | 5.3 | Inline 3D preview as an MCP App resource | two MCP-App hosts | Host support is the unknown |
 | 5.4 | Part rename and delete events for embedders | — | Cross-repo; KKSS owns the report |
+| 5.5 | On-canvas parameter handles | — | Preview latency is the only unknown |
 
 
 ##### 5.1 Per-document kernel isolation {#per-document-kernel-isolation}
@@ -647,6 +983,28 @@ Section 4 was emptied and removed when its last probe closed; it is recreated he
 - **If admitted (S):** the event, the manifest field, and `get_state` reporting Part ids.
 - **Out of scope:** any knowledge of the embedder's case format here.
 
+##### 5.5 On-canvas parameter handles {#on-canvas-parameter-handles}
+
+*Area: Interface.*
+
+- **Hypothesis:** a drag handle on the model edits *an existing op field or variable* (an extrude's length, a fillet's radius, a shell's thickness, a hole's depth, a pattern's spacing), with a value box beside it. It can stay responsive through the existing speculative-replay preview, without becoming a sketcher.
+- **Evidence today:**
+  - The transform gizmo is the precedent. It is a live preview on a geometry-free proxy, it stays in sync with the form fields, and only Apply commits.
+  - The op preview is a speculative replay with its own `::oppreview` cache key, debounced about 250 ms.
+  - SolidCraft ships handles with automatic join or cut for extrude, fillet, shell, hole depth, move, pattern spacing and revolve.
+  - The unknown is latency. Every handle move is a kernel replay of the edited op and everything after it.
+- **Probe (S):**
+  1. For an extrude near the end of `bull.stp`'s history and one near the start, measure the preview round trip per drag step: worker replay, tessellation, post and render.
+  2. Compare it against a budget of 100 ms per step for a "follows the mouse" feel, to be confirmed with the maintainer.
+  3. Measure the coalesced rate (drop intermediate steps while a replay is in flight).
+  4. Confirm cancellation on form switch and selection change still holds while a drag is in flight.
+- **Decision gate:**
+  - **Pass:** within budget at the end of the history. Handles ship for ops whose field is a length along a known axis.
+  - **Partial:** within budget only near the end. Handles appear only on the last op, and earlier ops keep the form.
+  - **Fail:** recorded. The value box alone ships (type a number on canvas) with the existing preview.
+- **If admitted (M):** a handle per supported op form, bound to that form's field, so the field shows the value, the expression is preserved, and a field bound to a variable edits the variable with a confirmation. Snap to the grid step. Escape cancels.
+- **Out of scope:** handles that create geometry, which would be sketching (see [Rejected scope](#rejected-scope)), and handles on ops below the save point.
+
 ### 6. Strategic — multi-phase bets {#strategic-—-multi-phase-bets}
 
 *Admission: an L-sized, multi-phase effort that gates other items or reopens Non-goals. Each starts with its own probe, and nothing below it is estimated until that probe reports.*
@@ -689,6 +1047,7 @@ Section 4 was emptied and removed when its last probe closed; it is recreated he
 - **Hypothesis:** revolute and slider joints between Parts, with limits and named poses, let the existing interference and clearance checks run across a motion range instead of at the one pose a file happens to be saved in.
 - **Evidence today:**
   - Assembly support stops at static placement: `mate` aligns two faces once, and `explode` previews a spread. Nothing records that a lid rotates about a hinge axis between 0° and 110°.
+  - SolidCraft (see the [SolidCraft review](#solidcraft-review)) ships joints with limits, as-built joints, rigid groups, motion links, contact sets and motion studies, which is the authoring side the scope question below must rule on.
   - text-to-cad models this directly — `revolute`, `slider`, `cylindrical` and `fastened` mates with required limits on anything that moves, couplings, and named poses — and its own validation guide says a static clearance check "proves only that pose".
   - The checking half is already here: `check_interference_all` and its `minClearance` near-miss reporting run on whatever geometry they are given. What is missing is a way to put a Part at a pose without rewriting the op list.
 - **Probe (M — a design question as much as a kernel one):**
@@ -822,6 +1181,8 @@ Three groups, three different revival rules. Each says what would change our min
   - For Netgen: a capability the shipped in-Gmsh Netgen demonstrably lacks that a standalone build supplies (the bundled copy passed its probe: repeatable min/mean gain on `bull.stp`).
 
 - **Reimplementing the OpenSCAD language** — rejected, recorded from the [agent-CAD comparison](#agent-cad-comparison). ReOpenSCAD rewrote the lexer, parser, evaluator and CSG kernel from scratch to avoid OpenSCAD's code entirely. The cost is fidelity: no `import()`, `surface()` or `roof()`, no user library paths (so no BOSL2), one built-in stroke font, and a sampled fallback mesher with its own "will not match OpenSCAD" warning. This extension evaluates `.scad` through the real OpenSCAD engine — the bundled WASM port first, the installed `openscad` binary as the fallback — so the install is optional and the engine is not reimplemented. **Revive only** if both the WASM path and the binary path are ruled out.
+
+- **A photoreal render workspace (lights, environments, PBR materials, image export)** — rejected, recorded from the [SolidCraft review](#solidcraft-review). SolidCraft ships one as its own workspace. Here the viewer's job is to show geometry truthfully for inspection: Part colours, the theme palette and the display modes. `render_snapshot` already gives an agent images. A renderer would add a second material model that meshing, export and the BOM never read. What survives is [Named materials in the Parts panel](#named-materials-in-parts) (2.42), which has a consumer in mass. **Revive only** for a concrete downstream consumer of rendered images that `render_snapshot`'s display modes cannot serve.
 
 - **Hosted, shared workspaces and an HTTP MCP transport** — rejected. ReOpenSCAD serves its MCP over HTTP, with the workspace URL itself granting edit access. This extension's MCP server is a local stdio process that reads and writes files the user already owns; a network listener would be a new attack surface with nothing local to gain. What survives: registering the server with VS Code (shipped — the MCP server-definition provider and the **Connect an agent…** snippets) and copyable client snippets. **Revive only** for a concrete embedding request that cannot spawn a process (for example, a KKSS deployment that runs the server remotely), with authentication designed in from the start. **Status 2026-10-31:** the embedding case this entry anticipated (a KKSS deployment that cannot spawn the server locally) is served on the KKSS side — its bearer-token, Host-checked HTTP meta server re-exposes these tools over loopback — so nothing is owed here and the rejection stands.
 
