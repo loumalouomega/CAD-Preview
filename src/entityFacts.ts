@@ -1256,6 +1256,18 @@ export async function rebindPartsAcrossOps(
   annotations: Annotation[] = [],
   layers: Layer[] = []
 ): Promise<{ parts: Part[]; annotations: Annotation[]; layers: Layer[]; stats: RebindStats; annotationStats: RebindStats; layerStats: RebindStats }> {
+  // A rule-defined Part (a scene selector) was just re-evaluated against the new
+  // shape by `resolvePartSelectors`; its answer is authoritative. Remapping it
+  // geometrically from the OLD shape would drop a face the rule newly matched
+  // (it has no old counterpart), so such Parts sit this pass out.
+  const isRule = (p: Part): boolean => p.selector !== undefined && p.selectorOpKind === "scene";
+  if (parts.some(isRule)) {
+    const rest = parts.filter((p) => !isRule(p));
+    const r = await rebindPartsAcrossOps(extensionPath, bytes, format, oldOps, newOps, rest, annotations, layers);
+    if (r.parts === rest) return { ...r, parts };
+    const remapped = [...r.parts];
+    return { ...r, parts: parts.map((p) => (isRule(p) ? p : remapped.shift()!)) };
+  }
   const EMPTY_STATS: RebindStats = { considered: 0, rebound: 0, dropped: 0 };
   if (parts.length === 0 && annotations.length === 0 && layers.length === 0) {
     return { parts, annotations, layers, stats: EMPTY_STATS, annotationStats: EMPTY_STATS, layerStats: EMPTY_STATS };
