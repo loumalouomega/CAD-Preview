@@ -40,7 +40,7 @@ import { sanitizeSpaceMouseMessage } from "../spaceMouseReports";
 import type { PanelOpId } from "./opCatalog";
 import { VariablesModel } from "./variablesModel";
 import { VariablesPanel } from "./variablesPanel";
-import { evaluateVariables, resolveEditOps } from "../editVariables";
+import { evaluateVariables, resolveEditOps, dimensionIssues } from "../editVariables";
 import { replayTail } from "../editsSidecar";
 import { resolvePlaneRefs } from "../planeRefs";
 import { extractIdentifiers } from "../paramExpr";
@@ -635,7 +635,7 @@ function currentResolvedOps(): { ops: EditOp[]; issues: string[] } {
   const { values } = evaluateVariables(variablesModel.list());
   const { ops: variableResolved, issues: variableIssues } = resolveEditOps(editsModel.list(), values);
   const { ops, issues: planeIssues } = resolvePlaneRefs(variableResolved, planesModel.list());
-  return { ops, issues: [...variableIssues, ...planeIssues] };
+  return { ops, issues: [...variableIssues, ...dimensionIssues(editsModel.list(), variablesModel.list()), ...planeIssues] };
 }
 
 /** How many op-expression fields reference each variable (for delete warnings). */

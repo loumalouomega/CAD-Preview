@@ -27,7 +27,7 @@ import {
   type EditOpKind,
   type OpOutcome,
 } from "./editOps";
-import { evaluateVariables, resolveEditOps, validateVariables, type ParamVariable } from "./editVariables";
+import { evaluateVariables, resolveEditOps, validateVariables, dimensionIssues, variableDimensions, type ParamVariable } from "./editVariables";
 import { resolvePlaneRefs } from "./planeRefs";
 import { applyPointRefWriteback, pointRefRebindWarnings, type PointRefHit } from "./pointRefCache";
 import { parseSvgDocument, svgSubpathsToPolylineOps } from "./svgImport";
@@ -3742,6 +3742,7 @@ export async function getState(params: { path: string }) {
   const planes = await readPlanes(modelPath);
   const meshOptions = await readMeshOptions(modelPath);
   const { errors } = evaluateVariables(variables);
+  const variableDims = variableDimensions(variables);
   return {
     // Per-sidecar content fingerprints (see src/mcpRevision.ts). Pass one as
     // `expectedRevision` to a write tool to refuse the write if that sidecar
@@ -3754,6 +3755,8 @@ export async function getState(params: { path: string }) {
       name: v.name,
       expr: v.expr,
       value: v.value,
+      /** Deduced from bracketed units: "length" | "angle" | "none" (plain number) | "mixed". */
+      unit: variableDims[v.name] ?? "none",
       error: errors.get(v.name) ?? null,
     })),
     parts,
@@ -4087,6 +4090,7 @@ export async function applyEditOps(
   const newOps = [...current.fullOps, ...accepted];
   const planesForWrite = await readPlanes(modelPath).catch(() => [] as never[]);
   const { ops: resolvedNewOps } = resolvePlaneRefs(newOps, planesForWrite);
+  warnings.push(...dimensionIssues(accepted, current.variables));
   if (!params.dryRun && accepted.length > 0) {
     // Persist the FULL list (baked prefix included); the watermark rides along.
     await writeEdits(modelPath, resolvedNewOps, current.variables, current.bakedThrough);
@@ -4889,7 +4893,7 @@ export async function setVariables(params: { path: string; variables: Array<{ na
   const { ops, issues } = resolveEditOps(current.fullOps, values);
   await writeEdits(modelPath, ops, variables, current.bakedThrough);
 
-  const warnings: string[] = [...issues];
+  const warnings: string[] = [...issues, ...dimensionIssues(ops, variables)];
   if (droppedCount > 0) {
     warnings.push(`${droppedCount} variable(s) dropped (invalid/duplicate name or oversized expression).`);
   }
