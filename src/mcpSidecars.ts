@@ -20,7 +20,7 @@ import { parsePlanesJson, serializePlanesJson } from "./planesSidecar";
 import { parseScadOverridesJson } from "./scadOverridesSidecar";
 import type { ScadValue } from "./scadParams";
 import { DEFAULT_MESH_OPTIONS, type MeshOptions } from "./meshOptions";
-import { parseMeshJson, serializeMeshJson, generateGeoScript } from "./meshOptionsSidecar";
+import { parseMeshJson, parseMeshJsonWithNotes, serializeMeshJson, generateGeoScript } from "./meshOptionsSidecar";
 import { parseScriptLibraryJson, serializeScriptLibraryJson, type ScriptLibrary } from "./scriptLibrary";
 import { bundledMacrosPath } from "./starterMacros";
 import { bundledProcessLimitsPath, parseProcessLimits, type ProcessLimitsLibrary } from "./processLimits";
@@ -182,6 +182,15 @@ export async function readMeshOptions(modelPath: string): Promise<MeshOptions> {
     return parseMeshJson(text);
   } catch {
     return DEFAULT_MESH_OPTIONS;
+  }
+}
+
+/** {@link readMeshOptions} plus the notes for fields the stored sidecar predates. */
+export async function readMeshOptionsWithNotes(modelPath: string): Promise<{ options: MeshOptions; legacyNotes: string[] }> {
+  try {
+    return parseMeshJsonWithNotes(await fs.readFile(meshOptionsSidecarPath(modelPath), "utf8"));
+  } catch {
+    return { options: DEFAULT_MESH_OPTIONS, legacyNotes: [] };
   }
 }
 

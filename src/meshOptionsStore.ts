@@ -1,6 +1,6 @@
 import * as vscode from "vscode";
 import { DEFAULT_MESH_OPTIONS, type MeshOptions } from "./meshOptions";
-import { parseMeshJson, serializeMeshJson, generateGeoScript } from "./meshOptionsSidecar";
+import { parseMeshJson, parseMeshJsonWithNotes, serializeMeshJson, generateGeoScript } from "./meshOptionsSidecar";
 import { assertNotDirty } from "./dirtyGuard";
 
 /** The mesh options sidecar URI for a model: `<model>.mesh.json` beside the source. */
@@ -15,6 +15,16 @@ export async function readMeshOptions(modelUri: vscode.Uri): Promise<MeshOptions
     return parseMeshJson(Buffer.from(bytes).toString("utf8"));
   } catch {
     return DEFAULT_MESH_OPTIONS;
+  }
+}
+
+/** {@link readMeshOptions} plus the notes for fields the stored sidecar predates. */
+export async function readMeshOptionsWithNotes(modelUri: vscode.Uri): Promise<{ options: MeshOptions; legacyNotes: string[] }> {
+  try {
+    const bytes = await vscode.workspace.fs.readFile(meshOptionsSidecarUri(modelUri));
+    return parseMeshJsonWithNotes(Buffer.from(bytes).toString("utf8"));
+  } catch {
+    return { options: DEFAULT_MESH_OPTIONS, legacyNotes: [] };
   }
 }
 

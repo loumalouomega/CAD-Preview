@@ -52,6 +52,13 @@ describe("buildHandoffManifest", () => {
     expect(m.outputs[0].sha256).toMatch(/^[0-9a-f]{64}$/);
   });
 
+  it("records a Part's rule beside its resolved ids, and nothing for a plain id bag", () => {
+    const rule = { version: 1 as const, source: { kind: "scene" as const, filter: [{ kind: "plane" as const, point: [-50, 0, 0] as [number, number, number], normal: [1, 0, 0] as [number, number, number] }] } };
+    const m = build({ parts: [{ ...part("FixedEnd", ["face-1"]), selector: rule, selectorOpKind: "scene" }, part("Wall", ["face-2"])] });
+    expect(m.parts[0].rule).toEqual(rule);
+    expect("rule" in m.parts[1]).toBe(false);
+  });
+
   it("records a hanging-node octree's constraints and says they exist only in MDPA", () => {
     const octree = {
       maxLevel: 4, snap: false, transition: "hanging" as const, numLeaves: 1450, numHanging: 378, finestLevel: 4, numSnapped: 0, numRefused: 0,

@@ -1552,11 +1552,23 @@ function filterableFactForFace(oc: any, face: any, id: string, cleanup: Array<{ 
   const props = new oc.GProp_GProps_1();
   cleanup.push(props);
   surfacePropertiesAdaptive(oc, face, props);
+  const params = info.params;
+  const radius =
+    params?.kind === "cylinder" || params?.kind === "sphere"
+      ? params.radius
+      : params?.kind === "torus"
+        ? params.majorRadius
+        : params?.kind === "cone"
+          ? params.refRadius
+          : null;
   return {
     id,
     area: props.Mass(),
     surfaceType: info.type,
-    normal: info.params?.kind === "plane" ? info.params.normal : null,
+    normal: params?.kind === "plane" ? params.normal : null,
+    bbox: bboxExtent(oc, face, cleanup),
+    planeOrigin: params?.kind === "plane" ? params.origin : null,
+    radius,
   };
 }
 
@@ -1660,7 +1672,7 @@ export async function resolveBucketSelector(
       const shape = applyEditsBRep(oc, readShape(oc, tmpName, format, cleanup), ops, cleanup);
       let survivors = allFaceFilterableFacts(oc, shape, cleanup);
       const { filter, rank } = query.source;
-      if (filter !== undefined) survivors = applyFaceFilter(survivors, filter);
+      if (filter !== undefined) survivors = applyFaceFilter(survivors, filter, { diagonal: bboxDiagonal(oc, shape, cleanup) });
       if (rank !== undefined) survivors = rankFaces(survivors, rank);
       return { ids: survivors.map((f) => f.id), unresolved: [], matches: [], bindable: true };
     } catch (err) {
@@ -1744,7 +1756,7 @@ export async function resolveBucketSelector(
     // in this file, never a fabricated predicate evaluation.
     let survivors = matches.filter((m) => byId.has(m.newId));
     if (filter !== undefined) {
-      const kept = new Set(applyFaceFilter([...byId.values()], filter).map((f) => f.id));
+      const kept = new Set(applyFaceFilter([...byId.values()], filter, { diagonal: bboxDiagonal(oc, fullShape, cleanupFull) }).map((f) => f.id));
       survivors = survivors.filter((m) => kept.has(m.newId));
     }
     if (rank !== undefined) {
@@ -2016,6 +2028,8 @@ export async function resolvePartSelectors(
     const fullFaceSigs = collectAllEntitySignatures(oc, fullShape, cleanupFull).filter((s) => s.kind === "face");
     const toleranceAbs = Math.max(1e-3 * bboxDiagonal(oc, fullShape, cleanupFull), 1e-6);
     const allFacts = allFaceFilterableFacts(oc, fullShape, cleanupFull);
+    // Rule leaves (box / plane / radius) default their tolerance to a fraction of the model size.
+    const filterCtx = { diagonal: bboxDiagonal(oc, fullShape, cleanupFull) };
 
     // Prefix replay per distinct bucket op, shared by every part on it.
     interface PrefixData {
@@ -2058,13 +2072,19 @@ export async function resolvePartSelectors(
       if (!query) return freeze("stored selector is malformed");
       if (query.source.kind === "scene") {
         const { filter, rank } = query.source;
-        let survivors = filter !== undefined ? applyFaceFilter(allFacts, filter) : [...allFacts];
+        let survivors = filter !== undefined ? applyFaceFilter(allFacts, filter, filterCtx) : [...allFacts];
         if (rank !== undefined) survivors = rankFaces(survivors, rank);
         if (survivors.length === 0) return freeze("scene query currently selects nothing");
         const ids = survivors.map((f) => f.id);
         if (JSON.stringify(ids) === JSON.stringify(part.surfaces)) return part;
         resolved++;
         changed = true;
+        const had = new Set(part.surfaces);
+        const now = new Set(ids);
+        const added = ids.filter((id) => !had.has(id)).length;
+        const lost = part.surfaces.filter((id) => !now.has(id)).length;
+        // A rule re-evaluating to a different answer is information, not a failure (it did resolve).
+        warnings.push(`Part "${part.name}": rule re-evaluated — ${added} face${added === 1 ? "" : "s"} added, ${lost} lost.`);
         return { ...part, surfaces: ids };
       }
       // Bucket path.
@@ -2092,7 +2112,7 @@ export async function resolvePartSelectors(
         const byId = new Map(facts.map((f) => [f.id, f]));
         survivors = survivors.filter((id) => byId.has(id));
         if (filter !== undefined) {
-          const kept = new Set(applyFaceFilter([...byId.values()], filter).map((f) => f.id));
+          const kept = new Set(applyFaceFilter([...byId.values()], filter, filterCtx).map((f) => f.id));
           survivors = survivors.filter((id) => kept.has(id));
         }
         if (rank !== undefined) {

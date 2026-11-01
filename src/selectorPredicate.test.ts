@@ -134,3 +134,62 @@ describe("selectorPredicate: filterFaces + rankFaces", () => {
     expect(rankFaces(withNull, { by: "area", order: "min", n: 2 }).map((f) => f.id)).toEqual(["face-1", "face-0"]);
   });
 });
+
+import { validateFacePredicate as vfp, matchesFacePredicate as mfp, applyFaceFilter as aff } from "./selectorPredicate";
+
+describe("rule leaves", () => {
+  const face = (over: Partial<FilterableFace>): FilterableFace => ({
+    id: "face-0", area: 1, surfaceType: "plane", normal: [1, 0, 0],
+    bbox: { min: [-50, -5, -5], max: [-50, 5, 5] }, planeOrigin: [-50, 0, 0], radius: null, ...over,
+  });
+  const ctx = { diagonal: 100 }; // default tol = 0.1
+
+  it("plane leaf matches coplanar faces in either orientation, rejects offset or tilted ones", () => {
+    const leaf = { kind: "plane" as const, point: [-50, 0, 0] as [number, number, number], normal: [1, 0, 0] as [number, number, number] };
+    expect(mfp(face({}), leaf, ctx)).toBe(true);
+    expect(mfp(face({ normal: [-1, 0, 0] }), leaf, ctx)).toBe(true);
+    expect(mfp(face({ planeOrigin: [50, 0, 0] }), leaf, ctx)).toBe(false);
+    expect(mfp(face({ planeOrigin: [-49.95, 3, 9] }), leaf, ctx)).toBe(true); // within 1e-3 x diagonal, in-plane offsets irrelevant
+    expect(mfp(face({ planeOrigin: [-49.5, 0, 0] }), leaf, ctx)).toBe(false);
+    expect(mfp(face({ normal: [0, 1, 0] }), leaf, ctx)).toBe(false);
+    expect(mfp(face({ surfaceType: "cylinder", normal: null }), leaf, ctx)).toBe(false);
+  });
+
+  it("box leaf: inside needs the whole face bbox in, intersects needs any overlap, null limits are open", () => {
+    const inside = { kind: "box" as const, mode: "inside" as const, min: [-60, null, null] as [number, null, null], max: [-40, null, null] as [number, null, null] };
+    expect(mfp(face({}), inside, ctx)).toBe(true);
+    expect(mfp(face({ bbox: { min: [-70, 0, 0], max: [-50, 1, 1] } }), inside, ctx)).toBe(false);
+    const hit = { ...inside, mode: "intersects" as const };
+    expect(mfp(face({ bbox: { min: [-70, 0, 0], max: [-50, 1, 1] } }), hit, ctx)).toBe(true);
+    expect(mfp(face({ bbox: { min: [-90, 0, 0], max: [-70, 1, 1] } }), hit, ctx)).toBe(false);
+    expect(mfp(face({ bbox: null }), inside, ctx)).toBe(false);
+  });
+
+  it("surfaceType radius leaf matches by radius within tolerance", () => {
+    const leaf = { kind: "surfaceType" as const, type: "cylinder" as const, radius: 5 };
+    expect(mfp(face({ surfaceType: "cylinder", radius: 5.05 }), leaf, ctx)).toBe(true);
+    expect(mfp(face({ surfaceType: "cylinder", radius: 6 }), leaf, ctx)).toBe(false);
+    expect(mfp(face({ surfaceType: "cylinder", radius: null }), leaf, ctx)).toBe(false);
+    expect(mfp(face({ surfaceType: "sphere", radius: 5 }), leaf, ctx)).toBe(false);
+  });
+
+  it("validation drops malformed rule leaves and keeps well-formed ones", () => {
+    expect(vfp({ kind: "plane", point: [0, 0, 0], normal: [0, 0, 0] })).toBeNull();
+    expect(vfp({ kind: "plane", point: [0, 0], normal: [1, 0, 0] })).toBeNull();
+    expect(vfp({ kind: "plane", point: [0, 0, 0], normal: [1, 0, 0], tol: -1 })).toBeNull();
+    expect(vfp({ kind: "box", mode: "inside", min: [null, null, null], max: [null, null, null] })).toBeNull();
+    expect(vfp({ kind: "box", mode: "inside", min: [5, null, null], max: [1, null, null] })).toBeNull();
+    expect(vfp({ kind: "box", mode: "near", min: [0, 0, 0], max: [1, 1, 1] })).toBeNull();
+    expect(vfp({ kind: "surfaceType", type: "cylinder", radius: -2 })).toBeNull();
+    expect(vfp({ kind: "box", mode: "inside", min: [0, null, null], max: [1, null, null] })).toEqual({
+      kind: "box", mode: "inside", min: [0, null, null], max: [1, null, null],
+    });
+    expect(vfp({ kind: "surfaceType", type: "plane" })).toEqual({ kind: "surfaceType", type: "plane" });
+  });
+
+  it("composes with existing leaves in an AND list", () => {
+    const faces = [face({ id: "face-1" }), face({ id: "face-2", area: 0.1 })];
+    const out = aff(faces, [{ kind: "plane", point: [-50, 0, 0], normal: [1, 0, 0] }, { kind: "areaGte", value: 0.5 }], ctx);
+    expect(out.map((f) => f.id)).toEqual(["face-1"]);
+  });
+});

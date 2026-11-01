@@ -78,7 +78,7 @@ import type { EditOp, EditOpKind } from "./editOps";
 import { validateEditOp } from "./editOps";
 import type { ParamVariable } from "./editVariables";
 import { resolvePlaneRefs } from "./planeRefs";
-import { readMeshOptions, writeMeshOptions, writeGeoScript, meshOptionsSidecarUri, geoScriptUri } from "./meshOptionsStore";
+import { readMeshOptions, readMeshOptionsWithNotes, writeMeshOptions, writeGeoScript, meshOptionsSidecarUri, geoScriptUri } from "./meshOptionsStore";
 import { readViewState, writeViewState, viewStateSidecarUri } from "./viewStateStore";
 import { writeCustomBackup, restoreCustomBackup } from "./customBackup";
 import type { MeshGenerationInput } from "./gmshService";
@@ -4248,8 +4248,9 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
    * returns it so the caller can keep `currentMeshOptions` in sync — same
    * pattern as `sendParts` above. */
   private async sendMeshOptions(uri: vscode.Uri, post: (msg: HostToWebview) => void): Promise<MeshOptions> {
-    const options = await readMeshOptions(uri);
+    const { options, legacyNotes } = await readMeshOptionsWithNotes(uri);
     post({ type: "meshingOptions", options });
+    for (const note of legacyNotes) post({ type: "status", text: `Mesh options: ${note}` });
     return options;
   }
 

@@ -442,7 +442,21 @@ const meshOptionsOverride = z
 // scene-requires-filter-or-rank rule are enforced by the gate.
 const selectorFilterLeaf = z.union([
   z.object({ kind: z.literal("planar") }),
-  z.object({ kind: z.literal("surfaceType"), type: z.string() }),
+  z.object({ kind: z.literal("surfaceType"), type: z.string(), radius: z.number().optional(), tol: z.number().optional() }),
+  // Rule leaves (Part membership defined by a rule, re-evaluated on every replay).
+  z.object({
+    kind: z.literal("box"),
+    mode: z.enum(["inside", "intersects"]),
+    min: z.tuple([z.number().nullable(), z.number().nullable(), z.number().nullable()]),
+    max: z.tuple([z.number().nullable(), z.number().nullable(), z.number().nullable()]),
+    tol: z.number().optional(),
+  }),
+  z.object({
+    kind: z.literal("plane"),
+    point: z.tuple([z.number(), z.number(), z.number()]),
+    normal: z.tuple([z.number(), z.number(), z.number()]),
+    tol: z.number().optional(),
+  }),
   z.object({
     kind: z.literal("normal"),
     dir: z.tuple([z.number(), z.number(), z.number()]),
@@ -453,7 +467,7 @@ const selectorFilterLeaf = z.union([
 ]);
 const selectorFilterSchema = z
   .union([selectorFilterLeaf, selectorFilterLeaf.array().min(1).max(8)])
-  .describe("One induced predicate or an AND-list (planar, surfaceType, normal dir, area thresholds) — evaluated against current-shape exact facts");
+  .describe("One induced predicate or an AND-list (planar, surfaceType [+ radius], normal dir, area thresholds, and the rule leaves box {mode inside|intersects, min/max per axis, null = unbounded} and plane {point, normal, tol}) — evaluated against current-shape exact facts");
 const selectorRankSchema = z
   .object({ by: z.literal("area"), order: z.enum(["max", "min"]), n: z.number().int().min(1) })
   .describe("Top-N by area over the (possibly filtered) faces, e.g. {by:'area',order:'max',n:1} for the largest");
@@ -1642,7 +1656,7 @@ server.registerTool(
   "set_part",
   {
     description:
-      "Create, update, or remove a named part (FEM sub-model-part) grouping entity ids from load_model's inventory. Parts drive per-part colours, Gmsh physical groups in mesh exports (B-rep sources), optional per-part meshSize refinement (a flat size confined to the part's own entities), and optional meshGrading (a distance-graded size AROUND the part — sizeAtWall within distNear, growing to sizeFar at distFar; B-rep sources only, same as physical groups and meshSize), and optional meshStructured (transfinite node count per meshed edge for an exact mapped grid on regular regions; B-rep sources only), and optional meshBoundaryLayer (an anisotropic boundary layer along the part's edge-N walls: wallSize, growthRatio, thickness, quads; 2-D meshes only). Optional density (g/cm3) or material name gives the part a mass: generate_bom adds Density/Mass columns and a total, get_mass_properties on a solid-N inside the part reports massGrams; a part with no density is reported as missing, never zero. Omitted fields keep their current values; meshSize/meshGrading/meshStructured/meshBoundaryLayer/density: null clears them. Optional selector stores a re-executable SelectorQuery beside the raw surfaces cache (same shape resolve_selector takes) — the host re-resolves it against the current op list and overwrites surfaces on an oracle-clean result; null clears a stored one.",
+      "Create, update, or remove a named part (FEM sub-model-part) grouping entity ids from load_model's inventory. Parts drive per-part colours, Gmsh physical groups in mesh exports (B-rep sources), optional per-part meshSize refinement (a flat size confined to the part's own entities), and optional meshGrading (a distance-graded size AROUND the part — sizeAtWall within distNear, growing to sizeFar at distFar; B-rep sources only, same as physical groups and meshSize), and optional meshStructured (transfinite node count per meshed edge for an exact mapped grid on regular regions; B-rep sources only), and optional meshBoundaryLayer (an anisotropic boundary layer along the part's edge-N walls: wallSize, growthRatio, thickness, quads; 2-D meshes only). Optional density (g/cm3) or material name gives the part a mass: generate_bom adds Density/Mass columns and a total, get_mass_properties on a solid-N inside the part reports massGrams; a part with no density is reported as missing, never zero. Omitted fields keep their current values; meshSize/meshGrading/meshStructured/meshBoundaryLayer/density: null clears them. Optional selector stores a re-executable SelectorQuery beside the raw surfaces cache (same shape resolve_selector takes) — the host re-resolves it against the current op list and overwrites surfaces on an oracle-clean result; null clears a stored one. A scene selector with a box/plane/radius filter is a rule-defined Part: its surfaces are re-evaluated after every edit (not rebound), and a change is reported as \"Part X: rule re-evaluated — N faces added, M lost\".",
     inputSchema: {
       path: modelPath,
       name: z.string().describe("Part name (the upsert key)"),

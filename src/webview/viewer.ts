@@ -4,7 +4,7 @@ import { TransformControls } from "three/examples/jsm/controls/TransformControls
 import * as cam from "./cameraControls";
 import type { ViewerCamera } from "./cameraControls";
 import { OrientationCube } from "./orientationCube";
-import { collectTargets, resolvePick, collectMeasureTargets, resolveMeasurePick, type PickResult } from "./picking";
+import { collectTargets, resolvePick, collectMeasureTargets, resolveMeasurePick, distinctPicks, candidateSignature, stepCandidateIndex, type PickResult } from "./picking";
 import { defaultEdgeColor, defaultFaceColor, defaultPointColor } from "./geometryBuilder";
 import { capCenterAndSize } from "./clipping";
 import { buildClipCap, repositionClipCap, disposeClipCap } from "./clipCap";
@@ -189,6 +189,11 @@ export class Viewer {
   private hoverListenersAttached = false;
   /** Last reported entity, so an unchanged hover reports nothing. */
   private lastHoverKey: string | null = null;
+  /** Entities under the last hover ray, front to back, and which one is current. */
+  private hoverCandidates: PickResult[] = [];
+  private hoverSignature = "";
+  private hoverStep = 0;
+  private onCandidateStep: ((index: number, count: number) => void) | null = null;
   private lastHoverAt = 0;
   /** Right-click reporting; `null` until `setContextMenuHandler` registers one. */
   private onContextMenu: ((r: PickResult, cssX: number, cssY: number, point: [number, number, number]) => void) | null = null;
@@ -1779,8 +1784,44 @@ export class Viewer {
     }
   };
 
+  /** Reports the current candidate to the hover consumer, only on a CHANGE of entity:
+   * a tooltip re-render per mouse move over one unchanged face is pure churn. */
+  private reportHoverCandidate(): void {
+    const r = this.hoverCandidates[this.hoverStep];
+    if (!r) return;
+    const key = `${r.entityType}:${r.entityId}`;
+    if (key !== this.lastHoverKey) {
+      this.lastHoverKey = key;
+      this.onEntityHover?.(r);
+    }
+  }
+
+  /** Registers the "k of n under the cursor" consumer (`0, 0` = nothing to step). */
+  setCandidateStepHandler(fn: (index: number, count: number) => void): void {
+    this.onCandidateStep = fn;
+  }
+
+  /**
+   * Steps the hovered entity to the next/previous one the view ray crosses, so the
+   * next click within the drag tolerance picks it. Returns false (and does nothing)
+   * unless MORE than one entity is under the cursor, so the caller leaves the key
+   * to its other meanings.
+   */
+  stepHoverCandidate(delta: number): boolean {
+    const n = this.hoverCandidates.length;
+    if (n <= 1 || this.selectionMode === null) return false;
+    this.hoverStep = stepCandidateIndex(this.hoverStep, n, delta);
+    this.onCandidateStep?.(this.hoverStep + 1, n);
+    this.reportHoverCandidate();
+    return true;
+  }
+
   /** The pointer left the canvas, the model, or every pane: clear BOTH consumers. */
   private onHoverPointerLeave = (): void => {
+    this.hoverCandidates = [];
+    this.hoverSignature = "";
+    this.hoverStep = 0;
+    this.onCandidateStep?.(0, 0);
     this.clearEntityHover();
     this.onPointerWorld?.(null);
   };
@@ -1842,18 +1883,17 @@ export class Viewer {
       mode === "surface" && this.onPointerWorld
         ? surfaceHits
         : this.raycaster.intersectObjects(collectTargets(this.model, mode), false);
-    for (const h of hits) {
-      const r = resolvePick(h.object.userData, mode);
-      if (r) {
-        // Only report a CHANGE of entity: a tooltip re-render per mouse move
-        // over one unchanged face is pure churn.
-        const key = `${r.entityType}:${r.entityId}`;
-        if (key !== this.lastHoverKey) {
-          this.lastHoverKey = key;
-          this.onEntityHover(r);
-        }
-        return;
-      }
+    const cands = distinctPicks(hits, mode);
+    const signature = candidateSignature(cands);
+    if (signature !== this.hoverSignature) {
+      this.hoverSignature = signature;
+      this.hoverStep = 0;
+      this.onCandidateStep?.(cands.length > 1 ? 1 : 0, cands.length > 1 ? cands.length : 0);
+    }
+    this.hoverCandidates = cands;
+    if (cands.length > 0) {
+      this.reportHoverCandidate();
+      return;
     }
     this.clearEntityHover();
   };
@@ -2691,12 +2731,13 @@ export class Viewer {
     if (this.selectionMode === null) return; // guaranteed non-null by the guard above, but keeps TS narrowing honest
     const targets = collectTargets(this.model, this.selectionMode);
     const hits = this.raycaster.intersectObjects(targets, false);
-    for (const h of hits) {
-      const r = resolvePick(h.object.userData, this.selectionMode);
-      if (r) {
-        this.onEntityPick?.(r, event.shiftKey);
-        return;
-      }
+    const cands = distinctPicks(hits, this.selectionMode);
+    if (cands.length > 0) {
+      // A stepped hover applies only to the SAME stack of entities it was stepped in.
+      const step = candidateSignature(cands) === this.hoverSignature ? this.hoverStep : 0;
+      this.hoverStep = 0;
+      this.onEntityPick?.(cands[step] ?? cands[0], event.shiftKey);
+      return;
     }
     this.onEmptyPick?.();
   };

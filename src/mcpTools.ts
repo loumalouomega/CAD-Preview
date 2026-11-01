@@ -229,6 +229,7 @@ import {
   readPlanes,
   writePlanes,
   readMeshOptions,
+  readMeshOptionsWithNotes,
   writeMeshOptions,
   assertNotSourcePath,
   editsSidecarPath,
@@ -5784,6 +5785,11 @@ export async function generateMeshTool(
   const modelPath = params.path;
   const route = requireRoute(modelPath);
   const warnings: string[] = [];
+
+  if (params.options?.conformal === undefined) {
+    // A sidecar written before a behaviour-changing field existed keeps the old behaviour — say so.
+    for (const note of (await readMeshOptionsWithNotes(modelPath)).legacyNotes) warnings.push(`Mesh options: ${note}.`);
+  }
 
   const input = await resolveMeshInputHeadless(ctx, modelPath, route, warnings);
   const base = await effectiveMeshOptions(modelPath, params.options);

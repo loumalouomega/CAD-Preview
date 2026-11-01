@@ -7960,6 +7960,56 @@ try {
     assert(endFaces.fixed && endFaces.load, `both end faces found by normal (got ${JSON.stringify(endFaces)})`);
     await call("set_part", { path: beamModel, name: "FixedEnd", surfaces: [endFaces.fixed] });
     await call("set_part", { path: beamModel, name: "LoadFace", surfaces: [endFaces.load] });
+    // Rule-defined Part membership (roadmap "Rule-defined Part membership"): "every planar face on x = -50"
+    // is a scene selector, re-evaluated on each replay instead of rebound. On a separate copy so the
+    // cantilever's own MDPA pins above and below stay untouched.
+    {
+      const ruleModel = path.join(dir, "tutorial-rule.stp");
+      const resetRule = () => {
+        fs.copyFileSync(path.join(ROOT, "examples", "STP", "block.stp"), ruleModel);
+        for (const ext of [".edits.json", ".parts.json", ".mesh.json"]) fs.rmSync(`${ruleModel}${ext}`, { force: true });
+      };
+      resetRule();
+      await callWithCleanRetry("apply_edit_ops", { path: ruleModel, ops: beamOps }, resetRule);
+      const endPlane = { kind: "plane", point: [-50, 0, 0], normal: [1, 0, 0] };
+      await call("set_part", { path: ruleModel, name: "RuleEnd", surfaces: [endFaces.fixed], selector: { version: 1, source: { kind: "scene", filter: [endPlane] } } });
+      await call("set_part", { path: ruleModel, name: "IdEnd", surfaces: [endFaces.fixed] });
+      const rs = await call("resolve_selector", { path: ruleModel, selector: { version: 1, source: { kind: "scene", filter: [endPlane] } } });
+      assert(
+        JSON.stringify(rs.ids) === JSON.stringify([endFaces.fixed]),
+        `the plane rule x = -50 selects exactly the beam's end face (got ${JSON.stringify(rs.ids)}, wanted ${endFaces.fixed})`
+      );
+      const boxRule = await call("resolve_selector", {
+        path: ruleModel,
+        selector: { version: 1, source: { kind: "scene", filter: [{ kind: "box", mode: "inside", min: [-51, null, null], max: [-49, null, null] }] } },
+      });
+      assert(
+        JSON.stringify(boxRule.ids) === JSON.stringify([endFaces.fixed]),
+        `the box rule (x within [-51, -49], faces fully inside) selects the same single face (got ${JSON.stringify(boxRule.ids)})`
+      );
+      const noBox = await call("resolve_selector", {
+        path: ruleModel,
+        selector: { version: 1, source: { kind: "scene", filter: [{ kind: "box", mode: "inside", min: [-1, null, null], max: [1, null, null] }] } },
+      });
+      assert(noBox.ids.length === 0, `a box that fully contains no face selects nothing, honestly (got ${JSON.stringify(noBox.ids)})`);
+      // A second box with a face on the SAME plane: the rule gains it, the id bag does not.
+      const grown = await callWithCleanRetry(
+        "apply_edit_ops",
+        { path: ruleModel, ops: [{ op: "addBox", center: [-45, 20, 0], size: [10, 10, 10] }] },
+        () => {
+          resetRule();
+        }
+      );
+      const ruleParts = (await call("read_sidecars", { path: ruleModel })).parts;
+      const ruleEnd = ruleParts.find((p) => p.name === "RuleEnd");
+      const idEnd = ruleParts.find((p) => p.name === "IdEnd");
+      assert(ruleEnd?.surfaces.length === 2, `the rule Part re-evaluated to both faces on x = -50 (got ${JSON.stringify(ruleEnd?.surfaces)})`);
+      assert(idEnd?.surfaces.length === 1, `the id-bag Part on the same face did not grow (got ${JSON.stringify(idEnd?.surfaces)})`);
+      assert(
+        (grown.warnings ?? []).some((w) => /Part "RuleEnd": rule re-evaluated — 1 face added, 0 lost/.test(w)),
+        `the change is reported as a note (got ${JSON.stringify(grown.warnings)})`
+      );
+    }
     const beamMdpa = path.join(dir, "tutorial-cantilever.mdpa");
     await call("export_mesh", {
       path: beamModel,

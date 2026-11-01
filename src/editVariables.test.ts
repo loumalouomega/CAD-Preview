@@ -68,6 +68,23 @@ describe("evaluateVariables", () => {
   });
 });
 
+describe("unit-suffixed variables", () => {
+  it("W = 2[in] resolves to 50.8 and drives an op field", () => {
+    const vars = validateVariables([{ name: "W", expr: "2[in]", value: 0 }]);
+    const { values, errors } = evaluateVariables(vars);
+    expect(errors.size).toBe(0);
+    expect(values.W).toBeCloseTo(50.8, 12);
+    const ops: EditOp[] = [{ op: "addBox", center: [0, 0, 0], size: [1, 2, 3], exprs: { "size[0]": "W" } }];
+    const { ops: resolved, issues } = resolveEditOps(ops, values);
+    expect(issues).toEqual([]);
+    expect(resolved[0]).toMatchObject({ size: [50.8, 2, 3] });
+  });
+  it("a unit-free variables array round-trips unchanged", () => {
+    const raw = [{ name: "L", expr: "20", value: 20 }, { name: "W", expr: "L/2", value: 10 }];
+    expect(validateVariables(raw)).toEqual(raw);
+  });
+});
+
 describe("resolveEditOps", () => {
   it("patches scalar, vec-component, and point-list fields", () => {
     const ops: EditOp[] = [

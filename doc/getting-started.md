@@ -300,6 +300,8 @@ Two small readouts report facts about the open document without asking you to do
 
 With a pick mode active (**Select ▾**), two things explain what you are pointing at.
 
+**Stepping under the cursor:** when more than one entity lies under the pointer (a solid's front and back faces, say), the status line reads `k of n under the cursor`. **↑/↓** (or **+/−**) step through them front to back and the tooltip follows; the next click within the drag tolerance picks the stepped entity. The keys do nothing when only one entity is under the cursor.
+
 **Hovering** shows a small tooltip with the entity's id (`face-12`, `edge-3`, `solid-0`) and which
 of your applied ops mention that id. This is the quickest way to read your own `.edits.json`: the
 ids in the sidecar are exactly the ids under your cursor. It says *mentions*, not *acts on*,
@@ -603,7 +605,7 @@ The **Variables** table at the top of the Edits panel makes the model parametric
 
 ![The Variables table with two variables — L = 20 and the derived H = L / 2 = 10.](/screenshots/variables.png)
 
-Expressions support numbers, variable names, `+ - * / ^`, parentheses, `sqrt/abs/min/max/floor/ceil/round`, `sin/cos/tan` (**degrees**, matching the angle fields), and `pi`. A variable's own expression may reference the variables defined **above** it in the table (so `W = L/2` works; reordering isn't supported). Because the fields are free-text, they no longer have browser spinner arrows — type the value.
+Expressions support numbers, variable names, `+ - * / ^`, parentheses, `sqrt/abs/min/max/floor/ceil/round`, `sin/cos/tan` (**degrees**, matching the angle fields), and `pi`. A number may carry a bracketed unit — `2[in]`, `10[mm]`, `5[deg]`, `0.5[rad]` (`mm cm m in ft`, `deg rad`) — and is converted to millimetres / degrees, so `W = 2[in]` is 50.8; plain numbers keep their meaning. A variable's own expression may reference the variables defined **above** it in the table (so `W = L/2` works; reordering isn't supported). Because the fields are free-text, they no longer have browser spinner arrows — type the value.
 
 If an expression can't be evaluated at Apply time (unknown name, syntax error), the apply is blocked with an inline message. If a *referenced* variable is later deleted or renamed, affected operations keep their last computed values — a warning names the missing variable, and re-adding it restores the parametric link. The delete button's tooltip warns when a variable is still referenced. Variables persist in the same `<model>.edits.json` sidecar as the operations ([format](./file-formats.md#parametric-variables)); variable edits are not part of the op undo/redo history.
 

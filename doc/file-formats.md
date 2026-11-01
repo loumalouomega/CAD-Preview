@@ -299,6 +299,8 @@ User-defined **parts** (named groups of volumes / surfaces / lines) are stored i
 
 Entity ids are the stable topological ids assigned during extraction (`solid-*`, `face-*`, `edge-*`). For mesh formats (which have no stored B-rep topology), the whole object is a **volume** with a stable traversal-order id (`node-*`), and each connected near-coplanar **facet** detected on load is a **surface** (`node-*/face-*`); meshes have no assignable lines. Ids stay valid as long as the source file is unchanged. Parsing is tolerant: a missing or hand-corrupted sidecar yields an empty part list rather than blocking the model from opening.
 
+A part may be **rule-defined**: a stored `selector` of `{"version": 1, "source": {"kind": "scene", "filter": [...]}}` is re-evaluated against the current model after every edit (instead of its ids being rebound), and its `surfaces` list is overwritten with the result. Besides the older leaves, a `filter` may use `{"kind": "plane", "point": [-50, 0, 0], "normal": [1, 0, 0]}` (planar faces on that plane, either orientation), `{"kind": "box", "mode": "inside" | "intersects", "min": [-51, null, null], "max": [-49, null, null]}` (face bounding box inside, or overlapping, the box; `null` = unbounded on that side) and `{"kind": "surfaceType", "type": "cylinder", "radius": 5}`. Tolerances default to `1e-3 ×` the model's bounding-box diagonal (the same figure the rebinder uses) and can be set with a leaf's own `tol`. A rule that selects nothing keeps the cached ids with a warning; a rule whose result changes reports "Part X: rule re-evaluated — N faces added, M lost". Faces only.
+
 A part may carry an optional `density` (g/cm³, a positive finite number — anything else is dropped on read); `generate_bom` and `get_mass_properties` turn it into a mass in grams (`volume mm³ / 1000 × density`), and a part without one reports its mass as missing, never zero. A part may additionally carry a re-executable `selector` (a SelectorQuery, same shape `resolve_selector` takes) beside its raw `surfaces` cache, plus a `selectorOpKind` tag naming the producing op's kind at synthesis time. The host re-resolves the query against the current op list on open and after every op-list change, overwriting `surfaces` only on an oracle-clean result — otherwise the cache freezes with a warning (a stored op index that now addresses a different op kind freezes rather than repointing). A malformed selector is dropped while the part survives on its raw ids. `set_part` accepts the query and derives the kind tag server-side from the current op list, so write-time mismatch is impossible by construction.
 
 ## Layers Sidecar (`<model>.layers.json`)
@@ -373,9 +375,20 @@ A leftover `<base>.save-tmp.<ext>` from a death between writing it and renaming 
 The optional top-level `variables` array holds the document's named **parametric variables** (`{name, expr, value}`), and any op may carry an optional `exprs` annotation mapping a numeric field path (`length`, `size[1]`, `points[2][0]`) to an expression string over them. Editing a variable in the panel re-resolves every annotated op and rebuilds the geometry live. Rules:
 
 - **Numeric fields are last-good caches.** The addressed field always holds the most recent successful evaluation, so a consumer that ignores `exprs` (or an older extension version) still sees a fully-resolved op. Parsing re-resolves ops against the variables (`parseEditsJson`), so hand-editing a variable's `expr` in the sidecar takes effect on the next open.
-- **Expressions** support numbers, variable names, `+ - * / ^`, parentheses, `sqrt/abs/min/max/floor/ceil/round/sin/cos/tan` (trig in **degrees**, matching the `*Deg` angle fields), and `pi`. Evaluation is a small closed interpreter (`src/paramExpr.ts`) — never `eval()`.
+- **Expressions** support numbers, variable names, `+ - * / ^`, parentheses, `sqrt/abs/min/max/floor/ceil/round/sin/cos/tan` (trig in **degrees**, matching the `*Deg` angle fields), and `pi`. A number may carry a bracketed unit — `2[in]`, `10[mm]`, `1.5[ft]`, `5[deg]`, `0.5[rad]` (`mm cm m in ft`, `deg rad`) — converted to the pipeline's millimetres / degrees (`2[in]` is `50.8`); a plain number keeps its meaning, and the suffix must touch the number. Evaluation is a small closed interpreter (`src/paramExpr.ts`) — never `eval()`.
 - **A variable may reference only variables defined above it** in the list (derived values like `W = L/2` work; cycles are unrepresentable). A variable whose expression fails keeps its cached `value`.
 - **Failures freeze, never crash:** an op whose expression references a deleted variable — or whose resolved values would violate a cross-field invariant (e.g. a torus with `minorRadius ≥ majorRadius`) — keeps its previous numbers and a warning is shown; replay continues.
+
+A variable can carry a unit, which is how a value pasted from an inch drawing stays unambiguous (`W` resolves to 50.8 mm):
+
+```parametric
+{
+  "variables": [{ "name": "W", "expr": "2[in]" }],
+  "steps": [
+    { "op": { "op": "addBox", "center": [0, 0, 0], "size": [10, 10, 10], "exprs": { "size[0]": "W" } } }
+  ]
+}
+```
 - **Stored operand queries** are the id-field counterpart of `exprs`: `targetQueries` maps an operand field (`targets`, `a`/`b`, `edges`, `profile`, `faceA`, …) to a SelectorQuery (same shape `resolve_selector` takes), with `targetQueryKinds` carrying one producing-op-kind tag per bucket query. The id arrays stay the last-good caches; resolution is **host-side and replay-only** (`src/opQueryResolve.ts`) — the sidecar keeps queries + caches untouched, and every freeze (forward reference, kind-tag mismatch, pattern producer, unresolved/empty) keeps the cache and surfaces a warning. Mesh sources never resolve queries (they replay on cached ids); queries are refused inside `repeat` bodies.
 - `variables` is omitted when empty, so pre-parametric sidecars are unchanged. The `version` stays `1`. Note: an **older** extension version rewriting the sidecar drops `variables` and `exprs` (it serializes only what it knows).
 

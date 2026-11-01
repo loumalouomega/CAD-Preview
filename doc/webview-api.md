@@ -807,6 +807,8 @@ unit), plus `formatMeshHeaderStat` (the FE Mesh section header's `1,248 el`) and
 so it never overlaps the canvas), which also holds `#kernel-status`; `main.ts` finds them by id, so
 moving them out of the dock needed no wiring change.
 
+`Viewer.stepHoverCandidate(delta)` steps the hovered entity through `distinctPicks(...)` (`picking.ts`: every distinct entity the ray crosses, front to back) and returns `false` unless more than one is under the cursor; `setCandidateStepHandler(cb)` receives `(index, count)` for the status line, and the next click picks the stepped entity only if the ray's stack is unchanged (`candidateSignature`).
+
 `Viewer.setEntityHoverHandler(cb)` is a hover pick path parallel to
 `setEntityPickHandler` — registering one is also what attaches the `pointermove`/`pointerleave`
 listeners (there was no `pointermove` on the canvas at all before this). It reuses the click path's

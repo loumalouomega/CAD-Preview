@@ -1,11 +1,12 @@
 import { describe, it, expect } from "vitest";
 import {
   parseMeshJson,
+  parseMeshJsonWithNotes,
   serializeMeshJson,
   generateGeoScript,
   MESH_SIDECAR_VERSION,
 } from "./meshOptionsSidecar";
-import { DEFAULT_MESH_OPTIONS, type MeshOptions } from "./meshOptions";
+import { DEFAULT_MESH_OPTIONS, LEGACY_MESH_DEFAULTS, NO_BEHAVIOUR_CHANGE_FIELDS, type MeshOptions } from "./meshOptions";
 
 describe("parseMeshJson", () => {
   it("parses a well-formed sidecar", () => {
@@ -203,5 +204,40 @@ describe("generateGeoScript", () => {
     expect(script).toContain('Merge "part.stp";');
     expect(script).not.toMatch(/^Mesh 3;/m);
     expect(script).toContain("engine: octree");
+  });
+});
+
+describe("legacy defaults for fields a sidecar predates", () => {
+  const { conformal: _omit, ...preConformal } = DEFAULT_MESH_OPTIONS;
+  const old = JSON.stringify({ version: 1, source: "two.stp", options: preConformal });
+
+  it("keeps non-conformal meshing for a sidecar written before the field existed, and says so", () => {
+    const { options, legacyNotes } = parseMeshJsonWithNotes(old);
+    expect(options.conformal).toBe(false);
+    expect(legacyNotes).toHaveLength(1);
+    expect(legacyNotes[0]).toMatch(/predates conformal meshing/);
+    expect(parseMeshJson(old).conformal).toBe(false);
+  });
+
+  it("re-saving writes the field, so the note disappears and the choice sticks", () => {
+    const resaved = serializeMeshJson("two.stp", { ...parseMeshJson(old), conformal: true });
+    const r = parseMeshJsonWithNotes(resaved);
+    expect(r.options.conformal).toBe(true);
+    expect(r.legacyNotes).toEqual([]);
+    expect(parseMeshJsonWithNotes(serializeMeshJson("two.stp", parseMeshJson(old))).options.conformal).toBe(false);
+  });
+
+  it("new, missing or unreadable sidecars keep today's defaults with no note", () => {
+    for (const t of ["{}", "not json", JSON.stringify({ options: null })]) {
+      expect(parseMeshJsonWithNotes(t)).toEqual({ options: DEFAULT_MESH_OPTIONS, legacyNotes: [] });
+    }
+    expect(DEFAULT_MESH_OPTIONS.conformal).toBe(true);
+  });
+
+  it("drift guard: every MeshOptions default has a legacy decision", () => {
+    const decided = new Set<string>([...Object.keys(LEGACY_MESH_DEFAULTS), ...NO_BEHAVIOUR_CHANGE_FIELDS]);
+    const missing = Object.keys(DEFAULT_MESH_OPTIONS).filter((k) => !decided.has(k));
+    expect(missing).toEqual([]);
+    for (const k of Object.keys(LEGACY_MESH_DEFAULTS)) expect(NO_BEHAVIOUR_CHANGE_FIELDS).not.toContain(k);
   });
 });

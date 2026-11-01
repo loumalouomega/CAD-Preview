@@ -1,4 +1,4 @@
-import { validateMeshOptions, DEFAULT_MESH_OPTIONS, gmshShapeOptions, type MeshOptions } from "./meshOptions";
+import { validateMeshOptions, DEFAULT_MESH_OPTIONS, LEGACY_MESH_DEFAULTS, gmshShapeOptions, type MeshOptions } from "./meshOptions";
 
 /**
  * Pure (vscode-free) parse/serialize for the mesh options sidecar
@@ -22,15 +22,34 @@ interface MeshSidecarFile {
  * meshing.
  */
 export function parseMeshJson(text: string): MeshOptions {
+  return parseMeshJsonWithNotes(text).options;
+}
+
+/**
+ * {@link parseMeshJson} plus the notes for fields the file predates. A key
+ * absent from an EXISTING `options` object takes its {@link LEGACY_MESH_DEFAULTS}
+ * value (the behaviour the file was written under), not today's default.
+ */
+export function parseMeshJsonWithNotes(text: string): { options: MeshOptions; legacyNotes: string[] } {
   let data: unknown;
   try {
     data = JSON.parse(text);
   } catch {
-    return DEFAULT_MESH_OPTIONS;
+    return { options: DEFAULT_MESH_OPTIONS, legacyNotes: [] };
   }
   const rawOptions = (data as Partial<MeshSidecarFile> | null)?.options;
-  const options = validateMeshOptions(rawOptions);
-  return options ?? DEFAULT_MESH_OPTIONS;
+  if (!rawOptions || typeof rawOptions !== "object" || Array.isArray(rawOptions)) {
+    return { options: DEFAULT_MESH_OPTIONS, legacyNotes: [] };
+  }
+  const raw: Record<string, unknown> = { ...(rawOptions as unknown as Record<string, unknown>) };
+  const legacyNotes: string[] = [];
+  for (const [key, legacy] of Object.entries(LEGACY_MESH_DEFAULTS)) {
+    if (legacy && !(key in raw)) {
+      raw[key] = legacy.value;
+      legacyNotes.push(legacy.note);
+    }
+  }
+  return { options: validateMeshOptions(raw) ?? DEFAULT_MESH_OPTIONS, legacyNotes };
 }
 
 /** Serializes options to the sidecar JSON text (pretty-printed, trailing newline). */
