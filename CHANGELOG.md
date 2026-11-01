@@ -6,12 +6,16 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/); thi
 
 ## [Unreleased]
 
+## [3.33.0] - 2026-11-01
+
 ### Added
 
-- Rule-defined Part membership: a Part's scene `selector` can now use `plane`, `box` (inside / intersects, `null` = unbounded) and `surfaceType` + `radius` leaves. It is re-evaluated after every edit instead of rebound, reports "N faces added, M lost" when its result changes, and the handoff manifest records the rule beside the resolved ids. Available through `set_part` / `resolve_selector`; the Parts-panel form is still to come.
-- The `"spacemouse"` host→webview message is now a documented, producer-agnostic contract (axes, dead-zone, buttons) and its payload is sanitised: a malformed message from a foreign producer is dropped instead of throwing in the handler.
-- Step through the entities under the cursor: when a view ray crosses several faces/edges/solids the status line shows `k of n under the cursor`, **↑/↓** (or **+/−**) step front to back, and the next click picks the stepped entity.
-- Bracketed units in parametric expressions: `2[in]`, `10[mm]`, `1.5[ft]`, `5[deg]`, `0.5[rad]` (`mm cm m in ft`, `deg rad`) convert to the pipeline's millimetres / degrees, so a value pasted from an inch drawing no longer reads as millimetres. Plain numbers keep their meaning and stored sidecars are unchanged; an unknown unit is a specific error.
+- **Rule-defined Part membership, from the Parts panel or an agent.** A Part's scene `selector` can now use `plane`, `box` (inside / intersects, `null` = unbounded) and `surfaceType` + `radius` leaves. It is re-evaluated after every edit instead of rebound — a face the rule newly matches now survives the geometric rebind pass that follows — reports "N faces added, M lost" when its result changes, and the handoff manifest records the rule beside the resolved ids. Available through `set_part` / `resolve_selector`, and from the Parts panel: hover a part's row, choose **Rule…**, then **On the selected plane** (every face on that plane, either orientation), **Inside the selection's box** (every face whose bounding box lies inside the union box of the selection) or **Same surface type and radius** (every cylinder, sphere, cone or torus of that radius). The row shows the rule and **Clear rule** returns the Part to a plain list; a selection no single rule describes is refused with the reason on the status line. B-rep sources only; edge/vertex rules and mesh sources are not supported.
+- **`addParametricCurve`: a curve given as functions of a parameter.** `x`/`y`/`z` are expressions in `s` and the document variables (trig in degrees, as everywhere), sampled over `sMin`…`sMax` (`samples`, 2–2000). The op is kept as written and re-evaluated on read into cached `points`, then drawn through the verified `addSpline` path or, with `as: "polyline"`, an `addPolyline` that may be `closed`; `plane: {origin, normal, up}` places the sketch on any frame (`origin + x·u + y·v + z·n`), otherwise the world axes are used. Changing a variable re-evaluates the curve on the next replay, a failing expression is warned about and the curve skipped, and a degenerate sample run is refused. Closing the curve into a face for `extrude`/`revolve` uses the ordinary `addLine`/`addPolyline` + `addSurfaceFromLines` ops; there is no panel form yet. `mcp:smoke` pins the area (0.5 + A/6) and its re-evaluation when A changes.
+- **The hover tint says what a click would do.** Under a pick mode the hovered entity is tinted in the accent colour when a click would add it to the selection and in the fail hue when it would remove it, then restored exactly. The tint never touches the entity's stored colour and is dropped before a selection repaint, so a stale restore cannot undo a selection change.
+- **Producer-agnostic `"spacemouse"` contract.** The `"spacemouse"` host→webview message is now a documented, producer-agnostic contract (axes, dead-zone, buttons) and its payload is sanitised: a malformed message from a foreign producer is dropped instead of throwing in the handler.
+- **Step through the entities under the cursor.** When a view ray crosses several faces/edges/solids the status line shows `k of n under the cursor`; **↑/↓** (or **+/−**) step front to back and the next click picks the stepped entity.
+- **Bracketed units and dimension checks in parametric expressions.** `2[in]`, `10[mm]`, `1.5[ft]`, `5[deg]`, `0.5[rad]` (`mm cm m in ft`, `deg rad`) convert to the pipeline's millimetres / degrees, so a value pasted from an inch drawing no longer reads as millimetres. Plain numbers keep their meaning and stored sidecars are unchanged; an unknown unit is a specific error. Each variable in `get_state` now carries a deduced `unit`, and `apply_edit_ops`, `set_variables` and the Edits panel report advisory `dimensionIssues` when an op field is driven by the wrong dimension (`5[deg]` on a length, or an expression mixing length and angle) — the value is still applied as written, so a mismatch never blocks a load.
 
 ### Fixed
 
@@ -1048,6 +1052,7 @@ This release republishes v1.9.0's full changelog (below) unchanged; v1.9.0 itsel
 
 - Initial release: read-only 3D preview for CAD and mesh files (STEP, IGES, BREP, STL, OBJ, PLY, glTF) inside a VS Code custom editor, using OpenCascade.js (OCCT WASM) in the extension host for B-rep formats and Three.js in the webview for rendering.
 
+[3.33.0]: https://github.com/loumalouomega/CAD-Preview/compare/v3.32.0...v3.33.0
 [3.32.0]: https://github.com/loumalouomega/CAD-Preview/compare/v3.31.0...v3.32.0
 [3.31.0]: https://github.com/loumalouomega/CAD-Preview/compare/v3.30.0...v3.31.0
 [3.30.0]: https://github.com/loumalouomega/CAD-Preview/compare/v3.29.0...v3.30.0
