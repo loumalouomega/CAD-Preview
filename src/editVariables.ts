@@ -87,8 +87,8 @@ export function resolveEditOps(
   values: Record<string, number>
 ): { ops: EditOp[]; issues: string[] } {
   const issues: string[] = [];
-  /** `addParametricCurve` → the plain curve op it denotes (after its own `exprs`, e.g. `sMax`, resolve). */
-  const expandCurve = (op: EditOp, index: number): EditOp => {
+  /** `addParametricCurve`: refresh the cached `points` against the variables (after its own `exprs`, e.g. `sMax`, resolve). A failing curve keeps its previous cache. */
+  const refreshCurve = (op: EditOp, index: number): EditOp => {
     if (op.op !== "addParametricCurve") return op;
     let source: EditOp = op;
     if (op.exprs) {
@@ -101,12 +101,12 @@ export function resolveEditOps(
       source = validateEditOp(clone) ?? op;
     }
     const r = compileParametricCurve(source as Extract<EditOp, { op: "addParametricCurve" }>, values);
-    if (r.ok) return r.op;
-    issues.push(`edit ${index + 1} (addParametricCurve): ${r.error}; the curve is not drawn`);
-    return op;
+    if (r.ok && (r.op.op === "addSpline" || r.op.op === "addPolyline")) return { ...source, points: r.op.points } as EditOp;
+    if (!r.ok) issues.push(`edit ${index + 1} (addParametricCurve): ${r.error}; keeping the previous curve`);
+    return source;
   };
   const resolved = ops.map((original, index) => {
-    const op = expandCurve(original, index);
+    const op = refreshCurve(original, index);
     if (!op.exprs) return op;
     const clone = JSON.parse(JSON.stringify(op)) as EditOp;
     for (const [key, expr] of Object.entries(op.exprs)) {

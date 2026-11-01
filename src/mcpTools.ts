@@ -4089,7 +4089,11 @@ export async function applyEditOps(
   const current = await readEditsResolved(modelPath);
   const newOps = [...current.fullOps, ...accepted];
   const planesForWrite = await readPlanes(modelPath).catch(() => [] as never[]);
-  const { ops: resolvedNewOps } = resolvePlaneRefs(newOps, planesForWrite);
+  // Evaluate expression-driven ops (parametric curves cache their samples) before they persist or replay.
+  const { values: docValues } = evaluateVariables(current.variables);
+  const variableResolved = resolveEditOps(newOps, docValues);
+  warnings.push(...variableResolved.issues.filter((i) => /addParametricCurve/.test(i)));
+  const { ops: resolvedNewOps } = resolvePlaneRefs(variableResolved.ops, planesForWrite);
   warnings.push(...dimensionIssues(accepted, current.variables));
   if (!params.dryRun && accepted.length > 0) {
     // Persist the FULL list (baked prefix included); the watermark rides along.

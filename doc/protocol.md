@@ -252,7 +252,7 @@ type EditOp =
   | { op: 'addBezier'; controlPoints: Vec3[]; guide?: boolean; coincident?: 'reuse' | 'independent' }  // `coincident` on the five curves above: what a RAW first/last position landing on an existing point does — see getting-started
   | { op: 'addEllipseArc'; center: Vec3; normal: Vec3; up: Vec3; radiusX: number; radiusY: number; startAngleDeg: number; endAngleDeg: number; guide?: boolean }
   | { op: 'addHelix'; center: Vec3; axis: Vec3; radius: number; pitch: number; turns: number; guide?: boolean }
-  | { op: 'addParametricCurve'; x: string; y: string; z?: string; sMin: number; sMax: number; samples: number; as?: 'spline' | 'polyline'; closed?: boolean; plane?: { origin: Vec3; normal: Vec3; up: Vec3 }; guide?: boolean }  // expressions in `s` + document variables; expanded on read into addSpline/addPolyline (agent-authored, no panel form yet)
+  | { op: 'addParametricCurve'; x: string; y: string; z?: string; sMin: number; sMax: number; samples: number; as?: 'spline' | 'polyline'; closed?: boolean; plane?: { origin: Vec3; normal: Vec3; up: Vec3 }; points?: Vec3[]; guide?: boolean }  // expressions in `s` + document variables; evaluated on read into cached `points`, drawn as addSpline/addPolyline (agent-authored, no panel form yet)
   | { op: 'addSurfaceFromLines'; edges: string[] }   // >= 3 edge ids, must close into a loop
   | { op: 'addVolumeFromSurfaces'; faces: string[] } // >= 4 face ids, must sew into a closed shell
   | { op: 'align'; targets: string[]; axis: 'x'|'y'|'z'; extent: 'min'|'center'|'max'; to: number }

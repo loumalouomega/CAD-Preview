@@ -17,10 +17,13 @@ describe("addParametricCurve", () => {
     expect(r.op.points[2][1]).toBeCloseTo(0, 12);
     expect(r.op.points[4]).toEqual([1, expect.closeTo(0, 12), 0]);
   });
-  it("re-evaluates when a document variable changes (resolve-on-read)", () => {
-    const a = resolveEditOps([wave()], { A: 0.1 }).ops[0];
-    const b = resolveEditOps([wave()], { A: 0.3 }).ops[0];
-    expect(a.op === "addSpline" && b.op === "addSpline" && a.points[1][1] * 3).toBeCloseTo((b as { points: number[][] }).points[1][1]);
+  it("resolve-on-read keeps the op and refreshes its cached samples when a variable changes", () => {
+    const a = resolveEditOps([wave()], { A: 0.1 }).ops[0] as AddParametricCurveOp;
+    const b = resolveEditOps([a], { A: 0.3 }).ops[0] as AddParametricCurveOp;
+    expect(a.op).toBe("addParametricCurve");
+    expect(a.points![1][1]).toBeCloseTo(0.1);
+    expect(b.points![1][1]).toBeCloseTo(0.3);
+    expect(b.x).toBe("s");
   });
   it("polyline form can be closed; spline cannot", () => {
     const r = compileParametricCurve(wave({ as: "polyline", closed: true, samples: 6, y: "s*(1-s)" }), {});
@@ -42,10 +45,11 @@ describe("addParametricCurve", () => {
     expect(wave({ samples: 5000 })).toBeNull();
     expect(wave({ x: "" })).toBeNull();
   });
-  it("an unresolved variable is reported and leaves the op for the kernel to skip", () => {
-    const { ops, issues } = resolveEditOps([wave()], {});
-    expect(ops[0].op).toBe("addParametricCurve");
-    expect(issues[0]).toMatch(/unknown variable 'A'.*not drawn/);
+  it("an unresolved variable is reported and the previous samples are kept", () => {
+    const good = resolveEditOps([wave()], { A: 0.1 }).ops[0] as AddParametricCurveOp;
+    const { ops, issues } = resolveEditOps([good], {});
+    expect((ops[0] as AddParametricCurveOp).points).toEqual(good.points);
+    expect(issues[0]).toMatch(/unknown variable 'A'.*keeping the previous curve/);
   });
   it("a degenerate curve is refused rather than fed to the spline fit", () => {
     const r = compileParametricCurve(wave({ x: "1", y: "1" }), {});

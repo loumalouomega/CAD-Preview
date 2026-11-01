@@ -257,6 +257,8 @@ export interface AddParametricCurveOp {
   as?: "spline" | "polyline"; closed?: boolean; guide?: boolean;
   /** Sketch plane: sample (x, y, z) map to `origin + x·u + y·v + z·n`, with n = `normal`, u = `up` made perpendicular to n, v = n × u. Absent = the world XYZ frame. */
   plane?: { origin: Vec3; normal: Vec3; up: Vec3 };
+  /** Last-good sampled points (annotation + cache, like a numeric field next to its `exprs`): refreshed by `resolveEditOps` against the document variables, read by the kernel. Absent until the op has been resolved once. */
+  points?: Vec3[];
 }
 /** Add a standalone circular-arc edge through three points (must not be collinear — a collinear triple is skipped by the engine). */
 export interface AddThreePointArcOp {
@@ -1572,8 +1574,9 @@ function validateEditOpCore(raw: unknown): EditOp | null {
         if (!origin || !normal || !up || !notParallel(normal, up)) return null;
         plane = { origin, normal, up };
       }
+      const cached = o.points === undefined ? null : asVec3Array(o.points, 2);
       return {
-        op: "addParametricCurve", x, y, ...(z !== undefined ? { z } : {}),
+        op: "addParametricCurve", x, y, ...(cached ? { points: cached } : {}), ...(z !== undefined ? { z } : {}),
         sMin: o.sMin, sMax: o.sMax, samples: o.samples as number,
         ...(as === "polyline" ? { as } : {}), ...(closed ? { closed } : {}), ...(plane ? { plane } : {}),
       };
