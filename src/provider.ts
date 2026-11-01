@@ -1700,20 +1700,12 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
         for (const w of scadWarnings) post({ type: "status", text: w });
         const bytes = src.bytes;
         const format = src.format;
-        // Stored selectors resolve FIRST (authoritative — a query that hits
-        // is exact by construction) and the heuristic rebind pass runs on the
-        // result, so a query-covered part never also gets geometrically
-        // remapped underneath its own resolution. Selector warnings surface
-        // on the status line; the parts message below carries the final ids.
-        const selected = await docPipeline.resolvePartSelectors(
-          this.context.extensionPath,
-          bytes,
-          format as Extract<CadFormat, "step" | "iges" | "brep" | "csg">,
-          newTail,
-          currentParts
-        );
-        if (selected.parts !== currentParts) currentParts = selected.parts;
-        for (const warning of selected.warnings) post({ type: "status", text: warning });
+        // Rebind FIRST: the geometric pass maps the stored (pre-op) ids onto the
+        // new state. Stored selectors then re-resolve against the new state, so
+        // their ids are new-state ids the rebind must not see again (a rule's
+        // freshly added face would be read as an unknown pre-op id and dropped).
+        // Selector warnings surface on the status line; the parts message below
+        // carries the final ids.
         const result = await docPipeline.rebindPartsAcrossOps(
           this.context.extensionPath,
           bytes,
@@ -1724,8 +1716,16 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
           currentAnnotations,
           currentLayers
         );
-        if (result.parts !== currentParts) {
-          currentParts = result.parts;
+        const selected = await docPipeline.resolvePartSelectors(
+          this.context.extensionPath,
+          bytes,
+          format as Extract<CadFormat, "step" | "iges" | "brep" | "csg">,
+          newTail,
+          result.parts
+        );
+        for (const warning of selected.warnings) post({ type: "status", text: warning });
+        if (selected.parts !== currentParts) {
+          currentParts = selected.parts;
           await writeParts(document.uri, currentParts);
           post({ type: "parts", parts: currentParts });
         }

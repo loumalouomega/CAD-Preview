@@ -2752,6 +2752,39 @@ describe("apply_edit_ops", () => {
       expect(parts[0].surfaces).toEqual(["face-2"]);
     });
 
+    it("rebinds stored ids before re-resolving a stored rule, so the rule's new-state face is kept", async () => {
+      await setPart({
+        path: stpModel,
+        name: "R",
+        surfaces: ["face-1"],
+        selector: { version: 1, source: { kind: "scene", filter: [{ kind: "planar" }] } },
+      });
+      // The real rebind keeps only ids that exist in the pre-op state (here: face-1). The rule
+      // re-resolves to a new-state face (face-9). Running the rebind after the rule would drop face-9.
+      const pipeline = fakePipeline({
+        rebindPartsAcrossOps: vi.fn(async (_ext, _bytes, _format, _old, _new, parts, annotations = [], layers = []) => ({
+          parts: parts.map((p: Part) => ({ ...p, surfaces: p.surfaces.filter((id: string) => id === "face-1") })),
+          annotations,
+          layers,
+          stats: { considered: 1, rebound: 0, dropped: 0 },
+          annotationStats: { considered: 0, rebound: 0, dropped: 0 },
+          layerStats: { considered: 0, rebound: 0, dropped: 0 },
+        })),
+        resolvePartSelectors: vi.fn(async (_ext: string, _bytes: Uint8Array, _format: string, _ops: unknown[], parts: Part[]) => ({
+          parts: parts.map((p) => (p.name === "R" ? { ...p, surfaces: ["face-1", "face-9"] } : p)),
+          resolved: 1,
+          frozen: 0,
+          warnings: [],
+        })),
+      });
+      await applyEditOps(ctx(pipeline), { path: stpModel, ops: [{ op: "addBox", center: [0, 0, 0], size: [1, 1, 1] }] });
+      const rebindAt = vi.mocked(pipeline.rebindPartsAcrossOps).mock.invocationCallOrder[0];
+      const resolveAt = vi.mocked(pipeline.resolvePartSelectors).mock.invocationCallOrder[0];
+      expect(rebindAt).toBeLessThan(resolveAt);
+      const parts = await readParts(stpModel);
+      expect(parts.find((p) => p.name === "R")!.surfaces).toEqual(["face-1", "face-9"]);
+    });
+
     it("surfaces a warning summarizing rebound/dropped counts", async () => {
       await setPart({ path: stpModel, name: "P", surfaces: ["face-1"] });
       const pipeline = fakePipeline({
