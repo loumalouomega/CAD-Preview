@@ -40,7 +40,7 @@ import { sanitizeSpaceMouseMessage } from "../spaceMouseReports";
 import type { PanelOpId } from "./opCatalog";
 import { VariablesModel } from "./variablesModel";
 import { VariablesPanel } from "./variablesPanel";
-import { evaluateVariables, resolveEditOps } from "../editVariables";
+import { evaluateVariables, resolveEditOps, dimensionIssues } from "../editVariables";
 import { replayTail } from "../editsSidecar";
 import { resolvePlaneRefs } from "../planeRefs";
 import { extractIdentifiers } from "../paramExpr";
@@ -63,6 +63,7 @@ import { emitPrimitiveOps } from "../primitiveEmit";
 import { fitConstructionPlane, fitOpForKind, fitStoreWarning } from "../fitMapping";
 import { validateEditOp, GUIDE_KINDS, COINCIDENT_CURVE_KINDS, curveEndpointSlots, getVec3Slot } from "../editOps";
 import type { SelectorQuery } from "../selectorQuery";
+import { ruleFromFaceFacts, type RuleKind } from "../ruleFromSelection";
 import type { FacePredicate } from "../selectorPredicate";
 import { StandardPartsPanel } from "./standardPartsPanel";
 import type { StandardPart } from "../stepPartsService";
@@ -253,6 +254,7 @@ const partsPanel = new PartsPanel(
       previewLayerId = null;
       renderHighlight();
     },
+    onDefineRule: (index, kind) => defineRuleForPart(index, kind),
     onRemovePart: (index) => partsModel.remove(index),
     onRename: (index, name) => partsModel.rename(index, name),
     onRecolor: (index, color) => partsModel.recolor(index, color),
@@ -635,7 +637,7 @@ function currentResolvedOps(): { ops: EditOp[]; issues: string[] } {
   const { values } = evaluateVariables(variablesModel.list());
   const { ops: variableResolved, issues: variableIssues } = resolveEditOps(editsModel.list(), values);
   const { ops, issues: planeIssues } = resolvePlaneRefs(variableResolved, planesModel.list());
-  return { ops, issues: [...variableIssues, ...planeIssues] };
+  return { ops, issues: [...variableIssues, ...dimensionIssues(editsModel.list(), variablesModel.list()), ...planeIssues] };
 }
 
 /** How many op-expression fields reference each variable (for delete warnings). */
@@ -3584,6 +3586,12 @@ document.getElementById("app")?.addEventListener("pointermove", (e) => {
   lastHoverPointer = { x: e.clientX - rect.left, y: e.clientY - rect.top };
 });
 
+// What a click on the hovered entity would do, for the hover tint: remove if it is
+// already in the selection, add otherwise.
+viewer.setHoverIntentResolver((r) =>
+  selection.list().some((e) => e.entityType === r.entityType && e.entityId === r.entityId) ? "remove" : "add"
+);
+
 viewer.setEntityHoverHandler((result) => {
   if (!result) {
     hideHoverTip();
@@ -3635,6 +3643,35 @@ let currentDocumentPath = "";
  * were read against — a reference quotes them only while that still holds, and
  * never triggers a fetch of its own. */
 const knownEntityFacts = new Map<string, { facts: EntityFacts; opCount: number }>();
+
+/**
+ * Parts ▸ "Define by rule": fetch exact facts for each selected face, let the
+ * pure `ruleFromFaceFacts` decide whether one rule describes them all, and
+ * store it as the Part's scene selector (the host re-evaluates it after every
+ * replay). Own request ids, so inspector-card replies are never consumed.
+ */
+const ruleFactWaiters = new Map<string, (facts: EntityFacts | null, error?: string) => void>();
+function defineRuleForPart(index: number, kind: RuleKind | "clear"): void {
+  if (kind === "clear") { partsModel.setRule(index, undefined); return; }
+  const faces = selection.list().filter((e) => e.entityType === "surface").map((e) => e.entityId);
+  if (sourceKind !== "brep") { setStatus("Rules need a B-rep source.", true); return; }
+  if (faces.length === 0) { setStatus("Select at least one face first.", true); return; }
+  if (faces.length > 50) { setStatus("Select at most 50 faces to define a rule.", true); return; }
+  const requests = faces.map((id) => new Promise<EntityFacts>((resolve, reject) => {
+    const requestId = `rule-${Date.now()}-${Math.random()}`;
+    ruleFactWaiters.set(requestId, (facts, error) => (facts ? resolve(facts) : reject(new Error(error ?? "facts unavailable"))));
+    post({ type: "entityFactsRequest", requestId, entityId: id });
+  }));
+  void Promise.all(requests).then(
+    (facts) => {
+      const r = ruleFromFaceFacts(facts, kind);
+      if (!r.ok) { setStatus(r.reason, true); return; }
+      partsModel.setRule(index, { query: r.query, surfaces: faces });
+      setStatus(`Rule set: faces ${r.summary}.`);
+    },
+    (err) => setStatus(`Could not read the selected faces: ${(err as Error).message}`, true)
+  );
+}
 
 function requestEntityFacts(entityId: string): void {
   if (!inspectorEl) return;
@@ -6345,7 +6382,9 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
       for (const op of msg.ops) editsModel.push(op);
       break;
 
-    case "entityFactsResult":
+    case "entityFactsResult": {
+      const ruleWaiter = ruleFactWaiters.get(msg.requestId);
+      if (ruleWaiter) { ruleFactWaiters.delete(msg.requestId); ruleWaiter(msg.facts); break; }
       // Clip ▸ Face shares this round trip with the inspector card, latched on
       // its own request id — checked first so a clip reply is never mistaken
       // for a card reply, and vice versa.
@@ -6358,8 +6397,11 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
       knownEntityFacts.set(msg.facts.entityId, { facts: msg.facts, opCount: editsModel.list().length });
       renderInspectorCard(msg.facts.entityId, msg.facts);
       break;
+    }
 
-    case "entityFactsError":
+    case "entityFactsError": {
+      const ruleErr = ruleFactWaiters.get(msg.requestId);
+      if (ruleErr) { ruleFactWaiters.delete(msg.requestId); ruleErr(null, msg.message); break; }
       if (msg.requestId === clipFaceFactsRequestId) {
         clipFaceFactsRequestId = null;
         setStatus(msg.message, true);
@@ -6369,6 +6411,7 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
       // Keep the card, showing why — silently vanishing would read as a bug.
       renderInspectorCard(selection.list()[0]?.entityId ?? "", null, msg.message);
       break;
+    }
 
     case "selectorSynthesizeResult": {
       const refWaiter = referenceSynthesizeWaiters.get(msg.requestId);

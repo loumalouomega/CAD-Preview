@@ -57,9 +57,9 @@ Existing implementation references were checked against the repository where not
 
 **Closed 2026-10-25 (N-sided surface filling).** Extension, not a planning review: the `BRepOffsetAPI_MakeFilling` probe (formerly 3.5) **passed** and the `addSurfaceFilling` op shipped (Build from selection ▸ Fill Surface) in the same change; it left the list. Remaining probe IDs were not renumbered.
 
-**Closed 2026-11-01 (1.7; 2.26 first increment; 2.30 stepping).** Extension, not a planning review: nothing was re-ranked. 1.7 (sidecar fields that arrived after the file was written) shipped as `LEGACY_MESH_DEFAULTS` (`conformal` → `false` for a sidecar that lacks it), with a panel/`generate_mesh` note and a drift-guard test; it left this list. No other sidecar was found with a behaviour-changing later-added field. The first increment of 2.26 also shipped (bracketed units); its dimension check stays open.
+**Closed 2026-11-01 (1.7; 2.26 first increment; 2.30 stepping).** Extension, not a planning review: nothing was re-ranked. 1.7 (sidecar fields that arrived after the file was written) shipped as `LEGACY_MESH_DEFAULTS` (`conformal` → `false` for a sidecar that lacks it), with a panel/`generate_mesh` note and a drift-guard test; it left this list. No other sidecar was found with a behaviour-changing later-added field. 2.26 (unit-aware document variables) shipped in full: bracketed units plus advisory per-field dimension warnings on `apply_edit_ops`, `set_variables` and the Edits panel, and a deduced `unit` per variable in `get_state`.
 
-**Extended 2026-10-31 (ElmerStudio review and Non-goal recovery).** Extension, not a planning review: nothing was re-ranked and no existing ID moved. The [ElmerStudio review](#elmerstudio-review) added [unit-aware document variables](#unit-aware-document-variables) (2.26), [rule-defined Part membership](#rule-defined-part-membership) (2.27), the [parametric-curve profile](#parametric-curve-profile) (2.28), transport-agnostic 3D-mouse input (since shipped and removed) and [Part rename and delete events for embedders](#part-rename-and-delete-events) (5.4); a second pass over its picking code the same day added [stepping through entities under the cursor](#step-through-entities-under-the-cursor) (2.30), and a third pass over its model-format history added sidecar fields that arrived after the file was written (since shipped and removed). Four Non-goals were re-read against today's kernels (meshio++ 17.23.0 with `fitCad`, `checkConformity` and prism layers, Manifold, the OpenSCAD WASM) and re-opened as probes that route around the dead API rather than revive it: [sampled B-rep self-intersection](#sampled-brep-self-intersection) (3.14), [B-rep repair by refit](#brep-repair-by-refit) (3.15), [3D text through OpenSCAD](#text-through-openscad) (3.16) and [OpenSCAD library staging](#openscad-library-staging) (3.17); section 4 is recreated for [a volume behind the prism-layer shell](#volume-behind-prism-layers) (4.11) and [physics-calibrated size presets](#physics-calibrated-size-presets) (4.12). Each original Non-goal entry stays and points at its probe. Stale facts fixed in passing: the gmsh-wasm version in the kernel review, the meshio++ and `view.*` "never called" rows, two links to a closed validity-report item, and a hex-dominant link that pointed at the wrong Non-goal group.
+**Extended 2026-10-31 (ElmerStudio review and Non-goal recovery).** Extension, not a planning review: nothing was re-ranked and no existing ID moved. The [ElmerStudio review](#elmerstudio-review) added [unit-aware document variables](#unit-aware-document-variables) (2.26), rule-defined Part membership (2.27, since shipped and removed), the parametric-curve profile (2.28, first increment shipped as `addParametricCurve`), transport-agnostic 3D-mouse input (since shipped and removed) and [Part rename and delete events for embedders](#part-rename-and-delete-events) (5.4); a second pass over its picking code the same day added stepping through entities under the cursor (2.30, since shipped and removed), and a third pass over its model-format history added sidecar fields that arrived after the file was written (since shipped and removed). Four Non-goals were re-read against today's kernels (meshio++ 17.23.0 with `fitCad`, `checkConformity` and prism layers, Manifold, the OpenSCAD WASM) and re-opened as probes that route around the dead API rather than revive it: [sampled B-rep self-intersection](#sampled-brep-self-intersection) (3.14), [B-rep repair by refit](#brep-repair-by-refit) (3.15), [3D text through OpenSCAD](#text-through-openscad) (3.16) and [OpenSCAD library staging](#openscad-library-staging) (3.17); section 4 is recreated for [a volume behind the prism-layer shell](#volume-behind-prism-layers) (4.11) and [physics-calibrated size presets](#physics-calibrated-size-presets) (4.12). Each original Non-goal entry stays and points at its probe. Stale facts fixed in passing: the gmsh-wasm version in the kernel review, the meshio++ and `view.*` "never called" rows, two links to a closed validity-report item, and a hex-dominant link that pointed at the wrong Non-goal group.
 
 Everything previously shipped is tracked in `CHANGELOG.md`, and `CLAUDE.md` holds the invariants, traps and verified kernel facts that a future change could break (not per-feature history, which lives in git) — this page is for what's **not** built yet, plus the Non-goals that record why a direction was rejected so it isn't re-proposed.
 
@@ -253,11 +253,11 @@ One project, read at source level (no Elmer run):
 
 | Source feature | From | Status here |
 | --- | --- | --- |
-| Unit-aware expressions `10[mm]`, `20[degC]` with deduced-unit warnings that never reject the value (`core/units.py`: `expr_dims`, `unit_warnings`) | ElmerStudio | [Unit-aware document variables](#unit-aware-document-variables) (2.26) |
+| Unit-aware expressions `10[mm]`, `20[degC]` with deduced-unit warnings that never reject the value (`core/units.py`: `expr_dims`, `unit_warnings`) | ElmerStudio | Shipped: bracketed units plus advisory dimension warnings (`dimensionIssues`) |
 | Parameters evaluated to a fixed point with named circular chains (`evaluate_parameters`, `_cycle_from`) | ElmerStudio | Already shipped in a stricter form: `editVariables.ts` allows references only to variables defined above, so a cycle is unrepresentable |
-| Selections that follow geometry edits: signature = owner-relative box centre/extent + measure, matched under a score limit, lost entities flagged (`core/geometry.py`: `signature`, `match`, `remap_selections`) | ElmerStudio | Already shipped for id bags (`entityRebind.ts`, `rebindPartsAcrossOps`); the rule-defined half is [Rule-defined Part membership](#rule-defined-part-membership) (2.27) |
-| Box Selections re-evaluated on every build and recorded per run (`_box_entities`, `meta["selections"]`) | ElmerStudio | [Rule-defined Part membership](#rule-defined-part-membership) (2.27) |
-| Selecting boundaries by position in scripts (`geo.select("boundary", xmax=0)`) | ElmerStudio | [Rule-defined Part membership](#rule-defined-part-membership) (2.27), headless half |
+| Selections that follow geometry edits: signature = owner-relative box centre/extent + measure, matched under a score limit, lost entities flagged (`core/geometry.py`: `signature`, `match`, `remap_selections`) | ElmerStudio | Already shipped for id bags (`entityRebind.ts`, `rebindPartsAcrossOps`); the rule-defined half is Shipped: Parts ▸ Rule from the selection |
+| Box Selections re-evaluated on every build and recorded per run (`_box_entities`, `meta["selections"]`) | ElmerStudio | Shipped: Parts ▸ Rule from the selection |
+| Selecting boundaries by position in scripts (`geo.select("boundary", xmax=0)`) | ElmerStudio | Shipped: scene-selector Part rules in `set_part` |
 | Parametric Curve + Convert to Solid | ElmerStudio | [Parametric-curve profile](#parametric-curve-profile) (2.28) |
 | Work planes (quick and face-parallel), 2D fillet/chamfer on clicked vertices, Form Union, Move/Copy/Rotate/Scale/Mirror/Array | ElmerStudio | Already shipped (construction planes, `filletProfile`, conformal meshing, the transform ops and `repeat`) |
 | Physics-controlled mesh: nine size levels as fractions of the model, flow halving, acoustics at c/(5·f_max) (`core/meshing.py`: `SIZE_PRESETS`, `acoustic_hmax`) | ElmerStudio | [Physics-calibrated size presets](#physics-calibrated-size-presets) (4.12) |
@@ -267,7 +267,7 @@ One project, read at source level (no Elmer run):
 | Mesh statistics and a quality plot per domain (gmsh `minSICN`) | ElmerStudio | Already shipped (`QualitySummary`, Mesh Health, `check_mesh_quality`) |
 | Identity pairs (mortar continuity) between touching domains | ElmerStudio | Covered differently: conformal multi-body meshing shares the interface nodes, and hanging-node MPCs ship for the octree engine |
 | Model tree "Used By" links and delete-in-use warnings (`core/deps.py`) | ElmerStudio | [Part rename and delete events for embedders](#part-rename-and-delete-events) (5.4); the cross-mode report itself is KKSS's |
-| Stepping through every face the view ray crosses (Up/Down, "k of n under the cursor"), hover coloured by add vs remove (`ui/graphics.py: candidates_at`, `cycle_candidate`) — second pass | ElmerStudio | [Step through entities under the cursor](#step-through-entities-under-the-cursor) (2.30) |
+| Stepping through every face the view ray crosses (Up/Down, "k of n under the cursor"), hover coloured by add vs remove (`ui/graphics.py: candidates_at`, `cycle_candidate`) — second pass | ElmerStudio | Shipped: stepping and the add-vs-remove hover tint |
 | Per-feature rebuild caching, face-parallel work planes, select-by-position — second pass | ElmerStudio | Already shipped here in stronger forms (the worker's base-shape/op-replay cache, Clip ▸ Face saved as a construction plane, Select-by-shape filters); ElmerStudio itself rebuilds from scratch on every build |
 | `Prop.legacy`: a saved node that lacks a key gets the value that applied before the key existed, so a changed default never changes a saved model's results (`core/model.py`, commit `2b33ff6`) — third pass | ElmerStudio | Sidecar fields that arrived after the file was written (since shipped as `LEGACY_MESH_DEFAULTS`) |
 | Remeshing a deformed domain while keeping every boundary's number, and moving chains re-spaced to the first mesh's grading (`core/remesh.py`) — third pass | ElmerStudio | Already shipped in the form that matters here: `remesh_mesh` keeps named regions and Parts; grading-preserving re-spacing has no consumer without a moving-boundary solver |
@@ -339,43 +339,14 @@ These are outcome groupings, not release numbers. Independent small items can sh
 - **What is left (S):** the cross-repository check — open the exported `.mdpa` in VSCode-MDPA-Preview and confirm both SubModelParts populate. It needs that extension and is not exercised from this repository.
 - **Done when:** that check passes, and KKSS's tutorial links to the page.
 
-#### 2.26 Unit-aware document variables {#unit-aware-document-variables}
-
-*Area: Geometry, Parity. Effort: S–M.*
-
-- **Evidence today:** document variables (`src/editVariables.ts`, evaluated by `src/paramExpr.ts`) are plain numbers in the document's own length unit; `set_variables` and `read_sidecars` expose them headless. A value pasted from a drawing in inches, or an angle written in radians, is silently taken as millimetres or degrees. ElmerStudio's `core/units.py` (read at `b1be253`) shows a cheap, well-bounded design: `10[mm]`, `2[in]`, `5[deg]` bind a unit to the operand just before it, every value is reduced to SI, a deduced dimension (`Dim`, seven base exponents) is checked against what the field expects, and a mismatch **warns but is still applied** ("the SI value is used as it is") — it never rejects, so no existing document can stop loading.
-- **Done so far (2026-11-01):** the bracketed-unit suffix shipped in `paramExpr.ts` — `mm cm m in ft` convert to millimetres and `deg rad` to degrees (`EXPR_UNITS`, lengths from `lengthUnits.ts`), the suffix must touch the number, an unknown unit is a specific error, plain numbers and stored sidecars are unchanged. `W = 2[in]` resolves to 50.8 and drives an op field.
-- **What is left (S):** a dimension check per op field (length, angle, dimensionless count) reported as an Edits-panel warning and as a `warnings` entry on `apply_edit_ops`/`set_variables`, never as a refusal (a mismatch is applied as written); `read_sidecars` returns each variable's `expr`, resolved value and deduced unit. This needs a field→dimension table over the op kinds and a unit carried through evaluation instead of folded into the number.
-- **Why now:** KKSS's geometry-parameter sweep drives these variables through `set_variables`; a unit-checked parameter table is what makes a swept row's value unambiguous in its provenance.
-- **Out of scope:** units on mesh sizes (they already follow the document unit), temperature offsets (`degC`), and any unit in the sidecar's stored numbers.
-- **Done when:** `W = 5[deg]` on a length field warns and still applies, and MCP and the Edits panel report the same warning (the 50.8 conversion and the unchanged-sidecar round trip are covered).
-
-#### 2.27 Define a rule from the selection {#rule-defined-part-membership}
-
-*Area: Geometry, Meshing. Effort: S.*
-
-- **Done so far (2026-11-01):** rule-defined Part membership shipped on the existing scene `selector` (no new Part field): `plane`, `box` and `surfaceType` + `radius` leaves in `selectorPredicate.ts`, exact-fact inputs in `filterableFactForFace`, re-evaluation in `resolvePartSelectors` with an "N faces added, M lost" note, `set_part`/`resolve_selector` schemas and docs, and the rule recorded in the handoff manifest. `mcp:smoke` pins "every face on x = −50" on the cantilever beam and shows the rule gaining a second coplanar face while an id-bag Part on the same face does not.
-- **What is left (S):** the Parts panel offers "Define by box/plane/type" from the current selection's extent (bounding box, or plane point and normal, or surface type and radius), writes the `selector` through the same message path as the other selector edits, and shows the rule beside the Part. The panel is DOM-only, so the logic that turns a selection into a rule belongs in a pure sibling module with unit tests.
-- **Out of scope:** expression predicates over arbitrary entity facts, rules on mesh sources, and edge or vertex rules.
-- **Done when:** a Part defined from a selected end face through the panel keeps exactly that end face after the beam is lengthened.
-
 #### 2.28 Parametric-curve profile {#parametric-curve-profile}
 
-*Area: Geometry. Effort: S–M.*
+*Area: Geometry. Effort: S.*
 
-- **Evidence today:** `addSpline` (approximating, endpoint-exact — this OCCT build binds no exact interpolator), `addPolyline`, `addSurfaceFromLines` and the profile ops exist, and `paramExpr.ts` already evaluates expressions over document variables. What is missing is a curve given as *functions*: a sinusoidal electrode, an airfoil thickness law, a cam. ElmerStudio offers exactly this as *Parametric Curve* + *Convert to Solid* and uses it for its wavy-anode verification case.
-- **First useful increment (S):** an `addParametricCurve` op — `{x, y, z?: expr in s, sMin, sMax, samples, plane?|planeId?, closed, as: "spline"|"polyline"}` — compiled at replay time into the existing `addSpline`/`addPolyline` (so its OCCT path is already verified), with `s` bound like a `repeat` index and document variables in scope.
-- **Then (S):** closing the curve with a straight segment and turning it into a face through `addSurfaceFromLines`, so it feeds `extrude`/`revolve` directly; an Edits-panel form and the command bar entry.
+- **Done so far (2026-11-01):** the `addParametricCurve` op shipped (agent-authored), including inline `plane` placement (`planeId` references are not supported): `x`/`y`/`z` expressions in `s` and the document variables, expanded on read into `addSpline`/`addPolyline` (`parametricCurve.ts`), so a changed variable re-evaluates the curve; `mcp:smoke` pins the closed-face area and its re-evaluation.
+- **What is left (S):** closing the curve with a straight segment into a face through `addSurfaceFromLines` so it feeds `extrude`/`revolve` directly, and an Edits-panel form with a command-bar entry (needs a generated icon).
 - **Out of scope:** exact interpolation (kernel-bound) and 3D surfaces from two-parameter functions.
-- **Done when:** `x = s, y = 0.1*sin(2*pi*s)` on `s ∈ [0, 1]` extrudes into a solid whose volume matches the analytic integral within the spline's stated tolerance, and changing a variable re-evaluates the curve.
-
-#### 2.30 Colour the hover by add vs remove {#step-through-entities-under-the-cursor}
-
-*Area: Parity, Geometry. Effort: S.*
-
-- **Done so far (2026-11-01):** stepping through every entity under the cursor shipped (`distinctPicks`, `Viewer.stepHoverCandidate`, ↑/↓ or +/−, `k of n under the cursor` on the status line, the next click picks the stepped entity; `test:webview` pins a front/back face pair). The status line and tooltip show the stepped entity.
-- **What is left (S):** ElmerStudio colours its hover red where a click would add and green where it would remove (`ui/graphics.py`). Here the hover is a tooltip only: colour the stepped candidate in the 3D view by whether a click would add it to or remove it from the current selection in Parts and Build selection, through the existing highlight path (`highlightGroup()` is the only opacity writer).
-- **Done when:** a `test:webview` case shows the hovered face tinted differently for an already-selected entity and an unselected one, and the tint clears when the pointer leaves. VSCode-MDPA-Preview's roadmap tracks the same interaction so the two viewers agree.
+- **Done when:** `x = s, y = 0.1*sin(360*s)` on `s ∈ [0, 1]` extrudes into a solid whose volume matches the analytic integral within the spline's tolerance, from the panel.
 
 ### Probe-gated — establish feasibility before estimating
 
@@ -472,18 +443,8 @@ None of these depends on another's result.
 
 *Area: Formats.*
 
-- **Hypothesis:** `VrmlAPI_Writer`, green and never mentioned anywhere else in this repository, writes a B-rep to a `.wrl` file that other VRML readers open.
-- **Evidence today:**
-  - `.wrl` is not an export target.
-  - three's `VRMLLoader` can read the result back, which makes round-trip checking cheap.
-  - Gmsh can also write `.wrl`, but only for meshes.
-- **Probe (S):**
-  1. Write `bull.stp` and confirm the file loads in three's `VRMLLoader`.
-  2. Compare the triangle count with the viewer's own tessellation.
-- **Decision gate:**
-  - **Pass:** a readable file.
-  - **Fail:** recorded.
-- **If admitted (S):** a VRML export target for B-rep sources. Low value: VRML is legacy, and glTF already covers display exchange.
+- **Probe passed (2026-11-01, `scripts/probe/examples/occt-vrml.ts` and `vrml-readback.ts`; opencascade.js 1.1.1):** `new oc.VrmlAPI_Writer()` then `writer.Write(shape, "/o.wrl", 2)` after `BRepMesh_IncrementalMesh_2(shape, 0.1, false, 0.5, true)` returns `true` and writes `#VRML V2.0 utf8` (the `_1`/`_2` suffixes and the static `VrmlAPI.Write` overloads do not exist). `block.stp`: 8 069 bytes, 6 `IndexedFaceSet`s; three's `VRMLLoader` reads it back as 6 meshes and exactly 12 triangles (the viewer's own count). `bull.stp`: 182 336 bytes in 110 ms, 36 face sets, read back as 36 meshes and 1 756 triangles against 1 854 coordIndex polygons (the loader drops degenerate ones; not yet reconciled with the viewer's tessellation).
+- **If admitted (M, not S):** the writer is host-side OCCT, so it cannot ride the webview's mesh exporters. It needs a `wrl` B-rep export target through `exportBRep`/`writeShape` (unit scaling by the same `scaleShapeForExport` rule), `exportTargetsFor`, the headless `export_model` path, and an `mcp:smoke` round trip. Low value: VRML is legacy and glTF already covers display exchange, so this stays unscheduled.
 
 ##### 3.14 Sampled B-rep self-intersection {#sampled-brep-self-intersection}
 
@@ -521,14 +482,9 @@ None of these depends on another's result.
 
 *Area: Geometry.*
 
-- **Hypothesis:** the bundled OpenSCAD WASM's `text()` produces glyph outlines that the `.csg` importer turns into ordinary profiles, giving real 3D text without OCCT's dead `Font_*` family.
-- **Evidence today:** `.scad`/`.csg` import ships WASM-first; SVG-outline text already ships through `svgImport.ts` and `addSurfaceFromLines`. Unknown: whether `@loumalouomega/openscad-wasm` bundles any font (not checked for this entry), and whether its MEMFS staging can mount one.
-- **Probe (S):**
-  1. Evaluate `linear_extrude(2) text("KKSS", size=10);` through `convertScadViaWasm` and record whether a font resolves, which one, and whether it declines with `ScadWasmFallbackError`.
-  2. If no font is bundled, stage one openly licensed font (e.g. Liberation, OFL/GPL-compatible) through the same MEMFS path as library files, and repeat.
-  3. Import the `.csg`, check that counters (the hole in "A") survive as holed faces, and record the triangle count.
-- **Decision gate:** *pass* — text with counters imports as a valid solid. *Fail* — no font can be mounted → recorded beside the Glyph entry, which keeps pointing at SVG outlines.
-- **If admitted (S):** an `addText` macro (not a kernel op) that writes the `.scad` snippet, plus the font's licence notice beside the other notices.
+- **Probe result (2026-11-01, `scripts/probe/examples/scad-text.ts`; `@loumalouomega/openscad-wasm`):** the package ships **no font** (its notices say so). Without a mounted font `text()` makes the render exit with status 1. With one mounted (`render(scad, {fonts: {"X.ttf": bytes}})`; an OFL face was used from disk and not bundled), `text("KKSS A", size=10)` evaluates in about 200 ms. **The `.csg` route cannot carry it:** `format: "csg"` writes the unevaluated `text(...)` node, which the `.csg` importer has no outline for. **The SVG route can:** `format: "svg"` on the 2D `text()` returns one `<path>` of 7 closed subpaths (6 contours reported for "KKSS A", counter of the A included), which is exactly what `svgImport.ts` and the multi-loop `addSurfaceFromLines` path already turn into holed faces.
+- **Partial pass; stays here, narrowed:** text with counters is reachable as SVG outlines, so the whole feature is "render `text()` to SVG with a mounted font, then `import_svg`". What is not decided is the font: shipping one needs a choice (an OFL face is GPL-compatible as separate data, with its licence text beside the other notices) and a size budget in the VSIX. Until that choice is made, the SVG-outline import remains the supported route for text.
+- **If admitted (S–M):** an `add_text` tool/macro that renders the SVG through the worker with the chosen bundled font and imports it, plus the font's licence notice. No kernel op, no system-font discovery.
 - **Out of scope:** system-font discovery and text on curved paths.
 
 ##### 3.17 OpenSCAD library staging {#openscad-library-staging}

@@ -11,7 +11,8 @@
  */
 
 import { EditOp, validateEditOp } from "./editOps";
-import { evalExpr, isValidVariableName, parseFieldPath, setNumericField } from "./paramExpr";
+import { compileParametricCurve } from "./parametricCurve";
+import { evalExpr, exprDimension, isValidVariableName, parseFieldPath, setNumericField, type ExprDim } from "./paramExpr";
 
 export interface ParamVariable {
   name: string;
@@ -86,7 +87,26 @@ export function resolveEditOps(
   values: Record<string, number>
 ): { ops: EditOp[]; issues: string[] } {
   const issues: string[] = [];
-  const resolved = ops.map((op, index) => {
+  /** `addParametricCurve`: refresh the cached `points` against the variables (after its own `exprs`, e.g. `sMax`, resolve). A failing curve keeps its previous cache. */
+  const refreshCurve = (op: EditOp, index: number): EditOp => {
+    if (op.op !== "addParametricCurve") return op;
+    let source: EditOp = op;
+    if (op.exprs) {
+      const clone = JSON.parse(JSON.stringify(op)) as EditOp;
+      for (const [key, expr] of Object.entries(op.exprs)) {
+        const path = parseFieldPath(key);
+        const r = path ? evalExpr(expr, values) : null;
+        if (path && r?.ok) setNumericField(clone, path, r.value);
+      }
+      source = validateEditOp(clone) ?? op;
+    }
+    const r = compileParametricCurve(source as Extract<EditOp, { op: "addParametricCurve" }>, values);
+    if (r.ok && (r.op.op === "addSpline" || r.op.op === "addPolyline")) return { ...source, points: r.op.points } as EditOp;
+    if (!r.ok) issues.push(`edit ${index + 1} (addParametricCurve): ${r.error}; keeping the previous curve`);
+    return source;
+  };
+  const resolved = ops.map((original, index) => {
+    const op = refreshCurve(original, index);
     if (!op.exprs) return op;
     const clone = JSON.parse(JSON.stringify(op)) as EditOp;
     for (const [key, expr] of Object.entries(op.exprs)) {
@@ -107,4 +127,43 @@ export function resolveEditOps(
     return revalidated;
   });
   return { ops: resolved, issues };
+}
+
+/** Each variable's deduced dimension (variables only see the ones above them). */
+export function variableDimensions(vars: ParamVariable[]): Record<string, ExprDim> {
+  const dims: Record<string, ExprDim> = Object.create(null);
+  for (const v of vars) dims[v.name] = exprDimension(v.expr, dims) ?? "none";
+  return dims;
+}
+
+/** What an op field holds, from its name: angles end in `Deg`, directions/factors/counts are plain numbers. */
+export function expectedFieldDimension(fieldPath: string): ExprDim {
+  const root = /^[A-Za-z][A-Za-z0-9]*/.exec(fieldPath)?.[0] ?? "";
+  if (/Deg$|^angle/i.test(root)) return "angle";
+  if (/^(axis|axisDir|dir|normal|planeNormal|up|factors|count|times|sides|samples|segments|n|copies|turns|scale|ratio)$/i.test(root)) return "none";
+  return "length";
+}
+
+/**
+ * Dimension mismatches between an op field's expression and what the field
+ * holds (`W = 5[deg]` driving a length). Advisory only: the value is applied
+ * as written, so a mismatch can never stop a document loading.
+ */
+export function dimensionIssues(ops: EditOp[], vars: ParamVariable[]): string[] {
+  const dims = variableDimensions(vars);
+  const issues: string[] = [];
+  ops.forEach((op, index) => {
+    for (const [key, expr] of Object.entries(op.exprs ?? {})) {
+      const got = exprDimension(expr, dims);
+      if (got === null || got === "none") continue;
+      const want = expectedFieldDimension(key);
+      if (got === "mixed") {
+        issues.push(`edit ${index + 1} (${op.op}): ${key} = "${expr}" mixes length and angle units; the value is used as written`);
+      } else if (got !== want) {
+        const wanted = want === "none" ? "a plain number" : `a ${want}`;
+        issues.push(`edit ${index + 1} (${op.op}): ${key} = "${expr}" is a ${got} but the field is ${wanted}; the value is used as written`);
+      }
+    }
+  });
+  return issues;
 }

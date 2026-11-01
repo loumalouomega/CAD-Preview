@@ -247,7 +247,7 @@ function thinLabel(op: { thin?: number; thinOuter?: number }): string {
  * only when a generated icon can be built for them. Empty today; the set stays
  * so the coverage tests keep their exemption seam.
  */
-export const AGENT_ONLY_OPS: ReadonlySet<EditOpKind> = new Set<EditOpKind>();
+export const AGENT_ONLY_OPS: ReadonlySet<EditOpKind> = new Set<EditOpKind>(["addParametricCurve"]);
 
 function describeOpBase(op: EditOp): string {
   switch (op.op) {
@@ -310,6 +310,7 @@ function describeOpBase(op: EditOp): string {
     case "addThreePointArc": return `⌒ 3-point arc`;
     case "addSpline": return `∿ Spline ×${op.points.length}`;
     case "addBezier": return `∿ Bezier ×${op.controlPoints.length}`;
+    case "addParametricCurve": return `∿ Parametric curve (${op.x}, ${op.y}) s∈[${op.sMin}, ${op.sMax}] ×${op.samples}`;
     case "addEllipseArc": return `⌒ Ellipse arc ${op.radiusX}×${op.radiusY} ${op.startAngleDeg}°→${op.endAngleDeg}°`;
     case "addHelix": return `⌇ Helix r=${op.radius} p=${op.pitch} ×${op.turns}`;
     case "addSurfaceFromLines": return `⌗ Surface from ${op.edges.length} lines`;
@@ -440,6 +441,8 @@ export function referencedEntities(op: EditOp): string[] {
     case "addEllipseArc":
     case "addHelix":
       return op.pointRefs ? [...new Set(Object.values(op.pointRefs).map((r) => r.id))] : [];
+    case "addParametricCurve":
+      return [];
     case "addEdgeSlot":
       return [op.edge];
     case "filletProfile":

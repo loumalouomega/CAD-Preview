@@ -2551,6 +2551,56 @@ test("hover: stepping under the cursor reaches the face behind and the next clic
   assert(JSON.stringify(picked) === JSON.stringify([behind]), `the click picked the stepped face (got ${JSON.stringify(picked)}, wanted ${behind})`);
 });
 
+test("hover: the hovered face is tinted by whether a click would add it or remove it, and the tint clears on leave", async (page) => {
+  await populate(page);
+  await page.click("#select-menu");
+  await page.click("#sel-toggle");
+  await page.click('.sel-mode[data-mode="surface"]');
+  await page.click("#select-menu");
+  await sleep(150);
+  const box = await viewportBox(page);
+  const cx = box.x + box.width / 2;
+  const cy = box.y + box.height / 2;
+  // Sum of (red - blue) over the viewport: --cad-accent is blue (0x3b82f6), --cad-accent-fail
+  // is red (0xe5484d), so the add tint lowers it and the remove tint raises it.
+  const redness = async () => {
+    await setPanelHidden(page, true);
+    const shot = (await shotWithoutToast(page, () => page.locator("#app").screenshot())).toString("base64");
+    await setPanelHidden(page, false);
+    return page.evaluate(async (b64) => {
+      const bmp = await createImageBitmap(await (await fetch(`data:image/png;base64,${b64}`)).blob());
+      const c = document.createElement("canvas");
+      c.width = bmp.width;
+      c.height = bmp.height;
+      c.getContext("2d").drawImage(bmp, 0, 0);
+      const { data } = c.getContext("2d").getImageData(0, 0, c.width, c.height);
+      let sum = 0;
+      for (let i = 0; i < data.length; i += 4) sum += data[i] - data[i + 2];
+      return sum;
+    }, shot);
+  };
+  const away = () => page.mouse.move(box.x + box.width / 2, box.y - 40);
+
+  await away();
+  await sleep(250);
+  const base = await redness();
+  await page.mouse.move(cx - 3, cy);
+  await page.mouse.move(cx, cy);
+  await sleep(300);
+  const addTint = await redness();
+  assert(addTint < base - 2000, `hovering an unselected face tints it toward the accent blue (base ${base}, hovered ${addTint})`);
+
+  await page.mouse.click(cx, cy);
+  await sleep(300);
+  const removeTint = await redness();
+  assert(removeTint > addTint + 2000, `once selected, hovering the same face tints it toward the fail red (add ${addTint}, remove ${removeTint})`);
+
+  await away();
+  await sleep(300);
+  const selectedOnly = await redness();
+  assert(selectedOnly < removeTint - 2000, `leaving the face clears the tint, leaving the plain selection look (hover ${removeTint}, left ${selectedOnly})`);
+});
+
 test("hover: the tooltip never intercepts a click meant for the geometry", async (page) => {
   // It tracks the cursor, so without pointer-events:none it would sit directly
   // under the pointer and swallow the very click it is describing.
@@ -2560,6 +2610,63 @@ test("hover: the tooltip never intercepts a click meant for the geometry", async
     return el ? getComputedStyle(el).pointerEvents : null;
   });
   assert(pe === "none", `#hover-tip is pointer-events:none (got ${pe})`);
+});
+
+test("parts: Rule ▸ plane stores a scene selector from the selected face's exact facts, and refuses a non-planar one", async (page) => {
+  await populate(page);
+  await sleep(200);
+  await page.click("#parts-new");
+  await sleep(150);
+  await page.click("#select-menu");
+  await page.click("#sel-toggle");
+  await page.click('.sel-mode[data-mode="surface"]');
+  await page.click("#select-menu");
+  await sleep(150);
+  const box = await viewportBox(page);
+  await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+  await sleep(300);
+  const pickedId = await page.evaluate(
+    () => (window.__sent ?? []).filter((m) => m.type === "entityFactsRequest").at(-1)?.entityId ?? null
+  );
+  assert(typeof pickedId === "string", "a face is selected");
+
+  const chooseRule = async (value) => {
+    await page.evaluate(() => (window.__sent.length = 0));
+    await page.hover(".part-row");
+    await page.selectOption(".part-rule", value);
+    await sleep(200);
+  };
+  const factsFor = (over) => ({
+    entityId: pickedId, kind: "face", bbox: { min: [-50, -5, -5], max: [-50, 5, 5], diagonal: 100 },
+    center: [-50, 0, 0], area: 100, length: null, normal: [-1, 0, 0], planeOrigin: [-50, 0, 0],
+    surfaceType: "plane", surfaceParams: { kind: "plane", origin: [-50, 0, 0], normal: [-1, 0, 0] },
+    curveType: null, ...over,
+  });
+  const replyToRuleRequests = async (facts) => {
+    const ids = await page.evaluate(() =>
+      window.__sent.filter((m) => m.type === "entityFactsRequest" && String(m.requestId).startsWith("rule-")).map((m) => m.requestId)
+    );
+    for (const requestId of ids) await post(page, { type: "entityFactsResult", requestId, facts });
+    await sleep(300);
+    return ids.length;
+  };
+  const lastParts = () =>
+    page.evaluate(() => window.__sent.filter((m) => m.type === "partsChanged").at(-1)?.parts ?? null);
+
+  // Non-planar: refused, nothing stored.
+  await chooseRule("plane");
+  assert((await replyToRuleRequests(factsFor({ normal: null, planeOrigin: null, surfaceType: "cylinder", surfaceParams: null }))) >= 1, "the rule asks the host for the selected face's facts");
+  const refused = await lastParts();
+  assert(refused === null || refused[0]?.selector === undefined, "a non-planar face stores no plane rule");
+
+  // Planar: the plane leaf lands on the Part with the scene tag.
+  await chooseRule("plane");
+  await replyToRuleRequests(factsFor({}));
+  const parts = await lastParts();
+  const filter = parts?.[0]?.selector?.source?.filter;
+  assert(parts?.[0]?.selectorOpKind === "scene" && parts[0].selector.source.kind === "scene", "the Part carries a scene selector");
+  assert(filter?.kind === "plane" && filter.point[0] === -50, `the plane leaf is on x = -50 (got ${JSON.stringify(filter)})`);
+  assert(parts[0].surfaces.includes(pickedId), "the selected face stays the cached membership");
 });
 
 test("inspector card: selection requests facts, and the reply renders per classification", async (page) => {
@@ -5618,6 +5725,13 @@ test("gizmo: grid snap quantises the drag to the grid size; turning it off frees
 });
 
 /** A capture of the WebGL canvas only — the sidebar is not part of the question. */
+/** A canvas capture with the pointer parked off the canvas, so the hover tint (a transient, pointer-driven recolour) is not part of the geometry being measured. */
+const parkedShot = async (page) => {
+  const box = await viewportBox(page);
+  await page.mouse.move(box.x + box.width / 2, box.y - 40);
+  await sleep(250);
+  return canvasShot(page);
+};
 const canvasShot = (page) => page.locator("#app canvas").last().screenshot().then((b) => b.toString("base64"));
 
 /** How many pixels differ between two canvas captures. */
@@ -5729,14 +5843,14 @@ test("gizmo: entity-point snap holds the preview on an existing point; the commi
   await setPointSnap(true);
   const hOn = await gizmoHandle(page, "x");
   if (!hOn) { assert(false, "gizmo handle visible with the point snap on"); return; }
-  const beforeOn = await canvasShot(page);
+  const beforeOn = await parkedShot(page);
   await dragFromTo(page, hOn.grab, [hOn.grab[0] + hOn.dir[0] * px, hOn.grab[1] + hOn.dir[1] * px]);
   const vecOn = await formVec(page, "vec");
   assert(
     Math.hypot(vecOn[0], vecOn[1], vecOn[2]) < 1e-6,
     `the form shows the SNAPPED delta, not the raw one (got ${JSON.stringify(vecOn)}; the target is the origin vertex)`
   );
-  const afterOn = await canvasShot(page);
+  const afterOn = await parkedShot(page);
   // The instrument's own control: two captures of the SAME state differ by
   // zero pixels, so the counts below are geometry and not noise.
   const noise = await canvasDiffCount(page, afterOn, await canvasShot(page));
@@ -5748,10 +5862,10 @@ test("gizmo: entity-point snap holds the preview on an existing point; the commi
   await setPointSnap(false);
   const hOff = await gizmoHandle(page, "x");
   if (!hOff) { assert(false, "gizmo handle visible with the point snap off"); return; }
-  const beforeOff = await canvasShot(page);
+  const beforeOff = await parkedShot(page);
   await dragFromTo(page, hOff.grab, [hOff.grab[0] + hOff.dir[0] * px, hOff.grab[1] + hOff.dir[1] * px]);
   const vecOff = await formVec(page, "vec");
-  const afterOff = await canvasShot(page);
+  const afterOff = await parkedShot(page);
   const diffOff = await canvasDiffCount(page, beforeOff, afterOff);
   assert(Math.abs(vecOff[0]) > 0 && Math.abs(vecOff[0]) < tolerance,
     `the same drag without the snap is a real raw delta inside the tolerance (got ${vecOff[0]} mm, tolerance ${tolerance} mm)`);

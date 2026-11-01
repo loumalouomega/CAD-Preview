@@ -8000,7 +8000,7 @@ try {
           resetRule();
         }
       );
-      const ruleParts = (await call("read_sidecars", { path: ruleModel })).parts;
+      const ruleParts = (await call("get_state", { path: ruleModel })).parts;
       const ruleEnd = ruleParts.find((p) => p.name === "RuleEnd");
       const idEnd = ruleParts.find((p) => p.name === "IdEnd");
       assert(ruleEnd?.surfaces.length === 2, `the rule Part re-evaluated to both faces on x = -50 (got ${JSON.stringify(ruleEnd?.surfaces)})`);
@@ -8503,6 +8503,39 @@ try {
       xorRejected.rejected === 1,
       `standalone wrap with targets is rejected at validation (got ${JSON.stringify(xorRejected.report)})`
     );
+  }
+
+  // --- Parametric curve (roadmap "Parametric-curve profile"): an
+  // addParametricCurve op expands on read into an addSpline, closes with a
+  // polyline into a face, and re-evaluates when a document variable changes.
+  // y = 0.5 + A*s*(1-s) on s in [0,1] (endpoints fixed at y = 0.5): the face
+  // under it (down to y = 0) has area exactly 0.5 + A/6 (the approximating spline is exact for a parabola to well
+  // inside the 1e-4 tolerance). Fresh block.stp: 12 edges, 6 faces, so the
+  // curve is edge-12, the closing polyline edge-13..15 and the face face-6. ---
+  {
+    const curveModel = path.join(dir, "param-curve.stp");
+    const resetCurve = () => {
+      fs.copyFileSync(path.join(ROOT, "examples", "STP", "block.stp"), curveModel);
+      for (const ext of [".edits.json"]) fs.rmSync(`${curveModel}${ext}`, { force: true });
+    };
+    resetCurve();
+    await call("set_variables", { path: curveModel, variables: [{ name: "A", expr: "0.3" }] });
+    const applied = await callWithCleanRetry("apply_edit_ops", {
+      path: curveModel,
+      ops: [
+        { op: "addParametricCurve", x: "s", y: "0.5 + A*s*(1-s)", sMin: 0, sMax: 1, samples: 24 },
+        { op: "addPolyline", points: [[1, 0.5, 0], [1, 0, 0], [0, 0, 0], [0, 0.5, 0]], closed: false },
+        { op: "addSurfaceFromLines", edges: ["edge-12", "edge-13", "edge-14", "edge-15"] },
+      ],
+    }, resetCurve);
+    assert(applied.applied === 3, `all three curve ops apply (got ${JSON.stringify(applied.report)})`);
+    const stored = JSON.parse(fs.readFileSync(`${curveModel}.edits.json`, "utf8"));
+    assert(stored.ops[0].op === "addParametricCurve", "the sidecar keeps the parametric op, not its expansion");
+    const areaA = (await call("inspect", { path: curveModel, entityId: "face-6" })).area;
+    assert(Math.abs(areaA - (0.5 + 0.3 / 6)) < 1e-3, `curve face area is 0.5 + A/6 = 0.55 for A = 0.3 (got ${areaA})`);
+    await call("set_variables", { path: curveModel, variables: [{ name: "A", expr: "0.6" }] });
+    const areaB = (await call("inspect", { path: curveModel, entityId: "face-6" })).area;
+    assert(Math.abs(areaB - (0.5 + 0.6 / 6)) < 1e-3, `changing A re-evaluates the curve: 0.6 for A = 0.6 (got ${areaB})`);
   }
 
   // --- 3D text via outline import (roadmap "3D text via outline import",

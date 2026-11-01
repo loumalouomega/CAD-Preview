@@ -512,6 +512,18 @@ export function applyOneOp(oc: any, shape: any, op: EditOp, cleanup: Array<{ del
     case "addEllipseArc":
     case "addHelix":
       return addWireframePrimitive(oc, shape, op, cleanup, fail, guideCollector, pointRefSink);
+    case "addParametricCurve": {
+      // Drawn from the cached samples `resolveEditOps` refreshed; the existing
+      // spline/polyline builders do the OCCT work.
+      if (!op.points) {
+        fail?.("addParametricCurve has no evaluated samples", "Resolve the op against the document variables first (apply_edit_ops and load do this); check its x/y/z expressions.");
+        return shape;
+      }
+      const plain: EditOp = op.as === "polyline"
+        ? { op: "addPolyline", points: op.points, closed: op.closed === true, ...(op.guide ? { guide: true } : {}) }
+        : { op: "addSpline", points: op.points, ...(op.guide ? { guide: true } : {}) };
+      return addWireframePrimitive(oc, shape, plain, cleanup, fail, guideCollector, pointRefSink);
+    }
     case "addSurfaceFromLines":
       return addSurfaceFromLines(oc, shape, op, cleanup, fail, guideCollector);
     case "addSurfaceFilling":

@@ -1738,6 +1738,19 @@ body:not(:has(#side.visible)) #status {
   opacity: 0.6;
   flex-shrink: 0;
 }
+/* The rule picker, like the density field, stays out of the row until hovered
+   or focused unless the part already carries a rule. */
+.part-rule {
+  max-width: 7em;
+  flex-shrink: 0;
+  font: inherit;
+  font-size: var(--ui-fs-label);
+  color: inherit;
+  background: var(--vscode-dropdown-background, transparent);
+  border: 1px solid var(--vscode-input-border, #3c3c3c);
+  border-radius: var(--ui-r-xs);
+}
+.part-row:not(:hover):not(:focus-within) .part-rule:not(.has-rule) { display: none; }
 
 /* Parametric variables table (inside the Edits panel scroll area). */
 #variables-header {
