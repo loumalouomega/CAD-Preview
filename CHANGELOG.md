@@ -8,6 +8,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/); thi
 
 ### Added
 
+- Rule-defined Part membership: a Part's scene `selector` can now use `plane`, `box` (inside / intersects, `null` = unbounded) and `surfaceType` + `radius` leaves. It is re-evaluated after every edit instead of rebound, reports "N faces added, M lost" when its result changes, and the handoff manifest records the rule beside the resolved ids. Available through `set_part` / `resolve_selector`; the Parts-panel form is still to come.
 - The `"spacemouse"` host→webview message is now a documented, producer-agnostic contract (axes, dead-zone, buttons) and its payload is sanitised: a malformed message from a foreign producer is dropped instead of throwing in the handler.
 - Step through the entities under the cursor: when a view ray crosses several faces/edges/solids the status line shows `k of n under the cursor`, **↑/↓** (or **+/−**) step front to back, and the next click picks the stepped entity.
 - Bracketed units in parametric expressions: `2[in]`, `10[mm]`, `1.5[ft]`, `5[deg]`, `0.5[rad]` (`mm cm m in ft`, `deg rad`) convert to the pipeline's millimetres / degrees, so a value pasted from an inch drawing no longer reads as millimetres. Plain numbers keep their meaning and stored sidecars are unchanged; an unknown unit is a specific error.

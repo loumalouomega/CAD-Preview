@@ -29,6 +29,9 @@ export interface ManifestPart {
   status: "resolved" | "unresolved" | "empty";
   groups: Array<{ dim: number; physicalTag: number; entityCount: number; elementCount: number }>;
   subModelPart?: { nodeCount: number; volumeCellCount: number; surfaceCellCount: number };
+  /** The Part's stored re-executable selector (a rule such as "planar faces on x = -50"), beside the ids it resolved to —
+   * so a downstream reader can say why a SubModelPart changed size. Absent for a plain id bag (additive field, no version bump). */
+  rule?: unknown;
 }
 
 export interface HandoffManifest {
@@ -107,6 +110,7 @@ export function buildHandoffManifest(input: ManifestInput): HandoffManifest {
       requested,
       status: total === 0 ? "empty" : groups.length === 0 ? "unresolved" : "resolved",
       groups,
+      ...(p.selector ? { rule: p.selector } : {}),
       ...(smp ? { subModelPart: { nodeCount: smp.nodeCount, volumeCellCount: smp.volumeCellCount, surfaceCellCount: smp.surfaceCellCount } } : {}),
     };
   });

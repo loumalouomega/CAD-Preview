@@ -36,9 +36,16 @@ export const SELECTOR_DIRECTION_TOLERANCE_DEG = 5;
 /** Rank cap, mirroring `MAX_SELECTOR_OP_INDEX`'s no-silent-unbounded-input rule. */
 export const MAX_RANK_N = 1000;
 
+/** A box limit per axis; `null` = unbounded on that side (a blank limit). */
+export type BoxLimit = [number | null, number | null, number | null];
+
 export type FacePredicate =
   | { kind: "planar" }
-  | { kind: "surfaceType"; type: SurfaceType }
+  | { kind: "surfaceType"; type: SurfaceType; radius?: number; tol?: number }
+  /** Rule: the face's bounding box lies inside / overlaps the box (limits per axis, `null` = unbounded). */
+  | { kind: "box"; min: BoxLimit; max: BoxLimit; mode: "inside" | "intersects"; tol?: number }
+  /** Rule: a planar face on the plane through `point` with normal `normal` (either orientation). */
+  | { kind: "plane"; point: Vec3; normal: Vec3; tol?: number }
   | { kind: "normal"; dir: Vec3; toleranceDeg?: number }
   | { kind: "areaGte"; value: number }
   | { kind: "areaLte"; value: number };
@@ -53,6 +60,30 @@ export interface FilterableFace {
   area: number | null;
   surfaceType: SurfaceType | null;
   normal: Vec3 | null;
+  /** Axis-aligned bounding box (rule leaves `box`); absent = those leaves do not match. */
+  bbox?: { min: Vec3; max: Vec3 } | null;
+  /** A point on a planar face's plane (rule leaf `plane`). */
+  planeOrigin?: Vec3 | null;
+  /** Cylinder / sphere radius, torus major radius, cone reference radius (rule leaf `surfaceType` + `radius`). */
+  radius?: number | null;
+}
+
+/**
+ * Model-scale context for rule leaves whose tolerance is relative: a leaf's own
+ * `tol` (model units) wins, otherwise `1e-3 × diagonal` — the same constant the
+ * Part rebinder uses, so a rule and a rebind agree on "the same place". Without a
+ * context the fallback is 1e-6 (exact-fixture tests).
+ */
+export interface FilterContext {
+  diagonal: number;
+}
+
+/** Default relative tolerance of rule leaves (shared by value with `entityRebind`'s `1e-3 × bboxDiagonal`). */
+export const RULE_TOLERANCE_FRACTION = 1e-3;
+
+function tolOf(own: number | undefined, ctx: FilterContext | undefined): number {
+  if (own !== undefined) return own;
+  return ctx ? Math.max(RULE_TOLERANCE_FRACTION * ctx.diagonal, 1e-6) : 1e-6;
 }
 
 function dot(a: Vec3, b: Vec3): number {
@@ -71,6 +102,18 @@ function isFiniteVec3(v: unknown): v is Vec3 {
   );
 }
 
+/** `undefined` = absent (fine), `null` = present but invalid, number = valid. */
+function validTol(v: unknown): number | undefined | null {
+  if (v === undefined) return undefined;
+  return typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : null;
+}
+
+function validBoxLimit(v: unknown): BoxLimit | null {
+  if (!Array.isArray(v) || v.length !== 3) return null;
+  if (!v.every((c) => c === null || (typeof c === "number" && Number.isFinite(c)))) return null;
+  return [...v] as BoxLimit;
+}
+
 /** Structural gate for one predicate leaf — mirrors `validateSelectorQuery`'s
  * "drop, never crash" rule: malformed input returns `null`, never throws. */
 export function validateFacePredicate(raw: unknown): FacePredicate | null {
@@ -79,10 +122,35 @@ export function validateFacePredicate(raw: unknown): FacePredicate | null {
   switch (r.kind) {
     case "planar":
       return { kind: "planar" };
-    case "surfaceType":
+    case "surfaceType": {
       if (typeof r.type !== "string") return null;
       if (!["plane", "cylinder", "cone", "sphere", "torus", "other"].includes(r.type)) return null;
-      return { kind: "surfaceType", type: r.type as SurfaceType };
+      if (r.radius === undefined && r.tol === undefined) return { kind: "surfaceType", type: r.type as SurfaceType };
+      if (typeof r.radius !== "number" || !Number.isFinite(r.radius) || r.radius <= 0) return null;
+      const tol = validTol(r.tol);
+      if (tol === null) return null;
+      return { kind: "surfaceType", type: r.type as SurfaceType, radius: r.radius, ...(tol !== undefined ? { tol } : {}) };
+    }
+    case "box": {
+      const min = validBoxLimit(r.min);
+      const max = validBoxLimit(r.max);
+      if (!min || !max) return null;
+      if (r.mode !== "inside" && r.mode !== "intersects") return null;
+      for (let i = 0; i < 3; i++) {
+        if (min[i] !== null && max[i] !== null && (min[i] as number) > (max[i] as number)) return null;
+      }
+      // A box with every limit open names the whole model, never a meant rule.
+      if (min.every((v) => v === null) && max.every((v) => v === null)) return null;
+      const tol = validTol(r.tol);
+      if (tol === null) return null;
+      return { kind: "box", min, max, mode: r.mode, ...(tol !== undefined ? { tol } : {}) };
+    }
+    case "plane": {
+      if (!isFiniteVec3(r.point) || !isFiniteVec3(r.normal) || norm(r.normal) <= 0) return null;
+      const tol = validTol(r.tol);
+      if (tol === null) return null;
+      return { kind: "plane", point: [...r.point] as Vec3, normal: [...r.normal] as Vec3, ...(tol !== undefined ? { tol } : {}) };
+    }
     case "normal": {
       if (!isFiniteVec3(r.dir)) return null;
       if (norm(r.dir) <= 0) return null;
@@ -123,12 +191,47 @@ export function validateSelectorRank(raw: unknown): SelectorRank | null {
  * match a curved face here, but the host's exact `normal` is null for one,
  * so matching would be a fabrication. Documented beside the field, not hidden.
  */
-export function matchesFacePredicate(face: FilterableFace, predicate: FacePredicate): boolean {
+export function matchesFacePredicate(face: FilterableFace, predicate: FacePredicate, ctx?: FilterContext): boolean {
   switch (predicate.kind) {
     case "planar":
       return face.surfaceType === "plane";
     case "surfaceType":
-      return face.surfaceType === predicate.type;
+      if (face.surfaceType !== predicate.type) return false;
+      if (predicate.radius === undefined) return true;
+      return face.radius != null && Math.abs(face.radius - predicate.radius) <= tolOf(predicate.tol, ctx);
+    case "box": {
+      if (!face.bbox) return false;
+      const t = tolOf(predicate.tol, ctx);
+      for (let i = 0; i < 3; i++) {
+        const lo = predicate.min[i];
+        const hi = predicate.max[i];
+        const fmin = face.bbox.min[i];
+        const fmax = face.bbox.max[i];
+        if (predicate.mode === "inside") {
+          if (lo !== null && fmin < lo - t) return false;
+          if (hi !== null && fmax > hi + t) return false;
+        } else {
+          if (lo !== null && fmax < lo - t) return false;
+          if (hi !== null && fmin > hi + t) return false;
+        }
+      }
+      return true;
+    }
+    case "plane": {
+      if (face.surfaceType !== "plane" || !face.normal || !face.planeOrigin) return false;
+      const nLen = norm(face.normal);
+      const dLen = norm(predicate.normal);
+      if (nLen <= 0 || dLen <= 0) return false;
+      const cosTol = Math.cos((SELECTOR_DIRECTION_TOLERANCE_DEG * Math.PI) / 180);
+      // Parallel in EITHER orientation: a face's outward normal flips with its orientation, the plane does not.
+      if (Math.abs(dot(face.normal, predicate.normal)) / (nLen * dLen) < cosTol - 1e-9) return false;
+      const d = [
+        face.planeOrigin[0] - predicate.point[0],
+        face.planeOrigin[1] - predicate.point[1],
+        face.planeOrigin[2] - predicate.point[2],
+      ] as Vec3;
+      return Math.abs(dot(d, predicate.normal)) / dLen <= tolOf(predicate.tol, ctx);
+    }
     case "normal": {
       if (!face.normal) return false;
       const nLen = norm(face.normal);
@@ -145,16 +248,20 @@ export function matchesFacePredicate(face: FilterableFace, predicate: FacePredic
 }
 
 /** Applies one predicate to a face list, preserving input order. */
-export function filterFaces(faces: FilterableFace[], predicate: FacePredicate): FilterableFace[] {
-  return faces.filter((f) => matchesFacePredicate(f, predicate));
+export function filterFaces(faces: FilterableFace[], predicate: FacePredicate, ctx?: FilterContext): FilterableFace[] {
+  return faces.filter((f) => matchesFacePredicate(f, predicate, ctx));
 }
 
 /** Applies an induced filter layer — one leaf or an AND-conjunction — to a
  * face list. Shared by the bucket and scene resolvers so the two cannot
  * disagree on conjunction semantics. */
-export function applyFaceFilter(faces: FilterableFace[], filter: FacePredicate | FacePredicate[]): FilterableFace[] {
+export function applyFaceFilter(
+  faces: FilterableFace[],
+  filter: FacePredicate | FacePredicate[],
+  ctx?: FilterContext
+): FilterableFace[] {
   const leaves = Array.isArray(filter) ? filter : [filter];
-  return faces.filter((f) => leaves.every((leaf) => matchesFacePredicate(f, leaf)));
+  return faces.filter((f) => leaves.every((leaf) => matchesFacePredicate(f, leaf, ctx)));
 }
 
 /**

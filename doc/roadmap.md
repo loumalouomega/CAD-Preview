@@ -350,15 +350,14 @@ These are outcome groupings, not release numbers. Independent small items can sh
 - **Out of scope:** units on mesh sizes (they already follow the document unit), temperature offsets (`degC`), and any unit in the sidecar's stored numbers.
 - **Done when:** `W = 5[deg]` on a length field warns and still applies, and MCP and the Edits panel report the same warning (the 50.8 conversion and the unchanged-sidecar round trip are covered).
 
-#### 2.27 Rule-defined Part membership {#rule-defined-part-membership}
+#### 2.27 Define a rule from the selection {#rule-defined-part-membership}
 
-*Area: Geometry, Meshing. Effort: M.*
+*Area: Geometry, Meshing. Effort: S.*
 
-- **Evidence today:** a Part is an id bag (`face-N`, `edge-N`, …) carried across edits by `entityRebind.ts`/`rebindPartsAcrossOps`; an id the rebind cannot place is dropped with a note. That is the right shape for a hand-picked selection, but for the most common simulation selections — "every face on the plane x = 0", "the faces inside this box", "all cylindrical faces of radius 5" — the user's intent is a rule, and a parameter change (a longer plate, a moved hole) should *re-evaluate* the rule, not rebind its last answer. ElmerStudio's Box Selections (`core/geometry.py: _box_entities`, inside/intersects with a diagonal-relative tolerance, blank limits = unbounded, re-evaluated on every build and recorded per sweep run) and its scripting call `geo.select("boundary", xmax=0)` are the model.
-- **First useful increment (M):** an optional `rule` on a Part — `{kind: "box", min, max, mode: "inside"|"intersects"}`, `{kind: "plane", point, normal, tol}` and `{kind: "surfaceType", type, radius?}` — resolved host-side after every replay from the facts the host already computes (`collectAllEntitySignatures`, face bounding boxes, `faceSurfaceInfo`). Its resolved ids are written beside the rule so every existing consumer (meshing physical groups, BOM, layers, KKSS handoff) reads the same id list it reads today. A rule whose result changes posts a "Part X: 2 faces added, 1 lost" note.
-- **Then (S):** the Parts panel offers "Define by box/plane/type" from the current selection's extent; `set_part` takes `rule`; the handoff manifest records the rule beside the ids so a downstream mesh reader can say why a SubModelPart changed size.
-- **Out of scope:** expression predicates over arbitrary entity facts (the three rule kinds above cover the use cases seen), and rules on mesh sources (their ids are facets; mesh's formula seeds cover that side).
-- **Done when:** on the cantilever tutorial, `FixedEnd` defined as `plane x = −50` keeps exactly its end face after the beam is lengthened through a variable, an id-bag Part on the same face is reported as rebound, and the MDPA export of both is identical.
+- **Done so far (2026-11-01):** rule-defined Part membership shipped on the existing scene `selector` (no new Part field): `plane`, `box` and `surfaceType` + `radius` leaves in `selectorPredicate.ts`, exact-fact inputs in `filterableFactForFace`, re-evaluation in `resolvePartSelectors` with an "N faces added, M lost" note, `set_part`/`resolve_selector` schemas and docs, and the rule recorded in the handoff manifest. `mcp:smoke` pins "every face on x = −50" on the cantilever beam and shows the rule gaining a second coplanar face while an id-bag Part on the same face does not.
+- **What is left (S):** the Parts panel offers "Define by box/plane/type" from the current selection's extent (bounding box, or plane point and normal, or surface type and radius), writes the `selector` through the same message path as the other selector edits, and shows the rule beside the Part. The panel is DOM-only, so the logic that turns a selection into a rule belongs in a pure sibling module with unit tests.
+- **Out of scope:** expression predicates over arbitrary entity facts, rules on mesh sources, and edge or vertex rules.
+- **Done when:** a Part defined from a selected end face through the panel keeps exactly that end face after the beam is lengthened.
 
 #### 2.28 Parametric-curve profile {#parametric-curve-profile}
 
