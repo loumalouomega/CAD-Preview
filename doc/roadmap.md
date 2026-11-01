@@ -451,18 +451,8 @@ None of these depends on another's result.
 
 *Area: Formats.*
 
-- **Hypothesis:** `VrmlAPI_Writer`, green and never mentioned anywhere else in this repository, writes a B-rep to a `.wrl` file that other VRML readers open.
-- **Evidence today:**
-  - `.wrl` is not an export target.
-  - three's `VRMLLoader` can read the result back, which makes round-trip checking cheap.
-  - Gmsh can also write `.wrl`, but only for meshes.
-- **Probe (S):**
-  1. Write `bull.stp` and confirm the file loads in three's `VRMLLoader`.
-  2. Compare the triangle count with the viewer's own tessellation.
-- **Decision gate:**
-  - **Pass:** a readable file.
-  - **Fail:** recorded.
-- **If admitted (S):** a VRML export target for B-rep sources. Low value: VRML is legacy, and glTF already covers display exchange.
+- **Probe passed (2026-11-01, `scripts/probe/examples/occt-vrml.ts` and `vrml-readback.ts`; opencascade.js 1.1.1):** `new oc.VrmlAPI_Writer()` then `writer.Write(shape, "/o.wrl", 2)` after `BRepMesh_IncrementalMesh_2(shape, 0.1, false, 0.5, true)` returns `true` and writes `#VRML V2.0 utf8` (the `_1`/`_2` suffixes and the static `VrmlAPI.Write` overloads do not exist). `block.stp`: 8 069 bytes, 6 `IndexedFaceSet`s; three's `VRMLLoader` reads it back as 6 meshes and exactly 12 triangles (the viewer's own count). `bull.stp`: 182 336 bytes in 110 ms, 36 face sets, read back as 36 meshes and 1 756 triangles against 1 854 coordIndex polygons (the loader drops degenerate ones; not yet reconciled with the viewer's tessellation).
+- **If admitted (M, not S):** the writer is host-side OCCT, so it cannot ride the webview's mesh exporters. It needs a `wrl` B-rep export target through `exportBRep`/`writeShape` (unit scaling by the same `scaleShapeForExport` rule), `exportTargetsFor`, the headless `export_model` path, and an `mcp:smoke` round trip. Low value: VRML is legacy and glTF already covers display exchange, so this stays unscheduled.
 
 ##### 3.14 Sampled B-rep self-intersection {#sampled-brep-self-intersection}
 
