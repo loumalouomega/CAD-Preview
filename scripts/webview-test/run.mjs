@@ -5725,6 +5725,13 @@ test("gizmo: grid snap quantises the drag to the grid size; turning it off frees
 });
 
 /** A capture of the WebGL canvas only — the sidebar is not part of the question. */
+/** A canvas capture with the pointer parked off the canvas, so the hover tint (a transient, pointer-driven recolour) is not part of the geometry being measured. */
+const parkedShot = async (page) => {
+  const box = await viewportBox(page);
+  await page.mouse.move(box.x + box.width / 2, box.y - 40);
+  await sleep(250);
+  return canvasShot(page);
+};
 const canvasShot = (page) => page.locator("#app canvas").last().screenshot().then((b) => b.toString("base64"));
 
 /** How many pixels differ between two canvas captures. */
@@ -5836,14 +5843,14 @@ test("gizmo: entity-point snap holds the preview on an existing point; the commi
   await setPointSnap(true);
   const hOn = await gizmoHandle(page, "x");
   if (!hOn) { assert(false, "gizmo handle visible with the point snap on"); return; }
-  const beforeOn = await canvasShot(page);
+  const beforeOn = await parkedShot(page);
   await dragFromTo(page, hOn.grab, [hOn.grab[0] + hOn.dir[0] * px, hOn.grab[1] + hOn.dir[1] * px]);
   const vecOn = await formVec(page, "vec");
   assert(
     Math.hypot(vecOn[0], vecOn[1], vecOn[2]) < 1e-6,
     `the form shows the SNAPPED delta, not the raw one (got ${JSON.stringify(vecOn)}; the target is the origin vertex)`
   );
-  const afterOn = await canvasShot(page);
+  const afterOn = await parkedShot(page);
   // The instrument's own control: two captures of the SAME state differ by
   // zero pixels, so the counts below are geometry and not noise.
   const noise = await canvasDiffCount(page, afterOn, await canvasShot(page));
@@ -5855,10 +5862,10 @@ test("gizmo: entity-point snap holds the preview on an existing point; the commi
   await setPointSnap(false);
   const hOff = await gizmoHandle(page, "x");
   if (!hOff) { assert(false, "gizmo handle visible with the point snap off"); return; }
-  const beforeOff = await canvasShot(page);
+  const beforeOff = await parkedShot(page);
   await dragFromTo(page, hOff.grab, [hOff.grab[0] + hOff.dir[0] * px, hOff.grab[1] + hOff.dir[1] * px]);
   const vecOff = await formVec(page, "vec");
-  const afterOff = await canvasShot(page);
+  const afterOff = await parkedShot(page);
   const diffOff = await canvasDiffCount(page, beforeOff, afterOff);
   assert(Math.abs(vecOff[0]) > 0 && Math.abs(vecOff[0]) < tolerance,
     `the same drag without the snap is a real raw delta inside the tolerance (got ${vecOff[0]} mm, tolerance ${tolerance} mm)`);

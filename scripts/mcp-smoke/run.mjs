@@ -8000,7 +8000,7 @@ try {
           resetRule();
         }
       );
-      const ruleParts = (await call("read_sidecars", { path: ruleModel })).parts;
+      const ruleParts = (await call("get_state", { path: ruleModel })).parts;
       const ruleEnd = ruleParts.find((p) => p.name === "RuleEnd");
       const idEnd = ruleParts.find((p) => p.name === "IdEnd");
       assert(ruleEnd?.surfaces.length === 2, `the rule Part re-evaluated to both faces on x = -50 (got ${JSON.stringify(ruleEnd?.surfaces)})`);
