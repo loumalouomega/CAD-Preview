@@ -156,3 +156,40 @@ describe("field paths", () => {
     expect(setNumericField(op, ["points", 9, 0], 1)).toBe(false); // out of range
   });
 });
+
+describe("bracketed units", () => {
+  const ev = (s: string, v: Record<string, number> = {}) => evalExpr(s, v);
+  it("converts lengths to mm and angles to degrees", () => {
+    expect(ev("2[in]")).toEqual({ ok: true, value: 50.8 });
+    expect(ev("1[ft]")).toEqual({ ok: true, value: 304.8 });
+    expect(ev("3[cm]")).toEqual({ ok: true, value: 30 });
+    expect(ev("1[m]")).toEqual({ ok: true, value: 1000 });
+    expect(ev("10[mm]")).toEqual({ ok: true, value: 10 });
+    expect(ev("180[deg]")).toEqual({ ok: true, value: 180 });
+    const r = ev("3.141592653589793[rad]");
+    expect(r.ok && Math.abs(r.value - 180) < 1e-9).toBe(true);
+  });
+  it("composes with the rest of the grammar", () => {
+    const a = ev("2[in] + 5[mm]");
+    expect(a.ok && Math.abs(a.value - 55.8) < 1e-9).toBe(true);
+    const b = ev("W*2[in]", { W: 2 });
+    expect(b.ok && Math.abs(b.value - 101.6) < 1e-9).toBe(true);
+    const c = ev("sin(30[deg])");
+    expect(c.ok && Math.abs(c.value - 0.5) < 1e-12).toBe(true);
+  });
+  it("reports unit errors specifically and rejects detached brackets", () => {
+    for (const bad of ["2[xx]", "2[in", "2[]", "2[1,5]"]) {
+      const r = ev(bad);
+      expect(r.ok).toBe(false);
+      if (!r.ok) expect(r.error).toMatch(/unit/);
+    }
+    expect(ev("2 [in]").ok).toBe(false);
+    expect(ev("(1+1)[mm]").ok).toBe(false);
+    expect(parseExprSyntax("2[in]")).toBe(true);
+    expect(parseExprSyntax("2[xx]")).toBe(false);
+  });
+  it("leaves plain numbers and exponents alone", () => {
+    expect(ev("1e3")).toEqual({ ok: true, value: 1000 });
+    expect(ev(".5")).toEqual({ ok: true, value: 0.5 });
+  });
+});

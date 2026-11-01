@@ -10,6 +10,8 @@
  * DEGREES to match every angle field in the op model (`angleDeg` etc.).
  */
 
+import { DISPLAY_UNITS, unitScaleFactor } from "./lengthUnits";
+
 export type EvalResult = { ok: true; value: number } | { ok: false; error: string };
 
 /** Functions callable in expressions. Trig is degree-based (op angles are `*Deg`). */
@@ -30,6 +32,18 @@ const CONSTANTS: Record<string, number> = { pi: Math.PI };
 
 const RESERVED = new Set([...Object.keys(FUNCTIONS), ...Object.keys(CONSTANTS)]);
 
+/**
+ * Bracketed-unit suffixes (`2[in]`, `5[deg]`). Every value in the pipeline is
+ * millimetres / degrees, so a suffix converts the number just before it into
+ * those; a plain number keeps its meaning. Lengths come from the shared
+ * `lengthUnits.ts` factor table (mm per unit = 1 / unitScaleFactor).
+ */
+export const EXPR_UNITS: Readonly<Record<string, number>> = {
+  ...Object.fromEntries(DISPLAY_UNITS.map((u) => [u, 1 / unitScaleFactor(u)])),
+  deg: 1,
+  rad: 180 / Math.PI,
+};
+
 /** A legal user variable name: identifier-shaped and not a reserved function/constant. */
 export function isValidVariableName(s: string): boolean {
   return /^[A-Za-z_][A-Za-z0-9_]*$/.test(s) && !RESERVED.has(s);
@@ -41,7 +55,7 @@ type Token =
   | { kind: "punct"; ch: string };
 
 /** Tokenize `src`; returns null on any illegal character or malformed number. */
-function tokenize(src: string): Token[] | null {
+function tokenizeRaw(src: string): Token[] | null {
   const tokens: Token[] = [];
   let i = 0;
   while (i < src.length) {
@@ -52,8 +66,20 @@ function tokenize(src: string): Token[] | null {
       if (!m) return null;
       const value = Number(m[0]);
       if (!Number.isFinite(value)) return null;
-      tokens.push({ kind: "num", value });
       i += m[0].length;
+      let scaled = value;
+      if (src[i] === "[") {
+        const close = src.indexOf("]", i);
+        if (close < 0) throw new Error("missing ']' after unit");
+        const unit = src.slice(i + 1, close);
+        if (!Object.prototype.hasOwnProperty.call(EXPR_UNITS, unit)) {
+          throw new Error(`unknown unit '${unit}' — use ${Object.keys(EXPR_UNITS).join(", ")}`);
+        }
+        scaled = value * EXPR_UNITS[unit];
+        i = close + 1;
+      }
+      if (!Number.isFinite(scaled)) return null;
+      tokens.push({ kind: "num", value: scaled });
       continue;
     }
     if (/[A-Za-z_]/.test(c)) {
@@ -70,6 +96,15 @@ function tokenize(src: string): Token[] | null {
     return null;
   }
   return tokens;
+}
+
+/** {@link tokenizeRaw} that turns a unit error into `null` (callers that only need validity). */
+function tokenize(src: string): Token[] | null {
+  try {
+    return tokenizeRaw(src);
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -168,7 +203,12 @@ class Parser {
 
 /** Evaluate `src` against `vars`. A non-finite result (div by zero, sqrt(-1)) is an error. */
 export function evalExpr(src: string, vars: Record<string, number>): EvalResult {
-  const tokens = tokenize(src);
+  let tokens: Token[] | null;
+  try {
+    tokens = tokenizeRaw(src);
+  } catch (err) {
+    return { ok: false, error: (err as Error).message };
+  }
   if (!tokens) return { ok: false, error: "invalid character in expression" };
   if (tokens.length === 0) return { ok: false, error: "empty expression" };
   try {

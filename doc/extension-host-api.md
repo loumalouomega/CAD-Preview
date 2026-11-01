@@ -1195,7 +1195,7 @@ Every `EditOp` may carry an optional parametric annotation `exprs?: ExprMap` (se
 
 The parametric layer — both **vscode/DOM-free** (unit-tested), imported by the host (sidecar parsing) and the webview (input parsing, resolve-on-read).
 
-`src/paramExpr.ts` is a hand-written recursive-descent expression evaluator (webview CSP blocks `eval()`): numbers, variable identifiers, `+ - * / ^`, unary minus, parentheses, `sqrt/abs/min/max/floor/ceil/round/sin/cos/tan` (degrees) and `pi`. Plus field-path addressing for `exprs` keys:
+`src/paramExpr.ts` is a hand-written recursive-descent expression evaluator (webview CSP blocks `eval()`): numbers, variable identifiers, `+ - * / ^`, unary minus, parentheses, `sqrt/abs/min/max/floor/ceil/round/sin/cos/tan` (degrees) and `pi`, plus bracketed unit suffixes on numbers (`2[in]`, `5[deg]`; `EXPR_UNITS` — lengths convert to mm via `lengthUnits.ts`, `rad` to degrees; an unknown unit is a specific evaluation error). Plus field-path addressing for `exprs` keys:
 
 ```typescript
 function evalExpr(src: string, vars: Record<string, number>): { ok: true; value: number } | { ok: false; error: string }

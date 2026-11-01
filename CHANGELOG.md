@@ -6,6 +6,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/); thi
 
 ## [Unreleased]
 
+### Added
+
+- Bracketed units in parametric expressions: `2[in]`, `10[mm]`, `1.5[ft]`, `5[deg]`, `0.5[rad]` (`mm cm m in ft`, `deg rad`) convert to the pipeline's millimetres / degrees, so a value pasted from an inch drawing no longer reads as millimetres. Plain numbers keep their meaning and stored sidecars are unchanged; an unknown unit is a specific error.
+
 ### Fixed
 
 - A `.mesh.json` written before `conformal` existed no longer silently meshes conformally when reopened. A key absent from an existing sidecar's `options` now takes its legacy value (`LEGACY_MESH_DEFAULTS`: `conformal` → `false`, the behaviour the file was written under) and the Meshing panel status line and MCP `generate_mesh` `warnings` say so. New sidecars keep today's defaults, and re-saving writes the field so the note disappears. A drift-guard test fails when a `MeshOptions` field is added without a legacy decision.
