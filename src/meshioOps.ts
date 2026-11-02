@@ -10,7 +10,7 @@
 // `meshioService.ts` keeps its own `MeshioOpSpec` interface and this file
 // mirrors it structurally — kept in lockstep by the test below.
 
-/** The nine operations `transform_mesh` (and now the panel) support. */
+/** The twelve operations `transform_mesh` (and now the panel) support. */
 export const MESHIO_OP_IDS = [
   "clean",
   "decimate",
@@ -21,6 +21,9 @@ export const MESHIO_OP_IDS = [
   "convertCells",
   "tetToPoly",
   "polyToTet",
+  "optimizeVolume",
+  "adapt",
+  "discretizeLevelset",
 ] as const;
 
 export type MeshioOpId = (typeof MESHIO_OP_IDS)[number];
@@ -34,6 +37,15 @@ export interface MeshioOpSpec {
   method?: string;
   mode?: string;
   targetGroupSize?: number;
+  /** `optimizeVolume`: `"worst"` (default) or `"energy"`. */
+  objective?: string;
+  maxRingSize?: number;
+  /** `adapt`: constant target edge size; `hausd` Hausdorff bound (both source units). */
+  hsiz?: number;
+  hausd?: number;
+  /** `discretizeLevelset`: the point-data array and its isovalue. */
+  levelSet?: string;
+  isovalue?: number;
 }
 
 /** Short human-readable label per operation, for the panel `<select>`. */
@@ -47,6 +59,9 @@ export const MESHIO_OP_LABELS: Record<MeshioOpId, string> = {
   convertCells: "Convert cells (linearize/simplexify/elevate)",
   tetToPoly: "Tets → polyhedral dual (one cell per vertex)",
   polyToTet: "Polyhedra → tets",
+  optimizeVolume: "Optimize tets (raise the worst dihedral angle)",
+  adapt: "MMG adapt (remesh to a target size)",
+  discretizeLevelset: "MMG level set (insert an isovalue interface)",
 };
 
 /**
@@ -83,5 +98,22 @@ export function validateMeshioOpSpec(raw: unknown): MeshioOpSpec | null {
   }
   const targetGroupSize = num(r.targetGroupSize);
   if (targetGroupSize !== undefined) spec.targetGroupSize = Math.max(1, Math.floor(targetGroupSize));
+  if (typeof r.objective === "string" && (r.objective === "worst" || r.objective === "energy")) spec.objective = r.objective;
+  const maxRingSize = num(r.maxRingSize);
+  if (maxRingSize !== undefined) spec.maxRingSize = Math.max(3, Math.floor(maxRingSize));
+  const hsiz = num(r.hsiz);
+  if (hsiz !== undefined) {
+    if (!(hsiz > 0)) return null;
+    spec.hsiz = hsiz;
+  }
+  const hausd = num(r.hausd);
+  if (hausd !== undefined) {
+    if (!(hausd > 0)) return null;
+    spec.hausd = hausd;
+  }
+  if (typeof r.levelSet === "string" && r.levelSet.length > 0 && r.levelSet.length <= 256) spec.levelSet = r.levelSet;
+  const isovalue = num(r.isovalue);
+  if (isovalue !== undefined) spec.isovalue = isovalue;
+  if (op === "discretizeLevelset" && spec.levelSet === undefined) return null;
   return spec;
 }

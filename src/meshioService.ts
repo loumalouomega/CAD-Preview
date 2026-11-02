@@ -506,7 +506,7 @@ export async function readMeshioDataInfo(
 
 /** One declarative step in a {@link runMeshioOps} pipeline. */
 export interface MeshioOpSpec {
-  op: "clean" | "decimate" | "smooth" | "subdivide" | "refine" | "agglomerate" | "convertCells" | "tetToPoly" | "polyToTet";
+  op: "clean" | "decimate" | "smooth" | "subdivide" | "refine" | "agglomerate" | "convertCells" | "tetToPoly" | "polyToTet" | "optimizeVolume" | "adapt" | "discretizeLevelset";
   /** `decimate`: fraction of faces to KEEP, in (0, 1]. */
   ratio?: number;
   /** `smooth`/`refine`: iteration / subdivision count. */
@@ -518,6 +518,15 @@ export interface MeshioOpSpec {
   mode?: string;
   /** `agglomerate`: target cells per group. */
   targetGroupSize?: number;
+  /** `optimizeVolume`: `"worst"` (default) | `"energy"`; `maxRingSize` caps the removal rings. */
+  objective?: string;
+  maxRingSize?: number;
+  /** `adapt`: constant target edge size and Hausdorff bound. */
+  hsiz?: number;
+  hausd?: number;
+  /** `discretizeLevelset`: point-data array name and isovalue. */
+  levelSet?: string;
+  isovalue?: number;
 }
 
 export interface MeshioOpsResult {
@@ -709,6 +718,44 @@ export async function runMeshioOps(
             const r = m.polyToTet(mesh, false, true);
             mesh = r.mesh;
             steps.push({ op: spec.op, applied: true, detail: `${r.numExactTets} exact tets, ${r.numFannedCells} cells fanned` });
+            break;
+          }
+          case "optimizeVolume": {
+            // meshio++ refuses a tet mesh that also carries lower-dimension blocks
+            // (their nodes would dangle), so the boundary blocks are dropped first.
+            const cells = mesh.cells as Array<{ type: string }>;
+            const tets = cells.filter((b) => b.type === "tetra");
+            if (tets.length === 0) throw new Error("optimizeVolume needs a linear tetrahedral mesh (no tetra block found)");
+            const dropped = cells.length - tets.length;
+            const r = m.optimizeVolume(
+              { ...mesh, cells: tets }, spec.iterations ?? 5, true, true, true, 0,
+              (spec.objective as "worst" | "energy" | undefined) ?? "worst", spec.maxRingSize ?? 7
+            );
+            mesh = r.mesh;
+            steps.push({
+              op: spec.op, applied: true,
+              detail: `min dihedral ${Number(r.minDihedralBefore).toFixed(2)}° → ${Number(r.minDihedralAfter).toFixed(2)}° (${r.numFlips} flips, ${r.numEdgeRemovals} edge removals, ${r.numVerticesMoved} moved)${dropped > 0 ? `; dropped ${dropped} non-tet block(s)` : ""}`,
+            });
+            break;
+          }
+          case "adapt": {
+            const o: Record<string, number> = {};
+            if (spec.hsiz !== undefined) o.hsiz = spec.hsiz;
+            if (spec.hausd !== undefined) o.hausd = spec.hausd;
+            const r = m.adapt(mesh, o);
+            mesh = r.mesh;
+            steps.push({ op: spec.op, applied: true, detail: `${r.report.library}: ${r.report.numElementsIn} → ${r.report.numElementsOut} elements, min quality ${Number(r.report.quality.min).toFixed(3)}` });
+            for (const w of r.report.warnings) warnings.push(`adapt: ${w}`);
+            break;
+          }
+          case "discretizeLevelset": {
+            if (!spec.levelSet) throw new Error("discretizeLevelset needs the name of a point-data array (levelSet)");
+            const o: Record<string, unknown> = { levelSet: spec.levelSet, isovalue: spec.isovalue ?? 0 };
+            if (spec.hausd !== undefined) o.hausd = spec.hausd;
+            const r = m.discretizeLevelset(mesh, o);
+            mesh = r.mesh;
+            steps.push({ op: spec.op, applied: true, detail: `${r.report.library}: ${r.report.numElementsIn} → ${r.report.numElementsOut} elements at ${spec.levelSet} = ${spec.isovalue ?? 0}` });
+            for (const w of r.report.warnings) warnings.push(`discretizeLevelset: ${w}`);
             break;
           }
           default:
@@ -1908,10 +1955,11 @@ export async function analyzeSurfaceMesh(
           numHit: num(r.numHit),
           numMissed: num(r.numMissed),
           numBelow: num(r.numBelow),
-          // A face that hit nothing has no distance: min/max/mean are NaN then.
-          min: finite(r.min),
-          max: finite(r.max),
-          mean: finite(r.mean),
+          // With no hit the kernel reports 0 (minCell -1), which would read as zero
+          // thickness: a statistic without a measurement is null.
+          min: num(r.numHit) > 0 ? finite(r.min) : null,
+          max: num(r.numHit) > 0 ? finite(r.max) : null,
+          mean: num(r.numHit) > 0 ? finite(r.mean) : null,
           minCell: num(r.minCell),
           minPoint: Array.from((r.minPoint as ArrayLike<number>) ?? []).map(Number),
           maxDistance: num(r.maxDistance),
