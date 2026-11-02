@@ -6,6 +6,17 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/); thi
 
 ## [Unreleased]
 
+## [3.34.0] - 2026-11-02
+
+### Added
+
+- **meshio++ 18's three surface analyses, as `find_mesh_intersections`, `measure_mesh_thickness` and `select_mesh_region`.** One `analyzeSurfaceMesh` kernel function (mesh-format sources only — pending mesh edits are baked, and a B-rep source answers `supported:false` with the "export it to STL first" reason) behind three facts-only tools. `find_mesh_intersections` runs exact triangle-triangle tests on a surface against itself or `otherPath` and reports `numPairs`, `numTrianglePairs`, `numCoplanar`, `numSegments`, `clean`, `truncated`, the capped triangle-pair list and the intersection segments; `maxPairs` (default 5000) caps the list, never the counts. `measure_mesh_thickness` casts a ray from each triangle's centroid along its normal (`direction` `auto`/`inward`/`outward`, `maxDistance`, `threshold`, optional `otherPath`) and reports `numHit`/`numMissed`/`numBelow`, `min`/`max`/`mean` and the least-distance triangle and point; with nothing hit the three statistics are `null`, never a misleading 0. `select_mesh_region` selects triangles (`kind: "cell"`, default) or vertices (`"point"`) by `box`, `plane` (inside is `(p - point)·normal ≥ 0`), `sphere`, the k-th node-connected `component` or a patch grown from a `seed` across edges no sharper than `featureAngle`, and returns the true counts plus capped `entries` in the surface's own order — the `mesh-triangle-N`/`mesh-vertex-N` ids headless tools use; it is read-only and refuses a call with no criterion. `mcp:smoke` pins the 10 mm cube: 10 mm thick on all 12 triangles (an outward ray hits nothing and reads `null`), clean against itself, 18 triangle pairs / 6 segments against a copy shifted by (5,5,5) with `maxPairs: 2` truncating the list and not the count, the 2 top triangles on the plane z ≥ 5 and 4 vertices in a bottom box; `tools/list` is now 89 tools.
+- **Five more `transform_mesh` / Mesh Ops operations from meshio++ 18.0.0.** `tetToPoly` turns a tet mesh into its polyhedral median dual (one polyhedron per vertex; the result must be written to `.vtu`/ensight/cgns/med/openfoam — MDPA and the other writers refuse polyhedra by name), `polyToTet` goes back, `optimizeVolume` raises the worst dihedral angle of a tet mesh (`iterations`, `objective` `worst`/`energy`, `maxRingSize`; boundary blocks are dropped so their nodes do not dangle, and the step detail reports min dihedral before/after), `adapt` is MMG remeshing to a constant `hsiz` within `hausd` (source units) and `discretizeLevelset` inserts the `isovalue` interface of a point-data array `levelSet`. The Mesh Ops panel gains the five operations and their fields (**Objective**, **Target size**, **Hausdorff**, **Level set**, **Isovalue**), and the CAD source is never modified. On a 12-tet block `adapt` gives 113 / 742 / 5 542 tets at `hsiz` 2 / 1 / 0.5 and a sphere level set 12 093 tets; the same block's dual is 480 polyhedra + 120 polygons in VTU, and the probe finds MDPA refuses it. Probes `meshio-1800.ts` and `meshio-1800-verify.ts`.
+
+### Changed
+
+- **Adopted `@meshioplusplus/wasm` 18.0.0 (pinned; was 17.23.0).** The tarball diff against 17.23.0 is purely additive in the typings, the format count is unchanged (80 read / 75 written), and the FULL WASM now statically links MMG 5.8 (LGPL-3.0-or-later) and Netgen (LGPL-2.1-only) — both GPL-3.0-or-later compatible and recorded in README Licensing; ELAS (GPL-3.0) is excluded upstream, so `move` always throws. Probed and **not adopted**: `tetrahedralize` with Netgen keeps the boundary (Hausdorff 0) but ignores `maxSize`/`maxVolume`/`grading` and aborts the WASM module on `bull.stp`, so fTetWild and the octree engines stay; `meshDomain` runs but needs a 2-D boundary-line mesh no workflow here produces; `metricFromHessian` needs a 9-component Hessian per point that nothing here produces. The triage is recorded in `doc/roadmap.md`.
+
 ## [3.33.0] - 2026-11-01
 
 ### Added
@@ -1052,6 +1063,7 @@ This release republishes v1.9.0's full changelog (below) unchanged; v1.9.0 itsel
 
 - Initial release: read-only 3D preview for CAD and mesh files (STEP, IGES, BREP, STL, OBJ, PLY, glTF) inside a VS Code custom editor, using OpenCascade.js (OCCT WASM) in the extension host for B-rep formats and Three.js in the webview for rendering.
 
+[3.34.0]: https://github.com/loumalouomega/CAD-Preview/compare/v3.33.0...v3.34.0
 [3.33.0]: https://github.com/loumalouomega/CAD-Preview/compare/v3.32.0...v3.33.0
 [3.32.0]: https://github.com/loumalouomega/CAD-Preview/compare/v3.31.0...v3.32.0
 [3.31.0]: https://github.com/loumalouomega/CAD-Preview/compare/v3.30.0...v3.31.0
