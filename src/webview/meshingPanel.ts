@@ -237,6 +237,11 @@ export class MeshingPanel {
   private readonly meshOpsLevels: HTMLInputElement;
   private readonly meshOpsTargetGroupSize: HTMLInputElement;
   private readonly meshOpsMode: HTMLSelectElement;
+  private readonly meshOpsObjective: HTMLSelectElement;
+  private readonly meshOpsHsiz: HTMLInputElement;
+  private readonly meshOpsHausd: HTMLInputElement;
+  private readonly meshOpsLevelSet: HTMLInputElement;
+  private readonly meshOpsIsovalue: HTMLInputElement;
   private readonly meshOpsRun: HTMLButtonElement;
   private readonly meshOpsStatus: HTMLElement;
 
@@ -1029,6 +1034,19 @@ export class MeshingPanel {
       ["linearize", "linearize (higher-order → linear)"],
       ["elevate", "elevate (linear → higher-order)"],
     ]);
+    this.meshOpsObjective = this.select(opsForm, "Objective", [
+      ["worst", "worst dihedral (never lowers it)"],
+      ["energy", "ODT energy"],
+    ]);
+    this.meshOpsHsiz = this.numberField(opsForm, "Target size", 1);
+    this.meshOpsHsiz.title = "MMG adapt: constant target edge length, in source units";
+    this.meshOpsHsiz.min = "0";
+    this.meshOpsHausd = this.numberField(opsForm, "Hausdorff", 0.05);
+    this.meshOpsHausd.title = "MMG: Hausdorff bound of the boundary approximation, in source units";
+    this.meshOpsHausd.min = "0";
+    this.meshOpsLevelSet = this.textField(opsForm, "Level set", "");
+    this.meshOpsLevelSet.title = "Name of the point-data array holding the level set";
+    this.meshOpsIsovalue = this.numberField(opsForm, "Isovalue", 0);
     const opsRunRow = document.createElement("div");
     opsRunRow.className = "meshing-field";
     this.meshOpsRun = document.createElement("button");
@@ -1055,6 +1073,26 @@ export class MeshingPanel {
         spec.targetGroupSize = Math.max(1, Math.floor(Number(this.meshOpsTargetGroupSize.value) || 4));
       } else if (op === "convertCells") {
         spec.mode = this.meshOpsMode.value;
+      } else if (op === "optimizeVolume") {
+        spec.iterations = Math.max(1, Math.floor(Number(this.meshOpsIterations.value) || 5));
+        spec.objective = this.meshOpsObjective.value;
+      } else if (op === "adapt") {
+        const hsiz = Number(this.meshOpsHsiz.value);
+        const hausd = Number(this.meshOpsHausd.value);
+        if (!(hsiz > 0) || !(hausd > 0)) {
+          this.renderMeshOpsStatus("Target size and Hausdorff bound must be positive.", true);
+          return;
+        }
+        spec.hsiz = hsiz;
+        spec.hausd = hausd;
+      } else if (op === "discretizeLevelset") {
+        const name = this.meshOpsLevelSet.value.trim();
+        if (!name) {
+          this.renderMeshOpsStatus("Enter the point-data array that holds the level set.", true);
+          return;
+        }
+        spec.levelSet = name;
+        spec.isovalue = Number(this.meshOpsIsovalue.value) || 0;
       }
       this.renderMeshOpsStatus("Running…", false);
       this.meshOpsRun.disabled = true;
@@ -1554,10 +1592,15 @@ export class MeshingPanel {
     };
     show(this.meshOpsRatio, op === "decimate");
     show(this.meshOpsMethod, op === "smooth");
-    show(this.meshOpsIterations, op === "smooth");
+    show(this.meshOpsIterations, op === "smooth" || op === "optimizeVolume");
     show(this.meshOpsLevels, op === "refine");
     show(this.meshOpsTargetGroupSize, op === "agglomerate");
     show(this.meshOpsMode, op === "convertCells");
+    show(this.meshOpsObjective, op === "optimizeVolume");
+    show(this.meshOpsHsiz, op === "adapt");
+    show(this.meshOpsHausd, op === "adapt");
+    show(this.meshOpsLevelSet, op === "discretizeLevelset");
+    show(this.meshOpsIsovalue, op === "discretizeLevelset");
   }
 
   /**

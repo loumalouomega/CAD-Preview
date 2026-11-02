@@ -22,6 +22,9 @@ import {
   repairMeshTool,
   inspectMeshioFieldsTool,
   checkMeshConformityTool,
+  findMeshIntersectionsTool,
+  measureMeshThicknessTool,
+  selectMeshRegionTool,
   projectToCadTool,
   growPrismLayersTool,
   inspectEntity,
@@ -659,6 +662,7 @@ function fakePipeline(overrides: Partial<Pipeline> = {}): Pipeline {
       dimension: 3, numHangingNodes: 0, numTJunctions: 0, numPartialOverlaps: 0, numUnweldedFacets: 0,
       numBoundaryFacets: 12, numNonManifoldFacets: 0, conforming: true, interfaceMode: "conforming", warnings: [],
     })),
+    analyzeSurfaceMesh: vi.fn(async (_b: Uint8Array, spec: { kind: "thickness" | "intersections" | "select" }) => ({ kind: spec.kind, numTriangles: 12, warnings: [] })),
     readMeshioDataInfo: vi.fn(async () => []),
     readMeshioProvenance: vi.fn(async () => null),
     runMeshioOps: vi.fn(async () => ({ bytes: new Uint8Array([1, 2, 3]), steps: [], warnings: [] })),
@@ -2473,6 +2477,28 @@ describe("inspect_meshio_fields", () => {
     expect(stp.supported).toBe(false);
     expect(stp.warnings[0]).toMatch(/export_mesh first/);
     await expect(checkMeshConformityTool(c, { path: await medModel(), tolerance: -1 })).rejects.toThrow(/tolerance must be/);
+  });
+
+  it("surface analyses pass the STL boundary and the validated spec to the pipeline; B-rep is unsupported", async () => {
+    const analyzeSurfaceMesh = vi.fn(async (_b: Uint8Array, spec: { kind: "thickness" | "intersections" | "select" }) => ({ kind: spec.kind, numTriangles: 12, warnings: ["w"] }));
+    const c = ctx(fakePipeline({ analyzeSurfaceMesh }));
+    const stl = path.join(dir, "sa.stl");
+    await fs.writeFile(stl, "solid x\nendsolid x\n", "utf8");
+    const t = await measureMeshThicknessTool(c, { path: stl, direction: "inward", threshold: 2 });
+    expect(analyzeSurfaceMesh).toHaveBeenLastCalledWith(expect.any(Uint8Array), { kind: "thickness", direction: "inward", maxDistance: undefined, threshold: 2 }, null);
+    expect(t).toMatchObject({ supported: true, kind: "thickness" });
+    expect(t.warnings).toContain("⟦meshio warning: w⟧");
+    await findMeshIntersectionsTool(c, { path: stl, otherPath: stl });
+    expect(analyzeSurfaceMesh).toHaveBeenLastCalledWith(expect.any(Uint8Array), expect.objectContaining({ kind: "intersections", useOther: true, maxPairs: 5000 }), expect.any(Uint8Array));
+    await selectMeshRegionTool(c, { path: stl, box: [0, 0, 0, 1, 1, 1], name: "r" });
+    expect(analyzeSurfaceMesh).toHaveBeenLastCalledWith(expect.any(Uint8Array), expect.objectContaining({ kind: "select", name: "r", box: [0, 0, 0, 1, 1, 1] }), null);
+    await expect(selectMeshRegionTool(c, { path: stl })).rejects.toThrow(/at least one criterion/);
+    await expect(selectMeshRegionTool(c, { path: stl, box: [1, 2] })).rejects.toThrow(/box must be 6/);
+    await expect(measureMeshThicknessTool(c, { path: stl, threshold: -1 })).rejects.toThrow(/threshold must be/);
+    await expect(findMeshIntersectionsTool(c, { path: stl, maxPairs: -1 })).rejects.toThrow(/maxPairs must be/);
+    const stp = await measureMeshThicknessTool(c, { path: stpModel });
+    expect(stp.supported).toBe(false);
+    expect(analyzeSurfaceMesh).toHaveBeenCalledTimes(3);
   });
 
   it("returns the pipeline's per-array facts verbatim for a meshio source", async () => {

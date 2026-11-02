@@ -77,6 +77,9 @@ import {
   remeshMeshTool,
   inspectMeshioFieldsTool,
   checkMeshConformityTool,
+  findMeshIntersectionsTool,
+  measureMeshThicknessTool,
+  selectMeshRegionTool,
   projectToCadTool,
   growPrismLayersTool,
   pinAnnotation,
@@ -861,7 +864,7 @@ server.registerTool(
   "transform_mesh",
   {
     description:
-      "Run a declarative list of meshio++ mesh operations over a meshio-readable source and write the result to a new file. ONE tool for the whole family rather than one per operation (the same shape run_parametric_script uses): pass `ops` as an ordered array of {op, ...params} and get a per-step report back saying which steps actually did something. Operations: clean (weld/drop degenerate+duplicate cells), decimate (quadric edge-collapse; `ratio` = fraction of faces to KEEP, surface meshes only), smooth (`method` taubin|laplacian, `iterations`), subdivide, refine (`levels`), agglomerate (`targetGroupSize`), convertCells (`mode` linearize|simplexify|elevate — simplexify splits quads/hexes into triangles/tets). A step that cannot run is reported with applied:false and its reason, and the pipeline continues. The CAD source is never modified. B-rep and mesh-parser (stl/obj/ply/gltf) sources return supported:false — a B-rep has exact geometry and should be edited with apply_edit_ops instead.",
+      "Run a declarative list of meshio++ mesh operations over a meshio-readable source and write the result to a new file. ONE tool for the whole family rather than one per operation (the same shape run_parametric_script uses): pass `ops` as an ordered array of {op, ...params} and get a per-step report back saying which steps actually did something. Operations: clean (weld/drop degenerate+duplicate cells), decimate (quadric edge-collapse; `ratio` = fraction of faces to KEEP, surface meshes only), smooth (`method` taubin|laplacian, `iterations`), subdivide, refine (`levels`), agglomerate (`targetGroupSize`), convertCells (`mode` linearize|simplexify|elevate — simplexify splits quads/hexes into triangles/tets), tetToPoly (meshio++ 18: tets → their polyhedral median dual, one polyhedron per vertex; write to vtu/ensight/cgns/med/openfoam -- MDPA and the other writers refuse polyhedra by name), polyToTet (polyhedra → tets, a polyhedron that already is a tet stays one), optimizeVolume (tet meshes: raise the worst dihedral angle; `iterations`, `objective` worst|energy, `maxRingSize`; boundary blocks are dropped), adapt (MMG remesh to a constant `hsiz` within `hausd`, source units; surface or tet meshes), discretizeLevelset (MMG: insert the `isovalue` interface of the point-data array `levelSet`). A step that cannot run is reported with applied:false and its reason, and the pipeline continues. The CAD source is never modified. B-rep and mesh-parser (stl/obj/ply/gltf) sources return supported:false — a B-rep has exact geometry and should be edited with apply_edit_ops instead.",
     inputSchema: {
       path: modelPath,
       ops: z
@@ -884,6 +887,59 @@ server.registerTool(
     },
   },
   wrap((args: { path: string; tolerance?: number }) => checkMeshConformityTool(ctx, args))
+);
+
+server.registerTool(
+  "find_mesh_intersections",
+  {
+    description:
+      "Where a triangle surface intersects itself, or (otherPath) where it interpenetrates or touches a second surface, by exact triangle-triangle tests (meshio++ 18 findIntersections). Facts only: numPairs, numTrianglePairs, numCoplanar, numSegments, clean, truncated, the (capped) triangle-pair list as flat [meshTriangle, otherTriangle] indices and the intersection segments as flat xyz endpoint pairs. Mesh-format sources only (stl/obj/ply/gltf and meshio++ boundaries; pending mesh edits are baked); a B-rep source returns supported:false -- export it to STL first.",
+    inputSchema: {
+      path: modelPath,
+      otherPath: z.string().optional().describe("A second mesh-format file: report where the two surfaces meet instead of self-intersections"),
+      maxPairs: z.number().optional().describe("Keep at most this many pairs (default 5000); the counts still cover every pair and truncated says so"),
+      segments: z.boolean().optional().describe("Return the intersection segments (default true)"),
+    },
+  },
+  wrap((args: { path: string; otherPath?: string; maxPairs?: number; segments?: boolean }) => findMeshIntersectionsTool(ctx, args))
+);
+
+server.registerTool(
+  "measure_mesh_thickness",
+  {
+    description:
+      "Wall thickness (inward) or clearance (outward) per triangle, by a ray from each triangle's centroid along its normal (meshio++ 18 thickness). Facts only: direction used, numHit/numMissed, numBelow (hits closer than threshold), min/max/mean distance (null when nothing was hit), the triangle of the least distance and its point. Exact rays over the mesh -- complements check_printability's sampled wall check. Mesh-format sources only (pending edits baked); a B-rep source returns supported:false.",
+    inputSchema: {
+      path: modelPath,
+      otherPath: z.string().optional().describe("Measure toward a second mesh-format file instead of the mesh itself"),
+      direction: z.enum(["auto", "inward", "outward"]).optional().describe("inward = thickness, outward = clearance, auto (default) picks by the surface's own orientation"),
+      maxDistance: z.number().optional().describe("The longest ray (default: the bounding-box diagonal)"),
+      threshold: z.number().optional().describe("Count the hits closer than this (numBelow); default none"),
+    },
+  },
+  wrap((args: { path: string; otherPath?: string; direction?: "auto" | "inward" | "outward"; maxDistance?: number; threshold?: number }) => measureMeshThicknessTool(ctx, args))
+);
+
+server.registerTool(
+  "select_mesh_region",
+  {
+    description:
+      "Selects triangles (kind cell, default) or vertices (kind point) of a mesh-format source by a box [xmin,ymin,zmin,xmax,ymax,zmax], plane [px,py,pz,nx,ny,nz] (inside is (p - point).normal >= 0), sphere [cx,cy,cz,r], the k-th node-connected component, or a patch grown from a seed point [x,y,z] across edges no sharper than featureAngle degrees (meshio++ 18 selectRegion). Returns the true counts and the selected indices (capped) in the surface's own order -- the mesh-triangle-N / mesh-vertex-N ids headless tools use. Read-only; nothing is written. At least one criterion is required. B-rep sources return supported:false.",
+    inputSchema: {
+      path: modelPath,
+      name: z.string().optional().describe("Region name (default 'selection')"),
+      kind: z.enum(["cell", "point"]).optional().describe("Select triangles (default) or vertices"),
+      mode: z.enum(["all", "any", "centroid"]).optional().describe("How a triangle reduces its vertices for box/plane/sphere (default all)"),
+      box: z.array(z.number()).optional().describe("[xmin, ymin, zmin, xmax, ymax, zmax]"),
+      plane: z.array(z.number()).optional().describe("[px, py, pz, nx, ny, nz]"),
+      sphere: z.array(z.number()).optional().describe("[cx, cy, cz, r]"),
+      component: z.number().int().optional().describe("The k-th node-connected component (0-based)"),
+      seed: z.array(z.number()).optional().describe("[x, y, z]: grow a patch from the triangle nearest this point"),
+      featureAngle: z.number().optional().describe("Largest dihedral angle in degrees the seed growth crosses (default 30)"),
+      normalTolerance: z.number().optional().describe("Largest angle in degrees to the seed's normal (default 0 = off)"),
+    },
+  },
+  wrap((args: Parameters<typeof selectMeshRegionTool>[1]) => selectMeshRegionTool(ctx, args))
 );
 
 server.registerTool(

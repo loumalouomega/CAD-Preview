@@ -2,9 +2,9 @@ import { describe, expect, it } from "vitest";
 import { MESHIO_OP_IDS, MESHIO_OP_LABELS, validateMeshioOpSpec } from "./meshioOps";
 
 describe("meshioOps", () => {
-  it("covers the seven transform_mesh operations", () => {
+  it("covers the twelve transform_mesh operations", () => {
     expect([...MESHIO_OP_IDS].sort()).toEqual(
-      ["agglomerate", "clean", "convertCells", "decimate", "refine", "smooth", "subdivide"].sort()
+      ["adapt", "agglomerate", "clean", "convertCells", "decimate", "discretizeLevelset", "optimizeVolume", "polyToTet", "refine", "smooth", "subdivide", "tetToPoly"].sort()
     );
     for (const id of MESHIO_OP_IDS) expect(MESHIO_OP_LABELS[id].length).toBeGreaterThan(0);
   });
@@ -37,5 +37,14 @@ describe("meshioOps", () => {
       op: "convertCells",
       mode: "simplexify",
     });
+  });
+  it("validates the 18.0 op parameters", () => {
+    expect(validateMeshioOpSpec({ op: "optimizeVolume", iterations: 3, objective: "energy", maxRingSize: 9 })).toEqual({ op: "optimizeVolume", iterations: 3, objective: "energy", maxRingSize: 9 });
+    expect(validateMeshioOpSpec({ op: "optimizeVolume", objective: "bogus" })).toEqual({ op: "optimizeVolume" });
+    expect(validateMeshioOpSpec({ op: "adapt", hsiz: 2, hausd: 0.1 })).toEqual({ op: "adapt", hsiz: 2, hausd: 0.1 });
+    expect(validateMeshioOpSpec({ op: "adapt", hsiz: 0 })).toBeNull();
+    expect(validateMeshioOpSpec({ op: "adapt", hausd: -1 })).toBeNull();
+    expect(validateMeshioOpSpec({ op: "discretizeLevelset", levelSet: "phi", isovalue: 0.5 })).toEqual({ op: "discretizeLevelset", levelSet: "phi", isovalue: 0.5 });
+    expect(validateMeshioOpSpec({ op: "discretizeLevelset" })).toBeNull();
   });
 });
