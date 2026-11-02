@@ -2,9 +2,9 @@ import { describe, expect, it } from "vitest";
 import { MESHIO_OP_IDS, MESHIO_OP_LABELS, validateMeshioOpSpec } from "./meshioOps";
 
 describe("meshioOps", () => {
-  it("covers the seven transform_mesh operations", () => {
+  it("covers the nine transform_mesh operations", () => {
     expect([...MESHIO_OP_IDS].sort()).toEqual(
-      ["agglomerate", "clean", "convertCells", "decimate", "refine", "smooth", "subdivide"].sort()
+      ["agglomerate", "clean", "convertCells", "decimate", "polyToTet", "refine", "smooth", "subdivide", "tetToPoly"].sort()
     );
     for (const id of MESHIO_OP_IDS) expect(MESHIO_OP_LABELS[id].length).toBeGreaterThan(0);
   });

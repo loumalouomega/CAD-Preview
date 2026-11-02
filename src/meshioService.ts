@@ -506,7 +506,7 @@ export async function readMeshioDataInfo(
 
 /** One declarative step in a {@link runMeshioOps} pipeline. */
 export interface MeshioOpSpec {
-  op: "clean" | "decimate" | "smooth" | "subdivide" | "refine" | "agglomerate" | "convertCells";
+  op: "clean" | "decimate" | "smooth" | "subdivide" | "refine" | "agglomerate" | "convertCells" | "tetToPoly" | "polyToTet";
   /** `decimate`: fraction of faces to KEEP, in (0, 1]. */
   ratio?: number;
   /** `smooth`/`refine`: iteration / subdivision count. */
@@ -696,6 +696,21 @@ export async function runMeshioOps(
             mesh = m.convertCells(mesh, spec.mode ?? "simplexify", false);
             steps.push({ op: spec.op, applied: true, detail: `mode ${spec.mode ?? "simplexify"}` });
             break;
+          case "tetToPoly": {
+            // meshio++ 18.0: the median dual — one polyhedron per vertex. Only
+            // polyhedron-capable writers (vtu, ensight, cgns, med, openfoam)
+            // accept the result; the others fail the write by name.
+            const r = m.tetToPoly(mesh, undefined, true);
+            mesh = r.mesh;
+            steps.push({ op: spec.op, applied: true, detail: `${r.vertexMap.length} dual cells, ${r.numNewPoints} new points, ${r.numBoundaryFaces} boundary faces` });
+            break;
+          }
+          case "polyToTet": {
+            const r = m.polyToTet(mesh, false, true);
+            mesh = r.mesh;
+            steps.push({ op: spec.op, applied: true, detail: `${r.numExactTets} exact tets, ${r.numFannedCells} cells fanned` });
+            break;
+          }
           default:
             steps.push({ op: String(spec.op), applied: false, detail: "unknown operation — skipped" });
             warnings.push(`Unknown operation "${String(spec.op)}" was skipped.`);
@@ -1769,6 +1784,201 @@ export async function checkMeshConformity(
     throw wrapMeshioFault(err);
   } finally {
     unstageMeshioSource(m, allPaths);
+  }
+}
+
+/**
+ * meshio++ 18.0 surface analyses over a triangle surface given as STL bytes
+ * (the same boundary every mesh-format source already funnels through).
+ * Facts only; the caller decides what is acceptable. One kernel function for
+ * the whole family so the `Pipeline` grows by one entry.
+ */
+export type SurfaceAnalysisSpec =
+  | {
+      kind: "thickness";
+      direction?: "auto" | "inward" | "outward";
+      maxDistance?: number;
+      threshold?: number;
+      /** Measure toward a second surface instead of the mesh itself. */
+      useOther?: boolean;
+    }
+  | { kind: "intersections"; useOther?: boolean; maxPairs?: number; segments?: boolean }
+  | {
+      kind: "select";
+      name: string;
+      selectKind?: "cell" | "point";
+      mode?: "all" | "any" | "centroid";
+      box?: number[];
+      plane?: number[];
+      sphere?: number[];
+      where?: [string, string, number];
+      quality?: [string, string, number];
+      component?: number;
+      seed?: number[];
+      featureAngle?: number;
+      normalTolerance?: number;
+    };
+
+export interface SurfaceAnalysisResult {
+  kind: SurfaceAnalysisSpec["kind"];
+  numTriangles: number;
+  /** `thickness`. */
+  thickness?: {
+    direction: string;
+    numHit: number;
+    numMissed: number;
+    numBelow: number;
+    min: number | null;
+    max: number | null;
+    mean: number | null;
+    minCell: number;
+    minPoint: number[];
+    maxDistance: number;
+  };
+  /** `intersections`. */
+  intersections?: {
+    numPairs: number;
+    numTrianglePairs: number;
+    numCoplanar: number;
+    numSegments: number;
+    clean: boolean;
+    truncated: boolean;
+    /** (triangle of the mesh, triangle of the other) index pairs, flattened. */
+    pairs: number[];
+    /** Intersection segments as flat xyz endpoint pairs (6 numbers each), when requested. */
+    segments: number[];
+  };
+  /** `select`. */
+  selection?: {
+    selectKind: string;
+    numCandidates: number;
+    numSelected: number;
+    numGrown: number;
+    numComponents: number;
+    /** Selected triangle (cell) or vertex (point) indices in the surface's own order. */
+    entries: number[];
+  };
+  warnings: string[];
+}
+
+/** Largest index/segment payload returned inline; the true counts are always reported. */
+export const SURFACE_ANALYSIS_MAX_ENTRIES = 5000;
+
+export async function analyzeSurfaceMesh(
+  stlBytes: Uint8Array,
+  spec: SurfaceAnalysisSpec,
+  otherStlBytes?: Uint8Array | null
+): Promise<SurfaceAnalysisResult> {
+  const m = await getMeshio();
+  const paths: string[] = [];
+  const read = (bytes: Uint8Array, p: string): any => {
+    // A Node Buffer may be a view into a pool: copy before handing it to MEMFS.
+    m.FS.writeFile(p, bytes.slice());
+    paths.push(p);
+    return m.readMesh(p, "stl");
+  };
+  const num = (v: unknown): number => {
+    const x = Number(v);
+    return Number.isFinite(x) ? x : 0;
+  };
+  const finite = (v: unknown): number | null => {
+    const x = Number(v);
+    return Number.isFinite(x) ? x : null;
+  };
+  try {
+    const mesh = read(stlBytes, "/sa0.stl");
+    const other = otherStlBytes ? read(otherStlBytes, "/sa1.stl") : undefined;
+    let numTriangles = 0;
+    for (const b of mesh.cells as Array<{ type: string; data: ArrayLike<unknown>; nodesPerCell?: number }>) {
+      if (b.type === "triangle") numTriangles += Math.floor(b.data.length / 3);
+    }
+    const base: Pick<SurfaceAnalysisResult, "numTriangles" | "warnings"> = { numTriangles, warnings: [] };
+    if (spec.kind === "thickness") {
+      const o: Record<string, unknown> = {};
+      if (spec.direction !== undefined) o.direction = spec.direction;
+      if (spec.maxDistance !== undefined) o.maxDistance = spec.maxDistance;
+      if (spec.threshold !== undefined) o.threshold = spec.threshold;
+      if (spec.useOther && other) o.other = other;
+      const r = m.thickness(mesh, o) as unknown as Record<string, unknown>;
+      return {
+        kind: "thickness",
+        ...base,
+        thickness: {
+          direction: String(r.direction),
+          numHit: num(r.numHit),
+          numMissed: num(r.numMissed),
+          numBelow: num(r.numBelow),
+          // A face that hit nothing has no distance: min/max/mean are NaN then.
+          min: finite(r.min),
+          max: finite(r.max),
+          mean: finite(r.mean),
+          minCell: num(r.minCell),
+          minPoint: Array.from((r.minPoint as ArrayLike<number>) ?? []).map(Number),
+          maxDistance: num(r.maxDistance),
+        },
+        warnings: Array.isArray(r.warnings) ? (r.warnings as unknown[]).map(String) : [],
+      };
+    }
+    if (spec.kind === "intersections") {
+      const o: Record<string, unknown> = { segments: spec.segments !== false };
+      if (spec.useOther && other) o.other = other;
+      if (spec.maxPairs !== undefined) o.maxPairs = spec.maxPairs;
+      const r = m.findIntersections(mesh, o) as unknown as Record<string, any>;
+      const pairs = Array.from((r.pairs as ArrayLike<number>) ?? []).map(Number).slice(0, SURFACE_ANALYSIS_MAX_ENTRIES * 2);
+      const segments: number[] = [];
+      const seg = r.segments as { points: ArrayLike<number>; cells: Array<{ data: ArrayLike<unknown> }> } | null;
+      if (seg) {
+        for (const b of seg.cells) {
+          const d = b.data;
+          for (let i = 0; i < d.length && segments.length < SURFACE_ANALYSIS_MAX_ENTRIES * 6; i++) {
+            const v = Number(d[i]);
+            segments.push(seg.points[v * 3], seg.points[v * 3 + 1], seg.points[v * 3 + 2]);
+          }
+        }
+      }
+      return {
+        kind: "intersections",
+        ...base,
+        intersections: {
+          numPairs: num(r.numPairs),
+          numTrianglePairs: num(r.numTrianglePairs),
+          numCoplanar: num(r.numCoplanar),
+          numSegments: num(r.numSegments),
+          clean: r.clean === true,
+          truncated: r.truncated === true,
+          pairs,
+          segments,
+        },
+        warnings: Array.isArray(r.warnings) ? (r.warnings as unknown[]).map(String) : [],
+      };
+    }
+    const { kind: _k, name, selectKind, ...criteria } = spec;
+    const o: Record<string, unknown> = { kind: selectKind ?? "cell" };
+    for (const [k, v] of Object.entries(criteria)) if (v != null) o[k] = v;
+    const r = m.selectRegion(mesh, name, o) as unknown as Record<string, any>;
+    const region = (r.mesh.regions as Array<{ name: string; entries: ArrayLike<unknown> }> | undefined)?.find((x) => x.name === name);
+    const entries = Array.from(region?.entries ?? []).map(Number);
+    const warnings: string[] = [];
+    if (entries.length > SURFACE_ANALYSIS_MAX_ENTRIES) warnings.push(`Selection has ${entries.length} entries; only the first ${SURFACE_ANALYSIS_MAX_ENTRIES} are listed (numSelected is the true count).`);
+    return {
+      kind: "select",
+      ...base,
+      selection: {
+        selectKind: String(o.kind),
+        numCandidates: num(r.numCandidates),
+        numSelected: num(r.numSelected),
+        numGrown: num(r.numGrown),
+        numComponents: num(r.numComponents),
+        entries: entries.slice(0, SURFACE_ANALYSIS_MAX_ENTRIES),
+      },
+      warnings,
+    };
+  } catch (err) {
+    throw wrapMeshioFault(err);
+  } finally {
+    for (const p of paths) {
+      try { m.FS.unlink(p); } catch { /* already gone */ }
+    }
   }
 }
 

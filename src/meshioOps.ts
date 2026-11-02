@@ -10,7 +10,7 @@
 // `meshioService.ts` keeps its own `MeshioOpSpec` interface and this file
 // mirrors it structurally — kept in lockstep by the test below.
 
-/** The seven operations `transform_mesh` (and now the panel) support. */
+/** The nine operations `transform_mesh` (and now the panel) support. */
 export const MESHIO_OP_IDS = [
   "clean",
   "decimate",
@@ -19,6 +19,8 @@ export const MESHIO_OP_IDS = [
   "refine",
   "agglomerate",
   "convertCells",
+  "tetToPoly",
+  "polyToTet",
 ] as const;
 
 export type MeshioOpId = (typeof MESHIO_OP_IDS)[number];
@@ -43,6 +45,8 @@ export const MESHIO_OP_LABELS: Record<MeshioOpId, string> = {
   refine: "Refine (levels)",
   agglomerate: "Agglomerate (coarsen)",
   convertCells: "Convert cells (linearize/simplexify/elevate)",
+  tetToPoly: "Tets → polyhedral dual (one cell per vertex)",
+  polyToTet: "Polyhedra → tets",
 };
 
 /**

@@ -375,8 +375,8 @@ try {
   assert(capsText.length > 100, "resources/read cad-preview://capabilities returns JSON text");
 
   const tools = (await request("tools/list", {})).tools.map((t) => t.name);
-  assert(tools.length === 86, `tools/list exposes 86 tools (got ${tools.length}: ${tools.join(", ")})`);
-  for (const t of ["check_draft", "check_printability", "list_workspace_models", "check_interference_all", "generate_bom", "generate_hole_table", "render_ops_prefix", "check_tolerance", "inspect_meshio_fields", "pin_annotation", "import_svg", "save_mesh_preset", "list_mesh_presets", "apply_mesh_preset", "compare_mesh_refinement", "export_tessellated_stl", "estimate_mesh_budget", "analyze_passages", "measure_mesh_deviation", "save_sheet_template", "list_sheet_templates", "batch_export", "check_handoff_manifest", "generate_prep_report", "job_status", "job_cancel", "check_brep_health", "list_scad_parameters", "convert_scad", "list_layers", "set_layer", "assign_layer", "segment_mesh_surface", "fit_mesh_to_cad", "mesh_cad_surface", "check_mesh_conformity", "project_to_cad", "grow_prism_layers", "iga_sample", "iga_refine", "iga_evaluate", "check_mesh_quality"]) {
+  assert(tools.length === 89, `tools/list exposes 89 tools (got ${tools.length}: ${tools.join(", ")})`);
+  for (const t of ["check_draft", "check_printability", "list_workspace_models", "check_interference_all", "generate_bom", "generate_hole_table", "render_ops_prefix", "check_tolerance", "inspect_meshio_fields", "pin_annotation", "import_svg", "save_mesh_preset", "list_mesh_presets", "apply_mesh_preset", "compare_mesh_refinement", "export_tessellated_stl", "estimate_mesh_budget", "analyze_passages", "measure_mesh_deviation", "save_sheet_template", "list_sheet_templates", "batch_export", "check_handoff_manifest", "generate_prep_report", "job_status", "job_cancel", "check_brep_health", "list_scad_parameters", "convert_scad", "list_layers", "set_layer", "assign_layer", "segment_mesh_surface", "fit_mesh_to_cad", "mesh_cad_surface", "check_mesh_conformity", "find_mesh_intersections", "measure_mesh_thickness", "select_mesh_region", "project_to_cad", "grow_prism_layers", "iga_sample", "iga_refine", "iga_evaluate", "check_mesh_quality"]) {
     assert(tools.includes(t), `tools/list exposes ${t}`);
   }
 
@@ -7666,6 +7666,34 @@ try {
   );
   const confBrep = await call("check_mesh_conformity", { path: octreeBlock });
   assert(confBrep.supported === false, "check_mesh_conformity declines a B-rep source (export a mesh first)");
+  // meshio++ 18 surface analyses over the 10 mm cube (examples/STL/cube.stl, spans -5..5): analytic answers.
+  const sa18Cube = path.join(dir, "sa18-cube.stl");
+  fs.copyFileSync(path.join(ROOT, "examples", "STL", "cube.stl"), sa18Cube);
+  const sa18Thick = await call("measure_mesh_thickness", { path: sa18Cube, threshold: 11 });
+  assert(
+    sa18Thick.supported === true && sa18Thick.thickness.direction === "inward" && sa18Thick.thickness.numHit === 12 &&
+      Math.abs(sa18Thick.thickness.min - 10) < 1e-9 && Math.abs(sa18Thick.thickness.max - 10) < 1e-9 && sa18Thick.thickness.numBelow === 12,
+    `measure_mesh_thickness reads the 10 mm cube as 10 mm thick on all 12 triangles (got ${JSON.stringify(sa18Thick.thickness)})`
+  );
+  const sa18Out = await call("measure_mesh_thickness", { path: sa18Cube, direction: "outward" });
+  assert(sa18Out.thickness.numHit === 0 && sa18Out.thickness.min === null, "...and an outward clearance ray from the lone cube hits nothing (min is null, not NaN)");
+  const sa18Self = await call("find_mesh_intersections", { path: sa18Cube });
+  assert(sa18Self.supported === true && sa18Self.intersections.numPairs === 0 && sa18Self.intersections.clean === true, `a lone cube does not intersect itself (got ${JSON.stringify(sa18Self.intersections)})`);
+  const sa18Shift = path.join(dir, "sa18-shift.stl");
+  fs.writeFileSync(sa18Shift, fs.readFileSync(sa18Cube, "utf8").replace(/vertex\s+(\S+)\s+(\S+)\s+(\S+)/g, (_m, x, y, z) => `vertex ${Number(x) + 5} ${Number(y) + 5} ${Number(z) + 5}`));
+  const sa18Pair = await call("find_mesh_intersections", { path: sa18Cube, otherPath: sa18Shift, maxPairs: 2 });
+  assert(
+    sa18Pair.intersections.numPairs === 18 && sa18Pair.intersections.numSegments === 6 && sa18Pair.intersections.clean === false &&
+      sa18Pair.intersections.truncated === true && sa18Pair.intersections.pairs.length === 4 && sa18Pair.intersections.segments.length === 36,
+    `a cube against a copy shifted by (5,5,5) meets in 18 triangle pairs / 6 segments, with maxPairs=2 truncating the list but not the count (got ${JSON.stringify({ ...sa18Pair.intersections, segments: sa18Pair.intersections.segments.length })})`
+  );
+  const sa18Top = await call("select_mesh_region", { path: sa18Cube, plane: [0, 0, 5, 0, 0, 1] });
+  assert(sa18Top.selection.numSelected === 2 && sa18Top.selection.entries.length === 2, `select_mesh_region on the plane z>=5 picks exactly the cube's 2 top triangles (got ${JSON.stringify(sa18Top.selection)})`);
+  const sa18Pts = await call("select_mesh_region", { path: sa18Cube, kind: "point", box: [-6, -6, -6, 6, 6, -4] });
+  assert(sa18Pts.selection.numSelected === 4, "...and a box over the bottom picks its 4 vertices");
+  const sa18Brep = await call("measure_mesh_thickness", { path: octreeBlock });
+  assert(sa18Brep.supported === false, "the surface analyses decline a B-rep source (export to STL first)");
+
   const ocmHexMsh = path.join(dir, "octreemesh-block-hex.msh");
   await call("export_mesh", { path: octreeBlock, format: "msh", outputPath: ocmHexMsh, options: { ...ocmOpts, octreeMeshOutput: "hex" } });
   const ocmHexVol = mshCellVolumes(fs.readFileSync(ocmHexMsh, "utf8"));

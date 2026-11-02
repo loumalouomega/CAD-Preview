@@ -125,8 +125,9 @@ import type {
 } from "./stepPartsService";
 import type { compareModels, CompareSource } from "./modelDiffHost";
 import type { ModelDiff } from "./modelDiff";
-import type { MeshConformityFacts } from "./meshioService";
-import type { convertToStlBoundary, convertToStlBoundaryWithRegions, convertFoamCaseToStlBoundary, exportViaMeshio, readMeshioMetadata, checkMeshQuality, checkMeshConformity, readMeshioDataInfo, readMeshioProvenance, runMeshioOps, MeshioDataArrayInfo } from "./meshioService";
+import type { MeshConformityFacts, SurfaceAnalysisResult, SurfaceAnalysisSpec } from "./meshioService";
+import { SURFACE_ANALYSIS_MAX_ENTRIES } from "./meshioService";
+import type { convertToStlBoundary, convertToStlBoundaryWithRegions, convertFoamCaseToStlBoundary, exportViaMeshio, readMeshioMetadata, checkMeshQuality, checkMeshConformity, analyzeSurfaceMesh, readMeshioDataInfo, readMeshioProvenance, runMeshioOps, MeshioDataArrayInfo } from "./meshioService";
 import { buildPartsFromMeshioRegions } from "./meshioRegionParts";
 import { buildPartsFromCsgColors, csgColorPartsNote, type CsgColorGroup } from "./csgColorParts";
 import { validateMmgOptions, type MmgOptions } from "./mmgOptions";
@@ -313,6 +314,7 @@ export interface Pipeline {
   readMeshioMetadata: typeof readMeshioMetadata;
   checkMeshQuality: typeof checkMeshQuality;
   checkMeshConformity: typeof checkMeshConformity;
+  analyzeSurfaceMesh: typeof analyzeSurfaceMesh;
   readMeshioDataInfo: typeof readMeshioDataInfo;
   readMeshioProvenance: typeof readMeshioProvenance;
   coarsenStlBoundary: typeof coarsenStlBoundary;
@@ -2673,6 +2675,155 @@ export async function checkMeshConformityTool(
   const warnings = facts.warnings.map((w) => envelope(w, "meshio warning"));
   if (facts.dimension === 0) warnings.push("The mesh has no volume or 2-D cells, so nothing was examined.");
   return { format: route.format, supported: true, ...facts, warnings };
+}
+
+// ---------------------------------------------------------------------------
+// meshio++ 18.0 surface analyses: find_mesh_intersections / measure_mesh_thickness / select_mesh_region
+
+type SurfaceToolResult = { supported: boolean; warnings: string[] } & Partial<SurfaceAnalysisResult>;
+
+/**
+ * Resolves a mesh-format source to the STL boundary the surface analyses read
+ * (pending edits baked, like meshing and export). B-rep sources have no
+ * triangle skin on the headless pipeline, so they report `supported:false`.
+ */
+async function resolveSurfaceStl(
+  ctx: ToolContext,
+  modelPath: string,
+  tool: string,
+  warnings: string[]
+): Promise<{ stl: Uint8Array } | { unsupported: string }> {
+  const route = requireRoute(modelPath);
+  if (route.strategy === "occt" || !isMeshSourceRoute(route)) {
+    return {
+      unsupported: `${tool} reads a triangle surface; ${route.format} is not a mesh-format source. Export the model to STL first and run the tool on that file.`,
+    };
+  }
+  const { ops } = await readEditsResolved(modelPath);
+  const input = await resolveMeshSourceInput(
+    route,
+    modelPath,
+    ops,
+    {
+      readBytes: () => readModelBytes(modelPath),
+      resolveGltfBuffers: (bytes) => resolveGltfBuffers(ctx, modelPath, bytes),
+      resolveMeshioCompanions: (bytes) => resolveMeshioCompanions(modelPath, route.format, bytes),
+      convertToStlBoundary: (bytes, format, name, companions) => ctx.pipeline.convertToStlBoundary(bytes, format, name, companions),
+      convertFoamCaseToStlBoundary: (markerPath) => ctx.pipeline.convertFoamCaseToStlBoundary(markerPath),
+      bakeEdits: (bytes, format, tail, external) => ctx.pipeline.bakeMeshEdits(bytes, format, tail, "stl", external),
+    },
+    warnings
+  );
+  return { stl: (input as { stlBytes: Uint8Array }).stlBytes };
+}
+
+async function runSurfaceAnalysis(
+  ctx: ToolContext,
+  tool: string,
+  modelPath: string,
+  otherPath: string | undefined,
+  spec: SurfaceAnalysisSpec
+): Promise<SurfaceToolResult> {
+  const warnings: string[] = [];
+  const src = await resolveSurfaceStl(ctx, modelPath, tool, warnings);
+  if ("unsupported" in src) return { supported: false, warnings: [src.unsupported] };
+  let other: Uint8Array | undefined;
+  if (otherPath !== undefined) {
+    const o = await resolveSurfaceStl(ctx, otherPath, tool, warnings);
+    if ("unsupported" in o) return { supported: false, warnings: [`otherPath: ${o.unsupported}`] };
+    other = o.stl;
+  }
+  const result = await ctx.pipeline.analyzeSurfaceMesh(
+    src.stl,
+    otherPath === undefined ? spec : { ...spec, useOther: true } as SurfaceAnalysisSpec,
+    other ?? null
+  );
+  return { supported: true, ...result, warnings: [...warnings, ...result.warnings.map((w) => envelope(w, "meshio warning"))] };
+}
+
+function requireNonNegative(name: string, v: number | undefined): void {
+  if (v !== undefined && !(Number.isFinite(v) && v >= 0)) throw new Error(`${name} must be a non-negative number (got ${String(v)}).`);
+}
+
+/**
+ * `find_mesh_intersections` — where a triangle surface intersects itself, or
+ * (`otherPath`) where it interpenetrates or touches a second surface (exact
+ * triangle-triangle tests). Facts only: counts, the capped triangle-pair list
+ * and the intersection segments; `clean` is not a verdict on fitness for use.
+ */
+export async function findMeshIntersectionsTool(
+  ctx: ToolContext,
+  params: { path: string; otherPath?: string; maxPairs?: number; segments?: boolean }
+): Promise<SurfaceToolResult> {
+  requireNonNegative("maxPairs", params.maxPairs);
+  const spec: SurfaceAnalysisSpec = { kind: "intersections", maxPairs: params.maxPairs ?? SURFACE_ANALYSIS_MAX_ENTRIES, segments: params.segments };
+  return runSurfaceAnalysis(ctx, "find_mesh_intersections", params.path, params.otherPath, spec);
+}
+
+/**
+ * `measure_mesh_thickness` — wall thickness (inward) or clearance (outward) per
+ * triangle by a ray from its centroid along its normal. Facts: hit/missed/below
+ * counts and the min/max/mean distance; `threshold` counts the hits below it.
+ */
+export async function measureMeshThicknessTool(
+  ctx: ToolContext,
+  params: { path: string; otherPath?: string; direction?: "auto" | "inward" | "outward"; maxDistance?: number; threshold?: number }
+): Promise<SurfaceToolResult> {
+  requireNonNegative("maxDistance", params.maxDistance);
+  requireNonNegative("threshold", params.threshold);
+  if (params.direction !== undefined && !["auto", "inward", "outward"].includes(params.direction)) {
+    throw new Error(`direction must be auto, inward or outward (got ${String(params.direction)}).`);
+  }
+  const spec: SurfaceAnalysisSpec = { kind: "thickness", direction: params.direction, maxDistance: params.maxDistance, threshold: params.threshold };
+  return runSurfaceAnalysis(ctx, "measure_mesh_thickness", params.path, params.otherPath, spec);
+}
+
+/**
+ * `select_mesh_region` — which triangles (or vertices) of a mesh-format source
+ * satisfy a box / plane / sphere / quality criterion, are one node-connected
+ * component, or form a patch grown from a seed point across smooth edges.
+ * Returns the indices (`mesh-triangle-N` / `mesh-vertex-N` ids, capped) and the
+ * true counts; nothing is written.
+ */
+export async function selectMeshRegionTool(
+  ctx: ToolContext,
+  params: {
+    path: string;
+    name?: string;
+    kind?: "cell" | "point";
+    mode?: "all" | "any" | "centroid";
+    box?: number[];
+    plane?: number[];
+    sphere?: number[];
+    component?: number;
+    seed?: number[];
+    featureAngle?: number;
+    normalTolerance?: number;
+  }
+): Promise<SurfaceToolResult> {
+  const lens: Array<[string, number[] | undefined, number]> = [["box", params.box, 6], ["plane", params.plane, 6], ["sphere", params.sphere, 4], ["seed", params.seed, 3]];
+  for (const [k, v, n] of lens) {
+    if (v !== undefined && !(v.length === n && v.every(Number.isFinite))) throw new Error(`${k} must be ${n} finite numbers.`);
+  }
+  requireNonNegative("featureAngle", params.featureAngle);
+  requireNonNegative("normalTolerance", params.normalTolerance);
+  const spec: SurfaceAnalysisSpec = {
+    kind: "select",
+    name: params.name ?? "selection",
+    selectKind: params.kind,
+    mode: params.mode,
+    box: params.box,
+    plane: params.plane,
+    sphere: params.sphere,
+    component: params.component,
+    seed: params.seed,
+    featureAngle: params.featureAngle,
+    normalTolerance: params.normalTolerance,
+  };
+  if (!params.box && !params.plane && !params.sphere && params.component === undefined && !params.seed) {
+    throw new Error("select_mesh_region needs at least one criterion: box, plane, sphere, component or seed.");
+  }
+  return runSurfaceAnalysis(ctx, "select_mesh_region", params.path, undefined, spec);
 }
 
 export async function checkMeshHealthTool(
