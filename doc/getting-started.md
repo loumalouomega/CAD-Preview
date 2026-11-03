@@ -194,9 +194,29 @@ Every item is also a VS Code command (`CAD Preview: …` in the Command Palette)
 
 The first time you open a CAD file (or run any `CAD Preview: …` command) after an update, a **What's New** tab opens beside the editor summarizing everything that changed since the version you last had installed — just close it (or click **Got it**) and keep working. It won't show again until the next update. You can reopen it anytime via **CAD Preview: Show What's New** in the Command Palette, which shows the full changelog rather than only what's new since your last session.
 
+### The Ribbon
+
+![The ribbon command strip under the menu bar: five tabs and, on the Model tab, large icon-over-label buttons in labelled groups.](/screenshots/ribbon.png)
+
+Under the menu bar, a **ribbon** gathers the commands that otherwise live in the Edits panel's button grid, the toolbar menus and the collapsed Advanced group, so what the tool can do is visible without opening a panel first. It has five tabs; the choice is remembered per document. A button opens the existing form, menu action or panel; the ribbon adds no features of its own.
+
+| Tab | Groups | Buttons |
+| --- | --- | --- |
+| **View** | Navigate, Display, Show, Layout, Pick & mark | Fit, Reset, Zoom to selection, Tree; the six display modes; Grid, Edges, Projection; the four split layouts; Select, Markup, Screenshot |
+| **Model** | One group per Edits-panel category: Primitives, Holes, Features, Refine, Boolean, Modify, Transform, Assembly, Build (3D), Wireframe, Curves, Sketch, Build (2D), then Import | Every Edits-panel operation (the same list as the GEOMETRY and EDIT tabs), plus Import SVG and Import DXF |
+| **Inspect** | Measure, Analysis | Measure mode and its four tools, Clear; Mass Properties, Clash, Draft, Printability, B-rep Health, Passages, Primitives (each expands its sidebar panel) |
+| **Mesh** | FE mesh, Repair & fit, Surface | FE Mesh overlay toggle, Mesh settings; Mesh Health, Region fit; Surface Tools |
+| **Export** | Model, Drawings, Bundle, Mesh | Save, Save As, Export; SVG and DXF outline, Drawing, Drawing sheet; Save and Load preprocess; FE mesh export |
+
+- **Operations** open the same form as the Edits panel's button and never apply anything by themselves. A B-rep-only operation is dimmed on a mesh source. The button of the operation whose form is open shows as pressed.
+- **Toggles** (Grid, Selection mode, the display modes, Measure…) show their live state, including when you change them through the toolbar menus. A button whose target is unavailable (Tree outside an assembly, a panel the current file does not offer) is dimmed.
+- **Narrow editors.** When the buttons do not fit, the ones that do not move into a **More ▸** menu, listed under their group headings, so every command stays reachable at any width. The Model tab has more than sixty buttons and always uses it.
+- **Compact** (the button at the right of the tab row) hides the labels and group titles for a one-row, icons-only strip; names stay on the tooltip and the accessible name.
+- **The Edits panel.** Because the ribbon covers the operation buttons, the panel's GEOMETRY/EDIT tabs and button grids are collapsed by default. The grid button in the Edits header (next to Undo) brings them back; an opened operation's parameter form and the history are always shown.
+
 ### Toolbar
 
-The toolbar appears at the top-right of the editor, just below the menu bar. Three always-visible buttons sit on the left; everything else is grouped behind four dropdown menus, so the strip stays compact:
+The toolbar appears at the top-right of the editor, just below the ribbon. Three always-visible buttons sit on the left; everything else is grouped behind four dropdown menus, so the strip stays compact:
 
 ![The viewer toolbar: Fit, Tree, FE Mesh, and the View / Select / Measure / Markup dropdown menus.](/screenshots/toolbar.png)
 
@@ -517,6 +537,8 @@ The **Edits** panel (below the Parts panel) applies non-destructive **edit opera
 Every parameter form previews **live**: while a form is open, the viewer shows what that op *would* produce as a translucent overlay, re-computed as you type (~250 ms debounce) and coloured by intent — green where material is added, red where it is removed, blue for wire/reference results (points, lines, sketch faces), neutral for transforms and fillet/chamfer. Switching forms or changing the selection cancels the preview; only **Apply** commits anything to the history.
 
 The **Extrude**, **Revolve**, **Shell**, and **Draft** forms also carry a **Pin query** row: pick exactly one face, choose the producing op and bucket role it came from (e.g. an extrude's end cap), and click **Synthesize** to name that face as a stored query. The query is attached when you click **Apply** (as long as the selection hasn't changed since) and survives later edits renumbering the model's faces — the same mechanism agents use headlessly, now available interactively. Edge/volume operands and multi-face picks can't be pinned yet; the row says so rather than offering a dead button.
+
+The operation buttons are also on the [ribbon](#the-ribbon)'s Model tab, and the panel's own button grid is collapsed behind the grid button in its header by default (see above).
 
 The panel is organised into two top-level tabs — **GEOMETRY** (create new entities) and **EDIT** (modify existing ones) — sharing one undo/redo/Clear header and one operation-history list. The GEOMETRY tab is further split into **2D** (points, lines, curves, sketch profiles) and **3D** (solid primitives, holes) subtabs. Each tab shows a grid of operation buttons (icon + name); clicking a button opens its parameter form below the grid, and clicking it again collapses the form. For mesh sources the whole **2D** subtab and every other B-rep-only button grey out.
 

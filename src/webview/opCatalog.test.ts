@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { OP_CATALOG, AGENT_ONLY_OPS, allCatalogEntries, describeOp, referencedEntities, buildEntityReferenceIndex, QUERYABLE_PANEL_FORMS } from "./opCatalog";
 import { OP_ICONS } from "./opIcons";
+import { ribbonOpIds } from "./ribbon";
 import { BREP_ONLY_OPS, QUERYABLE_OPERAND_FIELDS, type EditOp, type EditOpKind } from "../editOps";
 
 /** One representative well-formed op per kind, for describeOp coverage. */
@@ -352,6 +353,21 @@ describe("single-key shortcuts", () => {
     expect(keyed).toEqual({
       E: "extrude", R: "revolve", F: "fillet", C: "chamfer", H: "addHole", M: "translate", S: "shell", P: "patternLinear",
     });
+  });
+});
+
+describe("ribbon strip coverage (one-to-one with the catalog)", () => {
+  it("every catalog op is reachable from the ribbon strip", () => {
+    const reachable = ribbonOpIds();
+    const missing = allCatalogEntries().filter((e) => !reachable.has(e.id)).map((e) => e.id);
+    expect(missing).toEqual([]);
+  });
+  it("no ribbon op button lacks a form: each names a catalog entry that has an icon", () => {
+    const known = new Set(allCatalogEntries().map((e) => e.id));
+    for (const id of ribbonOpIds()) {
+      expect(known.has(id), id).toBe(true);
+      expect(OP_ICONS[id], id).toBeTruthy();
+    }
   });
 });
 

@@ -355,6 +355,21 @@ export interface ViewState {
    * into the menu's list model. Purely a display preference — no MCP surface.
    */
   bookmarks?: ViewBookmark[];
+  /**
+   * The ribbon command strip's active tab (`"view" | "model" | "inspect" |
+   * "mesh" | "export"`, `src/webview/ribbonTabs.ts`). Top-level sibling of
+   * `view` in `<model>.view.json`, omitted at the default (`"model"`) so an
+   * untouched sidecar stays byte-stable; an unknown id restores the default.
+   * Purely a display preference — no MCP surface.
+   */
+  ribbonTab?: string;
+  /** The ribbon's compact preference (labels hidden). Written only when `true`. */
+  ribbonCompact?: boolean;
+  /**
+   * The Edits panel's op button grid is expanded. Written only when `true`:
+   * absent means collapsed behind its toggle, because the ribbon covers it.
+   */
+  editsGridOpen?: boolean;
 }
 
 /** One saved meshing preset, as the FE Mesh panel lists it. A preset's own

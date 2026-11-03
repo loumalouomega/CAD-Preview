@@ -27,6 +27,8 @@ import { LayersPanel } from "./layersPanel";
 import { lockedOperandForOp } from "../layersSidecar";
 import { CommandBar } from "./commandBar";
 import { CommandPalette } from "./commandPalette";
+import { setupRibbon, type RibbonHandle } from "./ribbonStrip";
+import { DEFAULT_RIBBON_TAB, sanitizeRibbonTab } from "./ribbonTabs";
 import type { CommandRow, SelectionIds } from "../opCommands";
 import { AnnotationsModel } from "./annotationsModel";
 import { PlanesModel } from "./planesModel";
@@ -2950,9 +2952,11 @@ function openEditForm(panelId: PanelOpId, body: Record<string, unknown> | null |
 }
 
 // Command search (Ctrl+K / "/") and the opt-in single-key commands; see commandPalette.ts.
+/** False for a B-rep-only op on a mesh source — shared by the command search and the ribbon. */
+const isOpAvailable = (id: PanelOpId): boolean => sourceKind === "brep" || !allCatalogEntries().find((e) => e.id === id)?.brepOnly;
 const commandPalette = new CommandPalette({
   openOp: (id, body) => openEditForm(id, body ?? null, true),
-  isOpAvailable: (id) => sourceKind === "brep" || !allCatalogEntries().find((e) => e.id === id)?.brepOnly,
+  isOpAvailable,
   setStatus: (text, isError) => setStatus(text, isError ?? false),
 });
 commandPalette.install();
@@ -5430,6 +5434,7 @@ function setupMarkupControls(): void {
 let appearanceControls: AppearanceControlsHandle | null = null;
 let clippingControls: ClippingControlsHandle | null = null;
 let collapsiblePanels: CollapsiblePanelsHandle | null = null;
+let ribbon: RibbonHandle | null = null;
 let sidebarResizer: SidebarResizerHandle | null = null;
 
 /** While applying a saved bookmark, suppress the echo that would otherwise
@@ -5472,6 +5477,16 @@ try {
   // relying on `viewer.onViewChanged`.
   collapsiblePanels = setupCollapsiblePanels(scheduleViewSave);
   setupAdvancedGroupCount();
+  // The ribbon command strip. A user-driven tab / compact / grid-toggle change
+  // asks for the save itself (no camera moved); `ribbon.setState` is the silent
+  // restore path and never calls back.
+  ribbon = setupRibbon({
+    openOp: (id) => openEditForm(id, null, true),
+    isOpAvailable,
+    activeOp: () => editsPanel.openOpId(),
+    setStatus: (text, isError) => setStatus(text, isError ?? false),
+    onChange: () => scheduleViewSave(),
+  });
   // Sidebar resize handle. The callback is the USER-facing path only: the
   // resizer already applied `--side-width` itself (it is the one authority on
   // that var), so the callback just reflows the canvas — a window `resize`
@@ -5601,6 +5616,14 @@ function applyViewState(state: ViewState): void {
   // `onChange`, so reopening a document can't rewrite the sidecar it just read
   // (the same silent-`load()` contract `PartsModel`/`PlanesModel` follow).
   collapsiblePanels?.setCollapsed(state.collapsedPanels ?? []);
+  // Ribbon tab / compact / grid state — a restore, not an echo (`setState` never
+  // fires `onChange`). Absent fields mean the defaults, so a sidecar without
+  // them resets a previously-chosen tab exactly as `setCollapsed([])` expands.
+  ribbon?.setState({
+    tab: sanitizeRibbonTab(state.ribbonTab) ?? DEFAULT_RIBBON_TAB,
+    compact: state.ribbonCompact === true,
+    editsGridOpen: state.editsGridOpen === true,
+  });
   // Restore, not echo: `setWidth` deliberately never fires the resizer's
   // `onChange`, so reopening a document can't rewrite the sidecar it just
   // read (the same contract `setCollapsed` keeps above). Clamping HERE too:
@@ -5832,6 +5855,13 @@ function scheduleViewSave(): void {
     if (collapsed.length > 0) view.collapsedPanels = collapsed;
     const sidebarWidth = sidebarResizer?.getWidth() ?? SIDEBAR_DEFAULT_PX;
     if (sidebarWidth !== SIDEBAR_DEFAULT_PX) view.sidebarWidth = sidebarWidth;
+    // Ribbon state, each omitted at its default so an untouched sidecar stays byte-stable.
+    const ribbonState = ribbon?.getState();
+    if (ribbonState) {
+      if (ribbonState.tab !== DEFAULT_RIBBON_TAB) view.ribbonTab = ribbonState.tab;
+      if (ribbonState.compact) view.ribbonCompact = true;
+      if (ribbonState.editsGridOpen) view.editsGridOpen = true;
+    }
     // The webview is the single writer of the bookmark list (save/rename/
     // replace/delete below mutate `viewBookmarks` in place); every view save
     // carries the current list, omitted when empty like every other additive
