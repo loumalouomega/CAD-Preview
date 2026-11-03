@@ -10,6 +10,25 @@ describe("outputNameFor", () => {
     expect(outputNameFor("/a/b.stp", "brep", "{name}.{ext}")).toBe("b.stp.brep");
     expect(() => outputNameFor("/a/b.stp", "x", "../{stem}")).toThrow(/bare file name/);
   });
+
+  it("fills {config} with the configuration slug (empty without one)", () => {
+    expect(outputNameFor("/a/bolt.stp", "step", "{stem}-{config}.{ext}", "M8")).toBe("bolt-M8.step");
+    expect(outputNameFor("/a/bolt.stp", "step", "{stem}-{config}.{ext}")).toBe("bolt-.step");
+  });
+});
+
+describe("runBatch with a configuration", () => {
+  it("names the output by slug, tags the row, and the TSV gains a configuration column only then", async () => {
+    const exportOne = async (_i: string, out: string) => ({ outputs: [out], editsBaked: 0, warnings: [] });
+    const base = { outDir: "/o", ext: "step", exists: () => false, exportOne };
+    const withCfg = await runBatch(["/w/bolt.stp"], { ...base, naming: "{stem}-{config}.{ext}", configuration: { name: "M8 fine", slug: "M8_fine" } });
+    expect(withCfg.rows[0]).toMatchObject({ status: "ok", configuration: "M8 fine" });
+    expect(path.basename(withCfg.rows[0].outputs[0])).toBe("bolt-M8_fine.step");
+    expect(batchTsv(withCfg.rows).split("\n")[0]).toBe("input\tconfiguration\tstatus\toutputs\tedits_baked\terror\twarnings");
+    const plain = await runBatch(["/w/bolt.stp"], base);
+    expect(plain.rows[0].configuration).toBeUndefined();
+    expect(batchTsv(plain.rows).split("\n")[0]).toBe("input\tstatus\toutputs\tedits_baked\terror\twarnings");
+  });
 });
 
 describe("resolveCollision", () => {

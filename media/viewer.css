@@ -5422,3 +5422,40 @@ body:has(#side.visible) #kernel-status {
 #expr-suggest .expr-suggest-item { display: flex; justify-content: space-between; gap: 12px; padding: 1px 8px; cursor: pointer; }
 #expr-suggest .expr-suggest-item.active { background: var(--vscode-editorSuggestWidget-selectedBackground, var(--vscode-list-activeSelectionBackground, #04395e)); color: var(--vscode-list-activeSelectionForeground, inherit); }
 #expr-suggest .expr-suggest-kind { opacity: 0.6; }
+
+/* ── Config Table (design table) — built by configTablePanel.ts inside #variables-section ── */
+#config-section { border-top: 1px solid var(--vscode-sideBar-border, #3c3c3c); }
+#config-toggle {
+  display: flex; align-items: center; gap: 4px; width: 100%;
+  padding: 4px 8px; font: inherit; font-size: var(--ui-fs-label);
+  font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; text-align: left;
+  color: var(--vscode-sideBarSectionHeader-foreground, #bbb);
+  background: transparent; border: 0; cursor: pointer;
+}
+#config-toggle:hover { background: var(--vscode-list-hoverBackground, rgba(255,255,255,0.06)); }
+#config-count { opacity: 0.7; font-weight: 400; }
+#config-body[hidden] { display: none; }
+#config-tools { display: flex; gap: 4px; padding: 2px 8px 4px; }
+#config-new-name {
+  flex: 1; min-width: 0; font: inherit; color: var(--vscode-input-foreground, inherit);
+  background: var(--vscode-input-background, #1e1e1e); border: 1px solid var(--vscode-input-border, #3c3c3c);
+  border-radius: var(--ui-r-xs); padding: 1px 4px;
+}
+#config-grid { overflow-x: auto; padding: 0 4px 4px; }
+.config-table { border-collapse: collapse; width: max-content; min-width: 100%; font-size: var(--ui-fs-label); }
+.config-table th, .config-table td { padding: 1px 3px; text-align: left; white-space: nowrap; vertical-align: middle; }
+.config-table th { font-weight: 600; opacity: 0.8; }
+.config-row.active { background: var(--vscode-list-activeSelectionBackground, rgba(0,127,212,0.25)); }
+.config-name-cell { display: flex; align-items: center; gap: 3px; }
+.config-name { width: 84px; min-width: 0; font: inherit; color: inherit; background: transparent; border: 1px solid transparent; border-radius: var(--ui-r-xs); padding: 1px 2px; }
+.config-name:hover, .config-input:hover { border-color: var(--vscode-input-border, #3c3c3c); }
+.config-name:focus, .config-input:focus { outline: none; background: var(--vscode-input-background, #1e1e1e); border-color: var(--vscode-focusBorder, #007fd4); }
+.config-delete { font: inherit; padding: 0 4px; background: transparent; color: inherit; border: 0; cursor: pointer; opacity: 0.6; }
+.config-delete:hover { opacity: 1; }
+.config-cell { min-width: 64px; }
+.config-input { width: 64px; min-width: 0; font: inherit; color: inherit; background: transparent; border: 1px solid transparent; border-radius: var(--ui-r-xs); padding: 1px 2px; }
+.config-input::placeholder { opacity: 0.45; }
+.config-cell.overridden .config-input { font-weight: 600; }
+.config-value { margin-left: 3px; opacity: 0.65; }
+.config-cell.error .config-value, .config-cell.error .config-input { color: var(--vscode-errorForeground, #f48771); }
+#config-status, .config-empty { padding: 0 8px 4px; opacity: 0.75; font-size: var(--ui-fs-label); }

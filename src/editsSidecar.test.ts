@@ -166,3 +166,59 @@ describe("isExternalAppend", () => {
     expect(isExternalAppend([a, b], [b, a, c])).toBe(false);
   });
 });
+
+describe("configurations (design table)", () => {
+  const box = (): EditOp => ({ op: "addBox", center: [0, 0, 0], size: [1, 1, 1], exprs: { "size[0]": "D" } });
+  const file = (extra: Record<string, unknown> = {}) =>
+    JSON.stringify({
+      version: 1,
+      source: "m.stp",
+      variables: [{ name: "D", expr: "6", value: 6 }],
+      ops: [box()],
+      ...extra,
+    });
+
+  it("a sidecar with no configurations parses and serializes exactly as before", () => {
+    const parsed = parseEditsJson(file());
+    expect(parsed.configurations).toBeUndefined();
+    expect(parsed.activeConfiguration).toBeUndefined();
+    expect((parsed.ops[0] as { size: number[] }).size[0]).toBe(6);
+    const text = serializeEditsJson("m.stp", parsed.ops, parsed.variables, 0);
+    expect(text).not.toMatch(/configuration/i);
+    // serialize with an empty (or active-without-configs) state is byte-identical to omitting it
+    expect(serializeEditsJson("m.stp", parsed.ops, parsed.variables, 0, { configurations: [], activeConfiguration: "ghost" })).toBe(text);
+  });
+
+  it("round-trips configurations and the active one, dropping bad entries", () => {
+    const text = file({
+      configurations: [{ name: "M8", overrides: { D: "8", "1x": "2" } }, { name: "" }, { name: "M8", overrides: {} }],
+      activeConfiguration: "M8",
+    });
+    const parsed = parseEditsJson(text);
+    expect(parsed.configurations).toEqual([{ name: "M8", overrides: { D: "8" } }]);
+    expect(parsed.activeConfiguration).toBe("M8");
+    const again = parseEditsJson(serializeEditsJson("m.stp", parsed.ops, parsed.variables, 0, parsed));
+    expect(again.configurations).toEqual(parsed.configurations);
+    expect(again.activeConfiguration).toBe("M8");
+  });
+
+  it("overlays the active configuration BEFORE resolve: ops take the configuration's value, exprs and base variables stay", () => {
+    const parsed = parseEditsJson(file({ configurations: [{ name: "M8", overrides: { D: "8" } }], activeConfiguration: "M8" }));
+    const op = parsed.ops[0] as { size: number[]; exprs?: Record<string, string> };
+    expect(op.size[0]).toBe(8);
+    expect(op.exprs).toEqual({ "size[0]": "D" });
+    expect(parsed.variables[0]).toMatchObject({ name: "D", expr: "6", value: 6 });
+  });
+
+  it("an active name that matches nothing falls back to the plain variables", () => {
+    const parsed = parseEditsJson(file({ configurations: [{ name: "M8", overrides: { D: "8" } }], activeConfiguration: "ghost" }));
+    expect(parsed.activeConfiguration).toBeNull();
+    expect((parsed.ops[0] as { size: number[] }).size[0]).toBe(6);
+  });
+
+  it("an inactive configuration changes nothing", () => {
+    const parsed = parseEditsJson(file({ configurations: [{ name: "M8", overrides: { D: "8" } }] }));
+    expect((parsed.ops[0] as { size: number[] }).size[0]).toBe(6);
+    expect(parsed.configurations).toHaveLength(1);
+  });
+});

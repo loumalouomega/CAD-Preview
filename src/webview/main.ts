@@ -40,6 +40,9 @@ import { applySpaceMouseInput } from "./spaceMouseDispatch";
 import { sanitizeSpaceMouseMessage } from "../spaceMouseReports";
 import type { PanelOpId } from "./opCatalog";
 import { VariablesModel } from "./variablesModel";
+import { ConfigurationsModel } from "./configurationsModel";
+import { ConfigTablePanel } from "./configTablePanel";
+import { evaluateEffective } from "../configurations";
 import { VariablesPanel } from "./variablesPanel";
 import { collectVariableUsage, type VariableUsage } from "../variableUsage";
 import { evaluateVariables, resolveEditOps, dimensionIssues, parseVariablesCsv, parseVariablesJson, serializeVariablesCsv, serializeVariablesJson, promoteField } from "../editVariables";
@@ -633,10 +636,13 @@ function setupPlanesControls(): void {
 // only already-resolved ops.
 const editsModel = new EditsModel(syncEdits);
 const variablesModel = new VariablesModel(syncEdits);
+// Design table: named sets of variable overrides. The active one is overlaid on
+// the variables BEFORE resolution (`evaluateEffective`), so stored ops never change.
+const configurationsModel = new ConfigurationsModel(syncEdits);
 
 /** The op list with every expression re-evaluated against the current variables, then plane ids. */
 function currentResolvedOps(): { ops: EditOp[]; issues: string[] } {
-  const { values } = evaluateVariables(variablesModel.list());
+  const { values } = evaluateEffective(variablesModel.list(), configurationsModel.state);
   const { ops: variableResolved, issues: variableIssues } = resolveEditOps(editsModel.list(), values);
   const { ops, issues: planeIssues } = resolvePlaneRefs(variableResolved, planesModel.list());
   return { ops, issues: [...variableIssues, ...dimensionIssues(editsModel.list(), variablesModel.list()), ...planeIssues] };
@@ -658,7 +664,7 @@ function renderEditsUi(): void {
   // Facts were read against a particular op list; any change to it (even one
   // that leaves the length equal) makes them unquotable.
   knownEntityFacts.clear();
-  const { values, errors } = evaluateVariables(variablesModel.list());
+  const { values, errors } = evaluateEffective(variablesModel.list(), configurationsModel.state);
   const { ops: variableResolved } = resolveEditOps(editsModel.list(), values);
   const { ops } = resolvePlaneRefs(variableResolved, planesModel.list());
   editsPanel.setVariables(values);
@@ -671,6 +677,7 @@ function renderEditsUi(): void {
   // point anyway.
   editsPanel.render(ops, editsModel.canUndo, editsModel.canRedo, lastOpOutcomes, editsModel.redoList(), lastOpBuckets, editsModel.savePoint);
   variablesPanel.render(variablesModel.list(), values, errors, variableUsage());
+  configTablePanel.render(variablesModel.list(), configurationsModel.state);
   variablesPanel.renderModelParams(editsModel.list(), editsModel.savePoint);
   variablesPanel.setDeferState(variablesModel.isDeferred, variablesModel.hasPendingChanges);
   // The history length beside the section title, so it reads while collapsed.
@@ -720,7 +727,8 @@ function flashExternalEdits(): void {
 function syncEdits(): void {
   externalEditsFrom = null; // a local change ends the "added externally" marking
   const { ops, issues } = currentResolvedOps();
-  post({ type: "editsChanged", ops, variables: variablesModel.list() });
+  const configState = configurationsModel.state;
+  post({ type: "editsChanged", ops, variables: variablesModel.list(), configurations: configState.configurations, activeConfiguration: configState.activeConfiguration });
   renderEditsUi();
   // Ops whose expressions can't resolve keep their last-good values — surface
   // the first problem without blocking the rest of the replay.
@@ -730,7 +738,16 @@ function syncEdits(): void {
 
 const variablesPanel = new VariablesPanel(document.getElementById("variables-section")!, {
   onAdd: () => variablesModel.add(),
-  onRename: (index, name) => variablesModel.rename(index, name),
+  onRename: (index, name) => {
+    const before = variablesModel.list()[index]?.name;
+    const ok = variablesModel.rename(index, name);
+    // Carry every configuration's override across the rename.
+    if (ok && before !== undefined) {
+      const after = variablesModel.list()[index]?.name;
+      if (after !== undefined && after !== before) configurationsModel.renameVariable(before, after);
+    }
+    return ok;
+  },
   onSetExpr: (index, expr) => variablesModel.setExpr(index, expr),
   onRemove: (index) => variablesModel.remove(index),
   onSetComment: (index, comment) => variablesModel.setComment(index, comment),
@@ -798,6 +815,20 @@ const variablesPanel = new VariablesPanel(document.getElementById("variables-sec
   },
   report: (text, isError) => setStatus(text, isError),
 });
+
+// Config Table: built into the Variables section (before "Model parameters").
+const configTablePanel = new ConfigTablePanel(
+  document.getElementById("variables-section")!,
+  document.getElementById("model-params-title"),
+  {
+    onAdd: (name, copyFrom) => configurationsModel.add(name, copyFrom),
+    onRemove: (name) => configurationsModel.remove(name),
+    onRename: (from, to) => configurationsModel.rename(from, to),
+    onActivate: (name) => configurationsModel.activate(name),
+    onSetCell: (name, variable, expr, baseExpr) => configurationsModel.setCell(name, variable, expr, baseExpr),
+    report: (text, isError) => setStatus(text, isError),
+  }
+);
 
 /** Guidance shown when an edit targets ops at or inside the save point (Tier 0
  * Phase 2 — those ops live in the source file itself, not the sidecar). */
@@ -6053,6 +6084,7 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
       // travels with it so the timeline knows which rows are saved into the
       // file itself (Tier 0 Phase 2 — undo/remove/jump refuse to cross it).
       variablesModel.load(msg.variables);
+      configurationsModel.load(msg.configurations, msg.activeConfiguration);
       editsModel.load(msg.ops, msg.bakedThrough ?? 0);
       externalEditsFrom = msg.externalFrom ?? null;
       externalFlashPending = externalEditsFrom !== null;

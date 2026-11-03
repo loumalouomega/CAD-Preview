@@ -26,6 +26,7 @@ import type { ServerRequest, ServerNotification } from "@modelcontextprotocol/sd
 import { z } from "zod";
 import type { SnapshotClipInput } from "./snapshotOptions";
 import { errorToolResult, mergeFieldsIntoResult, mergeWarningsIntoResult, splitUnknownKeys, unknownKeyWarnings } from "./mcpErrors";
+import { CONFIGURATION_PARAM_TOOLS } from "./configurations";
 import { REVISION_GUARDED_TOOLS, assertRevision, currentRevision, lockKey, withSidecarLock } from "./mcpRevision";
 import { AsyncLocalStorage } from "async_hooks";
 import { createKernelClient, JobCancelledError, type JobOptions, type ScopedPipeline } from "./kernelClient";
@@ -99,6 +100,8 @@ import {
   runSavedScript,
   saveParametricScript,
   setVariables,
+  setConfiguration,
+  configurationScope,
   setPart,
   setPlane,
   listLayers,
@@ -275,17 +278,42 @@ const server = new McpServer({ name: "cad-preview", version: "1.0.0" }, { instru
             ),
         }
       : shape;
-    const known = Object.keys(fullShape);
-    return baseRegisterTool(name, { ...config, inputSchema: z.looseObject(fullShape) }, async (args: unknown, extra: unknown) => {
+    // Design table (src/configurations.ts): a read-only export/meshing tool
+    // gains an optional `configuration`, injected once here. The handler runs
+    // inside `configurationScope`, the single seam `readEditsResolved` reads,
+    // so the named configuration is evaluated WITHOUT touching the stored
+    // activeConfiguration.
+    const takesConfiguration = CONFIGURATION_PARAM_TOOLS.includes(name);
+    const shapeWithConfiguration = takesConfiguration
+      ? {
+          ...fullShape,
+          configuration: z
+            .string()
+            .optional()
+            .describe(
+              "Design table: evaluate the model with this named configuration's variable overrides instead of the stored active one (set_configuration defines them). The stored activeConfiguration is not changed. Omit to use the active configuration (or the plain variables when none is active)."
+            ),
+        }
+      : fullShape;
+    const known = Object.keys(shapeWithConfiguration);
+    return baseRegisterTool(name, { ...config, inputSchema: z.looseObject(shapeWithConfiguration) }, async (rawArgs: unknown, extra: unknown) => {
+      let args = rawArgs;
+      let scopedConfiguration: string | undefined;
+      if (takesConfiguration && rawArgs && typeof rawArgs === "object") {
+        const { configuration, ...rest } = rawArgs as Record<string, unknown>;
+        if (typeof configuration === "string" && configuration !== "") scopedConfiguration = configuration;
+        args = rest;
+      }
+      const inner = (a: unknown, e: unknown) => (scopedConfiguration === undefined ? cb(a, e) : configurationScope.run({ configuration: scopedConfiguration }, () => cb(a, e)));
       const { kept, unknown } = splitUnknownKeys(args, known);
       if (!guardKind) {
-        const result = await cb(kept, extra);
+        const result = await inner(kept, extra);
         return mergeWarningsIntoResult(result, unknownKeyWarnings(unknown, known));
       }
       const { expectedRevision, ...handlerArgs } = kept as Record<string, unknown> & { expectedRevision?: unknown };
       const modelFile = typeof handlerArgs.path === "string" ? handlerArgs.path : null;
       if (modelFile === null) {
-        const result = await cb(handlerArgs, extra);
+        const result = await inner(handlerArgs, extra);
         return mergeWarningsIntoResult(result, unknownKeyWarnings(unknown, known));
       }
       const dryRun = handlerArgs.dryRun === true;
@@ -295,7 +323,7 @@ const server = new McpServer({ name: "cad-preview", version: "1.0.0" }, { instru
         } catch (err) {
           return errorToolResult(err);
         }
-        const res = await cb(handlerArgs, extra);
+        const res = await inner(handlerArgs, extra);
         // Report the post-write revision so a caller can chain writes without
         // another get_state. Read inside the lock, so it is this call's write.
         return !dryRun && !(res as { isError?: boolean }).isError
@@ -1371,13 +1399,13 @@ server.registerTool(
   "batch_export",
   {
     description:
-      "Export MANY models in one call, one row per file: a B-rep format (step/iges/brep), a one-view technical drawing (svg/dxf), or a drawing sheet (sheet-svg/sheet-dxf). Each file goes through the same single-file tool (export_brep / export_technical_drawing / export_drawing_sheet), so a batched output is identical to exporting it alone. One bad file is a failed row, never an aborted batch. Sources are never written; an output that would overwrite an input is always refused; existing outputs follow onCollision (skip by default, suffix, or overwrite). Each row states editsBaked (B-rep sources bake their whole op list; mesh sources' drawings bake their pending edits through the headless mesh-edit replay and say so). Sequential, with per-file progress; cancelling stops before the next file and keeps what was written. Also returns a TSV table (optionally written to reportPath).",
+      "Export MANY models in one call, one row per file: a B-rep format (step/iges/brep), a one-view technical drawing (svg/dxf), or a drawing sheet (sheet-svg/sheet-dxf). Each file goes through the same single-file tool (export_brep / export_technical_drawing / export_drawing_sheet), so a batched output is identical to exporting it alone. One bad file is a failed row, never an aborted batch. Sources are never written; an output that would overwrite an input is always refused; existing outputs follow onCollision (skip by default, suffix, or overwrite). Each row states editsBaked (B-rep sources bake their whole op list; mesh sources' drawings bake their pending edits through the headless mesh-edit replay and say so). Sequential, with per-file progress; cancelling stops before the next file and keeps what was written. Design table: `configurations` (names) or `allConfigurations` writes one file per input per configuration (<stem>-<config>.<ext>) through the same writers, without changing any model's stored active configuration. Also returns a TSV table (optionally written to reportPath).",
     inputSchema: {
       inputs: z.array(z.string()).optional().describe("Model paths (give this OR root)"),
       root: z.string().optional().describe("Folder scanned like list_workspace_models (give this OR inputs)"),
       target: z.enum(["step", "iges", "brep", "svg", "dxf", "sheet-svg", "sheet-dxf"]),
       outDir: z.string().describe("Output folder (created if missing)"),
-      naming: z.string().optional().describe('Output name pattern: {stem}, {ext}, {name} (default "{stem}.{ext}")'),
+      naming: z.string().optional().describe('Output name pattern: {stem}, {ext}, {name}, {config} (default "{stem}.{ext}")'),
       onCollision: z.enum(["skip", "suffix", "overwrite"]).optional().describe('Existing outputs: default "skip"'),
       unit: z.string().optional().describe("B-rep and one-view targets: export unit (default mm)"),
       view: z.string().optional().describe("svg/dxf targets: named view (default front)"),
@@ -1385,11 +1413,15 @@ server.registerTool(
       libraryPath: z.string().optional().describe("sheet targets: user sheet-template library"),
       reportPath: z.string().optional().describe("Also write the TSV table here"),
       deterministic: z.boolean().optional().describe("step and sheet targets: byte-reproducible output (see export_brep / export_drawing_sheet)"),
+      configurations: z.array(z.string()).optional().describe("Design table: export every input once per named configuration, as <stem>-<config>.<ext> ({config} in naming). The stored activeConfiguration is not changed."),
+      allConfigurations: z.boolean().optional().describe("Design table: export every input under each configuration it stores (an input with none is a skipped row)"),
     },
   },
   wrap(
     (
       args: {
+        configurations?: string[];
+        allConfigurations?: boolean;
         inputs?: string[];
         root?: string;
         target: string;
@@ -1708,6 +1740,36 @@ server.registerTool(
     },
   },
   wrap((args: { path: string; variables: Array<{ name: string; expr: string; comment?: string; favourite?: boolean }> }) => setVariables(args))
+);
+
+server.registerTool(
+  "set_configuration",
+  {
+    description:
+      "Design table: create, update, rename, activate or remove a named CONFIGURATION of the model's variables (e.g. M6 / M8). A configuration is a sparse map of variable name -> expression override, stored in <model>.edits.json; the ops and their `exprs` never change — the active configuration is overlaid onto the variables before every expression resolves, so the same op list yields different geometry per configuration. `overrides` merges (an empty string or null removes one override; `replaceOverrides` replaces the whole map); `active: true` makes this the applied configuration (false un-applies it if it is the active one); `copyFrom` seeds a new configuration from another. A cell whose expression fails freezes at the variable's last-good value and is reported in `table[].errors`, never a crash. Variables are the only thing a configuration changes (not Parts, mesh options or layers). To evaluate a configuration WITHOUT changing the stored selection, pass `configuration` to an export or meshing tool (export_brep, export_mesh, generate_mesh, get_mass_properties, ...) or `configurations`/`allConfigurations` to batch_export. Returns every configuration's evaluated values (`table`).",
+    inputSchema: {
+      path: modelPath,
+      name: z.string().describe("Configuration name (the upsert key), 1-64 characters"),
+      overrides: z.record(z.string(), z.string().nullable()).optional().describe("Variable name -> expression override; empty string or null clears that override"),
+      replaceOverrides: z.boolean().optional().describe("Replace the whole override map instead of merging"),
+      rename: z.string().optional().describe("New name for this configuration"),
+      active: z.boolean().optional().describe("true applies this configuration; false un-applies it when it is the active one"),
+      remove: z.boolean().optional().describe("Delete the configuration"),
+      copyFrom: z.string().optional().describe("When creating, start from a copy of this configuration's overrides"),
+    },
+  },
+  wrap(
+    (args: {
+      path: string;
+      name: string;
+      overrides?: Record<string, string | null>;
+      replaceOverrides?: boolean;
+      rename?: string;
+      active?: boolean;
+      remove?: boolean;
+      copyFrom?: string;
+    }) => setConfiguration(args)
+  )
 );
 
 server.registerTool(

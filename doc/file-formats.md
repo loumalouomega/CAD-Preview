@@ -428,6 +428,29 @@ Op order is preserved (replay depends on it). Parsing is tolerant: malformed ops
 
 > **Entity-id drift:** topology-changing ops (booleans, fillet, feature modeling) re-tessellate into new `face-*`/`edge-*` ids, so a part assignment made before such an op may no longer resolve afterwards. The tolerant parts parser drops unresolved ids on reload, so this degrades gracefully rather than erroring.
 
+
+### Configurations (design table)
+
+The optional top-level `configurations` array and `activeConfiguration` string hold **named sets of variable values** (an M6 and an M8 variant of one model). Both are additive and omitted when empty, so a sidecar written before they existed parses and re-serialises byte-for-byte unchanged.
+
+```json
+{
+  "variables": [{ "name": "D", "expr": "6", "value": 6 }],
+  "configurations": [
+    { "name": "M6", "overrides": {} },
+    { "name": "M8", "overrides": { "D": "8" } }
+  ],
+  "activeConfiguration": "M8",
+  "ops": [{ "op": "addBox", "center": [0, 0, 0], "size": [8, 8, 8], "exprs": { "size[0]": "D", "size[1]": "D", "size[2]": "D" } }]
+}
+```
+
+- **Sparse overrides.** A configuration maps a variable name to an expression that replaces that variable's own `expr`; a variable it does not mention keeps the base expression. A cell equal to the base expression is stored as no override.
+- **Overlay before resolve, stored ops never change.** The active configuration is overlaid onto the variables (on clones) before the existing resolve-on-read, so the ops' `exprs`, the base `variables` and their cached `value`s are untouched; only the ops' cached numeric fields take the configuration's values (they are caches, healed on every read). `activeConfiguration` that names nothing falls back to the plain variables.
+- **Tolerant parse.** Entries with an empty, over-long (64), control-character or duplicate name are dropped; an override whose key is not a valid variable name, or whose value is not a bounded string, is dropped on its own. Up to 64 configurations.
+- **Failures freeze.** A cell that cannot evaluate keeps the variable's last-good cached value (and its dependents use it); the Config Table flags the cell. Nothing throws.
+- **Scope.** Variables are the only thing a configuration changes: not Parts, mesh options or layers. The sidecar writers in `src/editsStore.ts` and `src/mcpSidecars.ts` keep the configurations on disk when a caller does not pass them, so an older code path can never drop them.
+
 ### Blank documents
 
 **File ▾ → New Blank Model…** creates a `.brep` file holding an **empty compound** and opens it. Everything authored afterwards lives in this same `.edits.json` op-list, so a blank document is just the general "base shape ∘ ops" model with an empty base — no new concept, no new sidecar, and the CAD file stays read-only exactly as for an imported STEP.

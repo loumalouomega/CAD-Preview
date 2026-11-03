@@ -5109,6 +5109,94 @@ test("parameters table: promoting a model parameter makes the op follow the vari
   assert(sent.ops[0].size[1] === 9, `the op follows the variable (size ${JSON.stringify(sent.ops[0].size)})`);
 });
 
+const CONFIG_OPS = [{ op: "addBox", center: [0, 0, 0], size: [1, 1, 1], exprs: { "size[0]": "D" } }];
+const CONFIG_VARS = [{ name: "D", expr: "6", value: 6 }];
+
+test("configurations: the Config Table switches the active configuration through the overlay, a failing cell freezes, no-configuration documents are unchanged", async (page) => {
+  await populate(page);
+  // A document with no configurations: the section exists, collapsed, with no rows to pick.
+  await post(page, { type: "edits", ops: CONFIG_OPS, variables: CONFIG_VARS });
+  await sleep(300);
+  const bare = await page.evaluate(() => ({
+    toggle: document.getElementById("config-toggle") !== null,
+    bodyShown: document.getElementById("config-body").offsetParent !== null,
+    count: document.getElementById("config-count").textContent,
+    rows: document.querySelectorAll(".config-row").length,
+  }));
+  assert(bare.toggle && !bare.bodyShown && bare.count === "", `the Config Table is collapsed and empty without configurations (got ${JSON.stringify(bare)})`);
+  assert(bare.rows === 1, `only the Base row exists (got ${bare.rows})`);
+
+  await post(page, {
+    type: "edits",
+    ops: CONFIG_OPS,
+    variables: CONFIG_VARS,
+    configurations: [
+      { name: "M6", overrides: {} },
+      { name: "M8", overrides: { D: "8" } },
+    ],
+    activeConfiguration: null,
+  });
+  await sleep(300);
+  await page.evaluate(() => document.getElementById("config-toggle").click());
+  await sleep(150);
+  const shown = await page.evaluate(() => ({
+    bodyShown: document.getElementById("config-body").offsetParent !== null,
+    names: [...document.querySelectorAll(".config-row")].map((r) => r.dataset.config),
+    m8Cell: document.querySelector('.config-row[data-config="M8"] .config-cell[data-variable="D"] .config-input').value,
+    m8Value: document.querySelector('.config-row[data-config="M8"] .config-cell[data-variable="D"] .config-value').textContent,
+    m6Placeholder: document.querySelector('.config-row[data-config="M6"] .config-input').placeholder,
+  }));
+  assert(shown.bodyShown, "the opened Config Table is actually rendered (offsetParent)");
+  assert(shown.names.join("|") === "|M6|M8", `Base + two configuration rows (got ${shown.names})`);
+  assert(shown.m8Cell === "8" && shown.m8Value === "8" && shown.m6Placeholder === "6", `the M8 override and the inherited placeholder show (got ${JSON.stringify(shown)})`);
+
+  // Picking M8 posts the overlay-resolved op; the stored op, exprs and base variable are untouched.
+  await page.evaluate(() => document.querySelector('.config-row[data-config="M8"] .config-radio').click());
+  await sleep(300);
+  let sent = (await sentOf(page, "editsChanged")).pop();
+  assert(sent.activeConfiguration === "M8", `M8 is the posted active configuration (got ${sent.activeConfiguration})`);
+  assert(sent.ops[0].size[0] === 8, `the op resolves with D = 8 (size ${JSON.stringify(sent.ops[0].size)})`);
+  assert(sent.ops[0].exprs["size[0]"] === "D" && sent.variables[0].expr === "6", "the op's expression and the base variable are unchanged");
+  assert(sent.configurations.length === 2, "both configurations ride along");
+  const activeRow = await page.evaluate(() => document.querySelector(".config-row.active")?.dataset.config);
+  assert(activeRow === "M8", `the M8 row is marked active (got ${activeRow})`);
+
+  // Back to the plain variables.
+  await page.evaluate(() => document.querySelector('.config-row[data-base="1"] .config-radio').click());
+  await sleep(300);
+  sent = (await sentOf(page, "editsChanged")).pop();
+  assert(sent.activeConfiguration === null && sent.ops[0].size[0] === 6, `Base restores D = 6 (got ${sent.activeConfiguration}, ${sent.ops[0].size[0]})`);
+
+  // A cell that cannot evaluate freezes at the cached value and is flagged; nothing crashes.
+  await page.evaluate(() => {
+    const input = document.querySelector('.config-row[data-config="M6"] .config-input');
+    input.value = "oops(";
+    input.dispatchEvent(new Event("change"));
+  });
+  await sleep(250);
+  await page.evaluate(() => document.querySelector('.config-row[data-config="M6"] .config-radio').click());
+  await sleep(300);
+  sent = (await sentOf(page, "editsChanged")).pop();
+  assert(sent.activeConfiguration === "M6" && sent.ops[0].size[0] === 6, `a failing cell freezes at the cached 6 (got ${sent.ops[0].size[0]})`);
+  assert(sent.configurations.find((c) => c.name === "M6").overrides.D === "oops(", "the bad expression is stored as typed");
+  const flagged = await page.evaluate(() => document.querySelector('.config-row[data-config="M6"] .config-cell[data-variable="D"]').classList.contains("error"));
+  assert(flagged, "the failing cell is flagged");
+
+  // Add a configuration (copies the active one's overrides), then delete it.
+  await page.evaluate(() => {
+    const input = document.getElementById("config-new-name");
+    input.value = "M10";
+    document.getElementById("config-add").click();
+  });
+  await sleep(250);
+  sent = (await sentOf(page, "editsChanged")).pop();
+  assert(sent.configurations.map((c) => c.name).join() === "M6,M8,M10", `M10 was added (got ${sent.configurations.map((c) => c.name)})`);
+  await page.evaluate(() => document.querySelector('.config-row[data-config="M10"] .config-delete').click());
+  await sleep(250);
+  sent = (await sentOf(page, "editsChanged")).pop();
+  assert(sent.configurations.map((c) => c.name).join() === "M6,M8", "M10 was removed again");
+});
+
 const USEDBY_OPS = [
   { op: "addBox", center: [0, 0, 0], size: [4, 5, 6], exprs: { "size[0]": "len*2", "size[1]": "len" } },
   { op: "translate", targets: ["solid-0"], vec: [1, 0, 0] },

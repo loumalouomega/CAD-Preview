@@ -2,6 +2,7 @@ import type { CadFormat } from "./fileRouter";
 import type { QualityGateResult } from "./meshQualityGate";
 import type { EditOp } from "./editOps";
 import type { ParamVariable } from "./editVariables";
+import type { Configuration } from "./configurations";
 import type { MeshOptions, MeshGrading, MeshStructured, MeshBoundaryLayer, MeshEngine, OctreeStats, OctreeMeshStats, MeshCadStats } from "./meshOptions";
 import type { MeshExportFormatId } from "./meshExportFormats";
 import type { ViewerDefaults } from "./viewerDefaults";
@@ -534,6 +535,10 @@ export type HostToWebview =
       type: "edits";
       ops: EditOp[];
       variables: ParamVariable[];
+      /** Design table: named variable-override sets (absent = none). */
+      configurations?: Configuration[];
+      /** The applied configuration's name, or null. */
+      activeConfiguration?: string | null;
       bakedThrough?: number;
       /** Set only when the edits watcher reconciled a pure APPEND made by another
        * writer (an agent, a script): the index of the first appended op. The
@@ -944,7 +949,7 @@ export type WebviewToHost =
    * geometry through `resolveEffectiveSource` with the values as `-D`
    * overrides. The source file itself is never written. */
   | { type: "scadApplyOverrides"; overrides: Record<string, unknown> }
-  | { type: "editsChanged"; ops: EditOp[]; variables: ParamVariable[] }
+  | { type: "editsChanged"; ops: EditOp[]; variables: ParamVariable[]; configurations?: Configuration[]; activeConfiguration?: string | null }
   /** Parameters table export: the webview serialised the variables (`serializeVariablesCsv`/`Json`); the host only prompts for a path and writes. */
   | { type: "exportVariables"; format: "csv" | "json"; text: string }
   | { type: "viewChanged"; view: ViewState }

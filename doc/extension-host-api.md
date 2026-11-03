@@ -61,6 +61,7 @@ The extension host is a Node.js process. These modules run there — never in th
 | `src/editsStore.ts` | Read/write the `<model>.edits.json` sidecar (vscode fs) |
 | `src/editsSidecar.ts` | Pure parse/serialize for the edits sidecar (vscode-free, unit-tested) |
 | `src/paramExpr.ts` | Parametric expression evaluator + `exprs` field-path addressing (vscode/DOM-free, unit-tested) |
+| `src/configurations.ts` | Configurations (design table): validate, overlay (`applyConfiguration`/`effectiveVariables`/`evaluateEffective`), pure mutations, `configurationTable` (vscode/DOM-free, unit-tested) |
 | `src/editVariables.ts` | `ParamVariable` validate/evaluate + `resolveEditOps` op resolver (vscode/DOM-free, unit-tested) |
 | `src/gmshService.ts` | Lazy GMSH-wasm singleton, FE mesh generation + `.geo_unrolled` export |
 | `src/meshQuality.ts` | Pure per-element quality summary math (min/mean/histogram) (vscode/WASM-free, unit-tested) |
@@ -1186,9 +1187,9 @@ const BREP_ONLY_OPS: ReadonlySet<EditOp["op"]>          // disabled for mesh fil
 
 Every `EditOp` may carry an optional parametric annotation `exprs?: ExprMap` (see [File Formats](./file-formats.md#parametric-variables)); `validateEditOp` sanitizes it against the already-validated op (only keys addressing a finite numeric slot, only syntactically valid expressions, size-capped) and carries it onto the clean op.
 
-`src/editsSidecar.ts` is **vscode-free** (unit-tested): `parseEditsJson(text)` returns `{ ops, variables }` — it runs every op through `validateEditOp` and the variables through `validateVariables`, then **re-resolves** the ops' expressions against the variables (`resolveEditOps`), healing stale cached numbers in a hand-edited sidecar. `serializeEditsJson(sourceName, ops, variables)` is version-stamped with a trailing newline; `variables` is omitted when empty.
+`src/editsSidecar.ts` is **vscode-free** (unit-tested): `parseEditsJson(text)` returns `{ ops, variables, bakedThrough }` plus `configurations` / `activeConfiguration` when the file has them (the ops are resolved against the active configuration's overlay, on clones — see `src/configurations.ts`) — it runs every op through `validateEditOp` and the variables through `validateVariables`, then **re-resolves** the ops' expressions against the variables (`resolveEditOps`), healing stale cached numbers in a hand-edited sidecar. `serializeEditsJson(sourceName, ops, variables, bakedThrough, configState?)` is version-stamped with a trailing newline; `variables` is omitted when empty.
 
-`src/editsStore.ts` wraps them with VS Code filesystem access: `editsSidecarUri()` (`<model>.edits.json`), `readEdits()` (tolerant — empty lists on missing/unreadable), and `writeEdits(uri, ops, variables)` (writes only the sidecar; the CAD file is never touched).
+`src/editsStore.ts` wraps them with VS Code filesystem access: `editsSidecarUri()` (`<model>.edits.json`), `readEdits()` (tolerant — empty lists on missing/unreadable), and `writeEdits(uri, ops, variables, bakedThrough, configState?)` (writes only the sidecar; the CAD file is never touched; omitting `configState` keeps the configurations already on disk).
 
 ---
 

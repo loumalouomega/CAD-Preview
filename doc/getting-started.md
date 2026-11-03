@@ -644,6 +644,18 @@ The Variables table is also a parameters table:
 - **Autocomplete:** in every numeric op field and every variable expression, typing an identifier opens a suggestion list of variable names and the expression functions (`sqrt`, `sin`, `pi`, …). A variable's own expression is offered only the variables **above** it; op fields are offered all of them. **↑/↓** move (wrapping), **Enter** or **Tab** accept (a function gains its `(`), **Esc** dismisses and leaves the text as typed. With the list closed, Enter and Tab behave as before. No list appears inside a `[unit]` suffix or after a digit.
 - **Model parameters** lists every numeric field of each op in the history (`#3 extrude`, `length`), editable in place, and **→ var** promotes a field to a new variable: the field then follows the variable. Rows saved into the source file (🔒) are read-only, and a field already driven by an expression shows it instead.
 
+#### Configurations (design table)
+
+Under the Variables table, the collapsible **Configurations** section is a grid: one row per configuration (plus a **Base** row for the variables as written), one column per variable.
+
+- **Add** a configuration by typing a name and pressing **Add** or Enter. It starts as a copy of the active configuration's overrides.
+- **Pick a row** with its radio button to make it the active configuration: every op field bound to a variable re-resolves, and the viewer rebuilds. **Base** returns to the plain variables.
+- **Edit a cell** to override that variable in that configuration. An empty cell (shown with the base expression as a faint placeholder) inherits the variable's own expression; the small number beside the cell is the evaluated value. Overridden cells are bold.
+- A cell whose expression cannot be evaluated is marked with a warning, and the model **freezes** at that variable's last good value instead of failing.
+- Rename a configuration by editing its name; **×** deletes it. Renaming a variable carries its overrides along.
+
+Configurations are saved in `<model>.edits.json` ([format](./file-formats.md#configurations-design-table)); switching is not part of the op undo/redo history. For headless use, `set_configuration` defines them and the export and meshing tools take a `configuration` parameter ([MCP server](./mcp-server.md)); **Batch Export** can write one file per configuration.
+
 ### OpenSCAD Customizer
 
 The **Customizer** section (below Edits, `.scad` sources only) is the interactive half of the `list_scad_parameters` / `convert_scad` MCP tools: a form over the file's Customizer parameters, so changing a dimension never means editing the source.

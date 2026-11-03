@@ -1,6 +1,7 @@
 import * as vscode from "vscode";
 import type { EditOp } from "./editOps";
 import type { ParamVariable } from "./editVariables";
+import type { ConfigurationState } from "./configurations";
 import { parseEditsJson, serializeEditsJson, type ParsedEdits } from "./editsSidecar";
 import { assertNotDirty } from "./dirtyGuard";
 
@@ -20,9 +21,20 @@ export async function readEdits(modelUri: vscode.Uri): Promise<ParsedEdits> {
 }
 
 /** Writes the edits sidecar beside the model. The model file itself is never touched. */
-export async function writeEdits(modelUri: vscode.Uri, ops: EditOp[], variables: ParamVariable[], bakedThrough = 0): Promise<void> {
+export async function writeEdits(
+  modelUri: vscode.Uri,
+  ops: EditOp[],
+  variables: ParamVariable[],
+  bakedThrough = 0,
+  /** Omitted: the configurations already on disk are kept, so a caller that predates them never drops them. */
+  configState?: Partial<ConfigurationState>
+): Promise<void> {
   assertNotDirty(editsSidecarUri(modelUri));
+  if (configState === undefined) {
+    const existing = await readEdits(modelUri);
+    configState = { configurations: existing.configurations, activeConfiguration: existing.activeConfiguration };
+  }
   const sourceName = modelUri.path.slice(modelUri.path.lastIndexOf("/") + 1);
-  const text = serializeEditsJson(sourceName, ops, variables, bakedThrough);
+  const text = serializeEditsJson(sourceName, ops, variables, bakedThrough, configState);
   await vscode.workspace.fs.writeFile(editsSidecarUri(modelUri), Buffer.from(text, "utf8"));
 }
