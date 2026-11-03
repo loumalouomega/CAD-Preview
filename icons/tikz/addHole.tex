@@ -1,15 +1,15 @@
-% Op icon: hole — block cross-section with a plain drilled channel through it.
+% Op icon: hole (two-tone) - iso block, the bore opening on the top face carries the accent.
 \documentclass[tikz,border=2mm]{standalone}
 \usetikzlibrary{arrows.meta,calc,shapes.geometric}
 \begin{document}
 \begin{tikzpicture}[line width=1.3pt, line cap=round, line join=round, >=Stealth, x=1mm,y=1mm]
-  % Fill the block MINUS the channel as one compound (even-odd) path, rather
-  % than punching a `\fill[white]` hole over it — a literal white fill would
-  % show as a solid white block against this button's actual (non-white,
-  % theme-dependent) background instead of reading as empty space.
-  \fill[gray!15, even odd rule] (-10,-8) rectangle (10,8) (-3,-8) rectangle (3,8);
-  \draw[thick] (-10,-8) rectangle (10,8);
-  \draw[dashed] (-3,-8) -- (-3,8);
-  \draw[dashed] (3,-8) -- (3,8);
+  \begin{scope}[shift={(0.5,1.5)}]
+    \draw[thick, fill=gray!70] (-8,-9) rectangle (2,1);
+    \draw[thick, fill=gray!50] (-8,1) -- (2,1) -- (7,6) -- (-3,6) -- cycle;
+    \draw[thick, fill=gray!60] (2,-9) -- (7,-4) -- (7,6) -- (2,1) -- cycle;
+    \draw[dashed] (-3.3,3.5) -- (-3.3,-5);
+    \draw[dashed] (1.7,3.5) -- (1.7,-5);
+    \draw[thick, fill=blue] (-0.8,3.5) ellipse (2.5 and 1.4);
+  \end{scope}
 \end{tikzpicture}
 \end{document}
