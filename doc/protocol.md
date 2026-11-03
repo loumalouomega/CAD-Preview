@@ -277,6 +277,8 @@ interface ParamVariable {
   name: string    // identifier ([A-Za-z_][A-Za-z0-9_]*, not a function/constant name)
   expr: string    // defining expression; may reference variables defined ABOVE it only
   value: number   // cached last-good evaluation (kept when re-evaluation fails)
+  comment?: string   // note shown in the Parameters table; absent when empty
+  favourite?: true   // pinned to the top of the table view only; absent when false
 }
 ```
 
@@ -1095,6 +1097,7 @@ type WebviewToHost =
   | { type: 'loadPreprocessRequest' }
   | { type: 'scadApplyOverrides'; overrides: Record<string, unknown> }
   | { type: 'editsChanged'; ops: EditOp[]; variables: ParamVariable[] }
+  | { type: 'exportVariables'; format: 'csv' | 'json'; text: string }
   | { type: 'viewChanged'; view: ViewState }
   | { type: 'setCamerasLinked'; enabled: boolean }
   | { type: 'openFile' }
@@ -1227,6 +1230,14 @@ Sent whenever the user mutates the edit op-stack (apply / undo / redo / clear) *
   "ops": [ { "op": "translate", "targets": ["solid-0"], "vec": [10, 0, 0], "exprs": { "vec[0]": "L/2" } } ],
   "variables": [ { "name": "L", "expr": "20", "value": 20 } ]
 }
+```
+
+### `exportVariables`
+
+Webview → host. Parameters table ▸ **CSV… / JSON…**: the webview serialises the current variables (`serializeVariablesCsv` / `serializeVariablesJson`, `src/editVariables.ts`) and the host only prompts for a path and writes the text (capped at 1 MB). Import is webview-only: the file is read in the page and parsed by the same module, so it needs no message.
+
+```json
+{ "type": "exportVariables", "format": "csv", "text": "Name,Expression,Comment\nL,20,length\n" }
 ```
 
 ### `viewChanged`

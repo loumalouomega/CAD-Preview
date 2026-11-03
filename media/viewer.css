@@ -5305,3 +5305,29 @@ body:has(#side.visible) #kernel-status {
   overflow-wrap: anywhere;
 }
 .surface-result-warning { opacity: 0.8; }
+
+/* Parameters table (roadmap 2.31) */
+#variables-tools { display: flex; gap: 4px; padding: 2px 6px; align-items: center; }
+#variables-tools #variables-filter { flex: 1; min-width: 0; font: inherit; color: inherit; background: var(--vscode-input-background, #1e1e1e); border: 1px solid var(--vscode-input-border, #3c3c3c); border-radius: var(--ui-r-xs); padding: 1px 4px; }
+#variables-defer { display: flex; gap: 6px; align-items: center; padding: 0 6px 2px; font-size: 11px; opacity: 0.85; }
+#variables-defer-actions[hidden] { display: none; }
+#variables-import-file[hidden] { display: none; }
+.variable-row .variable-unit,
+.variable-row .variable-comment { min-width: 0; font: inherit; color: inherit; background: transparent; border: 1px solid transparent; border-radius: var(--ui-r-xs); padding: 1px 2px; }
+.variable-row .variable-unit { width: 44px; flex: none; }
+.variable-row .variable-comment { flex: 1.5; opacity: 0.8; }
+.variable-row .variable-comment:hover,
+.variable-row .variable-unit:hover { border-color: var(--vscode-input-border, #3c3c3c); }
+.variable-row .variable-comment:focus { outline: none; background: var(--vscode-input-background, #1e1e1e); border-color: var(--vscode-focusBorder, #007fd4); }
+.variable-row .variable-star { cursor: pointer; background: none; border: none; color: inherit; opacity: 0.4; padding: 0 2px; }
+.variable-row .variable-star.on { opacity: 1; color: var(--vscode-charts-yellow, #cca700); }
+.variable-row .variable-move { background: none; border: none; color: inherit; opacity: 0.6; padding: 0 1px; cursor: pointer; }
+#model-params-title { padding: 4px 6px 2px; font-size: 11px; text-transform: uppercase; opacity: 0.7; }
+#model-params-body { padding-bottom: 4px; }
+.mp-group { padding: 2px 6px 0; font-size: 11px; opacity: 0.8; }
+.mp-row { display: flex; align-items: center; gap: 4px; padding: 0 6px 0 14px; height: 22px; }
+.mp-row .mp-name { flex: 1; }
+.mp-row input.mp-value { width: 70px; font: inherit; color: inherit; background: transparent; border: 1px solid transparent; border-radius: var(--ui-r-xs); padding: 1px 3px; }
+.mp-row input.mp-value:hover { border-color: var(--vscode-input-border, #3c3c3c); }
+.mp-row .mp-expr { opacity: 0.7; font-style: italic; }
+.mp-row .mp-promote { font-size: 11px; }

@@ -110,7 +110,23 @@ export function viewerBodyHtml(): string {
               <span id="variables-title">Variables</span>
               <button id="variables-add" title="New variable">${icon("add")} New</button>
             </div>
+            <div id="variables-tools">
+              <input id="variables-filter" type="text" placeholder="Filter" spellcheck="false" title="Filter variables by name, expression or comment">
+              <button id="variables-import" title="Import variables from a CSV or JSON file (Name, Expression, Comment)">Import…</button>
+              <input id="variables-import-file" type="file" accept=".csv,.json,text/csv,application/json" hidden>
+              <button id="variables-export-csv" title="Export variables as CSV">CSV…</button>
+              <button id="variables-export-json" title="Export variables as JSON">JSON…</button>
+            </div>
+            <div id="variables-defer">
+              <label title="On: each change applies when you leave its field. Off: changes wait for Apply."><input id="variables-live" type="checkbox" checked> Apply each change as you leave its field</label>
+              <span id="variables-defer-actions" hidden>
+                <button id="variables-apply" title="Apply every pending change in one step">Apply</button>
+                <button id="variables-revert" title="Drop pending changes">Revert</button>
+              </span>
+            </div>
             <div id="variables-body"></div>
+            <div id="model-params-title">Model parameters</div>
+            <div id="model-params-body"></div>
           </div>
           <div id="edits-compose"></div>
           <div id="edits-body"></div>

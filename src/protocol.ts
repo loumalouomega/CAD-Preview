@@ -945,6 +945,8 @@ export type WebviewToHost =
    * overrides. The source file itself is never written. */
   | { type: "scadApplyOverrides"; overrides: Record<string, unknown> }
   | { type: "editsChanged"; ops: EditOp[]; variables: ParamVariable[] }
+  /** Parameters table export: the webview serialised the variables (`serializeVariablesCsv`/`Json`); the host only prompts for a path and writes. */
+  | { type: "exportVariables"; format: "csv" | "json"; text: string }
   | { type: "viewChanged"; view: ViewState }
   | { type: "openFile" }
   /** File ▸ New Blank Model… — host-only, like `openFile`: it needs no

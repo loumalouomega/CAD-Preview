@@ -6,6 +6,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/); thi
 
 ## [Unreleased]
 
+### Added
+
+- **Parameters table.** The Edits panel's Variables table gains a Unit selector (writes the bracket unit into a plain-number expression), a comment, a favourite star (pins the row in the view; evaluation order is unchanged), ▲/▼ reorder that refuses a move across a dependency, a Filter box, CSV/JSON import (every rejected row is named; a row is accepted whole or not at all) and export, and an "Apply each change as you leave its field" toggle with Apply/Revert. A **Model parameters** list shows every numeric field of each op, editable in place, and **→ var** promotes a field to a new variable. `ParamVariable` gains optional `comment`/`favourite` (additive; old sidecars round-trip byte-identically), `set_variables` accepts them (omitted keeps, empty/false clears) and `get_state` returns them.
+
 ## [3.34.0] - 2026-11-02
 
 ### Added

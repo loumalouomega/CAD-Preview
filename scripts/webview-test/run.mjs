@@ -4858,6 +4858,70 @@ test("surface tools: each action posts a typed request, replies render facts, st
 // `editsModel.test.ts` — what needs the real bundle here is the rendering
 // (locked class, lock marker, no ✕) and that a refused jump posts nothing.
 
+const sentOf = (page, type) => page.evaluate((t) => window.__sent.filter((m) => m.type === t), type);
+
+test("parameters table: reorder is refused across a dependency, import reports the bad row, favourite pins", async (page) => {
+  await populate(page);
+  await post(page, {
+    type: "edits",
+    ops: [],
+    variables: [
+      { name: "L", expr: "10", value: 10 },
+      { name: "W", expr: "L/2", value: 5 },
+    ],
+  });
+  await sleep(300);
+  // Moving W above L breaks the define-above rule: refused, nothing posted.
+  const before = (await sentOf(page, "editsChanged")).length;
+  await page.evaluate(() => document.querySelectorAll(".variable-row")[1].querySelector(".variable-move").click());
+  await sleep(200);
+  const names = await page.evaluate(() => [...document.querySelectorAll(".variable-row .variable-name")].map((i) => i.value));
+  assert(names.join() === "L,W", `reorder across a dependency is refused (got ${names})`);
+  assert((await sentOf(page, "editsChanged")).length === before, "a refused move writes nothing");
+  // Import: five CSV rows, one invalid -> four land, the bad one is reported.
+  await page.evaluate(() => {
+    const dt = new DataTransfer();
+    dt.items.add(new File(["Name,Expression,Comment\nA,1,one\nB,A+1,\n1bad,3,\nC,B*2,\nD,C+1,note\n"], "v.csv", { type: "text/csv" }));
+    const input = document.getElementById("variables-import-file");
+    input.files = dt.files;
+    input.dispatchEvent(new Event("change"));
+  });
+  await sleep(500);
+  const after = await page.evaluate(() => [...document.querySelectorAll(".variable-row .variable-name")].map((i) => i.value));
+  assert(after.join() === "L,W,A,B,C,D", `four valid rows imported, the invalid one dropped (got ${after})`);
+  const status = await page.evaluate(() => document.getElementById("status")?.textContent ?? "");
+  assert(/1 rejected/.test(status) && /row 3/.test(status), `the rejected row is reported (status: ${status})`);
+  // Favourite pins to the top of the view but not the evaluation order.
+  await page.evaluate(() => [...document.querySelectorAll(".variable-row")].find((r) => r.querySelector(".variable-name").value === "D").querySelector(".variable-star").click());
+  await sleep(300);
+  const view = await page.evaluate(() => [...document.querySelectorAll(".variable-row .variable-name")].map((i) => i.value));
+  assert(view[0] === "D", `a favourite renders first (got ${view})`);
+  const sent = (await sentOf(page, "editsChanged")).pop();
+  assert(sent.variables.map((v) => v.name).join() === "L,W,A,B,C,D" && sent.variables[5].favourite === true, "the stored order is unchanged and carries favourite");
+});
+
+test("parameters table: promoting a model parameter makes the op follow the variable", async (page) => {
+  await populate(page);
+  await post(page, { type: "edits", ops: [{ op: "addBox", center: [0, 0, 0], size: [4, 5, 6] }], variables: [] });
+  await sleep(300);
+  const rows = await page.evaluate(() => [...document.querySelectorAll("#model-params-body .mp-row")].map((r) => r.querySelector(".mp-name").textContent));
+  assert(rows.includes("size[1]"), `model parameters list the box size (got ${rows})`);
+  await page.evaluate(() => [...document.querySelectorAll("#model-params-body .mp-row")].find((r) => r.querySelector(".mp-name").textContent === "size[1]").querySelector(".mp-promote").click());
+  await sleep(300);
+  let sent = (await sentOf(page, "editsChanged")).pop();
+  assert(sent.variables.length === 1 && sent.variables[0].value === 5, "a variable holding 5 was created");
+  const v = sent.variables[0].name;
+  // Changing the variable re-resolves the op the host receives.
+  await page.evaluate((name) => {
+    const e = document.querySelector(".variable-row .variable-expr");
+    e.value = "9";
+    e.dispatchEvent(new Event("change"));
+  }, v);
+  await sleep(300);
+  sent = (await sentOf(page, "editsChanged")).pop();
+  assert(sent.ops[0].size[1] === 9, `the op follows the variable (size ${JSON.stringify(sent.ops[0].size)})`);
+});
+
 const SAVE_POINT_OPS = [
   { op: "translate", targets: ["solid-0"], vec: [1, 0, 0] },
   { op: "translate", targets: ["solid-0"], vec: [0, 1, 0] },

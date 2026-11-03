@@ -607,9 +607,18 @@ The **Variables** table at the top of the Edits panel makes the model parametric
 
 ![The Variables table with two variables — L = 20 and the derived H = L / 2 = 10.](/screenshots/variables.png)
 
-Expressions support numbers, variable names, `+ - * / ^`, parentheses, `sqrt/abs/min/max/floor/ceil/round`, `sin/cos/tan` (**degrees**, matching the angle fields), and `pi`. A number may carry a bracketed unit — `2[in]`, `10[mm]`, `5[deg]`, `0.5[rad]` (`mm cm m in ft`, `deg rad`) — and is converted to millimetres / degrees, so `W = 2[in]` is 50.8; plain numbers keep their meaning. A variable's own expression may reference the variables defined **above** it in the table (so `W = L/2` works; reordering isn't supported). Because the fields are free-text, they no longer have browser spinner arrows — type the value.
+Expressions support numbers, variable names, `+ - * / ^`, parentheses, `sqrt/abs/min/max/floor/ceil/round`, `sin/cos/tan` (**degrees**, matching the angle fields), and `pi`. A number may carry a bracketed unit — `2[in]`, `10[mm]`, `5[deg]`, `0.5[rad]` (`mm cm m in ft`, `deg rad`) — and is converted to millimetres / degrees, so `W = 2[in]` is 50.8; plain numbers keep their meaning. A variable's own expression may reference the variables defined **above** it in the table (so `W = L/2` works; the ▲/▼ buttons reorder, and refuse a move that would put a variable above one it references). Because the fields are free-text, they no longer have browser spinner arrows — type the value.
 
 If an expression can't be evaluated at Apply time (unknown name, syntax error), the apply is blocked with an inline message. If a *referenced* variable is later deleted or renamed, affected operations keep their last computed values — a warning names the missing variable, and re-adding it restores the parametric link. The delete button's tooltip warns when a variable is still referenced. Variables persist in the same `<model>.edits.json` sidecar as the operations ([format](./file-formats.md#parametric-variables)); variable edits are not part of the op undo/redo history.
+
+#### The Parameters table
+
+The Variables table is also a parameters table:
+
+- **Columns:** name · expression · **Unit** selector (writes the bracket syntax, `2[in]`, into a plain-number expression — there is no second unit store) · computed value · **comment** · ▲/▼ reorder · delete. The star pins a variable to the **top of the view**; the stored order, which is also the evaluation order, never changes. The **Filter** box matches name, expression and comment.
+- **Import… / CSV… / JSON…** read and write `Name, Expression, Comment` rows. An import adds the valid rows after the existing variables and names every rejected one in the status line (bad name, duplicate, a reference to a name not defined above, unparsable expression); a row is accepted whole or not at all.
+- **Apply each change as you leave its field** is on by default. Turn it off to collect edits and commit the whole table in one step with **Apply** (or drop them with **Revert**).
+- **Model parameters** lists every numeric field of each op in the history (`#3 extrude`, `length`), editable in place, and **→ var** promotes a field to a new variable: the field then follows the variable. Rows saved into the source file (🔒) are read-only, and a field already driven by an expression shows it instead.
 
 ### OpenSCAD Customizer
 

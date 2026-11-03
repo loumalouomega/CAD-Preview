@@ -40,10 +40,10 @@ import { sanitizeSpaceMouseMessage } from "../spaceMouseReports";
 import type { PanelOpId } from "./opCatalog";
 import { VariablesModel } from "./variablesModel";
 import { VariablesPanel } from "./variablesPanel";
-import { evaluateVariables, resolveEditOps, dimensionIssues } from "../editVariables";
+import { evaluateVariables, resolveEditOps, dimensionIssues, parseVariablesCsv, parseVariablesJson, serializeVariablesCsv, serializeVariablesJson, promoteField } from "../editVariables";
 import { replayTail } from "../editsSidecar";
 import { resolvePlaneRefs } from "../planeRefs";
-import { extractIdentifiers } from "../paramExpr";
+import { extractIdentifiers, parseFieldPath, setNumericField, getNumericField } from "../paramExpr";
 import { annotatedLabelText, evaluateToleranceBand, type AnnotatedTolerance } from "../toleranceBand";
 import { MeshingModel } from "./meshingModel";
 import { MeshingPanel } from "./meshingPanel";
@@ -677,6 +677,8 @@ function renderEditsUi(): void {
   // point anyway.
   editsPanel.render(ops, editsModel.canUndo, editsModel.canRedo, lastOpOutcomes, editsModel.redoList(), lastOpBuckets, editsModel.savePoint);
   variablesPanel.render(variablesModel.list(), values, errors, variableUsage());
+  variablesPanel.renderModelParams(editsModel.list(), editsModel.savePoint);
+  variablesPanel.setDeferState(variablesModel.isDeferred, variablesModel.hasPendingChanges);
   // The history length beside the section title, so it reads while collapsed.
   // Empty (not "0") when there are no ops, so the badge collapses away.
   const editsCount = document.getElementById("edits-count");
@@ -737,6 +739,68 @@ const variablesPanel = new VariablesPanel(document.getElementById("variables-sec
   onRename: (index, name) => variablesModel.rename(index, name),
   onSetExpr: (index, expr) => variablesModel.setExpr(index, expr),
   onRemove: (index) => variablesModel.remove(index),
+  onSetComment: (index, comment) => variablesModel.setComment(index, comment),
+  onToggleFavourite: (index) => variablesModel.toggleFavourite(index),
+  onMove: (index, delta) => variablesModel.move(index, delta),
+  onImport: (fileName, text) => {
+    const res = /\.json$/i.test(fileName)
+      ? parseVariablesJson(text, variablesModel.list())
+      : parseVariablesCsv(text, variablesModel.list());
+    // Accepted rows are appended by the model (one change); rejected rows are all reported.
+    variablesModel.importRows(res.accepted.map((v) => ({ name: v.name, expr: v.expr, comment: v.comment })));
+    const bad = res.rejected.map((r) => `row ${r.row}: ${r.reason}`);
+    setStatus(
+      `Imported ${res.accepted.length} variable${res.accepted.length === 1 ? "" : "s"}` +
+        (bad.length ? `; ${bad.length} rejected — ${bad.slice(0, 3).join("; ")}${bad.length > 3 ? "; …" : ""}` : ""),
+      bad.length > 0
+    );
+  },
+  onExport: (format) =>
+    post({
+      type: "exportVariables",
+      format,
+      text: format === "json" ? serializeVariablesJson(variablesModel.list()) : serializeVariablesCsv(variablesModel.list()),
+    }),
+  onLiveChange: (live) => {
+    variablesModel.setDeferred(!live);
+    variablesPanel.setDeferState(!live, variablesModel.hasPendingChanges);
+  },
+  onApply: () => {
+    variablesModel.commit();
+    variablesPanel.setDeferState(variablesModel.isDeferred, variablesModel.hasPendingChanges);
+  },
+  onRevert: () => {
+    variablesModel.revert();
+    renderEditsUi();
+  },
+  onEditField: (opIndex, path, value) => {
+    if (opIndex < editsModel.savePoint) return void setStatus(SAVE_POINT_REFUSAL, true);
+    const op = editsModel.list()[opIndex];
+    const segs = parseFieldPath(path);
+    if (!op || !segs || !setNumericField(op, segs, value)) return;
+    const next = validateEditOp(op);
+    if (!next) return void setStatus(`${path} = ${value} is not valid for this op`, true);
+    editsModel.replaceAt(opIndex, next);
+  },
+  onPromote: (opIndex, path) => {
+    if (opIndex < editsModel.savePoint) return void setStatus(SAVE_POINT_REFUSAL, true);
+    const op = editsModel.list()[opIndex];
+    const segs = parseFieldPath(path);
+    const value = op && segs ? getNumericField(op, segs) : null;
+    if (!op || value === null) return;
+    const base = `${op.op.replace(/^add/, "").replace(/^./, (c) => c.toLowerCase())}_${path.replace(/\[(\d+)\]/g, "$1")}`.replace(/[^A-Za-z0-9_]/g, "");
+    let name = base;
+    for (let n = 2; variablesModel.list().some((v) => v.name === name); n++) name = `${base}${n}`;
+    const promoted = promoteField(op, path, name);
+    if (!promoted) return void setStatus(`Cannot promote ${path}`, true);
+    // Variable first (silent), then the op replace fires ONE sync with both in place.
+    const wasDeferred = variablesModel.isDeferred;
+    variablesModel.load([...variablesModel.list(), { name, expr: String(value), value }]);
+    if (wasDeferred) variablesModel.commit();
+    editsModel.replaceAt(opIndex, promoted);
+    setStatus(`Created variable ${name} = ${value}`, false);
+  },
+  report: (text, isError) => setStatus(text, isError),
 });
 
 /** Guidance shown when an edit targets ops at or inside the save point (Tier 0

@@ -2442,6 +2442,19 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
         return;
       }
 
+      if (msg.type === "exportVariables") {
+        const ext = msg.format === "json" ? "json" : "csv";
+        const text = typeof msg.text === "string" ? msg.text.slice(0, 1_000_000) : "";
+        await this.promptSaveAndWrite(
+          document.uri.with({ path: document.uri.path.replace(/\.[^./]+$/, "") + ".variables.x" }),
+          ext,
+          ext.toUpperCase(),
+          async () => new TextEncoder().encode(text),
+          post
+        );
+        return;
+      }
+
       if (msg.type === "editsChanged") {
         const previousOps = currentEdits;
         currentEdits = msg.ops;
