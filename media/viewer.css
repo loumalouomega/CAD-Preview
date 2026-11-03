@@ -1752,6 +1752,20 @@ body:not(:has(#side.visible)) #status {
 }
 .part-row:not(:hover):not(:focus-within) .part-rule:not(.has-rule) { display: none; }
 
+/* The material picker shares the rule picker's hover-reveal behaviour; a Part
+   whose density was picked from the table keeps its name visible. */
+.part-material {
+  max-width: 7em;
+  flex-shrink: 0;
+  font: inherit;
+  font-size: var(--ui-fs-label);
+  color: inherit;
+  background: var(--vscode-dropdown-background, transparent);
+  border: 1px solid var(--vscode-input-border, #3c3c3c);
+  border-radius: var(--ui-r-xs);
+}
+.part-row:not(:hover):not(:focus-within) .part-material:not(.has-material) { display: none; }
+
 /* Parametric variables table (inside the Edits panel scroll area). */
 #variables-header {
   display: flex;

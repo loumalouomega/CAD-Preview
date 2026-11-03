@@ -2669,6 +2669,54 @@ test("parts: Rule ▸ plane stores a scene selector from the selected face's exa
   assert(parts[0].surfaces.includes(pickedId), "the selected face stays the cached membership");
 });
 
+test("parts: material picker stores only the density, offers the colour, and a hand-edited density clears the name", async (page) => {
+  await populate(page);
+  await sleep(200);
+  await page.click("#parts-new");
+  await sleep(150);
+  await page.click("#parts-new");
+  await sleep(150);
+  const lastParts = () =>
+    page.evaluate(() => window.__sent.filter((m) => m.type === "partsChanged").at(-1)?.parts ?? null);
+
+  // Part 0 keeps its auto palette colour: picking Steel stores 7.85 and offers steel's colour.
+  await page.evaluate(() => (window.__sent.length = 0));
+  await page.hover(".part-item:nth-last-child(2) .part-row");
+  await page.selectOption(".part-item:nth-last-child(2) .part-material", "steel");
+  await sleep(200);
+  const picked = await lastParts();
+  assert(picked?.at(-2)?.density === 7.85, `Steel stores density 7.85 (got ${picked?.at(-2)?.density})`);
+  assert(picked.at(-2).color === "#8d939b", `the suggested colour is applied to a never-recoloured Part (got ${picked.at(-2).color})`);
+  assert(!/steel|material/i.test(JSON.stringify(picked)), "the saved Part holds no material name");
+  const shown = await page.evaluate(() => document.querySelector(".part-item:nth-last-child(2) .part-material").value);
+  assert(shown === "steel", `the row shows the picked name (got ${shown})`);
+  // BOM mass for a 1000 mm3 solid at the stored density is volume x 7.85 / 1000.
+  assert(Math.abs((1000 / 1000) * picked.at(-2).density - 7.85) < 1e-12, "1000 mm3 at the stored density = 7.85 g");
+
+  // Part 1 was recoloured by the user first: its colour must survive the pick.
+  await page.evaluate(() => {
+    const sw = document.querySelector(".part-item:last-child .part-swatch");
+    sw.value = "#123456";
+    sw.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  await sleep(150);
+  await page.hover(".part-item:last-child .part-row");
+  await page.selectOption(".part-item:last-child .part-material", "copper");
+  await sleep(200);
+  const second = await lastParts();
+  assert(second?.at(-1)?.density === 8.96, "Copper stores 8.96");
+  assert(second.at(-1).color === "#123456", `a user-chosen colour is not overwritten (got ${second.at(-1).color})`);
+
+  // Editing the density by hand clears the shown name.
+  await page.hover(".part-item:nth-last-child(2) .part-row");
+  await page.fill(".part-item:nth-last-child(2) .part-density", "7.5");
+  await page.press(".part-item:nth-last-child(2) .part-density", "Enter");
+  await sleep(200);
+  const after = await page.evaluate(() => document.querySelector(".part-item:nth-last-child(2) .part-material").value);
+  assert(after === "", `hand-editing the density clears the shown name (got "${after}")`);
+  assert((await lastParts())?.at(-2)?.density === 7.5, "the hand-typed density is what is stored");
+});
+
 test("inspector card: selection requests facts, and the reply renders per classification", async (page) => {
   await populate(page);
   await sleep(200);

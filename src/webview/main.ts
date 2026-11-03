@@ -261,6 +261,7 @@ const partsPanel = new PartsPanel(
     onRename: (index, name) => partsModel.rename(index, name),
     onRecolor: (index, color) => partsModel.recolor(index, color),
     onSetDensity: (index, density) => partsModel.setDensity(index, density),
+    onPickMaterial: (index, density, color) => partsModel.setMaterial(index, density, color),
     onRemoveEntity: (index, type, id) => partsModel.removeEntity(index, type, id),
     onSelectPart: (index) => {
       previewPartIndex = index;

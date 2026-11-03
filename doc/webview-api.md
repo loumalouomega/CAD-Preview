@@ -51,7 +51,7 @@ The webview runs in a Chromium browser context. These modules are bundled into `
 | `src/webview/units.ts` | Display-unit conversion for Mass Properties/Measurement (mm/cm/m/in/ft), presentation-layer only (vscode/DOM-free, unit-tested) |
 | `src/webview/meshMassProperties.ts` | Client-side volume/area/centroid for mesh sources (Three.js triangle math, unit-tested) |
 | `src/webview/partsModel.ts` | Parts data model + operations, colour resolution (unit-testable) |
-| `src/webview/partsPanel.ts` | Editable Parts panel DOM management |
+| `src/webview/partsPanel.ts` | Editable Parts panel DOM management, including the per-row Material picker (`onPickMaterial` → `PartsModel.setMaterial`: density only, palette-colour-guarded colour offer; the shown name is session-only) |
 | `src/webview/layersModel.ts` | Layers data model + operations (visibility/lock/assign/move semantics, never-reused id counter adopted from the sidecar; unit-tested) |
 | `src/webview/layersPanel.ts` | Layers panel DOM management (reuses the Parts row classes; eye = persisted visibility, lock = operand refusal) |
 | `src/webview/standardPartsPanel.ts` | Standard Parts (step.parts) search/insert panel DOM management, no dedicated data model — request/response state is tracked directly in `main.ts`. Rows render text-first; `setThumbnails()` decorates listed rows with fetched images by part id (unknown ids dropped, errors hide the image) |

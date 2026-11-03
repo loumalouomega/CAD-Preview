@@ -1,5 +1,17 @@
 import { describe, expect, it } from "vitest";
-import { densityForMaterial, massGrams, totalMass, validateDensity } from "./materialDensity";
+import { MATERIALS, densityForMaterial, massGrams, materialLabel, totalMass, validateDensity } from "./materialDensity";
+
+describe("material picker table", () => {
+  it("every entry has a usable density, a #rrggbb colour and a label", () => {
+    for (const m of MATERIALS) {
+      expect(validateDensity(m.density)).toBe(m.density);
+      expect(m.color).toMatch(/^#[0-9a-f]{6}$/);
+      expect(densityForMaterial(m.name)).toBe(m.density);
+    }
+    expect(materialLabel("stainless steel")).toBe("Stainless steel");
+    expect(materialLabel("pla")).toBe("PLA");
+  });
+});
 
 describe("materialDensity", () => {
   it("a 10 mm steel cube at 7.85 g/cm3 is 7.85 g", () => {

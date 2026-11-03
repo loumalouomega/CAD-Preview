@@ -98,6 +98,20 @@ export class PartsModel {
     this.onChange();
   }
 
+  /**
+   * Picks a named material: stores ONLY the density (the name is presentation,
+   * as for headless `set_part`). `suggestedColor` replaces the Part's colour
+   * only while it is still the auto-assigned palette colour, so a colour the
+   * user chose is never overwritten. One `onChange`, so it is one persist.
+   */
+  setMaterial(index: number, density: number, suggestedColor?: string): void {
+    const p = this.parts[index];
+    if (!p) return;
+    p.density = density;
+    if (suggestedColor && PALETTE.includes(p.color)) p.color = suggestedColor;
+    this.onChange();
+  }
+
   setMeshGrading(index: number, grading: MeshGrading | undefined): void {
     const p = this.parts[index];
     if (!p) return;

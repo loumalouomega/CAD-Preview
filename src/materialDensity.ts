@@ -9,26 +9,33 @@ export interface Material {
   name: string;
   /** g/cm³ */
   density: number;
+  /** Suggested part colour (`#rrggbb`) the Parts panel offers on picking; presentation only, never stored with the name. */
+  color: string;
 }
 
 export const MATERIALS: readonly Material[] = [
-  { name: "steel", density: 7.85 },
-  { name: "stainless steel", density: 8.0 },
-  { name: "aluminium", density: 2.7 },
-  { name: "copper", density: 8.96 },
-  { name: "brass", density: 8.5 },
-  { name: "titanium", density: 4.5 },
-  { name: "abs", density: 1.04 },
-  { name: "pla", density: 1.24 },
-  { name: "petg", density: 1.27 },
-  { name: "nylon", density: 1.15 },
-  { name: "water", density: 1.0 },
+  { name: "steel", density: 7.85, color: "#8d939b" },
+  { name: "stainless steel", density: 8.0, color: "#b9bec6" },
+  { name: "aluminium", density: 2.7, color: "#c4c9cf" },
+  { name: "copper", density: 8.96, color: "#b87333" },
+  { name: "brass", density: 8.5, color: "#c9a227" },
+  { name: "titanium", density: 4.5, color: "#8a8d91" },
+  { name: "abs", density: 1.04, color: "#e8e2d0" },
+  { name: "pla", density: 1.24, color: "#7fb98a" },
+  { name: "petg", density: 1.27, color: "#8fc1d8" },
+  { name: "nylon", density: 1.15, color: "#efe9dc" },
+  { name: "water", density: 1.0, color: "#6aa9e0" },
 ];
 
 /** Case-insensitive lookup; `aluminum` is accepted for `aluminium`. */
 export function densityForMaterial(name: string): number | undefined {
   const key = name.trim().toLowerCase().replace("aluminum", "aluminium");
   return MATERIALS.find((m) => m.name === key)?.density;
+}
+
+/** Panel label for a table name: first letter upper-cased ("stainless steel" -> "Stainless steel"); "abs"/"pla"/"petg" read as acronyms. */
+export function materialLabel(name: string): string {
+  return /^(abs|pla|petg)$/.test(name) ? name.toUpperCase() : name.charAt(0).toUpperCase() + name.slice(1);
 }
 
 /** A usable density is a finite number > 0; anything else is `undefined`. */
