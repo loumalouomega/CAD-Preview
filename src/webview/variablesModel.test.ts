@@ -72,3 +72,62 @@ describe("VariablesModel", () => {
     expect(onChange).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("VariablesModel parameters-table operations", () => {
+  const seed = () => {
+    const onChange = vi.fn();
+    const m = new VariablesModel(onChange);
+    m.load([
+      { name: "L", expr: "10", value: 10 },
+      { name: "W", expr: "L/2", value: 5 },
+    ]);
+    return { m, onChange };
+  };
+
+  it("comment and favourite set/clear and fire", () => {
+    const { m, onChange } = seed();
+    m.setComment(0, "  length ");
+    m.toggleFavourite(1);
+    expect(m.list()[0].comment).toBe("length");
+    expect(m.list()[1].favourite).toBe(true);
+    m.setComment(0, "");
+    m.toggleFavourite(1);
+    expect(m.list()[0]).toEqual({ name: "L", expr: "10", value: 10 });
+    expect(m.list()[1].favourite).toBeUndefined();
+    expect(onChange).toHaveBeenCalledTimes(4);
+  });
+
+  it("move refuses across a dependency and does not fire", () => {
+    const { m, onChange } = seed();
+    expect(m.move(1, -1)).toContain('"W"');
+    expect(m.list().map((v) => v.name)).toEqual(["L", "W"]);
+    expect(onChange).not.toHaveBeenCalled();
+    m.add();
+    expect(m.move(2, -1)).toBeNull();
+    expect(m.list().map((v) => v.name)).toEqual(["L", "L3", "W"]);
+  });
+
+  it("importRows appends accepted rows and reports the rest", () => {
+    const { m, onChange } = seed();
+    const res = m.importRows([{ name: "H", expr: "W*2" }, { name: "L", expr: "1" }]);
+    expect(res.accepted.map((v) => v.name)).toEqual(["H"]);
+    expect(res.rejected).toHaveLength(1);
+    expect(m.size).toBe(3);
+    expect(onChange).toHaveBeenCalledTimes(1);
+  });
+
+  it("deferred mode batches changes into one commit and revert drops them", () => {
+    const { m, onChange } = seed();
+    m.setDeferred(true);
+    m.setExpr(0, "20");
+    m.toggleFavourite(0);
+    expect(onChange).not.toHaveBeenCalled();
+    expect(m.hasPendingChanges).toBe(true);
+    m.commit();
+    expect(onChange).toHaveBeenCalledTimes(1);
+    m.setExpr(0, "99");
+    m.revert();
+    expect(m.list()[0].expr).toBe("20");
+    expect(onChange).toHaveBeenCalledTimes(1);
+  });
+});

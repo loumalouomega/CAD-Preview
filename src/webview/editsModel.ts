@@ -125,6 +125,19 @@ export class EditsModel {
   }
 
   /**
+   * Replaces the op at `index` in place (Parameters table: edit a field, or
+   * promote it to a variable). Clears the redo buffer like {@link remove}.
+   * Refused inside the save point and for out-of-range indices.
+   */
+  replaceAt(index: number, op: EditOp): boolean {
+    if (index < this.bakedThrough || index < 0 || index >= this.ops.length) return false;
+    this.ops[index] = clone(op);
+    this.redoBuffer = [];
+    this.onChange();
+    return true;
+  }
+
+  /**
    * Moves the stack boundary straight to timeline position `index` in ONE
    * splice — the op-history-scrubbing primitive.
    * `index` addresses the full chronological timeline: applied ops at
