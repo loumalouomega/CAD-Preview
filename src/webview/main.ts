@@ -40,10 +40,11 @@ import { sanitizeSpaceMouseMessage } from "../spaceMouseReports";
 import type { PanelOpId } from "./opCatalog";
 import { VariablesModel } from "./variablesModel";
 import { VariablesPanel } from "./variablesPanel";
+import { collectVariableUsage, type VariableUsage } from "../variableUsage";
 import { evaluateVariables, resolveEditOps, dimensionIssues, parseVariablesCsv, parseVariablesJson, serializeVariablesCsv, serializeVariablesJson, promoteField } from "../editVariables";
 import { replayTail } from "../editsSidecar";
 import { resolvePlaneRefs } from "../planeRefs";
-import { extractIdentifiers, parseFieldPath, setNumericField, getNumericField } from "../paramExpr";
+import { parseFieldPath, setNumericField, getNumericField } from "../paramExpr";
 import { annotatedLabelText, evaluateToleranceBand, type AnnotatedTolerance } from "../toleranceBand";
 import { MeshingModel } from "./meshingModel";
 import { MeshingPanel } from "./meshingPanel";
@@ -640,17 +641,9 @@ function currentResolvedOps(): { ops: EditOp[]; issues: string[] } {
   return { ops, issues: [...variableIssues, ...dimensionIssues(editsModel.list(), variablesModel.list()), ...planeIssues] };
 }
 
-/** How many op-expression fields reference each variable (for delete warnings). */
-function variableUsage(): Map<string, number> {
-  const usage = new Map<string, number>();
-  for (const op of editsModel.list()) {
-    for (const expr of Object.values(op.exprs ?? {})) {
-      for (const ident of extractIdentifiers(expr)) {
-        usage.set(ident, (usage.get(ident) ?? 0) + 1);
-      }
-    }
-  }
-  return usage;
+/** Who references each variable (op fields + other variables): drives the delete warning and the Used-by list. */
+function variableUsage(): Map<string, VariableUsage> {
+  return collectVariableUsage(editsModel.list(), variablesModel.list());
 }
 
 /** Re-renders the Edits + Variables panels from the models (no host post). */
@@ -741,6 +734,8 @@ const variablesPanel = new VariablesPanel(document.getElementById("variables-sec
   onRemove: (index) => variablesModel.remove(index),
   onSetComment: (index, comment) => variablesModel.setComment(index, comment),
   onToggleFavourite: (index) => variablesModel.toggleFavourite(index),
+  onSelectOp: (opIndex) => editsPanel.revealRow(opIndex),
+  onRefresh: () => renderEditsUi(),
   onMove: (index, delta) => variablesModel.move(index, delta),
   onImport: (fileName, text) => {
     const res = /\.json$/i.test(fileName)

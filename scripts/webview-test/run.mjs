@@ -4922,6 +4922,156 @@ test("parameters table: promoting a model parameter makes the op follow the vari
   assert(sent.ops[0].size[1] === 9, `the op follows the variable (size ${JSON.stringify(sent.ops[0].size)})`);
 });
 
+const USEDBY_OPS = [
+  { op: "addBox", center: [0, 0, 0], size: [4, 5, 6], exprs: { "size[0]": "len*2", "size[1]": "len" } },
+  { op: "translate", targets: ["solid-0"], vec: [1, 0, 0] },
+  { op: "translate", targets: ["solid-0"], vec: [0, 1, 0], exprs: { "vec[1]": "len+width" } },
+];
+const USEDBY_VARS = [
+  { name: "len", expr: "10", value: 10 },
+  { name: "width", expr: "len/2", value: 5 },
+  { name: "zed", expr: "width*2", value: 10 },
+];
+
+test("variable used-by: the disclosure lists referencing ops and variables, its count matches the delete tooltip", async (page) => {
+  await populate(page);
+  await post(page, { type: "edits", ops: USEDBY_OPS, variables: USEDBY_VARS });
+  await sleep(300);
+  const row = (name) => `[...document.querySelectorAll(".variable-row")].find((r) => r.querySelector(".variable-name").value === "${name}")`;
+  const info = await page.evaluate(`(() => { const r = ${row("len")}; return { toggle: r.querySelector(".variable-used")?.textContent ?? null, del: r.querySelector(".part-btn").title, open: document.querySelector(".variable-usedby") !== null }; })()`);
+  assert(info.toggle !== null && !info.open, `a Used-by toggle shows while the list is closed (got ${JSON.stringify(info)})`);
+  // len: 3 op fields (size[0], size[1], vec[1]) + variable width.
+  assert(/referenced by 3 edit fields and 1 variable/.test(info.del), `delete tooltip quotes 3 fields + 1 variable (got ${info.del})`);
+  await page.evaluate(`${row("len")}.querySelector(".variable-used").click()`);
+  await sleep(250);
+  const list = await page.evaluate(() => ({
+    ops: [...document.querySelectorAll(".variable-usedby .usedby-op")].map((b) => b.textContent),
+    vars: [...document.querySelectorAll(".variable-usedby .usedby-var")].map((b) => b.textContent),
+    shown: document.querySelector(".variable-usedby")?.offsetParent !== null,
+  }));
+  assert(list.shown, "the open Used-by list is rendered");
+  assert(list.ops.length === 2 && /^#1 addBox/.test(list.ops[0]) && /size\[0\], size\[1\]/.test(list.ops[0]) && /^#3 translate.*vec\[1\]/.test(list.ops[1]), `op rows with their fields (got ${JSON.stringify(list.ops)})`);
+  const fieldTotal = list.ops.reduce((n, t) => n + t.split("—")[1].split(",").length, 0);
+  assert(fieldTotal === 3, `listed fields (${fieldTotal}) equal the delete tooltip's 3`);
+  assert(list.vars.length === 1 && /width/.test(list.vars[0]), `the referencing variable is listed (got ${JSON.stringify(list.vars)})`);
+  // The disclosure survives the re-render a variable edit causes.
+  await page.evaluate(() => {
+    const c = document.querySelector(".variable-row .variable-comment");
+    c.value = "x";
+    c.dispatchEvent(new Event("change"));
+  });
+  await sleep(300);
+  assert(await page.evaluate(() => document.querySelector(".variable-usedby") !== null), "the open disclosure stays open across a re-render");
+  // Clicking an op row selects that history row and does not jump the timeline.
+  await page.evaluate(() => (window.__sent.length = 0));
+  await page.evaluate(() => [...document.querySelectorAll(".usedby-op")].find((b) => b.dataset.opIndex === "2").click());
+  await sleep(250);
+  const sel = await page.evaluate(() => [...document.querySelectorAll("#edits-body .edit-row")].map((li) => li.classList.contains("edit-row-selected")));
+  assert(sel.join() === "false,false,true", `history row 3 is selected (got ${sel})`);
+  assert((await sentOf(page, "editsChanged")).length === 0, "selecting a row posts no edit (no timeline jump)");
+  // A variable nobody uses has no toggle and the plain tooltip.
+  const unused = await page.evaluate(`(() => { const r = ${row("zed")}; return { toggle: r.querySelector(".variable-used") !== null, del: r.querySelector(".part-btn").title }; })()`);
+  assert(!unused.toggle && unused.del === "Delete variable", `an unused variable has no toggle (got ${JSON.stringify(unused)})`);
+});
+
+async function openFilletForm(page) {
+  const status = await runModeFilter(page, "line", "longestN", "1");
+  assert(/matched 1 of \d+/.test(status), `precondition: one edge is selected (got ${JSON.stringify(status)})`);
+  await page.click("#select-menu");
+  await sleep(150);
+  await page.evaluate(() => {
+    [...document.querySelectorAll(".op-btn")].find((b) => b.querySelector(".op-name")?.textContent === "Fillet")?.click();
+  });
+  await sleep(250);
+}
+const suggestState = (page) => page.evaluate(() => {
+  const ul = document.getElementById("expr-suggest");
+  return {
+    // position:fixed has no offsetParent, so ask the engine whether it renders.
+    visible: !!ul && !ul.hidden && ul.checkVisibility(),
+    items: ul && !ul.hidden ? [...ul.querySelectorAll("li")].map((li) => li.firstChild.textContent) : [],
+    active: ul?.querySelector("li.active")?.firstChild.textContent ?? null,
+  };
+});
+const AC_VARS = [
+  { name: "len", expr: "10", value: 10 },
+  { name: "width", expr: "len/2", value: 5 },
+];
+
+test("expression autocomplete: Tab and Enter accept, arrows move, Escape leaves the field unchanged (op field)", async (page) => {
+  await populate(page);
+  await post(page, { type: "edits", ops: [], variables: [...AC_VARS, { name: "sz", expr: "1", value: 1 }] });
+  await sleep(300);
+  await openFilletForm(page);
+  const sel = '#edits-params input[data-name="amount"]';
+  const val = () => page.evaluate((s) => document.querySelector(s).value, sel);
+  await page.fill(sel, "");
+  await page.focus(sel);
+  await page.keyboard.type("2*l");
+  let st = await suggestState(page);
+  assert(st.visible && st.items.join() === "len", `typing a prefix lists the matching variable (got ${JSON.stringify(st)})`);
+  await page.keyboard.press("Tab");
+  assert((await val()) === "2*len" && !(await suggestState(page)).visible, `Tab accepts (got ${await val()})`);
+  assert(await page.evaluate((s) => document.activeElement === document.querySelector(s), sel), "Tab kept focus in the field");
+
+  await page.fill(sel, "");
+  await page.keyboard.type("w");
+  st = await suggestState(page);
+  assert(st.items[0] === "width", `variables first (got ${JSON.stringify(st.items)})`);
+  await page.keyboard.press("Enter");
+  assert((await val()) === "width", `Enter accepts (got ${await val()})`);
+  assert((await sentOf(page, "editsChanged")).length === 0, "Enter on an open list does not apply the form");
+
+  await page.fill(sel, "");
+  await page.keyboard.type("s");
+  st = await suggestState(page);
+  assert(st.items.join() === "sz,sqrt,sin" && st.active === "sz", `functions are offered (got ${JSON.stringify(st)})`);
+  await page.keyboard.press("ArrowDown");
+  const second = (await suggestState(page)).active;
+  assert(second === st.items[1], `ArrowDown moves the highlight (got ${second})`);
+  await page.keyboard.press("ArrowUp");
+  assert((await suggestState(page)).active === st.items[0], "ArrowUp moves back");
+  await page.keyboard.press("ArrowUp");
+  assert((await suggestState(page)).active === st.items.at(-1), "ArrowUp wraps");
+  await page.keyboard.press("Escape");
+  assert(!(await suggestState(page)).visible && (await val()) === "s", `Escape dismisses and leaves the text unchanged (got ${await val()})`);
+  await page.keyboard.type("q");
+  assert((await suggestState(page)).items.join() === "sqrt", "typing reopens it");
+  await page.keyboard.press("Tab");
+  assert((await val()) === "sqrt(", `a function gains its parenthesis (got ${await val()})`);
+});
+
+test("expression autocomplete: a variable expression offers only variables defined above", async (page) => {
+  await populate(page);
+  await post(page, { type: "edits", ops: [], variables: [...AC_VARS, { name: "wall", expr: "1", value: 1 }] });
+  await sleep(300);
+  const sel = (i) => `.variable-row:nth-child(${i}) .variable-expr`;
+  // width (2nd row) may use len but not wall (defined below) and not itself.
+  await page.focus(sel(2));
+  await page.keyboard.press("Control+A");
+  await page.keyboard.type("l");
+  let st = await suggestState(page);
+  assert(st.visible && st.items.join() === "len", `row 2 sees len (got ${JSON.stringify(st.items)})`);
+  await page.keyboard.press("Escape");
+  await page.keyboard.press("Control+A");
+  await page.keyboard.type("w");
+  st = await suggestState(page);
+  assert(!st.items.includes("wall") && !st.items.includes("width"), `row 2 does not see wall/width (got ${JSON.stringify(st.items)})`);
+  await page.keyboard.press("Escape");
+  assert((await page.evaluate((s) => document.querySelector(s).value, sel(2))) === "w", "Escape left the typed text, not the stored expression");
+  await page.fill(sel(2), "len/2");
+  await page.keyboard.press("Escape");
+  await page.focus(sel(3)); // leaving row 2 commits it and re-renders the table
+  await sleep(300);
+  await page.focus(sel(3));
+  await page.keyboard.press("Control+A");
+  await page.keyboard.type("w");
+  st = await suggestState(page);
+  assert(st.visible && st.items.includes("width"), `row 3 sees width (got ${JSON.stringify(st.items)})`);
+  await page.keyboard.press("Enter");
+  assert((await page.evaluate((s) => document.querySelector(s).value, sel(3))) === "width", "Enter accepts in a variable expression");
+});
+
 const SAVE_POINT_OPS = [
   { op: "translate", targets: ["solid-0"], vec: [1, 0, 0] },
   { op: "translate", targets: ["solid-0"], vec: [0, 1, 0] },

@@ -11,6 +11,7 @@ import { QUERYABLE_PANEL_FORMS, catalogLocation } from "./opCatalog";
 import { OP_ICONS } from "./opIcons";
 import { allHoleSizes, depthPresetsFor, findHoleSize } from "../holeStandards";
 import { TOOLBAR_ICONS } from "../toolbarIcons";
+import { attachExpressionAutocomplete } from "./expressionAutocomplete";
 
 // Re-exported for compatibility — `describeOp` now lives in the pure, headless-
 // testable opCatalog module.
@@ -754,7 +755,11 @@ export class EditsPanel {
         li.classList.add("edit-row-baked");
         li.title = "Saved into the file itself — cannot be undone or removed (File ▸ Revert File drops back to the save).";
       }
-      li.addEventListener("click", () => this.cb.onJumpTo(i));
+      li.dataset.opIndex = String(i);
+      li.addEventListener("click", () => {
+        this.revealedOp = null;
+        this.cb.onJumpTo(i);
+      });
       const outcome = opts.outcome;
       if (outcome && !outcome.applied) {
         li.classList.add("edit-row-skipped");
@@ -839,6 +844,30 @@ export class EditsPanel {
     ops.forEach((op, i) => row(op, i, { pending: false, outcome: outcomeOf.get(i), bucket: bucketOf.get(i), baked: i < bakedThrough }));
     (redoOps ?? []).forEach((op, k) => row(op, ops.length + k, { pending: true }));
     this.body.appendChild(ol);
+    if (this.revealedOp !== null) this.revealRow(this.revealedOp);
+  }
+
+  /** The history row last revealed from the Variables panel's Used-by list. */
+  private revealedOp: number | null = null;
+
+  /**
+   * Select and scroll to history row `index` WITHOUT jumping the timeline (a
+   * row click scrubs the stack; a Used-by click must only point at the op).
+   * The mark survives re-renders until the user clicks a row.
+   */
+  revealRow(index: number): void {
+    this.revealedOp = index;
+    let found = false;
+    for (const li of this.body.querySelectorAll<HTMLElement>(".edit-row")) {
+      const on = li.dataset.opIndex === String(index);
+      li.classList.toggle("edit-row-selected", on);
+      li.setAttribute("aria-selected", on ? "true" : "false");
+      if (on) {
+        found = true;
+        li.scrollIntoView({ block: "nearest" });
+      }
+    }
+    if (!found) this.revealedOp = null;
   }
 
   /** Enables/disables the B-rep-only controls (whole 2D subtab + individual
@@ -2103,6 +2132,7 @@ export class EditsPanel {
     input.spellcheck = false;
     input.autocomplete = "off";
     input.className = "compose-num";
+    attachExpressionAutocomplete(input, () => Object.keys(this.variableValues));
     return input;
   }
 

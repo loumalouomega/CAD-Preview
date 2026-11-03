@@ -5331,3 +5331,23 @@ body:has(#side.visible) #kernel-status {
 .mp-row input.mp-value:hover { border-color: var(--vscode-input-border, #3c3c3c); }
 .mp-row .mp-expr { opacity: 0.7; font-style: italic; }
 .mp-row .mp-promote { font-size: 11px; }
+
+/* Variable Used-by disclosure + expression autocomplete. */
+.variable-row .variable-used { background: none; border: none; color: inherit; opacity: 0.7; padding: 0 2px; cursor: pointer; font-size: 11px; white-space: nowrap; }
+.variable-row .variable-used:hover { opacity: 1; }
+.variable-usedby { display: flex; flex-direction: column; align-items: flex-start; gap: 1px; padding: 0 6px 3px 24px; font-size: 11px; }
+.variable-usedby .usedby-op { background: none; border: none; color: var(--vscode-textLink-foreground, #3794ff); padding: 0; cursor: pointer; text-align: left; font: inherit; }
+.variable-usedby .usedby-op:hover { text-decoration: underline; }
+.variable-usedby .usedby-var { opacity: 0.8; }
+.edit-row.edit-row-selected { outline: 1px solid var(--vscode-focusBorder, #007fd4); outline-offset: -1px; background: var(--vscode-list-activeSelectionBackground, rgba(0,127,212,0.25)); }
+#expr-suggest {
+  position: fixed; z-index: 1000; margin: 0; padding: 2px 0; list-style: none; max-height: 160px; overflow-y: auto;
+  font-size: 12px; color: var(--vscode-editorSuggestWidget-foreground, var(--vscode-foreground));
+  background: var(--vscode-editorSuggestWidget-background, var(--vscode-editorWidget-background, #252526));
+  border: 1px solid var(--vscode-editorSuggestWidget-border, var(--vscode-widget-border, #454545));
+  border-radius: var(--ui-r-xs);
+}
+#expr-suggest[hidden] { display: none; }
+#expr-suggest .expr-suggest-item { display: flex; justify-content: space-between; gap: 12px; padding: 1px 8px; cursor: pointer; }
+#expr-suggest .expr-suggest-item.active { background: var(--vscode-editorSuggestWidget-selectedBackground, var(--vscode-list-activeSelectionBackground, #04395e)); color: var(--vscode-list-activeSelectionForeground, inherit); }
+#expr-suggest .expr-suggest-kind { opacity: 0.6; }

@@ -1,6 +1,8 @@
 import { enumerateNumericFields, exprUnit, withExprUnit, type ParamVariable } from "../editVariables";
 import type { EditOp } from "../editOps";
 import { TOOLBAR_ICONS } from "../toolbarIcons";
+import { deleteTooltip, EMPTY_USAGE, usageSummary, type VariableUsage } from "../variableUsage";
+import { attachExpressionAutocomplete } from "./expressionAutocomplete";
 
 export interface VariablesPanelCallbacks {
   onAdd: () => void;
@@ -20,6 +22,10 @@ export interface VariablesPanelCallbacks {
   /** Edit a stored op's numeric field (op index, field path, value). */
   onEditField: (opIndex: number, path: string, value: number) => void;
   onPromote: (opIndex: number, path: string) => void;
+  /** A Used-by op row was clicked: select (not jump to) that history row. */
+  onSelectOp: (opIndex: number) => void;
+  /** Re-render after a purely presentational change (Used-by open/closed). */
+  onRefresh: () => void;
   report: (text: string, isError: boolean) => void;
 }
 
@@ -36,6 +42,8 @@ export class VariablesPanel {
   private readonly modelBody: HTMLElement;
   private readonly filter: HTMLInputElement;
   private readonly deferActions: HTMLElement;
+  /** Variables whose Used-by disclosure is open (survives the full re-render). */
+  private readonly openUsedBy = new Set<string>();
 
   constructor(section: HTMLElement, private readonly cb: VariablesPanelCallbacks) {
     this.body = section.querySelector("#variables-body")!;
@@ -136,20 +144,47 @@ export class VariablesPanel {
   /**
    * @param values evaluated name → value map (from `evaluateVariables`)
    * @param errors per-variable evaluation errors (failed vars show these instead of a value)
-   * @param usage per-variable count of op-expression references (drives the delete warning)
+   * @param usage who references each variable (drives the delete warning and the Used-by list)
    */
   render(
     vars: ParamVariable[],
     values: Record<string, number>,
     errors: Map<string, string>,
-    usage: Map<string, number>
+    usage: Map<string, VariableUsage>
   ): void {
     this.body.innerHTML = "";
     // Favourites are pinned in the VIEW only; `index` stays the evaluation-order index.
     const order = vars.map((v, index) => ({ v, index }));
     order.sort((a, b) => Number(!!b.v.favourite) - Number(!!a.v.favourite) || a.index - b.index);
-    for (const { v, index } of order) this.body.appendChild(this.buildRow(v, index, values, errors, usage, vars.length));
+    for (const { v, index } of order) {
+      this.body.appendChild(this.buildRow(v, index, values, errors, usage, vars.length, vars));
+      const u = usage.get(v.name) ?? EMPTY_USAGE;
+      if (this.openUsedBy.has(v.name) && (u.ops.length > 0 || u.variables.length > 0)) this.body.appendChild(this.buildUsedBy(v.name, u));
+    }
     this.applyFilter();
+  }
+
+  /** The expanded Used-by list under a variable's row: op rows (clickable) then variables. */
+  private buildUsedBy(name: string, u: VariableUsage): HTMLElement {
+    const box = document.createElement("div");
+    box.className = "variable-usedby";
+    box.dataset.for = name;
+    for (const o of u.ops) {
+      const b = document.createElement("button");
+      b.className = "usedby-op";
+      b.dataset.opIndex = String(o.opIndex);
+      b.textContent = `#${o.opIndex + 1} ${o.op} — ${o.fields.join(", ")}`;
+      b.title = "Select this row in the edit history";
+      b.addEventListener("click", () => this.cb.onSelectOp(o.opIndex));
+      box.appendChild(b);
+    }
+    for (const n of u.variables) {
+      const s = document.createElement("span");
+      s.className = "usedby-var";
+      s.textContent = `variable ${n}`;
+      box.appendChild(s);
+    }
+    return box;
   }
 
   private buildRow(
@@ -157,8 +192,9 @@ export class VariablesPanel {
     index: number,
     values: Record<string, number>,
     errors: Map<string, string>,
-    usage: Map<string, number>,
-    count: number
+    usage: Map<string, VariableUsage>,
+    count: number,
+    vars: ParamVariable[]
   ): HTMLElement {
     const row = document.createElement("div");
     row.className = "variable-row";
@@ -207,6 +243,9 @@ export class VariablesPanel {
     expr.title = "Expression: numbers, other variables defined above, + - * / ^ ( ), sqrt/abs/min/max/floor/ceil/round/sin/cos/tan (degrees), pi";
     expr.spellcheck = false;
     expr.addEventListener("change", () => this.cb.onSetExpr(index, expr.value));
+    // A variable may reference only variables above it. Read the live list at
+    // keystroke time so a reorder is honoured without re-wiring.
+    attachExpressionAutocomplete(expr, () => vars.slice(0, index).map((x) => x.name));
     row.appendChild(expr);
 
     const unit = document.createElement("select");
@@ -260,6 +299,21 @@ export class VariablesPanel {
     });
     row.appendChild(comment);
 
+    const used = usage.get(v.name) ?? EMPTY_USAGE;
+    if (used.ops.length > 0 || used.variables.length > 0) {
+      const open = this.openUsedBy.has(v.name);
+      const toggle = document.createElement("button");
+      toggle.className = "variable-used" + (open ? " open" : "");
+      toggle.textContent = `${open ? "▾" : "▸"} ${used.fieldCount + used.variables.length}`;
+      toggle.title = `Used by ${usageSummary(used)} — click to ${open ? "hide" : "list"}`;
+      toggle.setAttribute("aria-expanded", open ? "true" : "false");
+      toggle.addEventListener("click", () => {
+        if (!this.openUsedBy.delete(v.name)) this.openUsedBy.add(v.name);
+        this.cb.onRefresh();
+      });
+      row.appendChild(toggle);
+    }
+
     for (const [delta, glyph] of [[-1, "▲"], [1, "▼"]] as const) {
       const mv = document.createElement("button");
       mv.className = "variable-move";
@@ -276,16 +330,14 @@ export class VariablesPanel {
     const del = document.createElement("button");
     del.className = "part-btn";
     del.innerHTML = TOOLBAR_ICONS.close;
-    const uses = usage.get(v.name) ?? 0;
-    del.title = uses > 0
-      ? `Delete variable (referenced by ${uses} edit field${uses === 1 ? "" : "s"} — they will freeze at their current values)`
-      : "Delete variable";
+    del.title = deleteTooltip(used);
     del.addEventListener("click", () => this.cb.onRemove(index));
     row.appendChild(del);
 
     return row;
   }
 }
+
 
 function formatValue(n: number | undefined): string {
   if (n === undefined || !Number.isFinite(n)) return "?";
