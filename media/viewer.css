@@ -4807,6 +4807,77 @@ body:has(#side.visible) #kernel-status {
   bottom: calc(var(--ui-s-5) + 132px + var(--ui-statusbar-h) + var(--ui-cmdbar-h));
 }
 
+/* ── Command search (Ctrl+K) ───────────────────────────────────────────── */
+
+#cmd-palette {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  padding-top: 10vh;
+  background: rgba(0, 0, 0, 0.25);
+  font-family: var(--ui-font);
+  font-size: var(--ui-fs-md);
+}
+#cmd-palette[hidden] { display: none; }
+#cmd-palette .cmd-palette-box {
+  width: min(560px, calc(100vw - 32px));
+  max-height: 70vh;
+  display: flex;
+  flex-direction: column;
+  color: var(--vscode-quickInput-foreground, var(--vscode-foreground, #ccc));
+  background: var(--vscode-quickInput-background, var(--vscode-editorWidget-background, #252526));
+  border: 1px solid var(--vscode-editorWidget-border, #454545);
+  border-radius: var(--ui-r-md);
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.4);
+}
+#cmd-palette-input {
+  box-sizing: border-box;
+  margin: var(--ui-s-3);
+  padding: 4px var(--ui-s-3);
+  font: inherit;
+  color: var(--vscode-input-foreground, #ccc);
+  background: var(--vscode-input-background, #3c3c3c);
+  border: 1px solid var(--vscode-input-border, transparent);
+}
+#cmd-palette-input:focus { outline: 1px solid var(--vscode-focusBorder, #007fd4); outline-offset: -1px; }
+#cmd-palette-list { list-style: none; margin: 0; padding: 0 0 var(--ui-s-2); overflow-y: auto; }
+#cmd-palette-list .cmd-row {
+  display: flex;
+  align-items: center;
+  gap: var(--ui-s-3);
+  padding: 3px var(--ui-s-4);
+  cursor: pointer;
+}
+#cmd-palette-list .cmd-row:hover { background: var(--vscode-list-hoverBackground, #2a2d2e); }
+#cmd-palette-list .cmd-row.selected {
+  color: var(--vscode-list-activeSelectionForeground, #fff);
+  background: var(--vscode-list-activeSelectionBackground, #04395e);
+}
+#cmd-palette-list .cmd-row.disabled { opacity: 0.5; }
+#cmd-palette-list .cmd-icon { flex: none; width: 16px; height: 16px; display: inline-flex; }
+#cmd-palette-list .cmd-icon svg { width: 16px; height: 16px; }
+#cmd-palette-list .cmd-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#cmd-palette-list .cmd-group { flex: none; opacity: 0.65; font-size: var(--ui-fs-label); }
+#cmd-palette-list .cmd-key {
+  flex: none;
+  padding: 0 5px;
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: var(--ui-fs-label);
+  border: 1px solid var(--vscode-editorWidget-border, #454545);
+  border-radius: var(--ui-r-xs);
+}
+#cmd-palette-list .cmd-key.off { opacity: 0.45; }
+#cmd-palette-list .cmd-empty { padding: 6px var(--ui-s-4); opacity: 0.7; }
+#cmd-palette .cmd-palette-foot {
+  padding: 3px var(--ui-s-4);
+  font-size: var(--ui-fs-label);
+  opacity: 0.65;
+  border-top: 1px solid var(--vscode-editorWidget-border, #454545);
+}
+
 /* ── Command bar ───────────────────────────────────────────────────────── */
 
 #cmdbar {

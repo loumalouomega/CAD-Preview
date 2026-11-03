@@ -1,7 +1,7 @@
 import * as THREE from "three";
 import { Viewer } from "./viewer";
 import { refreshPalette } from "./palette";
-import { buildEntityReferenceIndex, QUERYABLE_PANEL_FORMS } from "./opCatalog";
+import { allCatalogEntries, buildEntityReferenceIndex, QUERYABLE_PANEL_FORMS } from "./opCatalog";
 import { hoverContent, inspectorContent, summaryLine } from "./entityExplain";
 import { formatEntityReferences, producingBucketFor } from "./entityReference";
 import { UI_GLYPHS } from "../uiGlyphs";
@@ -26,6 +26,7 @@ import { LayersModel } from "./layersModel";
 import { LayersPanel } from "./layersPanel";
 import { lockedOperandForOp } from "../layersSidecar";
 import { CommandBar } from "./commandBar";
+import { CommandPalette } from "./commandPalette";
 import type { CommandRow, SelectionIds } from "../opCommands";
 import { AnnotationsModel } from "./annotationsModel";
 import { PlanesModel } from "./planesModel";
@@ -2900,19 +2901,33 @@ const commandBar = new CommandBar(document.getElementById("cmdbar")!, {
   getInventory: commandBarInventory,
   sourceKind: () => sourceKind ?? "",
   commit: commandBarCommit,
-  openForm: (row, body) => {
-    const chevron = document.querySelector<HTMLElement>("#edits-panel.collapsed #edits-header .panel-chevron");
-    chevron?.click(); // an open form inside a collapsed section would be invisible
-    if (!editsPanel.openOp(row.panelId)) return false;
-    if (body) {
-      selectBodyIds(body);
-      const { skipped } = editsPanel.prefillFromBody(body);
-      if (skipped.length > 0) setStatus(`Form opened; these body fields were not prefilled: ${skipped.join(", ")}.`);
-    }
-    return true;
-  },
+  openForm: (row, body) => openEditForm(row.panelId, body, false),
 });
-editsModel.onPush = (op) => { if (!commandBarCommitting) commandBar.echo(op); };
+
+/** Opens an op's form (expanding a collapsed Edits section first) and prefills it from `body`. Shared by the command bar and the command search. */
+function openEditForm(panelId: PanelOpId, body: Record<string, unknown> | null | undefined, quiet: boolean): boolean {
+  const chevron = document.querySelector<HTMLElement>("#edits-panel.collapsed #edits-header .panel-chevron");
+  chevron?.click(); // an open form inside a collapsed section would be invisible
+  if (!editsPanel.openOp(panelId)) return false;
+  if (body) {
+    selectBodyIds(body);
+    const { skipped } = editsPanel.prefillFromBody(body);
+    if (skipped.length > 0 && !quiet) setStatus(`Form opened; these body fields were not prefilled: ${skipped.join(", ")}.`);
+  }
+  return true;
+}
+
+// Command search (Ctrl+K / "/") and the opt-in single-key commands; see commandPalette.ts.
+const commandPalette = new CommandPalette({
+  openOp: (id, body) => openEditForm(id, body ?? null, true),
+  isOpAvailable: (id) => sourceKind === "brep" || !allCatalogEntries().find((e) => e.id === id)?.brepOnly,
+  setStatus: (text, isError) => setStatus(text, isError ?? false),
+});
+commandPalette.install();
+editsModel.onPush = (op) => {
+  commandPalette.noteApplied(op);
+  if (!commandBarCommitting) commandBar.echo(op);
+};
 
 /** After a replay: report a graceful skip of the op the bar just pushed (a typed op must never fail silently). */
 function reportCommandBarOutcome(): void {
@@ -6208,6 +6223,7 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
       // Cross-document settings — only ever initial state; per-document sidecar
       // values and runtime toggles (the toolbar Grid button) always win once set.
       meshSizePreset = msg.meshSizePreset;
+      commandPalette.setSingleKeys(msg.singleKeyCommands);
       viewer.applyDefaults(msg);
       syncMeshSizeSeed();
       {

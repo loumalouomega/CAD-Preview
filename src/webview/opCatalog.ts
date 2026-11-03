@@ -51,6 +51,13 @@ export interface CatalogEntry {
   brepOnly: boolean;
   /** The EditOp kind(s) this button can emit (for catalog↔op-model tests). */
   kinds: EditOpKind[];
+  /**
+   * Opt-in single-letter shortcut (upper-case, shown in the command search),
+   * declared here, beside the entry, and nowhere else. Active only with
+   * `cadPreview.singleKeyCommands`; `opCatalog.test.ts` refuses duplicates and
+   * collisions with the view snaps in `viewShortcuts.ts`.
+   */
+  key?: string;
 }
 
 export interface CatalogCategory {
@@ -58,10 +65,24 @@ export interface CatalogCategory {
   ops: CatalogEntry[];
 }
 
-const entry = (id: PanelOpId, label: string, kinds: EditOpKind[]): CatalogEntry => ({
+const entry = (id: PanelOpId, label: string, kinds: EditOpKind[], key?: string): CatalogEntry => ({
   id, label, kinds,
   brepOnly: kinds.every((k) => BREP_ONLY_OPS.has(k)),
+  ...(key ? { key } : {}),
 });
+
+/**
+ * Single-letter shortcuts for toolbar/dropdown actions that are not edit ops,
+ * keyed by the element id the command search clicks. Same rules as
+ * {@link CatalogEntry.key}; the one shared key space is checked by
+ * `opCatalog.test.ts`.
+ */
+export const ACTION_KEYS: Readonly<Record<string, string>> = Object.freeze({
+  "measure-toggle": "Q",
+});
+
+/** Repeats the last command (reopens its form with the last values, never applies). */
+export const REPEAT_LAST_KEY = "Shift+R";
 
 /** Tab structure: GEOMETRY (2D / 3D subtabs) creates, EDIT modifies. */
 export const OP_CATALOG: {
@@ -122,7 +143,7 @@ export const OP_CATALOG: {
     {
       title: "Holes",
       ops: [
-        entry("addHole", "Hole", ["addHole"]),
+        entry("addHole", "Hole", ["addHole"], "H"),
         entry("addCounterboreHole", "C'bore", ["addCounterboreHole"]),
         entry("addCountersinkHole", "C'sink", ["addCountersinkHole"]),
       ],
@@ -136,7 +157,7 @@ export const OP_CATALOG: {
     {
       title: "Transform",
       ops: [
-        entry("translate", "Move", ["translate"]),
+        entry("translate", "Move", ["translate"], "M"),
         entry("rotate", "Rotate", ["rotate"]),
         entry("scale", "Scale", ["scale"]),
         entry("mirror", "Mirror", ["mirror"]),
@@ -153,15 +174,15 @@ export const OP_CATALOG: {
     {
       title: "Refine",
       ops: [
-        entry("fillet", "Fillet", ["fillet"]),
-        entry("chamfer", "Chamfer", ["chamfer"]),
+        entry("fillet", "Fillet", ["fillet"], "F"),
+        entry("chamfer", "Chamfer", ["chamfer"], "C"),
       ],
     },
     {
       title: "Features",
       ops: [
-        entry("extrude", "Extrude", ["extrude"]),
-        entry("revolve", "Revolve", ["revolve"]),
+        entry("extrude", "Extrude", ["extrude"], "E"),
+        entry("revolve", "Revolve", ["revolve"], "R"),
         entry("sweep", "Sweep", ["sweep"]),
         entry("loft", "Loft", ["loft"]),
         entry("rib", "Rib", ["rib"]),
@@ -171,7 +192,7 @@ export const OP_CATALOG: {
     {
       title: "Modify",
       ops: [
-        entry("shell", "Shell", ["shell"]),
+        entry("shell", "Shell", ["shell"], "S"),
         entry("draft", "Draft", ["draft"]),
         entry("defeature", "Defeature", ["defeature"]),
         entry("unifySameDomain", "Unify faces", ["unifySameDomain"]),
@@ -187,7 +208,7 @@ export const OP_CATALOG: {
         entry("explode", "Explode", ["explode"]),
         entry("mate", "Mate", ["mate"]),
         entry("align", "Align", ["align"]),
-        entry("patternLinear", "Linear Pattern", ["patternLinear"]),
+        entry("patternLinear", "Linear Pattern", ["patternLinear"], "P"),
         entry("patternCircular", "Circular Pattern", ["patternCircular"]),
       ],
     },

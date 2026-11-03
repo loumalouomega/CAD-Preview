@@ -475,6 +475,11 @@
           ],
           "default": "y",
           "description": "Default up-axis orientation for newly opened models."
+        },
+        "cadPreview.singleKeyCommands": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable single-letter command keys in the viewer: E Extrude, R Revolve, F Fillet, C Chamfer, H Hole, M Move, S Shell, P Linear Pattern, Q Measure mode, and Shift+R to repeat the last command (reopens its form with the last values, without applying). Off by default because single keys collide with typing habits; they never fire while focus is in a text field and never replace the view snaps (1-6, i). Ctrl+K (or / outside a field) opens the command search regardless of this setting. Read when a viewer opens."
         }
       }
     }
