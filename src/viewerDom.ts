@@ -55,6 +55,23 @@ export function viewerBodyHtml(): string {
       <span id="doc-chip-unsaved"></span>
     </div>
   </div>
+  <!-- Ribbon command strip (roadmap Ribbon command strip). Only the skeleton is
+       static; ribbonStrip.ts fills the tabs and groups from ribbon.ts so the
+       strip is generated from the op catalog and cannot list a button without a
+       form. The more-wrap is hidden until something overflows. -->
+  <div id="ribbon" role="region" aria-label="Command ribbon">
+    <div id="ribbon-tabbar">
+      <div id="ribbon-tabs" role="tablist" aria-label="Ribbon tabs"></div>
+      <button id="ribbon-compact" type="button" aria-pressed="false" title="Hide the button labels (icons only)">Compact</button>
+    </div>
+    <div id="ribbon-row" role="tabpanel" aria-label="Commands">
+      <div id="ribbon-groups"></div>
+      <div id="ribbon-more-wrap" class="tb-menu-wrap" hidden>
+        <button id="ribbon-more" class="tb-menu" type="button" title="More commands" aria-label="More commands" aria-haspopup="true" aria-expanded="false">More ${glyph("chevronRight")}</button>
+        <div id="ribbon-more-dropdown" class="tb-dropdown hidden" role="menu"></div>
+      </div>
+    </div>
+  </div>
   <div id="layout">
     <div id="side">
       <div id="tree-panel" class="side-section">
@@ -99,6 +116,7 @@ export function viewerBodyHtml(): string {
           <span class="panel-icon" aria-hidden="true">${glyph("sliders")}</span>
           <span id="edits-title" class="panel-title">Edits <span id="edits-count" title="Operations in the edit history"></span></span>
           <div id="edits-actions">
+            <button id="edits-grid-toggle" type="button" aria-pressed="false" title="Show the op button grid (the ribbon covers it)">${glyph("shapes")}</button>
             <button id="edits-undo" title="Undo last edit" disabled>${glyph("undo")}</button>
             <button id="edits-redo" title="Redo edit" disabled>${glyph("redo")}</button>
             <button id="edits-clear" title="Clear all edits" disabled>${glyph("trash")}</button>

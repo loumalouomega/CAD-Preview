@@ -162,6 +162,9 @@ interface ViewState {
   collapsedPanels?: string[]                 // sidebar sections collapsed to their header, by panel id
   sidebarWidth?: number                      // resizable sidebar width in px; absent = 220 default
   bookmarks?: ViewBookmark[]                 // named saved viewpoints (View ▾ menu); session-persisted per document
+  ribbonTab?: string                         // ribbon command strip's active tab; absent = "model"
+  ribbonCompact?: boolean                    // ribbon labels hidden; written only when true
+  editsGridOpen?: boolean                    // Edits panel's op button grid expanded; written only when true
 }
 ```
 
@@ -172,6 +175,8 @@ Phase 2 (roadmap "Split view", Phase 2) adds `layout` + per-pane camera states. 
 `collapsedPanels` lists the sidebar sections currently collapsed to just their header, by panel id (`"parts-panel"`, `"meshing-panel"`, …). The only source of valid ids is `COLLAPSIBLE_PANELS` in `src/webview/collapsiblePanels.ts`, and `sanitizeCollapsedPanels` filters a hand-edited or newer-build sidecar against it on read, so an unknown id is dropped rather than reaching some other element. Absent or empty means every section is expanded, so an older sidecar restores exactly as before and an untouched one stays byte-stable. Purely a display preference, like `displayMode` — it never affects geometry, and there is deliberately no MCP surface for it. Like `layout`/`panes`, it is a top-level sibling of `view` in the file, added with **no** `VIEW_STATE_SIDECAR_VERSION` bump.
 
 `sidebarWidth` (roadmap "Sidebar layout and keyboard usability") is the resizable sidebar's width in px, clamped through `clampSidebarWidth` in `src/webview/sidebarResizer.ts` (`176..420`) on read — a hand-edited or out-of-range value falls back to the clamp bounds, never the raw number. Absent, or exactly `220` (the pre-resizer fixed width), means "the default" and is **omitted on write** in both cases, so an unresized document's sidecar stays byte-stable. Same sibling-of-`view` shape, same no-version-bump rule, same no-MCP-surface scoping as `collapsedPanels`.
+
+The ribbon command strip (roadmap "Ribbon command strip") adds three more display-only fields. `ribbonTab` is the active tab id (`"view" | "model" | "inspect" | "mesh" | "export"`, from `src/webview/ribbonTabs.ts`'s `RIBBON_TABS`); it is omitted at the default `"model"`, and an id this build does not know restores the default rather than invalidating the record. `ribbonCompact` (labels hidden, icons only) and `editsGridOpen` (the Edits panel's op button grid, which collapses behind a toggle because the strip covers it) are written only when `true`, so a document whose ribbon was never touched writes a `.view.json` byte-identical to the pre-ribbon shape. All three ride the same `viewChanged` post as everything else here, and a `viewState` restore applies them silently (no echo back). They have no MCP surface.
 
 `clip` carries an optional explicit `normal` (roadmap "Arbitrary and reusable construction planes", Phases 1+2) that wins over the `axis` preset when present. `axis` is written **regardless**, set to the custom normal's dominant axis — so an older build, which only knows the axis form, restores a sensible neighbouring clip rather than failing its axis check and silently switching clipping off entirely. `offsetFrac` is measured along whichever normal is active.
 

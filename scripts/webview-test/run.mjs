@@ -1773,8 +1773,8 @@ test("dropdowns: clicking an open trigger's inner icon closes it", async (page) 
  * failure text rather than a guess. If one of these fails: measure, then update
  * BOTH this test and the clip in `capture.mjs` together.
  */
-const FILE_MENU_CLIP = { x: 0, y: 0, width: 320, height: 439 };
-const TOOLBAR_MENU_CLIP = { x: 750, y: 30, width: 610, height: 500 };
+const FILE_MENU_CLIP = { x: 0, y: 0, width: 320, height: 446 };
+const TOOLBAR_MENU_CLIP = { x: 750, y: 119, width: 610, height: 500 };
 
 const panelBox = (page, id) =>
   page.evaluate((i) => {
@@ -4069,6 +4069,253 @@ test("collapse: state is saved to and restored from view state", async (page) =>
     state.echo === null || eq(state.echo, ["edits-panel", "macros-panel"]),
     `any autosave echoed after a restore carries the restored set, never the pre-restore one (got ${JSON.stringify(state.echo)})`
   );
+});
+
+// ── Ribbon command strip (roadmap "Ribbon command strip") ─────────────────
+//
+// The pure half (single source with the op catalog, overflow planning, the
+// sidecar fields) is unit-tested in `ribbon.test.ts` / `opCatalog.test.ts` /
+// `viewStateSidecar.test.ts`. What needs the real bundle is RENDERED visibility:
+// every group of every tab actually on screen at a wide width, the More menu
+// carrying whatever does not fit at a narrow one, the overflow never leaving a
+// button half-clipped, and the persisted state round trip. Visibility is
+// asserted through `offsetParent` + a real box, never the `hidden` attribute:
+// `#ribbon-more-wrap`, `.ribbon-btn` and `.ribbon-group` all carry an author
+// `display` rule that would silently beat the UA's `[hidden]`.
+
+const RIBBON_GROUPS = {
+  view: ["Navigate", "Display", "Show", "Layout", "Pick & mark"],
+  inspect: ["Measure", "Analysis"],
+  mesh: ["FE mesh", "Repair & fit", "Surface"],
+  export: ["Model", "Drawings", "Bundle", "Mesh"],
+};
+
+/** What is on screen in the ribbon right now: per-group and per-button rendered state, the More menu, geometry. */
+const ribbonSnapshot = (page) => page.evaluate(() => {
+  const rendered = (el) => { if (!el || el.offsetParent === null) return false; const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
+  const ribbon = document.getElementById("ribbon");
+  const groupsEl = document.getElementById("ribbon-groups");
+  const gr = groupsEl.getBoundingClientRect();
+  const groups = [...document.querySelectorAll("#ribbon-groups .ribbon-group")].map((g) => ({
+    title: g.dataset.group, visible: rendered(g),
+    visibleButtons: [...g.querySelectorAll(".ribbon-btn")].filter(rendered).length,
+    buttons: g.querySelectorAll(".ribbon-btn").length,
+  }));
+  const strip = [...document.querySelectorAll("#ribbon-groups .ribbon-btn")];
+  const menuRows = [...document.querySelectorAll("#ribbon-more-dropdown .ribbon-more-item")];
+  return {
+    tab: document.querySelector("#ribbon-tabs .ribbon-tab.active")?.dataset.tab ?? null,
+    selected: [...document.querySelectorAll("#ribbon-tabs .ribbon-tab")].filter((b) => b.getAttribute("aria-selected") === "true").map((b) => b.dataset.tab),
+    groups,
+    stripVisible: strip.filter(rendered).map((b) => b.dataset.item),
+    stripTotal: strip.length,
+    // A rendered button must lie wholly inside the strip: a half-clipped one is a planner bug.
+    clipped: strip.filter(rendered).filter((b) => b.getBoundingClientRect().right > gr.right + 1).map((b) => b.dataset.item),
+    menuItems: menuRows.map((b) => b.dataset.item),
+    moreRendered: rendered(document.getElementById("ribbon-more-wrap")) && rendered(document.getElementById("ribbon-more")),
+    menuOpen: rendered(document.getElementById("ribbon-more-dropdown")),
+    height: Math.round(ribbon.getBoundingClientRect().height),
+    labelsRendered: strip.filter(rendered).some((b) => rendered(b.querySelector(".ribbon-label"))),
+    // The ribbon's OWN overflow. (The whole page overflows at 360px for reasons that predate the strip:
+    // the status bar and dock are wider than that.)
+    ribbonOverflowX: ribbon.scrollWidth > ribbon.clientWidth + 1 || [...ribbon.querySelectorAll("*")].some((el) => el.offsetParent !== null && el.getBoundingClientRect().width > 0 && el.getBoundingClientRect().right > document.documentElement.clientWidth + 1),
+  };
+});
+const openRibbonTab = async (page, tab) => { await page.click(`#ribbon-tab-${tab}`); await sleep(120); };
+
+test("ribbon: every tab's groups are rendered at a wide width, and the More menu takes the rest when narrow", async (page) => {
+  await populate(page);
+  await page.setViewportSize({ width: 1900, height: 900 });
+  await sleep(250);
+  const first = await ribbonSnapshot(page);
+  assert(first.tab === "model" && eq(first.selected, ["model"]), `the strip opens on Model with exactly one tab selected (got ${JSON.stringify(first.selected)})`);
+  assert(first.height === 89, `the strip is a fixed 89px tall with labels (got ${first.height})`);
+
+  // Wide: the four non-Model tabs fit completely — every group on screen, no More button.
+  for (const [tab, titles] of Object.entries(RIBBON_GROUPS)) {
+    await openRibbonTab(page, tab);
+    const s = await ribbonSnapshot(page);
+    assert(s.tab === tab && eq(s.selected, [tab]), `${tab}: the tab is selected (got ${JSON.stringify(s.selected)})`);
+    assert(eq(s.groups.map((g) => g.title), titles), `${tab}: renders its groups ${JSON.stringify(titles)} (got ${JSON.stringify(s.groups.map((g) => g.title))})`);
+    assert(s.groups.every((g) => g.visible && g.visibleButtons === g.buttons && g.buttons > 0), `${tab}: every group and every button is rendered at 1900px (got ${JSON.stringify(s.groups.filter((g) => !g.visible || g.visibleButtons !== g.buttons))})`);
+    assert(!s.moreRendered && s.menuItems.length === 0, `${tab}: no More button when everything fits`);
+    assert(s.clipped.length === 0, `${tab}: nothing is half-clipped (got ${JSON.stringify(s.clipped)})`);
+    assert(s.labelsRendered, `${tab}: buttons show their labels`);
+  }
+
+  // Model has ~60 buttons: even 1900px overflows. The first group is on screen, More carries the rest.
+  await openRibbonTab(page, "model");
+  const model = await ribbonSnapshot(page);
+  assert(model.groups[0]?.title === "Primitives" && model.groups[0].visible && model.groups[0].visibleButtons === model.groups[0].buttons, "model: the Primitives group leads and is fully rendered");
+  assert(model.moreRendered && model.menuItems.length > 0, `model: the overflow ▸ menu is rendered and carries the rest (${model.menuItems.length} items)`);
+  assert(model.stripVisible.length + model.menuItems.length === model.stripTotal, `model: every button is in the strip XOR the menu (${model.stripVisible.length} + ${model.menuItems.length} vs ${model.stripTotal})`);
+  assert(model.clipped.length === 0, "model: nothing is half-clipped");
+  assert(!model.groups.some((g) => g.visible && g.visibleButtons === 0), "model: a group with no rendered button is itself hidden");
+
+  // Narrow: every tab overflows (Mesh needs ~400px) and the partition invariant holds on each.
+  await page.setViewportSize({ width: 360, height: 900 });
+  await sleep(300);
+  for (const tab of ["view", "model", "inspect", "mesh", "export"]) {
+    await openRibbonTab(page, tab);
+    const s = await ribbonSnapshot(page);
+    assert(s.moreRendered, `${tab} @360px: the More ▸ button is rendered`);
+    assert(s.menuItems.length > 0 && s.stripVisible.length + s.menuItems.length === s.stripTotal, `${tab} @360px: every button is in the strip XOR the menu (${s.stripVisible.length} + ${s.menuItems.length} vs ${s.stripTotal})`);
+    assert(s.clipped.length === 0, `${tab} @360px: nothing is half-clipped (got ${JSON.stringify(s.clipped)})`);
+    assert(!s.ribbonOverflowX, `${tab} @360px: nothing in the strip runs past the window edge`);
+    assert(!s.groups.some((g) => g.visible && g.visibleButtons === 0), `${tab} @360px: no empty group is left on the strip`);
+  }
+
+  // The menu itself: opens visibly, lists the overflowed items under group headings, Escape closes and returns focus.
+  await openRibbonTab(page, "inspect");
+  await page.click("#ribbon-more");
+  await sleep(100);
+  const open = await ribbonSnapshot(page);
+  assert(open.menuOpen, "clicking More opens the menu (rendered)");
+  assert(await page.evaluate(() => document.querySelectorAll("#ribbon-more-dropdown .ribbon-more-head").length > 0 && [...document.querySelectorAll("#ribbon-more-dropdown .ribbon-more-item")].every((b) => b.getBoundingClientRect().width > 0)), "…with group headings and rendered rows");
+  await page.keyboard.press("Escape");
+  await sleep(80);
+  assert(!(await ribbonSnapshot(page)).menuOpen, "Escape closes it");
+  assert(await page.evaluate(() => document.activeElement?.id === "ribbon-more"), "…and returns focus to the More button");
+
+  // Back to wide: the overflow dissolves again (resize re-plans, not just the first layout).
+  await page.setViewportSize({ width: 1900, height: 900 });
+  await sleep(300);
+  const back = await ribbonSnapshot(page);
+  assert(!back.moreRendered && back.stripVisible.length === back.stripTotal, `Inspect fits again at 1900px (strip ${back.stripVisible.length}/${back.stripTotal}, More ${back.moreRendered})`);
+});
+
+test("ribbon: every catalog op is reachable from the strip and opens its form; the Edits grid sits behind its toggle", async (page) => {
+  await populate(page);
+  await page.setViewportSize({ width: 1900, height: 900 });
+  await sleep(250);
+
+  // Reachability: the Edits panel's own button grid is the independent oracle for "every op".
+  const gridLabels = await page.evaluate(() => [...document.querySelectorAll(".op-btn .op-name")].map((n) => n.textContent).sort());
+  const ribbonLabels = await page.evaluate(() => [...document.querySelectorAll('#ribbon [data-item^="op:"]')].map((b) => b.getAttribute("aria-label")).sort());
+  // Strip + menu rows both carry the item: each op appears twice only if rendered twice, so dedupe through the id.
+  const ribbonIds = await page.evaluate(() => [...new Set([...document.querySelectorAll('#ribbon [data-item^="op:"]')].map((b) => b.dataset.item))]);
+  assert(gridLabels.length > 50 && ribbonIds.length === gridLabels.length, `the strip names as many ops as the catalog grid (${ribbonIds.length} vs ${gridLabels.length})`);
+  const uniq = (a) => [...new Set(a)].sort();
+  assert(eq(uniq(ribbonLabels), uniq(gridLabels)), `…with the same labels (diff ${JSON.stringify(uniq(gridLabels).filter((l) => !ribbonLabels.includes(l)))})`);
+
+  // A wide strip button opens the form without applying anything.
+  const before = await sentCount(page, "editsChanged");
+  await page.click('#ribbon-groups [data-item="op:addBox"]');
+  await sleep(200);
+  assert((await activeOpName(page)) === "Box", `clicking Box on the strip opens the Box form (got ${await activeOpName(page)})`);
+  assert(await page.evaluate(() => { const p = document.getElementById("edits-params"); return p.children.length > 0 && p.getBoundingClientRect().height > 0; }), "…the parameter form is rendered although the button grid is collapsed");
+  assert(await page.evaluate(() => document.querySelector('#ribbon [data-item="op:addBox"]').classList.contains("active") && document.querySelector('#ribbon [data-item="op:addBox"]').getAttribute("aria-pressed") === "true"), "…and the strip button shows pressed");
+  assert((await sentCount(page, "editsChanged")) === before, "…without pushing an op");
+
+  // An overflowed op: open More, click Fillet.
+  const inMenu = await page.evaluate(() => !!document.querySelector('#ribbon-more-dropdown [data-item="op:addTrapezoidProfile"]') && !document.querySelector('#ribbon-groups [data-item="op:addTrapezoidProfile"]:not([hidden])'));
+  assert(inMenu, "Trapezoid (the Sketch tools close the Model tab) is carried by the More menu and not the strip at this width");
+  await page.click("#ribbon-more");
+  await page.click('#ribbon-more-dropdown [data-item="op:addTrapezoidProfile"]');
+  await sleep(200);
+  assert((await activeOpName(page)) === "Trapezoid", `an overflowed op opens its form too (got ${await activeOpName(page)})`);
+  assert(await page.evaluate(() => document.getElementById("ribbon-more-dropdown").classList.contains("hidden")), "…and choosing a row closes the menu");
+
+  // The grid: collapsed by default (no tab row, no grids), toggle shows it, toggle hides it.
+  const gridState = () => page.evaluate(() => {
+    const r = (sel) => { const el = document.querySelector(sel); return !!el && el.offsetParent !== null && el.getBoundingClientRect().height > 0; };
+    return { tabs: r("#edits-panel .edits-tabs"), grid: r("#edits-panel .edits-tab-content .op-btn"), pressed: document.getElementById("edits-grid-toggle").getAttribute("aria-pressed"), toggle: r("#edits-grid-toggle") };
+  });
+  let g = await gridState();
+  assert(!g.tabs && !g.grid && g.toggle && g.pressed === "false", `the Edits button grid is collapsed by default behind a visible toggle (got ${JSON.stringify(g)})`);
+  await page.click("#edits-grid-toggle");
+  await sleep(120);
+  g = await gridState();
+  assert(g.tabs && g.grid && g.pressed === "true", `the toggle brings the tab row and the grid back (got ${JSON.stringify(g)})`);
+  await page.click("#edits-grid-toggle");
+  await sleep(120);
+  g = await gridState();
+  assert(!g.tabs && !g.grid && g.pressed === "false", `…and hides them again (got ${JSON.stringify(g)})`);
+});
+
+test("ribbon: a toggle button mirrors and drives its target; the floating toolbar clears the strip", async (page) => {
+  await populate(page);
+  await openRibbonTab(page, "view");
+  const gridPressed = () => page.evaluate(() => ({
+    target: document.getElementById("grid").getAttribute("aria-checked"),
+    btn: document.querySelector('#ribbon [data-item="click:grid"]').getAttribute("aria-pressed"),
+  }));
+  const start = await gridPressed();
+  await page.click('#ribbon [data-item="click:grid"]');
+  await sleep(250);
+  const after = await gridPressed();
+  assert(after.target !== start.target, `clicking Grid on the strip toggles the real #grid control (${start.target} -> ${after.target})`);
+  assert(after.btn === after.target, `…and the strip button mirrors it (aria-pressed ${after.btn} vs aria-checked ${after.target})`);
+  // Driving the target elsewhere (the View menu) is mirrored too.
+  await page.evaluate(() => document.getElementById("grid").click());
+  await sleep(250);
+  const again = await gridPressed();
+  assert(again.btn === again.target && again.target === start.target, `a change made through the View menu reaches the strip (${JSON.stringify(again)})`);
+
+  // Display modes are a 1-of-N segment: the strip's pressed state follows `.active`.
+  await page.click('#ribbon [data-item="click:mode-wireframe"]');
+  await sleep(250);
+  const modes = await page.evaluate(() => ["shaded", "wireframe"].map((m) => document.querySelector(`#ribbon [data-item="click:mode-${m}"]`).getAttribute("aria-pressed")));
+  assert(eq(modes, ["false", "true"]), `Wire is pressed and Shaded is not after choosing Wire (got ${JSON.stringify(modes)})`);
+
+  // The absolutely-positioned toolbar and measure readout sit below the strip, not under it.
+  const boxes = await page.evaluate(() => ({ ribbon: document.getElementById("ribbon").getBoundingClientRect().bottom, toolbar: document.getElementById("toolbar").getBoundingClientRect().top, menubar: document.getElementById("menubar").getBoundingClientRect().bottom, ribbonTop: document.getElementById("ribbon").getBoundingClientRect().top, appTop: document.getElementById("app").getBoundingClientRect().top }));
+  assert(Math.abs(boxes.ribbonTop - boxes.menubar) <= 1, `the strip sits directly under the menu bar (${boxes.ribbonTop} vs ${boxes.menubar})`);
+  assert(boxes.toolbar >= boxes.ribbon, `the floating toolbar starts below the strip (toolbar ${boxes.toolbar} vs strip bottom ${boxes.ribbon})`);
+  assert(Math.abs(boxes.appTop - boxes.ribbon) <= 1, `the canvas starts at the strip's bottom edge (${boxes.appTop} vs ${boxes.ribbon})`);
+
+  // A target that is unavailable greys its button: the Tree toggle is hidden outside assemblies.
+  const tree = await page.evaluate(() => { const t = document.getElementById("tree-toggle"); return { targetHidden: t.style.display === "none" || t.offsetParent === null, disabled: document.querySelector('#ribbon [data-item="click:tree-toggle"]').disabled }; });
+  assert(!tree.targetHidden || tree.disabled, "a button whose target is hidden is disabled");
+});
+
+test("ribbon: tab, compact and the Edits grid persist additively in view state and restore from it", async (page) => {
+  await populate(page);
+  await sleep(700);
+  await page.evaluate(() => (window.__sent.length = 0));
+  const lastView = () => page.evaluate(() => (window.__sent ?? []).filter((m) => m.type === "viewChanged").at(-1)?.view ?? null);
+
+  await openRibbonTab(page, "inspect");
+  await page.click("#ribbon-compact");
+  await page.click("#edits-grid-toggle");
+  await sleep(900); // VIEW_SAVE_DEBOUNCE_MS is 500
+  let saved = await lastView();
+  assert(saved?.ribbonTab === "inspect", `choosing a tab posts a viewChanged naming it (got ${JSON.stringify(saved?.ribbonTab)})`);
+  assert(saved?.ribbonCompact === true && saved?.editsGridOpen === true, `…with the compact and open-grid flags (got ${JSON.stringify([saved?.ribbonCompact, saved?.editsGridOpen])})`);
+
+  // Compact is real: labels and group titles are not rendered, the strip is shorter, the toolbar moved up with it.
+  const compact = await ribbonSnapshot(page);
+  const titles = await page.evaluate(() => [...document.querySelectorAll("#ribbon-groups .ribbon-group-title")].filter((t) => t.offsetParent !== null && t.getBoundingClientRect().height > 0).length);
+  assert(!compact.labelsRendered && titles === 0, "compact: button labels and group titles are not rendered");
+  assert(compact.height === 63, `compact: the strip is 63px tall (got ${compact.height})`);
+  assert(await page.evaluate(() => document.querySelector("#ribbon-groups .ribbon-btn").getAttribute("aria-label")?.length > 0 && document.querySelector("#ribbon-groups .ribbon-btn").title.length > 0), "compact: buttons keep an accessible name and a tooltip");
+  assert(await page.evaluate(() => document.getElementById("toolbar").getBoundingClientRect().top >= document.getElementById("ribbon").getBoundingClientRect().bottom), "compact: the toolbar still clears the strip");
+
+  // The default tab writes nothing: back to Model, compact and grid off.
+  await openRibbonTab(page, "model");
+  await page.click("#ribbon-compact");
+  await page.click("#edits-grid-toggle");
+  await sleep(900);
+  saved = await lastView();
+  assert(saved && !("ribbonTab" in saved) && !("ribbonCompact" in saved) && !("editsGridOpen" in saved), `defaults are omitted so an untouched sidecar stays byte-stable (got ${JSON.stringify([saved?.ribbonTab, saved?.ribbonCompact, saved?.editsGridOpen])})`);
+
+  // Restore: a viewState post applies tab, compact and grid silently.
+  await page.evaluate(() => (window.__sent.length = 0));
+  const baseView = { viewDirection: [1, 0.8, 1], cameraUp: [0, 1, 0], orthographic: false, displayMode: "shaded", clip: null };
+  await post(page, { type: "viewState", view: { ...baseView, ribbonTab: "mesh", ribbonCompact: true, editsGridOpen: true } });
+  await sleep(900);
+  const restored = await ribbonSnapshot(page);
+  assert(restored.tab === "mesh" && eq(restored.selected, ["mesh"]), `a restored tab is selected (got ${JSON.stringify(restored.selected)})`);
+  assert(restored.height === 63 && !restored.labelsRendered, "…and the restored compact preference applies");
+  assert(await page.evaluate(() => document.getElementById("edits-grid-toggle").getAttribute("aria-pressed") === "true" && document.querySelector("#edits-panel .edits-tabs").offsetParent !== null), "…and the restored open grid is rendered");
+  const echo = await lastView();
+  assert(echo === null || (echo.ribbonTab === "mesh" && echo.ribbonCompact === true && echo.editsGridOpen === true), `any autosave echoed after a restore carries the restored state, never the pre-restore one (got ${JSON.stringify([echo?.ribbonTab, echo?.ribbonCompact, echo?.editsGridOpen])})`);
+
+  // A sidecar from a newer build with a tab this build lacks falls back to the default; absent flags reset.
+  await post(page, { type: "viewState", view: { ...baseView, ribbonTab: "sketch" } });
+  await sleep(500);
+  const fallback = await ribbonSnapshot(page);
+  assert(fallback.tab === "model" && fallback.height === 89, `an unknown tab id falls back to Model and absent flags reset (got ${fallback.tab}, ${fallback.height}px)`);
 });
 
 // ── Source-format gating of the two eligibility-gated panels ──────────────

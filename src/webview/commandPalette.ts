@@ -16,6 +16,7 @@
  */
 import type { EditOp } from "../editOps";
 import { closeAllDropdowns } from "./dropdownMenu";
+import { revealPanel } from "./panelReveal";
 import {
   LastCommandTracker,
   actionShortcut,
@@ -414,12 +415,6 @@ export class CommandPalette {
 
   /** Expands the panel (and the Advanced group above it), then scrolls it into view. */
   private revealPanel(section: HTMLElement): void {
-    const expand = (el: HTMLElement | null): void => {
-      if (el?.classList.contains("collapsed")) el.querySelector<HTMLElement>(".panel-header .panel-chevron")?.click();
-    };
-    if (section.closest("#advanced-body")) expand(document.getElementById("advanced-group"));
-    expand(section);
-    section.scrollIntoView({ block: "nearest" });
-    section.querySelector<HTMLElement>(".panel-header .panel-chevron")?.focus();
+    revealPanel(section);
   }
 }

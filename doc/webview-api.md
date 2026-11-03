@@ -66,6 +66,10 @@ The webview runs in a Chromium browser context. These modules are bundled into `
 | `src/webview/editsPanel.ts` | Edits panel DOM — GEOMETRY (2D/3D) / EDIT tabs, op grids, param forms, op list |
 | `src/webview/commandSearch.ts` | Command search, pure half: `fuzzyScore`/`rankItems`, `opSearchItems`, `resolveKey` (the key table), `LastCommandTracker` |
 | `src/webview/commandPalette.ts` | Command search overlay (Ctrl+K, `/`) and the opt-in single-key commands |
+| `src/webview/ribbonTabs.ts` | Ribbon tab ids, labels, default and `sanitizeRibbonTab` (tiny and pure so the host-side `viewStateSidecar.ts` can import it) |
+| `src/webview/ribbon.ts` | Ribbon command strip, pure half: the tab/group/item tables (the Model tab is generated from `opCatalog.ts`), `planOverflow`, `RibbonState` (unit-tested) |
+| `src/webview/ribbonStrip.ts` | Ribbon command strip, DOM half: builds `#ribbon`, mirrors target state, fits the overflow ▸ menu |
+| `src/webview/panelReveal.ts` | `revealPanel`: expand a sidebar section (and the Advanced group above it) and scroll it into view; shared by the command search and the ribbon |
 | `src/webview/commandBar.ts` | Lower command bar (`#cmdbar`) — typed `<command> [<json>]` lines, history, Tab completion, panel echo |
 | `src/webview/meshEdits.ts` | Webview edit engine for mesh formats (Three.js transforms; unit-tested) |
 | `src/webview/meshFacets.ts` | Segment a mesh into coplanar facets → per-face sub-meshes (unit-tested); carries `color`/`uv` and native materials into each facet and gates multi-material meshes by material |
@@ -1232,6 +1236,43 @@ class LastCommandTracker { opened(id); applied(op); get(); recent(); touch(id) }
 `resolveKey` is the one decision point for keys: Ctrl/Cmd+K opens the search anywhere, `/` only outside a text field; the letters and Shift+R need `singleKeys` and are ignored while typing (`isTextEntryTarget`), with Ctrl/Cmd/Alt held, on auto-repeat and for the view snaps (`viewShortcuts.ts`). The letters come from `CatalogEntry.key` and `ACTION_KEYS` in `opCatalog.ts` — the only place a shortcut is declared.
 
 `new CommandPalette(host)` takes `openOp(id, body?)`, `isOpAvailable(id)` and `setStatus(text, isError?)`; `main.ts` supplies them (`openOp` is the same `openEditForm` the command bar uses: expand the Edits section, `EditsPanel.openOp`, `prefillFromBody`). `install()` adds one capture-phase `keydown` listener on `window`. `setSingleKeys(on)` is fed from the `"viewerDefaults"` message; `noteApplied(op)` is called from `EditsModel.onPush` so the last applied op's values are what Shift+R refills. The overlay (`#cmd-palette`) is built lazily on first open — no DOM at module scope — and has an explicit `#cmd-palette[hidden]` rule. Toolbar and panel entries are read from the live DOM each time the search opens (every `button` with an id in `#toolbar`, `#file-dropdown` and the dropdown menus, and every visible `#side .side-section` with a `.panel-title`), so a new menu item or panel is searchable with no second list; running one clicks the same element. It draws no canvas (the single WebGL context is untouched), closes any open dropdown when it opens, and on Escape returns focus to the element that had it.
+
+## `src/webview/ribbon.ts`, `src/webview/ribbonStrip.ts` and `src/webview/ribbonTabs.ts`
+
+The ribbon command strip: five tabs (**View · Model · Inspect · Mesh · Export**) of large icon-over-label buttons in labelled groups, between the menu bar and the canvas. It adds no feature surface: every button opens something that already exists. `ribbon.ts` is pure (no DOM, no `three`, unit-tested in `ribbon.test.ts` and, for the catalog coupling, `opCatalog.test.ts`); `ribbonStrip.ts` is the DOM half and has no unit test of its own (the `test:webview` ribbon cases drive it); `ribbonTabs.ts` holds only the tab ids so the host can import them.
+
+```ts
+// ribbon.ts
+type RibbonTarget =
+  | { type: "op"; opId: PanelOpId }          // opens the op's form, as the Edits panel's button does
+  | { type: "click"; selector: string }      // clicks a toolbar / menu element, as the user would
+  | { type: "panel"; panelId: string }       // expands a sidebar section (revealPanel)
+type RibbonIcon = { kind: "op" | "toolbar" | "glyph"; id } | { kind: "panel" } | { kind: "none" }   // existing icons only
+interface RibbonItem { id; label; title; target: RibbonTarget; icon: RibbonIcon; brepOnly?; toggle? }
+interface RibbonGroup { title: string; items: RibbonItem[] }
+function ribbonGroups(tab: RibbonTabId): RibbonGroup[]
+function modelGroups(): RibbonGroup[]         // generated from OP_CATALOG, never a hand-kept op list
+function ribbonOpIds(): Set<PanelOpId>        // the reachability set the tests compare to the catalog
+function planOverflow(rights, groupStart, available, moreWidth): number   // items kept on the strip
+interface RibbonState { tab: RibbonTabId; compact: boolean; editsGridOpen: boolean }
+```
+
+**Single source.** The Model tab's groups are the catalog's categories (a category added to the catalog later lands at the end of the tab automatically). The other tabs come from a small table of non-op actions: click targets name an existing element by selector, panel targets name a `COLLAPSIBLE_PANELS` id. `opCatalog.test.ts` and `ribbon.test.ts` lock that every catalog op is reachable from the strip, that no op button lacks an entry and an icon, and that every click selector and panel id exists in `viewerBodyHtml()`. A new Edits-panel op button therefore appears on the strip with no second list; a new toolbar action needs one row in the table in `ribbon.ts`.
+
+```ts
+// ribbonStrip.ts
+function setupRibbon(host: RibbonHost): RibbonHandle | null
+interface RibbonHost { openOp(id); isOpAvailable(id); activeOp(): PanelOpId | null; setStatus(text, isError?); onChange(state: RibbonState) }
+interface RibbonHandle { getState(); setState(partial | null); refresh(); fit() }
+```
+
+**State is mirrored, never stored.** A button's pressed and disabled states are read from its target: `aria-checked` or `.active` on a click target, `hidden` on a panel, `isOpAvailable`/`activeOp()` for an op. A `MutationObserver` over `#toolbar`, `#menubar`, `#view-controls` and `#side` (never over `#ribbon` itself, so it cannot feed back) schedules a coalesced refresh, so a change made through the View menu reaches the strip.
+
+**Overflow.** The strip is a single non-wrapping row. `fit()` shows everything, measures each button's right edge, and `planOverflow` keeps the longest prefix that fits beside the **More ▸** button, backed off to a group boundary so a group is never split (unless the first group alone is wider than the window). Hidden buttons move to the **More** menu under their group headings; the menu is wired by `setupDropdown`, so it gets single-open, outside-click dismissal and Escape-returns-focus for free. A `ResizeObserver` on `#ribbon` re-plans on every width change.
+
+**Layout contract.** The strip is in normal flow between `#menubar` and `#layout`, with a fixed height (`--ribbon-h`: 89px with labels, 63px in compact mode). `#toolbar` and `#measure-readout-row`, which are absolutely positioned from the viewport, add `--ribbon-h` to their `top`. Every toggled element carries an explicit `#id[hidden]` override.
+
+**Persistence.** The tab, the compact preference and the Edits-grid toggle ride `ViewState` (`ribbonTab`, `ribbonCompact`, `editsGridOpen`; additive, omitted at their defaults, see [Protocol](./protocol.md#viewstate)). `setState` is the silent restore path and never calls `onChange`. When `editsGridOpen` is false, `#edits-panel` carries `.grid-collapsed`, which hides the Edits panel's GEOMETRY/EDIT tab rows and op button grids; the parameter form and the history stay.
 
 ## `src/webview/editsPanel.ts`
 

@@ -315,3 +315,38 @@ describe("view-state: named view bookmarks", () => {
     expect(parseViewStateJson(text)).toEqual(validView);
   });
 });
+
+describe("view-state: ribbon strip state", () => {
+  it("round-trips tab, compact and the open Edits grid as top-level siblings of `view`", () => {
+    const view: ViewState = { ...validView, ribbonTab: "mesh", ribbonCompact: true, editsGridOpen: true };
+    const file = JSON.parse(serializeViewStateJson("bull.stp", view));
+    expect(file.ribbonTab).toBe("mesh");
+    expect(file.ribbonCompact).toBe(true);
+    expect(file.editsGridOpen).toBe(true);
+    expect(file.view.ribbonTab).toBeUndefined();
+    expect(file.view.ribbonCompact).toBeUndefined();
+    expect(file.view.editsGridOpen).toBeUndefined();
+    expect(parseViewStateJson(serializeViewStateJson("bull.stp", view))).toEqual(view);
+  });
+
+  it("survives a split-view sidecar as well as a single-pane one", () => {
+    const text = JSON.stringify({ version: 1, source: "b.stp", view: validView, layout: "1x2", ribbonTab: "export", ribbonCompact: true });
+    const parsed = parseViewStateJson(text);
+    expect(parsed?.ribbonTab).toBe("export");
+    expect(parsed?.ribbonCompact).toBe(true);
+    const single = parseViewStateJson(JSON.stringify({ version: 1, source: "b.stp", view: validView, ribbonTab: "view" }));
+    expect(single?.ribbonTab).toBe("view");
+  });
+
+  it("writes nothing at the defaults, so an untouched ribbon leaves the sidecar byte-identical", () => {
+    const plain = serializeViewStateJson("bull.stp", validView);
+    expect(serializeViewStateJson("bull.stp", { ...validView, ribbonTab: "model", ribbonCompact: false, editsGridOpen: false })).toBe(plain);
+    expect(JSON.parse(plain)).not.toHaveProperty("ribbonTab");
+    expect(parseViewStateJson(plain)?.ribbonTab).toBeUndefined();
+  });
+
+  it("drops an unknown tab and non-boolean flags without losing the rest of the record", () => {
+    const text = JSON.stringify({ version: 1, source: "b.stp", view: validView, ribbonTab: "sketch", ribbonCompact: "yes", editsGridOpen: 1 });
+    expect(parseViewStateJson(text)).toEqual(validView);
+  });
+});

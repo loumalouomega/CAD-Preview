@@ -518,7 +518,10 @@ The persisted **camera orientation, display mode, ortho/perspective toggle, and 
     { "viewDirection": [0, 1, 0], "cameraUp": [0, 0, 1], "orthographic": true }
   ],
   "collapsedPanels": ["meshing-panel", "standard-parts-panel"],
-  "sidebarWidth": 300
+  "sidebarWidth": 300,
+  "ribbonTab": "inspect",
+  "ribbonCompact": true,
+  "editsGridOpen": true
 }
 ```
 
@@ -527,6 +530,8 @@ The persisted **camera orientation, display mode, ortho/perspective toggle, and 
 `collapsedPanels` is a third such optional top-level sibling: the sidebar sections currently collapsed to just their header, by panel id. Valid ids come only from `COLLAPSIBLE_PANELS` (`src/webview/collapsiblePanels.ts`), and a hand-edited or newer-build list is filtered against it on read, so an unknown id is dropped rather than reaching some other element. Absent or empty (the default) means every section is expanded, so an older sidecar restores exactly as before and an untouched one stays byte-stable — again purely additive, no version bump.
 
 `sidebarWidth` (roadmap "Sidebar layout and keyboard usability") is a fourth such optional sibling: the resizable sidebar's width in px. Read values are clamped through `clampSidebarWidth` (`src/webview/sidebarResizer.ts`, range 176..420) — a hand-edited out-of-range number falls back to the clamp bounds, never the raw value, and a non-numeric value means "unpersisted". Absent **or exactly 220** (the pre-resizer fixed width) writes nothing, so an unresized document's sidecar stays byte-stable. Same shape, same no-version-bump rule, same exclusion from the Preprocess Archive and from MCP as `collapsedPanels`.
+
+`ribbonTab`, `ribbonCompact` and `editsGridOpen` (roadmap "Ribbon command strip") are three more optional top-level siblings: the command strip's active tab (`view`, `model`, `inspect`, `mesh` or `export`), whether its button labels are hidden, and whether the Edits panel's op button grid is expanded. Each is omitted at its default (tab `model`, labels shown, grid collapsed), so an untouched ribbon leaves the file byte-identical to the older shape; an unknown tab id or a non-boolean flag falls back to the default without discarding the rest of the record. Display preferences only: no MCP surface, no geometry.
 
 `viewDirection`/`cameraUp` are a normalized direction (target → camera) and up vector, not a raw position/target/distance — `Viewer.frame(direction)` already re-derives both from the model's current bounding box, so this survives edits that change the model's extents. `clip.offsetFrac` is likewise a fraction of the model's bbox, not a raw plane constant — measured along the clip's **active normal**. `clip` may carry an optional explicit unit `normal` (`{axis, offsetFrac, normal?}`) which wins over `axis` when present; `axis` is still always written, set to that normal's dominant axis, so an older build restores a sensible neighbouring clip instead of none. A malformed `normal` drops only itself, leaving the clip as its axis form — unlike a malformed `axis`, which still drops the whole `clip`. Parsing is tolerant like the other three sidecars, with one stricter rule: a missing or degenerate (all-zero) `viewDirection`/`cameraUp` rejects the WHOLE record (falls back to no persisted view, i.e. the default isometric) rather than feeding NaN/zero into the camera — every other field falls back individually (an unrecognized `displayMode` → `"shaded"`, a malformed `clip` → `null`, an unknown `layout` → ignored as `"1x1"`, a bad per-pane entry → falls back to `view`'s own direction/up/ortho for that pane, a short/long `panes` array → padded/truncated to `paneCount(layout)`).
 
