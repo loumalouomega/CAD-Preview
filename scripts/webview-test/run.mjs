@@ -3130,6 +3130,66 @@ test("coincident point: Add at an existing point's coordinates asks Collapse / K
   assert((await sentCount(page, "editsChanged")) === mid + 1 && op?.coincident === undefined && (await page.evaluate(() => document.getElementById("coincident-prompt") === null)), `a non-coincident point is pushed directly with no field (got ${JSON.stringify(op)})`);
 });
 
+test("f(s) Curve form: pushes addParametricCurve with the typed expressions, the close flag and a placed plane; a bad expression pushes nothing", async (page) => {
+  await populate(page);
+  const open = async () => {
+    await page.evaluate(() => {
+      if (document.querySelector('#edits-params input[data-name="sMax"]')) return;
+      [...document.querySelectorAll(".op-btn")].find((b) => b.querySelector(".op-name")?.textContent === "f(s) Curve")?.click();
+    });
+    await sleep(250);
+  };
+  const setField = (name, value, i) => page.evaluate(([n, v, k]) => {
+    const sel = k === undefined ? `#edits-params input[data-name="${n}"]` : `#edits-params input[data-name="${n}"][data-i="${k}"]`;
+    const inp = document.querySelector(sel);
+    if (inp.type === "checkbox") inp.checked = v; else inp.value = v;
+    inp.dispatchEvent(new Event("input", { bubbles: true }));
+    inp.dispatchEvent(new Event("change", { bubbles: true }));
+  }, [name, value, i]);
+  const add = () => page.evaluate(() => [...document.querySelectorAll("#edits-params .compose-apply")].find((b) => b.textContent === "Add")?.click());
+  const lastOp = () => page.evaluate(() => (window.__sent ?? []).findLast((x) => x.type === "editsChanged")?.ops.at(-1));
+  await open();
+  const shown = await page.evaluate(() => ["x", "y", "z", "sMin", "sMax", "samples", "close", "origin", "normal", "up"].map(
+    (n) => { const el = document.querySelector(`#edits-params [data-name="${n}"]`); return [n, !!el && el.offsetParent !== null]; }));
+  assert(shown.every(([, v]) => v), `every curve control is rendered visible (got ${JSON.stringify(shown)})`);
+  // Defaults: one period of the roadmap's example, no close, no plane.
+  const before = await sentCount(page, "editsChanged");
+  await add();
+  await sleep(300);
+  let op = await lastOp();
+  assert(
+    (await sentCount(page, "editsChanged")) === before + 1 && op?.op === "addParametricCurve" && op.x === "s" && op.y === "0.1*sin(360*s)"
+      && op.sMin === 0 && op.sMax === 1 && op.samples === 41 && op.close === undefined && op.plane === undefined && op.z === undefined,
+    `defaults push the plain curve (got ${JSON.stringify(op)})`
+  );
+  // Typed expressions, a closing request and a non-default frame all land on the op.
+  await setField("y", "0.2*sin(360*s)");
+  await setField("sMax", "0.5");
+  await setField("samples", "21");
+  await setField("close", true);
+  await setField("normal", "1", 0);
+  await setField("normal", "0", 2);
+  await setField("up", "0", 0);
+  await setField("up", "1", 2);
+  const mid = await sentCount(page, "editsChanged");
+  await add();
+  await sleep(300);
+  op = await lastOp();
+  assert(
+    (await sentCount(page, "editsChanged")) === mid + 1 && op?.op === "addParametricCurve" && op.y === "0.2*sin(360*s)" && op.sMax === 0.5
+      && op.samples === 21 && op.close === true && JSON.stringify(op.plane) === JSON.stringify({ origin: [0, 0, 0], normal: [1, 0, 0], up: [0, 0, 1] }),
+    `typed expression, close and plane are pushed (got ${JSON.stringify(op)})`
+  );
+  // Control: an expression that cannot evaluate is reported inline and nothing is pushed.
+  await setField("y", "sin(360*");
+  const bad = await sentCount(page, "editsChanged");
+  await add();
+  await sleep(300);
+  assert((await sentCount(page, "editsChanged")) === bad, "an unparsable y(s) pushes nothing");
+  const err = await page.evaluate(() => document.querySelector("#edits-params")?.textContent ?? "");
+  assert(/y\(s\)/.test(err), `the failing expression is named inline (got ${JSON.stringify(err.slice(-200))})`);
+});
+
 test("coincident curve endpoint: a raw Line start on an existing point asks Collapse / Keep independent and records the choice", async (page) => {
   await populate(page);
   await enablePicking(page, "point");

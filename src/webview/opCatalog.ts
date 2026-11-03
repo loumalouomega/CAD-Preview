@@ -29,7 +29,7 @@ export type PanelOpId =
   // GEOMETRY 2D — wireframe
   | "addPoint" | "addLine" | "addArc"
   // GEOMETRY 2D — curves
-  | "addPolyline" | "addThreePointArc" | "addSpline" | "addBezier" | "addEllipseArc" | "addHelix"
+  | "addPolyline" | "addThreePointArc" | "addSpline" | "addBezier" | "addEllipseArc" | "addHelix" | "addParametricCurve"
   // GEOMETRY 2D — sketch profiles
   | "addCircleProfile" | "addRectangleProfile" | "addPolygonProfile"
   | "addEllipseProfile" | "addRoundedRectangleProfile" | "addSlotProfile" | "addTrapezoidProfile"
@@ -108,6 +108,7 @@ export const OP_CATALOG: {
         entry("addBezier", "Bezier", ["addBezier"]),
         entry("addEllipseArc", "Ell. Arc", ["addEllipseArc"]),
         entry("addHelix", "Helix", ["addHelix"]),
+        entry("addParametricCurve", "f(s) Curve", ["addParametricCurve"]),
       ],
     },
     {
@@ -268,7 +269,7 @@ function thinLabel(op: { thin?: number; thinOuter?: number }): string {
  * only when a generated icon can be built for them. Empty today; the set stays
  * so the coverage tests keep their exemption seam.
  */
-export const AGENT_ONLY_OPS: ReadonlySet<EditOpKind> = new Set<EditOpKind>(["addParametricCurve"]);
+export const AGENT_ONLY_OPS: ReadonlySet<EditOpKind> = new Set<EditOpKind>();
 
 function describeOpBase(op: EditOp): string {
   switch (op.op) {
@@ -331,7 +332,7 @@ function describeOpBase(op: EditOp): string {
     case "addThreePointArc": return `⌒ 3-point arc`;
     case "addSpline": return `∿ Spline ×${op.points.length}`;
     case "addBezier": return `∿ Bezier ×${op.controlPoints.length}`;
-    case "addParametricCurve": return `∿ Parametric curve (${op.x}, ${op.y}) s∈[${op.sMin}, ${op.sMax}] ×${op.samples}`;
+    case "addParametricCurve": return `∿ Parametric curve (${op.x}, ${op.y}) s∈[${op.sMin}, ${op.sMax}] ×${op.samples}${op.close ? " closed face" : ""}`;
     case "addEllipseArc": return `⌒ Ellipse arc ${op.radiusX}×${op.radiusY} ${op.startAngleDeg}°→${op.endAngleDeg}°`;
     case "addHelix": return `⌇ Helix r=${op.radius} p=${op.pitch} ×${op.turns}`;
     case "addSurfaceFromLines": return `⌗ Surface from ${op.edges.length} lines`;

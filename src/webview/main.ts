@@ -2720,6 +2720,7 @@ function tintForPanelOp(id: PanelOpId, wrapVariant?: "emboss" | "engrave" | "sta
     case "addBezier":
     case "addEllipseArc":
     case "addHelix":
+    case "addParametricCurve":
     case "section":
     case "buildSurface":
     case "buildVolume":
@@ -3369,6 +3370,18 @@ function buildOpForPanelCore(id: PanelOpId, rawDraft: Record<string, unknown>): 
       if (!nonParallel(d.normal, d.up)) return { error: "Up must not be parallel to Normal." };
       if (d.startAngleDeg === d.endAngleDeg) return { error: "Start and end angle must differ." };
       return { op: withExprs({ op: id, center: d.center, normal: d.normal, up: d.up, radiusX: d.radiusX, radiusY: d.radiusY, startAngleDeg: d.startAngleDeg, endAngleDeg: d.endAngleDeg, ...pointRefsOf(d) }) };
+    case "addParametricCurve": {
+      if (!d.x || !d.y) return { error: "Enter x(s) and y(s) expressions." };
+      if (!(d.sMax > d.sMin)) return { error: "s max must exceed s min." };
+      if (!Number.isInteger(d.samples) || d.samples < 2 || d.samples > 2000) return { error: "Samples must be a whole number from 2 to 2000." };
+      if (d.close && d.samples < 3) return { error: "Closing a curve needs 3+ samples." };
+      if (d.close && d.guide) return { error: "A closed curve builds a face, which cannot be construction geometry." };
+      if (d.plane && !nonParallel(d.plane.normal, d.plane.up)) return { error: "Up must not be parallel to Normal." };
+      return { op: withExprs({
+        op: id, x: d.x, y: d.y, ...(d.z && d.z !== "0" ? { z: d.z } : {}), sMin: d.sMin, sMax: d.sMax, samples: d.samples,
+        ...(d.as === "polyline" ? { as: "polyline" as const } : {}), ...(d.close ? { close: true } : {}), ...(d.plane ? { plane: d.plane } : {}),
+      }) };
+    }
     case "addHelix":
       if (d.radius <= 0 || d.pitch <= 0 || d.turns <= 0) return { error: "Helix radius, pitch, and turns must all be positive." };
       return { op: withExprs({ op: id, center: d.center, axis: d.axis, radius: d.radius, pitch: d.pitch, turns: d.turns, ...pointRefsOf(d) }) };
