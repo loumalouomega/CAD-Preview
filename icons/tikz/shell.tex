@@ -1,13 +1,13 @@
-% Op icon: shell — hollow box cross-section, a "picture frame" of outer + inner squares.
+% Op icon: shell (two-tone) - hollowed iso box, the opening (accent) cut into the top face.
 \documentclass[tikz,border=2mm]{standalone}
 \usetikzlibrary{arrows.meta,calc,shapes.geometric}
 \begin{document}
 \begin{tikzpicture}[line width=1.3pt, line cap=round, line join=round, >=Stealth, x=1mm,y=1mm]
-  \draw[thick] (-10,-10) rectangle (10,10);
-  \draw[thick] (-6,-6) rectangle (6,6);
-  \draw[dashed] (-10,10) -- (-6,6);
-  \draw[dashed] (10,10) -- (6,6);
-  \draw[dashed] (-10,-10) -- (-6,-6);
-  \draw[dashed] (10,-10) -- (6,-6);
+  \begin{scope}[shift={(0.5,1.5)}]
+    \draw[thick, fill=gray!70] (-8,-9) rectangle (2,1);
+    \draw[thick, fill=gray!50] (-8,1) -- (2,1) -- (7,6) -- (-3,6) -- cycle;
+    \draw[thick, fill=gray!60] (2,-9) -- (7,-4) -- (7,6) -- (2,1) -- cycle;
+    \draw[thick, fill=blue] (-5.5,2.2) -- (-0.5,2.2) -- (3.5,4.8) -- (-1.5,4.8) -- cycle;
+  \end{scope}
 \end{tikzpicture}
 \end{document}

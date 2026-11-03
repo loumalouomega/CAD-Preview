@@ -212,6 +212,7 @@ Under the menu bar, a **ribbon** gathers the commands that otherwise live in the
 - **Toggles** (Grid, Selection mode, the display modes, Measure…) show their live state, including when you change them through the toolbar menus. A button whose target is unavailable (Tree outside an assembly, a panel the current file does not offer) is dimmed.
 - **Narrow editors.** When the buttons do not fit, the ones that do not move into a **More ▸** menu, listed under their group headings, so every command stays reachable at any width. The Model tab has more than sixty buttons and always uses it.
 - **Compact** (the button at the right of the tab row) hides the labels and group titles for a one-row, icons-only strip; names stay on the tooltip and the accessible name.
+- **Icons.** The Model-tab operation icons that draw a solid are two-tone: a neutral body with an accent (your theme's button colour) on the part the command acts on, such as the extruded profile or the filleted corner. High-contrast themes drop the accent and stay monochrome.
 - **The Edits panel.** Because the ribbon covers the operation buttons, the panel's GEOMETRY/EDIT tabs and button grids are collapsed by default. The grid button in the Edits header (next to Undo) brings them back; an opened operation's parameter form and the history are always shown.
 
 ### Toolbar

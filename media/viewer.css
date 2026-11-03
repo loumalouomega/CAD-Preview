@@ -96,7 +96,9 @@ body.vscode-high-contrast-light {
  *   --cad-*  scene DATA. Read by `palette.ts` via getComputedStyle, fed to THREE
  *            materials, byte-identical to PALETTE_FALLBACKS. Never styles chrome.
  *   --ui-*   chrome METRICS ONLY — radii, spacing, elevation, type scale, control
- *            heights. It carries NO COLOUR.
+ *            heights. It carries NO COLOUR, with ONE named exception:
+ *            `--ui-icon-accent` (below), which is a pure `var(--vscode-*)` alias
+ *            — no literal palette — consumed by the two-tone icon SVGs.
  *
  * Every chrome colour still resolves through `var(--vscode-*, <literal>)`, which
  * is what makes light and high-contrast themes work with no per-theme chrome
@@ -149,6 +151,18 @@ body.vscode-high-contrast-light {
   --ui-h-ctl: 24px;
   --ui-statusbar-h: 24px;
   --ui-cmdbar-h: 28px;
+
+  /* Two-tone icons (icons/svgIconPostProcess.mjs maps the reserved TikZ `blue`
+   * fill to `var(--ui-icon-accent, currentColor)`). Theme button colour, then
+   * focus colour; the trailing literal is only the screenshot harness's, which
+   * defines neither. Blue, never magenta/violet. High-contrast bodies reset it
+   * to `currentColor` below so those themes stay monochrome. */
+  --ui-icon-accent: var(--vscode-button-background, var(--vscode-focusBorder, #0e639c));
+}
+
+body.vscode-high-contrast,
+body.vscode-high-contrast-light {
+  --ui-icon-accent: currentColor;
 }
 
 /* Elevation is the one metric that must react to theme: a near-black drop shadow

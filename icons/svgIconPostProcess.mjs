@@ -12,6 +12,15 @@
 //     shaded regions scale with the theme's foreground color instead of
 //     staying a fixed gray, and relative shading between an icon's own faces
 //     is preserved rather than flattened
+//   - the ONE reserved accent colour, TikZ `blue` (`rgb(0%, 0%, 100%)`), as a
+//     FILL -> `var(--ui-icon-accent, currentColor)`: the part of a two-tone
+//     icon the command acts on. `blue!N` (a tint, mixed with white) keeps its
+//     tint as a proportional `fill-opacity`, like `gray!N`. The custom property
+//     is set from the VS Code button colour in media/viewer.css and is
+//     `currentColor` in high-contrast themes, so those stay monochrome. Strokes
+//     NEVER take the accent: draw the accent as a fill and outline it black.
+export const ACCENT_FILL = "var(--ui-icon-accent, currentColor)";
+
 export function postProcess(svg) {
   let out = svg
     .replace(/^<\?xml[^>]*\?>\s*/, "")
@@ -31,6 +40,15 @@ export function postProcess(svg) {
     if (p === 0 || p === 100) return `fill="rgb(${pct}%, ${pct}%, ${pct}%)" fill-opacity="1"`; // pure black/white, untouched
     const opacity = ((100 - p) / 100).toFixed(3).replace(/0+$/, "").replace(/\.$/, "");
     return `fill="currentColor" fill-opacity="${opacity}"`;
+  });
+
+  // Accent: `blue` (R=G=p%, B=100%) -> the accent variable. p=0 is pure blue
+  // (opacity 1); p=100 would be white, which is never an accent.
+  out = out.replace(/fill="rgb\((\d+(?:\.\d+)?)%, \1%, 100%\)" fill-opacity="1"/g, (m, pct) => {
+    const p = Number(pct);
+    if (p === 100) return m;
+    const opacity = ((100 - p) / 100).toFixed(3).replace(/0+$/, "").replace(/\.$/, "");
+    return `fill="${ACCENT_FILL}" fill-opacity="${opacity}"`;
   });
 
   return out;

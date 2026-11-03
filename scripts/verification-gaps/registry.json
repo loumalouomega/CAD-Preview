@@ -756,6 +756,12 @@
       "section": "Configurations (design table) - Batch Export command prompt",
       "gap": "the 'One file per configuration' quick-pick that batchExportCommand.ts shows only when a picked model stores configurations is covered by batchExportTool unit tests and mcp:smoke, but has not been driven through test:integration or an Extension Development Host; the Config Table itself is covered by the 'configurations:' test:webview case.",
       "status": "open"
+    },
+    {
+      "id": "two-tone-icons-f5",
+      "section": "Two-tone icon set (roadmap item, closed)",
+      "gap": "the two-tone op icons were checked in the Playwright harness (dark, light and both high-contrast classes via the 'ribbon: two-tone icons' test:webview case) and in generated screenshots, but not in a real Extension Development Host: the accent colour against a real theme's --vscode-button-background (Dark+, Light+, a high-contrast theme) and its legibility at 1em on the ribbon and Edits panel have not been eyeballed in F5.",
+      "status": "open"
     }
   ]
 }

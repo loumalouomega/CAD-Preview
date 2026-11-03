@@ -4366,6 +4366,44 @@ test("ribbon: tab, compact and the Edits grid persist additively in view state a
   assert(fallback.tab === "model" && fallback.height === 89, `an unknown tab id falls back to Model and absent flags reset (got ${fallback.tab}, ${fallback.height}px)`);
 });
 
+test("ribbon: two-tone icons paint their accent from the theme in dark and light, and stay monochrome in high contrast", async (page) => {
+  await populate(page);
+  await page.setViewportSize({ width: 1900, height: 900 });
+  await openRibbonTab(page, "model");
+  // What the accent resolves to (a probe element reads the custom property) and what the first accent path really paints.
+  const read = () => page.evaluate(() => {
+    const btn = document.querySelector('#ribbon [data-item="op:extrude"]');
+    const svg = btn?.querySelector("svg");
+    const path = svg ? [...svg.querySelectorAll("path")].find((p) => (p.getAttribute("fill") ?? "").includes("--ui-icon-accent")) : null;
+    const probe = document.createElement("i");
+    probe.style.color = "var(--ui-icon-accent)";
+    svg?.appendChild(probe);
+    const accent = getComputedStyle(probe).color;
+    probe.remove();
+    return {
+      hasAccentPath: !!path,
+      painted: path ? getComputedStyle(path).fill : null,
+      accent,
+      text: svg ? getComputedStyle(svg).color : null,
+      // A neutral (gray) path must NOT take the accent.
+      neutralPainted: svg ? getComputedStyle([...svg.querySelectorAll("path")].find((p) => p.getAttribute("fill") === "currentColor")).fill : null,
+    };
+  });
+  for (const theme of ["vscode-dark", "vscode-light"]) {
+    await setTheme(page, theme);
+    const r = await read();
+    assert(r.hasAccentPath, `${theme}: the Extrude ribbon icon carries an accent path`);
+    assert(r.painted === r.accent && r.accent !== r.text, `${theme}: the accent path paints --ui-icon-accent (${r.painted}), distinct from the text colour ${r.text}`);
+    assert(r.neutralPainted === r.text, `${theme}: a neutral path keeps the text colour (${r.neutralPainted})`);
+  }
+  for (const theme of ["vscode-high-contrast", "vscode-high-contrast vscode-high-contrast-light"]) {
+    await setTheme(page, theme);
+    const r = await read();
+    assert(r.painted === r.text && r.accent === r.text, `${theme}: the accent collapses to the text colour (painted ${r.painted}, accent ${r.accent}, text ${r.text})`);
+  }
+  await setTheme(page, "vscode-dark");
+});
+
 // ── Source-format gating of the two eligibility-gated panels ──────────────
 //
 // `#mesh-health-panel { display: flex }` beat the UA's `[hidden]` rule, so
