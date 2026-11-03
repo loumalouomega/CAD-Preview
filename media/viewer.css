@@ -3851,7 +3851,7 @@ input[type="range"].meshing-slider:focus {
    * restyle, not a new component (the selection-driven `entityFactsRequest` and
    * `renderInspectorCard` are unchanged). */
   right: 8px;
-  top: 86px;
+  top: calc(86px + var(--ribbon-h, 0px));
   min-width: 168px;
   max-width: min(28vw, 260px);
   padding: 6px 9px;
