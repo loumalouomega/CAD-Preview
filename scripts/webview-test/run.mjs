@@ -3429,6 +3429,193 @@ test("command bar: history recalls earlier lines and Tab completes a command", a
   assert((await page.inputValue("#cmdbar-input")) === "", "Escape clears the line");
 });
 
+/**
+ * Command search and keyboard-first commands (roadmap "Command search and
+ * keyboard-first commands"). The matcher and key table are unit-tested in
+ * `commandSearch.test.ts`; what needs the real bundle is the overlay (it must
+ * actually become visible and take focus), Enter reaching the same form a
+ * button click opens, the DOM-derived toolbar/panel sources, and the opt-in
+ * keys staying inert while the setting is off or focus is in a field.
+ */
+const paletteVisible = (page) => page.evaluate(() => {
+  const el = document.getElementById("cmd-palette");
+  return !!el && el.getClientRects().length > 0 && getComputedStyle(el).display !== "none"; // position:fixed has no offsetParent
+});
+const activeOpName = (page) => page.evaluate(() => document.querySelector(".op-btn.active .op-name")?.textContent ?? null);
+const blurAll = (page) => page.evaluate(() => document.activeElement instanceof HTMLElement && document.activeElement.blur());
+const setSingleKeys = async (page, on) => { await post(page, { type: "viewerDefaults", background: "#1e1e1e", meshSizePreset: "medium", showGridAndAxes: true, upAxis: "y", singleKeyCommands: on }); await sleep(100); };
+const paletteRows = (page) => page.evaluate(() => [...document.querySelectorAll("#cmd-palette-list .cmd-row")].map((r) => ({
+  id: r.dataset.id, kind: r.dataset.kind, label: r.querySelector(".cmd-label")?.textContent, group: r.querySelector(".cmd-group")?.textContent,
+  key: r.querySelector(".cmd-key")?.textContent ?? null, keyOff: !!r.querySelector(".cmd-key.off"), hasIcon: !!r.querySelector(".cmd-icon svg"), selected: r.classList.contains("selected"),
+})));
+
+test("command search: Ctrl+K, 'fil' finds Fillet, Enter opens its form, Shift+R reopens it without applying", async (page) => {
+  await populate(page);
+  await setSingleKeys(page, true);
+  await blurAll(page);
+  const before = await sentCount(page, "editsChanged");
+  assert(!(await paletteVisible(page)), "the search starts closed");
+  await page.keyboard.press("Control+K");
+  assert(await paletteVisible(page), "Ctrl+K opens the command search");
+  assert(await page.evaluate(() => document.activeElement?.id === "cmd-palette-input"), "…and focuses its input");
+  await page.keyboard.type("fil");
+  const rows = await paletteRows(page);
+  assert(rows[0]?.label === "Fillet" && rows[0].selected, `'fil' ranks Fillet first and selects it (got ${JSON.stringify(rows.slice(0, 3).map((r) => r.label))})`);
+  assert(rows[0].group === "Refine" && rows[0].key === "F" && rows[0].hasIcon, `the row shows group, shortcut and icon (got ${JSON.stringify(rows[0])})`);
+  await page.keyboard.press("Enter");
+  await sleep(200);
+  assert(!(await paletteVisible(page)), "Enter closes the search");
+  assert((await activeOpName(page)) === "Fillet", `Enter opens the Fillet form (got ${await activeOpName(page)})`);
+  assert((await page.evaluate(() => document.querySelector("#edits-params")?.children.length ?? 0)) > 0, "…with its parameter form rendered");
+  assert((await sentCount(page, "editsChanged")) === before, "…without pushing an op");
+
+  // Move on to another form, then repeat.
+  await page.evaluate(() => [...document.querySelectorAll(".op-btn")].find((b) => b.querySelector(".op-name")?.textContent === "Box")?.click());
+  await sleep(150);
+  assert((await activeOpName(page)) === "Box", "another form is open now");
+  await blurAll(page);
+  await page.keyboard.press("Shift+R");
+  await sleep(200);
+  assert((await activeOpName(page)) === "Fillet", `Shift+R reopens the last command's form (got ${await activeOpName(page)})`);
+  assert((await sentCount(page, "editsChanged")) === before, "…and applies nothing");
+});
+
+test("command search: Shift+R refills the last applied op's values", async (page) => {
+  await populate(page);
+  await setSingleKeys(page, true);
+  await blurAll(page);
+  // Apply a Box with a distinctive size through the command bar, then move to another form.
+  await typeCommand(page, 'addBox {"center":[0,0,0],"size":[13,14,15]}');
+  await page.evaluate(() => [...document.querySelectorAll(".op-btn")].find((b) => b.querySelector(".op-name")?.textContent === "Sphere")?.click());
+  await sleep(150);
+  await blurAll(page);
+  await page.keyboard.press("Shift+R");
+  await sleep(250);
+  assert((await activeOpName(page)) === "Box", `Shift+R reopens Box (got ${await activeOpName(page)})`);
+  const values = await page.evaluate(() => [...document.querySelectorAll("#edits-params input[data-name]")].map((i) => i.value).join("|"));
+  assert(/13/.test(values) && /14/.test(values) && /15/.test(values), `the form carries the last values (got ${JSON.stringify(values)})`);
+});
+
+test("command search: '/' opens it outside a field only; Escape closes and restores focus; toolbar and panel results run", async (page) => {
+  await populate(page);
+  await blurAll(page);
+  await page.keyboard.press("/");
+  assert(await paletteVisible(page), "'/' opens the search when focus is not in a field");
+  await page.keyboard.press("Escape");
+  assert(!(await paletteVisible(page)), "Escape closes it");
+
+  await page.focus("#cmdbar-input");
+  await page.keyboard.press("/");
+  assert(!(await paletteVisible(page)), "'/' inside a field does not open it");
+  assert((await page.inputValue("#cmdbar-input")) === "/", "…and types the slash normally");
+  await page.fill("#cmdbar-input", "");
+  await page.keyboard.press("Control+K");
+  assert(await paletteVisible(page), "Ctrl+K opens it even from a field");
+  await page.keyboard.press("Escape");
+  assert(await page.evaluate(() => document.activeElement?.id === "cmdbar-input"), "Escape returns focus to where it was");
+
+  // A toolbar action: the Grid toggle.
+  const gridBefore = await page.evaluate(() => document.getElementById("grid")?.getAttribute("aria-checked"));
+  await blurAll(page);
+  await page.keyboard.press("Control+K");
+  await page.keyboard.type("hide smooth");
+  const smooth = (await paletteRows(page))[0];
+  assert(smooth?.kind === "action" && /Hide smooth edges/.test(smooth.label) && smooth.group === "View" && smooth.hasIcon, `a dropdown action is listed with its menu as the group (got ${JSON.stringify(smooth)})`);
+  await page.keyboard.press("Escape");
+  await page.keyboard.press("Control+K");
+  await page.keyboard.type("grid");
+  const gridRow = (await paletteRows(page)).find((r) => r.id === "grid");
+  assert(!!gridRow, "the Grid toggle is searchable");
+  await page.keyboard.press("Enter");
+  await sleep(150);
+  const gridAfter = await page.evaluate(() => document.getElementById("grid")?.getAttribute("aria-checked"));
+  assert(gridBefore !== gridAfter, `choosing a toolbar action runs it (aria-checked ${gridBefore} -> ${gridAfter})`);
+
+  // A panel in the collapsed Advanced group.
+  const advancedCollapsed = await page.evaluate(() => document.getElementById("advanced-group")?.classList.contains("collapsed"));
+  await blurAll(page);
+  await page.keyboard.press("Control+K");
+  await page.keyboard.type("mass prop");
+  const mass = (await paletteRows(page))[0];
+  assert(mass?.kind === "panel" && mass.label === "Mass Properties" && mass.group === "Advanced", `an Advanced panel is listed (got ${JSON.stringify(mass)})`);
+  await page.keyboard.press("Enter");
+  await sleep(250);
+  const shown = await page.evaluate(() => {
+    const panel = document.getElementById("mass-panel");
+    const r = panel.getBoundingClientRect();
+    return {
+      advancedCollapsed: document.getElementById("advanced-group").classList.contains("collapsed"),
+      panelCollapsed: panel.classList.contains("collapsed"),
+      visible: panel.offsetParent !== null && r.height > 0 && r.bottom > 0 && r.top < window.innerHeight,
+    };
+  });
+  assert(advancedCollapsed === true, "(precondition) Advanced starts collapsed");
+  assert(!shown.advancedCollapsed && !shown.panelCollapsed && shown.visible, `choosing a panel expands it and brings it into view (got ${JSON.stringify(shown)})`);
+});
+
+test("single-key commands: off by default ('e' does nothing); on, E opens Extrude, never from a field", async (page) => {
+  await populate(page);
+  await blurAll(page);
+  await page.keyboard.press("e");
+  await sleep(150);
+  assert((await activeOpName(page)) === null, `with the setting off, 'e' opens nothing (got ${await activeOpName(page)})`);
+  await page.keyboard.press("Shift+R");
+  await page.keyboard.press("q");
+  assert((await page.evaluate(() => document.getElementById("measure-toggle")?.getAttribute("aria-checked"))) === "false", "…and 'q' does not toggle Measure mode");
+  // The reference still shows the key, marked as inactive.
+  await page.keyboard.press("Control+K");
+  await page.keyboard.type("extrude");
+  const off = (await paletteRows(page))[0];
+  assert(off?.label === "Extrude" && off.key === "E" && off.keyOff, `the search lists the key but marks it off (got ${JSON.stringify(off)})`);
+  await page.keyboard.press("Escape");
+
+  await setSingleKeys(page, true);
+  await blurAll(page);
+  await page.keyboard.press("Shift+R");
+  assert(/No previous command/.test(await page.evaluate(() => document.getElementById("status")?.textContent ?? "")), "Shift+R with nothing to repeat says so");
+  await page.keyboard.press("e");
+  await sleep(200);
+  assert((await activeOpName(page)) === "Extrude", `with the setting on, 'e' opens the Extrude form (got ${await activeOpName(page)})`);
+
+  await page.focus("#cmdbar-input");
+  await page.keyboard.press("f");
+  await sleep(150);
+  assert((await page.inputValue("#cmdbar-input")) === "f" && (await activeOpName(page)) === "Extrude", "typing 'f' in a field types it and opens no form");
+  await page.fill("#cmdbar-input", "");
+  await blurAll(page);
+
+  await page.keyboard.press("Control+e");
+  assert((await activeOpName(page)) === "Extrude", "Ctrl+E is not a command key");
+  await page.keyboard.press("f");
+  await sleep(150);
+  assert((await activeOpName(page)) === "Fillet", `'f' opens Fillet (got ${await activeOpName(page)})`);
+  await page.keyboard.press("q");
+  assert((await page.evaluate(() => document.getElementById("measure-toggle")?.getAttribute("aria-checked"))) === "true", "'q' toggles Measure mode");
+  await page.keyboard.press("q");
+
+  // The view snaps are not letter commands: digits and 'i' open no form.
+  await page.keyboard.press("3");
+  await page.keyboard.press("i");
+  await sleep(150);
+  assert((await activeOpName(page)) === "Fillet", "the view-snap keys (3, i) open no form and change no command");
+});
+
+test("command search: a B-rep-only op is refused on a mesh source", async (page) => {
+  await openStl(page);
+  await setSingleKeys(page, true);
+  await blurAll(page);
+  await page.keyboard.press("f");
+  await sleep(150);
+  assert((await activeOpName(page)) === null, "'f' opens no Fillet form on a mesh source");
+  const status = await page.evaluate(() => document.getElementById("status")?.textContent ?? "");
+  assert(/not available/i.test(status), `…and says why (got ${JSON.stringify(status)})`);
+  await page.keyboard.press("Control+K");
+  await page.keyboard.type("fillet");
+  const row = (await paletteRows(page))[0];
+  assert(row?.label === "Fillet", "Fillet is still listed");
+  assert(await page.evaluate(() => document.querySelector("#cmd-palette-list .cmd-row")?.classList.contains("disabled") ?? false), "…marked disabled");
+});
+
 test("command bar: a typed op the kernel skips reports it on the bar", async (page) => {
   await page.evaluate(() => {
     window.__lastGeometry = null;

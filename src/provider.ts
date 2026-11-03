@@ -4335,6 +4335,7 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
       meshSizePreset: cfg.get("defaultMeshSizePreset"),
       showGridAndAxes: cfg.get("showGridAndAxesOnOpen"),
       upAxis: cfg.get("upAxis"),
+      singleKeyCommands: cfg.get("singleKeyCommands"),
     });
     post({ type: "viewerDefaults", ...defaults });
   }

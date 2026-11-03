@@ -314,6 +314,7 @@ interface ViewerDefaults {
   meshSizePreset: MeshSizePreset
   showGridAndAxes: boolean
   upAxis: UpAxis
+  singleKeyCommands: boolean   // cadPreview.singleKeyCommands (default false)
 }
 
 const DEFAULT_VIEWER_DEFAULTS: ViewerDefaults

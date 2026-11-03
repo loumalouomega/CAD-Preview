@@ -321,6 +321,40 @@ describe("catalogLocation", () => {
   });
 });
 
+describe("single-key shortcuts", () => {
+  it("declares each key once, as one upper-case letter, across catalog entries and ACTION_KEYS", async () => {
+    const { ACTION_KEYS } = await import("./opCatalog");
+    const seen = new Map<string, string>();
+    const claim = (key: string, owner: string): void => {
+      expect(key, owner).toMatch(/^[A-Z]$/);
+      expect(seen.get(key), `${key} claimed by both ${seen.get(key)} and ${owner}`).toBeUndefined();
+      seen.set(key, owner);
+    };
+    for (const e of allCatalogEntries()) if (e.key) claim(e.key, e.id);
+    for (const [elementId, key] of Object.entries(ACTION_KEYS)) claim(key, elementId);
+    expect(seen.size).toBeGreaterThanOrEqual(9);
+  });
+
+  it("never collides with a view snap (1-6, i) and keeps plain R (Revolve) distinct from Shift+R (repeat)", async () => {
+    const { viewForKey } = await import("../viewShortcuts");
+    const { ACTION_KEYS, REPEAT_LAST_KEY } = await import("./opCatalog");
+    const keys = [...allCatalogEntries().flatMap((e) => (e.key ? [e.key] : [])), ...Object.values(ACTION_KEYS)];
+    for (const k of keys) {
+      expect(viewForKey({ key: k }), `${k} collides with a view snap`).toBeNull();
+      expect(viewForKey({ key: k.toLowerCase() }), `${k} collides with a view snap`).toBeNull();
+    }
+    expect(REPEAT_LAST_KEY).toBe("Shift+R");
+    expect(allCatalogEntries().find((e) => e.key === "R")?.id).toBe("revolve");
+  });
+
+  it("puts keys on exactly the ops the roadmap names", () => {
+    const keyed = Object.fromEntries(allCatalogEntries().filter((e) => e.key).map((e) => [e.key, e.id]));
+    expect(keyed).toEqual({
+      E: "extrude", R: "revolve", F: "fillet", C: "chamfer", H: "addHole", M: "translate", S: "shell", P: "patternLinear",
+    });
+  });
+});
+
 describe("localisation contract boundary", () => {
   it("machine-readable op kinds and panel ids are ASCII identifiers, never display labels", () => {
     const ident = /^[A-Za-z][A-Za-z0-9]*$/;

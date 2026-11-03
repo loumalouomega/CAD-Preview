@@ -17,6 +17,8 @@ export interface ViewerDefaults {
   meshSizePreset: MeshSizePreset;
   showGridAndAxes: boolean;
   upAxis: UpAxis;
+  /** `cadPreview.singleKeyCommands`: opt-in single-letter op shortcuts and Shift+R repeat. */
+  singleKeyCommands: boolean;
 }
 
 export const DEFAULT_VIEWER_DEFAULTS: ViewerDefaults = {
@@ -24,6 +26,7 @@ export const DEFAULT_VIEWER_DEFAULTS: ViewerDefaults = {
   meshSizePreset: "medium",
   showGridAndAxes: true,
   upAxis: "y",
+  singleKeyCommands: false,
 };
 
 const HEX_COLOR_RE = /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/;
@@ -52,5 +55,8 @@ export function normalizeViewerDefaults(raw: unknown): ViewerDefaults {
 
   const upAxis: UpAxis = o.upAxis === "y" || o.upAxis === "z" ? o.upAxis : DEFAULT_VIEWER_DEFAULTS.upAxis;
 
-  return { background, meshSizePreset, showGridAndAxes, upAxis };
+  const singleKeyCommands =
+    typeof o.singleKeyCommands === "boolean" ? o.singleKeyCommands : DEFAULT_VIEWER_DEFAULTS.singleKeyCommands;
+
+  return { background, meshSizePreset, showGridAndAxes, upAxis, singleKeyCommands };
 }

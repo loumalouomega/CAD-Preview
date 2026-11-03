@@ -62,6 +62,8 @@ The webview runs in a Chromium browser context. These modules are bundled into `
 | `src/planeFrame.ts` | Deterministic 2D frame for plane-authored profiles: `planeBasis` + `profilePlacementFromPlane` (vscode/OCCT/THREE-free, unit-tested; `occtOperations.ts` delegates its own copy here) |
 | `src/webview/opIcons.ts` | Generated per-op SVG icons (`icons/build-op-icons.mjs`) |
 | `src/webview/editsPanel.ts` | Edits panel DOM — GEOMETRY (2D/3D) / EDIT tabs, op grids, param forms, op list |
+| `src/webview/commandSearch.ts` | Command search, pure half: `fuzzyScore`/`rankItems`, `opSearchItems`, `resolveKey` (the key table), `LastCommandTracker` |
+| `src/webview/commandPalette.ts` | Command search overlay (Ctrl+K, `/`) and the opt-in single-key commands |
 | `src/webview/commandBar.ts` | Lower command bar (`#cmdbar`) — typed `<command> [<json>]` lines, history, Tab completion, panel echo |
 | `src/webview/meshEdits.ts` | Webview edit engine for mesh formats (Three.js transforms; unit-tested) |
 | `src/webview/meshFacets.ts` | Segment a mesh into coplanar facets → per-face sub-meshes (unit-tested); carries `color`/`uv` and native materials into each facet and gates multi-material meshes by material |
@@ -121,7 +123,7 @@ Entry point for the webview bundle. Not exported — all logic runs at module le
 | `"meshingResult"` | `viewer.setMeshOverlay(buildFEMesh(msg.positions, msg.indices, msg.edges, msg.elementGroups))`; if `msg.constraintLinks` is present, `viewer.setConstraintLinksOverlay(buildConstraintLinks(msg.positions, msg.constraintLinks))` (hidden until the links button is toggled); if `msg.worstElements` is present, `viewer.setWorstElementsOverlay(buildWorstElementsHighlight(msg.positions, msg.worstElements.indices))` and auto-show it (else clear it) → `MeshingPanel.render(..., { nodeCount, elementCount, elapsedMs, quality: msg.quality, worstElements: msg.worstElements })` |
 | `"meshingError"` | `MeshingPanel.render(..., { error: msg.message })` |
 | `"remeshResult"` / `"remeshError"` | Guarded by `remeshRequestId`; `MeshingPanel.finishRemesh` renders counts, output path, warnings or cancellation/error and releases Run. The existing `meshingJobSettled` releases FE progress/Cancel |
-| `"viewerDefaults"` | `viewer.applyDefaults(msg)` (background/grid-axes apply immediately; up-axis stored for the next `setModel()`) → `meshSizePreset` feeds `syncMeshSizeSeed()`. Order-independent relative to `"geometry"`/`"loadUrl"` — arrives in the `ready` handshake alongside `"parts"`/`"meshingOptions"` |
+| `"viewerDefaults"` | `viewer.applyDefaults(msg)` (background/grid-axes apply immediately; up-axis stored for the next `setModel()`) → `meshSizePreset` feeds `syncMeshSizeSeed()`; `singleKeyCommands` goes to `CommandPalette.setSingleKeys()` (the opt-in letter keys). Order-independent relative to `"geometry"`/`"loadUrl"` — arrives in the `ready` handshake alongside `"parts"`/`"meshingOptions"` |
 | `"screenshotRequest"` | `viewer.render()` (force a fresh frame) → `viewer.captureScreenshotBase64()` → posts back `"screenshotResult"`/`"screenshotError"`, correlated by `msg.requestId` |
 | `"massPropertiesResult"` | `renderMassProperties(msg.properties)` — caches the raw (mm) result and renders it converted to `currentDisplayUnit` (see `src/webview/units.ts` below); ignored if `msg.requestId` doesn't match the latest request |
 | `"massPropertiesError"` | `MassPropertiesPanel.renderMessage(msg.message, true)` (same stale-request guard) |
@@ -1210,6 +1212,24 @@ The lower command bar (`#cmdbar`, a body-level row above `#statusbar`, outside `
 `new CommandBar(root, callbacks)` takes `getSelection()` / `getInventory()` (ids by type, for `$sel` and Tab), `sourceKind()`, `commit(op, row)` and `openForm(row, body)`. `main.ts` supplies them: `commit` is the shared tail (layer-lock refusal, gizmo/op-preview cancellation, one `editsModel.push`), so a typed op and a panel Apply persist identical ops; `openForm` expands a collapsed Edits section, calls `EditsPanel.openOp(id)` and, with a body, `prefillFromBody` (numbers and 3-vectors only; it reports what it skipped) after selecting body ids the model confirms. `run()` is the whole execution path: parse, B-rep-only gate against `sourceKind()`, `buildCommandOp` (with `$sel` typing), `validateEditOp`, and on a null result `explainEditOpRejection` (the expected shape). `echo(op)` writes a panel-built op's command text; `main.ts` calls it from `EditsModel.onPush`, except while the bar itself is committing. `showMessage(text, error?)` drives the message line, and `main.ts` uses it to report a typed op that the next replay's `OpOutcome` shows as skipped.
 
 Typing in the bar stops key propagation so shortcuts and open dropdowns never see it. The row's height is `--ui-cmdbar-h`; the dock and the status toast both lift by it.
+
+## `src/webview/commandSearch.ts` and `src/webview/commandPalette.ts`
+
+Command search and keyboard-first commands. `commandSearch.ts` is pure (no DOM, no `three`) and unit-tested in `commandSearch.test.ts`; `commandPalette.ts` is the DOM half and has no unit test of its own (it is covered by the `command search` and `single-key commands` `test:webview` cases).
+
+```ts
+// commandSearch.ts
+interface SearchItem { id; kind: "op" | "action" | "panel"; label; group; keywords: string[]; shortcut?; disabled? }
+function fuzzyScore(query: string, text: string): number | null   // every whitespace token must match; prefix > word start > mid-word > subsequence; shorter text wins a tie
+function rankItems(items, query, { limit?, recent? }): SearchItem[] // best of label (1.0) / keywords (0.7) / group (0.4); empty query = recents first
+function opSearchItems(): SearchItem[]                              // one per catalog button; keywords = panel id, COMMAND_TABLE name + aliases, op kinds
+function resolveKey(e, singleKeys, table?): KeyCommand | null       // search | op | action | repeat
+class LastCommandTracker { opened(id); applied(op); get(); recent(); touch(id) }
+```
+
+`resolveKey` is the one decision point for keys: Ctrl/Cmd+K opens the search anywhere, `/` only outside a text field; the letters and Shift+R need `singleKeys` and are ignored while typing (`isTextEntryTarget`), with Ctrl/Cmd/Alt held, on auto-repeat and for the view snaps (`viewShortcuts.ts`). The letters come from `CatalogEntry.key` and `ACTION_KEYS` in `opCatalog.ts` — the only place a shortcut is declared.
+
+`new CommandPalette(host)` takes `openOp(id, body?)`, `isOpAvailable(id)` and `setStatus(text, isError?)`; `main.ts` supplies them (`openOp` is the same `openEditForm` the command bar uses: expand the Edits section, `EditsPanel.openOp`, `prefillFromBody`). `install()` adds one capture-phase `keydown` listener on `window`. `setSingleKeys(on)` is fed from the `"viewerDefaults"` message; `noteApplied(op)` is called from `EditsModel.onPush` so the last applied op's values are what Shift+R refills. The overlay (`#cmd-palette`) is built lazily on first open — no DOM at module scope — and has an explicit `#cmd-palette[hidden]` rule. Toolbar and panel entries are read from the live DOM each time the search opens (every `button` with an id in `#toolbar`, `#file-dropdown` and the dropdown menus, and every visible `#side .side-section` with a `.panel-title`), so a new menu item or panel is searchable with no second list; running one clicks the same element. It draws no canvas (the single WebGL context is untouched), closes any open dropdown when it opens, and on Escape returns focus to the element that had it.
 
 ## `src/webview/editsPanel.ts`
 

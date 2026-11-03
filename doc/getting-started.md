@@ -40,6 +40,7 @@ CAD Preview contributes a few cross-document defaults under **CAD Preview** in V
 | `cadPreview.kernelTimeoutMinutes` | `5` | Watchdog for a single kernel job (load, mesh, export…): a job running longer is killed and the kernel worker respawned. Applies to newly opened documents |
 | `cadPreview.tessellationQuality` | `standard` | B-rep (STEP/IGES/BREP/CSG/SCAD) tessellation density — `draft`/`standard`/`fine`; `standard` is identical to every previous version's fixed behavior. Unlike the other settings here, re-read on every edit, so a change applies to the next edit without reopening the file. Face triangle density only — does not affect edge display or the FE Mesh panel's own (separate) mesh generation |
 | `cadPreview.upAxis` | `y` | Default up-axis for newly opened models — set to `z` for Z-up source conventions |
+| `cadPreview.singleKeyCommands` | `false` | Turns on the single-letter [command keys](#command-search-and-single-key-commands) (E Extrude, R Revolve, F Fillet, C Chamfer, H Hole, M Move, S Shell, P Linear Pattern, Q Measure mode) and Shift+R to repeat the last command. Off by default because single keys collide with typing habits; read when a viewer opens |
 
 ## Opening a File
 
@@ -398,7 +399,7 @@ Click any face of the cube to snap the camera to that standard view:
 | **+Y / -Y** | Top / Bottom |
 | **+Z / -Z** | Front / Back |
 
-The same views are on the keyboard (ignored while typing in a text field, and with Ctrl, Cmd or Alt held):
+The same views are on the keyboard (ignored while typing in a text field, and with Ctrl, Cmd or Alt held; the optional [single-letter command keys](#command-search-and-single-key-commands) never take these):
 
 | Key | View   | Key | View   |
 | --- | ------ | --- | ------ |
@@ -406,6 +407,27 @@ The same views are on the keyboard (ignored while typing in a text field, and wi
 | `2` | Back   | `5` | Top    |
 | `3` | Right  | `6` | Bottom |
 | `i` | Isometric (front-top-right) | | |
+
+### Command Search and Single-Key Commands
+
+**Ctrl+K** (Cmd+K on macOS), or **/** when focus is not in a text field, opens a command search over the whole interface: every Edits-panel operation, every toolbar and dropdown action, and every sidebar panel, including the ones inside **Advanced**. Type a few letters and the list narrows by fuzzy match (`fil` finds **Fillet** before **Fill Surface**); an operation also answers to its [command-bar](#the-command-bar) name, so `union` finds the Union button. Each row shows its icon, its group (the operation's category, the dropdown it lives in, or Panels / Advanced) and its shortcut, so the list doubles as the shortcut reference. **↑**/**↓** move, **Enter** runs, **Escape** closes and returns focus to where it was.
+
+- Choosing an **operation** opens its form exactly as clicking its button would (the Edits section is expanded if it was collapsed). A B-rep-only operation on a mesh source is shown dimmed and refuses with a status message.
+- Choosing a **toolbar action** runs it, the same as clicking it in its menu.
+- Choosing a **panel** expands it (and the Advanced group above it) and scrolls it into view.
+- With nothing typed, the most recently chosen items come first.
+
+With `cadPreview.singleKeyCommands` on, these unmodified keys work when focus is not in a text field (a field, the command bar and the search itself always keep their keys):
+
+| Key | Command | Key | Command |
+| --- | --- | --- | --- |
+| `E` | Extrude | `H` | Hole |
+| `R` | Revolve | `M` | Move |
+| `F` | Fillet | `S` | Shell |
+| `C` | Chamfer | `P` | Linear Pattern |
+| `Q` | Measure mode (toggle) | **Shift+R** | Repeat the last command |
+
+A key opens the operation's form; it never applies anything. **Shift+R** reopens the form of the last command: the last applied operation's values are filled back in (numbers and vectors; the operands are re-selected where the model still has them), or, if you only opened a form without applying, that form. It never applies either. The keys never take the view snaps (`1`–`6`, `i`), are ignored with Ctrl, Cmd or Alt held and on key auto-repeat, and are off by default; the search lists them dimmed while the setting is off. Each letter is declared once, beside its catalog entry (`src/webview/opCatalog.ts`), and `opCatalog.test.ts` refuses a duplicate or a collision with a view snap.
 
 ### Component Tree Panel
 
