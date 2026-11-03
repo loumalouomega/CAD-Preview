@@ -1,5 +1,6 @@
 import { validateEditOp, type EditOp } from "./editOps";
 import { validateVariables, evaluateVariables, resolveEditOps, type ParamVariable } from "./editVariables";
+import { validateConfigurationState, effectiveVariables, type Configuration, type ConfigurationState } from "./configurations";
 
 /**
  * Pure (vscode-free) parse/serialize for the edits sidecar `<model>.edits.json`
@@ -15,6 +16,10 @@ interface EditsSidecarFile {
   source: string;
   /** Named parametric variables; omitted when empty (pre-parametric files simply lack it). */
   variables?: ParamVariable[];
+  /** Named configurations (design table); omitted when empty. Additive: older files lack it. */
+  configurations?: Configuration[];
+  /** The applied configuration's name; omitted when none. */
+  activeConfiguration?: string;
   /**
    * Tier 0 save-in-place watermark: the file on disk is already
    * `base ∘ ops[0..bakedThrough]`, so replay starts after it. Omitted when 0
@@ -27,6 +32,10 @@ interface EditsSidecarFile {
 export interface ParsedEdits {
   ops: EditOp[];
   variables: ParamVariable[];
+  /** Named configurations (sparse variable overrides). Absent on a file that has none. */
+  configurations?: Configuration[];
+  /** Name of the applied configuration, if it names one of `configurations`. */
+  activeConfiguration?: string | null;
   /** Count of leading ops already baked into the saved source file. 0 = none. */
   bakedThrough: number;
 }
@@ -49,8 +58,10 @@ export function parseEditsJson(text: string): ParsedEdits {
   }
   const file = data as Partial<EditsSidecarFile> | null;
   const variables = validateVariables(file?.variables);
+  const config = validateConfigurationState(file?.configurations, file?.activeConfiguration);
+  const configFields = config.configurations.length > 0 ? { configurations: config.configurations, activeConfiguration: config.activeConfiguration } : {};
   const rawOps = file?.ops;
-  if (!Array.isArray(rawOps)) return { ops: [], variables, bakedThrough: 0 };
+  if (!Array.isArray(rawOps)) return { ops: [], variables, ...configFields, bakedThrough: 0 };
 
   const ops: EditOp[] = [];
   for (const raw of rawOps) {
@@ -62,16 +73,31 @@ export function parseEditsJson(text: string): ParsedEdits {
     typeof bakedRaw === "number" && Number.isInteger(bakedRaw)
       ? Math.min(Math.max(bakedRaw, 0), ops.length)
       : 0;
-  const { values } = evaluateVariables(variables);
-  return { ops: resolveEditOps(ops, values).ops, variables, bakedThrough };
+  // Base caches heal first; the ops are then resolved against the ACTIVE
+  // configuration's overlay (clones), so the stored base variables never take
+  // a configuration's values.
+  const base = evaluateVariables(variables);
+  const values = config.activeConfiguration ? evaluateVariables(effectiveVariables(variables, config).variables).values : base.values;
+  return { ops: resolveEditOps(ops, values).ops, variables, ...configFields, bakedThrough };
 }
 
 /** Serializes ops + variables to the sidecar JSON text (pretty-printed, trailing
  * newline). `variables` is emitted only when non-empty so pre-parametric
  * documents keep their exact previous output; `bakedThrough` only when > 0. */
-export function serializeEditsJson(sourceName: string, ops: EditOp[], variables: ParamVariable[] = [], bakedThrough = 0): string {
+export function serializeEditsJson(
+  sourceName: string,
+  ops: EditOp[],
+  variables: ParamVariable[] = [],
+  bakedThrough = 0,
+  configState?: Partial<ConfigurationState> | null
+): string {
   const file: EditsSidecarFile = { version: EDITS_SIDECAR_VERSION, source: sourceName, ops };
   if (variables.length > 0) file.variables = variables;
+  const config = validateConfigurationState(configState?.configurations, configState?.activeConfiguration);
+  if (config.configurations.length > 0) {
+    file.configurations = config.configurations;
+    if (config.activeConfiguration) file.activeConfiguration = config.activeConfiguration;
+  }
   if (Number.isInteger(bakedThrough) && bakedThrough > 0) file.bakedThrough = Math.min(bakedThrough, ops.length);
   return JSON.stringify(file, null, 2) + "\n";
 }

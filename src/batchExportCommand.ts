@@ -12,6 +12,7 @@ import type { KernelClient } from "./kernelClient";
 import { BATCH_TARGETS, batchExportTool, type BatchTarget } from "./mcpTools";
 import { batchReportHtml } from "./batchExport";
 import { ROUTED_EXTENSIONS } from "./fileRouter";
+import { readEdits } from "./mcpSidecars";
 
 const TARGET_LABELS: Record<BatchTarget, string> = {
   step: "STEP (.step)",
@@ -71,6 +72,22 @@ export async function runBatchExportCommand(
   );
   if (!collisionPick) return undefined;
 
+  // Design table: only asked when a picked model actually stores configurations,
+  // so a plain batch keeps its exact previous prompts.
+  let perConfiguration = false;
+  const stored = await Promise.all(inputs.map((u) => readEdits(u.fsPath).catch(() => null)));
+  if (stored.some((e) => (e?.configurations?.length ?? 0) > 0)) {
+    const configPick = await vscode.window.showQuickPick(
+      [
+        { label: "Export as currently configured", perConfiguration: false },
+        { label: "One file per configuration", perConfiguration: true, description: "<name>-<configuration>.<ext>; the active configuration is not changed" },
+      ],
+      { title: "Batch export — configurations" }
+    );
+    if (!configPick) return undefined;
+    perConfiguration = configPick.perConfiguration;
+  }
+
   const owner = `batch-${++batchCounter}`;
   const result = await vscode.window.withProgress(
     { location: vscode.ProgressLocation.Notification, title: "CAD Preview: Batch export", cancellable: true },
@@ -81,7 +98,7 @@ export async function runBatchExportCommand(
         let last = 0;
         return await batchExportTool(
           { pipeline: pipeline.withJob({ owner, signal: abort.signal }), extensionPath: context.extensionPath },
-          { inputs: inputs.map((u) => u.fsPath), target: targetPick.target, outDir: outDirs[0].fsPath, onCollision: collisionPick.policy },
+          { inputs: inputs.map((u) => u.fsPath), target: targetPick.target, outDir: outDirs[0].fsPath, onCollision: collisionPick.policy, ...(perConfiguration ? { allConfigurations: true } : {}) },
           (p) => {
             const total = p.total ?? inputs.length;
             progress.report({ message: `${p.progress}/${total} — ${p.message ?? ""}`, increment: ((p.progress - last) / total) * 100 });

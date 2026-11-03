@@ -662,7 +662,7 @@ An op may carry an optional `exprs` annotation (field path → expression string
 }
 ```
 
-`bakedThrough` (optional) is the save-point watermark. `externalFrom` (optional) is sent only when the host's edits watcher reconciled a **pure append** made by another writer — an agent, a script: the index of the first appended op. The history marks rows from that index as external (a transient badge, webview memory only) until the next local edit; any other external change (a removal, a reorder, an edited prefix) is adopted without it.
+`configurations` and `activeConfiguration` (both optional) carry the design table, see [`editsChanged`](#editschanged). `bakedThrough` (optional) is the save-point watermark. `externalFrom` (optional) is sent only when the host's edits watcher reconciled a **pure append** made by another writer — an agent, a script: the index of the first appended op. The history marks rows from that index as external (a transient badge, webview memory only) until the next local edit; any other external change (a removal, a reorder, an edited prefix) is adopted without it.
 
 ### `editError`
 
@@ -1096,7 +1096,7 @@ type WebviewToHost =
   | { type: 'savePreprocessRequest' }
   | { type: 'loadPreprocessRequest' }
   | { type: 'scadApplyOverrides'; overrides: Record<string, unknown> }
-  | { type: 'editsChanged'; ops: EditOp[]; variables: ParamVariable[] }
+  | { type: 'editsChanged'; ops: EditOp[]; variables: ParamVariable[]; configurations?: Configuration[]; activeConfiguration?: string | null }
   | { type: 'exportVariables'; format: 'csv' | 'json'; text: string }
   | { type: 'viewChanged'; view: ViewState }
   | { type: 'setCamerasLinked'; enabled: boolean }
@@ -1231,6 +1231,8 @@ Sent whenever the user mutates the edit op-stack (apply / undo / redo / clear) *
   "variables": [ { "name": "L", "expr": "20", "value": 20 } ]
 }
 ```
+
+`configurations` (optional) and `activeConfiguration` carry the [design table](./file-formats.md#configurations-design-table): named sparse variable overrides and the applied one (`null` = the plain variables). The `ops` are resolved against the **active configuration's overlay** (webview `evaluateEffective`), while `variables` stay the base list, so picking a Config Table row posts a new `editsChanged` and the stored `exprs` never change. The host keeps both in memory and writes them with the ops; a host `edits` message carries them back the same way, and a message that omits them leaves the host's current set alone.
 
 ### `exportVariables`
 
