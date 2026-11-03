@@ -8564,6 +8564,37 @@ try {
     await call("set_variables", { path: curveModel, variables: [{ name: "A", expr: "0.6" }] });
     const areaB = (await call("inspect", { path: curveModel, entityId: "face-6" })).area;
     assert(Math.abs(areaB - (0.5 + 0.6 / 6)) < 1e-3, `changing A re-evaluates the curve: 0.6 for A = 0.6 (got ${areaB})`);
+
+    // `close: true` (roadmap "Parametric-curve profile"): the curve plus its
+    // straight closing segment bound a face that extrudes directly. One hump of
+    // y = 0.1*sin(360*s) (s in [0, 0.5]) closed by the chord encloses
+    // 0.1/pi = 0.03183 of area, so a 2 mm extrusion is 0.06366 mm3 (the
+    // approximating spline lands within ~1e-4 of it). Fresh block.stp: the face
+    // is face-6 and the extruded body solid-1.
+    resetCurve();
+    const closedCurve = { op: "addParametricCurve", x: "s", y: "0.1*sin(360*s)", sMin: 0, sMax: 0.5, samples: 41, close: true };
+    const closedApplied = await callWithCleanRetry("apply_edit_ops", { path: curveModel, ops: [closedCurve] }, resetCurve);
+    assert(closedApplied.applied === 1, `the closed curve applies (got ${JSON.stringify(closedApplied.report)})`);
+    assert(JSON.parse(fs.readFileSync(`${curveModel}.edits.json`, "utf8")).ops[0].close === true, "the sidecar keeps close on the parametric op");
+    const lobeFace = (await call("inspect", { path: curveModel, entityId: "face-6" })).area;
+    assert(Math.abs(lobeFace - 0.1 / Math.PI) < 1e-4, `the closed lobe face has area 0.1/pi = 0.03183 (got ${lobeFace})`);
+    const closedSidecar = fs.readFileSync(`${curveModel}.edits.json`);
+    const lobeExtruded = await callWithCleanRetry("apply_edit_ops", {
+      path: curveModel, ops: [{ op: "extrude", profile: "face-6", dir: [0, 0, 1], length: 2 }],
+    }, () => fs.writeFileSync(`${curveModel}.edits.json`, closedSidecar));
+    assert(lobeExtruded.applied === 1, `the closed lobe extrudes (got ${JSON.stringify(lobeExtruded.report)})`);
+    const lobeVol = (await call("get_mass_properties", { path: curveModel, entityId: "solid-1" })).volume;
+    assert(Math.abs(lobeVol - 0.2 / Math.PI) < 5e-4, `the extruded lobe has volume 0.2/pi = 0.06366 (got ${lobeVol})`);
+    // A full period touches its own closing segment (net-zero signed area): refused by name, curve still drawn.
+    resetCurve();
+    const figureEight = await callWithCleanRetry("apply_edit_ops", {
+      path: curveModel,
+      ops: [{ op: "addParametricCurve", x: "s", y: "0.1*sin(360*s)", sMin: 0, sMax: 1, samples: 41, close: true }],
+    }, resetCurve);
+    assert(
+      figureEight.applied === 0 && /opposite winding/.test(figureEight.report[0]?.diagnostic ?? ""),
+      `a closed full sine period is refused as zero-net-area (got ${JSON.stringify(figureEight.report)})`
+    );
   }
 
   // --- Configurations (roadmap "Configurations (design table)"): a parametric

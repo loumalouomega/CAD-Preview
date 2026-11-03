@@ -255,6 +255,8 @@ export interface AddParametricCurveOp {
   op: "addParametricCurve"; x: string; y: string; z?: string;
   sMin: number; sMax: number; samples: number;
   as?: "spline" | "polyline"; closed?: boolean; guide?: boolean;
+  /** Also close the curve with a straight segment from its last sample back to its first and build the planar face that wire bounds (the `addSurfaceFromLines` recipe), so the result feeds `extrude`/`revolve` directly. The curve and the closing segment become ordinary `edge-N`s and the face a free face. Needs ≥ 3 samples, no `guide`; supersedes `closed`. */
+  close?: boolean;
   /** Sketch plane: sample (x, y, z) map to `origin + x·u + y·v + z·n`, with n = `normal`, u = `up` made perpendicular to n, v = n × u. Absent = the world XYZ frame. */
   plane?: { origin: Vec3; normal: Vec3; up: Vec3 };
   /** Last-good sampled points (annotation + cache, like a numeric field next to its `exprs`): refreshed by `resolveEditOps` against the document variables, read by the kernel. Absent until the op has been resolved once. */
@@ -1564,7 +1566,9 @@ function validateEditOpCore(raw: unknown): EditOp | null {
       if (!x || !y || z === null) return null;
       if (!isFiniteNumber(o.sMin) || !isFiniteNumber(o.sMax) || o.sMax <= o.sMin) return null;
       if (!Number.isInteger(o.samples) || (o.samples as number) < 2 || (o.samples as number) > 2000) return null;
+      const close = o.close === true;
       if (closed && (as !== "polyline" || (o.samples as number) < 3)) return null;
+      if (close && ((o.samples as number) < 3 || o.guide === true)) return null;
       let plane: AddParametricCurveOp["plane"];
       if (o.plane !== undefined) {
         const pl = o.plane as Record<string, unknown> | null;
@@ -1578,7 +1582,7 @@ function validateEditOpCore(raw: unknown): EditOp | null {
       return {
         op: "addParametricCurve", x, y, ...(cached ? { points: cached } : {}), ...(z !== undefined ? { z } : {}),
         sMin: o.sMin, sMax: o.sMax, samples: o.samples as number,
-        ...(as === "polyline" ? { as } : {}), ...(closed ? { closed } : {}), ...(plane ? { plane } : {}),
+        ...(as === "polyline" ? { as } : {}), ...(closed && !close ? { closed } : {}), ...(close ? { close } : {}), ...(plane ? { plane } : {}),
       };
     }
     case "addBezier": {

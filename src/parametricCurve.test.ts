@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { compileParametricCurve } from "./parametricCurve";
+import { compileParametricCurve, loopSelfIntersects } from "./parametricCurve";
 import { resolveEditOps } from "./editVariables";
 import { validateEditOp, type AddParametricCurveOp } from "./editOps";
 
@@ -54,5 +54,30 @@ describe("addParametricCurve", () => {
   it("a degenerate curve is refused rather than fed to the spline fit", () => {
     const r = compileParametricCurve(wave({ x: "1", y: "1" }), {});
     expect(r.ok).toBe(false);
+  });
+  it("close keeps the op, round-trips through validation, and is gated", () => {
+    const c = wave({ close: true, samples: 8, y: "s*(1-s)" });
+    expect(c.close).toBe(true);
+    expect(validateEditOp(JSON.parse(JSON.stringify(c)))).toEqual(c);
+    expect(wave({ close: true, samples: 2 })).toBeNull(); // curve + chord would be a line
+    expect(wave({ close: true, guide: true })).toBeNull(); // a face is not construction geometry
+    expect(wave({ close: false })).not.toHaveProperty("close");
+    // close supersedes a polyline's own `closed`: the kernel adds the chord itself, so the polyline stays open
+    const poly = { as: "polyline", closed: true, close: true, samples: 6, y: "s*(1-s)" };
+    const r = compileParametricCurve(wave(poly), {});
+    expect(r.ok && r.op.op === "addPolyline" && r.op.closed).toBe(false);
+    expect(wave(poly).closed).toBeUndefined();
+  });
+  it("loopSelfIntersects: a one-lobe loop is simple, a full sine period touches its chord", () => {
+    const pts = (n: number, f: (s: number) => number, s1: number) =>
+      Array.from({ length: n }, (_, i) => { const s = (s1 * i) / (n - 1); return [s, f(s), 0] as [number, number, number]; });
+    const sine = (s: number) => 0.1 * Math.sin(2 * Math.PI * s);
+    expect(loopSelfIntersects(pts(41, sine, 0.5))).toBe(false); // half period: one hump over its chord
+    expect(loopSelfIntersects(pts(41, sine, 1))).toBe(true); // full period: figure-8 about the chord
+    expect(loopSelfIntersects(pts(40, sine, 1))).toBe(true); // even count: no sample on the touch point, still crosses
+    expect(loopSelfIntersects(pts(24, (s) => 0.5 + 0.3 * s * (1 - s), 1))).toBe(false);
+    // a bow-tie in a vertical plane (y constant) crosses itself; a triangle there does not
+    expect(loopSelfIntersects([[0, 0, 0], [1, 0, 1], [1, 0, 0], [0, 0, 1]])).toBe(true);
+    expect(loopSelfIntersects([[0, 0, 0], [1, 0, 0], [1, 0, 1]])).toBe(false);
   });
 });
