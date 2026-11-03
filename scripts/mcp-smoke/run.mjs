@@ -375,8 +375,8 @@ try {
   assert(capsText.length > 100, "resources/read cad-preview://capabilities returns JSON text");
 
   const tools = (await request("tools/list", {})).tools.map((t) => t.name);
-  assert(tools.length === 89, `tools/list exposes 89 tools (got ${tools.length}: ${tools.join(", ")})`);
-  for (const t of ["check_draft", "check_printability", "list_workspace_models", "check_interference_all", "generate_bom", "generate_hole_table", "render_ops_prefix", "check_tolerance", "inspect_meshio_fields", "pin_annotation", "import_svg", "save_mesh_preset", "list_mesh_presets", "apply_mesh_preset", "compare_mesh_refinement", "export_tessellated_stl", "estimate_mesh_budget", "analyze_passages", "measure_mesh_deviation", "save_sheet_template", "list_sheet_templates", "batch_export", "check_handoff_manifest", "generate_prep_report", "job_status", "job_cancel", "check_brep_health", "list_scad_parameters", "convert_scad", "list_layers", "set_layer", "assign_layer", "segment_mesh_surface", "fit_mesh_to_cad", "mesh_cad_surface", "check_mesh_conformity", "find_mesh_intersections", "measure_mesh_thickness", "select_mesh_region", "project_to_cad", "grow_prism_layers", "iga_sample", "iga_refine", "iga_evaluate", "check_mesh_quality"]) {
+  assert(tools.length === 90, `tools/list exposes 90 tools (got ${tools.length}: ${tools.join(", ")})`);
+  for (const t of ["check_draft", "check_printability", "list_workspace_models", "check_interference_all", "generate_bom", "generate_hole_table", "render_ops_prefix", "check_tolerance", "inspect_meshio_fields", "pin_annotation", "import_svg", "save_mesh_preset", "list_mesh_presets", "apply_mesh_preset", "compare_mesh_refinement", "export_tessellated_stl", "estimate_mesh_budget", "analyze_passages", "measure_mesh_deviation", "save_sheet_template", "list_sheet_templates", "batch_export", "check_handoff_manifest", "generate_prep_report", "job_status", "job_cancel", "check_brep_health", "list_scad_parameters", "convert_scad", "list_layers", "set_layer", "assign_layer", "segment_mesh_surface", "fit_mesh_to_cad", "mesh_cad_surface", "check_mesh_conformity", "find_mesh_intersections", "measure_mesh_thickness", "select_mesh_region", "project_to_cad", "grow_prism_layers", "iga_sample", "iga_refine", "iga_evaluate", "check_mesh_quality", "set_configuration"]) {
     assert(tools.includes(t), `tools/list exposes ${t}`);
   }
 
@@ -8564,6 +8564,93 @@ try {
     await call("set_variables", { path: curveModel, variables: [{ name: "A", expr: "0.6" }] });
     const areaB = (await call("inspect", { path: curveModel, entityId: "face-6" })).area;
     assert(Math.abs(areaB - (0.5 + 0.6 / 6)) < 1e-3, `changing A re-evaluates the curve: 0.6 for A = 0.6 (got ${areaB})`);
+
+    // `close: true` (roadmap "Parametric-curve profile"): the curve plus its
+    // straight closing segment bound a face that extrudes directly. One hump of
+    // y = 0.1*sin(360*s) (s in [0, 0.5]) closed by the chord encloses
+    // 0.1/pi = 0.03183 of area, so a 2 mm extrusion is 0.06366 mm3 (the
+    // approximating spline lands within ~1e-4 of it). Fresh block.stp: the face
+    // is face-6 and the extruded body solid-1.
+    resetCurve();
+    const closedCurve = { op: "addParametricCurve", x: "s", y: "0.1*sin(360*s)", sMin: 0, sMax: 0.5, samples: 41, close: true };
+    const closedApplied = await callWithCleanRetry("apply_edit_ops", { path: curveModel, ops: [closedCurve] }, resetCurve);
+    assert(closedApplied.applied === 1, `the closed curve applies (got ${JSON.stringify(closedApplied.report)})`);
+    assert(JSON.parse(fs.readFileSync(`${curveModel}.edits.json`, "utf8")).ops[0].close === true, "the sidecar keeps close on the parametric op");
+    const lobeFace = (await call("inspect", { path: curveModel, entityId: "face-6" })).area;
+    assert(Math.abs(lobeFace - 0.1 / Math.PI) < 1e-4, `the closed lobe face has area 0.1/pi = 0.03183 (got ${lobeFace})`);
+    const closedSidecar = fs.readFileSync(`${curveModel}.edits.json`);
+    const lobeExtruded = await callWithCleanRetry("apply_edit_ops", {
+      path: curveModel, ops: [{ op: "extrude", profile: "face-6", dir: [0, 0, 1], length: 2 }],
+    }, () => fs.writeFileSync(`${curveModel}.edits.json`, closedSidecar));
+    assert(lobeExtruded.applied === 1, `the closed lobe extrudes (got ${JSON.stringify(lobeExtruded.report)})`);
+    const lobeVol = (await call("get_mass_properties", { path: curveModel, entityId: "solid-1" })).volume;
+    assert(Math.abs(lobeVol - 0.2 / Math.PI) < 5e-4, `the extruded lobe has volume 0.2/pi = 0.06366 (got ${lobeVol})`);
+    // A full period touches its own closing segment (net-zero signed area): refused by name, curve still drawn.
+    resetCurve();
+    const figureEight = await callWithCleanRetry("apply_edit_ops", {
+      path: curveModel,
+      ops: [{ op: "addParametricCurve", x: "s", y: "0.1*sin(360*s)", sMin: 0, sMax: 1, samples: 41, close: true }],
+    }, resetCurve);
+    assert(
+      figureEight.applied === 0 && /opposite winding/.test(figureEight.report[0]?.diagnostic ?? ""),
+      `a closed full sine period is refused as zero-net-area (got ${JSON.stringify(figureEight.report)})`
+    );
+  }
+
+  // --- Configurations (roadmap "Configurations (design table)"): a parametric
+  // cube D x D x D parked beside block.stp (60 mm3). Volume = 60 + D^3:
+  // M6 = 60 + 216 = 276, M8 = 60 + 512 = 572. The `configuration` parameter
+  // evaluates one WITHOUT changing the stored activeConfiguration; the exported
+  // STEPs are re-measured through a separate load, and batch_export writes one
+  // file per configuration. ---
+  {
+    const cfgModel = path.join(dir, "config-box.stp");
+    const resetCfg = () => {
+      fs.copyFileSync(path.join(ROOT, "examples", "STP", "block.stp"), cfgModel);
+      fs.rmSync(`${cfgModel}.edits.json`, { force: true });
+    };
+    resetCfg();
+    await call("set_variables", { path: cfgModel, variables: [{ name: "D", expr: "6" }] });
+    const cfgApplied = await callWithCleanRetry("apply_edit_ops", {
+      path: cfgModel,
+      ops: [{ op: "addBox", center: [20, 0, 0], size: [1, 1, 1], exprs: { "size[0]": "D", "size[1]": "D", "size[2]": "D" } }],
+    }, resetCfg);
+    assert(cfgApplied.applied === 1, `the parametric cube applies (got ${JSON.stringify(cfgApplied.report)})`);
+    await call("set_configuration", { path: cfgModel, name: "M6" });
+    const cfgSet = await call("set_configuration", { path: cfgModel, name: "M8", overrides: { D: "8" } });
+    assert(cfgSet.activeConfiguration === null && cfgSet.table.length === 3, `two configurations stored, none active (got ${JSON.stringify(cfgSet.table)})`);
+    const volOf = async (args) => (await call("get_mass_properties", { path: cfgModel, ...args })).volume;
+    const near = (a, b) => Math.abs(a - b) / b < 1e-3;
+    const v0 = await volOf({});
+    const v6 = await volOf({ configuration: "M6" });
+    const v8 = await volOf({ configuration: "M8" });
+    assert(near(v0, 276) && near(v6, 276), `no configuration and M6 give 60 + 6^3 = 276 (got ${v0}, ${v6})`);
+    assert(near(v8, 572), `configuration M8 gives 60 + 8^3 = 572 (got ${v8})`);
+    assert((await call("get_state", { path: cfgModel })).activeConfiguration === null, "evaluating M8 did not change the stored active configuration");
+    const bad = await request("tools/call", { name: "get_mass_properties", arguments: { path: cfgModel, configuration: "nope" } });
+    assert(bad.isError === true, "an unknown configuration is an error, not a silent fallback");
+    // Export through the parameter, then measure the written file on its own.
+    const exp8 = path.join(dir, "config-box-m8.brep");
+    await call("export_brep", { path: cfgModel, targetFormat: "brep", outputPath: exp8, configuration: "M8" });
+    const exp8Vol = (await call("get_mass_properties", { path: exp8 })).volume;
+    assert(near(exp8Vol, 572), `the BREP exported under M8 re-measures 572 (got ${exp8Vol})`);
+    // Activating re-resolves the stored ops; the sidecar keeps exprs and the base variable.
+    await call("set_configuration", { path: cfgModel, name: "M8", active: true });
+    const cfgStored = JSON.parse(fs.readFileSync(`${cfgModel}.edits.json`, "utf8"));
+    assert(cfgStored.activeConfiguration === "M8" && cfgStored.variables[0].expr === "6", "the sidecar stores activeConfiguration and leaves the base variable alone");
+    assert(cfgStored.ops[0].exprs["size[0]"] === "D" && cfgStored.ops[0].size[0] === 8, "the stored op keeps its expression and caches the active value");
+    assert(near(await volOf({}), 572) && near(await volOf({ configuration: "M6" }), 276), "with M8 active, the default is 572 and an explicit M6 still gives 276");
+    // One file per configuration.
+    const cfgOut = path.join(dir, "config-batch");
+    const batched = await call("batch_export", { inputs: [cfgModel], target: "brep", outDir: cfgOut, allConfigurations: true });
+    assert(
+      batched.summary.ok === 2 && fs.existsSync(path.join(cfgOut, "config-box-M6.brep")) && fs.existsSync(path.join(cfgOut, "config-box-M8.brep")),
+      `batch_export writes config-box-M6.brep and config-box-M8.brep (got ${JSON.stringify(batched.rows.map((r) => [r.configuration, r.status, r.error]))})`
+    );
+    const b6 = (await call("get_mass_properties", { path: path.join(cfgOut, "config-box-M6.brep") })).volume;
+    const b8 = (await call("get_mass_properties", { path: path.join(cfgOut, "config-box-M8.brep") })).volume;
+    assert(near(b6, 276) && near(b8, 572), `the batched files hold 276 and 572 (got ${b6}, ${b8})`);
+    assert((await call("get_state", { path: cfgModel })).activeConfiguration === "M8", "batch_export left the stored active configuration alone");
   }
 
   // --- 3D text via outline import (roadmap "3D text via outline import",

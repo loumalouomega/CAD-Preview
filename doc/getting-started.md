@@ -40,6 +40,7 @@ CAD Preview contributes a few cross-document defaults under **CAD Preview** in V
 | `cadPreview.kernelTimeoutMinutes` | `5` | Watchdog for a single kernel job (load, mesh, export…): a job running longer is killed and the kernel worker respawned. Applies to newly opened documents |
 | `cadPreview.tessellationQuality` | `standard` | B-rep (STEP/IGES/BREP/CSG/SCAD) tessellation density — `draft`/`standard`/`fine`; `standard` is identical to every previous version's fixed behavior. Unlike the other settings here, re-read on every edit, so a change applies to the next edit without reopening the file. Face triangle density only — does not affect edge display or the FE Mesh panel's own (separate) mesh generation |
 | `cadPreview.upAxis` | `y` | Default up-axis for newly opened models — set to `z` for Z-up source conventions |
+| `cadPreview.singleKeyCommands` | `false` | Turns on the single-letter [command keys](#command-search-and-single-key-commands) (E Extrude, R Revolve, F Fillet, C Chamfer, H Hole, M Move, S Shell, P Linear Pattern, Q Measure mode) and Shift+R to repeat the last command. Off by default because single keys collide with typing habits; read when a viewer opens |
 
 ## Opening a File
 
@@ -193,9 +194,30 @@ Every item is also a VS Code command (`CAD Preview: …` in the Command Palette)
 
 The first time you open a CAD file (or run any `CAD Preview: …` command) after an update, a **What's New** tab opens beside the editor summarizing everything that changed since the version you last had installed — just close it (or click **Got it**) and keep working. It won't show again until the next update. You can reopen it anytime via **CAD Preview: Show What's New** in the Command Palette, which shows the full changelog rather than only what's new since your last session.
 
+### The Ribbon
+
+![The ribbon command strip under the menu bar: five tabs and, on the Model tab, large icon-over-label buttons in labelled groups.](/screenshots/ribbon.png)
+
+Under the menu bar, a **ribbon** gathers the commands that otherwise live in the Edits panel's button grid, the toolbar menus and the collapsed Advanced group, so what the tool can do is visible without opening a panel first. It has five tabs; the choice is remembered per document. A button opens the existing form, menu action or panel; the ribbon adds no features of its own.
+
+| Tab | Groups | Buttons |
+| --- | --- | --- |
+| **View** | Navigate, Display, Show, Layout, Pick & mark | Fit, Reset, Zoom to selection, Tree; the six display modes; Grid, Edges, Projection; the four split layouts; Select, Markup, Screenshot |
+| **Model** | One group per Edits-panel category: Primitives, Holes, Features, Refine, Boolean, Modify, Transform, Assembly, Build (3D), Wireframe, Curves, Sketch, Build (2D), then Import | Every Edits-panel operation (the same list as the GEOMETRY and EDIT tabs), plus Import SVG and Import DXF |
+| **Inspect** | Measure, Analysis | Measure mode and its four tools, Clear; Mass Properties, Clash, Draft, Printability, B-rep Health, Passages, Primitives (each expands its sidebar panel) |
+| **Mesh** | FE mesh, Repair & fit, Surface | FE Mesh overlay toggle, Mesh settings; Mesh Health, Region fit; Surface Tools |
+| **Export** | Model, Drawings, Bundle, Mesh | Save, Save As, Export; SVG and DXF outline, Drawing, Drawing sheet; Save and Load preprocess; FE mesh export |
+
+- **Operations** open the same form as the Edits panel's button and never apply anything by themselves. A B-rep-only operation is dimmed on a mesh source. The button of the operation whose form is open shows as pressed.
+- **Toggles** (Grid, Selection mode, the display modes, Measure…) show their live state, including when you change them through the toolbar menus. A button whose target is unavailable (Tree outside an assembly, a panel the current file does not offer) is dimmed.
+- **Narrow editors.** When the buttons do not fit, the ones that do not move into a **More ▸** menu, listed under their group headings, so every command stays reachable at any width. The Model tab has more than sixty buttons and always uses it.
+- **Compact** (the button at the right of the tab row) hides the labels and group titles for a one-row, icons-only strip; names stay on the tooltip and the accessible name.
+- **Icons.** The Model-tab operation icons that draw a solid are two-tone: a neutral body with an accent (your theme's button colour) on the part the command acts on, such as the extruded profile or the filleted corner. High-contrast themes drop the accent and stay monochrome.
+- **The Edits panel.** Because the ribbon covers the operation buttons, the panel's GEOMETRY/EDIT tabs and button grids are collapsed by default. The grid button in the Edits header (next to Undo) brings them back; an opened operation's parameter form and the history are always shown.
+
 ### Toolbar
 
-The toolbar appears at the top-right of the editor, just below the menu bar. Three always-visible buttons sit on the left; everything else is grouped behind four dropdown menus, so the strip stays compact:
+The toolbar appears at the top-right of the editor, just below the ribbon. Three always-visible buttons sit on the left; everything else is grouped behind four dropdown menus, so the strip stays compact:
 
 ![The viewer toolbar: Fit, Tree, FE Mesh, and the View / Select / Measure / Markup dropdown menus.](/screenshots/toolbar.png)
 
@@ -398,7 +420,7 @@ Click any face of the cube to snap the camera to that standard view:
 | **+Y / -Y** | Top / Bottom |
 | **+Z / -Z** | Front / Back |
 
-The same views are on the keyboard (ignored while typing in a text field, and with Ctrl, Cmd or Alt held):
+The same views are on the keyboard (ignored while typing in a text field, and with Ctrl, Cmd or Alt held; the optional [single-letter command keys](#command-search-and-single-key-commands) never take these):
 
 | Key | View   | Key | View   |
 | --- | ------ | --- | ------ |
@@ -406,6 +428,27 @@ The same views are on the keyboard (ignored while typing in a text field, and wi
 | `2` | Back   | `5` | Top    |
 | `3` | Right  | `6` | Bottom |
 | `i` | Isometric (front-top-right) | | |
+
+### Command Search and Single-Key Commands
+
+**Ctrl+K** (Cmd+K on macOS), or **/** when focus is not in a text field, opens a command search over the whole interface: every Edits-panel operation, every toolbar and dropdown action, and every sidebar panel, including the ones inside **Advanced**. Type a few letters and the list narrows by fuzzy match (`fil` finds **Fillet** before **Fill Surface**); an operation also answers to its [command-bar](#the-command-bar) name, so `union` finds the Union button. Each row shows its icon, its group (the operation's category, the dropdown it lives in, or Panels / Advanced) and its shortcut, so the list doubles as the shortcut reference. **↑**/**↓** move, **Enter** runs, **Escape** closes and returns focus to where it was.
+
+- Choosing an **operation** opens its form exactly as clicking its button would (the Edits section is expanded if it was collapsed). A B-rep-only operation on a mesh source is shown dimmed and refuses with a status message.
+- Choosing a **toolbar action** runs it, the same as clicking it in its menu.
+- Choosing a **panel** expands it (and the Advanced group above it) and scrolls it into view.
+- With nothing typed, the most recently chosen items come first.
+
+With `cadPreview.singleKeyCommands` on, these unmodified keys work when focus is not in a text field (a field, the command bar and the search itself always keep their keys):
+
+| Key | Command | Key | Command |
+| --- | --- | --- | --- |
+| `E` | Extrude | `H` | Hole |
+| `R` | Revolve | `M` | Move |
+| `F` | Fillet | `S` | Shell |
+| `C` | Chamfer | `P` | Linear Pattern |
+| `Q` | Measure mode (toggle) | **Shift+R** | Repeat the last command |
+
+A key opens the operation's form; it never applies anything. **Shift+R** reopens the form of the last command: the last applied operation's values are filled back in (numbers and vectors; the operands are re-selected where the model still has them), or, if you only opened a form without applying, that form. It never applies either. The keys never take the view snaps (`1`–`6`, `i`), are ignored with Ctrl, Cmd or Alt held and on key auto-repeat, and are off by default; the search lists them dimmed while the setting is off. Each letter is declared once, beside its catalog entry (`src/webview/opCatalog.ts`), and `opCatalog.test.ts` refuses a duplicate or a collision with a view snap.
 
 ### Component Tree Panel
 
@@ -454,7 +497,7 @@ Each part is a compact row: a colour swatch (click to recolour), an editable nam
 
 The panel header's **Isolate** button (target icon) shows only the currently-selected part's entities, hiding everything else; click it again (or select a different part and click it again) to clear isolation. Isolating composes with the per-row eye-toggles rather than overriding them — a part you'd already hidden stays hidden after you clear isolation. Like the eye-toggles, isolation is display-only and is never written to `<model>.parts.json`.
 
-Each part row has a small **density** field (g/cm³, e.g. steel 7.85, aluminium 2.7; empty = unset). The header's **Copy BOM** button (copy icon) copies the bill of materials — one row per part (name, entity counts, volume/area, density and mass in grams) as tab-separated text, ready to paste into a spreadsheet — computed live over the current model. It is enabled only for a B-rep source with at least one part defined (mesh sources have no per-part rows to compute). A part without a density leaves its Density/Mass cells empty — never zero.
+Each part row has a small **density** field (g/cm³, e.g. steel 7.85, aluminium 2.7; empty = unset) and a **Material…** picker built from the same table headless `set_part`'s `material` uses (steel, stainless steel, aluminium, copper, brass, titanium, ABS, PLA, PETG, nylon, water). Picking an entry sets the density and, only while the Part still has its automatically assigned palette colour, that material's suggested colour (a colour you chose is never overwritten). Only the number is saved: the name is presentation, shown while the density still equals the picked value, and typing a different density clears it. Both controls appear when the row is hovered or focused. The header's **Copy BOM** button (copy icon) copies the bill of materials — one row per part (name, entity counts, volume/area, density and mass in grams) as tab-separated text, ready to paste into a spreadsheet — computed live over the current model. It is enabled only for a B-rep source with at least one part defined (mesh sources have no per-part rows to compute). A part without a density leaves its Density/Mass cells empty — never zero.
 
 Beside it, **Copy hole table** (plate-with-holes icon) copies the hole schedule — one row per hole size and axis direction: diameter, axis, count, the `face-N`/`solid-N` ids, and the nearest standard thread designation with its signed delta — as the same tab-separated text the `generate_hole_table` MCP tool returns. It needs no parts, only a B-rep source.
 
@@ -496,6 +539,8 @@ Every parameter form previews **live**: while a form is open, the viewer shows w
 
 The **Extrude**, **Revolve**, **Shell**, and **Draft** forms also carry a **Pin query** row: pick exactly one face, choose the producing op and bucket role it came from (e.g. an extrude's end cap), and click **Synthesize** to name that face as a stored query. The query is attached when you click **Apply** (as long as the selection hasn't changed since) and survives later edits renumbering the model's faces — the same mechanism agents use headlessly, now available interactively. Edge/volume operands and multi-face picks can't be pinned yet; the row says so rather than offering a dead button.
 
+The operation buttons are also on the [ribbon](#the-ribbon)'s Model tab, and the panel's own button grid is collapsed behind the grid button in its header by default (see above).
+
 The panel is organised into two top-level tabs — **GEOMETRY** (create new entities) and **EDIT** (modify existing ones) — sharing one undo/redo/Clear header and one operation-history list. The GEOMETRY tab is further split into **2D** (points, lines, curves, sketch profiles) and **3D** (solid primitives, holes) subtabs. Each tab shows a grid of operation buttons (icon + name); clicking a button opens its parameter form below the grid, and clicking it again collapses the form. For mesh sources the whole **2D** subtab and every other B-rep-only button grey out.
 
 <div style="display:flex; gap:1rem; flex-wrap:wrap; align-items:flex-start;">
@@ -527,6 +572,7 @@ Opening **Move**, **Rotate**, or **Scale** with a selection active also attaches
 | **Bezier** | Appends a Bézier curve over the control-point list (passes through first and last only) |
 | **Ell. Arc** | Appends an elliptical arc — Radius X along **Up**, Radius Y perpendicular, trimmed Start°→End° |
 | **Helix** | Appends a helix: `Turns` revolutions of `Pitch` height around `Axis` from `Base`, radius `Radius` |
+| **f(s) Curve** | Appends a curve given as functions of a parameter `s`: type `x(s)`, `y(s)`, `z(s)` (expressions in `s` and the document variables, trig in degrees; the fields suggest `s` and the variable names) over `s min`…`s max`, sampled at `Samples` points (2–2000) and drawn as an endpoint-exact **Spline** or a **Polyline**. **Origin / Normal / Up** place the sketch (sample `(x, y, z)` lands at `origin + x·u + y·v + z·n`; the defaults are the world axes). **Close into a face** also draws the straight segment from the last sample back to the first and builds the flat face that loop bounds, so it appears under "Sketches" and feeds Extrude/Revolve directly (the curve's edges and the closing segment are ordinary lines). The curve stays an expression: changing a document variable re-draws it. A curve that touches or crosses its own closing segment (a full sine period) bounds regions of opposite winding with zero net area and is refused with a message; close one lobe instead, e.g. `s` from 0 to 0.5 |
 | **Circle / Rectangle / Polygon / Ellipse / Rounded / Slot / Trapezoid** | **Sketch** — appends a flat profile face you can later select (**Surf** mode) and feed into Extrude/Revolve/Sweep/Loft. Rectangle-family shapes take an **Up** direction for in-plane orientation. Circle/Rectangle/Polygon additionally offer a **Plane** picker: choose a saved `plane-N` to place the sketch from the plane plus **Offset U/V** (and **Rotation°** for rectangle/polygon), or leave it on Custom and type the center by hand — picked placement fills the coordinate fields in and locks them until you switch back |
 | **Surface** (Build from selection) | Select ≥3 lines (**Line** mode) that close into a loop and **Build** — assembles them into a new flat face under "Sketches" |
 | **Fill Surface** (Build from selection) | Select 3+ edges (**Line** mode) forming one closed boundary, **Build** — appends a smooth, generally non-planar face through them under "Sketches". It is an approximation (a quarter-cylinder boundary fills to within 0.7 % of the radius), not an exact analytic surface; use it to close a curved gap before **Surfaces → Volume** |
@@ -594,7 +640,7 @@ addLine {"start":"point-3","end":"point-7"}
 - **Panel → bar**: every op you build with a panel button writes its equivalent command into the bar, so the typed form can be learned from the clicks.
 - B-rep-only commands (fillet, chamfer, features, sketches, …) are refused on a mesh source with the same reason the greyed panel buttons give. If the kernel later skips a typed op (for example its ids no longer exist), the bar reports the skip's diagnostic rather than leaving a silent no-op.
 
-Commands: `addPoint`, `addLine`, `addArc`, `addPolyline`, `addThreePointArc`, `addSpline`, `addBezier`, `addEllipseArc`, `addHelix`; the seven sketch profiles (`addCircleProfile`, `addRectangleProfile`, `addPolygonProfile`, `addEllipseProfile`, `addRoundedRectangleProfile`, `addSlotProfile`, `addTrapezoidProfile`); `buildSurface` (`surface`), `edgeSlot` (`slot`), `buildVolume` (`volume`); the primitives `addBox`, `addSphere`, `addCylinder`, `addCone`, `addTorus`, `addPrism`, `addWedge`; `addHole`, `addCounterboreHole`, `addCountersinkHole`; `translate`, `rotate`, `scale`, `mirror`; `union`, `subtract`, `intersect`; `fillet`, `chamfer`; `extrude`, `revolve`, `sweep`, `loft`, `rib`, `wrap`; `shell`, `draft`, `defeature`, `unifySameDomain`, `splitByPlane`, `splitFace`, `section`, `drill`; `explode`, `mate`, `align`, `patternLinear`, `patternCircular`. Run **Describe capabilities** (MCP) or see the Edits panel forms for each body's fields. The bar is webview-only: it needs no extra setup and writes nothing the panel does not.
+Commands: `addPoint`, `addLine`, `addArc`, `addPolyline`, `addThreePointArc`, `addSpline`, `addBezier`, `addEllipseArc`, `addHelix`, `addParametricCurve`; the seven sketch profiles (`addCircleProfile`, `addRectangleProfile`, `addPolygonProfile`, `addEllipseProfile`, `addRoundedRectangleProfile`, `addSlotProfile`, `addTrapezoidProfile`); `buildSurface` (`surface`), `edgeSlot` (`slot`), `buildVolume` (`volume`); the primitives `addBox`, `addSphere`, `addCylinder`, `addCone`, `addTorus`, `addPrism`, `addWedge`; `addHole`, `addCounterboreHole`, `addCountersinkHole`; `translate`, `rotate`, `scale`, `mirror`; `union`, `subtract`, `intersect`; `fillet`, `chamfer`; `extrude`, `revolve`, `sweep`, `loft`, `rib`, `wrap`; `shell`, `draft`, `defeature`, `unifySameDomain`, `splitByPlane`, `splitFace`, `section`, `drill`; `explode`, `mate`, `align`, `patternLinear`, `patternCircular`. Run **Describe capabilities** (MCP) or see the Edits panel forms for each body's fields. The bar is webview-only: it needs no extra setup and writes nothing the panel does not.
 
 ### Parametric Variables
 
@@ -607,9 +653,32 @@ The **Variables** table at the top of the Edits panel makes the model parametric
 
 ![The Variables table with two variables — L = 20 and the derived H = L / 2 = 10.](/screenshots/variables.png)
 
-Expressions support numbers, variable names, `+ - * / ^`, parentheses, `sqrt/abs/min/max/floor/ceil/round`, `sin/cos/tan` (**degrees**, matching the angle fields), and `pi`. A number may carry a bracketed unit — `2[in]`, `10[mm]`, `5[deg]`, `0.5[rad]` (`mm cm m in ft`, `deg rad`) — and is converted to millimetres / degrees, so `W = 2[in]` is 50.8; plain numbers keep their meaning. A variable's own expression may reference the variables defined **above** it in the table (so `W = L/2` works; reordering isn't supported). Because the fields are free-text, they no longer have browser spinner arrows — type the value.
+Expressions support numbers, variable names, `+ - * / ^`, parentheses, `sqrt/abs/min/max/floor/ceil/round`, `sin/cos/tan` (**degrees**, matching the angle fields), and `pi`. A number may carry a bracketed unit — `2[in]`, `10[mm]`, `5[deg]`, `0.5[rad]` (`mm cm m in ft`, `deg rad`) — and is converted to millimetres / degrees, so `W = 2[in]` is 50.8; plain numbers keep their meaning. A variable's own expression may reference the variables defined **above** it in the table (so `W = L/2` works; the ▲/▼ buttons reorder, and refuse a move that would put a variable above one it references). Because the fields are free-text, they no longer have browser spinner arrows — type the value.
 
-If an expression can't be evaluated at Apply time (unknown name, syntax error), the apply is blocked with an inline message. If a *referenced* variable is later deleted or renamed, affected operations keep their last computed values — a warning names the missing variable, and re-adding it restores the parametric link. The delete button's tooltip warns when a variable is still referenced. Variables persist in the same `<model>.edits.json` sidecar as the operations ([format](./file-formats.md#parametric-variables)); variable edits are not part of the op undo/redo history.
+If an expression can't be evaluated at Apply time (unknown name, syntax error), the apply is blocked with an inline message. If a *referenced* variable is later deleted or renamed, affected operations keep their last computed values — a warning names the missing variable, and re-adding it restores the parametric link. The delete button's tooltip warns when a variable is still referenced (see [Used by](#the-parameters-table)). Variables persist in the same `<model>.edits.json` sidecar as the operations ([format](./file-formats.md#parametric-variables)); variable edits are not part of the op undo/redo history.
+
+#### The Parameters table
+
+The Variables table is also a parameters table:
+
+- **Columns:** name · expression · **Unit** selector (writes the bracket syntax, `2[in]`, into a plain-number expression — there is no second unit store) · computed value · **comment** · ▲/▼ reorder · delete. The star pins a variable to the **top of the view**; the stored order, which is also the evaluation order, never changes. The **Filter** box matches name, expression and comment.
+- **Import… / CSV… / JSON…** read and write `Name, Expression, Comment` rows. An import adds the valid rows after the existing variables and names every rejected one in the status line (bad name, duplicate, a reference to a name not defined above, unparsable expression); a row is accepted whole or not at all.
+- **Apply each change as you leave its field** is on by default. Turn it off to collect edits and commit the whole table in one step with **Apply** (or drop them with **Revert**).
+- **Used by:** a variable that something references shows a `▸ N` toggle on its row (N = referencing edit fields + other variables). It lists each referencing op as `#3 translate — vec[1]` and then the other variables whose expression uses it. Clicking an op row **selects that row in the Edit history** (outlined, scrolled into view) without jumping the timeline. N is the same count the delete button's tooltip quotes ("referenced by 3 edit fields and 1 variable"). A reference is a *name* stored in the op, so "Used by" is exact — unlike the positional `face-N` ids.
+- **Autocomplete:** in every numeric op field and every variable expression, typing an identifier opens a suggestion list of variable names and the expression functions (`sqrt`, `sin`, `pi`, …). A variable's own expression is offered only the variables **above** it; op fields are offered all of them. **↑/↓** move (wrapping), **Enter** or **Tab** accept (a function gains its `(`), **Esc** dismisses and leaves the text as typed. With the list closed, Enter and Tab behave as before. No list appears inside a `[unit]` suffix or after a digit.
+- **Model parameters** lists every numeric field of each op in the history (`#3 extrude`, `length`), editable in place, and **→ var** promotes a field to a new variable: the field then follows the variable. Rows saved into the source file (🔒) are read-only, and a field already driven by an expression shows it instead.
+
+#### Configurations (design table)
+
+Under the Variables table, the collapsible **Configurations** section is a grid: one row per configuration (plus a **Base** row for the variables as written), one column per variable.
+
+- **Add** a configuration by typing a name and pressing **Add** or Enter. It starts as a copy of the active configuration's overrides.
+- **Pick a row** with its radio button to make it the active configuration: every op field bound to a variable re-resolves, and the viewer rebuilds. **Base** returns to the plain variables.
+- **Edit a cell** to override that variable in that configuration. An empty cell (shown with the base expression as a faint placeholder) inherits the variable's own expression; the small number beside the cell is the evaluated value. Overridden cells are bold.
+- A cell whose expression cannot be evaluated is marked with a warning, and the model **freezes** at that variable's last good value instead of failing.
+- Rename a configuration by editing its name; **×** deletes it. Renaming a variable carries its overrides along.
+
+Configurations are saved in `<model>.edits.json` ([format](./file-formats.md#configurations-design-table)); switching is not part of the op undo/redo history. For headless use, `set_configuration` defines them and the export and meshing tools take a `configuration` parameter ([MCP server](./mcp-server.md)); **Batch Export** can write one file per configuration.
 
 ### OpenSCAD Customizer
 

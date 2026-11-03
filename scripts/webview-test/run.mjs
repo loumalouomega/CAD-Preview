@@ -1773,8 +1773,8 @@ test("dropdowns: clicking an open trigger's inner icon closes it", async (page) 
  * failure text rather than a guess. If one of these fails: measure, then update
  * BOTH this test and the clip in `capture.mjs` together.
  */
-const FILE_MENU_CLIP = { x: 0, y: 0, width: 320, height: 439 };
-const TOOLBAR_MENU_CLIP = { x: 750, y: 30, width: 610, height: 500 };
+const FILE_MENU_CLIP = { x: 0, y: 0, width: 320, height: 446 };
+const TOOLBAR_MENU_CLIP = { x: 750, y: 119, width: 610, height: 500 };
 
 const panelBox = (page, id) =>
   page.evaluate((i) => {
@@ -2669,6 +2669,54 @@ test("parts: Rule ▸ plane stores a scene selector from the selected face's exa
   assert(parts[0].surfaces.includes(pickedId), "the selected face stays the cached membership");
 });
 
+test("parts: material picker stores only the density, offers the colour, and a hand-edited density clears the name", async (page) => {
+  await populate(page);
+  await sleep(200);
+  await page.click("#parts-new");
+  await sleep(150);
+  await page.click("#parts-new");
+  await sleep(150);
+  const lastParts = () =>
+    page.evaluate(() => window.__sent.filter((m) => m.type === "partsChanged").at(-1)?.parts ?? null);
+
+  // Part 0 keeps its auto palette colour: picking Steel stores 7.85 and offers steel's colour.
+  await page.evaluate(() => (window.__sent.length = 0));
+  await page.hover(".part-item:nth-last-child(2) .part-row");
+  await page.selectOption(".part-item:nth-last-child(2) .part-material", "steel");
+  await sleep(200);
+  const picked = await lastParts();
+  assert(picked?.at(-2)?.density === 7.85, `Steel stores density 7.85 (got ${picked?.at(-2)?.density})`);
+  assert(picked.at(-2).color === "#8d939b", `the suggested colour is applied to a never-recoloured Part (got ${picked.at(-2).color})`);
+  assert(!/steel|material/i.test(JSON.stringify(picked)), "the saved Part holds no material name");
+  const shown = await page.evaluate(() => document.querySelector(".part-item:nth-last-child(2) .part-material").value);
+  assert(shown === "steel", `the row shows the picked name (got ${shown})`);
+  // BOM mass for a 1000 mm3 solid at the stored density is volume x 7.85 / 1000.
+  assert(Math.abs((1000 / 1000) * picked.at(-2).density - 7.85) < 1e-12, "1000 mm3 at the stored density = 7.85 g");
+
+  // Part 1 was recoloured by the user first: its colour must survive the pick.
+  await page.evaluate(() => {
+    const sw = document.querySelector(".part-item:last-child .part-swatch");
+    sw.value = "#123456";
+    sw.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  await sleep(150);
+  await page.hover(".part-item:last-child .part-row");
+  await page.selectOption(".part-item:last-child .part-material", "copper");
+  await sleep(200);
+  const second = await lastParts();
+  assert(second?.at(-1)?.density === 8.96, "Copper stores 8.96");
+  assert(second.at(-1).color === "#123456", `a user-chosen colour is not overwritten (got ${second.at(-1).color})`);
+
+  // Editing the density by hand clears the shown name.
+  await page.hover(".part-item:nth-last-child(2) .part-row");
+  await page.fill(".part-item:nth-last-child(2) .part-density", "7.5");
+  await page.press(".part-item:nth-last-child(2) .part-density", "Enter");
+  await sleep(200);
+  const after = await page.evaluate(() => document.querySelector(".part-item:nth-last-child(2) .part-material").value);
+  assert(after === "", `hand-editing the density clears the shown name (got "${after}")`);
+  assert((await lastParts())?.at(-2)?.density === 7.5, "the hand-typed density is what is stored");
+});
+
 test("inspector card: selection requests facts, and the reply renders per classification", async (page) => {
   await populate(page);
   await sleep(200);
@@ -3082,6 +3130,66 @@ test("coincident point: Add at an existing point's coordinates asks Collapse / K
   assert((await sentCount(page, "editsChanged")) === mid + 1 && op?.coincident === undefined && (await page.evaluate(() => document.getElementById("coincident-prompt") === null)), `a non-coincident point is pushed directly with no field (got ${JSON.stringify(op)})`);
 });
 
+test("f(s) Curve form: pushes addParametricCurve with the typed expressions, the close flag and a placed plane; a bad expression pushes nothing", async (page) => {
+  await populate(page);
+  const open = async () => {
+    await page.evaluate(() => {
+      if (document.querySelector('#edits-params input[data-name="sMax"]')) return;
+      [...document.querySelectorAll(".op-btn")].find((b) => b.querySelector(".op-name")?.textContent === "f(s) Curve")?.click();
+    });
+    await sleep(250);
+  };
+  const setField = (name, value, i) => page.evaluate(([n, v, k]) => {
+    const sel = k === undefined ? `#edits-params input[data-name="${n}"]` : `#edits-params input[data-name="${n}"][data-i="${k}"]`;
+    const inp = document.querySelector(sel);
+    if (inp.type === "checkbox") inp.checked = v; else inp.value = v;
+    inp.dispatchEvent(new Event("input", { bubbles: true }));
+    inp.dispatchEvent(new Event("change", { bubbles: true }));
+  }, [name, value, i]);
+  const add = () => page.evaluate(() => [...document.querySelectorAll("#edits-params .compose-apply")].find((b) => b.textContent === "Add")?.click());
+  const lastOp = () => page.evaluate(() => (window.__sent ?? []).findLast((x) => x.type === "editsChanged")?.ops.at(-1));
+  await open();
+  const shown = await page.evaluate(() => ["x", "y", "z", "sMin", "sMax", "samples", "close", "origin", "normal", "up"].map(
+    (n) => { const el = document.querySelector(`#edits-params [data-name="${n}"]`); return [n, !!el && el.offsetParent !== null]; }));
+  assert(shown.every(([, v]) => v), `every curve control is rendered visible (got ${JSON.stringify(shown)})`);
+  // Defaults: one period of the roadmap's example, no close, no plane.
+  const before = await sentCount(page, "editsChanged");
+  await add();
+  await sleep(300);
+  let op = await lastOp();
+  assert(
+    (await sentCount(page, "editsChanged")) === before + 1 && op?.op === "addParametricCurve" && op.x === "s" && op.y === "0.1*sin(360*s)"
+      && op.sMin === 0 && op.sMax === 1 && op.samples === 41 && op.close === undefined && op.plane === undefined && op.z === undefined,
+    `defaults push the plain curve (got ${JSON.stringify(op)})`
+  );
+  // Typed expressions, a closing request and a non-default frame all land on the op.
+  await setField("y", "0.2*sin(360*s)");
+  await setField("sMax", "0.5");
+  await setField("samples", "21");
+  await setField("close", true);
+  await setField("normal", "1", 0);
+  await setField("normal", "0", 2);
+  await setField("up", "0", 0);
+  await setField("up", "1", 2);
+  const mid = await sentCount(page, "editsChanged");
+  await add();
+  await sleep(300);
+  op = await lastOp();
+  assert(
+    (await sentCount(page, "editsChanged")) === mid + 1 && op?.op === "addParametricCurve" && op.y === "0.2*sin(360*s)" && op.sMax === 0.5
+      && op.samples === 21 && op.close === true && JSON.stringify(op.plane) === JSON.stringify({ origin: [0, 0, 0], normal: [1, 0, 0], up: [0, 0, 1] }),
+    `typed expression, close and plane are pushed (got ${JSON.stringify(op)})`
+  );
+  // Control: an expression that cannot evaluate is reported inline and nothing is pushed.
+  await setField("y", "sin(360*");
+  const bad = await sentCount(page, "editsChanged");
+  await add();
+  await sleep(300);
+  assert((await sentCount(page, "editsChanged")) === bad, "an unparsable y(s) pushes nothing");
+  const err = await page.evaluate(() => document.querySelector("#edits-params")?.textContent ?? "");
+  assert(/y\(s\)/.test(err), `the failing expression is named inline (got ${JSON.stringify(err.slice(-200))})`);
+});
+
 test("coincident curve endpoint: a raw Line start on an existing point asks Collapse / Keep independent and records the choice", async (page) => {
   await populate(page);
   await enablePicking(page, "point");
@@ -3427,6 +3535,193 @@ test("command bar: history recalls earlier lines and Tab completes a command", a
   assert((await page.inputValue("#cmdbar-input")).startsWith("addCylinder"), `Tab completes a unique prefix (got ${JSON.stringify(await page.inputValue("#cmdbar-input"))})`);
   await page.press("#cmdbar-input", "Escape");
   assert((await page.inputValue("#cmdbar-input")) === "", "Escape clears the line");
+});
+
+/**
+ * Command search and keyboard-first commands (roadmap "Command search and
+ * keyboard-first commands"). The matcher and key table are unit-tested in
+ * `commandSearch.test.ts`; what needs the real bundle is the overlay (it must
+ * actually become visible and take focus), Enter reaching the same form a
+ * button click opens, the DOM-derived toolbar/panel sources, and the opt-in
+ * keys staying inert while the setting is off or focus is in a field.
+ */
+const paletteVisible = (page) => page.evaluate(() => {
+  const el = document.getElementById("cmd-palette");
+  return !!el && el.getClientRects().length > 0 && getComputedStyle(el).display !== "none"; // position:fixed has no offsetParent
+});
+const activeOpName = (page) => page.evaluate(() => document.querySelector(".op-btn.active .op-name")?.textContent ?? null);
+const blurAll = (page) => page.evaluate(() => document.activeElement instanceof HTMLElement && document.activeElement.blur());
+const setSingleKeys = async (page, on) => { await post(page, { type: "viewerDefaults", background: "#1e1e1e", meshSizePreset: "medium", showGridAndAxes: true, upAxis: "y", singleKeyCommands: on }); await sleep(100); };
+const paletteRows = (page) => page.evaluate(() => [...document.querySelectorAll("#cmd-palette-list .cmd-row")].map((r) => ({
+  id: r.dataset.id, kind: r.dataset.kind, label: r.querySelector(".cmd-label")?.textContent, group: r.querySelector(".cmd-group")?.textContent,
+  key: r.querySelector(".cmd-key")?.textContent ?? null, keyOff: !!r.querySelector(".cmd-key.off"), hasIcon: !!r.querySelector(".cmd-icon svg"), selected: r.classList.contains("selected"),
+})));
+
+test("command search: Ctrl+K, 'fil' finds Fillet, Enter opens its form, Shift+R reopens it without applying", async (page) => {
+  await populate(page);
+  await setSingleKeys(page, true);
+  await blurAll(page);
+  const before = await sentCount(page, "editsChanged");
+  assert(!(await paletteVisible(page)), "the search starts closed");
+  await page.keyboard.press("Control+K");
+  assert(await paletteVisible(page), "Ctrl+K opens the command search");
+  assert(await page.evaluate(() => document.activeElement?.id === "cmd-palette-input"), "…and focuses its input");
+  await page.keyboard.type("fil");
+  const rows = await paletteRows(page);
+  assert(rows[0]?.label === "Fillet" && rows[0].selected, `'fil' ranks Fillet first and selects it (got ${JSON.stringify(rows.slice(0, 3).map((r) => r.label))})`);
+  assert(rows[0].group === "Refine" && rows[0].key === "F" && rows[0].hasIcon, `the row shows group, shortcut and icon (got ${JSON.stringify(rows[0])})`);
+  await page.keyboard.press("Enter");
+  await sleep(200);
+  assert(!(await paletteVisible(page)), "Enter closes the search");
+  assert((await activeOpName(page)) === "Fillet", `Enter opens the Fillet form (got ${await activeOpName(page)})`);
+  assert((await page.evaluate(() => document.querySelector("#edits-params")?.children.length ?? 0)) > 0, "…with its parameter form rendered");
+  assert((await sentCount(page, "editsChanged")) === before, "…without pushing an op");
+
+  // Move on to another form, then repeat.
+  await page.evaluate(() => [...document.querySelectorAll(".op-btn")].find((b) => b.querySelector(".op-name")?.textContent === "Box")?.click());
+  await sleep(150);
+  assert((await activeOpName(page)) === "Box", "another form is open now");
+  await blurAll(page);
+  await page.keyboard.press("Shift+R");
+  await sleep(200);
+  assert((await activeOpName(page)) === "Fillet", `Shift+R reopens the last command's form (got ${await activeOpName(page)})`);
+  assert((await sentCount(page, "editsChanged")) === before, "…and applies nothing");
+});
+
+test("command search: Shift+R refills the last applied op's values", async (page) => {
+  await populate(page);
+  await setSingleKeys(page, true);
+  await blurAll(page);
+  // Apply a Box with a distinctive size through the command bar, then move to another form.
+  await typeCommand(page, 'addBox {"center":[0,0,0],"size":[13,14,15]}');
+  await page.evaluate(() => [...document.querySelectorAll(".op-btn")].find((b) => b.querySelector(".op-name")?.textContent === "Sphere")?.click());
+  await sleep(150);
+  await blurAll(page);
+  await page.keyboard.press("Shift+R");
+  await sleep(250);
+  assert((await activeOpName(page)) === "Box", `Shift+R reopens Box (got ${await activeOpName(page)})`);
+  const values = await page.evaluate(() => [...document.querySelectorAll("#edits-params input[data-name]")].map((i) => i.value).join("|"));
+  assert(/13/.test(values) && /14/.test(values) && /15/.test(values), `the form carries the last values (got ${JSON.stringify(values)})`);
+});
+
+test("command search: '/' opens it outside a field only; Escape closes and restores focus; toolbar and panel results run", async (page) => {
+  await populate(page);
+  await blurAll(page);
+  await page.keyboard.press("/");
+  assert(await paletteVisible(page), "'/' opens the search when focus is not in a field");
+  await page.keyboard.press("Escape");
+  assert(!(await paletteVisible(page)), "Escape closes it");
+
+  await page.focus("#cmdbar-input");
+  await page.keyboard.press("/");
+  assert(!(await paletteVisible(page)), "'/' inside a field does not open it");
+  assert((await page.inputValue("#cmdbar-input")) === "/", "…and types the slash normally");
+  await page.fill("#cmdbar-input", "");
+  await page.keyboard.press("Control+K");
+  assert(await paletteVisible(page), "Ctrl+K opens it even from a field");
+  await page.keyboard.press("Escape");
+  assert(await page.evaluate(() => document.activeElement?.id === "cmdbar-input"), "Escape returns focus to where it was");
+
+  // A toolbar action: the Grid toggle.
+  const gridBefore = await page.evaluate(() => document.getElementById("grid")?.getAttribute("aria-checked"));
+  await blurAll(page);
+  await page.keyboard.press("Control+K");
+  await page.keyboard.type("hide smooth");
+  const smooth = (await paletteRows(page))[0];
+  assert(smooth?.kind === "action" && /Hide smooth edges/.test(smooth.label) && smooth.group === "View" && smooth.hasIcon, `a dropdown action is listed with its menu as the group (got ${JSON.stringify(smooth)})`);
+  await page.keyboard.press("Escape");
+  await page.keyboard.press("Control+K");
+  await page.keyboard.type("grid");
+  const gridRow = (await paletteRows(page)).find((r) => r.id === "grid");
+  assert(!!gridRow, "the Grid toggle is searchable");
+  await page.keyboard.press("Enter");
+  await sleep(150);
+  const gridAfter = await page.evaluate(() => document.getElementById("grid")?.getAttribute("aria-checked"));
+  assert(gridBefore !== gridAfter, `choosing a toolbar action runs it (aria-checked ${gridBefore} -> ${gridAfter})`);
+
+  // A panel in the collapsed Advanced group.
+  const advancedCollapsed = await page.evaluate(() => document.getElementById("advanced-group")?.classList.contains("collapsed"));
+  await blurAll(page);
+  await page.keyboard.press("Control+K");
+  await page.keyboard.type("mass prop");
+  const mass = (await paletteRows(page))[0];
+  assert(mass?.kind === "panel" && mass.label === "Mass Properties" && mass.group === "Advanced", `an Advanced panel is listed (got ${JSON.stringify(mass)})`);
+  await page.keyboard.press("Enter");
+  await sleep(250);
+  const shown = await page.evaluate(() => {
+    const panel = document.getElementById("mass-panel");
+    const r = panel.getBoundingClientRect();
+    return {
+      advancedCollapsed: document.getElementById("advanced-group").classList.contains("collapsed"),
+      panelCollapsed: panel.classList.contains("collapsed"),
+      visible: panel.offsetParent !== null && r.height > 0 && r.bottom > 0 && r.top < window.innerHeight,
+    };
+  });
+  assert(advancedCollapsed === true, "(precondition) Advanced starts collapsed");
+  assert(!shown.advancedCollapsed && !shown.panelCollapsed && shown.visible, `choosing a panel expands it and brings it into view (got ${JSON.stringify(shown)})`);
+});
+
+test("single-key commands: off by default ('e' does nothing); on, E opens Extrude, never from a field", async (page) => {
+  await populate(page);
+  await blurAll(page);
+  await page.keyboard.press("e");
+  await sleep(150);
+  assert((await activeOpName(page)) === null, `with the setting off, 'e' opens nothing (got ${await activeOpName(page)})`);
+  await page.keyboard.press("Shift+R");
+  await page.keyboard.press("q");
+  assert((await page.evaluate(() => document.getElementById("measure-toggle")?.getAttribute("aria-checked"))) === "false", "…and 'q' does not toggle Measure mode");
+  // The reference still shows the key, marked as inactive.
+  await page.keyboard.press("Control+K");
+  await page.keyboard.type("extrude");
+  const off = (await paletteRows(page))[0];
+  assert(off?.label === "Extrude" && off.key === "E" && off.keyOff, `the search lists the key but marks it off (got ${JSON.stringify(off)})`);
+  await page.keyboard.press("Escape");
+
+  await setSingleKeys(page, true);
+  await blurAll(page);
+  await page.keyboard.press("Shift+R");
+  assert(/No previous command/.test(await page.evaluate(() => document.getElementById("status")?.textContent ?? "")), "Shift+R with nothing to repeat says so");
+  await page.keyboard.press("e");
+  await sleep(200);
+  assert((await activeOpName(page)) === "Extrude", `with the setting on, 'e' opens the Extrude form (got ${await activeOpName(page)})`);
+
+  await page.focus("#cmdbar-input");
+  await page.keyboard.press("f");
+  await sleep(150);
+  assert((await page.inputValue("#cmdbar-input")) === "f" && (await activeOpName(page)) === "Extrude", "typing 'f' in a field types it and opens no form");
+  await page.fill("#cmdbar-input", "");
+  await blurAll(page);
+
+  await page.keyboard.press("Control+e");
+  assert((await activeOpName(page)) === "Extrude", "Ctrl+E is not a command key");
+  await page.keyboard.press("f");
+  await sleep(150);
+  assert((await activeOpName(page)) === "Fillet", `'f' opens Fillet (got ${await activeOpName(page)})`);
+  await page.keyboard.press("q");
+  assert((await page.evaluate(() => document.getElementById("measure-toggle")?.getAttribute("aria-checked"))) === "true", "'q' toggles Measure mode");
+  await page.keyboard.press("q");
+
+  // The view snaps are not letter commands: digits and 'i' open no form.
+  await page.keyboard.press("3");
+  await page.keyboard.press("i");
+  await sleep(150);
+  assert((await activeOpName(page)) === "Fillet", "the view-snap keys (3, i) open no form and change no command");
+});
+
+test("command search: a B-rep-only op is refused on a mesh source", async (page) => {
+  await openStl(page);
+  await setSingleKeys(page, true);
+  await blurAll(page);
+  await page.keyboard.press("f");
+  await sleep(150);
+  assert((await activeOpName(page)) === null, "'f' opens no Fillet form on a mesh source");
+  const status = await page.evaluate(() => document.getElementById("status")?.textContent ?? "");
+  assert(/not available/i.test(status), `…and says why (got ${JSON.stringify(status)})`);
+  await page.keyboard.press("Control+K");
+  await page.keyboard.type("fillet");
+  const row = (await paletteRows(page))[0];
+  assert(row?.label === "Fillet", "Fillet is still listed");
+  assert(await page.evaluate(() => document.querySelector("#cmd-palette-list .cmd-row")?.classList.contains("disabled") ?? false), "…marked disabled");
 });
 
 test("command bar: a typed op the kernel skips reports it on the bar", async (page) => {
@@ -3882,6 +4177,291 @@ test("collapse: state is saved to and restored from view state", async (page) =>
     state.echo === null || eq(state.echo, ["edits-panel", "macros-panel"]),
     `any autosave echoed after a restore carries the restored set, never the pre-restore one (got ${JSON.stringify(state.echo)})`
   );
+});
+
+// ── Ribbon command strip (roadmap "Ribbon command strip") ─────────────────
+//
+// The pure half (single source with the op catalog, overflow planning, the
+// sidecar fields) is unit-tested in `ribbon.test.ts` / `opCatalog.test.ts` /
+// `viewStateSidecar.test.ts`. What needs the real bundle is RENDERED visibility:
+// every group of every tab actually on screen at a wide width, the More menu
+// carrying whatever does not fit at a narrow one, the overflow never leaving a
+// button half-clipped, and the persisted state round trip. Visibility is
+// asserted through `offsetParent` + a real box, never the `hidden` attribute:
+// `#ribbon-more-wrap`, `.ribbon-btn` and `.ribbon-group` all carry an author
+// `display` rule that would silently beat the UA's `[hidden]`.
+
+const RIBBON_GROUPS = {
+  view: ["Navigate", "Display", "Show", "Layout", "Pick & mark"],
+  inspect: ["Measure", "Analysis"],
+  mesh: ["FE mesh", "Repair & fit", "Surface"],
+  export: ["Model", "Drawings", "Bundle", "Mesh"],
+};
+
+/** What is on screen in the ribbon right now: per-group and per-button rendered state, the More menu, geometry. */
+const ribbonSnapshot = (page) => page.evaluate(() => {
+  const rendered = (el) => { if (!el || el.offsetParent === null) return false; const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
+  const ribbon = document.getElementById("ribbon");
+  const groupsEl = document.getElementById("ribbon-groups");
+  const gr = groupsEl.getBoundingClientRect();
+  const groups = [...document.querySelectorAll("#ribbon-groups .ribbon-group")].map((g) => ({
+    title: g.dataset.group, visible: rendered(g),
+    visibleButtons: [...g.querySelectorAll(".ribbon-btn")].filter(rendered).length,
+    buttons: g.querySelectorAll(".ribbon-btn").length,
+  }));
+  const strip = [...document.querySelectorAll("#ribbon-groups .ribbon-btn")];
+  const menuRows = [...document.querySelectorAll("#ribbon-more-dropdown .ribbon-more-item")];
+  return {
+    tab: document.querySelector("#ribbon-tabs .ribbon-tab.active")?.dataset.tab ?? null,
+    selected: [...document.querySelectorAll("#ribbon-tabs .ribbon-tab")].filter((b) => b.getAttribute("aria-selected") === "true").map((b) => b.dataset.tab),
+    groups,
+    stripVisible: strip.filter(rendered).map((b) => b.dataset.item),
+    stripTotal: strip.length,
+    // A rendered button must lie wholly inside the strip: a half-clipped one is a planner bug.
+    clipped: strip.filter(rendered).filter((b) => b.getBoundingClientRect().right > gr.right + 1).map((b) => b.dataset.item),
+    menuItems: menuRows.map((b) => b.dataset.item),
+    moreRendered: rendered(document.getElementById("ribbon-more-wrap")) && rendered(document.getElementById("ribbon-more")),
+    menuOpen: rendered(document.getElementById("ribbon-more-dropdown")),
+    height: Math.round(ribbon.getBoundingClientRect().height),
+    labelsRendered: strip.filter(rendered).some((b) => rendered(b.querySelector(".ribbon-label"))),
+    // The ribbon's OWN overflow. (The whole page overflows at 360px for reasons that predate the strip:
+    // the status bar and dock are wider than that.)
+    ribbonOverflowX: ribbon.scrollWidth > ribbon.clientWidth + 1 || [...ribbon.querySelectorAll("*")].some((el) => el.offsetParent !== null && el.getBoundingClientRect().width > 0 && el.getBoundingClientRect().right > document.documentElement.clientWidth + 1),
+  };
+});
+const openRibbonTab = async (page, tab) => { await page.click(`#ribbon-tab-${tab}`); await sleep(120); };
+
+test("ribbon: every tab's groups are rendered at a wide width, and the More menu takes the rest when narrow", async (page) => {
+  await populate(page);
+  await page.setViewportSize({ width: 1900, height: 900 });
+  await sleep(250);
+  const first = await ribbonSnapshot(page);
+  assert(first.tab === "model" && eq(first.selected, ["model"]), `the strip opens on Model with exactly one tab selected (got ${JSON.stringify(first.selected)})`);
+  assert(first.height === 89, `the strip is a fixed 89px tall with labels (got ${first.height})`);
+
+  // Wide: the four non-Model tabs fit completely — every group on screen, no More button.
+  for (const [tab, titles] of Object.entries(RIBBON_GROUPS)) {
+    await openRibbonTab(page, tab);
+    const s = await ribbonSnapshot(page);
+    assert(s.tab === tab && eq(s.selected, [tab]), `${tab}: the tab is selected (got ${JSON.stringify(s.selected)})`);
+    assert(eq(s.groups.map((g) => g.title), titles), `${tab}: renders its groups ${JSON.stringify(titles)} (got ${JSON.stringify(s.groups.map((g) => g.title))})`);
+    assert(s.groups.every((g) => g.visible && g.visibleButtons === g.buttons && g.buttons > 0), `${tab}: every group and every button is rendered at 1900px (got ${JSON.stringify(s.groups.filter((g) => !g.visible || g.visibleButtons !== g.buttons))})`);
+    assert(!s.moreRendered && s.menuItems.length === 0, `${tab}: no More button when everything fits`);
+    assert(s.clipped.length === 0, `${tab}: nothing is half-clipped (got ${JSON.stringify(s.clipped)})`);
+    assert(s.labelsRendered, `${tab}: buttons show their labels`);
+  }
+
+  // Model has ~60 buttons: even 1900px overflows. The first group is on screen, More carries the rest.
+  await openRibbonTab(page, "model");
+  const model = await ribbonSnapshot(page);
+  assert(model.groups[0]?.title === "Primitives" && model.groups[0].visible && model.groups[0].visibleButtons === model.groups[0].buttons, "model: the Primitives group leads and is fully rendered");
+  assert(model.moreRendered && model.menuItems.length > 0, `model: the overflow ▸ menu is rendered and carries the rest (${model.menuItems.length} items)`);
+  assert(model.stripVisible.length + model.menuItems.length === model.stripTotal, `model: every button is in the strip XOR the menu (${model.stripVisible.length} + ${model.menuItems.length} vs ${model.stripTotal})`);
+  assert(model.clipped.length === 0, "model: nothing is half-clipped");
+  assert(!model.groups.some((g) => g.visible && g.visibleButtons === 0), "model: a group with no rendered button is itself hidden");
+
+  // Narrow: every tab overflows (Mesh needs ~400px) and the partition invariant holds on each.
+  await page.setViewportSize({ width: 360, height: 900 });
+  await sleep(300);
+  for (const tab of ["view", "model", "inspect", "mesh", "export"]) {
+    await openRibbonTab(page, tab);
+    const s = await ribbonSnapshot(page);
+    assert(s.moreRendered, `${tab} @360px: the More ▸ button is rendered`);
+    assert(s.menuItems.length > 0 && s.stripVisible.length + s.menuItems.length === s.stripTotal, `${tab} @360px: every button is in the strip XOR the menu (${s.stripVisible.length} + ${s.menuItems.length} vs ${s.stripTotal})`);
+    assert(s.clipped.length === 0, `${tab} @360px: nothing is half-clipped (got ${JSON.stringify(s.clipped)})`);
+    assert(!s.ribbonOverflowX, `${tab} @360px: nothing in the strip runs past the window edge`);
+    assert(!s.groups.some((g) => g.visible && g.visibleButtons === 0), `${tab} @360px: no empty group is left on the strip`);
+  }
+
+  // The menu itself: opens visibly, lists the overflowed items under group headings, Escape closes and returns focus.
+  await openRibbonTab(page, "inspect");
+  await page.click("#ribbon-more");
+  await sleep(100);
+  const open = await ribbonSnapshot(page);
+  assert(open.menuOpen, "clicking More opens the menu (rendered)");
+  assert(await page.evaluate(() => document.querySelectorAll("#ribbon-more-dropdown .ribbon-more-head").length > 0 && [...document.querySelectorAll("#ribbon-more-dropdown .ribbon-more-item")].every((b) => b.getBoundingClientRect().width > 0)), "…with group headings and rendered rows");
+  await page.keyboard.press("Escape");
+  await sleep(80);
+  assert(!(await ribbonSnapshot(page)).menuOpen, "Escape closes it");
+  assert(await page.evaluate(() => document.activeElement?.id === "ribbon-more"), "…and returns focus to the More button");
+
+  // Back to wide: the overflow dissolves again (resize re-plans, not just the first layout).
+  await page.setViewportSize({ width: 1900, height: 900 });
+  await sleep(300);
+  const back = await ribbonSnapshot(page);
+  assert(!back.moreRendered && back.stripVisible.length === back.stripTotal, `Inspect fits again at 1900px (strip ${back.stripVisible.length}/${back.stripTotal}, More ${back.moreRendered})`);
+});
+
+test("ribbon: every catalog op is reachable from the strip and opens its form; the Edits grid sits behind its toggle", async (page) => {
+  await populate(page);
+  await page.setViewportSize({ width: 1900, height: 900 });
+  await sleep(250);
+
+  // Reachability: the Edits panel's own button grid is the independent oracle for "every op".
+  const gridLabels = await page.evaluate(() => [...document.querySelectorAll(".op-btn .op-name")].map((n) => n.textContent).sort());
+  const ribbonLabels = await page.evaluate(() => [...document.querySelectorAll('#ribbon [data-item^="op:"]')].map((b) => b.getAttribute("aria-label")).sort());
+  // Strip + menu rows both carry the item: each op appears twice only if rendered twice, so dedupe through the id.
+  const ribbonIds = await page.evaluate(() => [...new Set([...document.querySelectorAll('#ribbon [data-item^="op:"]')].map((b) => b.dataset.item))]);
+  assert(gridLabels.length > 50 && ribbonIds.length === gridLabels.length, `the strip names as many ops as the catalog grid (${ribbonIds.length} vs ${gridLabels.length})`);
+  const uniq = (a) => [...new Set(a)].sort();
+  assert(eq(uniq(ribbonLabels), uniq(gridLabels)), `…with the same labels (diff ${JSON.stringify(uniq(gridLabels).filter((l) => !ribbonLabels.includes(l)))})`);
+
+  // A wide strip button opens the form without applying anything.
+  const before = await sentCount(page, "editsChanged");
+  await page.click('#ribbon-groups [data-item="op:addBox"]');
+  await sleep(200);
+  assert((await activeOpName(page)) === "Box", `clicking Box on the strip opens the Box form (got ${await activeOpName(page)})`);
+  assert(await page.evaluate(() => { const p = document.getElementById("edits-params"); return p.children.length > 0 && p.getBoundingClientRect().height > 0; }), "…the parameter form is rendered although the button grid is collapsed");
+  assert(await page.evaluate(() => document.querySelector('#ribbon [data-item="op:addBox"]').classList.contains("active") && document.querySelector('#ribbon [data-item="op:addBox"]').getAttribute("aria-pressed") === "true"), "…and the strip button shows pressed");
+  assert((await sentCount(page, "editsChanged")) === before, "…without pushing an op");
+
+  // An overflowed op: open More, click Fillet.
+  const inMenu = await page.evaluate(() => !!document.querySelector('#ribbon-more-dropdown [data-item="op:addTrapezoidProfile"]') && !document.querySelector('#ribbon-groups [data-item="op:addTrapezoidProfile"]:not([hidden])'));
+  assert(inMenu, "Trapezoid (the Sketch tools close the Model tab) is carried by the More menu and not the strip at this width");
+  await page.click("#ribbon-more");
+  await page.click('#ribbon-more-dropdown [data-item="op:addTrapezoidProfile"]');
+  await sleep(200);
+  assert((await activeOpName(page)) === "Trapezoid", `an overflowed op opens its form too (got ${await activeOpName(page)})`);
+  assert(await page.evaluate(() => document.getElementById("ribbon-more-dropdown").classList.contains("hidden")), "…and choosing a row closes the menu");
+
+  // The grid: collapsed by default (no tab row, no grids), toggle shows it, toggle hides it.
+  const gridState = () => page.evaluate(() => {
+    const r = (sel) => { const el = document.querySelector(sel); return !!el && el.offsetParent !== null && el.getBoundingClientRect().height > 0; };
+    return { tabs: r("#edits-panel .edits-tabs"), grid: r("#edits-panel .edits-tab-content .op-btn"), pressed: document.getElementById("edits-grid-toggle").getAttribute("aria-pressed"), toggle: r("#edits-grid-toggle") };
+  });
+  let g = await gridState();
+  assert(!g.tabs && !g.grid && g.toggle && g.pressed === "false", `the Edits button grid is collapsed by default behind a visible toggle (got ${JSON.stringify(g)})`);
+  await page.click("#edits-grid-toggle");
+  await sleep(120);
+  g = await gridState();
+  assert(g.tabs && g.grid && g.pressed === "true", `the toggle brings the tab row and the grid back (got ${JSON.stringify(g)})`);
+  await page.click("#edits-grid-toggle");
+  await sleep(120);
+  g = await gridState();
+  assert(!g.tabs && !g.grid && g.pressed === "false", `…and hides them again (got ${JSON.stringify(g)})`);
+});
+
+test("ribbon: a toggle button mirrors and drives its target; the floating toolbar clears the strip", async (page) => {
+  await populate(page);
+  await openRibbonTab(page, "view");
+  const gridPressed = () => page.evaluate(() => ({
+    target: document.getElementById("grid").getAttribute("aria-checked"),
+    btn: document.querySelector('#ribbon [data-item="click:grid"]').getAttribute("aria-pressed"),
+  }));
+  const start = await gridPressed();
+  await page.click('#ribbon [data-item="click:grid"]');
+  await sleep(250);
+  const after = await gridPressed();
+  assert(after.target !== start.target, `clicking Grid on the strip toggles the real #grid control (${start.target} -> ${after.target})`);
+  assert(after.btn === after.target, `…and the strip button mirrors it (aria-pressed ${after.btn} vs aria-checked ${after.target})`);
+  // Driving the target elsewhere (the View menu) is mirrored too.
+  await page.evaluate(() => document.getElementById("grid").click());
+  await sleep(250);
+  const again = await gridPressed();
+  assert(again.btn === again.target && again.target === start.target, `a change made through the View menu reaches the strip (${JSON.stringify(again)})`);
+
+  // Display modes are a 1-of-N segment: the strip's pressed state follows `.active`.
+  await page.click('#ribbon [data-item="click:mode-wireframe"]');
+  await sleep(250);
+  const modes = await page.evaluate(() => ["shaded", "wireframe"].map((m) => document.querySelector(`#ribbon [data-item="click:mode-${m}"]`).getAttribute("aria-pressed")));
+  assert(eq(modes, ["false", "true"]), `Wire is pressed and Shaded is not after choosing Wire (got ${JSON.stringify(modes)})`);
+
+  // The absolutely-positioned toolbar and measure readout sit below the strip, not under it.
+  const boxes = await page.evaluate(() => ({ ribbon: document.getElementById("ribbon").getBoundingClientRect().bottom, toolbar: document.getElementById("toolbar").getBoundingClientRect().top, menubar: document.getElementById("menubar").getBoundingClientRect().bottom, ribbonTop: document.getElementById("ribbon").getBoundingClientRect().top, appTop: document.getElementById("app").getBoundingClientRect().top }));
+  assert(Math.abs(boxes.ribbonTop - boxes.menubar) <= 1, `the strip sits directly under the menu bar (${boxes.ribbonTop} vs ${boxes.menubar})`);
+  assert(boxes.toolbar >= boxes.ribbon, `the floating toolbar starts below the strip (toolbar ${boxes.toolbar} vs strip bottom ${boxes.ribbon})`);
+  assert(Math.abs(boxes.appTop - boxes.ribbon) <= 1, `the canvas starts at the strip's bottom edge (${boxes.appTop} vs ${boxes.ribbon})`);
+
+  // A target that is unavailable greys its button: the Tree toggle is hidden outside assemblies.
+  const tree = await page.evaluate(() => { const t = document.getElementById("tree-toggle"); return { targetHidden: t.style.display === "none" || t.offsetParent === null, disabled: document.querySelector('#ribbon [data-item="click:tree-toggle"]').disabled }; });
+  assert(!tree.targetHidden || tree.disabled, "a button whose target is hidden is disabled");
+});
+
+test("ribbon: tab, compact and the Edits grid persist additively in view state and restore from it", async (page) => {
+  await populate(page);
+  await sleep(700);
+  await page.evaluate(() => (window.__sent.length = 0));
+  const lastView = () => page.evaluate(() => (window.__sent ?? []).filter((m) => m.type === "viewChanged").at(-1)?.view ?? null);
+
+  await openRibbonTab(page, "inspect");
+  await page.click("#ribbon-compact");
+  await page.click("#edits-grid-toggle");
+  await sleep(900); // VIEW_SAVE_DEBOUNCE_MS is 500
+  let saved = await lastView();
+  assert(saved?.ribbonTab === "inspect", `choosing a tab posts a viewChanged naming it (got ${JSON.stringify(saved?.ribbonTab)})`);
+  assert(saved?.ribbonCompact === true && saved?.editsGridOpen === true, `…with the compact and open-grid flags (got ${JSON.stringify([saved?.ribbonCompact, saved?.editsGridOpen])})`);
+
+  // Compact is real: labels and group titles are not rendered, the strip is shorter, the toolbar moved up with it.
+  const compact = await ribbonSnapshot(page);
+  const titles = await page.evaluate(() => [...document.querySelectorAll("#ribbon-groups .ribbon-group-title")].filter((t) => t.offsetParent !== null && t.getBoundingClientRect().height > 0).length);
+  assert(!compact.labelsRendered && titles === 0, "compact: button labels and group titles are not rendered");
+  assert(compact.height === 63, `compact: the strip is 63px tall (got ${compact.height})`);
+  assert(await page.evaluate(() => document.querySelector("#ribbon-groups .ribbon-btn").getAttribute("aria-label")?.length > 0 && document.querySelector("#ribbon-groups .ribbon-btn").title.length > 0), "compact: buttons keep an accessible name and a tooltip");
+  assert(await page.evaluate(() => document.getElementById("toolbar").getBoundingClientRect().top >= document.getElementById("ribbon").getBoundingClientRect().bottom), "compact: the toolbar still clears the strip");
+
+  // The default tab writes nothing: back to Model, compact and grid off.
+  await openRibbonTab(page, "model");
+  await page.click("#ribbon-compact");
+  await page.click("#edits-grid-toggle");
+  await sleep(900);
+  saved = await lastView();
+  assert(saved && !("ribbonTab" in saved) && !("ribbonCompact" in saved) && !("editsGridOpen" in saved), `defaults are omitted so an untouched sidecar stays byte-stable (got ${JSON.stringify([saved?.ribbonTab, saved?.ribbonCompact, saved?.editsGridOpen])})`);
+
+  // Restore: a viewState post applies tab, compact and grid silently.
+  await page.evaluate(() => (window.__sent.length = 0));
+  const baseView = { viewDirection: [1, 0.8, 1], cameraUp: [0, 1, 0], orthographic: false, displayMode: "shaded", clip: null };
+  await post(page, { type: "viewState", view: { ...baseView, ribbonTab: "mesh", ribbonCompact: true, editsGridOpen: true } });
+  await sleep(900);
+  const restored = await ribbonSnapshot(page);
+  assert(restored.tab === "mesh" && eq(restored.selected, ["mesh"]), `a restored tab is selected (got ${JSON.stringify(restored.selected)})`);
+  assert(restored.height === 63 && !restored.labelsRendered, "…and the restored compact preference applies");
+  assert(await page.evaluate(() => document.getElementById("edits-grid-toggle").getAttribute("aria-pressed") === "true" && document.querySelector("#edits-panel .edits-tabs").offsetParent !== null), "…and the restored open grid is rendered");
+  const echo = await lastView();
+  assert(echo === null || (echo.ribbonTab === "mesh" && echo.ribbonCompact === true && echo.editsGridOpen === true), `any autosave echoed after a restore carries the restored state, never the pre-restore one (got ${JSON.stringify([echo?.ribbonTab, echo?.ribbonCompact, echo?.editsGridOpen])})`);
+
+  // A sidecar from a newer build with a tab this build lacks falls back to the default; absent flags reset.
+  await post(page, { type: "viewState", view: { ...baseView, ribbonTab: "sketch" } });
+  await sleep(500);
+  const fallback = await ribbonSnapshot(page);
+  assert(fallback.tab === "model" && fallback.height === 89, `an unknown tab id falls back to Model and absent flags reset (got ${fallback.tab}, ${fallback.height}px)`);
+});
+
+test("ribbon: two-tone icons paint their accent from the theme in dark and light, and stay monochrome in high contrast", async (page) => {
+  await populate(page);
+  await page.setViewportSize({ width: 1900, height: 900 });
+  await openRibbonTab(page, "model");
+  // What the accent resolves to (a probe element reads the custom property) and what the first accent path really paints.
+  const read = () => page.evaluate(() => {
+    const btn = document.querySelector('#ribbon [data-item="op:extrude"]');
+    const svg = btn?.querySelector("svg");
+    const path = svg ? [...svg.querySelectorAll("path")].find((p) => (p.getAttribute("fill") ?? "").includes("--ui-icon-accent")) : null;
+    const probe = document.createElement("i");
+    probe.style.color = "var(--ui-icon-accent)";
+    svg?.appendChild(probe);
+    const accent = getComputedStyle(probe).color;
+    probe.remove();
+    return {
+      hasAccentPath: !!path,
+      painted: path ? getComputedStyle(path).fill : null,
+      accent,
+      text: svg ? getComputedStyle(svg).color : null,
+      // A neutral (gray) path must NOT take the accent.
+      neutralPainted: svg ? getComputedStyle([...svg.querySelectorAll("path")].find((p) => p.getAttribute("fill") === "currentColor")).fill : null,
+    };
+  });
+  for (const theme of ["vscode-dark", "vscode-light"]) {
+    await setTheme(page, theme);
+    const r = await read();
+    assert(r.hasAccentPath, `${theme}: the Extrude ribbon icon carries an accent path`);
+    assert(r.painted === r.accent && r.accent !== r.text, `${theme}: the accent path paints --ui-icon-accent (${r.painted}), distinct from the text colour ${r.text}`);
+    assert(r.neutralPainted === r.text, `${theme}: a neutral path keeps the text colour (${r.neutralPainted})`);
+  }
+  for (const theme of ["vscode-high-contrast", "vscode-high-contrast vscode-high-contrast-light"]) {
+    await setTheme(page, theme);
+    const r = await read();
+    assert(r.painted === r.text && r.accent === r.text, `${theme}: the accent collapses to the text colour (painted ${r.painted}, accent ${r.accent}, text ${r.text})`);
+  }
+  await setTheme(page, "vscode-dark");
 });
 
 // ── Source-format gating of the two eligibility-gated panels ──────────────
@@ -4857,6 +5437,308 @@ test("surface tools: each action posts a typed request, replies render facts, st
 // refuse timeline interaction; the unit-testable gates live in
 // `editsModel.test.ts` — what needs the real bundle here is the rendering
 // (locked class, lock marker, no ✕) and that a refused jump posts nothing.
+
+const sentOf = (page, type) => page.evaluate((t) => window.__sent.filter((m) => m.type === t), type);
+
+test("parameters table: reorder is refused across a dependency, import reports the bad row, favourite pins", async (page) => {
+  await populate(page);
+  await post(page, {
+    type: "edits",
+    ops: [],
+    variables: [
+      { name: "L", expr: "10", value: 10 },
+      { name: "W", expr: "L/2", value: 5 },
+    ],
+  });
+  await sleep(300);
+  // Moving W above L breaks the define-above rule: refused, nothing posted.
+  const before = (await sentOf(page, "editsChanged")).length;
+  await page.evaluate(() => document.querySelectorAll(".variable-row")[1].querySelector(".variable-move").click());
+  await sleep(200);
+  const names = await page.evaluate(() => [...document.querySelectorAll(".variable-row .variable-name")].map((i) => i.value));
+  assert(names.join() === "L,W", `reorder across a dependency is refused (got ${names})`);
+  assert((await sentOf(page, "editsChanged")).length === before, "a refused move writes nothing");
+  // Import: five CSV rows, one invalid -> four land, the bad one is reported.
+  await page.evaluate(() => {
+    const dt = new DataTransfer();
+    dt.items.add(new File(["Name,Expression,Comment\nA,1,one\nB,A+1,\n1bad,3,\nC,B*2,\nD,C+1,note\n"], "v.csv", { type: "text/csv" }));
+    const input = document.getElementById("variables-import-file");
+    input.files = dt.files;
+    input.dispatchEvent(new Event("change"));
+  });
+  await sleep(500);
+  const after = await page.evaluate(() => [...document.querySelectorAll(".variable-row .variable-name")].map((i) => i.value));
+  assert(after.join() === "L,W,A,B,C,D", `four valid rows imported, the invalid one dropped (got ${after})`);
+  const status = await page.evaluate(() => document.getElementById("status")?.textContent ?? "");
+  assert(/1 rejected/.test(status) && /row 3/.test(status), `the rejected row is reported (status: ${status})`);
+  // Favourite pins to the top of the view but not the evaluation order.
+  await page.evaluate(() => [...document.querySelectorAll(".variable-row")].find((r) => r.querySelector(".variable-name").value === "D").querySelector(".variable-star").click());
+  await sleep(300);
+  const view = await page.evaluate(() => [...document.querySelectorAll(".variable-row .variable-name")].map((i) => i.value));
+  assert(view[0] === "D", `a favourite renders first (got ${view})`);
+  const sent = (await sentOf(page, "editsChanged")).pop();
+  assert(sent.variables.map((v) => v.name).join() === "L,W,A,B,C,D" && sent.variables[5].favourite === true, "the stored order is unchanged and carries favourite");
+});
+
+test("parameters table: promoting a model parameter makes the op follow the variable", async (page) => {
+  await populate(page);
+  await post(page, { type: "edits", ops: [{ op: "addBox", center: [0, 0, 0], size: [4, 5, 6] }], variables: [] });
+  await sleep(300);
+  const rows = await page.evaluate(() => [...document.querySelectorAll("#model-params-body .mp-row")].map((r) => r.querySelector(".mp-name").textContent));
+  assert(rows.includes("size[1]"), `model parameters list the box size (got ${rows})`);
+  await page.evaluate(() => [...document.querySelectorAll("#model-params-body .mp-row")].find((r) => r.querySelector(".mp-name").textContent === "size[1]").querySelector(".mp-promote").click());
+  await sleep(300);
+  let sent = (await sentOf(page, "editsChanged")).pop();
+  assert(sent.variables.length === 1 && sent.variables[0].value === 5, "a variable holding 5 was created");
+  const v = sent.variables[0].name;
+  // Changing the variable re-resolves the op the host receives.
+  await page.evaluate((name) => {
+    const e = document.querySelector(".variable-row .variable-expr");
+    e.value = "9";
+    e.dispatchEvent(new Event("change"));
+  }, v);
+  await sleep(300);
+  sent = (await sentOf(page, "editsChanged")).pop();
+  assert(sent.ops[0].size[1] === 9, `the op follows the variable (size ${JSON.stringify(sent.ops[0].size)})`);
+});
+
+const CONFIG_OPS = [{ op: "addBox", center: [0, 0, 0], size: [1, 1, 1], exprs: { "size[0]": "D" } }];
+const CONFIG_VARS = [{ name: "D", expr: "6", value: 6 }];
+
+test("configurations: the Config Table switches the active configuration through the overlay, a failing cell freezes, no-configuration documents are unchanged", async (page) => {
+  await populate(page);
+  // A document with no configurations: the section exists, collapsed, with no rows to pick.
+  await post(page, { type: "edits", ops: CONFIG_OPS, variables: CONFIG_VARS });
+  await sleep(300);
+  const bare = await page.evaluate(() => ({
+    toggle: document.getElementById("config-toggle") !== null,
+    bodyShown: document.getElementById("config-body").offsetParent !== null,
+    count: document.getElementById("config-count").textContent,
+    rows: document.querySelectorAll(".config-row").length,
+  }));
+  assert(bare.toggle && !bare.bodyShown && bare.count === "", `the Config Table is collapsed and empty without configurations (got ${JSON.stringify(bare)})`);
+  assert(bare.rows === 1, `only the Base row exists (got ${bare.rows})`);
+
+  await post(page, {
+    type: "edits",
+    ops: CONFIG_OPS,
+    variables: CONFIG_VARS,
+    configurations: [
+      { name: "M6", overrides: {} },
+      { name: "M8", overrides: { D: "8" } },
+    ],
+    activeConfiguration: null,
+  });
+  await sleep(300);
+  await page.evaluate(() => document.getElementById("config-toggle").click());
+  await sleep(150);
+  const shown = await page.evaluate(() => ({
+    bodyShown: document.getElementById("config-body").offsetParent !== null,
+    names: [...document.querySelectorAll(".config-row")].map((r) => r.dataset.config),
+    m8Cell: document.querySelector('.config-row[data-config="M8"] .config-cell[data-variable="D"] .config-input').value,
+    m8Value: document.querySelector('.config-row[data-config="M8"] .config-cell[data-variable="D"] .config-value').textContent,
+    m6Placeholder: document.querySelector('.config-row[data-config="M6"] .config-input').placeholder,
+  }));
+  assert(shown.bodyShown, "the opened Config Table is actually rendered (offsetParent)");
+  assert(shown.names.join("|") === "|M6|M8", `Base + two configuration rows (got ${shown.names})`);
+  assert(shown.m8Cell === "8" && shown.m8Value === "8" && shown.m6Placeholder === "6", `the M8 override and the inherited placeholder show (got ${JSON.stringify(shown)})`);
+
+  // Picking M8 posts the overlay-resolved op; the stored op, exprs and base variable are untouched.
+  await page.evaluate(() => document.querySelector('.config-row[data-config="M8"] .config-radio').click());
+  await sleep(300);
+  let sent = (await sentOf(page, "editsChanged")).pop();
+  assert(sent.activeConfiguration === "M8", `M8 is the posted active configuration (got ${sent.activeConfiguration})`);
+  assert(sent.ops[0].size[0] === 8, `the op resolves with D = 8 (size ${JSON.stringify(sent.ops[0].size)})`);
+  assert(sent.ops[0].exprs["size[0]"] === "D" && sent.variables[0].expr === "6", "the op's expression and the base variable are unchanged");
+  assert(sent.configurations.length === 2, "both configurations ride along");
+  const activeRow = await page.evaluate(() => document.querySelector(".config-row.active")?.dataset.config);
+  assert(activeRow === "M8", `the M8 row is marked active (got ${activeRow})`);
+
+  // Back to the plain variables.
+  await page.evaluate(() => document.querySelector('.config-row[data-base="1"] .config-radio').click());
+  await sleep(300);
+  sent = (await sentOf(page, "editsChanged")).pop();
+  assert(sent.activeConfiguration === null && sent.ops[0].size[0] === 6, `Base restores D = 6 (got ${sent.activeConfiguration}, ${sent.ops[0].size[0]})`);
+
+  // A cell that cannot evaluate freezes at the cached value and is flagged; nothing crashes.
+  await page.evaluate(() => {
+    const input = document.querySelector('.config-row[data-config="M6"] .config-input');
+    input.value = "oops(";
+    input.dispatchEvent(new Event("change"));
+  });
+  await sleep(250);
+  await page.evaluate(() => document.querySelector('.config-row[data-config="M6"] .config-radio').click());
+  await sleep(300);
+  sent = (await sentOf(page, "editsChanged")).pop();
+  assert(sent.activeConfiguration === "M6" && sent.ops[0].size[0] === 6, `a failing cell freezes at the cached 6 (got ${sent.ops[0].size[0]})`);
+  assert(sent.configurations.find((c) => c.name === "M6").overrides.D === "oops(", "the bad expression is stored as typed");
+  const flagged = await page.evaluate(() => document.querySelector('.config-row[data-config="M6"] .config-cell[data-variable="D"]').classList.contains("error"));
+  assert(flagged, "the failing cell is flagged");
+
+  // Add a configuration (copies the active one's overrides), then delete it.
+  await page.evaluate(() => {
+    const input = document.getElementById("config-new-name");
+    input.value = "M10";
+    document.getElementById("config-add").click();
+  });
+  await sleep(250);
+  sent = (await sentOf(page, "editsChanged")).pop();
+  assert(sent.configurations.map((c) => c.name).join() === "M6,M8,M10", `M10 was added (got ${sent.configurations.map((c) => c.name)})`);
+  await page.evaluate(() => document.querySelector('.config-row[data-config="M10"] .config-delete').click());
+  await sleep(250);
+  sent = (await sentOf(page, "editsChanged")).pop();
+  assert(sent.configurations.map((c) => c.name).join() === "M6,M8", "M10 was removed again");
+});
+
+const USEDBY_OPS = [
+  { op: "addBox", center: [0, 0, 0], size: [4, 5, 6], exprs: { "size[0]": "len*2", "size[1]": "len" } },
+  { op: "translate", targets: ["solid-0"], vec: [1, 0, 0] },
+  { op: "translate", targets: ["solid-0"], vec: [0, 1, 0], exprs: { "vec[1]": "len+width" } },
+];
+const USEDBY_VARS = [
+  { name: "len", expr: "10", value: 10 },
+  { name: "width", expr: "len/2", value: 5 },
+  { name: "zed", expr: "width*2", value: 10 },
+];
+
+test("variable used-by: the disclosure lists referencing ops and variables, its count matches the delete tooltip", async (page) => {
+  await populate(page);
+  await post(page, { type: "edits", ops: USEDBY_OPS, variables: USEDBY_VARS });
+  await sleep(300);
+  const row = (name) => `[...document.querySelectorAll(".variable-row")].find((r) => r.querySelector(".variable-name").value === "${name}")`;
+  const info = await page.evaluate(`(() => { const r = ${row("len")}; return { toggle: r.querySelector(".variable-used")?.textContent ?? null, del: r.querySelector(".part-btn").title, open: document.querySelector(".variable-usedby") !== null }; })()`);
+  assert(info.toggle !== null && !info.open, `a Used-by toggle shows while the list is closed (got ${JSON.stringify(info)})`);
+  // len: 3 op fields (size[0], size[1], vec[1]) + variable width.
+  assert(/referenced by 3 edit fields and 1 variable/.test(info.del), `delete tooltip quotes 3 fields + 1 variable (got ${info.del})`);
+  await page.evaluate(`${row("len")}.querySelector(".variable-used").click()`);
+  await sleep(250);
+  const list = await page.evaluate(() => ({
+    ops: [...document.querySelectorAll(".variable-usedby .usedby-op")].map((b) => b.textContent),
+    vars: [...document.querySelectorAll(".variable-usedby .usedby-var")].map((b) => b.textContent),
+    shown: document.querySelector(".variable-usedby")?.offsetParent !== null,
+  }));
+  assert(list.shown, "the open Used-by list is rendered");
+  assert(list.ops.length === 2 && /^#1 addBox/.test(list.ops[0]) && /size\[0\], size\[1\]/.test(list.ops[0]) && /^#3 translate.*vec\[1\]/.test(list.ops[1]), `op rows with their fields (got ${JSON.stringify(list.ops)})`);
+  const fieldTotal = list.ops.reduce((n, t) => n + t.split("—")[1].split(",").length, 0);
+  assert(fieldTotal === 3, `listed fields (${fieldTotal}) equal the delete tooltip's 3`);
+  assert(list.vars.length === 1 && /width/.test(list.vars[0]), `the referencing variable is listed (got ${JSON.stringify(list.vars)})`);
+  // The disclosure survives the re-render a variable edit causes.
+  await page.evaluate(() => {
+    const c = document.querySelector(".variable-row .variable-comment");
+    c.value = "x";
+    c.dispatchEvent(new Event("change"));
+  });
+  await sleep(300);
+  assert(await page.evaluate(() => document.querySelector(".variable-usedby") !== null), "the open disclosure stays open across a re-render");
+  // Clicking an op row selects that history row and does not jump the timeline.
+  await page.evaluate(() => (window.__sent.length = 0));
+  await page.evaluate(() => [...document.querySelectorAll(".usedby-op")].find((b) => b.dataset.opIndex === "2").click());
+  await sleep(250);
+  const sel = await page.evaluate(() => [...document.querySelectorAll("#edits-body .edit-row")].map((li) => li.classList.contains("edit-row-selected")));
+  assert(sel.join() === "false,false,true", `history row 3 is selected (got ${sel})`);
+  assert((await sentOf(page, "editsChanged")).length === 0, "selecting a row posts no edit (no timeline jump)");
+  // A variable nobody uses has no toggle and the plain tooltip.
+  const unused = await page.evaluate(`(() => { const r = ${row("zed")}; return { toggle: r.querySelector(".variable-used") !== null, del: r.querySelector(".part-btn").title }; })()`);
+  assert(!unused.toggle && unused.del === "Delete variable", `an unused variable has no toggle (got ${JSON.stringify(unused)})`);
+});
+
+async function openFilletForm(page) {
+  const status = await runModeFilter(page, "line", "longestN", "1");
+  assert(/matched 1 of \d+/.test(status), `precondition: one edge is selected (got ${JSON.stringify(status)})`);
+  await page.click("#select-menu");
+  await sleep(150);
+  await page.evaluate(() => {
+    [...document.querySelectorAll(".op-btn")].find((b) => b.querySelector(".op-name")?.textContent === "Fillet")?.click();
+  });
+  await sleep(250);
+}
+const suggestState = (page) => page.evaluate(() => {
+  const ul = document.getElementById("expr-suggest");
+  return {
+    // position:fixed has no offsetParent, so ask the engine whether it renders.
+    visible: !!ul && !ul.hidden && ul.checkVisibility(),
+    items: ul && !ul.hidden ? [...ul.querySelectorAll("li")].map((li) => li.firstChild.textContent) : [],
+    active: ul?.querySelector("li.active")?.firstChild.textContent ?? null,
+  };
+});
+const AC_VARS = [
+  { name: "len", expr: "10", value: 10 },
+  { name: "width", expr: "len/2", value: 5 },
+];
+
+test("expression autocomplete: Tab and Enter accept, arrows move, Escape leaves the field unchanged (op field)", async (page) => {
+  await populate(page);
+  await post(page, { type: "edits", ops: [], variables: [...AC_VARS, { name: "sz", expr: "1", value: 1 }] });
+  await sleep(300);
+  await openFilletForm(page);
+  const sel = '#edits-params input[data-name="amount"]';
+  const val = () => page.evaluate((s) => document.querySelector(s).value, sel);
+  await page.fill(sel, "");
+  await page.focus(sel);
+  await page.keyboard.type("2*l");
+  let st = await suggestState(page);
+  assert(st.visible && st.items.join() === "len", `typing a prefix lists the matching variable (got ${JSON.stringify(st)})`);
+  await page.keyboard.press("Tab");
+  assert((await val()) === "2*len" && !(await suggestState(page)).visible, `Tab accepts (got ${await val()})`);
+  assert(await page.evaluate((s) => document.activeElement === document.querySelector(s), sel), "Tab kept focus in the field");
+
+  await page.fill(sel, "");
+  await page.keyboard.type("w");
+  st = await suggestState(page);
+  assert(st.items[0] === "width", `variables first (got ${JSON.stringify(st.items)})`);
+  await page.keyboard.press("Enter");
+  assert((await val()) === "width", `Enter accepts (got ${await val()})`);
+  assert((await sentOf(page, "editsChanged")).length === 0, "Enter on an open list does not apply the form");
+
+  await page.fill(sel, "");
+  await page.keyboard.type("s");
+  st = await suggestState(page);
+  assert(st.items.join() === "sz,sqrt,sin" && st.active === "sz", `functions are offered (got ${JSON.stringify(st)})`);
+  await page.keyboard.press("ArrowDown");
+  const second = (await suggestState(page)).active;
+  assert(second === st.items[1], `ArrowDown moves the highlight (got ${second})`);
+  await page.keyboard.press("ArrowUp");
+  assert((await suggestState(page)).active === st.items[0], "ArrowUp moves back");
+  await page.keyboard.press("ArrowUp");
+  assert((await suggestState(page)).active === st.items.at(-1), "ArrowUp wraps");
+  await page.keyboard.press("Escape");
+  assert(!(await suggestState(page)).visible && (await val()) === "s", `Escape dismisses and leaves the text unchanged (got ${await val()})`);
+  await page.keyboard.type("q");
+  assert((await suggestState(page)).items.join() === "sqrt", "typing reopens it");
+  await page.keyboard.press("Tab");
+  assert((await val()) === "sqrt(", `a function gains its parenthesis (got ${await val()})`);
+});
+
+test("expression autocomplete: a variable expression offers only variables defined above", async (page) => {
+  await populate(page);
+  await post(page, { type: "edits", ops: [], variables: [...AC_VARS, { name: "wall", expr: "1", value: 1 }] });
+  await sleep(300);
+  const sel = (i) => `.variable-row:nth-child(${i}) .variable-expr`;
+  // width (2nd row) may use len but not wall (defined below) and not itself.
+  await page.focus(sel(2));
+  await page.keyboard.press("Control+A");
+  await page.keyboard.type("l");
+  let st = await suggestState(page);
+  assert(st.visible && st.items.join() === "len", `row 2 sees len (got ${JSON.stringify(st.items)})`);
+  await page.keyboard.press("Escape");
+  await page.keyboard.press("Control+A");
+  await page.keyboard.type("w");
+  st = await suggestState(page);
+  assert(!st.items.includes("wall") && !st.items.includes("width"), `row 2 does not see wall/width (got ${JSON.stringify(st.items)})`);
+  await page.keyboard.press("Escape");
+  assert((await page.evaluate((s) => document.querySelector(s).value, sel(2))) === "w", "Escape left the typed text, not the stored expression");
+  await page.fill(sel(2), "len/2");
+  await page.keyboard.press("Escape");
+  await page.focus(sel(3)); // leaving row 2 commits it and re-renders the table
+  await sleep(300);
+  await page.focus(sel(3));
+  await page.keyboard.press("Control+A");
+  await page.keyboard.type("w");
+  st = await suggestState(page);
+  assert(st.visible && st.items.includes("width"), `row 3 sees width (got ${JSON.stringify(st.items)})`);
+  await page.keyboard.press("Enter");
+  assert((await page.evaluate((s) => document.querySelector(s).value, sel(3))) === "width", "Enter accepts in a variable expression");
+});
 
 const SAVE_POINT_OPS = [
   { op: "translate", targets: ["solid-0"], vec: [1, 0, 0] },

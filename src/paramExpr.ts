@@ -30,6 +30,11 @@ const FUNCTIONS: Record<string, (...args: number[]) => number> = {
 
 const CONSTANTS: Record<string, number> = { pi: Math.PI };
 
+/** Callable function names, for autocomplete (the table itself stays private). */
+export const EXPR_FUNCTION_NAMES: readonly string[] = Object.keys(FUNCTIONS);
+/** Constant names (`pi`), for autocomplete. */
+export const EXPR_CONSTANT_NAMES: readonly string[] = Object.keys(CONSTANTS);
+
 const RESERVED = new Set([...Object.keys(FUNCTIONS), ...Object.keys(CONSTANTS)]);
 
 /**

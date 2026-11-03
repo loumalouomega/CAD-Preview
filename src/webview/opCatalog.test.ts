@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { OP_CATALOG, AGENT_ONLY_OPS, allCatalogEntries, describeOp, referencedEntities, buildEntityReferenceIndex, QUERYABLE_PANEL_FORMS } from "./opCatalog";
 import { OP_ICONS } from "./opIcons";
+import { ribbonOpIds } from "./ribbon";
 import { BREP_ONLY_OPS, QUERYABLE_OPERAND_FIELDS, type EditOp, type EditOpKind } from "../editOps";
 
 /** One representative well-formed op per kind, for describeOp coverage. */
@@ -318,6 +319,55 @@ describe("catalogLocation", () => {
     expect(catalogLocation("addPoint")).toBe("2d");
     expect(catalogLocation("addBox")).toBe("3d");
     expect(catalogLocation("translate")).toBe("edit");
+  });
+});
+
+describe("single-key shortcuts", () => {
+  it("declares each key once, as one upper-case letter, across catalog entries and ACTION_KEYS", async () => {
+    const { ACTION_KEYS } = await import("./opCatalog");
+    const seen = new Map<string, string>();
+    const claim = (key: string, owner: string): void => {
+      expect(key, owner).toMatch(/^[A-Z]$/);
+      expect(seen.get(key), `${key} claimed by both ${seen.get(key)} and ${owner}`).toBeUndefined();
+      seen.set(key, owner);
+    };
+    for (const e of allCatalogEntries()) if (e.key) claim(e.key, e.id);
+    for (const [elementId, key] of Object.entries(ACTION_KEYS)) claim(key, elementId);
+    expect(seen.size).toBeGreaterThanOrEqual(9);
+  });
+
+  it("never collides with a view snap (1-6, i) and keeps plain R (Revolve) distinct from Shift+R (repeat)", async () => {
+    const { viewForKey } = await import("../viewShortcuts");
+    const { ACTION_KEYS, REPEAT_LAST_KEY } = await import("./opCatalog");
+    const keys = [...allCatalogEntries().flatMap((e) => (e.key ? [e.key] : [])), ...Object.values(ACTION_KEYS)];
+    for (const k of keys) {
+      expect(viewForKey({ key: k }), `${k} collides with a view snap`).toBeNull();
+      expect(viewForKey({ key: k.toLowerCase() }), `${k} collides with a view snap`).toBeNull();
+    }
+    expect(REPEAT_LAST_KEY).toBe("Shift+R");
+    expect(allCatalogEntries().find((e) => e.key === "R")?.id).toBe("revolve");
+  });
+
+  it("puts keys on exactly the ops the roadmap names", () => {
+    const keyed = Object.fromEntries(allCatalogEntries().filter((e) => e.key).map((e) => [e.key, e.id]));
+    expect(keyed).toEqual({
+      E: "extrude", R: "revolve", F: "fillet", C: "chamfer", H: "addHole", M: "translate", S: "shell", P: "patternLinear",
+    });
+  });
+});
+
+describe("ribbon strip coverage (one-to-one with the catalog)", () => {
+  it("every catalog op is reachable from the ribbon strip", () => {
+    const reachable = ribbonOpIds();
+    const missing = allCatalogEntries().filter((e) => !reachable.has(e.id)).map((e) => e.id);
+    expect(missing).toEqual([]);
+  });
+  it("no ribbon op button lacks a form: each names a catalog entry that has an icon", () => {
+    const known = new Set(allCatalogEntries().map((e) => e.id));
+    for (const id of ribbonOpIds()) {
+      expect(known.has(id), id).toBe(true);
+      expect(OP_ICONS[id], id).toBeTruthy();
+    }
   });
 });
 

@@ -1,7 +1,7 @@
 import * as THREE from "three";
 import { Viewer } from "./viewer";
 import { refreshPalette } from "./palette";
-import { buildEntityReferenceIndex, QUERYABLE_PANEL_FORMS } from "./opCatalog";
+import { allCatalogEntries, buildEntityReferenceIndex, QUERYABLE_PANEL_FORMS } from "./opCatalog";
 import { hoverContent, inspectorContent, summaryLine } from "./entityExplain";
 import { formatEntityReferences, producingBucketFor } from "./entityReference";
 import { UI_GLYPHS } from "../uiGlyphs";
@@ -26,6 +26,9 @@ import { LayersModel } from "./layersModel";
 import { LayersPanel } from "./layersPanel";
 import { lockedOperandForOp } from "../layersSidecar";
 import { CommandBar } from "./commandBar";
+import { CommandPalette } from "./commandPalette";
+import { setupRibbon, type RibbonHandle } from "./ribbonStrip";
+import { DEFAULT_RIBBON_TAB, sanitizeRibbonTab } from "./ribbonTabs";
 import type { CommandRow, SelectionIds } from "../opCommands";
 import { AnnotationsModel } from "./annotationsModel";
 import { PlanesModel } from "./planesModel";
@@ -39,11 +42,15 @@ import { applySpaceMouseInput } from "./spaceMouseDispatch";
 import { sanitizeSpaceMouseMessage } from "../spaceMouseReports";
 import type { PanelOpId } from "./opCatalog";
 import { VariablesModel } from "./variablesModel";
+import { ConfigurationsModel } from "./configurationsModel";
+import { ConfigTablePanel } from "./configTablePanel";
+import { evaluateEffective } from "../configurations";
 import { VariablesPanel } from "./variablesPanel";
-import { evaluateVariables, resolveEditOps, dimensionIssues } from "../editVariables";
+import { collectVariableUsage, type VariableUsage } from "../variableUsage";
+import { evaluateVariables, resolveEditOps, dimensionIssues, parseVariablesCsv, parseVariablesJson, serializeVariablesCsv, serializeVariablesJson, promoteField } from "../editVariables";
 import { replayTail } from "../editsSidecar";
 import { resolvePlaneRefs } from "../planeRefs";
-import { extractIdentifiers } from "../paramExpr";
+import { parseFieldPath, setNumericField, getNumericField } from "../paramExpr";
 import { annotatedLabelText, evaluateToleranceBand, type AnnotatedTolerance } from "../toleranceBand";
 import { MeshingModel } from "./meshingModel";
 import { MeshingPanel } from "./meshingPanel";
@@ -259,6 +266,7 @@ const partsPanel = new PartsPanel(
     onRename: (index, name) => partsModel.rename(index, name),
     onRecolor: (index, color) => partsModel.recolor(index, color),
     onSetDensity: (index, density) => partsModel.setDensity(index, density),
+    onPickMaterial: (index, density, color) => partsModel.setMaterial(index, density, color),
     onRemoveEntity: (index, type, id) => partsModel.removeEntity(index, type, id),
     onSelectPart: (index) => {
       previewPartIndex = index;
@@ -631,26 +639,21 @@ function setupPlanesControls(): void {
 // only already-resolved ops.
 const editsModel = new EditsModel(syncEdits);
 const variablesModel = new VariablesModel(syncEdits);
+// Design table: named sets of variable overrides. The active one is overlaid on
+// the variables BEFORE resolution (`evaluateEffective`), so stored ops never change.
+const configurationsModel = new ConfigurationsModel(syncEdits);
 
 /** The op list with every expression re-evaluated against the current variables, then plane ids. */
 function currentResolvedOps(): { ops: EditOp[]; issues: string[] } {
-  const { values } = evaluateVariables(variablesModel.list());
+  const { values } = evaluateEffective(variablesModel.list(), configurationsModel.state);
   const { ops: variableResolved, issues: variableIssues } = resolveEditOps(editsModel.list(), values);
   const { ops, issues: planeIssues } = resolvePlaneRefs(variableResolved, planesModel.list());
   return { ops, issues: [...variableIssues, ...dimensionIssues(editsModel.list(), variablesModel.list()), ...planeIssues] };
 }
 
-/** How many op-expression fields reference each variable (for delete warnings). */
-function variableUsage(): Map<string, number> {
-  const usage = new Map<string, number>();
-  for (const op of editsModel.list()) {
-    for (const expr of Object.values(op.exprs ?? {})) {
-      for (const ident of extractIdentifiers(expr)) {
-        usage.set(ident, (usage.get(ident) ?? 0) + 1);
-      }
-    }
-  }
-  return usage;
+/** Who references each variable (op fields + other variables): drives the delete warning and the Used-by list. */
+function variableUsage(): Map<string, VariableUsage> {
+  return collectVariableUsage(editsModel.list(), variablesModel.list());
 }
 
 /** Re-renders the Edits + Variables panels from the models (no host post). */
@@ -664,7 +667,7 @@ function renderEditsUi(): void {
   // Facts were read against a particular op list; any change to it (even one
   // that leaves the length equal) makes them unquotable.
   knownEntityFacts.clear();
-  const { values, errors } = evaluateVariables(variablesModel.list());
+  const { values, errors } = evaluateEffective(variablesModel.list(), configurationsModel.state);
   const { ops: variableResolved } = resolveEditOps(editsModel.list(), values);
   const { ops } = resolvePlaneRefs(variableResolved, planesModel.list());
   editsPanel.setVariables(values);
@@ -677,6 +680,9 @@ function renderEditsUi(): void {
   // point anyway.
   editsPanel.render(ops, editsModel.canUndo, editsModel.canRedo, lastOpOutcomes, editsModel.redoList(), lastOpBuckets, editsModel.savePoint);
   variablesPanel.render(variablesModel.list(), values, errors, variableUsage());
+  configTablePanel.render(variablesModel.list(), configurationsModel.state);
+  variablesPanel.renderModelParams(editsModel.list(), editsModel.savePoint);
+  variablesPanel.setDeferState(variablesModel.isDeferred, variablesModel.hasPendingChanges);
   // The history length beside the section title, so it reads while collapsed.
   // Empty (not "0") when there are no ops, so the badge collapses away.
   const editsCount = document.getElementById("edits-count");
@@ -724,7 +730,8 @@ function flashExternalEdits(): void {
 function syncEdits(): void {
   externalEditsFrom = null; // a local change ends the "added externally" marking
   const { ops, issues } = currentResolvedOps();
-  post({ type: "editsChanged", ops, variables: variablesModel.list() });
+  const configState = configurationsModel.state;
+  post({ type: "editsChanged", ops, variables: variablesModel.list(), configurations: configState.configurations, activeConfiguration: configState.activeConfiguration });
   renderEditsUi();
   // Ops whose expressions can't resolve keep their last-good values — surface
   // the first problem without blocking the rest of the replay.
@@ -734,10 +741,97 @@ function syncEdits(): void {
 
 const variablesPanel = new VariablesPanel(document.getElementById("variables-section")!, {
   onAdd: () => variablesModel.add(),
-  onRename: (index, name) => variablesModel.rename(index, name),
+  onRename: (index, name) => {
+    const before = variablesModel.list()[index]?.name;
+    const ok = variablesModel.rename(index, name);
+    // Carry every configuration's override across the rename.
+    if (ok && before !== undefined) {
+      const after = variablesModel.list()[index]?.name;
+      if (after !== undefined && after !== before) configurationsModel.renameVariable(before, after);
+    }
+    return ok;
+  },
   onSetExpr: (index, expr) => variablesModel.setExpr(index, expr),
   onRemove: (index) => variablesModel.remove(index),
+  onSetComment: (index, comment) => variablesModel.setComment(index, comment),
+  onToggleFavourite: (index) => variablesModel.toggleFavourite(index),
+  onSelectOp: (opIndex) => editsPanel.revealRow(opIndex),
+  onRefresh: () => renderEditsUi(),
+  onMove: (index, delta) => variablesModel.move(index, delta),
+  onImport: (fileName, text) => {
+    const res = /\.json$/i.test(fileName)
+      ? parseVariablesJson(text, variablesModel.list())
+      : parseVariablesCsv(text, variablesModel.list());
+    // Accepted rows are appended by the model (one change); rejected rows are all reported.
+    variablesModel.importRows(res.accepted.map((v) => ({ name: v.name, expr: v.expr, comment: v.comment })));
+    const bad = res.rejected.map((r) => `row ${r.row}: ${r.reason}`);
+    setStatus(
+      `Imported ${res.accepted.length} variable${res.accepted.length === 1 ? "" : "s"}` +
+        (bad.length ? `; ${bad.length} rejected — ${bad.slice(0, 3).join("; ")}${bad.length > 3 ? "; …" : ""}` : ""),
+      bad.length > 0
+    );
+  },
+  onExport: (format) =>
+    post({
+      type: "exportVariables",
+      format,
+      text: format === "json" ? serializeVariablesJson(variablesModel.list()) : serializeVariablesCsv(variablesModel.list()),
+    }),
+  onLiveChange: (live) => {
+    variablesModel.setDeferred(!live);
+    variablesPanel.setDeferState(!live, variablesModel.hasPendingChanges);
+  },
+  onApply: () => {
+    variablesModel.commit();
+    variablesPanel.setDeferState(variablesModel.isDeferred, variablesModel.hasPendingChanges);
+  },
+  onRevert: () => {
+    variablesModel.revert();
+    renderEditsUi();
+  },
+  onEditField: (opIndex, path, value) => {
+    if (opIndex < editsModel.savePoint) return void setStatus(SAVE_POINT_REFUSAL, true);
+    const op = editsModel.list()[opIndex];
+    const segs = parseFieldPath(path);
+    if (!op || !segs || !setNumericField(op, segs, value)) return;
+    const next = validateEditOp(op);
+    if (!next) return void setStatus(`${path} = ${value} is not valid for this op`, true);
+    editsModel.replaceAt(opIndex, next);
+  },
+  onPromote: (opIndex, path) => {
+    if (opIndex < editsModel.savePoint) return void setStatus(SAVE_POINT_REFUSAL, true);
+    const op = editsModel.list()[opIndex];
+    const segs = parseFieldPath(path);
+    const value = op && segs ? getNumericField(op, segs) : null;
+    if (!op || value === null) return;
+    const base = `${op.op.replace(/^add/, "").replace(/^./, (c) => c.toLowerCase())}_${path.replace(/\[(\d+)\]/g, "$1")}`.replace(/[^A-Za-z0-9_]/g, "");
+    let name = base;
+    for (let n = 2; variablesModel.list().some((v) => v.name === name); n++) name = `${base}${n}`;
+    const promoted = promoteField(op, path, name);
+    if (!promoted) return void setStatus(`Cannot promote ${path}`, true);
+    // Variable first (silent), then the op replace fires ONE sync with both in place.
+    const wasDeferred = variablesModel.isDeferred;
+    variablesModel.load([...variablesModel.list(), { name, expr: String(value), value }]);
+    if (wasDeferred) variablesModel.commit();
+    editsModel.replaceAt(opIndex, promoted);
+    setStatus(`Created variable ${name} = ${value}`, false);
+  },
+  report: (text, isError) => setStatus(text, isError),
 });
+
+// Config Table: built into the Variables section (before "Model parameters").
+const configTablePanel = new ConfigTablePanel(
+  document.getElementById("variables-section")!,
+  document.getElementById("model-params-title"),
+  {
+    onAdd: (name, copyFrom) => configurationsModel.add(name, copyFrom),
+    onRemove: (name) => configurationsModel.remove(name),
+    onRename: (from, to) => configurationsModel.rename(from, to),
+    onActivate: (name) => configurationsModel.activate(name),
+    onSetCell: (name, variable, expr, baseExpr) => configurationsModel.setCell(name, variable, expr, baseExpr),
+    report: (text, isError) => setStatus(text, isError),
+  }
+);
 
 /** Guidance shown when an edit targets ops at or inside the save point (Tier 0
  * Phase 2 — those ops live in the source file itself, not the sidecar). */
@@ -2626,6 +2720,7 @@ function tintForPanelOp(id: PanelOpId, wrapVariant?: "emboss" | "engrave" | "sta
     case "addBezier":
     case "addEllipseArc":
     case "addHelix":
+    case "addParametricCurve":
     case "section":
     case "buildSurface":
     case "buildVolume":
@@ -2841,19 +2936,35 @@ const commandBar = new CommandBar(document.getElementById("cmdbar")!, {
   getInventory: commandBarInventory,
   sourceKind: () => sourceKind ?? "",
   commit: commandBarCommit,
-  openForm: (row, body) => {
-    const chevron = document.querySelector<HTMLElement>("#edits-panel.collapsed #edits-header .panel-chevron");
-    chevron?.click(); // an open form inside a collapsed section would be invisible
-    if (!editsPanel.openOp(row.panelId)) return false;
-    if (body) {
-      selectBodyIds(body);
-      const { skipped } = editsPanel.prefillFromBody(body);
-      if (skipped.length > 0) setStatus(`Form opened; these body fields were not prefilled: ${skipped.join(", ")}.`);
-    }
-    return true;
-  },
+  openForm: (row, body) => openEditForm(row.panelId, body, false),
 });
-editsModel.onPush = (op) => { if (!commandBarCommitting) commandBar.echo(op); };
+
+/** Opens an op's form (expanding a collapsed Edits section first) and prefills it from `body`. Shared by the command bar and the command search. */
+function openEditForm(panelId: PanelOpId, body: Record<string, unknown> | null | undefined, quiet: boolean): boolean {
+  const chevron = document.querySelector<HTMLElement>("#edits-panel.collapsed #edits-header .panel-chevron");
+  chevron?.click(); // an open form inside a collapsed section would be invisible
+  if (!editsPanel.openOp(panelId)) return false;
+  if (body) {
+    selectBodyIds(body);
+    const { skipped } = editsPanel.prefillFromBody(body);
+    if (skipped.length > 0 && !quiet) setStatus(`Form opened; these body fields were not prefilled: ${skipped.join(", ")}.`);
+  }
+  return true;
+}
+
+// Command search (Ctrl+K / "/") and the opt-in single-key commands; see commandPalette.ts.
+/** False for a B-rep-only op on a mesh source — shared by the command search and the ribbon. */
+const isOpAvailable = (id: PanelOpId): boolean => sourceKind === "brep" || !allCatalogEntries().find((e) => e.id === id)?.brepOnly;
+const commandPalette = new CommandPalette({
+  openOp: (id, body) => openEditForm(id, body ?? null, true),
+  isOpAvailable,
+  setStatus: (text, isError) => setStatus(text, isError ?? false),
+});
+commandPalette.install();
+editsModel.onPush = (op) => {
+  commandPalette.noteApplied(op);
+  if (!commandBarCommitting) commandBar.echo(op);
+};
 
 /** After a replay: report a graceful skip of the op the bar just pushed (a typed op must never fail silently). */
 function reportCommandBarOutcome(): void {
@@ -3259,6 +3370,18 @@ function buildOpForPanelCore(id: PanelOpId, rawDraft: Record<string, unknown>): 
       if (!nonParallel(d.normal, d.up)) return { error: "Up must not be parallel to Normal." };
       if (d.startAngleDeg === d.endAngleDeg) return { error: "Start and end angle must differ." };
       return { op: withExprs({ op: id, center: d.center, normal: d.normal, up: d.up, radiusX: d.radiusX, radiusY: d.radiusY, startAngleDeg: d.startAngleDeg, endAngleDeg: d.endAngleDeg, ...pointRefsOf(d) }) };
+    case "addParametricCurve": {
+      if (!d.x || !d.y) return { error: "Enter x(s) and y(s) expressions." };
+      if (!(d.sMax > d.sMin)) return { error: "s max must exceed s min." };
+      if (!Number.isInteger(d.samples) || d.samples < 2 || d.samples > 2000) return { error: "Samples must be a whole number from 2 to 2000." };
+      if (d.close && d.samples < 3) return { error: "Closing a curve needs 3+ samples." };
+      if (d.close && d.guide) return { error: "A closed curve builds a face, which cannot be construction geometry." };
+      if (d.plane && !nonParallel(d.plane.normal, d.plane.up)) return { error: "Up must not be parallel to Normal." };
+      return { op: withExprs({
+        op: id, x: d.x, y: d.y, ...(d.z && d.z !== "0" ? { z: d.z } : {}), sMin: d.sMin, sMax: d.sMax, samples: d.samples,
+        ...(d.as === "polyline" ? { as: "polyline" as const } : {}), ...(d.close ? { close: true } : {}), ...(d.plane ? { plane: d.plane } : {}),
+      }) };
+    }
     case "addHelix":
       if (d.radius <= 0 || d.pitch <= 0 || d.turns <= 0) return { error: "Helix radius, pitch, and turns must all be positive." };
       return { op: withExprs({ op: id, center: d.center, axis: d.axis, radius: d.radius, pitch: d.pitch, turns: d.turns, ...pointRefsOf(d) }) };
@@ -5324,6 +5447,7 @@ function setupMarkupControls(): void {
 let appearanceControls: AppearanceControlsHandle | null = null;
 let clippingControls: ClippingControlsHandle | null = null;
 let collapsiblePanels: CollapsiblePanelsHandle | null = null;
+let ribbon: RibbonHandle | null = null;
 let sidebarResizer: SidebarResizerHandle | null = null;
 
 /** While applying a saved bookmark, suppress the echo that would otherwise
@@ -5366,6 +5490,16 @@ try {
   // relying on `viewer.onViewChanged`.
   collapsiblePanels = setupCollapsiblePanels(scheduleViewSave);
   setupAdvancedGroupCount();
+  // The ribbon command strip. A user-driven tab / compact / grid-toggle change
+  // asks for the save itself (no camera moved); `ribbon.setState` is the silent
+  // restore path and never calls back.
+  ribbon = setupRibbon({
+    openOp: (id) => openEditForm(id, null, true),
+    isOpAvailable,
+    activeOp: () => editsPanel.openOpId(),
+    setStatus: (text, isError) => setStatus(text, isError ?? false),
+    onChange: () => scheduleViewSave(),
+  });
   // Sidebar resize handle. The callback is the USER-facing path only: the
   // resizer already applied `--side-width` itself (it is the one authority on
   // that var), so the callback just reflows the canvas — a window `resize`
@@ -5495,6 +5629,14 @@ function applyViewState(state: ViewState): void {
   // `onChange`, so reopening a document can't rewrite the sidecar it just read
   // (the same silent-`load()` contract `PartsModel`/`PlanesModel` follow).
   collapsiblePanels?.setCollapsed(state.collapsedPanels ?? []);
+  // Ribbon tab / compact / grid state — a restore, not an echo (`setState` never
+  // fires `onChange`). Absent fields mean the defaults, so a sidecar without
+  // them resets a previously-chosen tab exactly as `setCollapsed([])` expands.
+  ribbon?.setState({
+    tab: sanitizeRibbonTab(state.ribbonTab) ?? DEFAULT_RIBBON_TAB,
+    compact: state.ribbonCompact === true,
+    editsGridOpen: state.editsGridOpen === true,
+  });
   // Restore, not echo: `setWidth` deliberately never fires the resizer's
   // `onChange`, so reopening a document can't rewrite the sidecar it just
   // read (the same contract `setCollapsed` keeps above). Clamping HERE too:
@@ -5726,6 +5868,13 @@ function scheduleViewSave(): void {
     if (collapsed.length > 0) view.collapsedPanels = collapsed;
     const sidebarWidth = sidebarResizer?.getWidth() ?? SIDEBAR_DEFAULT_PX;
     if (sidebarWidth !== SIDEBAR_DEFAULT_PX) view.sidebarWidth = sidebarWidth;
+    // Ribbon state, each omitted at its default so an untouched sidecar stays byte-stable.
+    const ribbonState = ribbon?.getState();
+    if (ribbonState) {
+      if (ribbonState.tab !== DEFAULT_RIBBON_TAB) view.ribbonTab = ribbonState.tab;
+      if (ribbonState.compact) view.ribbonCompact = true;
+      if (ribbonState.editsGridOpen) view.editsGridOpen = true;
+    }
     // The webview is the single writer of the bookmark list (save/rename/
     // replace/delete below mutate `viewBookmarks` in place); every view save
     // carries the current list, omitted when empty like every other additive
@@ -5979,6 +6128,7 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
       // travels with it so the timeline knows which rows are saved into the
       // file itself (Tier 0 Phase 2 — undo/remove/jump refuse to cross it).
       variablesModel.load(msg.variables);
+      configurationsModel.load(msg.configurations, msg.activeConfiguration);
       editsModel.load(msg.ops, msg.bakedThrough ?? 0);
       externalEditsFrom = msg.externalFrom ?? null;
       externalFlashPending = externalEditsFrom !== null;
@@ -6149,6 +6299,7 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
       // Cross-document settings — only ever initial state; per-document sidecar
       // values and runtime toggles (the toolbar Grid button) always win once set.
       meshSizePreset = msg.meshSizePreset;
+      commandPalette.setSingleKeys(msg.singleKeyCommands);
       viewer.applyDefaults(msg);
       syncMeshSizeSeed();
       {

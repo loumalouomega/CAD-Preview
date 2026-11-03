@@ -73,7 +73,7 @@ export const OP_PARAM_DOCS: Record<EditOpKind, string> = {
   addPolyline: '{points: ([x,y,z] | "point-N")[] (>=2; >=3 when closed), closed: boolean}',
   addThreePointArc: '{p1, p2, p3: each [x,y,z] | "point-N" (non-collinear)}',
   addSpline: '{points: ([x,y,z] | "point-N")[] (>=2; approximating fit, endpoint-exact)}',
-  addParametricCurve: '{x: expr, y: expr, z?: expr (default "0") — expressions in the parameter s and the document variables; sMin: n, sMax: n (> sMin), samples: integer 2..2000, as?: "spline"|"polyline" (default spline; approximating fit, endpoint-exact), closed?: boolean (polyline only, >=3 samples), plane?: {origin: [x,y,z], normal: [x,y,z], up: [x,y,z]} (sketch plane: world = origin + x·u + y·v + z·n; default the world XYZ frame)} — evaluated on read into cached samples drawn as addSpline/addPolyline, so a changed variable re-evaluates the curve',
+  addParametricCurve: '{x: expr, y: expr, z?: expr (default "0") — expressions in the parameter s and the document variables; sMin: n, sMax: n (> sMin), samples: integer 2..2000, as?: "spline"|"polyline" (default spline; approximating fit, endpoint-exact), closed?: boolean (polyline only, >=3 samples), close?: boolean (>=3 samples, no guide: also draws the straight segment from the last sample back to the first and builds the planar face that loop bounds — a free face that extrude/revolve take directly via its face-N id; supersedes closed), plane?: {origin: [x,y,z], normal: [x,y,z], up: [x,y,z]} (sketch plane: world = origin + x·u + y·v + z·n; default the world XYZ frame)} — evaluated on read into cached samples drawn as addSpline/addPolyline, so a changed variable re-evaluates the curve',
   addBezier: '{controlPoints: ([x,y,z] | "point-N")[] (>=2)}',
   addEllipseArc:
     '{center: [x,y,z] | "point-N", normal: [x,y,z], up: [x,y,z], radiusX: n>0, radiusY: n>0, startAngleDeg: n, endAngleDeg: n}',
@@ -250,7 +250,7 @@ function buildCommandTable(): CommandRow[] {
   return rows;
 }
 
-/** One row per panel button (59 today) — locked to `allCatalogEntries()` by `opCommands.test.ts`. */
+/** One row per panel button (60 today) — locked to `allCatalogEntries()` by `opCommands.test.ts`. */
 export const COMMAND_TABLE: readonly CommandRow[] = buildCommandTable();
 
 const COMMAND_LOOKUP: ReadonlyMap<string, CommandRow> = (() => {

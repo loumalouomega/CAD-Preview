@@ -10,6 +10,8 @@ import { PANE_LAYOUTS, paneCount, type PaneLayoutId } from "./webview/viewerPane
 // `displayMode`/`viewerPanes` above can be imported by value from the host.
 import { sanitizeCollapsedPanels } from "./webview/collapsiblePanels";
 import { clampSidebarWidth, SIDEBAR_DEFAULT_PX } from "./webview/sidebarResizer";
+// Pure tab ids only (not `ribbon.ts`, which carries the op catalog).
+import { DEFAULT_RIBBON_TAB, sanitizeRibbonTab } from "./webview/ribbonTabs";
 
 /** Pure (vscode-free) parse/serialize for the view-state sidecar — unit-testable. */
 
@@ -24,6 +26,9 @@ interface SidecarFile {
   collapsedPanels?: unknown;
   sidebarWidth?: unknown;
   bookmarks?: unknown;
+  ribbonTab?: unknown;
+  ribbonCompact?: unknown;
+  editsGridOpen?: unknown;
 }
 
 const CLIP_AXES: readonly ClipAxis[] = ["x", "y", "z"];
@@ -102,6 +107,15 @@ export function parseViewStateJson(text: string): ViewState | null {
   // fold-before-the-1x1-early-return requirement as `collapsedPanels` above.
   const bookmarks = sanitizeBookmarks(file?.bookmarks);
   if (bookmarks.length > 0) base.bookmarks = bookmarks;
+
+  // Ribbon strip state — same additive top-level siblings, same
+  // fold-before-the-1x1-early-return requirement. A tab id this build does not
+  // know (hand-edited, or from a newer build) drops to the default; the two
+  // booleans are `=== true` only, so a stray `"yes"` never turns anything on.
+  const ribbonTab = sanitizeRibbonTab(file?.ribbonTab);
+  if (ribbonTab !== null && ribbonTab !== DEFAULT_RIBBON_TAB) base.ribbonTab = ribbonTab;
+  if (file?.ribbonCompact === true) base.ribbonCompact = true;
+  if (file?.editsGridOpen === true) base.editsGridOpen = true;
 
   // Optional split-view layout — purely additive, tolerant.
   const rawLayout = file?.layout;
@@ -213,8 +227,8 @@ export function sanitizeBookmarks(raw: unknown): ViewBookmark[] {
 
 /** Serializes view state to the sidecar JSON text (pretty-printed, trailing newline). */
 export function serializeViewStateJson(sourceName: string, view: ViewState): string {
-  const { layout, panes, collapsedPanels, sidebarWidth, bookmarks, ...viewCore } = view;
-  const file: SidecarFile & { view: Omit<ViewState, "layout" | "panes" | "collapsedPanels" | "sidebarWidth" | "bookmarks"> } = {
+  const { layout, panes, collapsedPanels, sidebarWidth, bookmarks, ribbonTab, ribbonCompact, editsGridOpen, ...viewCore } = view;
+  const file: SidecarFile & { view: Omit<ViewState, "layout" | "panes" | "collapsedPanels" | "sidebarWidth" | "bookmarks" | "ribbonTab" | "ribbonCompact" | "editsGridOpen"> } = {
     version: VIEW_STATE_SIDECAR_VERSION,
     source: sourceName,
     view: viewCore,
@@ -239,5 +253,11 @@ export function serializeViewStateJson(sourceName: string, view: ViewState): str
   if (bookmarks && bookmarks.length > 0) {
     (file as SidecarFile).bookmarks = bookmarks;
   }
+  // Ribbon state: each omitted at its default, so a document whose ribbon was
+  // never touched writes a sidecar byte-identical to the pre-ribbon shape.
+  const tab = sanitizeRibbonTab(ribbonTab);
+  if (tab !== null && tab !== DEFAULT_RIBBON_TAB) (file as SidecarFile).ribbonTab = tab;
+  if (ribbonCompact === true) (file as SidecarFile).ribbonCompact = true;
+  if (editsGridOpen === true) (file as SidecarFile).editsGridOpen = true;
   return JSON.stringify(file, null, 2) + "\n";
 }

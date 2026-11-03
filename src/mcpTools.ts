@@ -44,23 +44,61 @@ import {
   serializeLayersJson,
   type LayerDrawSubset,
 } from "./layersSidecar";
-async function readEditsResolved(modelPath: string): Promise<{ ops: EditOp[]; fullOps: EditOp[]; variables: ParamVariable[]; bakedThrough: number }> {
+/**
+ * The configuration (design table) a read-only export/meshing tool evaluates
+ * the document with, set by the `registerTool` decorator for the tools in
+ * `CONFIGURATION_PARAM_TOOLS`. It is the ONE overlay seam: `readEditsResolved`
+ * re-resolves the stored ops against that configuration's variable overlay
+ * and the stored `activeConfiguration` is never touched.
+ */
+export const configurationScope = new AsyncLocalStorage<{ configuration: string }>();
+
+async function readEditsResolved(modelPath: string): Promise<{ ops: EditOp[]; fullOps: EditOp[]; variables: ParamVariable[]; bakedThrough: number; configurations: Configuration[]; activeConfiguration: string | null }> {
   const parsed = await readEditsRaw(modelPath);
   const bakedThrough = parsed.bakedThrough;
+  const configurations = parsed.configurations ?? [];
+  const activeConfiguration = parsed.activeConfiguration ?? null;
+  let parsedOps = parsed.ops;
+  const requested = configurationScope.getStore()?.configuration;
+  if (requested !== undefined && requested !== activeConfiguration) {
+    const state = { configurations, activeConfiguration };
+    if (!findConfiguration(state, requested)) {
+      const known = configurations.map((c) => c.name);
+      throw new Error(`Unknown configuration "${requested}" - ${known.length > 0 ? `valid: ${known.join(", ")}` : "this model has no configurations"}.`);
+    }
+    const { values } = evaluateEffective(parsed.variables, state, requested);
+    parsedOps = resolveEditOps(parsed.ops, values).ops;
+  }
   try {
     const planes = await readPlanes(modelPath);
-    const { ops: fullOps } = resolvePlaneRefs(parsed.ops, planes);
+    const { ops: fullOps } = resolvePlaneRefs(parsedOps, planes);
     // Tier 0 save-in-place: the file on disk already contains
     // `fullOps[0..bakedThrough]`, so every kernel replay consumes only the
     // tail. `ops` is that tail (identity when nothing is baked, so
     // pre-watermark documents behave byte-for-byte as before); `fullOps`
     // keeps display/index/persist semantics for history, stackLength,
     // outcome offsets and sidecar writes.
-    return { ops: replayTail(fullOps, bakedThrough), fullOps, variables: parsed.variables, bakedThrough };
+    return { ops: replayTail(fullOps, bakedThrough), fullOps, variables: parsed.variables, bakedThrough, configurations, activeConfiguration };
   } catch {
-    return { ops: replayTail(parsed.ops, bakedThrough), fullOps: parsed.ops, variables: parsed.variables, bakedThrough };
+    return { ops: replayTail(parsedOps, bakedThrough), fullOps: parsedOps, variables: parsed.variables, bakedThrough, configurations, activeConfiguration };
   }
 }
+import { AsyncLocalStorage } from "async_hooks";
+import {
+  findConfiguration,
+  evaluateEffective,
+  addConfiguration,
+  removeConfiguration,
+  renameConfiguration,
+  activateConfiguration,
+  setConfigurationCell,
+  configurationTable,
+  configurationFileSlug,
+  normalizeConfigurationName,
+  type Configuration,
+  type ConfigurationState,
+  type ConfigurationResult,
+} from "./configurations";
 import { compileParametricScript } from "./parametricScript";
 import { routeFile, COMPARABLE_MESH_FORMATS, DISPLAY_ONLY_MESH_FORMATS, displayOnlyMeshMessage, MESHIO_FORMATS, ambiguityCaveatFor, type CadFormat, type FileRoute, type MeshParseFormat } from "./fileRouter";
 import { resolveExternalBuffers, type GltfExternalBuffers } from "./gltfParser";
@@ -256,7 +294,7 @@ import {
 import { buildPreprocessZip, readPreprocessZip } from "./preprocessArchive";
 import { bomTsv, type BomRow } from "./bomExport";
 import { densityForMaterial, totalMass, validateDensity } from "./materialDensity";
-import { batchTsv, runBatch, type CollisionPolicy } from "./batchExport";
+import { batchTsv, runBatch, type BatchRow, type BatchSummary, type CollisionPolicy } from "./batchExport";
 import { buildHandoffManifest, checkHandoffManifest, deterministicExportId, type HandoffManifest, parseHandoffManifest, replayFingerprint, HANDOFF_MANIFEST_SUFFIX } from "./handoffManifest";
 import { normalizeMeshExport } from "./deterministicMesh";
 import { kernelVersions } from "./kernelVersions";
@@ -439,6 +477,7 @@ export function describeCapabilities() {
     opNotes: [
       "Pass ops as raw JSON objects with an `op` kind field; they are validated by the same tolerant gate the extension uses (malformed ops are rejected with a reason, never crash).",
       "Any numeric field may carry a parametric expression via `exprs`, e.g. {op: \"addBox\", size: [20,10,5], exprs: {\"size[0]\": \"L\"}} — see set_variables.",
+      "Design table: set_configuration stores named CONFIGURATIONS (sparse variable name -> expression overrides) in the edits sidecar and can make one active; ops and their exprs never change, the active configuration is overlaid onto the variables before they resolve. Export and meshing tools (export_brep, export_mesh, generate_mesh, get_mass_properties, load_model, render_snapshot, screenshot_shape, export_technical_drawing, export_drawing_sheet, export_tessellated_stl, estimate_mesh_budget) take an optional `configuration` that evaluates a named one WITHOUT changing the stored selection; batch_export takes `configurations`/`allConfigurations` for one file per configuration (<stem>-<config>.<ext>). Variables are the only thing a configuration changes.",
       "Any id-bearing operand field may carry a stored selector via `targetQueries` (plus `targetQueryKinds` tags for bucket queries), e.g. {op: \"boolean\", kind: \"union\", a: [...], b: [...], targetQueries: {a: {version: 1, source: {kind: \"scene\", filter: {kind: \"planar\"}}}}}. Queries resolve against the CURRENT op list at every load (bucket = the producing op's recorded faces re-matched geometrically; scene = a whole-model filter/rank) and overwrite the field's cached ids for that replay; the sidecar is untouched. A scalar slot (profile/face/path/faceA/faceB/upToFace/upTo/edge) needs exactly one resolved id or the field freezes to its cache; every freeze surfaces as a load_model warning. Forward references (producing op not strictly before the consuming one) and queries inside repeat bodies are refused. Mesh sources never resolve queries — they replay on cached ids.",
       "brepOnly ops are rejected for mesh-format sources (STL/OBJ/PLY/glTF). topologyChanging ops reassign face-N/edge-N ids on replay.",
       "Angles are degrees. Vec3s are [x,y,z] arrays.",
@@ -705,7 +744,7 @@ async function sidecarSummary(modelPath: string) {
   const parts = await readParts(modelPath);
   return {
     editOpCount: fullOps.length,
-    variables: variables.map((v) => ({ name: v.name, expr: v.expr, value: v.value })),
+    variables: variables.map((v) => ({ name: v.name, expr: v.expr, value: v.value, ...(v.comment ? { comment: v.comment } : {}), ...(v.favourite ? { favourite: true } : {}) })),
     parts: parts.map((p) => p.name),
   };
 }
@@ -3883,10 +3922,16 @@ export async function repairMeshTool(
 // ---------------------------------------------------------------------------
 // get_state
 
+/** Values the document's ops resolve with: the active configuration's overlay (or the base variables when none is active). */
+function documentValuesOf(doc: { variables: ParamVariable[]; configurations: Configuration[]; activeConfiguration: string | null }): Record<string, number> {
+  return evaluateEffective(doc.variables, { configurations: doc.configurations, activeConfiguration: doc.activeConfiguration }).values;
+}
+
 export async function getState(params: { path: string }) {
   const modelPath = params.path;
   requireRoute(modelPath);
-  const { fullOps, variables, bakedThrough } = await readEditsResolved(modelPath);
+  const { fullOps, variables, bakedThrough, configurations, activeConfiguration } = await readEditsResolved(modelPath);
+  const activeEval = activeConfiguration ? evaluateEffective(variables, { configurations, activeConfiguration }) : null;
   const parts = await readParts(modelPath);
   const { layers } = await readLayers(modelPath);
   const annotations = await readAnnotations(modelPath);
@@ -3908,8 +3953,24 @@ export async function getState(params: { path: string }) {
       value: v.value,
       /** Deduced from bracketed units: "length" | "angle" | "none" (plain number) | "mixed". */
       unit: variableDims[v.name] ?? "none",
+      comment: v.comment ?? "",
+      favourite: v.favourite === true,
       error: errors.get(v.name) ?? null,
     })),
+    // Design table: sparse variable overrides per named configuration. With one
+    // active, `effectiveVariables` shows what the document resolves with.
+    configurations: configurations.map((c) => ({ name: c.name, active: c.name === activeConfiguration, overrides: c.overrides })),
+    activeConfiguration,
+    ...(activeEval
+      ? {
+          effectiveVariables: variables.map((v) => ({
+            name: v.name,
+            expr: activeEval.variables.find((e) => e.name === v.name)?.expr ?? v.expr,
+            value: activeEval.values[v.name] ?? v.value,
+            error: activeEval.errors.get(v.name) ?? null,
+          })),
+        }
+      : {}),
     parts,
     // Presentation/drawing layers, distinct from Parts — see `list_layers`.
     layers,
@@ -4241,7 +4302,7 @@ export async function applyEditOps(
   const newOps = [...current.fullOps, ...accepted];
   const planesForWrite = await readPlanes(modelPath).catch(() => [] as never[]);
   // Evaluate expression-driven ops (parametric curves cache their samples) before they persist or replay.
-  const { values: docValues } = evaluateVariables(current.variables);
+  const docValues = documentValuesOf(current);
   const variableResolved = resolveEditOps(newOps, docValues);
   warnings.push(...variableResolved.issues.filter((i) => /addParametricCurve/.test(i)));
   const { ops: resolvedNewOps } = resolvePlaneRefs(variableResolved.ops, planesForWrite);
@@ -4526,7 +4587,7 @@ async function compileAndApplyScript(
   const warnings: string[] = [...extraWarnings];
 
   const current = await readEditsResolved(modelPath);
-  const { values: documentValues } = evaluateVariables(current.variables);
+  const documentValues = documentValuesOf(current);
   const compiled = compileParametricScript(params.script, documentValues);
   enrichScriptRejections(params.script, compiled.report);
 
@@ -5026,11 +5087,15 @@ export async function listStandardHoleSizes(params: { standard?: string; designa
 // ---------------------------------------------------------------------------
 // set_variables
 
-export async function setVariables(params: { path: string; variables: Array<{ name: string; expr: string }> }) {
+export async function setVariables(params: {
+  path: string;
+  variables: Array<{ name: string; expr: string; comment?: string; favourite?: boolean }>;
+}) {
   const modelPath = params.path;
   requireRoute(modelPath);
   const current = await readEditsResolved(modelPath);
   const previous = new Map(current.variables.map((v) => [v.name, v.value]));
+  const previousFull = new Map(current.variables.map((v) => [v.name, v]));
 
   // Keep each carried-over variable's cached value so a failing expr freezes
   // at its last-good number, same as the webview's VariablesModel.
@@ -5038,11 +5103,19 @@ export async function setVariables(params: { path: string; variables: Array<{ na
     name: v.name,
     expr: v.expr,
     value: previous.get(v.name) ?? 0,
+    // An omitted comment/favourite keeps the existing one (the list REPLACES, but
+    // an agent that doesn't know these fields must not silently wipe them);
+    // an explicit "" / false clears it.
+    comment: v.comment !== undefined ? v.comment : previousFull.get(v.name)?.comment,
+    favourite: v.favourite !== undefined ? v.favourite : previousFull.get(v.name)?.favourite,
   }));
   const variables = validateVariables(candidate);
   const droppedCount = candidate.length - variables.length;
 
-  const { values, errors } = evaluateVariables(variables);
+  const { errors } = evaluateVariables(variables);
+  // Ops resolve against the ACTIVE configuration's overlay (the stored base
+  // variables keep their own caches).
+  const values = documentValuesOf({ variables, configurations: current.configurations, activeConfiguration: current.activeConfiguration });
   // Tier 0: re-resolve the FULL list (baked prefix included) so the persisted
   // sidecar keeps every op; replay sites tail-slice back down on read.
   const { ops, issues } = resolveEditOps(current.fullOps, values);
@@ -5057,8 +5130,101 @@ export async function setVariables(params: { path: string; variables: Array<{ na
       name: v.name,
       expr: v.expr,
       value: v.value,
+      comment: v.comment ?? "",
+      favourite: v.favourite === true,
       error: errors.get(v.name) ?? null,
     })),
+    resolvedOpCount: ops.length,
+    warnings,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// set_configuration (design table)
+
+/**
+ * Create, update, rename, activate or remove one named configuration: a sparse
+ * map of variable name -> expression override layered onto the document
+ * variables before they resolve. Stored in `<model>.edits.json`; the stored ops
+ * never change. Activating re-resolves the op list against the new overlay and
+ * persists the refreshed numeric caches (the exprs are the source of truth).
+ * Read-only tools evaluate a configuration WITHOUT touching the stored
+ * selection through their `configuration` parameter.
+ */
+export async function setConfiguration(params: {
+  path: string;
+  name: string;
+  /** Variable name -> expression. An empty string or null removes that override. Merged unless `replaceOverrides`. */
+  overrides?: Record<string, string | null>;
+  replaceOverrides?: boolean;
+  rename?: string;
+  /** true applies this configuration; false un-applies it if it is the active one. */
+  active?: boolean;
+  remove?: boolean;
+  /** Start a new configuration from a copy of this one's overrides. */
+  copyFrom?: string;
+}) {
+  const modelPath = params.path;
+  requireRoute(modelPath);
+  const current = await readEditsResolved(modelPath);
+  const warnings: string[] = [];
+  let state: ConfigurationState = { configurations: current.configurations, activeConfiguration: current.activeConfiguration };
+  const fail = (res: ConfigurationResult): never => {
+    throw new Error(res.error ?? "Invalid configuration change.");
+  };
+
+  if (params.remove) {
+    const res = removeConfiguration(state, params.name);
+    if (res.error) fail(res);
+    state = res.state;
+  } else {
+    if (!findConfiguration(state, params.name)) {
+      const res = addConfiguration(state, params.name, params.copyFrom);
+      if (res.error) fail(res);
+      state = res.state;
+    }
+    const name = normalizeConfigurationName(params.name)!;
+    if (params.replaceOverrides) {
+      state = { ...state, configurations: state.configurations.map((c) => (c.name === name ? { ...c, overrides: {} } : c)) };
+    }
+    const known = new Set(current.variables.map((v) => v.name));
+    for (const [variable, expr] of Object.entries(params.overrides ?? {})) {
+      const base = current.variables.find((v) => v.name === variable)?.expr;
+      const res = setConfigurationCell(state, name, variable, typeof expr === "string" ? expr : "", base);
+      if (res.error) {
+        warnings.push(`${variable}: ${res.error}`);
+        continue;
+      }
+      state = res.state;
+      if (typeof expr === "string" && expr.trim() !== "" && !known.has(variable)) warnings.push(`"${variable}" is not a variable of this model yet; the override is stored and applies once it exists.`);
+    }
+    if (params.rename !== undefined) {
+      const res = renameConfiguration(state, name, params.rename);
+      if (res.error) fail(res);
+      state = res.state;
+    }
+    const finalName = params.rename !== undefined ? normalizeConfigurationName(params.rename)! : name;
+    if (params.active === true) state = activateConfiguration(state, finalName).state;
+    else if (params.active === false && state.activeConfiguration === finalName) state = activateConfiguration(state, null).state;
+  }
+
+  const { values, errors } = evaluateEffective(current.variables, state);
+  // Re-resolve the FULL list so the persisted numeric caches match the overlay now in force.
+  const { ops, issues } = resolveEditOps(current.fullOps, values);
+  await writeEdits(modelPath, ops, current.variables, current.bakedThrough, state);
+  warnings.push(...issues);
+  const table = configurationTable(current.variables, state);
+  return {
+    activeConfiguration: state.activeConfiguration,
+    configurations: state.configurations.map((c) => ({ name: c.name, active: c.name === state.activeConfiguration, overrides: c.overrides })),
+    /** One row per configuration (plus the base): every variable's evaluated value, with an error string when a cell fails (it freezes at the cached value). */
+    table: table.map((row) => ({
+      configuration: row.name,
+      active: row.active,
+      values: Object.fromEntries(row.cells.map((c) => [c.variable, c.value])),
+      errors: Object.fromEntries(row.cells.filter((c) => c.error).map((c) => [c.variable, c.error])),
+    })),
+    effectiveErrors: Object.fromEntries(errors),
     resolvedOpCount: ops.length,
     warnings,
   };
@@ -7793,7 +7959,7 @@ export async function loadPreprocessTool(params: { zipPath: string; outputPath: 
   }
   if (contents.edits !== undefined) {
     const parsed = parseEditsJson(contents.edits);
-    await writeEdits(outputPath, parsed.ops, parsed.variables, parsed.bakedThrough);
+    await writeEdits(outputPath, parsed.ops, parsed.variables, parsed.bakedThrough, { configurations: parsed.configurations, activeConfiguration: parsed.activeConfiguration });
   }
   if (contents.meshOptions !== undefined) {
     // mcpSidecars' writeMeshOptions writes <out>.mesh.json AND regenerates the
@@ -7927,6 +8093,10 @@ export async function batchExportTool(
     reportPath?: string;
     /** Forwarded to the step and sheet targets (see export_brep / export_drawing_sheet). */
     deterministic?: boolean;
+    /** Design table: export each input once per named configuration (`<stem>-<config>.<ext>`). */
+    configurations?: string[];
+    /** Design table: export each input under every configuration it stores. */
+    allConfigurations?: boolean;
   },
   onProgress: ProgressCallback = () => {},
   signal?: AbortSignal
@@ -7982,17 +8152,58 @@ export async function batchExportTool(
     return { outputs: [result.written], editsBaked: baked, warnings: [...rowWarnings, ...result.warnings] };
   };
 
-  const { rows, summary } = await runBatch(inputs, {
+  const runOptions = {
     outDir,
     ext: batchTargetExt(target),
-    naming: params.naming,
     onCollision: policy,
-    exists: (p) => fsSync.existsSync(p),
-    exportOne,
+    exists: (p: string) => fsSync.existsSync(p),
     isCancelled: () => signal?.aborted === true,
-    onProgress: (done, total, row) =>
-      onProgress({ progress: done, total, message: `${path.basename(row.input)}: ${row.status}` }),
-  });
+  };
+  const perConfiguration = params.allConfigurations === true || (params.configurations?.length ?? 0) > 0;
+  let rows: BatchRow[];
+  let summary: BatchSummary;
+  if (!perConfiguration) {
+    ({ rows, summary } = await runBatch(inputs, {
+      ...runOptions,
+      naming: params.naming,
+      exportOne,
+      onProgress: (done, total, row) =>
+        onProgress({ progress: done, total, message: `${path.basename(row.input)}: ${row.status}` }),
+    }));
+  } else {
+    // Design-table mode: one file per (input, configuration), through the very
+    // same writers. Each configuration is evaluated WITHOUT changing the
+    // stored activeConfiguration (configurationScope).
+    const jobs: Array<{ input: string; configuration: string | null }> = [];
+    for (const input of inputs) {
+      const stored = params.allConfigurations ? (await readEditsRaw(input)).configurations ?? [] : [];
+      const names = params.allConfigurations ? stored.map((c) => c.name) : params.configurations ?? [];
+      if (names.length === 0) jobs.push({ input, configuration: null });
+      for (const name of names) jobs.push({ input, configuration: name });
+    }
+    rows = [];
+    for (const [i, job] of jobs.entries()) {
+      if (signal?.aborted) {
+        for (const rest of jobs.slice(i)) rows.push({ input: rest.input, status: "cancelled", outputs: [], editsBaked: 0, warnings: [], ...(rest.configuration ? { configuration: rest.configuration } : {}) });
+        break;
+      }
+      if (job.configuration === null) {
+        rows.push({ input: job.input, status: "skipped", outputs: [], editsBaked: 0, warnings: [], error: "this model has no configurations" });
+        continue;
+      }
+      const name = job.configuration;
+      const res = await runBatch([job.input], {
+        ...runOptions,
+        naming: params.naming ?? "{stem}-{config}.{ext}",
+        configuration: { name, slug: configurationFileSlug(name) },
+        exportOne: (input, outPath) => configurationScope.run({ configuration: name }, () => exportOne(input, outPath)),
+      });
+      rows.push(...res.rows);
+      onProgress({ progress: i + 1, total: jobs.length, message: `${path.basename(job.input)} [${name}]: ${res.rows[0]?.status ?? "failed"}` });
+    }
+    const count = (st: BatchRow["status"]) => rows.filter((r) => r.status === st).length;
+    summary = { total: rows.length, ok: count("ok"), failed: count("failed"), skipped: count("skipped"), cancelled: count("cancelled") };
+  }
   const table = batchTsv(rows);
   let reportPath: string | undefined;
   if (params.reportPath) {

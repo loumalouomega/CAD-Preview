@@ -12,6 +12,7 @@ import * as path from "path";
 import type { EditOp } from "./editOps";
 import type { ParamVariable } from "./editVariables";
 import { parseEditsJson, serializeEditsJson, type ParsedEdits } from "./editsSidecar";
+import type { ConfigurationState } from "./configurations";
 import type { Annotation, ConstructionPlane, Layer, Part } from "./protocol";
 import { parsePartsJson, serializePartsJson } from "./partsSidecar";
 import { parseLayersFile, serializeLayersJson } from "./layersSidecar";
@@ -106,8 +107,19 @@ export async function readEdits(modelPath: string): Promise<ParsedEdits> {
 }
 
 /** Writes the edits sidecar beside the model. The model file itself is never touched. */
-export async function writeEdits(modelPath: string, ops: EditOp[], variables: ParamVariable[], bakedThrough = 0): Promise<void> {
-  const text = serializeEditsJson(path.basename(modelPath), ops, variables, bakedThrough);
+export async function writeEdits(
+  modelPath: string,
+  ops: EditOp[],
+  variables: ParamVariable[],
+  bakedThrough = 0,
+  /** Omitted: the configurations already on disk are kept, so a caller that predates them never drops them. */
+  configState?: Partial<ConfigurationState>
+): Promise<void> {
+  if (configState === undefined) {
+    const existing = await readEdits(modelPath);
+    configState = { configurations: existing.configurations, activeConfiguration: existing.activeConfiguration };
+  }
+  const text = serializeEditsJson(path.basename(modelPath), ops, variables, bakedThrough, configState);
   await fs.writeFile(editsSidecarPath(modelPath), text, "utf8");
 }
 

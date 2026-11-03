@@ -1,9 +1,10 @@
-% Op icon: rotate — circular arrow sweeping ~250°, centre pivot dot.
+% Op icon: rotate (two-tone) - dashed ghost, the rotated body (accent), and an arc arrow.
 \documentclass[tikz,border=2mm]{standalone}
 \usetikzlibrary{arrows.meta,calc,shapes.geometric}
 \begin{document}
 \begin{tikzpicture}[line width=1.3pt, line cap=round, line join=round, >=Stealth, x=1mm,y=1mm]
-  \filldraw (0,0) circle (1.6);
-  \draw[->, thick] (0,10) arc (90:335:10);
+  \draw[dashed, fill=gray!80] (-5.5,-5.5) rectangle (5.5,5.5);
+  \draw[thick, fill=blue, rotate=30] (-5.5,-5.5) rectangle (5.5,5.5);
+  \draw[->, thick] (11,-2) arc (-10:65:11);
 \end{tikzpicture}
 \end{document}

@@ -74,6 +74,8 @@ import {
   explainEditOpRejection,
   removeEditOp,
   setVariables,
+  setConfiguration,
+  configurationScope,
   setPart,
   setPlane,
   listLayers,
@@ -3778,8 +3780,8 @@ describe("set_variables", () => {
       ],
     });
     expect(result.variables).toEqual([
-      { name: "L", expr: "20", value: 20, error: null },
-      { name: "W", expr: "L/2", value: 10, error: null },
+      { name: "L", expr: "20", value: 20, comment: "", favourite: false, error: null },
+      { name: "W", expr: "L/2", value: 10, comment: "", favourite: false, error: null },
     ]);
     const { ops } = await readEdits(stpModel);
     expect((ops[0] as { size: number[] }).size[0]).toBe(20);
@@ -3796,6 +3798,20 @@ describe("set_variables", () => {
     expect(result.variables[0].error).toBeTruthy();
     expect(result.variables[0].value).toBe(0); // frozen at the (fresh) cache
     expect(result.variables[1].value).toBe(5);
+  });
+});
+
+describe("set_variables comment/favourite", () => {
+  it("stores them, keeps them when omitted on a later call, and clears with \"\"/false", async () => {
+    await setVariables({ path: stpModel, variables: [{ name: "L", expr: "20", comment: "length", favourite: true }] });
+    expect((await readEdits(stpModel)).variables[0]).toMatchObject({ comment: "length", favourite: true });
+    const kept = await setVariables({ path: stpModel, variables: [{ name: "L", expr: "21" }] });
+    expect(kept.variables[0]).toMatchObject({ comment: "length", favourite: true, value: 21 });
+    const cleared = await setVariables({ path: stpModel, variables: [{ name: "L", expr: "21", comment: "", favourite: false }] });
+    expect(cleared.variables[0]).toMatchObject({ comment: "", favourite: false });
+    const stored = (await readEdits(stpModel)).variables[0];
+    expect(stored.comment).toBeUndefined();
+    expect(stored.favourite).toBeUndefined();
   });
 });
 
@@ -6546,5 +6562,128 @@ describe("3MF is display-only on the host", () => {
     await expect(exportSvgSilhouetteTool(c, { path: threeMfModel, outputPath: path.join(dir, "o.svg") })).rejects.toThrow(/display-only formats/);
     await expect(generateMeshTool(c, { path: threeMfModel })).rejects.toThrow(/display-only mesh format/);
     expect(c.pipeline.generateMesh).not.toHaveBeenCalled();
+  });
+});
+
+describe("set_configuration (design table)", () => {
+  async function parametricBox(c: ToolContext): Promise<void> {
+    await applyEditOps(c, {
+      path: stpModel,
+      ops: [{ op: "addBox", center: [0, 0, 0], size: [1, 1, 1], exprs: { "size[0]": "D", "size[1]": "D", "size[2]": "D" } }],
+    });
+    await setVariables({ path: stpModel, variables: [{ name: "D", expr: "6" }] });
+  }
+  const sizeOf = (ops: unknown[]): number[] => (ops[0] as { size: number[] }).size;
+
+  it("stores sparse overrides, activates one, and re-resolves the ops without touching exprs or base variables", async () => {
+    const c = ctx();
+    await parametricBox(c);
+    await setConfiguration({ path: stpModel, name: "M6" });
+    const r = await setConfiguration({ path: stpModel, name: "M8", overrides: { D: "8" }, active: true });
+    expect(r.activeConfiguration).toBe("M8");
+    expect(r.table.map((row) => row.configuration)).toEqual([null, "M6", "M8"]);
+    expect(r.table[2].values).toEqual({ D: 8 });
+    expect(r.table[1].values).toEqual({ D: 6 });
+    const stored = await readEdits(stpModel);
+    expect(sizeOf(stored.ops)).toEqual([8, 8, 8]);
+    expect((stored.ops[0] as { exprs: object }).exprs).toEqual({ "size[0]": "D", "size[1]": "D", "size[2]": "D" });
+    expect(stored.variables[0]).toMatchObject({ name: "D", expr: "6", value: 6 });
+    expect(stored.configurations).toEqual([
+      { name: "M6", overrides: {} },
+      { name: "M8", overrides: { D: "8" } },
+    ]);
+    // Deactivating returns to the plain variables.
+    await setConfiguration({ path: stpModel, name: "M8", active: false });
+    expect(sizeOf((await readEdits(stpModel)).ops)).toEqual([6, 6, 6]);
+  });
+
+  it("other sidecar writes (apply_edit_ops, set_variables) keep the configurations", async () => {
+    const c = ctx();
+    await parametricBox(c);
+    await setConfiguration({ path: stpModel, name: "M8", overrides: { D: "8" }, active: true });
+    await applyEditOps(c, { path: stpModel, ops: [{ op: "addBox", center: [5, 0, 0], size: [1, 1, 1] }] });
+    await setVariables({ path: stpModel, variables: [{ name: "D", expr: "7" }] });
+    const stored = await readEdits(stpModel);
+    expect(stored.activeConfiguration).toBe("M8");
+    expect(stored.configurations).toHaveLength(1);
+    // The new base value does not leak into the active configuration's result.
+    expect(sizeOf(stored.ops)).toEqual([8, 8, 8]);
+  });
+
+  it("refuses bad names/unknown copies, and a failing override freezes instead of throwing", async () => {
+    const c = ctx();
+    await parametricBox(c);
+    await expect(setConfiguration({ path: stpModel, name: "" })).rejects.toThrow(/name/);
+    await expect(setConfiguration({ path: stpModel, name: "X", remove: true })).rejects.toThrow(/No configuration/);
+    const r = await setConfiguration({ path: stpModel, name: "bad", overrides: { D: "oops(" }, active: true });
+    expect(r.table[1].errors.D).toBeTruthy();
+    expect(r.table[1].values.D).toBe(6); // frozen at the cached value
+    expect(sizeOf((await readEdits(stpModel)).ops)).toEqual([6, 6, 6]);
+  });
+
+  it("get_state lists configurations; renaming and removing keep the active pointer coherent", async () => {
+    const c = ctx();
+    await parametricBox(c);
+    await setConfiguration({ path: stpModel, name: "M8", overrides: { D: "8" }, active: true });
+    const state = await getState({ path: stpModel });
+    expect(state.activeConfiguration).toBe("M8");
+    expect(state.configurations).toEqual([{ name: "M8", active: true, overrides: { D: "8" } }]);
+    expect(state.effectiveVariables?.[0]).toMatchObject({ name: "D", expr: "8", value: 8 });
+    const renamed = await setConfiguration({ path: stpModel, name: "M8", rename: "Eight" });
+    expect(renamed.activeConfiguration).toBe("Eight");
+    const removed = await setConfiguration({ path: stpModel, name: "Eight", remove: true });
+    expect(removed.activeConfiguration).toBeNull();
+    expect((await getState({ path: stpModel })).configurations).toEqual([]);
+  });
+
+  it("configurationScope evaluates a named configuration for an export WITHOUT changing the stored one", async () => {
+    const c = ctx();
+    await parametricBox(c);
+    await setConfiguration({ path: stpModel, name: "M6" });
+    await setConfiguration({ path: stpModel, name: "M8", overrides: { D: "8" } });
+    const before = await fs.readFile(`${stpModel}.edits.json`, "utf8");
+    const exported = async (config?: string): Promise<number[]> => {
+      vi.mocked(c.pipeline.exportBRep).mockClear();
+      const run = () => exportBRepTool(c, { path: stpModel, targetFormat: "brep", outputPath: path.join(dir, `scoped-${config ?? "none"}.brep`) });
+      await (config ? configurationScope.run({ configuration: config }, run) : run());
+      return sizeOf(vi.mocked(c.pipeline.exportBRep).mock.calls[0][4] as unknown[]);
+    };
+    expect(await exported("M8")).toEqual([8, 8, 8]);
+    expect(await exported("M6")).toEqual([6, 6, 6]);
+    expect(await exported()).toEqual([6, 6, 6]);
+    expect(await fs.readFile(`${stpModel}.edits.json`, "utf8")).toBe(before);
+    await expect(configurationScope.run({ configuration: "nope" }, () => exportBRepTool(c, { path: stpModel, targetFormat: "brep", outputPath: path.join(dir, "x.brep") }))).rejects.toThrow(/Unknown configuration "nope".*M6, M8/);
+  });
+
+  it("batch_export writes one file per configuration as <stem>-<config>.<ext>, evaluating each without changing the stored one", async () => {
+    const c = ctx();
+    await parametricBox(c);
+    await setConfiguration({ path: stpModel, name: "M6" });
+    await setConfiguration({ path: stpModel, name: "M8 coarse", overrides: { D: "8" } });
+    const before = await fs.readFile(`${stpModel}.edits.json`, "utf8");
+    vi.mocked(c.pipeline.exportBRep).mockClear();
+    const outDir = path.join(dir, "cfg-batch");
+    const r = await batchExportTool(c, { inputs: [stpModel], target: "brep", outDir, allConfigurations: true });
+    expect(r.rows.map((x) => [x.configuration, x.status])).toEqual([
+      ["M6", "ok"],
+      ["M8 coarse", "ok"],
+    ]);
+    expect(r.rows.map((x) => path.basename(x.outputs[0]))).toEqual(["model-M6.brep", "model-M8_coarse.brep"]);
+    expect(vi.mocked(c.pipeline.exportBRep).mock.calls.map((call) => sizeOf(call[4] as unknown[]))).toEqual([
+      [6, 6, 6],
+      [8, 8, 8],
+    ]);
+    expect(r.table.split("\n")[0]).toBe("input\tconfiguration\tstatus\toutputs\tedits_baked\terror\twarnings");
+    expect(await fs.readFile(`${stpModel}.edits.json`, "utf8")).toBe(before);
+    // Named subset; a name the model lacks is a failed row, not an aborted batch.
+    const subset = await batchExportTool(c, { inputs: [stpModel], target: "brep", outDir: path.join(dir, "cfg-batch2"), configurations: ["M6", "ghost"] });
+    expect(subset.rows.map((x) => x.status)).toEqual(["ok", "failed"]);
+    expect(subset.rows[1].error).toMatch(/Unknown configuration "ghost"/);
+    // A model with no configurations is a skipped row under allConfigurations.
+    const none = await batchExportTool(c, { inputs: [stpModel2], target: "brep", outDir: path.join(dir, "cfg-batch3"), allConfigurations: true });
+    expect(none.rows[0]).toMatchObject({ status: "skipped", error: "this model has no configurations" });
+    // Without the new options the table keeps its previous shape.
+    const plain = await batchExportTool(c, { inputs: [stpModel2], target: "brep", outDir: path.join(dir, "cfg-batch4") });
+    expect(plain.table.split("\n")[0]).toBe("input\tstatus\toutputs\tedits_baked\terror\twarnings");
   });
 });

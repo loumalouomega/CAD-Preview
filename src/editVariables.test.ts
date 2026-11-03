@@ -1,6 +1,10 @@
 import { describe, it, expect } from "vitest";
-import { validateVariables, evaluateVariables, resolveEditOps, ParamVariable } from "./editVariables";
-import { EditOp } from "./editOps";
+import {
+  validateVariables, evaluateVariables, resolveEditOps, ParamVariable,
+  canMoveVariable, parseVariablesCsv, parseVariablesJson, serializeVariablesCsv,
+  withExprUnit, exprUnit, enumerateNumericFields, promoteField,
+} from "./editVariables";
+import { EditOp, validateEditOp } from "./editOps";
 
 describe("validateVariables", () => {
   it("keeps well-formed entries in order", () => {
@@ -132,5 +136,77 @@ describe("resolveEditOps", () => {
     expect(resolved[0]).toBe(ops[0]);
     expect(resolved[1]).toMatchObject({ op: "addSphere", radius: 7 });
     expect(resolved.map((o) => o.op)).toEqual(["translate", "addSphere"]);
+  });
+});
+
+describe("Parameters table helpers", () => {
+  const vars = (): ParamVariable[] => [
+    { name: "L", expr: "10", value: 10 },
+    { name: "W", expr: "L/2", value: 5 },
+    { name: "H", expr: "3", value: 3 },
+  ];
+
+  it("round-trips comment and favourite, omitting them when empty", () => {
+    const out = validateVariables([
+      { name: "a", expr: "1", value: 1, comment: "  ", favourite: false },
+      { name: "b", expr: "2", value: 2, comment: "note", favourite: true },
+    ]);
+    expect(out[0]).toEqual({ name: "a", expr: "1", value: 1 });
+    expect(out[1]).toEqual({ name: "b", expr: "2", value: 2, comment: "note", favourite: true });
+  });
+
+  it("refuses a reorder across a dependency, naming the variable", () => {
+    const r = canMoveVariable(vars(), 1, 0);
+    expect(r.ok).toBe(false);
+    expect((r as { reason: string }).reason).toContain('"W"');
+    const r2 = canMoveVariable(vars(), 0, 2);
+    expect(r2.ok).toBe(false);
+    expect(canMoveVariable(vars(), 2, 0).ok).toBe(true);
+    expect(canMoveVariable(vars(), 0, 1).ok).toBe(false);
+  });
+
+  it("imports a five-row CSV, rejecting the bad row and keeping the rest", () => {
+    const csv = 'Name,Expression,Comment\nA,5,"five, mm"\nB,A*2,\n1bad,3,\nC,D+1,\nA,9,dup\n';
+    const res = parseVariablesCsv(csv, []);
+    expect(res.accepted.map((v) => v.name)).toEqual(["A", "B"]);
+    expect(res.accepted[0].comment).toBe("five, mm");
+    expect(res.rejected.map((r) => r.row)).toEqual([3, 4, 5]);
+    expect(res.rejected[1].reason).toContain("not defined above");
+    expect(res.rejected[2].reason).toContain("duplicate");
+  });
+
+  it("serialises CSV that parses back identically", () => {
+    const v: ParamVariable[] = [{ name: "A", expr: "max(1,2)", value: 2, comment: 'say "hi", ok' }];
+    const back = parseVariablesCsv(serializeVariablesCsv(v), []);
+    expect(back.rejected).toEqual([]);
+    expect(back.accepted[0]).toMatchObject({ name: "A", expr: "max(1,2)", comment: 'say "hi", ok' });
+  });
+
+  it("rejects non-array JSON and malformed rows", () => {
+    expect(parseVariablesJson("{}").rejected).toHaveLength(1);
+    const res = parseVariablesJson('[{"name":"A","expr":"1"},{"name":3}]');
+    expect(res.accepted.map((v) => v.name)).toEqual(["A"]);
+    expect(res.rejected[0].row).toBe(2);
+  });
+
+  it("rewrites the bracket unit only on plain numbers", () => {
+    expect(withExprUnit("2", "in")).toBe("2[in]");
+    expect(withExprUnit("2[in]", "mm")).toBe("2[mm]");
+    expect(withExprUnit("2[in]", null)).toBe("2");
+    expect(withExprUnit("L*2", "in")).toBeNull();
+    expect(exprUnit("2[in]")).toBe("in");
+  });
+
+  it("enumerates numeric fields and promotes one onto a variable", () => {
+    const op = validateEditOp({ op: "addBox", size: [4, 5, 6], center: [0, 0, 0] })!;
+    const fields = enumerateNumericFields(op);
+    expect(fields.map((f) => f.path)).toContain("size[1]");
+    expect(fields.find((f) => f.path === "size[1]")!.value).toBe(5);
+    const promoted = promoteField(op, "size[1]", "W")!;
+    expect(promoted.exprs).toEqual({ "size[1]": "W" });
+    expect((promoted as { size: number[] }).size[1]).toBe(5);
+    const { ops } = resolveEditOps([promoted], { W: 9 });
+    expect((ops[0] as { size: number[] }).size).toEqual([4, 9, 6]);
+    expect(promoteField(op, "nope", "W")).toBeNull();
   });
 });

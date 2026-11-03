@@ -162,6 +162,9 @@ interface ViewState {
   collapsedPanels?: string[]                 // sidebar sections collapsed to their header, by panel id
   sidebarWidth?: number                      // resizable sidebar width in px; absent = 220 default
   bookmarks?: ViewBookmark[]                 // named saved viewpoints (View ▾ menu); session-persisted per document
+  ribbonTab?: string                         // ribbon command strip's active tab; absent = "model"
+  ribbonCompact?: boolean                    // ribbon labels hidden; written only when true
+  editsGridOpen?: boolean                    // Edits panel's op button grid expanded; written only when true
 }
 ```
 
@@ -172,6 +175,8 @@ Phase 2 (roadmap "Split view", Phase 2) adds `layout` + per-pane camera states. 
 `collapsedPanels` lists the sidebar sections currently collapsed to just their header, by panel id (`"parts-panel"`, `"meshing-panel"`, …). The only source of valid ids is `COLLAPSIBLE_PANELS` in `src/webview/collapsiblePanels.ts`, and `sanitizeCollapsedPanels` filters a hand-edited or newer-build sidecar against it on read, so an unknown id is dropped rather than reaching some other element. Absent or empty means every section is expanded, so an older sidecar restores exactly as before and an untouched one stays byte-stable. Purely a display preference, like `displayMode` — it never affects geometry, and there is deliberately no MCP surface for it. Like `layout`/`panes`, it is a top-level sibling of `view` in the file, added with **no** `VIEW_STATE_SIDECAR_VERSION` bump.
 
 `sidebarWidth` (roadmap "Sidebar layout and keyboard usability") is the resizable sidebar's width in px, clamped through `clampSidebarWidth` in `src/webview/sidebarResizer.ts` (`176..420`) on read — a hand-edited or out-of-range value falls back to the clamp bounds, never the raw number. Absent, or exactly `220` (the pre-resizer fixed width), means "the default" and is **omitted on write** in both cases, so an unresized document's sidecar stays byte-stable. Same sibling-of-`view` shape, same no-version-bump rule, same no-MCP-surface scoping as `collapsedPanels`.
+
+The ribbon command strip (roadmap "Ribbon command strip") adds three more display-only fields. `ribbonTab` is the active tab id (`"view" | "model" | "inspect" | "mesh" | "export"`, from `src/webview/ribbonTabs.ts`'s `RIBBON_TABS`); it is omitted at the default `"model"`, and an id this build does not know restores the default rather than invalidating the record. `ribbonCompact` (labels hidden, icons only) and `editsGridOpen` (the Edits panel's op button grid, which collapses behind a toggle because the strip covers it) are written only when `true`, so a document whose ribbon was never touched writes a `.view.json` byte-identical to the pre-ribbon shape. All three ride the same `viewChanged` post as everything else here, and a `viewState` restore applies them silently (no echo back). They have no MCP surface.
 
 `clip` carries an optional explicit `normal` (roadmap "Arbitrary and reusable construction planes", Phases 1+2) that wins over the `axis` preset when present. `axis` is written **regardless**, set to the custom normal's dominant axis — so an older build, which only knows the axis form, restores a sensible neighbouring clip rather than failing its axis check and silently switching clipping off entirely. `offsetFrac` is measured along whichever normal is active.
 
@@ -252,7 +257,7 @@ type EditOp =
   | { op: 'addBezier'; controlPoints: Vec3[]; guide?: boolean; coincident?: 'reuse' | 'independent' }  // `coincident` on the five curves above: what a RAW first/last position landing on an existing point does — see getting-started
   | { op: 'addEllipseArc'; center: Vec3; normal: Vec3; up: Vec3; radiusX: number; radiusY: number; startAngleDeg: number; endAngleDeg: number; guide?: boolean }
   | { op: 'addHelix'; center: Vec3; axis: Vec3; radius: number; pitch: number; turns: number; guide?: boolean }
-  | { op: 'addParametricCurve'; x: string; y: string; z?: string; sMin: number; sMax: number; samples: number; as?: 'spline' | 'polyline'; closed?: boolean; plane?: { origin: Vec3; normal: Vec3; up: Vec3 }; points?: Vec3[]; guide?: boolean }  // expressions in `s` + document variables; evaluated on read into cached `points`, drawn as addSpline/addPolyline (agent-authored, no panel form yet)
+  | { op: 'addParametricCurve'; x: string; y: string; z?: string; sMin: number; sMax: number; samples: number; as?: 'spline' | 'polyline'; closed?: boolean; close?: boolean; plane?: { origin: Vec3; normal: Vec3; up: Vec3 }; points?: Vec3[]; guide?: boolean }  // expressions in `s` + document variables; evaluated on read into cached `points`, drawn as addSpline/addPolyline; `close` adds the closing segment and the planar face it bounds (Edits ▸ f(s) Curve)
   | { op: 'addSurfaceFromLines'; edges: string[] }   // >= 3 edge ids, must close into a loop
   | { op: 'addVolumeFromSurfaces'; faces: string[] } // >= 4 face ids, must sew into a closed shell
   | { op: 'align'; targets: string[]; axis: 'x'|'y'|'z'; extent: 'min'|'center'|'max'; to: number }
@@ -277,6 +282,8 @@ interface ParamVariable {
   name: string    // identifier ([A-Za-z_][A-Za-z0-9_]*, not a function/constant name)
   expr: string    // defining expression; may reference variables defined ABOVE it only
   value: number   // cached last-good evaluation (kept when re-evaluation fails)
+  comment?: string   // note shown in the Parameters table; absent when empty
+  favourite?: true   // pinned to the top of the table view only; absent when false
 }
 ```
 
@@ -660,7 +667,7 @@ An op may carry an optional `exprs` annotation (field path → expression string
 }
 ```
 
-`bakedThrough` (optional) is the save-point watermark. `externalFrom` (optional) is sent only when the host's edits watcher reconciled a **pure append** made by another writer — an agent, a script: the index of the first appended op. The history marks rows from that index as external (a transient badge, webview memory only) until the next local edit; any other external change (a removal, a reorder, an edited prefix) is adopted without it.
+`configurations` and `activeConfiguration` (both optional) carry the design table, see [`editsChanged`](#editschanged). `bakedThrough` (optional) is the save-point watermark. `externalFrom` (optional) is sent only when the host's edits watcher reconciled a **pure append** made by another writer — an agent, a script: the index of the first appended op. The history marks rows from that index as external (a transient badge, webview memory only) until the next local edit; any other external change (a removal, a reorder, an edited prefix) is adopted without it.
 
 ### `editError`
 
@@ -776,10 +783,10 @@ Sent in reply to `meshingGenerate`/`meshingExport` when GMSH throws or the docum
 
 ### `viewerDefaults`
 
-Sent once, alongside `parts`/`meshingOptions` in the `ready` handshake, reading `workspace.getConfiguration("cadPreview")` (`src/viewerDefaults.ts`'s `normalizeViewerDefaults` is the tolerance gate — same clamp-per-field style as `validateMeshOptions`). Arrives in no deterministic order relative to `geometry`/`loadUrl` (B-rep tessellation is async), so the webview's handler must tolerate either order — `background`/`showGridAndAxes` apply immediately (scene-level), `upAxis` is stored and applied at the next `Viewer.setModel()` call, and `meshSizePreset` feeds the same bbox-derived seed `syncMeshSizeSeed()` already computes. These are cross-document **defaults only** — a persisted per-document `.mesh.json` value or the toolbar Grid toggle always wins once set.
+Sent once, alongside `parts`/`meshingOptions` in the `ready` handshake, reading `workspace.getConfiguration("cadPreview")` (`src/viewerDefaults.ts`'s `normalizeViewerDefaults` is the tolerance gate — same clamp-per-field style as `validateMeshOptions`). Arrives in no deterministic order relative to `geometry`/`loadUrl` (B-rep tessellation is async), so the webview's handler must tolerate either order — `background`/`showGridAndAxes` apply immediately (scene-level), `upAxis` is stored and applied at the next `Viewer.setModel()` call, and `meshSizePreset` feeds the same bbox-derived seed `syncMeshSizeSeed()` already computes. `singleKeyCommands` mirrors `cadPreview.singleKeyCommands` (default `false`; anything but a real boolean falls back to it) and gates the webview's single-letter command keys and Shift+R; Ctrl+K / `/` command search is always on. These are cross-document **defaults only** — a persisted per-document `.mesh.json` value or the toolbar Grid toggle always wins once set.
 
 ```json
-{ "type": "viewerDefaults", "background": "#1e1e1e", "meshSizePreset": "medium", "showGridAndAxes": true, "upAxis": "y" }
+{ "type": "viewerDefaults", "background": "#1e1e1e", "meshSizePreset": "medium", "showGridAndAxes": true, "upAxis": "y", "singleKeyCommands": false }
 ```
 
 ### `documentInfo`
@@ -1094,7 +1101,8 @@ type WebviewToHost =
   | { type: 'savePreprocessRequest' }
   | { type: 'loadPreprocessRequest' }
   | { type: 'scadApplyOverrides'; overrides: Record<string, unknown> }
-  | { type: 'editsChanged'; ops: EditOp[]; variables: ParamVariable[] }
+  | { type: 'editsChanged'; ops: EditOp[]; variables: ParamVariable[]; configurations?: Configuration[]; activeConfiguration?: string | null }
+  | { type: 'exportVariables'; format: 'csv' | 'json'; text: string }
   | { type: 'viewChanged'; view: ViewState }
   | { type: 'setCamerasLinked'; enabled: boolean }
   | { type: 'openFile' }
@@ -1227,6 +1235,16 @@ Sent whenever the user mutates the edit op-stack (apply / undo / redo / clear) *
   "ops": [ { "op": "translate", "targets": ["solid-0"], "vec": [10, 0, 0], "exprs": { "vec[0]": "L/2" } } ],
   "variables": [ { "name": "L", "expr": "20", "value": 20 } ]
 }
+```
+
+`configurations` (optional) and `activeConfiguration` carry the [design table](./file-formats.md#configurations-design-table): named sparse variable overrides and the applied one (`null` = the plain variables). The `ops` are resolved against the **active configuration's overlay** (webview `evaluateEffective`), while `variables` stay the base list, so picking a Config Table row posts a new `editsChanged` and the stored `exprs` never change. The host keeps both in memory and writes them with the ops; a host `edits` message carries them back the same way, and a message that omits them leaves the host's current set alone.
+
+### `exportVariables`
+
+Webview → host. Parameters table ▸ **CSV… / JSON…**: the webview serialises the current variables (`serializeVariablesCsv` / `serializeVariablesJson`, `src/editVariables.ts`) and the host only prompts for a path and writes the text (capped at 1 MB). Import is webview-only: the file is read in the page and parsed by the same module, so it needs no message.
+
+```json
+{ "type": "exportVariables", "format": "csv", "text": "Name,Expression,Comment\nL,20,length\n" }
 ```
 
 ### `viewChanged`

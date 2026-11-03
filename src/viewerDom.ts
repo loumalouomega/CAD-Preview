@@ -55,6 +55,23 @@ export function viewerBodyHtml(): string {
       <span id="doc-chip-unsaved"></span>
     </div>
   </div>
+  <!-- Ribbon command strip (roadmap Ribbon command strip). Only the skeleton is
+       static; ribbonStrip.ts fills the tabs and groups from ribbon.ts so the
+       strip is generated from the op catalog and cannot list a button without a
+       form. The more-wrap is hidden until something overflows. -->
+  <div id="ribbon" role="region" aria-label="Command ribbon">
+    <div id="ribbon-tabbar">
+      <div id="ribbon-tabs" role="tablist" aria-label="Ribbon tabs"></div>
+      <button id="ribbon-compact" type="button" aria-pressed="false" title="Hide the button labels (icons only)">Compact</button>
+    </div>
+    <div id="ribbon-row" role="tabpanel" aria-label="Commands">
+      <div id="ribbon-groups"></div>
+      <div id="ribbon-more-wrap" class="tb-menu-wrap" hidden>
+        <button id="ribbon-more" class="tb-menu" type="button" title="More commands" aria-label="More commands" aria-haspopup="true" aria-expanded="false">More ${glyph("chevronRight")}</button>
+        <div id="ribbon-more-dropdown" class="tb-dropdown hidden" role="menu"></div>
+      </div>
+    </div>
+  </div>
   <div id="layout">
     <div id="side">
       <div id="tree-panel" class="side-section">
@@ -99,6 +116,7 @@ export function viewerBodyHtml(): string {
           <span class="panel-icon" aria-hidden="true">${glyph("sliders")}</span>
           <span id="edits-title" class="panel-title">Edits <span id="edits-count" title="Operations in the edit history"></span></span>
           <div id="edits-actions">
+            <button id="edits-grid-toggle" type="button" aria-pressed="false" title="Show the op button grid (the ribbon covers it)">${glyph("shapes")}</button>
             <button id="edits-undo" title="Undo last edit" disabled>${glyph("undo")}</button>
             <button id="edits-redo" title="Redo edit" disabled>${glyph("redo")}</button>
             <button id="edits-clear" title="Clear all edits" disabled>${glyph("trash")}</button>
@@ -110,7 +128,23 @@ export function viewerBodyHtml(): string {
               <span id="variables-title">Variables</span>
               <button id="variables-add" title="New variable">${icon("add")} New</button>
             </div>
+            <div id="variables-tools">
+              <input id="variables-filter" type="text" placeholder="Filter" spellcheck="false" title="Filter variables by name, expression or comment">
+              <button id="variables-import" title="Import variables from a CSV or JSON file (Name, Expression, Comment)">Import…</button>
+              <input id="variables-import-file" type="file" accept=".csv,.json,text/csv,application/json" hidden>
+              <button id="variables-export-csv" title="Export variables as CSV">CSV…</button>
+              <button id="variables-export-json" title="Export variables as JSON">JSON…</button>
+            </div>
+            <div id="variables-defer">
+              <label title="On: each change applies when you leave its field. Off: changes wait for Apply."><input id="variables-live" type="checkbox" checked> Apply each change as you leave its field</label>
+              <span id="variables-defer-actions" hidden>
+                <button id="variables-apply" title="Apply every pending change in one step">Apply</button>
+                <button id="variables-revert" title="Drop pending changes">Revert</button>
+              </span>
+            </div>
             <div id="variables-body"></div>
+            <div id="model-params-title">Model parameters</div>
+            <div id="model-params-body"></div>
           </div>
           <div id="edits-compose"></div>
           <div id="edits-body"></div>

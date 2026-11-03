@@ -104,4 +104,21 @@ describe("PartsModel", () => {
     expect(m.list()[0].name).toBe("Part 1");
     expect(m.list()[0].volumes).toEqual([]);
   });
+
+  it("setMaterial stores the density, offers the colour only over a palette colour, and fires once", () => {
+    const onChange = vi.fn();
+    const m = new PartsModel(onChange);
+    m.create();
+    m.create();
+    onChange.mockClear();
+    m.setMaterial(0, 7.85, "#8d939b");
+    expect(onChange).toHaveBeenCalledTimes(1);
+    expect(m.list()[0].density).toBe(7.85);
+    expect(m.list()[0].color).toBe("#8d939b");
+    m.recolor(1, "#123456");
+    m.setMaterial(1, 2.7, "#c4c9cf");
+    expect(m.list()[1].density).toBe(2.7);
+    expect(m.list()[1].color).toBe("#123456");
+    expect(JSON.stringify(m.list())).not.toMatch(/steel|material/i);
+  });
 });

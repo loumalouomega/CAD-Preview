@@ -2,6 +2,7 @@ import type { CadFormat } from "./fileRouter";
 import type { QualityGateResult } from "./meshQualityGate";
 import type { EditOp } from "./editOps";
 import type { ParamVariable } from "./editVariables";
+import type { Configuration } from "./configurations";
 import type { MeshOptions, MeshGrading, MeshStructured, MeshBoundaryLayer, MeshEngine, OctreeStats, OctreeMeshStats, MeshCadStats } from "./meshOptions";
 import type { MeshExportFormatId } from "./meshExportFormats";
 import type { ViewerDefaults } from "./viewerDefaults";
@@ -354,6 +355,21 @@ export interface ViewState {
    * into the menu's list model. Purely a display preference — no MCP surface.
    */
   bookmarks?: ViewBookmark[];
+  /**
+   * The ribbon command strip's active tab (`"view" | "model" | "inspect" |
+   * "mesh" | "export"`, `src/webview/ribbonTabs.ts`). Top-level sibling of
+   * `view` in `<model>.view.json`, omitted at the default (`"model"`) so an
+   * untouched sidecar stays byte-stable; an unknown id restores the default.
+   * Purely a display preference — no MCP surface.
+   */
+  ribbonTab?: string;
+  /** The ribbon's compact preference (labels hidden). Written only when `true`. */
+  ribbonCompact?: boolean;
+  /**
+   * The Edits panel's op button grid is expanded. Written only when `true`:
+   * absent means collapsed behind its toggle, because the ribbon covers it.
+   */
+  editsGridOpen?: boolean;
 }
 
 /** One saved meshing preset, as the FE Mesh panel lists it. A preset's own
@@ -534,6 +550,10 @@ export type HostToWebview =
       type: "edits";
       ops: EditOp[];
       variables: ParamVariable[];
+      /** Design table: named variable-override sets (absent = none). */
+      configurations?: Configuration[];
+      /** The applied configuration's name, or null. */
+      activeConfiguration?: string | null;
       bakedThrough?: number;
       /** Set only when the edits watcher reconciled a pure APPEND made by another
        * writer (an agent, a script): the index of the first appended op. The
@@ -944,7 +964,9 @@ export type WebviewToHost =
    * geometry through `resolveEffectiveSource` with the values as `-D`
    * overrides. The source file itself is never written. */
   | { type: "scadApplyOverrides"; overrides: Record<string, unknown> }
-  | { type: "editsChanged"; ops: EditOp[]; variables: ParamVariable[] }
+  | { type: "editsChanged"; ops: EditOp[]; variables: ParamVariable[]; configurations?: Configuration[]; activeConfiguration?: string | null }
+  /** Parameters table export: the webview serialised the variables (`serializeVariablesCsv`/`Json`); the host only prompts for a path and writes. */
+  | { type: "exportVariables"; format: "csv" | "json"; text: string }
   | { type: "viewChanged"; view: ViewState }
   | { type: "openFile" }
   /** File ▸ New Blank Model… — host-only, like `openFile`: it needs no

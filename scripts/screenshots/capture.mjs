@@ -158,6 +158,22 @@ const SHOTS = [
     target: {}, // full UI with model + panels
   },
   { file: "toolbar.png", setup: populate, target: { sel: "#toolbar" } },
+  // The ribbon command strip. At the 1360px shot width the Model tab overflows
+  // (it has 60+ buttons), so these show the real thing: the leading groups and
+  // the More button; the second shot opens the menu, which hangs below the
+  // strip over the canvas, so it needs a fixed clip with the usual silent-cut
+  // hazard: the menu is max-height 60vh (540px at 900) and scrolls past that.
+  { file: "ribbon.png", setup: populate, target: { sel: "#ribbon" } },
+  {
+    file: "ribbon-inspect.png",
+    setup: async (page) => { await populate(page); await page.click("#ribbon-tab-inspect"); await sleep(200); },
+    target: { sel: "#ribbon" },
+  },
+  {
+    file: "ribbon-more.png",
+    setup: async (page) => { await populate(page); await page.click("#ribbon-more"); await sleep(200); },
+    target: { clip: { x: 840, y: 35, width: 520, height: 600 } },
+  },
   {
     file: "file-menu.png",
     setup: async (page) => { await populate(page); await page.click("#file-menu"); await sleep(150); },
@@ -167,7 +183,7 @@ const SHOTS = [
     // with Import/Export DXF (285 → 342), one more with Export Technical
     // Drawing (342 → 371), and one more plus a separator with New Blank Model
     // (371 → 410), and one more with Export Drawing Sheet (410 → 439).
-    target: { clip: { x: 0, y: 0, width: 320, height: 439 } },
+    target: { clip: { x: 0, y: 0, width: 320, height: 446 } },
   },
   // The toolbar's four dropdowns. `clip` rather than `sel: "#toolbar"` — a
   // locator screenshot clips to the element box, which would cut off the
@@ -187,7 +203,11 @@ const SHOTS = [
     // (470→500). The trigger chevrons became icons (chrome redesign, pass 3),
     // which widened the toolbar and pushed the View panel's left edge to
     // x=766.9 — the clip went 770→750.
-    target: { clip: { x: 750, y: 30, width: 610, height: 500 } },
+    // The ribbon strip sits between the menu bar and the toolbar, which pushed
+    // the toolbar (and so every panel hanging off it) down by `--ribbon-h`
+    // (89px with labels): y 30 -> 119, same height. The tallest panel still
+    // ends well inside it; re-check when a menu grows a row.
+    target: { clip: { x: 750, y: 119, width: 610, height: 500 } },
   })),
   { file: "view-controls.png", setup: populate, target: { sel: "#view-controls" } },
   {
@@ -364,7 +384,12 @@ const SHOTS = [
   {
     file: "edits-geometry.png",
     setup: async (page) => {
+      // The ribbon took 89px of height from the sidebar; give it back so the
+      // panel is not squeezed below the form (an element shot clips to its box).
+      await page.setViewportSize({ width: 1360, height: 989 });
       await populate(page);
+      // The op button grid is collapsed behind a toggle now the ribbon covers it.
+      await page.click("#edits-grid-toggle");
       await page.locator(".edits-tab", { hasText: "Geometry" }).click();
       await page.locator(".edits-subtab", { hasText: "3D" }).click();
       await page.locator(".op-btn", { hasText: "Box" }).first().click();
@@ -375,7 +400,9 @@ const SHOTS = [
   {
     file: "edits-edit.png",
     setup: async (page) => {
+      await page.setViewportSize({ width: 1360, height: 989 });
       await populate(page);
+      await page.click("#edits-grid-toggle");
       await page.locator(".edits-tab", { hasText: "Edit" }).click();
       await sleep(200);
     },
