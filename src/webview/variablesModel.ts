@@ -66,5 +66,8 @@ export class VariablesModel {
 }
 
 function clone(v: ParamVariable): ParamVariable {
-  return { name: v.name, expr: v.expr, value: v.value };
+  const out: ParamVariable = { name: v.name, expr: v.expr, value: v.value };
+  if (v.comment) out.comment = v.comment;
+  if (v.favourite) out.favourite = true;
+  return out;
 }

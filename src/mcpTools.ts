@@ -705,7 +705,7 @@ async function sidecarSummary(modelPath: string) {
   const parts = await readParts(modelPath);
   return {
     editOpCount: fullOps.length,
-    variables: variables.map((v) => ({ name: v.name, expr: v.expr, value: v.value })),
+    variables: variables.map((v) => ({ name: v.name, expr: v.expr, value: v.value, ...(v.comment ? { comment: v.comment } : {}), ...(v.favourite ? { favourite: true } : {}) })),
     parts: parts.map((p) => p.name),
   };
 }
@@ -3908,6 +3908,8 @@ export async function getState(params: { path: string }) {
       value: v.value,
       /** Deduced from bracketed units: "length" | "angle" | "none" (plain number) | "mixed". */
       unit: variableDims[v.name] ?? "none",
+      comment: v.comment ?? "",
+      favourite: v.favourite === true,
       error: errors.get(v.name) ?? null,
     })),
     parts,
@@ -5026,11 +5028,15 @@ export async function listStandardHoleSizes(params: { standard?: string; designa
 // ---------------------------------------------------------------------------
 // set_variables
 
-export async function setVariables(params: { path: string; variables: Array<{ name: string; expr: string }> }) {
+export async function setVariables(params: {
+  path: string;
+  variables: Array<{ name: string; expr: string; comment?: string; favourite?: boolean }>;
+}) {
   const modelPath = params.path;
   requireRoute(modelPath);
   const current = await readEditsResolved(modelPath);
   const previous = new Map(current.variables.map((v) => [v.name, v.value]));
+  const previousFull = new Map(current.variables.map((v) => [v.name, v]));
 
   // Keep each carried-over variable's cached value so a failing expr freezes
   // at its last-good number, same as the webview's VariablesModel.
@@ -5038,6 +5044,11 @@ export async function setVariables(params: { path: string; variables: Array<{ na
     name: v.name,
     expr: v.expr,
     value: previous.get(v.name) ?? 0,
+    // An omitted comment/favourite keeps the existing one (the list REPLACES, but
+    // an agent that doesn't know these fields must not silently wipe them);
+    // an explicit "" / false clears it.
+    comment: v.comment !== undefined ? v.comment : previousFull.get(v.name)?.comment,
+    favourite: v.favourite !== undefined ? v.favourite : previousFull.get(v.name)?.favourite,
   }));
   const variables = validateVariables(candidate);
   const droppedCount = candidate.length - variables.length;
@@ -5057,6 +5068,8 @@ export async function setVariables(params: { path: string; variables: Array<{ na
       name: v.name,
       expr: v.expr,
       value: v.value,
+      comment: v.comment ?? "",
+      favourite: v.favourite === true,
       error: errors.get(v.name) ?? null,
     })),
     resolvedOpCount: ops.length,

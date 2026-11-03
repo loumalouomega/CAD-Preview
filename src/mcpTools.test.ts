@@ -3778,8 +3778,8 @@ describe("set_variables", () => {
       ],
     });
     expect(result.variables).toEqual([
-      { name: "L", expr: "20", value: 20, error: null },
-      { name: "W", expr: "L/2", value: 10, error: null },
+      { name: "L", expr: "20", value: 20, comment: "", favourite: false, error: null },
+      { name: "W", expr: "L/2", value: 10, comment: "", favourite: false, error: null },
     ]);
     const { ops } = await readEdits(stpModel);
     expect((ops[0] as { size: number[] }).size[0]).toBe(20);
@@ -3796,6 +3796,20 @@ describe("set_variables", () => {
     expect(result.variables[0].error).toBeTruthy();
     expect(result.variables[0].value).toBe(0); // frozen at the (fresh) cache
     expect(result.variables[1].value).toBe(5);
+  });
+});
+
+describe("set_variables comment/favourite", () => {
+  it("stores them, keeps them when omitted on a later call, and clears with \"\"/false", async () => {
+    await setVariables({ path: stpModel, variables: [{ name: "L", expr: "20", comment: "length", favourite: true }] });
+    expect((await readEdits(stpModel)).variables[0]).toMatchObject({ comment: "length", favourite: true });
+    const kept = await setVariables({ path: stpModel, variables: [{ name: "L", expr: "21" }] });
+    expect(kept.variables[0]).toMatchObject({ comment: "length", favourite: true, value: 21 });
+    const cleared = await setVariables({ path: stpModel, variables: [{ name: "L", expr: "21", comment: "", favourite: false }] });
+    expect(cleared.variables[0]).toMatchObject({ comment: "", favourite: false });
+    const stored = (await readEdits(stpModel)).variables[0];
+    expect(stored.comment).toBeUndefined();
+    expect(stored.favourite).toBeUndefined();
   });
 });
 

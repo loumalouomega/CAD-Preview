@@ -1699,13 +1699,15 @@ server.registerTool(
   "set_variables",
   {
     description:
-      "Replace the model's named parametric variables (e.g. L = 20) and re-resolve every op expression against them — geometry rebuilds from the new values on the next load/mesh. A variable's expression may reference only variables defined above it in the list. Op fields bind to variables via each op's `exprs` map.",
+      "Replace the model's named parametric variables (e.g. L = 20) and re-resolve every op expression against them — geometry rebuilds from the new values on the next load/mesh. A variable's expression may reference only variables defined above it in the list. Optional `comment` (a note) and `favourite` (pin in the Parameters table) are kept from the current list when omitted and cleared by an empty string or false. Op fields bind to variables via each op's `exprs` map.",
     inputSchema: {
       path: modelPath,
-      variables: z.array(z.object({ name: z.string(), expr: z.string() })).describe("Full ordered variable list"),
+      variables: z
+        .array(z.object({ name: z.string(), expr: z.string(), comment: z.string().optional(), favourite: z.boolean().optional() }))
+        .describe("Full ordered variable list"),
     },
   },
-  wrap((args: { path: string; variables: Array<{ name: string; expr: string }> }) => setVariables(args))
+  wrap((args: { path: string; variables: Array<{ name: string; expr: string; comment?: string; favourite?: boolean }> }) => setVariables(args))
 );
 
 server.registerTool(
