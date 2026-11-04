@@ -2355,12 +2355,12 @@ describe("fit_mesh_to_cad", () => {
     const c = ctx();
     await fitMeshToCadTool(c, {
       path: stlModel, outputPath: path.join(dir, "fitted2.step"),
-      backend: "occt", refineSegmentation: true, freeformMode: "adaptive", faceDeviation: true, mergeFaces: false, segmentMethod: "primitive",
+      backend: "occt", refineSegmentation: true, refineTolerance: 2e-3, freeformMode: "adaptive", faceDeviation: true, mergeFaces: false, segmentMethod: "primitive",
     });
     expect(c.pipeline.fitMeshToCad).toHaveBeenCalledWith(
       expect.any(Uint8Array),
       "stl",
-      { backend: "occt", refineSegmentation: true, freeformMode: "adaptive", faceDeviation: true, mergeFaces: false, segmentMethod: "primitive", cadJson: false },
+      { backend: "occt", refineSegmentation: true, refineTolerance: 2e-3, freeformMode: "adaptive", faceDeviation: true, mergeFaces: false, segmentMethod: "primitive", cadJson: false },
       undefined
     );
   });

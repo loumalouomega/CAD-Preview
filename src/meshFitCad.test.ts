@@ -11,6 +11,11 @@ describe("fitMeshToCad option validation (meshio++ 17.9+ knobs)", () => {
   it("rejects an unknown freeformMode by name", async () => {
     await expect(fitMeshToCad(bytes, "stl", { freeformMode: "wild" as never })).rejects.toThrow(/freeformMode must be/);
   });
+  it("rejects a refineTolerance outside (0, 1] or without refineSegmentation", async () => {
+    await expect(fitMeshToCad(bytes, "stl", { refineSegmentation: true, refineTolerance: 0 })).rejects.toThrow(/refineTolerance/);
+    await expect(fitMeshToCad(bytes, "stl", { refineSegmentation: true, refineTolerance: 2 })).rejects.toThrow(/refineTolerance/);
+    await expect(fitMeshToCad(bytes, "stl", { refineTolerance: 2e-3 })).rejects.toThrow(/only applies with refineSegmentation/);
+  });
   it("rejects an unknown segmentMethod by name", async () => {
     await expect(fitMeshToCad(bytes, "stl", { segmentMethod: "x" as never })).rejects.toThrow(/segmentMethod must be/);
   });

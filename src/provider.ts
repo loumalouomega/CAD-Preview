@@ -117,6 +117,7 @@ import {
   parseMeshPresetsJson,
   serializeMeshPresetsJson,
 } from "./meshPresets";
+import { FIT_TO_CAD_LEVELS } from "./fitToCadLevels";
 import { emitPrimitiveOps } from "./primitiveEmit";
 import { compileParametricScript } from "./parametricScript";
 import { evaluateVariables } from "./editVariables";
@@ -4811,6 +4812,14 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
     }
     const meshFormat = route.format as MeshParseFormat;
 
+    // How hard to try: the default leaves a rough (optimizer or scan) skin mostly
+    // faceted; refining the patches first is the measured fix. A dismissed pick writes nothing.
+    const level = await vscode.window.showQuickPick(
+      FIT_TO_CAD_LEVELS.map((l) => ({ label: l.label, detail: l.detail, level: l })),
+      { title: "Fit to CAD", placeHolder: "How should the surface patches be fitted?" }
+    );
+    if (!level) return;
+
     const baseName = uri.path.slice(uri.path.lastIndexOf("/") + 1).replace(/\.[^.]+$/, "");
     const saveUri = await vscode.window.showSaveDialog({
       defaultUri: vscode.Uri.joinPath(uri, "..", `${baseName}.step`),
@@ -4824,7 +4833,7 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
       const result = await this.docPipeline(uri).fitMeshToCad(
         sourceBytes,
         meshFormat,
-        {},
+        { ...level.level.options },
         await resolveGltfBuffersFor(uri, meshFormat, sourceBytes, this.decodeGltf)
       );
       this.assertMeshingJobActive();
