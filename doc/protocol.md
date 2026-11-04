@@ -402,7 +402,16 @@ interface MeshRegionFit {              // src/fitMapping.ts
 
 interface MeshioOpSpec {              // src/meshioOps.ts — one panel Run = one entry (transform_mesh takes a list)
   op: 'clean' | 'decimate' | 'smooth' | 'subdivide' | 'refine' | 'agglomerate' | 'convertCells' | 'tetToPoly' | 'polyToTet' | 'optimizeVolume' | 'adapt' | 'discretizeLevelset'
+         | 'untangle' | 'prepareMetric' | 'morph' | 'convexHull' | 'delaunay2d' | 'convertCoordinates'
+         | 'estimateNormals' | 'reconstructSurface' | 'geodesicDistance' | 'parameterize' | 'laplacianEigenmodes'
   ratio?: number; iterations?: number; levels?: number; method?: string; mode?: string; targetGroupSize?: number
+  // meshio++ 18.1 (all optional; `validateMeshioOpSpec` drops malformed values and refuses a prepareMetric without `arrays`,
+  // a morph without `array` and a geodesicDistance with neither `sources` nor `sourceRegion`)
+  arrays?: string[]; array?: string; output?: string; targetVertices?: number; hmin?: number; hmax?: number; gradation?: number
+  fixBoundary?: boolean; steps?: number; stiffening?: number; allowInverted?: boolean; dimension?: 0 | 2 | 3
+  system?: 'cylindrical' | 'spherical'; axis?: number[]; origin?: number[]; inverse?: boolean
+  neighbours?: number; orientation?: 'consistent' | 'viewpoint' | 'none'; k?: number; cellSize?: number; maxDistance?: number
+  sources?: number[]; sourceRegion?: string; padding?: number; maxDepth?: number; maxStretch?: number; numModes?: number
 }
 ```
 
@@ -1515,7 +1524,7 @@ Sent whenever a field in the open Edits-panel op form changes (and once when the
 Sent when the FE Mesh panel's Mesh-ops **Run op…** button is clicked — only reachable for a meshio++-imported source (the section hides itself for B-rep and native-mesh documents, mirroring `transform_mesh`'s own MCP-tool gate; OpenFOAM case markers are additionally refused host-side). `ops` is a one-element array of `MeshioOpSpec` (`src/meshioOps.ts`: `{op, ratio?, iterations?, levels?, method?, mode?, targetGroupSize?}` — one operation per Run, not the multi-op lists `transform_mesh` accepts). The host validates each entry, runs `runMeshioOps` against the currently-open document's own bytes (+ companions), and writes the result to a NEW file via the shared save flow — the source is never modified. Replies with `meshioOpsResult`/`meshioOpsError`, correlated via `requestId` like every other request/response pair in this file.
 
 ```json
-{ "type": "meshioOpsRequest", "requestId": "1234-0.56", "ops": [{ "op": "<one of clean|decimate|smooth|subdivide|refine|agglomerate|convertCells|tetToPoly|polyToTet|optimizeVolume|adapt|discretizeLevelset>" }] }
+{ "type": "meshioOpsRequest", "requestId": "1234-0.56", "ops": [{ "op": "<one of clean|decimate|smooth|subdivide|refine|agglomerate|convertCells|tetToPoly|polyToTet|optimizeVolume|adapt|discretizeLevelset|untangle|prepareMetric|morph|convexHull|delaunay2d|convertCoordinates|estimateNormals|reconstructSurface|geodesicDistance|parameterize|laplacianEigenmodes>" }] }
 ```
 
 ### `fitRegionRequest`

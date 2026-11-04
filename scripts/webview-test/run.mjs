@@ -848,6 +848,80 @@ test("mesh ops: section tracks source kind and posts a guarded request", async (
   assert((await hiddenOf()) === true, "mesh ops section hides again on a B-rep load");
 });
 
+test("mesh ops: the meshio++ 18.1 operations show their own rows and post validated specs", async (page) => {
+  await populate(page);
+  const stl = ["solid t", "facet normal 0 0 1", "outer loop", "vertex 0 0 0", "vertex 1 0 0", "vertex 0 1 0", "endloop", "endfacet", "endsolid t"].join("\n");
+  await post(page, { type: "loadMeshBytes", sourceFormat: "vtu", dataBase64: Buffer.from(stl, "utf8").toString("base64") });
+  await sleep(800);
+  const visibleLabels = () =>
+    page.evaluate(() =>
+      [...document.querySelectorAll("#meshing-meshops label.meshing-field")]
+        .filter((l) => l.offsetParent !== null)
+        .map((l) => l.querySelector(".meshing-label")?.textContent ?? "")
+    );
+  const requests = () => page.evaluate(() => (window.__sent ?? []).filter((m) => m.type === "meshioOpsRequest").length);
+  const lastOp = () => page.evaluate(() => (window.__sent ?? []).findLast((m) => m.type === "meshioOpsRequest")?.ops?.[0] ?? null);
+  const pick = (op) => page.selectOption("#meshing-meshops select >> nth=0", op);
+  const setField = (label, value) =>
+    page.evaluate(([text, v]) => {
+      const row = [...document.querySelectorAll("#meshing-meshops label.meshing-field")].find((l) => l.querySelector(".meshing-label")?.textContent === text);
+      const input = row?.querySelector("input,select");
+      if (!input) throw new Error(`no field ${text}`);
+      input.value = v;
+    }, [label, value]);
+  const status = () => page.evaluate(() => document.getElementById("meshing-ops-status")?.textContent ?? "");
+  const settle = async () => {
+    const r = await page.evaluate(() => (window.__sent ?? []).findLast((m) => m.type === "meshioOpsRequest")?.requestId ?? null);
+    if (r) await post(page, { type: "meshioOpsResult", requestId: r, steps: [], warnings: [] });
+    await sleep(120);
+  };
+
+  await pick("geodesicDistance");
+  let labels = await visibleLabels();
+  assert(labels.includes("Source points") && !labels.includes("Keep ratio") && !labels.includes("Array(s)"), `geodesic distance shows only its Source points row (got ${JSON.stringify(labels)})`);
+  const before = await requests();
+  await setField("Source points", "");
+  await page.click("#meshing-ops-run");
+  await sleep(150);
+  assert((await requests()) === before && /source point ids/.test(await status()), `an empty source list is refused in the panel without a request (status ${JSON.stringify(await status())})`);
+  await setField("Source points", "0, 3");
+  await page.click("#meshing-ops-run");
+  await page.waitForFunction((n) => (window.__sent ?? []).filter((m) => m.type === "meshioOpsRequest").length > n, before);
+  let spec = await lastOp();
+  assert(spec.op === "geodesicDistance" && JSON.stringify(spec.sources) === "[0,3]", `geodesic posts the parsed ids (got ${JSON.stringify(spec)})`);
+  await settle();
+
+  await pick("morph");
+  labels = await visibleLabels();
+  assert(labels.includes("Array(s)") && !labels.includes("Source points"), `morph shows the array row (got ${JSON.stringify(labels)})`);
+  const beforeMorph = await requests();
+  await page.click("#meshing-ops-run");
+  await sleep(150);
+  assert((await requests()) === beforeMorph && /displacement/.test(await status()), "a morph without its displacement array is refused in the panel");
+  await setField("Array(s)", "disp");
+  await page.click("#meshing-ops-run");
+  await page.waitForFunction((n) => (window.__sent ?? []).filter((m) => m.type === "meshioOpsRequest").length > n, beforeMorph);
+  spec = await lastOp();
+  assert(spec.op === "morph" && spec.array === "disp", `morph posts the array name (got ${JSON.stringify(spec)})`);
+  await settle();
+
+  await pick("convexHull");
+  await setField("Hull in", "2");
+  const beforeHull = await requests();
+  await page.click("#meshing-ops-run");
+  await page.waitForFunction((n) => (window.__sent ?? []).filter((m) => m.type === "meshioOpsRequest").length > n, beforeHull);
+  spec = await lastOp();
+  assert(spec.op === "convexHull" && spec.dimension === 2, `convex hull posts its dimension (got ${JSON.stringify(spec)})`);
+  await settle();
+
+  await pick("convertCoordinates");
+  await setField("Axis", "0,0,0");
+  const beforeAxis = await requests();
+  await page.click("#meshing-ops-run");
+  await sleep(150);
+  assert((await requests()) === beforeAxis && /axis/i.test(await status()), "an all-zero axis is refused in the panel");
+});
+
 /**
  * H3. BOM Copy button — the interactive half of the BOM-copy item.
  *
