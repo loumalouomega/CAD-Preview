@@ -6,6 +6,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/); thi
 
 ## [Unreleased]
 
+## [3.36.0] - 2026-11-04
+
 ### Added
 
 - **meshio++ 18.1.0: eleven Mesh Ops / `transform_mesh` operations and three tools.** The 13 new `Meshio` methods are all adopted. As operations (Mesh Ops panel and `transform_mesh`): `untangle` (tet/hex meshes), `prepareMetric`, `morph`, `convexHull` (the 3 × 4 × 5 block's tets give 8 vertices, area 94, volume 60), `delaunay2d`, `convertCoordinates` (cylindrical/spherical), `estimateNormals`, `reconstructSurface`, and `geodesicDistance` / `parameterize` / `laplacianEigenmodes`, which write their results as point data (`geodesic:distance`, `uv`, `laplacian:modes`) so the file opens with Colour by field. As tools: `analyze_surface_geometry` (geodesic distance, UV-atlas quality, Laplace-Beltrami eigenvalues — facts only), `mesh_adjacency` (node / clique / cell graph degree facts, optionally written as a METIS `.graph` or Scotch `.grf` file for a partitioner) and `register_meshes` (rigid ICP; a cube registered onto a copy shifted by 0.5 recovers the translation −0.5 and cuts the RMS from 0.354 to 7e-10). `validateMeshioOpSpec` refuses a `prepareMetric` with no `arrays`, a `morph` with no `array` and a `geodesicDistance` with no source up front; a step the kernel cannot run (an unknown array, a surface op on a volume mesh) is reported with `applied: false`. `tools/list` is now 93 tools. Probe: `scripts/probe/examples/meshio-1810-surface.ts`; `mcp:smoke` pins the analytic cases.
@@ -1089,6 +1091,7 @@ This release republishes v1.9.0's full changelog (below) unchanged; v1.9.0 itsel
 
 - Initial release: read-only 3D preview for CAD and mesh files (STEP, IGES, BREP, STL, OBJ, PLY, glTF) inside a VS Code custom editor, using OpenCascade.js (OCCT WASM) in the extension host for B-rep formats and Three.js in the webview for rendering.
 
+[3.36.0]: https://github.com/loumalouomega/CAD-Preview/compare/v3.35.0...v3.36.0
 [3.35.0]: https://github.com/loumalouomega/CAD-Preview/compare/v3.34.0...v3.35.0
 [3.34.0]: https://github.com/loumalouomega/CAD-Preview/compare/v3.33.0...v3.34.0
 [3.33.0]: https://github.com/loumalouomega/CAD-Preview/compare/v3.32.0...v3.33.0
