@@ -133,6 +133,7 @@ import { setupSidebarResizer, clampSidebarWidth, SIDEBAR_DEFAULT_PX, type Sideba
 import { sanitizeBookmarks } from "../viewStateSidecar";
 import { MarkupModel, type MarkupStroke, type MarkupTool, type Point } from "./markupModel";
 import { redrawAll } from "./markupCanvas";
+import { lookAtFaceDirection } from "./lookAtFace";
 import { findOpDependents, describeDependents } from "../opDependents";
 import { setupDropdown } from "./dropdownMenu";
 import type { HostToWebview, WebviewToHost, TreeNode, EntityType, EditOp, ViewState, ViewBookmark, Annotation, SurfaceToolParams } from "../protocol";
@@ -4185,6 +4186,20 @@ function setupSelectionControls(): void {
     });
     ctxMenu.append(noteBtn);
 
+    // Look at face (roadmap "Navigation upgrades"): view a planar B-rep face head-on.
+    if (sourceKind === "brep" && result.entityType === "surface") {
+      const lookBtn = document.createElement("button");
+      lookBtn.id = "ctx-look-at-face";
+      lookBtn.setAttribute("role", "menuitem");
+      lookBtn.textContent = "Look at face";
+      lookBtn.title = `Turn the camera to view ${result.entityId} head-on (planar faces only)`;
+      lookBtn.addEventListener("click", () => {
+        closeMenu();
+        lookAtFace(result.entityId);
+      });
+      ctxMenu.append(lookBtn);
+    }
+
     // Copy reference (roadmap "Quotable entity references"): the MCP server runs
     // in another process and cannot see the selection, so this puts a
     // self-describing, paste-ready line on the clipboard. The right-clicked
@@ -5301,6 +5316,24 @@ function requestClipFromFace(): void {
   if (!face) return;
   clipFaceFactsRequestId = `clipface-${Date.now()}-${Math.random()}`;
   post({ type: "entityFactsRequest", requestId: clipFaceFactsRequestId, entityId: face.entityId });
+}
+
+/** Look at face: one facts round trip (own request id), then a camera snap along the normal. */
+function lookAtFace(entityId: string): void {
+  const requestId = `lookat-${Date.now()}-${Math.random()}`;
+  ruleFactWaiters.set(requestId, (facts, error) => {
+    if (!facts) { setStatus(error ?? "Could not read that face.", true); return; }
+    if (!facts.normal) {
+      setStatus(`${facts.entityId} is ${facts.surfaceType ? `a ${facts.surfaceType} face` : "not planar"} — pick a planar face.`, true);
+      return;
+    }
+    const cur = viewer.getViewDirection();
+    const dir = lookAtFaceDirection(facts.normal, [cur.x, cur.y, cur.z]);
+    if (!dir) { setStatus("That face has no usable normal.", true); return; }
+    viewer.setViewDirection(new THREE.Vector3(dir[0], dir[1], dir[2]));
+    setStatus(`Looking at ${facts.entityId}.`);
+  });
+  post({ type: "entityFactsRequest", requestId, entityId });
 }
 
 /** Applies a clip plane from a completed Clip ▸ Face round trip. */

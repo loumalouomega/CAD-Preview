@@ -3859,7 +3859,7 @@ test("context menu: right-clicking geometry offers groups with member counts", a
   assert((await menuShown()) === true, "right-clicking a face opens the context menu");
 
   const rows = await page.evaluate(() =>
-    [...document.querySelectorAll("#context-menu button:not(#ctx-pin-note):not(#ctx-copy-reference)")].map((b) => b.textContent)
+    [...document.querySelectorAll("#context-menu button:not(#ctx-pin-note):not(#ctx-copy-reference):not(#ctx-look-at-face)")].map((b) => b.textContent)
   );
   assert(rows.length > 0, `the menu offers at least one group (got ${JSON.stringify(rows)})`);
   assert(
@@ -3888,12 +3888,12 @@ test("context menu: choosing a group selects exactly the members it advertised",
   await sleep(250);
 
   const advertised = await page.evaluate(() => {
-    const b = document.querySelector("#context-menu button:not(#ctx-pin-note):not(#ctx-copy-reference)");
+    const b = document.querySelector("#context-menu button:not(#ctx-pin-note):not(#ctx-copy-reference):not(#ctx-look-at-face)");
     return b ? Number(b.textContent.match(/(\d+)$/)?.[1] ?? "0") : null;
   });
   assert(advertised !== null && advertised > 1, `the first group advertises a count (got ${advertised})`);
 
-  await page.evaluate(() => document.querySelector("#context-menu button:not(#ctx-pin-note):not(#ctx-copy-reference)")?.click());
+  await page.evaluate(() => document.querySelector("#context-menu button:not(#ctx-pin-note):not(#ctx-copy-reference):not(#ctx-look-at-face)")?.click());
   await sleep(300);
 
   // The status line reports what was actually selected — it must agree with
@@ -5552,6 +5552,37 @@ test("parameters table: reorder is refused across a dependency, import reports t
   assert(view[0] === "D", `a favourite renders first (got ${view})`);
   const sent = (await sentOf(page, "editsChanged")).pop();
   assert(sent.variables.map((v) => v.name).join() === "L,W,A,B,C,D" && sent.variables[5].favourite === true, "the stored order is unchanged and carries favourite");
+});
+
+test("look at face: the context-menu entry fetches the face normal and turns the camera onto it", async (page) => {
+  await populate(page);
+  await enablePicking(page, "surface");
+  const box = await viewportBox(page);
+  await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2, { button: "right" });
+  await sleep(250);
+  const shown = await page.evaluate(() => { const b = document.getElementById("ctx-look-at-face"); return !!b && b.getClientRects().length > 0; });
+  assert(shown, "right-clicking a B-rep face offers Look at face");
+  await page.evaluate(() => (window.__sent.length = 0));
+  await page.evaluate(() => document.getElementById("ctx-look-at-face").click());
+  await sleep(250);
+  const req = await page.evaluate(() => (window.__sent ?? []).find((m) => m.type === "entityFactsRequest" && String(m.requestId).startsWith("lookat-")) ?? null);
+  assert(req !== null, "choosing it issues its own entityFactsRequest");
+  // A non-planar reply refuses by name and does not move the camera.
+  await post(page, { type: "entityFactsResult", requestId: req.requestId, facts: { entityId: req.entityId, entityType: "surface", surfaceType: "cylinder" } });
+  await sleep(200);
+  const refused = await page.evaluate(() => document.getElementById("status")?.textContent ?? "");
+  assert(/cylinder face — pick a planar face/.test(refused), `a non-planar face is refused by name (got ${JSON.stringify(refused)})`);
+  // A planar reply turns the camera to ±normal (the sign follows the current side).
+  await page.evaluate(() => (window.__sent.length = 0));
+  await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2, { button: "right" });
+  await sleep(250);
+  await page.evaluate(() => document.getElementById("ctx-look-at-face").click());
+  await sleep(250);
+  const req2 = await page.evaluate(() => (window.__sent ?? []).filter((m) => m.type === "entityFactsRequest" && String(m.requestId).startsWith("lookat-")).at(-1));
+  await post(page, { type: "entityFactsResult", requestId: req2.requestId, facts: { entityId: req2.entityId, entityType: "surface", normal: [1, 0, 0], planeOrigin: [0, 0, 0] } });
+  await sleep(700);
+  const dir = await page.evaluate(() => (window.__sent ?? []).filter((m) => m.type === "viewChanged").at(-1)?.view?.viewDirection ?? null);
+  assert(Array.isArray(dir) && Math.abs(Math.abs(dir[0]) - 1) < 1e-6 && Math.abs(dir[1]) < 1e-6 && Math.abs(dir[2]) < 1e-6, `the camera looks along ±X (got ${JSON.stringify(dir)})`);
 });
 
 test("form ergonomics: the Apply row stays inside the scrolling Edits area on a long form at a short height", async (page) => {
