@@ -17,6 +17,9 @@ import * as fs from "fs";
 import * as path from "path";
 import { fileURLToPath } from "url";
 import { loadBRep, exportBRep } from "../../src/occtService";
+import { computeMassProperties } from "../../src/massProperties";
+import { checkBrepHealth } from "../../src/brepHealth";
+import { recognizePrimitives } from "../../src/primitiveReport";
 import { generateMesh, type MeshGenerationInput } from "../../src/gmshService";
 import { encodeBuffer, type Part } from "../../src/protocol";
 import { DEFAULT_MESH_OPTIONS } from "../../src/meshOptions";
@@ -169,6 +172,23 @@ async function main(): Promise<void> {
     regionAssignment: { regionNames: mmgBoundary.regions.regionNames, triangleRegionIndex: encodeBuffer(mmgBoundary.regions.triangleRegion) } });
   writeJson("mmg-parts.json", { type: "parts", parts: mmgParts });
   writeJson("mmg-report.json", { report: mmg.report, warnings: mmg.warnings });
+
+  // Analysis-panel reports, from the same host entry points the provider calls
+  // (`computeMassProperties`, `checkBrepHealth`, `recognizePrimitives`) — real
+  // numbers on bull.stp, and on block.stp for the primitive classifier (bull is
+  // honestly "not a recognized primitive", which is a worse picture of the panel).
+  writeJson("mass-properties.json", {
+    type: "massPropertiesResult",
+    properties: await computeMassProperties(ROOT, bytes, "step", [], null),
+  });
+  writeJson("brep-health.json", {
+    type: "brepHealthResult",
+    report: await checkBrepHealth(ROOT, bytes, "step", []),
+  });
+  writeJson("primitives.json", {
+    type: "primitiveRecognizeResult",
+    report: await recognizePrimitives(ROOT, new Uint8Array(fs.readFileSync(path.join(ROOT, "examples", "STP", "block.stp"))), "step", []),
+  });
 
   // Every tutorial starts from block.stp (not bull.stp) and its op-list ids
   // were probed live (pinned in scripts/mcp-smoke/run.mjs). Each entry below

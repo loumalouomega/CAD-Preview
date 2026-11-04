@@ -511,6 +511,8 @@ Parts are saved automatically to a `<model>.parts.json` sidecar next to the CAD 
 
 ### Organizing Layers
 
+![The Layers panel with two layers: a Construction layer holding two surfaces, and a hidden Centre lines layer holding three edges.](/screenshots/layers-panel.png)
+
 The **Layers** panel sits right below Parts in the left sidebar. Where a part says *which entities form a finite-element sub-model*, a layer says *which entities are shown, locked or drawn together* — the drafting meaning of "layer" (construction, hidden, dimensions, centre lines), not a second kind of part.
 
 Each layer is a compact row working exactly like a part row: a colour swatch (the panel swatch and the layer's drawing-export colour), an editable name, a `volumes · surfaces · lines` count, an **eye** (show/hide — unlike a part's eye, this persists: a hidden layer stays hidden for drawings and agents), a **lock** (members stay selectable for measurement but refuse as edit operands and Transform Gizmo targets, with a named message telling you which layer to unlock), plus hover-revealed assign and delete buttons. Click **＋ New** to create a layer, then the **＋** on its row to assign the current selection (any pick mode) to it — each entity sits on exactly one layer, so assigning moves it out of wherever it was. Unassigned entities sit on the **Default** layer, which cannot be deleted; deleting any other layer returns its members to Default.
@@ -670,6 +672,8 @@ The Variables table is also a parameters table:
 
 #### Configurations (design table)
 
+![The Configurations grid: a Base row plus Short and Tall, one column per variable, with Tall active and its overridden cells in bold.](/screenshots/configurations.png)
+
 Under the Variables table, the collapsible **Configurations** section is a grid: one row per configuration (plus a **Base** row for the variables as written), one column per variable.
 
 - **Add** a configuration by typing a name and pressing **Add** or Enter. It starts as a copy of the active configuration's overrides.
@@ -768,6 +772,8 @@ Mesh options are saved automatically to a `<model>.mesh.json` sidecar next to th
 
 ### Mass Properties
 
+![The Mass Properties panel after Compute on bull.stp: volume, area, centre of mass and the moments of inertia about the centroid.](/screenshots/mass-properties.png)
+
 The **Mass Properties** panel (below the FE Mesh panel) computes volume, surface area, length, center of mass, and moments of inertia for the whole model or a single selected entity.
 
 1. With nothing selected, click **Compute** for whole-model properties. To inspect one entity instead, enter **Select** mode, pick exactly one volume, surface, or edge, then click **Compute** — selecting more than one entity shows a guidance message instead of a (possibly misleading) combined result.
@@ -786,6 +792,8 @@ The **Clash** panel (below Mass Properties, B-rep sources only) checks Parts aga
 Results are session-only and clear on every model rebuild, since re-tessellation may renumber the ids they name.
 
 ### B-rep Health
+
+![The B-rep Health panel after Check on bull.stp: a valid per-BRepCheck verdict, topology counts and the per-solid signed volume.](/screenshots/brep-health.png)
 
 The **B-rep Health** panel (Advanced ▸ Analysis, STEP/IGES/BREP sources only) runs OpenCascade's own validity checker (`BRepCheck`) on the model as currently edited. It reports facts, not a verdict of its own, and repairs nothing.
 
@@ -855,6 +863,8 @@ The **Draft** panel (below Printability; any source with triangles) reports **fa
 Faces nearly perpendicular to the pull are parting faces and are not findings. The view is coloured by draft angle (viridis, clamped to ±15°); **Clear** removes it, and so does an edit. The same report is available headless as the `check_draft` MCP tool. The Draft edit operation (a different thing) is currently blocked by the kernel — see its row in the operations table.
 
 ### Primitives
+
+![The Primitives panel after Recognize on the 3×4×5 block.stp: one solid recognized as a box with a zero fit residual.](/screenshots/primitives.png)
 
 The **Primitives** panel (below Region fit, B-rep sources only) classifies each solid as a box, sphere, cylinder, cone, or torus — the interactive counterpart of the `recognize_primitives` / `decompose_to_primitives` MCP tools.
 
