@@ -6,6 +6,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/); thi
 
 ## [Unreleased]
 
+## [3.35.0] - 2026-11-04
+
 ### Added
 
 - **Two-tone op icons.** The icon pipeline gains one reserved accent: a TikZ `blue` fill becomes `var(--ui-icon-accent, currentColor)` (a `blue!N` tint keeps its tint as fill opacity; strokes never take it). `--ui-icon-accent` follows the VS Code button colour (then the focus colour) and is `currentColor` in the high-contrast themes, which stay monochrome. Seventeen Model-tab icons are redrawn filled with the accent on the part the command acts on: box, cylinder, sphere, extrude, revolve, fillet, chamfer, hole, shell, union, subtract, intersect, mirror, linear and circular pattern, move and rotate. The ribbon and the Edits panel pick them up; the list is in `icons/README.md`.
@@ -16,6 +18,11 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/); thi
 - **Command search and single-key commands.** Ctrl+K (or `/` when focus is not in a text field) opens a fuzzy command search over every Edits-panel operation (labels plus their command-bar names), every toolbar and dropdown action, and every sidebar panel including the Advanced ones; each row shows its icon, group and shortcut. Choosing an operation opens its form, an action runs, a panel expands and scrolls into view. The new opt-in setting `cadPreview.singleKeyCommands` (off by default) turns on E Extrude, R Revolve, F Fillet, C Chamfer, H Hole, M Move, S Shell, P Linear Pattern and Q Measure mode, plus Shift+R to reopen the last command's form with its last values (it never applies); the keys never fire in a text field, with Ctrl/Cmd/Alt, or on the view snaps (`1`-`6`, `i`). Shortcuts are declared once beside the catalog entry and `opCatalog.test.ts` refuses duplicates and view-snap collisions. Webview-only. New `src/webview/commandSearch.ts` (pure matcher, ranking and key table) and `commandPalette.ts` (overlay); `viewerDefaults` carries `singleKeyCommands`.
 - **Parameters table.** The Edits panel's Variables table gains a Unit selector (writes the bracket unit into a plain-number expression), a comment, a favourite star (pins the row in the view; evaluation order is unchanged), ▲/▼ reorder that refuses a move across a dependency, a Filter box, CSV/JSON import (every rejected row is named; a row is accepted whole or not at all) and export, and an "Apply each change as you leave its field" toggle with Apply/Revert. A **Model parameters** list shows every numeric field of each op, editable in place, and **→ var** promotes a field to a new variable. `ParamVariable` gains optional `comment`/`favourite` (additive; old sidecars round-trip byte-identically), `set_variables` accepts them (omitted keeps, empty/false clears) and `get_state` returns them.
 - **Variable "Used by" list and expression autocomplete.** A variable that is referenced shows a `▸ N` toggle that lists the op rows (with the referencing field paths) and the other variables using it; clicking an op row selects that history row without moving the timeline, and N equals the count in the delete button's tooltip (which now also counts referencing variables). Every numeric op field and variable expression suggests variable names (a variable's expression only sees those defined above it) and the expression functions: arrow keys move, Enter or Tab accept, Escape dismisses without touching the text. Webview-only; pure logic in `variableUsage.ts` and `expressionCompletion.ts`.
+
+### Changed
+
+- **Three.js 0.186.1 → 0.187.0.** `@types/three` follows to 0.187.0. The r187 migration notes were reviewed: no API removed in this release is used here, and the `setViewport`/`setScissor` pixel-ratio change only affects a bound render target, which the viewer does not use. Validated with `npm ci`, the unit and webview suites, `npm run compat` (83/83), `npm run mcp:smoke`, and VSIX packaging + `compat:vsix`.
+- **Dependency security refresh.** The `qs` override moves to 6.17.1 and `@vscode/vsce`'s `minimatch` is forced to 11, closing the remaining Dependabot alerts with no runtime API change.
 
 ## [3.34.0] - 2026-11-02
 
@@ -1074,6 +1081,7 @@ This release republishes v1.9.0's full changelog (below) unchanged; v1.9.0 itsel
 
 - Initial release: read-only 3D preview for CAD and mesh files (STEP, IGES, BREP, STL, OBJ, PLY, glTF) inside a VS Code custom editor, using OpenCascade.js (OCCT WASM) in the extension host for B-rep formats and Three.js in the webview for rendering.
 
+[3.35.0]: https://github.com/loumalouomega/CAD-Preview/compare/v3.34.0...v3.35.0
 [3.34.0]: https://github.com/loumalouomega/CAD-Preview/compare/v3.33.0...v3.34.0
 [3.33.0]: https://github.com/loumalouomega/CAD-Preview/compare/v3.32.0...v3.33.0
 [3.32.0]: https://github.com/loumalouomega/CAD-Preview/compare/v3.31.0...v3.32.0
