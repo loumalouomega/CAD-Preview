@@ -95,6 +95,16 @@ export interface FitMeshToCadOptions {
    * faces 4770 → 3778 (at ~1.2x the time).
    */
   refineSegmentation?: boolean;
+  /**
+   * How far a point may lie from its refined patch's primitive, as a fraction of
+   * the bounding-box diagonal (kernel default 1e-3). Only read with
+   * `refineSegmentation`. A rough skin — a topology optimizer's, a scan's — needs
+   * it just above its own roughness: on a 22 236-triangle optimized hook the
+   * defaults left 94.7 % of the area faceted, `refineSegmentation` with 2e-3
+   * left 41.9 % (20 planes, 13 cylinders, 7 cones, 12 B-splines) at the cost of
+   * a skin deviation of about 0.4 % of the diagonal.
+   */
+  refineTolerance?: number;
   /** Freeform B-spline treatment: `"legacy"` (default), `"adaptive"`, `"network"` or `"auto"`. */
   freeformMode?: "legacy" | "adaptive" | "network" | "auto";
   /** Measure each face's two-sided distance to the skin (OpenCASCADE backend only). */
@@ -220,6 +230,10 @@ export async function fitMeshToCad(
   if (options.freeformMode !== undefined && !["legacy", "adaptive", "network", "auto"].includes(options.freeformMode)) {
     throw new Error(`freeformMode must be "legacy", "adaptive", "network" or "auto" (got ${String(options.freeformMode)})`);
   }
+  const refineTolerance = finiteOrUndefined("refineTolerance", options.refineTolerance, (v) => v > 0 && v <= 1, "must be a fraction of the diagonal within (0, 1]");
+  if (refineTolerance !== undefined && !options.refineSegmentation) {
+    throw new Error("refineTolerance only applies with refineSegmentation: true.");
+  }
   if (options.faceDeviation && options.backend === "native") {
     throw new Error('faceDeviation needs the OpenCASCADE backend — drop it or use backend "occt".');
   }
@@ -279,6 +293,7 @@ export async function fitMeshToCad(
     if (options.backend !== undefined) cadOptions.backend = options.backend;
     if (options.mergeFaces !== undefined) cadOptions.mergeFaces = options.mergeFaces;
     if (options.refineSegmentation !== undefined) cadOptions.refineSegmentation = options.refineSegmentation;
+    if (refineTolerance !== undefined) cadOptions.refineTolerance = refineTolerance;
     if (options.freeformMode !== undefined) cadOptions.freeformMode = options.freeformMode;
     if (options.faceDeviation !== undefined) cadOptions.faceDeviation = options.faceDeviation;
 

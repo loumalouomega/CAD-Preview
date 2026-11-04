@@ -6,6 +6,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/); thi
 
 ## [Unreleased]
 
+### Added
+
+- **Fit to CAD… asks how hard to try, and `fit_mesh_to_cad` takes `refineTolerance`.** The Mesh Health button used to fit with the kernel defaults only, which leave a rough or organic skin (a topology optimizer's output, a scan) almost entirely faceted: on a 22 236-triangle optimized hook 94.7 % of the area stayed facets. It now opens a quick pick — **kernel defaults** (first, so Enter changes nothing) or **refine the patches first** (`refineSegmentation` with tolerance 0.2 % of the diagonal), which on that hook left 41.9 % faceted (20 planes, 13 cylinders, 7 cones, 12 B-splines, a sphere and 3 tori) in about three minutes, with the solid up to ~0.4 % of the diagonal from the skin. The MCP tool gains `refineTolerance` (a fraction of the bounding-box diagonal in (0, 1], only with `refineSegmentation`) and its descriptions now say that refinement is the first thing to try on such skins and that `freeformMode` is slow (measured 8-12x the time with a larger skin deviation; with `refineSegmentation` it can exceed the kernel worker's five-minute watchdog on a few thousand triangles), so the freeform modes stay out of the pick. `segmentMethod: "primitive"`, `featureAngle` and `minPatchCells` were measured not to help on this skin.
+
 ## [3.36.0] - 2026-11-04
 
 ### Added
