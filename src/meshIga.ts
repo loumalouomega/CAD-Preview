@@ -38,7 +38,36 @@
 
 import { getMeshio, wrapMeshioFault } from "./meshioService";
 
+/**
+ * How a STEP/IGES source is read (meshio++ 18.3 `readMeshSelective`'s
+ * `cadRead`, full artifact only). Ignored — with a warning — for `.cad.json`.
+ * A length or angle of 0 or less is upstream's "automatic", not an error.
+ */
+export interface CadReadOptions {
+  /** Linear deflection of the triangulation (a length; <= 0 automatic). */
+  deflection?: number;
+  /** Angular deflection in radians (upstream default 0.5). */
+  angularDeflection?: number;
+  /** Heal the shape (`ShapeFix_Shape`, then sewing) before it is extracted. */
+  heal?: boolean;
+  /** Sewing tolerance (<= 0 automatic); a positive value sews without `heal`. */
+  sewTolerance?: number;
+}
+
+/** The heal report meshio++ attaches to the side channel's file-level `extra`. */
+export interface CadHealReport {
+  healed?: boolean;
+  fixed?: boolean;
+  sewTolerance?: number;
+  freeEdgesBefore?: number;
+  freeEdgesAfter?: number;
+  multipleEdges?: number;
+  degenerated?: number;
+}
+
 export interface IgaModelOptions {
+  /** STEP/IGES read settings (see {@link CadReadOptions}). */
+  cadRead?: CadReadOptions;
   /** Cells per knot span and direction of the sampling; 0 is automatic. */
   sampleSubdivisions?: number;
   /** Points per knot span a trimming curve is sampled at (2..4096). */
@@ -82,6 +111,8 @@ export interface IgaMeshFacts {
 }
 
 export interface IgaSampleReport {
+  /** Present when the read healed or sewed the shape (`cadRead`). */
+  heal?: CadHealReport;
   model: IgaModelFacts;
   sampled: IgaMeshFacts;
   warnings: string[];
@@ -96,6 +127,8 @@ export interface IgaRefineOptions extends IgaModelOptions {
 
 export interface IgaRefineReport {
   format: "cad_json";
+  /** Present when the read healed or sewed the shape (`cadRead`). */
+  heal?: CadHealReport;
   before: IgaModelFacts;
   after: IgaModelFacts;
   /** The refined model's own sampling (its rendered-cell inventory). */
@@ -110,6 +143,8 @@ export interface IgaRefineResult {
 }
 
 export interface IgaEvaluateOptions {
+  /** STEP/IGES read settings (see {@link CadReadOptions}). */
+  cadRead?: CadReadOptions;
   /** 1 adds first derivatives and (a surface's) unit normals. */
   derivatives?: number;
   /** Points per knot span a trimming curve is sampled at (2..4096). */
@@ -127,6 +162,8 @@ export interface IgaEvaluateReport {
   normals?: number[];
   /** 1 where the face's trimming loops contain the point (B-rep faces only). */
   inside?: number[];
+  /** Present when the read healed or sewed the shape (`cadRead`). */
+  heal?: CadHealReport;
   warnings: string[];
 }
 
@@ -135,6 +172,69 @@ export interface IgaEvaluateReport {
 // handler — the same shape `stageMeshioSource`'s `/in.<format>` uses).
 const READ_PATH = "/m.json";
 const WRITE_PATH = "/r.json";
+
+const num = (v: unknown): number | undefined => (typeof v === "number" && Number.isFinite(v) ? v : undefined);
+
+/** Validates `cadRead` and builds the argument passed to meshio++ — only the
+ * keys the caller set (a default read stays byte-identical to 18.1). `null`
+ * is tolerated: `undefined` crosses `kernelIpc` as `null`. */
+export function buildCadRead(cadRead: CadReadOptions | null | undefined): Record<string, unknown> | undefined {
+  if (cadRead == null) return undefined;
+  const out: Record<string, unknown> = {};
+  for (const key of ["deflection", "angularDeflection", "sewTolerance"] as const) {
+    const v = cadRead[key];
+    if (v == null) continue;
+    if (typeof v !== "number" || !Number.isFinite(v)) throw new Error(`cadRead.${key} must be a finite number (got ${String(v)})`);
+    out[key] = v;
+  }
+  if (cadRead.heal != null) {
+    if (typeof cadRead.heal !== "boolean") throw new Error(`cadRead.heal must be a boolean (got ${String(cadRead.heal)})`);
+    out.heal = cadRead.heal;
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
+/** The heal report from the side channel's JSON `extra`, tolerant of absence. */
+export function healReportOf(info: Record<string, unknown>): CadHealReport | undefined {
+  const extra = info.extra;
+  if (typeof extra !== "string") return undefined;
+  let heal: Record<string, unknown> | undefined;
+  try {
+    heal = (JSON.parse(extra) as { heal?: Record<string, unknown> }).heal;
+  } catch {
+    return undefined;
+  }
+  if (!heal || typeof heal !== "object") return undefined;
+  return {
+    healed: typeof heal.healed === "boolean" ? heal.healed : undefined,
+    fixed: typeof heal.fixed === "boolean" ? heal.fixed : undefined,
+    sewTolerance: num(heal.sew_tolerance),
+    freeEdgesBefore: num(heal.free_edges_before),
+    freeEdgesAfter: num(heal.free_edges_after),
+    multipleEdges: num(heal.multiple_edges),
+    degenerated: num(heal.degenerated),
+  };
+}
+
+/** Reads the staged file's `cad_json` side channel (shared by the three tools). */
+function readIgaSideChannel(
+  m: any,
+  meshioFormat: string,
+  cadRead: CadReadOptions | null | undefined
+): { info: Record<string, unknown>; heal?: CadHealReport; warnings: string[] } {
+  const warnings: string[] = [];
+  const cad = buildCadRead(cadRead);
+  const isBrep = meshioFormat === "step" || meshioFormat === "iges";
+  if (cad && !isBrep) warnings.push("cadRead applies to STEP/IGES sources only — ignored for a CAD JSON model.");
+  const readOptions: Record<string, unknown> = { format: meshioFormat, info: true };
+  if (cad && isBrep) readOptions.cadRead = cad;
+  const selective: Record<string, unknown> = m.readMeshSelective(READ_PATH, readOptions);
+  const info = selective.info as Record<string, unknown> | undefined;
+  if (!info || info.format !== "cad_json") {
+    throw new Error("The file has no CAD JSON side channel — iga_* tools need a Kratos CAD JSON NURBS model (.cad.json).");
+  }
+  return { info, heal: healReportOf(info), warnings };
+}
 
 function perDirection(name: string, value: number | number[] | undefined): number | number[] | undefined {
   if (value === undefined) return undefined;
@@ -203,25 +303,20 @@ async function readCadJsonInfo(
   bytes: Uint8Array,
   meshioFormat: string,
   options?: IgaModelOptions
-): Promise<{ info: Record<string, unknown>; sampled: IgaMeshFacts; warnings: string[] }> {
+): Promise<{ info: Record<string, unknown>; sampled: IgaMeshFacts; heal?: CadHealReport; warnings: string[] }> {
   const m = await getMeshio();
   try {
     m.FS.writeFile(READ_PATH, bytes);
-    const selective: Record<string, unknown> = m.readMeshSelective(READ_PATH, { format: meshioFormat, info: true });
-    const info = selective.info as Record<string, unknown> | undefined;
-    if (!info || info.format !== "cad_json") {
-      throw new Error("The file has no CAD JSON side channel — iga_* tools need a Kratos CAD JSON NURBS model (.cad.json).");
-    }
+    const { info, heal, warnings } = readIgaSideChannel(m, meshioFormat, options?.cadRead);
     const sampledOptions: Record<string, unknown> = {};
     if (options?.sampleSubdivisions !== undefined) sampledOptions.sampleSubdivisions = options.sampleSubdivisions;
     if (options?.trimSamples !== undefined) sampledOptions.trimSamples = options.trimSamples;
     if (options?.edges !== undefined) sampledOptions.edges = options.edges;
     if (options?.trim !== undefined) sampledOptions.trim = options.trim;
     const sampled = Object.keys(sampledOptions).length > 0 ? m.igaSample(info, sampledOptions) : m.igaSample(info);
-    const warnings: string[] = [];
     const faces = ((info.faces ?? []) as Array<{ trimmed?: boolean }>).length;
     if (faces === 0) warnings.push("The model declares no faces — the sampled cells come from the patches alone.");
-    return { info, sampled: meshFacts((sampled as { mesh: Record<string, unknown> }).mesh), warnings };
+    return { info, sampled: meshFacts((sampled as { mesh: Record<string, unknown> }).mesh), heal, warnings };
   } catch (err) {
     throw wrapMeshioFault(err);
   }
@@ -236,8 +331,8 @@ export async function igaSampleModel(bytes: Uint8Array, meshioFormat: string, op
   if (options.sampleSubdivisions !== undefined && !(Number.isInteger(options.sampleSubdivisions) && options.sampleSubdivisions >= 0)) {
     throw new Error(`sampleSubdivisions must be a non-negative integer (got ${options.sampleSubdivisions})`);
   }
-  const { info, sampled, warnings } = await readCadJsonInfo(bytes, meshioFormat, options);
-  return { model: modelFacts(info), sampled, warnings };
+  const { info, sampled, heal, warnings } = await readCadJsonInfo(bytes, meshioFormat, options);
+  return { ...(heal ? { heal } : {}), model: modelFacts(info), sampled, warnings };
 }
 
 /** `iga_refine`: exact refinement (degree elevation + knot insertion) of the
@@ -261,11 +356,7 @@ export async function igaRefineModel(bytes: Uint8Array, meshioFormat: string, op
   const m = await getMeshio();
   try {
     m.FS.writeFile(READ_PATH, bytes);
-    const selective: Record<string, unknown> = m.readMeshSelective(READ_PATH, { format: meshioFormat, info: true });
-    const info = selective.info as Record<string, unknown> | undefined;
-    if (!info || info.format !== "cad_json") {
-      throw new Error("The file has no CAD JSON side channel — iga_* tools need a Kratos CAD JSON NURBS model (.cad.json).");
-    }
+    const { info, heal, warnings } = readIgaSideChannel(m, meshioFormat, options.cadRead);
     const before = modelFacts(info);
     const refineOptions: Record<string, unknown> = { ...sampling };
     if (subdivisions !== undefined) refineOptions.subdivisions = subdivisions;
@@ -274,9 +365,8 @@ export async function igaRefineModel(bytes: Uint8Array, meshioFormat: string, op
     const after = modelFacts(refined.info);
     m.writeMesh(WRITE_PATH, refined.mesh, "cad_json", { info: refined.info });
     const refinedBytes = new Uint8Array(m.FS.readFile(WRITE_PATH));
-    const warnings: string[] = [];
     if (before.faces !== after.faces) warnings.push(`Face count changed (${before.faces} → ${after.faces}) — refinement must not change it; the written file is suspect.`);
-    return { refinedBytes, report: { format: "cad_json", before, after, sampled: meshFacts(refined.mesh), warnings } };
+    return { refinedBytes, report: { format: "cad_json", ...(heal ? { heal } : {}), before, after, sampled: meshFacts(refined.mesh), warnings } };
   } catch (err) {
     throw wrapMeshioFault(err);
   }
@@ -306,11 +396,7 @@ export async function igaEvaluateModel(
   const m = await getMeshio();
   try {
     m.FS.writeFile(READ_PATH, bytes);
-    const selective: Record<string, unknown> = m.readMeshSelective(READ_PATH, { format: meshioFormat, info: true });
-    const info = selective.info as Record<string, unknown> | undefined;
-    if (!info || info.format !== "cad_json") {
-      throw new Error("The file has no CAD JSON side channel — iga_* tools need a Kratos CAD JSON NURBS model (.cad.json).");
-    }
+    const { info, heal, warnings } = readIgaSideChannel(m, meshioFormat, options.cadRead);
     const faces = (info.faces ?? []) as unknown[];
     if (face >= faces.length) {
       throw new Error(`face ${face} is out of range — the model has ${faces.length} face(s), 0-based.`);
@@ -324,7 +410,6 @@ export async function igaEvaluateModel(
     const spaceDim = Number(r.spaceDim ?? 3);
     const paramDim = 2; // every CAD JSON face is a surface
     const pointCount = Math.floor(params.length / paramDim);
-    const warnings: string[] = [];
     const inside = r.inside as Uint8Array | undefined;
     if (inside) {
       const outside = Array.from(inside).filter((v) => Number(v) === 0).length;
@@ -339,6 +424,7 @@ export async function igaEvaluateModel(
       ...(r.derivatives ? { derivatives: Array.from(r.derivatives as ArrayLike<number>, Number) } : {}),
       ...(r.normals ? { normals: Array.from(r.normals as ArrayLike<number>, Number) } : {}),
       ...(inside ? { inside: Array.from(inside, Number) } : {}),
+      ...(heal ? { heal } : {}),
       warnings,
     };
   } catch (err) {
