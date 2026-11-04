@@ -424,6 +424,8 @@ Click any face of the cube to snap the camera to that standard view:
 | **+Y / -Y** | Top / Bottom |
 | **+Z / -Z** | Front / Back |
 
+The cube is a 3×3 grid of hit regions, so it offers **26** views: the middle of a face snaps to that face's view, the strip along a border snaps to the **edge** view between two faces (45° between them), and a corner square snaps to the **corner** view (an isometric-style direction). The coloured axis arrow heads are clickable too: clicking one looks along that axis.
+
 The same views are on the keyboard (ignored while typing in a text field, and with Ctrl, Cmd or Alt held; the optional [single-letter command keys](#command-search-and-single-key-commands) never take these):
 
 | Key | View   | Key | View   |

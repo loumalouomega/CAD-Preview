@@ -441,15 +441,12 @@ These are outcome groupings, not release numbers. Independent small items can sh
 
 *Area: Interface. Effort: S–M.*
 
-- **Today:** the orientation cube snaps to its six faces, `1`–`6` and `i` give the standard views, and the view-controls dock carries reset, fit, zoom and display mode. The axis helper is not clickable. Mouse mapping is fixed: left-drag orbits, right-drag pans, the wheel zooms.
-- **First increment (S):**
-  - **Clickable axis tips** on the triad: click +X/−X/+Y/−Y/+Z/−Z to look along that axis.
-  - **26 snapped views:** the cube's 12 edges and 8 corners become hit regions beside its 6 faces, as in SolidCraft. These are pure camera targets in `orientationCube.ts`, and its tests extend to them.
-  - **Look at selection:** from the context menu, view along a selected planar face's normal. Clip ▸ Face already computes that normal.
+- **Shipped (2026-11-04):** the orientation cube's 26 snapped views (faces, edges, corners) and clickable axis arrow heads.
+- **Left, first increment (S):** **Look at selection** — from the context menu, view along a selected planar face's normal (Clip ▸ Face already computes that normal).
 - **Second increment (S):**
   - **Navigation presets:** a `cadPreview.navigationPreset` setting with Default, Fusion (middle-drag pan, Shift+middle orbit), OpenSCAD and Touchpad (two-finger pan, pinch zoom). One mapping table drives every preset. SpaceMouse input is unaffected.
   - Free orbit with roll stays off. The trackball is not proposed.
-- **Done when:** `test:webview` snaps to a corner view and pins the camera direction (±1e-6). Each preset maps one scripted gesture to the expected camera change.
+- **Done when:** `test:webview` clicks a corner region and pins the camera direction (±1e-6). Each preset maps one scripted gesture to the expected camera change.
 
 #### 2.40 Zebra stripes and a centre-of-mass marker {#zebra-stripes-and-centre-of-mass-marker}
 
