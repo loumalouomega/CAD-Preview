@@ -375,7 +375,7 @@ try {
   assert(capsText.length > 100, "resources/read cad-preview://capabilities returns JSON text");
 
   const tools = (await request("tools/list", {})).tools.map((t) => t.name);
-  assert(tools.length === 95, `tools/list exposes 93 tools (got ${tools.length}: ${tools.join(", ")})`);
+  assert(tools.length === 95, `tools/list exposes 95 tools (got ${tools.length}: ${tools.join(", ")})`);
   for (const t of ["check_draft", "check_printability", "list_workspace_models", "check_interference_all", "generate_bom", "generate_hole_table", "render_ops_prefix", "check_tolerance", "inspect_meshio_fields", "pin_annotation", "import_svg", "save_mesh_preset", "list_mesh_presets", "apply_mesh_preset", "compare_mesh_refinement", "export_tessellated_stl", "estimate_mesh_budget", "analyze_passages", "measure_mesh_deviation", "save_sheet_template", "list_sheet_templates", "batch_export", "check_handoff_manifest", "generate_prep_report", "job_status", "job_cancel", "check_brep_health", "list_scad_parameters", "convert_scad", "list_layers", "set_layer", "assign_layer", "segment_mesh_surface", "fit_mesh_to_cad", "mesh_cad_surface", "check_mesh_conformity", "find_mesh_intersections", "measure_mesh_thickness", "select_mesh_region", "analyze_surface_geometry", "mesh_adjacency", "register_meshes", "project_to_cad", "grow_prism_layers", "iga_sample", "iga_refine", "iga_evaluate", "check_mesh_quality", "set_configuration"]) {
     assert(tools.includes(t), `tools/list exposes ${t}`);
   }
@@ -2670,10 +2670,10 @@ try {
   assert(Math.abs(sphereAfter2.area - sphereBefore2.area) < 1e-6, "the Part is back on the sphere face after unsuppress");
 
   // Issue draft from a failure: a fillet on a nonexistent edge fails; the draft names it, redacts paths, attaches no bytes.
-  const issueDraftModel = path.join(dir, "bull-for-issue-draft-test.stp");
-  fs.copyFileSync(FIXTURE, issueDraftModel);
-  await call("apply_edit_ops", { path: issueDraftModel, ops: [{ op: "fillet", edges: ["edge-99999"], radius: 1 }] });
-  const draft = await call("diagnostics_report", { path: issueDraftModel });
+  const issueReportModel = path.join(dir, "bull-for-issue-draft-test.stp");
+  fs.copyFileSync(FIXTURE, issueReportModel);
+  await call("apply_edit_ops", { path: issueReportModel, ops: [{ op: "fillet", edges: ["edge-99999"], radius: 1 }] });
+  const draft = await call("diagnostics_report", { path: issueReportModel });
   assert(draft.opIndex === 0 && draft.opApplied === false, `diagnostics_report finds the failed op (got ${JSON.stringify([draft.opIndex, draft.opApplied])})`);
   assert(/fillet/.test(draft.title) && /edge-99999/.test(draft.body) && /CAD Preview \d/.test(draft.body), "the draft names the op, its parameters and the extension version");
   assert(!draft.body.includes(dir) && !draft.body.includes(os.homedir()), "the draft contains neither the working directory nor the home directory");
@@ -7090,23 +7090,23 @@ try {
   // assertion pins the HONEST SKIP: applied:false with the kernel-limitation
   // diagnostic, never a silent no-op, while a neighboring op still applies.
   // Own throwaway copy — the opsModel's solid/face counts feed later asserts.
-  const issueDraftModel = path.join(dir, "bull-for-draft.stp");
-  fs.copyFileSync(path.join(ROOT, "examples", "STP", "bull.stp"), issueDraftModel);
+  const draftModel = path.join(dir, "bull-for-draft.stp");
+  fs.copyFileSync(path.join(ROOT, "examples", "STP", "bull.stp"), draftModel);
   const draftBox = await call("apply_edit_ops", {
-    path: issueDraftModel,
+    path: draftModel,
     ops: [{ op: "addBox", center: [80, 80, 80], size: [10, 10, 10] }],
   });
   let dPos = null, dNeg = null;
   for (const fid of draftBox.model.solids[1].faceIds) {
-    const facts = await call("inspect", { path: issueDraftModel, entityId: fid });
+    const facts = await call("inspect", { path: draftModel, entityId: fid });
     if (facts.surfaceType !== "plane" || !facts.normal || Math.abs(Math.abs(facts.normal[0]) - 1) > 1e-6) continue;
     if (facts.planeOrigin[0] > 80) dPos = { id: fid, facts };
     else if (facts.planeOrigin[0] < 80) dNeg = { id: fid, facts };
   }
   assert(dPos && dNeg, `draft fixture: the box's ±x planar faces identified (${dPos?.id} / ${dNeg?.id})`);
-  const beforeDraft = await call("get_mass_properties", { path: issueDraftModel });
+  const beforeDraft = await call("get_mass_properties", { path: draftModel });
   const drafted = await call("apply_edit_ops", {
-    path: issueDraftModel,
+    path: draftModel,
     ops: [
       { op: "addBox", center: [100, 100, 100], size: [10, 10, 10] },
       { op: "draft", faces: [dPos.id], angleDeg: 5, planePoint: dNeg.facts.planeOrigin, planeNormal: dPos.facts.normal },
@@ -7118,7 +7118,7 @@ try {
     draftReport && draftReport.applied === false && /draft engine|BRepOffsetAPI_DraftAngle/i.test(draftReport.diagnostic ?? ""),
     `the draft diagnostic names the kernel limitation (got: ${JSON.stringify(draftReport?.diagnostic)})`
   );
-  const afterDraft = await call("get_mass_properties", { path: issueDraftModel });
+  const afterDraft = await call("get_mass_properties", { path: draftModel });
   assert(Math.abs(afterDraft.volume - beforeDraft.volume - 1000) < 1e-2, `only the neighbor box applied — the skipped draft adds exactly its 1000 units to adaptive-integration precision (Δ=${(afterDraft.volume - beforeDraft.volume).toFixed(9)})`);
 
   // Edge slot: slot the box's first edge (edge-98 — the box's edges follow
