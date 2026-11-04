@@ -32,6 +32,7 @@ import {
 import type { EntityType, PaneViewState } from "../protocol";
 import type { SelectedEntity } from "./selection";
 import type { UpAxis } from "../viewerDefaults";
+import { NAVIGATION_PRESETS, type MouseAction, type NavigationPreset } from "../navigationPresets";
 import { unionSelectionBounds, padBoxToMinSize } from "./selectionBounds";
 import { applyPreviewTint } from "./opPreviewBands";
 import { createRenderScheduler, type FrameTick } from "./renderScheduler";
@@ -454,6 +455,7 @@ export class Viewer {
     // autosave — see `onViewChanged`'s doc comment.
     for (const cb of this.viewChangeCallbacks) controls.addEventListener("change", cb);
     const pane: PaneState = { persp, ortho, active: persp, controls, orthoHalfHeight };
+    this.applyNavigationPreset(pane);
     this.applySpeedCompensation(pane, rect);
     return pane;
   }
@@ -745,12 +747,27 @@ export class Viewer {
    * Only ever *initial* state — the toolbar Grid toggle remains a per-session
    * runtime override on top of this, never persisted.
    */
-  applyDefaults(d: { background: string; showGridAndAxes: boolean; upAxis: UpAxis }): void {
+  applyDefaults(d: { background: string; showGridAndAxes: boolean; upAxis: UpAxis; navigationPreset?: NavigationPreset }): void {
+    this.navigationPreset = d.navigationPreset ?? "default";
+    for (const pane of this.panes) this.applyNavigationPreset(pane);
     this.scene.background = new THREE.Color(d.background);
     this.grid.visible = d.showGridAndAxes;
     this.axes.visible = d.showGridAndAxes;
     this.upAxis = d.upAxis;
     this.requestRender();
+  }
+
+  private navigationPreset: NavigationPreset = "default";
+
+  /** Maps the active preset's buttons onto one pane's `OrbitControls` (-1 = no action). */
+  private applyNavigationPreset(pane: PaneState): void {
+    const m = NAVIGATION_PRESETS[this.navigationPreset];
+    const act = (a: MouseAction): number => (a === "rotate" ? THREE.MOUSE.ROTATE : a === "dolly" ? THREE.MOUSE.DOLLY : a === "pan" ? THREE.MOUSE.PAN : -1);
+    (pane.controls as unknown as { mouseButtons: Record<string, number> }).mouseButtons = {
+      LEFT: act(m.left),
+      MIDDLE: act(m.middle),
+      RIGHT: act(m.right),
+    };
   }
 
   private clearModel(): void {

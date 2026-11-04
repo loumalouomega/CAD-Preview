@@ -12,7 +12,7 @@ describe("normalizeViewerDefaults", () => {
   });
 
   it("accepts a well-formed object unchanged", () => {
-    const opts = { background: "#000000", meshSizePreset: "fine" as const, showGridAndAxes: false, upAxis: "z" as const, singleKeyCommands: true };
+    const opts = { background: "#000000", meshSizePreset: "fine" as const, showGridAndAxes: false, upAxis: "z" as const, singleKeyCommands: true, navigationPreset: "fusion" as const };
     expect(normalizeViewerDefaults(opts)).toEqual(opts);
   });
 

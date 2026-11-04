@@ -441,11 +441,9 @@ These are outcome groupings, not release numbers. Independent small items can sh
 
 *Area: Interface. Effort: S–M.*
 
-- **Shipped (2026-11-04):** the orientation cube's 26 snapped views (faces, edges, corners), clickable axis arrow heads and **Look at face** in the context menu.
-- **Second increment (S):**
-  - **Navigation presets:** a `cadPreview.navigationPreset` setting with Default, Fusion (middle-drag pan, Shift+middle orbit), OpenSCAD and Touchpad (two-finger pan, pinch zoom). One mapping table drives every preset. SpaceMouse input is unaffected.
-  - Free orbit with roll stays off. The trackball is not proposed.
-- **Done when:** each preset maps one scripted gesture to the expected camera change.
+- **Shipped (2026-11-04):** the orientation cube's 26 snapped views (faces, edges, corners), clickable axis arrow heads, **Look at face** in the context menu, and `cadPreview.navigationPreset` with Default and Fusion (one table, `src/navigationPresets.ts`; `test:webview` drives real drags).
+- **What is left (S):** an **OpenSCAD** preset (its mapping is the same as Default, so it needs a reason to exist beyond a name) and a **Touchpad** preset (two-finger pan and pinch zoom arrive as wheel events, so it needs wheel-gesture handling and a real trackpad to verify). Free orbit with roll stays off; the trackball is not proposed.
+- **Done when:** the Touchpad preset maps a scripted two-finger scroll to a pan and a ctrl-wheel pinch to a zoom.
 
 #### 2.40 Zebra stripes and a centre-of-mass marker {#zebra-stripes-and-centre-of-mass-marker}
 

@@ -4375,6 +4375,7 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
       showGridAndAxes: cfg.get("showGridAndAxesOnOpen"),
       upAxis: cfg.get("upAxis"),
       singleKeyCommands: cfg.get("singleKeyCommands"),
+      navigationPreset: cfg.get("navigationPreset"),
     });
     post({ type: "viewerDefaults", ...defaults });
   }

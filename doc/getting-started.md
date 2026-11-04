@@ -40,6 +40,7 @@ CAD Preview contributes a few cross-document defaults under **CAD Preview** in V
 | `cadPreview.kernelTimeoutMinutes` | `5` | Watchdog for a single kernel job (load, mesh, export…): a job running longer is killed and the kernel worker respawned. Applies to newly opened documents |
 | `cadPreview.tessellationQuality` | `standard` | B-rep (STEP/IGES/BREP/CSG/SCAD) tessellation density — `draft`/`standard`/`fine`; `standard` is identical to every previous version's fixed behavior. Unlike the other settings here, re-read on every edit, so a change applies to the next edit without reopening the file. Face triangle density only — does not affect edge display or the FE Mesh panel's own (separate) mesh generation |
 | `cadPreview.upAxis` | `y` | Default up-axis for newly opened models — set to `z` for Z-up source conventions |
+| `cadPreview.navigationPreset` | `default` | Mouse navigation: `default` (left-drag orbits, middle-drag zooms, right-drag pans) or `fusion` (middle-drag pans, Shift+middle-drag orbits, the left button is free for selection). The wheel always zooms; applied when a viewer opens |
 | `cadPreview.singleKeyCommands` | `false` | Turns on the single-letter [command keys](#command-search-and-single-key-commands) (E Extrude, R Revolve, F Fillet, C Chamfer, H Hole, M Move, S Shell, P Linear Pattern, Q Measure mode) and Shift+R to repeat the last command. Off by default because single keys collide with typing habits; read when a viewer opens |
 
 ## Opening a File

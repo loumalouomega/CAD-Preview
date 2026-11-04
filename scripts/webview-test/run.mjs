@@ -5554,6 +5554,44 @@ test("parameters table: reorder is refused across a dependency, import reports t
   assert(sent.variables.map((v) => v.name).join() === "L,W,A,B,C,D" && sent.variables[5].favourite === true, "the stored order is unchanged and carries favourite");
 });
 
+test("navigation presets: Fusion pans on middle-drag and orbits on Shift+middle-drag; Default orbits on left-drag", async (page) => {
+  await populate(page);
+  await sleep(900); // let any settling animation finish
+  const box = await viewportBox(page);
+  const cx = box.x + box.width / 2, cy = box.y + box.height / 2;
+  // How many canvas pixels a drag changes (pointer parked afterwards, so hover tint is not counted).
+  const pixelsMoved = async (button, shift) => {
+    const before = await parkedShot(page);
+    if (shift) await page.keyboard.down("Shift");
+    await page.mouse.move(cx, cy);
+    await page.mouse.down({ button });
+    await page.mouse.move(cx + 120, cy + 60, { steps: 12 });
+    await page.mouse.up({ button });
+    if (shift) await page.keyboard.up("Shift");
+    await sleep(900); // damping settles
+    return canvasDiffCount(page, before, await parkedShot(page));
+  };
+  const defaults = (navigationPreset) => ({ type: "viewerDefaults", background: "#1e1e1e", meshSizePreset: "medium", showGridAndAxes: true, upAxis: "y", singleKeyCommands: false, navigationPreset });
+  // A real camera move changes >100k canvas pixels; hover-tint residue changes a few thousand at most.
+  const MOVED = 60000, STILL = 25000;
+  const base = await pixelsMoved("left", false);
+  assert(base > MOVED, `Default: a left-drag orbits (${base} pixels changed)`);
+  await post(page, defaults("fusion"));
+  await sleep(900);
+  const fusionLeft = await pixelsMoved("left", false);
+  assert(fusionLeft < STILL, `Fusion: a left-drag does not move the camera (${fusionLeft} pixels changed)`);
+  const fusionRight = await pixelsMoved("right", false);
+  assert(fusionRight < STILL, `Fusion: a right-drag does not move the camera (${fusionRight} pixels changed)`);
+  const fusionMiddle = await pixelsMoved("middle", false);
+  assert(fusionMiddle > MOVED, `Fusion: a middle-drag pans (${fusionMiddle} pixels changed)`);
+  const fusionOrbit = await pixelsMoved("middle", true);
+  assert(fusionOrbit > MOVED, `Fusion: Shift+middle-drag orbits (${fusionOrbit} pixels changed)`);
+  await post(page, defaults("default"));
+  await sleep(900);
+  const back = await pixelsMoved("left", false);
+  assert(back > MOVED, `Default again: the left-drag that did nothing under Fusion orbits (${back} pixels changed)`);
+});
+
 test("look at face: the context-menu entry fetches the face normal and turns the camera onto it", async (page) => {
   await populate(page);
   await enablePicking(page, "surface");

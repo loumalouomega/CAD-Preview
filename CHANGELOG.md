@@ -8,6 +8,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/); thi
 
 ### Added
 
+- **`cadPreview.navigationPreset`: a Fusion-style mouse mapping.** `fusion` makes middle-drag pan and Shift+middle-drag orbit, leaving the left button free for selection; `default` keeps today's mapping. One table (`navigationPresets.ts`) drives every pane. The OpenSCAD preset (identical to Default) and a Touchpad preset (two-finger pan and pinch zoom) remain on the roadmap.
 - **Look at face.** The right-click menu on a B-rep face turns the camera to view it head-on (the normal's sign follows the side the camera is already on); a curved face is refused by name.
 - **An operation form's Apply button stays in view.** The Apply row of every Edits form is pinned to the bottom of the scrolling Edits area, so a long form (sweep, loft, wrap) no longer pushes it out of reach. The collapsible form header and the docked placement remain on the roadmap.
 - **The orientation cube snaps to 26 views, and its axis arrows are clickable.** Edge strips and corner squares of the cube give the 12 edge and 8 corner view directions beside the 6 faces; clicking an axis arrow head looks along that axis. Pure `snapDirectionFromHit` in `orientationCube.ts`, covered by a 26-direction sweep. Look-at-selection and navigation presets remain on the roadmap.
