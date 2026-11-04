@@ -5537,6 +5537,22 @@ try {
       Math.abs(cadEval.normals[0] - 1) < 1e-9 && Math.abs(cadEval.normals[1]) < 1e-9 && Math.abs(cadEval.normals[2]) < 1e-9 && cadEval.inside?.[0] === 1,
     `iga_evaluate(face 0 @ uv 0.5,0.5): on the x=5 face with a unit +x normal, inside (got ${JSON.stringify({ p: cadEval.points, n: cadEval.normals, i: cadEval.inside })})`
   );
+  // meshio++ 18.3 `cadRead` on a STEP source: heal report + deflection control.
+  {
+    const bullStep = path.join(ROOT, "examples", "STP", "bull.stp");
+    const blockStep = path.join(ROOT, "examples", "STP", "block.stp");
+    const plain = await call("iga_sample", { path: blockStep });
+    assert(plain.heal === undefined, `iga_sample(block.stp) without cadRead carries no heal report (got ${JSON.stringify(plain.heal)})`);
+    const healed = await call("iga_sample", { path: blockStep, cadRead: { heal: true } });
+    assert(
+      healed.model?.faces === 6 && healed.heal?.healed === true && healed.heal?.freeEdgesBefore === 0 && healed.heal?.freeEdgesAfter === 0,
+      `iga_sample(block.stp, cadRead.heal): 6 faces, healed, no free edges (got ${JSON.stringify(healed.heal)})`
+    );
+    const sewn = await call("iga_sample", { path: bullStep, cadRead: { sewTolerance: 1e-3 } });
+    assert(sewn.heal?.healed === false && sewn.heal?.sewTolerance === 0.001, `iga_sample(bull.stp, sewTolerance): sewn at 1e-3 without heal (got ${JSON.stringify(sewn.heal)})`);
+    const ignored = await call("iga_sample", { path: cadJsonFile, cadRead: { heal: true } });
+    assert(ignored.heal === undefined && ignored.warnings?.some((w) => /cadRead applies to STEP\/IGES/.test(w)), `cadRead on a .cad.json is ignored with a warning (got ${JSON.stringify(ignored.warnings)})`);
+  }
   const cadRefinedPath = path.join(dir, "cube-refined.cad.json");
   const cadRefine = await call("iga_refine", { path: cadJsonFile, outputPath: cadRefinedPath, elevate: 1, subdivisions: 1 });
   assert(
