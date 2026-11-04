@@ -466,16 +466,12 @@ These are outcome groupings, not release numbers. Independent small items can sh
 
 *Area: Interface. Effort: S.*
 
-- **Today:** op forms open inline in the Edits panel, below the button grid. A long form (sweep, loft, wrap) scrolls its Apply button out of view. A collapsed panel loses the form's place.
-- **First increment (S):**
-  - **Sticky footer:** Apply, Cancel and the live-preview toggle are pinned outside the scrolling area.
+- **Shipped (2026-11-04):** the sticky Apply footer (`.compose-footer`, pinned inside `#edits-scroll`; `test:webview` pins it against an unpinned control).
+- **What is left (S):**
   - **Collapsible form header:** the header shows the op name and its intent tint, and collapsing it keeps every value.
-  - **Optional placement:** a setting docks forms as a right-hand overlay on the viewport, as in SolidCraft. The overlay has the same DOM and moves, never duplicates. It obeys the one-WebGL-context rule and never covers the orientation cube.
-- **Rules kept:**
-  - The preview is still cancelled on form switch, on selection change and before commit.
-  - Escape restores before it blurs.
-  - Every toggled element gets its `[hidden]` override.
-- **Done when:** `test:webview` asserts that Apply is visible (`offsetParent !== null`) on the longest form at the smallest supported height; collapsing and expanding keeps typed values; the docked placement passes the same cases.
+  - **Optional placement:** a setting docks forms as a right-hand overlay on the viewport, as in SolidCraft. Same DOM, moved never duplicated; obeys the one-WebGL-context rule and never covers the orientation cube.
+- **Rules kept:** the preview is still cancelled on form switch, on selection change and before commit; Escape restores before it blurs; every toggled element gets its `[hidden]` override.
+- **Done when:** collapsing and expanding keeps typed values, and the docked placement passes the same Apply-visibility case.
 
 #### 2.43 Issue draft from a failure {#issue-draft-from-a-failure}
 

@@ -3556,6 +3556,17 @@ input[type="range"].meshing-slider:focus {
   margin-top: 6px;
 }
 #edits-params:empty { margin-top: 0; }
+/* The form's Apply row is pinned to the bottom of the scrolling #edits-scroll,
+ * so the button never scrolls out of view on a long form. */
+#edits-params > .compose-footer {
+  position: sticky;
+  bottom: 0;
+  z-index: 2;
+  margin-bottom: 0;
+  padding: 4px 0;
+  background: var(--vscode-sideBar-background, var(--vscode-editor-background, #252526));
+  border-top: 1px solid var(--vscode-sideBar-border, rgba(128, 128, 128, 0.35));
+}
 
 /* ── Mode toggles and segmented tool rows inside the toolbar dropdowns ──
  *

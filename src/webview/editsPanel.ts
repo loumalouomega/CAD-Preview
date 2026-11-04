@@ -1705,8 +1705,11 @@ export class EditsPanel {
     // The form's Apply row, registered by `applyButtonDraft` during the
     // switch above — appended here, after every param row, so no form can
     // silently render without its commit button (see its doc comment).
-    if (this.pendingApplyRow) {
-      f.appendChild(this.pendingApplyRow);
+    const applyRow = this.pendingApplyRow as HTMLElement | null;
+    if (applyRow) {
+      // Sticky footer: a long form (sweep, loft, wrap) scrolls under it, Apply stays reachable.
+      applyRow.classList.add("compose-footer");
+      f.appendChild(applyRow);
       this.pendingApplyRow = null;
     }
     // A freshly-opened form previews immediately from its default field

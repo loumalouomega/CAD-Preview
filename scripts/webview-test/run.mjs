@@ -5554,6 +5554,46 @@ test("parameters table: reorder is refused across a dependency, import reports t
   assert(sent.variables.map((v) => v.name).join() === "L,W,A,B,C,D" && sent.variables[5].favourite === true, "the stored order is unchanged and carries favourite");
 });
 
+test("form ergonomics: the Apply row stays inside the scrolling Edits area on a long form at a short height", async (page) => {
+  await populate(page);
+  await page.setViewportSize({ width: 820, height: 640 });
+  // Give the Edits section the sidebar: the tree and Parts sections would otherwise take all of it.
+  await page.evaluate(() => { for (const id of ["tree-panel", "parts-panel"]) document.getElementById(id)?.classList.add("collapsed"); });
+  await sleep(300);
+  const names = ["Loft", "Sweep", "Wrap", "Extrude"];
+  let report = null;
+  for (const n of names) {
+    await page.evaluate((name) => [...document.querySelectorAll(".op-btn")].find((b) => b.querySelector(".op-name")?.textContent === name)?.click(), n);
+    await sleep(250);
+    report = await page.evaluate(() => {
+      const scroll = document.getElementById("edits-scroll");
+      const row = document.querySelector("#edits-params > .compose-footer");
+      if (!scroll || !row) return null;
+      // Scroll the form's top to the top of the area (how a user reaches a long form).
+      const top = document.getElementById("edits-params").getBoundingClientRect().top - scroll.getBoundingClientRect().top + scroll.scrollTop;
+      scroll.scrollTop = top;
+      const sr = scroll.getBoundingClientRect();
+      const rr = row.getBoundingClientRect();
+      return { name: document.querySelector(".op-btn.active .op-name")?.textContent ?? "?", formHeight: document.getElementById("edits-params").getBoundingClientRect().height, scrollHeight: sr.height, rowBottom: rr.bottom, scrollBottom: sr.bottom, shown: row.getClientRects().length > 0 };
+    });
+    if (report && report.formHeight > report.scrollHeight) break;
+    await page.evaluate((name) => [...document.querySelectorAll(".op-btn")].find((b) => b.querySelector(".op-name")?.textContent === name)?.click(), n); // collapse
+    await sleep(150);
+  }
+  assert(report !== null, "a form with an Apply footer was opened");
+  assert(report.formHeight > report.scrollHeight, `precondition: the form (${report.name}) is taller than the scroll area (${Math.round(report.formHeight)} vs ${Math.round(report.scrollHeight)})`);
+  assert(report.shown && report.rowBottom <= report.scrollBottom + 1, `the Apply row is pinned inside the scroll area while the form fills it (row bottom ${report.rowBottom}, area bottom ${report.scrollBottom})`);
+  // Control: without the sticky class the same row sits below the fold.
+  const unpinned = await page.evaluate(() => {
+    const row = document.querySelector("#edits-params > .compose-footer");
+    row.classList.remove("compose-footer");
+    const sc = document.getElementById("edits-scroll");
+    return row.getBoundingClientRect().bottom > sc.getBoundingClientRect().bottom;
+  });
+  assert(unpinned, "control: an unpinned Apply row is below the fold on the same form");
+  await page.setViewportSize({ width: 1280, height: 800 });
+});
+
 test("history rows: suppress toggles replay state, rename commits/cancels, delete warns about dependents", async (page) => {
   await populate(page);
   await post(page, {
