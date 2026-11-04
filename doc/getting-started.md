@@ -190,6 +190,10 @@ A full-width menu bar sits at the very top of the editor with a single **File �
 
 Every item is also a VS Code command (`CAD Preview: …` in the Command Palette). The keyboard shortcuts are scoped to a focused CAD Preview tab, so they don't override VS Code's global Open/Save elsewhere.
 
+### Reporting a problem
+
+**CAD Preview: Report Issue…** (Command Palette, with a CAD tab focused) opens a draft in a new editor tab: the first operation that did not apply (its kind, parameters and diagnostic), the file's name, and the extension, kernel-package, VS Code and OS versions. Absolute paths are replaced by file names and the model itself is never attached. Edit the draft freely; only if you click **Open on GitHub** in the prompt is a prefilled issue page opened in your browser. An agent gets the same text from the `diagnostics_report` MCP tool.
+
 ### What's New
 
 The first time you open a CAD file (or run any `CAD Preview: …` command) after an update, a **What's New** tab opens beside the editor summarizing everything that changed since the version you last had installed — just close it (or click **Got it**) and keep working. It won't show again until the next update. You can reopen it anytime via **CAD Preview: Show What's New** in the Command Palette, which shows the full changelog rather than only what's new since your last session.

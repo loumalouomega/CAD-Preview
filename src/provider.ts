@@ -103,6 +103,7 @@ import { isMeshSourceRoute, resolveMeshSourceInput } from "./meshSourceInput";
 import { runMeshSweep, validateSweepSizes, sweepOutputName, SWEEP_NOTE } from "./meshSweep";
 import { getNonce } from "./nonce";
 import { showLatestWhatsNew } from "./whatsNew";
+import { buildIssueDraft, issueUrl } from "./issueDraft";
 import { runCompareModelsCommand } from "./modelComparePanel";
 import { runBatchExportCommand } from "./batchExportCommand";
 import { runPrepReportCommand } from "./prepReportCommand";
@@ -124,6 +125,7 @@ import { evaluateVariables } from "./editVariables";
 import { effectiveVariables, validateConfigurationState, type Configuration, type ConfigurationState } from "./configurations";
 import { fetchThumbnail, ThumbCache } from "./standardPartsThumbs";
 import * as path from "path";
+import * as os from "os";
 
 /** Debounce window for autosaving the parts/edits/mesh-options sidecars after changes. */
 const PARTS_SAVE_DEBOUNCE_MS = 500;
@@ -237,6 +239,8 @@ interface EditorSession {
   savePreprocess(): void;
   /** Save the current 3D view as a PNG (save dialog). */
   screenshot(): void;
+  /** Assemble a redacted issue draft for the first failed op (or the whole model), open it for review. */
+  reportIssue(): void;
   /** Export a 2D outline (silhouette) of the model as an SVG drawing. */
   exportSvg(): void;
   /** Export a 2D outline (silhouette) of the model as a DXF drawing. */
@@ -542,6 +546,7 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
       vscode.commands.registerCommand("cad-preview.savePreprocess", withSession((s) => s.savePreprocess())),
       vscode.commands.registerCommand("cad-preview.loadPreprocess", () => void this.loadPreprocessDialog()),
       vscode.commands.registerCommand("cad-preview.whatsNew", () => void showLatestWhatsNew(this.context)),
+      vscode.commands.registerCommand("cad-preview.reportIssue", withSession((s) => s.reportIssue())),
       vscode.commands.registerCommand("cad-preview.screenshot", withSession((s) => s.screenshot())),
       vscode.commands.registerCommand("cad-preview.exportSvg", withSession((s) => s.exportSvg())),
       vscode.commands.registerCommand("cad-preview.exportDxf", withSession((s) => s.exportDxf())),
@@ -2210,6 +2215,9 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
       save: flushSidecars,
       savePreprocess: () => {
         void flushSidecars().then(() => this.handleSavePreprocess(document.uri, post));
+      },
+      reportIssue: () => {
+        void this.reportIssue(document.uri.fsPath, currentEdits, this.lastOpOutcomes.get(document.uri.toString()) ?? []);
       },
       screenshot: () => {
         void this.handleScreenshot(document.uri, post, pending);
@@ -3920,6 +3928,9 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
       });
     }
 
+    /** Latest replay outcomes per document (full-history indexed) — feeds "Report issue…". */
+    private readonly lastOpOutcomes = new Map<string, import("./editOps").OpOutcome[]>();
+
     private async handleBRep(
      uri: vscode.Uri,
      format: Extract<CadFormat, "step" | "iges" | "brep" | "csg" | "scad">,
@@ -3989,6 +4000,7 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
             ...opOutcomes.map((o) => ({ ...o, index: o.index + bakedThrough })),
           ]
         : opOutcomes;
+      this.lastOpOutcomes.set(uri.toString(), rebasedOutcomes);
       const rebasedBuckets = bakedThrough > 0 ? opBuckets.map((b) => ({ ...b, op: b.op + bakedThrough })) : opBuckets;
       post({
         type: "geometry",
@@ -5423,6 +5435,34 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
    * through the same `pending` map), minus the format `showQuickPick` — the
    * format is always PNG.
    */
+  /**
+   * "Report issue…": opens the redacted draft in an untitled editor tab for
+   * review, then — only on an explicit click — hands the prefilled URL to the
+   * browser. Nothing is sent automatically and model bytes are never attached.
+   */
+  private async reportIssue(modelPath: string, ops: EditOp[], outcomes: import("./editOps").OpOutcome[]): Promise<void> {
+    const failed = outcomes.find((o) => !o.applied && !o.suppressed);
+    const pkg = this.context.extension.packageJSON as { version?: string; dependencies?: Record<string, string>; repository?: { url?: string } };
+    const kernels: Record<string, string> = {};
+    for (const k of ["opencascade.js", "@loumalouomega/gmsh-wasm", "@meshioplusplus/wasm", "float-tetwild-wasm", "@loumalouomega/mmg-wasm", "@loumalouomega/openscad-wasm", "manifold-3d"]) {
+      if (pkg.dependencies?.[k]) kernels[k] = pkg.dependencies[k];
+    }
+    const draft = buildIssueDraft({
+      modelPath,
+      op: failed ? ops[failed.index] : undefined,
+      outcome: failed,
+      env: { extensionVersion: pkg.version ?? "unknown", vscodeVersion: vscode.version, platform: `${process.platform} ${process.arch}`, kernels },
+      scrub: [os.homedir(), path.dirname(modelPath), ...(vscode.workspace.workspaceFolders ?? []).map((f) => f.uri.fsPath)],
+    });
+    const doc = await vscode.workspace.openTextDocument({ language: "markdown", content: `# ${draft.title}\n\n${draft.body}\n` });
+    await vscode.window.showTextDocument(doc, { preview: false });
+    const pick = await vscode.window.showInformationMessage("Review the draft, then open it as a GitHub issue? Nothing is sent until you do.", "Open on GitHub");
+    if (pick === "Open on GitHub") {
+      const edited = doc.getText().replace(/^# .*\n\n/, "");
+      await vscode.env.openExternal(vscode.Uri.parse(issueUrl(pkg.repository?.url ?? "https://github.com/loumalouomega/CAD-Preview", { title: draft.title, body: edited })));
+    }
+  }
+
   private async handleScreenshot(
     uri: vscode.Uri,
     post: (msg: HostToWebview) => void,

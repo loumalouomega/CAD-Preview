@@ -18,6 +18,8 @@
 import * as fs from "fs/promises";
 import * as fsSync from "fs";
 import * as path from "path";
+import * as os from "os";
+import { buildIssueDraft } from "./issueDraft";
 import { createHash, randomUUID } from "node:crypto";
 import {
   validateEditOp,
@@ -4863,6 +4865,51 @@ export async function removeEditOp(ctx: ToolContext, params: { path: string; ind
     stackLength: newOps.length,
     warnings,
   };
+}
+
+/**
+ * `diagnostics_report` (roadmap "Issue draft from a failure"): the same redacted
+ * text the editor's "Report issue…" command assembles, for an agent to show its
+ * user. Never opens a URL, never attaches model bytes. With `opIndex` it names
+ * that op (and, on a B-rep source, the replay diagnostic for it); otherwise it
+ * uses the first op that failed to apply, if any.
+ */
+export async function diagnosticsReport(ctx: ToolContext, params: { path: string; opIndex?: number; error?: string }) {
+  const modelPath = params.path;
+  const route = requireRoute(modelPath);
+  const current = await readEditsResolved(modelPath);
+  let outcomes: OpOutcome[] = [];
+  const notes: string[] = [];
+  if (route.strategy === "occt" && current.ops.length > 0) {
+    try {
+      const src = await readOcctSource(ctx, modelPath, route, notes, { diagnostics: [], droppedCount: 0 });
+      if (src.ok) {
+        const r = await ctx.pipeline.loadBRep(ctx.extensionPath, src.bytes, src.format as BRepFormat, current.ops);
+        outcomes = r.opOutcomes.map((o) => ({ ...o, index: o.index + current.bakedThrough }));
+      }
+    } catch (err) {
+      notes.push(`Could not replay the op list for diagnostics: ${(err as Error).message}`);
+    }
+  }
+  let index = params.opIndex;
+  if (index !== undefined && (!Number.isInteger(index) || index < 0 || index >= current.fullOps.length)) {
+    throw new Error(`opIndex ${index} out of range — the op stack has ${current.fullOps.length} entries (0-based).`);
+  }
+  if (index === undefined) index = outcomes.find((o) => !o.applied && !o.suppressed)?.index;
+  const outcome = index === undefined ? undefined : outcomes.find((o) => o.index === index);
+  const pkg = JSON.parse(fsSync.readFileSync(path.join(ctx.extensionPath, "package.json"), "utf8")) as { version?: string; dependencies?: Record<string, string> };
+  const kernelNames = ["opencascade.js", "@loumalouomega/gmsh-wasm", "@meshioplusplus/wasm", "float-tetwild-wasm", "@loumalouomega/mmg-wasm", "@loumalouomega/openscad-wasm", "manifold-3d"];
+  const kernels: Record<string, string> = {};
+  for (const k of kernelNames) if (pkg.dependencies?.[k]) kernels[k] = pkg.dependencies[k];
+  const draft = buildIssueDraft({
+    modelPath,
+    op: index === undefined ? undefined : current.fullOps[index],
+    outcome,
+    error: params.error,
+    env: { extensionVersion: pkg.version ?? "unknown", platform: `${process.platform} ${process.arch}`, nodeVersion: process.version, kernels },
+    scrub: [os.homedir(), path.dirname(modelPath)],
+  });
+  return { title: draft.title, body: draft.body, opIndex: index ?? null, opApplied: outcome ? outcome.applied : null, notes };
 }
 
 /** Suppress/unsuppress and/or rename one op in place (roadmap "History timeline depth"). The op itself is never edited. */

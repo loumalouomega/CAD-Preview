@@ -484,14 +484,9 @@ These are outcome groupings, not release numbers. Independent small items can sh
 
 *Area: Platform. Effort: S.*
 
-- **Today:** a failed op shows a ⚠ history row with its diagnostic and hint, and a kernel crash shows a coded notification. Reporting either upstream means copying text by hand, and the versions that matter (extension, kernels, VS Code) are not in that text.
-- **First increment (S):**
-  - **Report issue…** appears on ⚠ rows, on kernel-crash notifications and in the File menu.
-  - It assembles a draft: the op kind and parameters, the `OpOutcome` diagnostic, the extension and kernel package versions, VS Code and the OS.
-  - The draft opens in an editor tab for review, then goes to a prefilled `issues/new` URL through `vscode.env.openExternal`.
-  - **Nothing is sent automatically.** Absolute paths are redacted to the file's basename. Model bytes are never attached; the draft says how to attach a file deliberately.
-- **Parity:** an MCP `diagnostics_report` tool returns the same text for an agent to show its user. It never opens a URL.
-- **Done when:** a unit test pins the redaction (no home path, no workspace path in the output); `test:integration` drives the command from a forced op failure and captures the URL through a stub.
+- **Shipped (2026-11-04):** the redacted draft (`src/issueDraft.ts`), the `CAD Preview: Report Issue…` command (draft in an untitled tab, then an explicit **Open on GitHub**) and the `diagnostics_report` MCP tool.
+- **What is left:** a **Report issue…** button on ⚠ history rows and a File-menu entry in the webview, and the same entry on kernel-crash notifications (they need the crash message routed into `buildIssueDraft`'s `error`).
+- **Done when:** a `test:integration` case drives the command from a forced op failure and captures the URL through a stub.
 
 #### 2.44 Welcome walkthrough and sample gallery {#welcome-walkthrough-and-samples}
 

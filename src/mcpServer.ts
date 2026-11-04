@@ -100,6 +100,7 @@ import {
   importSvgTool,
   runParametricScriptTool,
   removeEditOp,
+  diagnosticsReport,
   setEditOpState,
   runSavedScript,
   saveParametricScript,
@@ -1640,6 +1641,20 @@ server.registerTool(
     inputSchema: { path: modelPath, index: z.number().int().describe("0-based index into the op stack") },
   },
   wrap((args: { path: string; index: number }) => removeEditOp(ctx, args))
+);
+
+server.registerTool(
+  "diagnostics_report",
+  {
+    description:
+      "Assemble a redacted issue draft (title + markdown body) for a failing edit op: the op's kind and parameters, the replay diagnostic, and the extension/kernel/OS versions. Absolute paths are reduced to basenames; model bytes are never included and nothing is sent or opened — show the text to your user. Pass opIndex to name an op, or omit it to use the first op that did not apply.",
+    inputSchema: {
+      path: modelPath,
+      opIndex: z.number().int().optional().describe("0-based op index; default = the first op that failed to apply"),
+      error: z.string().optional().describe("Optional free-text error (e.g. a kernel crash message) to include, redacted"),
+    },
+  },
+  wrap((args: { path: string; opIndex?: number; error?: string }) => diagnosticsReport(ctx, args))
 );
 
 server.registerTool(

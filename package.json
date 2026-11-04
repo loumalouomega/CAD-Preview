@@ -217,6 +217,10 @@
         "title": "CAD Preview: Load Preprocess (.zip)…"
       },
       {
+        "command": "cad-preview.reportIssue",
+        "title": "CAD Preview: Report Issue…"
+      },
+      {
         "command": "cad-preview.whatsNew",
         "title": "CAD Preview: Show What's New"
       },
