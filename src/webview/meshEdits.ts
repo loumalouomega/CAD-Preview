@@ -95,6 +95,13 @@ export function applyEditsMesh(
   for (let index = 0; index < ops.length; index++) {
     const op = ops[index];
     const outcome: OpOutcome = { index, kind: op.op, applied: true };
+    if (op.suppressed) {
+      // Keep the id counters aligned so later `prim-K` / `pattern-K` ids don't shift.
+      if (op.op === "patternLinear" || op.op === "patternCircular") ctx.patternCount++;
+      else if (op.op.startsWith("add") && op.op !== "addHole" && op.op !== "addCounterboreHole" && op.op !== "addCountersinkHole") ctx.primCount++;
+      outcomes?.push({ index, kind: op.op, applied: false, suppressed: true, note: "suppressed" });
+      continue;
+    }
     // First `fail` call wins for this op.
     const fail: (diagnostic: string, hint?: string) => void = (diagnostic, hint) => {
       if (!outcome.applied) return;

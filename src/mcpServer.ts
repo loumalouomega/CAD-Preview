@@ -100,6 +100,7 @@ import {
   importSvgTool,
   runParametricScriptTool,
   removeEditOp,
+  setEditOpState,
   runSavedScript,
   saveParametricScript,
   setVariables,
@@ -1639,6 +1640,21 @@ server.registerTool(
     inputSchema: { path: modelPath, index: z.number().int().describe("0-based index into the op stack") },
   },
   wrap((args: { path: string; index: number }) => removeEditOp(ctx, args))
+);
+
+server.registerTool(
+  "set_edit_op_state",
+  {
+    description:
+      "Suppress/unsuppress and/or rename one op by 0-based index (the history row's eye and rename). A suppressed op stays in the stack but replay skips it (its opOutcome reads suppressed, not a failure); stored ops are never edited otherwise. Refused inside the baked prefix. Part ids are rebound best-effort like remove_edit_op.",
+    inputSchema: {
+      path: modelPath,
+      index: z.number().int().describe("0-based index into the op stack"),
+      suppressed: z.boolean().optional().describe("true to suppress, false to restore"),
+      label: z.string().nullable().optional().describe("Display name for the row; null or empty clears it"),
+    },
+  },
+  wrap((args: { path: string; index: number; suppressed?: boolean; label?: string | null }) => setEditOpState(ctx, args))
 );
 
 const libraryPath = z.string().describe("Absolute path to the script-library JSON file (you name it; it is created on first save)");

@@ -65,7 +65,7 @@ Existing implementation references were checked against the repository where not
 
 **Closed 2026-11-03 (Command search).** Extension, not a planning review: nothing was re-ranked. 2.34 shipped (Ctrl+K / `/` command search over every op, toolbar action and panel; opt-in `cadPreview.singleKeyCommands` letter keys with Shift+R to repeat the last command) and left this list; the 2.35 number is unchanged.
 
-**Closed 2026-11-03 (Configurations first increment).** Extension, not a planning review: nothing was re-ranked. 2.33 shipped its first increment: named configurations (sparse variable overrides plus `activeConfiguration`, additive in `.edits.json`), the Config Table under the Variables section, `set_configuration`, the `configuration` parameter on the export, meshing and mass tools, and a Batch Export mode (`configurations` / `allConfigurations`, and a Batch Export command prompt) that writes one file per configuration. 2.33 stays in the list for the one phase left, per-configuration feature suppression, which waits on 2.37.
+**Closed 2026-11-03 (Configurations first increment).** Extension, not a planning review: nothing was re-ranked. 2.33 shipped its first increment: named configurations (sparse variable overrides plus `activeConfiguration`, additive in `.edits.json`), the Config Table under the Variables section, `set_configuration`, the `configuration` parameter on the export, meshing and mass tools, and a Batch Export mode (`configurations` / `allConfigurations`, and a Batch Export command prompt) that writes one file per configuration. 2.33 stays in the list for the one phase left, per-configuration feature suppression, which is now unblocked (2.37 shipped the per-op suppressed state).
 
 **Closed 2026-11-03 (Ribbon command strip).** Extension, not a planning review: nothing was re-ranked. 2.35 shipped (a View · Model · Inspect · Mesh · Export ribbon under the menu bar, generated from the op catalog plus a small table of non-op actions, with an overflow ▸ menu, a compact preference, a persisted tab and the Edits panel's button grid behind a toggle) and left this list; the 2.36 number is unchanged, and the two-tone icon set is now the one item left in the Interface depth theme.
 
@@ -403,30 +403,20 @@ These are outcome groupings, not release numbers. Independent small items can sh
 *Area: Parity, Interface. Effort: S–M.*
 
 - **Shipped (2026-11-03):** named configurations of the document variables, the Config Table, `set_configuration`, the `configuration` parameter on the export and meshing tools, and one-file-per-configuration batch export. See [Configurations](./getting-started.md#configurations-design-table) and the [file format](./file-formats.md#configurations-design-table).
-- **What is left:** a configuration that also suppresses ops. It needs the suppressed state that [History timeline depth](#history-timeline-depth) (2.37) gives an op, then a per-configuration list of suppressed op indices overlaid at the same point as the variable overrides, so stored ops still never change.
+- **What is left:** a configuration that also suppresses ops. The per-op suppressed state now exists (shipped with History timeline depth); what remains is a per-configuration list of suppressed op indices overlaid at the same point as the variable overrides, so stored ops still never change.
 - **Out of scope:** configurations of Parts, mesh options or layers. Variables (and, in this phase, op suppression) are the only things a configuration changes.
 - **Done when:** a configuration that suppresses a fillet exports a model without it while the other configuration keeps it, from the table and through `set_configuration`, with `mcp:smoke` pinning both volumes.
 
 #### 2.37 History timeline depth {#history-timeline-depth}
 
-*Area: Interface, Parity. Effort: M.*
+*Area: Interface, Parity. Effort: S–M.*
 
-- **Today:** a history row can be jumped to (rows after the marker dim), deleted, and clicked to highlight the faces its op produced. There is no suppress, rename, folder or reorder. Deleting a row that later ops reference gives no warning, even though those references stop resolving.
-- **First increment (M):**
-  - **Suppress:** an additive `suppressed: true` on the stored op. Replay skips it, and its `OpOutcome` reads `applied: false` with a "suppressed" note.
-    - Suppressing or unsuppressing is a topology change, so it goes through `rebindPartsAcrossOps` exactly as a removal and re-insertion would.
-    - It is refused across the save point, like remove and undo.
-    - `remove_edit_op` stays the only way to delete an op.
-  - **Rename:** an additive `label` shown instead of `describeOp`'s text. The op `kind` is never touched.
-  - **Folders:** display-only groups stored as `{name, from, to}` index ranges beside the ops in `.edits.json`. Collapsing a folder hides its rows and changes nothing in replay.
-  - **Delete with dependents:** before a delete, list everything that would stop resolving: `pointRefs` and `planeId` users, stored `targetQueries`, and Parts whose ids the op produced.
+- **Shipped (2026-11-04):** suppress/unsuppress (`suppressed: true`, skipped by every replay fold, outcome `suppressed`), rename (`label`), delete with a dependents confirm, and `set_edit_op_state` (`get_state` reports both).
+- **What is left:**
+  - **Folders:** display-only `{name, from, to}` index ranges stored beside the ops in `.edits.json`; collapsing hides rows and changes nothing in replay.
   - **Hover highlight:** hovering a row tints the faces its op produced, reusing the click-highlight chip's bucket lookup.
-- **Later phase (S–M):** drag reorder, allowed only when the dependency check above finds no reference that crosses the move. It is rebound as a non-append change (one direct whole-shape match).
-- **Parity:** `set_edit_op_state {index, suppressed?, label?}`, and `get_state` reports both fields.
-- **Done when:**
-  - `test:integration` suppresses a fillet, sees the edge count change and a Part keep its faces, then unsuppresses back to an identical `opOutcomes` list;
-  - the dependents list names a `pointRefs` user;
-  - an old sidecar parses unchanged.
+  - **Drag reorder** (S–M): allowed only when the dependency check finds no reference crossing the move; rebound as a non-append change.
+- **Done when:** folders round-trip an old sidecar unchanged and collapse without changing `opOutcomes`; hover tints the bucket faces; a reorder across a `pointRefs` user is refused.
 
 #### 2.38 Unified Browser tree {#unified-browser-tree}
 

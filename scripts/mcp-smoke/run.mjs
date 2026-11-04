@@ -375,7 +375,7 @@ try {
   assert(capsText.length > 100, "resources/read cad-preview://capabilities returns JSON text");
 
   const tools = (await request("tools/list", {})).tools.map((t) => t.name);
-  assert(tools.length === 93, `tools/list exposes 93 tools (got ${tools.length}: ${tools.join(", ")})`);
+  assert(tools.length === 94, `tools/list exposes 93 tools (got ${tools.length}: ${tools.join(", ")})`);
   for (const t of ["check_draft", "check_printability", "list_workspace_models", "check_interference_all", "generate_bom", "generate_hole_table", "render_ops_prefix", "check_tolerance", "inspect_meshio_fields", "pin_annotation", "import_svg", "save_mesh_preset", "list_mesh_presets", "apply_mesh_preset", "compare_mesh_refinement", "export_tessellated_stl", "estimate_mesh_budget", "analyze_passages", "measure_mesh_deviation", "save_sheet_template", "list_sheet_templates", "batch_export", "check_handoff_manifest", "generate_prep_report", "job_status", "job_cancel", "check_brep_health", "list_scad_parameters", "convert_scad", "list_layers", "set_layer", "assign_layer", "segment_mesh_surface", "fit_mesh_to_cad", "mesh_cad_surface", "check_mesh_conformity", "find_mesh_intersections", "measure_mesh_thickness", "select_mesh_region", "analyze_surface_geometry", "mesh_adjacency", "register_meshes", "project_to_cad", "grow_prism_layers", "iga_sample", "iga_refine", "iga_evaluate", "check_mesh_quality", "set_configuration"]) {
     assert(tools.includes(t), `tools/list exposes ${t}`);
   }
@@ -2636,6 +2636,38 @@ try {
     removeState.edits.length === 1 && /addSphere/.test(JSON.stringify(removeState.edits[0])),
     `only the sphere op remains in the stack after removing the box (got: ${JSON.stringify(removeState.edits.map((e) => e.op))})`
   );
+
+  // History timeline depth: suppress/unsuppress. Own copy; box + sphere, Part on the sphere's face.
+  const suppressModel = path.join(dir, "bull-for-suppress-test.stp");
+  fs.copyFileSync(FIXTURE, suppressModel);
+  const suppressBase = await call("load_model", { path: suppressModel });
+  const suppressApplied = await call("apply_edit_ops", {
+    path: suppressModel,
+    ops: [
+      { op: "addBox", center: [bbox.max[0] + 3 * s, 0, 0], size: [s, s, s] },
+      { op: "addSphere", center: [bbox.max[0] + 6 * s, 0, 0], radius: s / 2 },
+    ],
+  });
+  const suppressSolidsFull = suppressApplied.model.solids.length;
+  assert(suppressSolidsFull === suppressBase.solids.length + 2, "box + sphere add two solids before suppression");
+  const sphereFace2 = suppressApplied.model.solids[suppressSolidsFull - 1].faceIds[0];
+  const sphereBefore2 = await call("inspect", { path: suppressModel, entityId: sphereFace2 });
+  await call("set_part", { path: suppressModel, name: "SuppressTest", surfaces: [sphereFace2] });
+  await call("set_edit_op_state", { path: suppressModel, index: 0, suppressed: true, label: "Skipped box" });
+  const suppressedState = await call("get_state", { path: suppressModel });
+  assert(suppressedState.edits[0].suppressed === true && suppressedState.edits[0].description === "Skipped box", "get_state reports suppressed + label");
+  const suppressedLoad = await call("load_model", { path: suppressModel });
+  assert(suppressedLoad.solids.length === suppressSolidsFull - 1, `a suppressed box drops one solid (got ${suppressedLoad.solids.length}, want ${suppressSolidsFull - 1})`);
+  assert(!JSON.stringify(suppressedLoad.warnings ?? []).includes("did NOT apply"), "a suppressed op raises no 'did NOT apply' warning");
+  const suppressedPart = suppressedState.parts.find((p) => p.name === "SuppressTest");
+  const sphereMid = await call("inspect", { path: suppressModel, entityId: suppressedPart.surfaces[0] });
+  assert(Math.abs(sphereMid.area - sphereBefore2.area) < 1e-6, "the Part still sits on the sphere face while the box is suppressed");
+  await call("set_edit_op_state", { path: suppressModel, index: 0, suppressed: false });
+  const unsuppressedLoad = await call("load_model", { path: suppressModel });
+  assert(unsuppressedLoad.solids.length === suppressSolidsFull, "unsuppressing restores the box solid");
+  const unsuppressedPart = (await call("get_state", { path: suppressModel })).parts.find((p) => p.name === "SuppressTest");
+  const sphereAfter2 = await call("inspect", { path: suppressModel, entityId: unsuppressedPart.surfaces[0] });
+  assert(Math.abs(sphereAfter2.area - sphereBefore2.area) < 1e-6, "the Part is back on the sphere face after unsuppress");
 
   // The pure-TRUNCATION path (remove_edit_op on the LAST index — structurally
   // identical to what an interactive "undo" does, since there's no separate

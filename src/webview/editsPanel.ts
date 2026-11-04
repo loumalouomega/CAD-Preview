@@ -128,6 +128,8 @@ export interface EditsPanelCallbacks {
   onClear: () => void;
   /** Remove a single op from anywhere in the history list (not just the last one). */
   onRemoveOp: (index: number) => void;
+  /** Suppress/unsuppress and/or rename the op at `index` (wired to `EditsModel.setState`). */
+  onSetOpState: (index: number, state: { suppressed?: boolean; label?: string | null }) => void;
   /** Jump the op stack straight to timeline position `index` in one splice
    * (op-history scrubbing): applied rows roll the
    * model back past them, pending-redo rows re-apply through them. Wired
@@ -762,7 +764,7 @@ export class EditsPanel {
         this.cb.onJumpTo(i);
       });
       const outcome = opts.outcome;
-      if (outcome && !outcome.applied) {
+      if (outcome && !outcome.applied && !outcome.suppressed) {
         li.classList.add("edit-row-skipped");
         li.title = `Did not apply — ${outcome.diagnostic ?? "no reason recorded"}${outcome.hint ? `\nHint: ${outcome.hint}` : ""}`;
       }
@@ -771,7 +773,40 @@ export class EditsPanel {
       idx.textContent = `${i + 1}.`;
       const label = document.createElement("span");
       label.className = "edit-label";
-      label.textContent = describeOp(op);
+      label.textContent = op.label ?? describeOp(op);
+      if (op.suppressed) {
+        li.classList.add("edit-row-suppressed");
+        label.title = "Suppressed — replay skips this op";
+      }
+      if (!opts.pending && !opts.baked) {
+        label.addEventListener("dblclick", (e) => {
+          e.stopPropagation();
+          const input = document.createElement("input");
+          input.type = "text";
+          input.className = "edit-rename";
+          input.value = op.label ?? "";
+          input.placeholder = describeOp(op);
+          let done = false;
+          const commit = (save: boolean): void => {
+            if (done) return;
+            done = true;
+            // Escape restores before blurring: the swap-back must not re-commit.
+            if (save) this.cb.onSetOpState(i, { label: input.value });
+            else input.replaceWith(label);
+          };
+          input.addEventListener("keydown", (ke) => {
+            if (ke.key === "Enter") { ke.preventDefault(); commit(true); }
+            else if (ke.key === "Escape") { ke.preventDefault(); commit(false); input.blur(); }
+            ke.stopPropagation();
+          });
+          input.addEventListener("blur", () => commit(true));
+          input.addEventListener("click", (ce) => ce.stopPropagation());
+          label.replaceWith(input);
+          input.focus();
+          input.select();
+        });
+        label.title = label.title || "Double-click to rename";
+      }
       li.appendChild(idx);
       li.appendChild(label);
       if (!opts.pending && this.externalFrom !== null && i >= this.externalFrom) {
@@ -791,6 +826,16 @@ export class EditsPanel {
       if (!opts.pending) {
         // No ✕ on baked rows — removal is refused, so offering it would lie.
         if (!opts.baked) {
+          const sup = document.createElement("button");
+          sup.className = "edit-suppress";
+          sup.textContent = op.suppressed ? "○" : "●";
+          sup.title = op.suppressed ? "Unsuppress this edit" : "Suppress this edit (keep it, skip it in replay)";
+          sup.setAttribute("aria-pressed", String(op.suppressed === true));
+          sup.addEventListener("click", (e) => {
+            e.stopPropagation();
+            this.cb.onSetOpState(i, { suppressed: !op.suppressed });
+          });
+          li.appendChild(sup);
           const del = document.createElement("button");
           del.className = "edit-remove";
           del.innerHTML = TOOLBAR_ICONS.close;
@@ -803,7 +848,7 @@ export class EditsPanel {
         }
         // A skipped op's warning marker sits between the label and the remove
         // button so it can't be mistaken for a row-level action.
-        if (outcome && !outcome.applied) {
+        if (outcome && !outcome.applied && !outcome.suppressed) {
           const warn = document.createElement("span");
           warn.className = "edit-skip-warning";
           warn.textContent = "⚠";

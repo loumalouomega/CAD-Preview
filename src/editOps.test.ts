@@ -473,6 +473,14 @@ describe("validateEditOp", () => {
       .toEqual({ op: "addVolumeFromSurfaces", faces: ["face-0", "face-1", "face-2", "face-3"] });
   });
 
+  it("keeps suppressed only when true and trims/caps label; old ops stay byte-stable", () => {
+    const base = { op: "addPoint", position: [1, 2, 3] };
+    expect(validateEditOp({ ...base, suppressed: true, label: "  Anchor  " })).toEqual({ ...base, suppressed: true, label: "Anchor" });
+    expect(validateEditOp({ ...base, suppressed: false, label: "  " })).toEqual(base);
+    expect(validateEditOp({ ...base, suppressed: "yes", label: 5 })).toEqual(base);
+    expect(validateEditOp({ ...base, label: "x".repeat(500) })!.label).toHaveLength(80);
+  });
+
   it("keeps a valid addPoint coincident choice and drops an unknown one", () => {
     expect(validateEditOp({ op: "addPoint", position: [1, 2, 3], coincident: "reuse" }))
       .toEqual({ op: "addPoint", position: [1, 2, 3], coincident: "reuse" });

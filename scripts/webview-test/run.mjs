@@ -5554,6 +5554,40 @@ test("parameters table: reorder is refused across a dependency, import reports t
   assert(sent.variables.map((v) => v.name).join() === "L,W,A,B,C,D" && sent.variables[5].favourite === true, "the stored order is unchanged and carries favourite");
 });
 
+test("history rows: suppress toggles replay state, rename commits/cancels, delete warns about dependents", async (page) => {
+  await populate(page);
+  await post(page, {
+    type: "edits",
+    ops: [{ op: "addBox", center: [0, 0, 0], size: [4, 5, 6] }, { op: "addSphere", center: [9, 0, 0], radius: 2 }],
+    variables: [],
+  });
+  await sleep(300);
+  const visible = (sel) => page.evaluate((q) => { const e = document.querySelector(q); return !!e && e.getClientRects().length > 0; }, sel);
+  assert(await visible('.edit-row[data-op-index="1"] .edit-suppress'), "the suppress button renders on an unbaked row");
+  await page.evaluate(() => document.querySelector('.edit-row[data-op-index="1"] .edit-suppress').click());
+  await sleep(300);
+  let sent = (await sentOf(page, "editsChanged")).pop();
+  assert(sent.ops[1].suppressed === true && sent.ops[0].suppressed === undefined, `suppress posts suppressed:true on that op only (got ${JSON.stringify(sent.ops)})`);
+  assert(await page.evaluate(() => document.querySelector('.edit-row[data-op-index="1"]').classList.contains("edit-row-suppressed") && !document.querySelector('.edit-row[data-op-index="1"]').classList.contains("edit-row-skipped")), "a suppressed row is struck through, not shown as a failure");
+  await page.evaluate(() => document.querySelector('.edit-row[data-op-index="1"] .edit-suppress').click());
+  await sleep(300);
+  sent = (await sentOf(page, "editsChanged")).pop();
+  assert(sent.ops[1].suppressed === undefined, "unsuppress removes the flag again");
+  // Rename: Escape cancels, Enter commits.
+  const dbl = () => page.evaluate(() => document.querySelector('.edit-row[data-op-index="0"] .edit-label').dispatchEvent(new MouseEvent("dblclick", { bubbles: true })));
+  await dbl();
+  await page.evaluate(() => { const i = document.querySelector(".edit-rename"); i.value = "Nope"; i.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); });
+  await sleep(200);
+  sent = (await sentOf(page, "editsChanged")).pop();
+  assert(sent.ops[0].label === undefined, "Escape cancels the rename");
+  await dbl();
+  await page.evaluate(() => { const i = document.querySelector(".edit-rename"); i.value = "Base block"; i.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true })); });
+  await sleep(300);
+  sent = (await sentOf(page, "editsChanged")).pop();
+  assert(sent.ops[0].label === "Base block", `Enter commits the label (got ${sent.ops[0].label})`);
+  assert(await page.evaluate(() => document.querySelector('.edit-row[data-op-index="0"] .edit-label').textContent === "Base block"), "the row shows the label");
+});
+
 test("parameters table: promoting a model parameter makes the op follow the variable", async (page) => {
   await populate(page);
   await post(page, { type: "edits", ops: [{ op: "addBox", center: [0, 0, 0], size: [4, 5, 6] }], variables: [] });

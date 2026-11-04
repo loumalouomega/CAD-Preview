@@ -1,4 +1,4 @@
-import type { EditOp } from "../editOps";
+import { MAX_OP_LABEL, type EditOp } from "../editOps";
 
 /**
  * In-webview op-stack for the replayable edit list. Pure data + operations (no
@@ -132,6 +132,28 @@ export class EditsModel {
   replaceAt(index: number, op: EditOp): boolean {
     if (index < this.bakedThrough || index < 0 || index >= this.ops.length) return false;
     this.ops[index] = clone(op);
+    this.redoBuffer = [];
+    this.onChange();
+    return true;
+  }
+
+  /**
+   * Suppress/unsuppress and/or relabel the op at `index` (roadmap "History
+   * timeline depth"). `label: null` clears it. Refused inside the save point;
+   * a call that changes nothing is a no-op with no `onChange`.
+   */
+  setState(index: number, state: { suppressed?: boolean; label?: string | null }): boolean {
+    if (index < this.bakedThrough || index < 0 || index >= this.ops.length) return false;
+    const next = clone(this.ops[index]);
+    if (state.suppressed === true) next.suppressed = true;
+    else if (state.suppressed === false) delete next.suppressed;
+    if (state.label !== undefined) {
+      const t = (state.label ?? "").trim().slice(0, MAX_OP_LABEL);
+      if (t) next.label = t;
+      else delete next.label;
+    }
+    if (JSON.stringify(next) === JSON.stringify(this.ops[index])) return false;
+    this.ops[index] = next;
     this.redoBuffer = [];
     this.onChange();
     return true;

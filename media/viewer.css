@@ -3225,6 +3225,15 @@ input[type="range"].meshing-slider:focus {
  * the row dims and carries a ⚠ marker whose tooltip holds the diagnostic +
  * hint. Warning color matches the editor theme's error/warning foreground. */
 .edit-row-skipped .edit-label { opacity: 0.45; }
+/* Suppressed (replay skips it): struck through, not a warning. */
+.edit-row-suppressed .edit-label { opacity: 0.45; text-decoration: line-through; }
+.edit-suppress {
+  flex-shrink: 0; font: inherit; font-size: var(--ui-fs-label); line-height: 1;
+  width: 16px; height: 16px; padding: 0; border: none; border-radius: var(--ui-r-xs);
+  color: var(--vscode-foreground, #ccc); background: transparent; cursor: pointer; opacity: 0.5;
+}
+.edit-suppress:hover { opacity: 1; background: var(--vscode-toolbar-hoverBackground, rgba(255,255,255,0.1)); }
+.edit-rename { flex: 1; min-width: 0; font: inherit; font-size: var(--ui-fs-sm); }
 
 /* Tier 0 Phase 2 — rows saved into the source file itself: dimmed with a 🔒
  * marker (no ✕ remove button — removal is refused, so offering it would lie).

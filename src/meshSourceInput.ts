@@ -89,7 +89,7 @@ export async function bakeMeshSourceEdits(
 
 /** Factual warning lines for a bake: how many ops applied, which skipped, and why. */
 export function bakeWarnings(outcomes: OpOutcome[], messages: string[], total: number): string[] {
-  const skipped = outcomes.filter((o) => !o.applied);
+  const skipped = outcomes.filter((o) => !o.applied && !o.suppressed);
   const out = [`Baked ${total - skipped.length} of ${total} pending mesh edit op(s) headlessly (the same engine the viewer replays with).`];
   for (const o of skipped) {
     out.push(`Edit op #${o.index + 1} (${o.kind}) was skipped — ${o.diagnostic ?? "it did not apply"}.${o.hint ? ` Hint: ${o.hint}` : ""}`);
