@@ -6,6 +6,14 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/); thi
 
 ## [Unreleased]
 
+### Added
+
+- **meshio++ 18.3.0: `cadRead` on the `iga_sample` / `iga_refine` / `iga_evaluate` STEP/IGES reads.** A new optional `cadRead {deflection, angularDeflection, heal, sewTolerance}` sets how meshio++ reads a STEP/IGES source before the NURBS side channel is taken: the triangulation deflection (a length / radians; 0 or less is automatic), and `heal: true` (`ShapeFix_Shape`, then sewing) or a positive `sewTolerance` (sews without healing). When set, each response carries a `heal` report (`healed`, `fixed`, `sewTolerance`, `freeEdgesBefore/After`, `multipleEdges`, `degenerated`) — facts only. The argument is passed to meshio++ only when set, so a default call is byte-identical to 18.1, and it is ignored with a warning for `.cad.json`. Probe: `scripts/probe/examples/meshio-1830-cadread.ts` (`block.stp` heals with 0 free edges; `bull.stp` at deflection 5 / 1 rad reads 1 248 triangles against 3 180 by default); `mcp:smoke` pins the heal and sew reports.
+
+### Changed
+
+- **`@meshioplusplus/wasm` upgraded from 18.1.0 to 18.3.0** (18.2 was never published). The other 18.3 additions are not adopted because the WebAssembly artifacts cannot run them: `cutLevelSet` / `cutQuadrature` (CutCells is linked into neither artifact; `hasCutcells()` is false) and `remeshQuads` (needs an installed QuadriFlow / Instant Meshes process and always throws in WebAssembly). `tetrahedralize`'s `backend` change is documentation only.
+
 ## [3.36.1] - 2026-11-04
 
 ### Added
