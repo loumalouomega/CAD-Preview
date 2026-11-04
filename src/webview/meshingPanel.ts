@@ -20,6 +20,24 @@ import {
 } from "./meshSizeHeuristics";
 
 /** The displayed model's bounding-box dimensions, from `Viewer.getModelExtents()`. */
+/** The meshio++ 18.1 operations whose parameters come from `buildExtraSpec`. */
+const MESHIO_18_1_OPS: ReadonlySet<MeshioOpId> = new Set<MeshioOpId>([
+  "untangle", "prepareMetric", "morph", "convexHull", "delaunay2d", "convertCoordinates",
+  "estimateNormals", "reconstructSurface", "geodesicDistance", "parameterize", "laplacianEigenmodes",
+]);
+
+/** Which `meshOpsExtra` rows each operation shows. */
+const OPS_EXTRA_FIELDS: Partial<Record<MeshioOpId, string[]>> = {
+  prepareMetric: ["arrays", "targetVertices", "hmin", "hmax"],
+  morph: ["arrays"],
+  convexHull: ["dimension"],
+  convertCoordinates: ["system", "axis", "arrays"],
+  estimateNormals: ["neighbours", "orientation"],
+  reconstructSurface: ["k", "cellSize", "maxDistance"],
+  geodesicDistance: ["sources"],
+  laplacianEigenmodes: ["numModes"],
+};
+
 export interface ModelExtents {
   size: [number, number, number];
   diagonal: number;
@@ -242,6 +260,8 @@ export class MeshingPanel {
   private readonly meshOpsHausd: HTMLInputElement;
   private readonly meshOpsLevelSet: HTMLInputElement;
   private readonly meshOpsIsovalue: HTMLInputElement;
+  /** meshio++ 18.1 parameter rows, keyed by the spec field they fill (see `OPS_EXTRA_FIELDS`). */
+  private readonly meshOpsExtra: Record<string, HTMLInputElement | HTMLSelectElement> = {};
   private readonly meshOpsRun: HTMLButtonElement;
   private readonly meshOpsStatus: HTMLElement;
 
@@ -1047,6 +1067,34 @@ export class MeshingPanel {
     this.meshOpsLevelSet = this.textField(opsForm, "Level set", "");
     this.meshOpsLevelSet.title = "Name of the point-data array holding the level set";
     this.meshOpsIsovalue = this.numberField(opsForm, "Isovalue", 0);
+    const extra = this.meshOpsExtra;
+    extra.arrays = this.textField(opsForm, "Array(s)", "");
+    extra.arrays.title = "Point-data array name(s), comma-separated. Metric: 6-component arrays; Morph: the 3-component displacement; Components: vector/tensor arrays to rewrite (optional)";
+    extra.sources = this.textField(opsForm, "Source points", "0");
+    extra.sources.title = "Geodesic distance: comma-separated 0-based point ids";
+    extra.neighbours = this.numberField(opsForm, "Neighbours", 0);
+    extra.neighbours.title = "Normals: points in each fitted neighbourhood (0 = default)";
+    extra.k = this.numberField(opsForm, "k", 0);
+    extra.k.title = "Reconstruct: nearest tangent planes blended per lattice node (0 = default; 1 is Hoppe's field)";
+    extra.cellSize = this.numberField(opsForm, "Cell size", 0);
+    extra.cellSize.title = "Reconstruct: lattice cell size in source units (0 = automatic)";
+    extra.maxDistance = this.numberField(opsForm, "Reach", 0);
+    extra.maxDistance.title = "Reconstruct: lattice nodes farther than this from a sample are undefined, which keeps an open scan open (0 = automatic)";
+    extra.numModes = this.numberField(opsForm, "Modes", 6);
+    extra.numModes.title = "Eigenmodes: how many of the lowest modes to compute";
+    extra.numModes.step = "1";
+    extra.targetVertices = this.numberField(opsForm, "Target points", 0);
+    extra.targetVertices.title = "Metric: normalise the metric to about this many vertices (0 = keep its scale)";
+    extra.targetVertices.step = "1";
+    extra.hmin = this.numberField(opsForm, "Min size", 0);
+    extra.hmin.title = "Metric: smallest edge length, source units (0 = none)";
+    extra.hmax = this.numberField(opsForm, "Max size", 0);
+    extra.hmax.title = "Metric: largest edge length, source units (0 = none)";
+    extra.system = this.select(opsForm, "System", [["cylindrical", "cylindrical (r, θ, z)"], ["spherical", "spherical (r, θ, φ)"]]);
+    extra.axis = this.textField(opsForm, "Axis", "0,0,1");
+    extra.axis.title = "Components: the symmetry axis, three comma-separated numbers";
+    extra.orientation = this.select(opsForm, "Orientation", [["consistent", "consistent (spanning tree)"], ["none", "none"]]);
+    extra.dimension = this.select(opsForm, "Hull in", [["0", "decide from the points"], ["3", "3-D"], ["2", "2-D (x, y)"]]);
     const opsRunRow = document.createElement("div");
     opsRunRow.className = "meshing-field";
     this.meshOpsRun = document.createElement("button");
@@ -1093,6 +1141,12 @@ export class MeshingPanel {
         }
         spec.levelSet = name;
         spec.isovalue = Number(this.meshOpsIsovalue.value) || 0;
+      } else if (MESHIO_18_1_OPS.has(op)) {
+        const problem = this.buildExtraSpec(op, spec);
+        if (problem) {
+          this.renderMeshOpsStatus(problem, true);
+          return;
+        }
       }
       this.renderMeshOpsStatus("Running…", false);
       this.meshOpsRun.disabled = true;
@@ -1584,6 +1638,89 @@ export class MeshingPanel {
     this.renderRemeshStatus(text, error);
   }
 
+  /**
+   * Fills `spec` from the meshio++ 18.1 parameter rows. Returns a message when the form is
+   * unusable (a required name left empty, a malformed list), else `null`; a 0 in an
+   * "automatic" number row means the option is left out and the kernel decides.
+   */
+  private buildExtraSpec(op: MeshioOpId, spec: MeshioOpSpec): string | null {
+    const e = this.meshOpsExtra;
+    const text = (key: string): string => (e[key] as HTMLInputElement).value.trim();
+    const positive = (key: string): number | undefined => {
+      const v = Number(text(key));
+      return Number.isFinite(v) && v > 0 ? v : undefined;
+    };
+    const list = (key: string): string[] => text(key).split(",").map((x) => x.trim()).filter((x) => x.length > 0);
+    const numbers = (key: string, count: number): number[] | null => {
+      const parts = list(key).map(Number);
+      return parts.length === count && parts.every(Number.isFinite) ? parts : null;
+    };
+    switch (op) {
+      case "untangle":
+        spec.iterations = Math.max(1, Math.floor(Number(this.meshOpsIterations.value) || 100));
+        break;
+      case "prepareMetric": {
+        const arrays = list("arrays");
+        if (arrays.length === 0) return "Enter the name(s) of the 6-component metric point-data array(s).";
+        spec.arrays = arrays;
+        const target = positive("targetVertices");
+        if (target !== undefined) spec.targetVertices = Math.floor(target);
+        const hmin = positive("hmin");
+        if (hmin !== undefined) spec.hmin = hmin;
+        const hmax = positive("hmax");
+        if (hmax !== undefined) spec.hmax = hmax;
+        break;
+      }
+      case "morph": {
+        const name = list("arrays")[0];
+        if (!name) return "Enter the name of the 3-component displacement point-data array.";
+        spec.array = name;
+        break;
+      }
+      case "convexHull":
+        spec.dimension = Number(text("dimension"));
+        break;
+      case "convertCoordinates": {
+        spec.system = text("system");
+        const axis = numbers("axis", 3);
+        if (!axis || axis.every((x) => x === 0)) return "The axis needs three numbers, not all zero (for example 0,0,1).";
+        spec.axis = axis;
+        const arrays = list("arrays");
+        if (arrays.length > 0) spec.arrays = arrays;
+        break;
+      }
+      case "estimateNormals": {
+        spec.orientation = text("orientation");
+        const n = positive("neighbours");
+        if (n !== undefined) spec.neighbours = Math.max(2, Math.floor(n));
+        break;
+      }
+      case "reconstructSurface": {
+        const k = positive("k");
+        if (k !== undefined) spec.k = Math.floor(k);
+        const cell = positive("cellSize");
+        if (cell !== undefined) spec.cellSize = cell;
+        const reach = positive("maxDistance");
+        if (reach !== undefined) spec.maxDistance = reach;
+        break;
+      }
+      case "geodesicDistance": {
+        const ids = list("sources").map(Number);
+        if (ids.length === 0 || !ids.every((x) => Number.isInteger(x) && x >= 0)) return "Enter one or more source point ids (0-based integers, comma-separated).";
+        spec.sources = ids;
+        break;
+      }
+      case "laplacianEigenmodes": {
+        const modes = positive("numModes");
+        if (modes !== undefined) spec.numModes = Math.floor(modes);
+        break;
+      }
+      default:
+        break;
+    }
+    return null;
+  }
+
   /** Shows only the parameter rows the selected operation actually reads. */
   private syncMeshOpsParams(): void {
     const op = this.meshOpsSelect.value as MeshioOpId;
@@ -1592,7 +1729,7 @@ export class MeshingPanel {
     };
     show(this.meshOpsRatio, op === "decimate");
     show(this.meshOpsMethod, op === "smooth");
-    show(this.meshOpsIterations, op === "smooth" || op === "optimizeVolume");
+    show(this.meshOpsIterations, op === "smooth" || op === "optimizeVolume" || op === "untangle");
     show(this.meshOpsLevels, op === "refine");
     show(this.meshOpsTargetGroupSize, op === "agglomerate");
     show(this.meshOpsMode, op === "convertCells");
@@ -1601,6 +1738,7 @@ export class MeshingPanel {
     show(this.meshOpsHausd, op === "adapt");
     show(this.meshOpsLevelSet, op === "discretizeLevelset");
     show(this.meshOpsIsovalue, op === "discretizeLevelset");
+    for (const [key, el] of Object.entries(this.meshOpsExtra)) show(el, (OPS_EXTRA_FIELDS[op] ?? []).includes(key));
   }
 
   /**

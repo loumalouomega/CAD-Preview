@@ -504,30 +504,8 @@ export async function readMeshioDataInfo(
   }
 }
 
-/** One declarative step in a {@link runMeshioOps} pipeline. */
-export interface MeshioOpSpec {
-  op: "clean" | "decimate" | "smooth" | "subdivide" | "refine" | "agglomerate" | "convertCells" | "tetToPoly" | "polyToTet" | "optimizeVolume" | "adapt" | "discretizeLevelset";
-  /** `decimate`: fraction of faces to KEEP, in (0, 1]. */
-  ratio?: number;
-  /** `smooth`/`refine`: iteration / subdivision count. */
-  iterations?: number;
-  levels?: number;
-  /** `smooth`: `"taubin"` (default, shrink-free) or `"laplacian"`. */
-  method?: string;
-  /** `convertCells`: `"linearize" | "simplexify" | "elevate"`. */
-  mode?: string;
-  /** `agglomerate`: target cells per group. */
-  targetGroupSize?: number;
-  /** `optimizeVolume`: `"worst"` (default) | `"energy"`; `maxRingSize` caps the removal rings. */
-  objective?: string;
-  maxRingSize?: number;
-  /** `adapt`: constant target edge size and Hausdorff bound. */
-  hsiz?: number;
-  hausd?: number;
-  /** `discretizeLevelset`: point-data array name and isovalue. */
-  levelSet?: string;
-  isovalue?: number;
-}
+/** One declarative step in a {@link runMeshioOps} pipeline (the shared, WASM-free vocabulary in `meshioOps.ts`). */
+export type MeshioOpSpec = import("./meshioOps").MeshioOpSpec;
 
 export interface MeshioOpsResult {
   bytes: Uint8Array;
@@ -756,6 +734,106 @@ export async function runMeshioOps(
             mesh = r.mesh;
             steps.push({ op: spec.op, applied: true, detail: `${r.report.library}: ${r.report.numElementsIn} → ${r.report.numElementsOut} elements at ${spec.levelSet} = ${spec.isovalue ?? 0}` });
             for (const w of r.report.warnings) warnings.push(`discretizeLevelset: ${w}`);
+            break;
+          }
+          case "untangle": {
+            const o: Record<string, unknown> = {};
+            if (spec.fixBoundary !== undefined) o.fixBoundary = spec.fixBoundary;
+            if (spec.iterations !== undefined) o.maxSweeps = spec.iterations;
+            const r = m.untangle(mesh, o);
+            mesh = r.mesh;
+            steps.push({
+              op: spec.op, applied: true,
+              detail: `inverted cells ${r.numInvertedBefore} → ${r.numInvertedAfter}, min quality ${Number(r.minQualityBefore).toFixed(3)} → ${Number(r.minQualityAfter).toFixed(3)} (${r.sweeps} sweep(s), ${r.moves} move(s))`,
+            });
+            if (r.numInvertedAfter > 0) warnings.push(`untangle: ${r.numInvertedAfter} inverted cell(s) remain.`);
+            break;
+          }
+          case "prepareMetric": {
+            if (!spec.arrays?.length) throw new Error("prepareMetric needs the names of the metric point-data arrays (arrays)");
+            const o: Record<string, unknown> = { arrays: spec.arrays };
+            for (const key of ["output", "targetVertices", "hmin", "hmax", "gradation"] as const) if (spec[key] !== undefined) o[key] = spec[key];
+            const r = m.prepareMetric(mesh, o);
+            mesh = r.mesh;
+            steps.push({ op: spec.op, applied: true, detail: `metric "${spec.output ?? "metric"}": complexity ${Number(r.complexityBefore).toPrecision(5)} → ${Number(r.complexityAfter).toPrecision(5)}, ${r.numGraded} graded in ${r.sweeps} sweep(s)` });
+            break;
+          }
+          case "morph": {
+            if (!spec.array) throw new Error("morph needs the name of the point-data displacement array (array)");
+            const o: Record<string, unknown> = { array: spec.array };
+            for (const key of ["fixBoundary", "steps", "stiffening", "allowInverted"] as const) if (spec[key] !== undefined) o[key] = spec[key];
+            const r = m.morph(mesh, o);
+            mesh = r.mesh;
+            steps.push({ op: spec.op, applied: true, detail: `${r.numConstrained} constrained / ${r.numFree} free points, max displacement ${Number(r.maxDisplacement).toPrecision(4)}, ${r.numInverted} inverted cell(s), ${r.iterations} iteration(s)${r.converged ? "" : " (not converged)"}` });
+            if (!r.converged) warnings.push("morph: the interior solve did not converge.");
+            break;
+          }
+          case "convexHull": {
+            const r = m.convexHull(mesh, spec.dimension === undefined ? undefined : { dimension: spec.dimension });
+            mesh = r.mesh;
+            steps.push({ op: spec.op, applied: true, detail: `${r.dimension}-D hull: ${r.numVertices} vertices, ${r.numFacets} facets, ${r.dimension === 3 ? `area ${Number(r.area).toPrecision(6)}, volume ${Number(r.volume).toPrecision(6)}` : `area ${Number(r.area).toPrecision(6)}, perimeter ${Number(r.perimeter).toPrecision(6)}`}` });
+            break;
+          }
+          case "delaunay2d": {
+            const r = m.delaunay2d(mesh);
+            mesh = r.mesh;
+            steps.push({ op: spec.op, applied: true, detail: `${r.numTriangles} triangles, ${r.numBoundary} boundary points, ${r.numDuplicates} duplicate point(s) left out` });
+            if (r.numDuplicates > 0) warnings.push(`delaunay2d: ${r.numDuplicates} point(s) coincide in x, y with an earlier one and are in no triangle.`);
+            break;
+          }
+          case "convertCoordinates": {
+            const o: Record<string, unknown> = {};
+            for (const key of ["system", "axis", "origin", "arrays", "inverse"] as const) if (spec[key] !== undefined) o[key] = spec[key];
+            const r = m.convertCoordinates(mesh, o);
+            mesh = r.mesh;
+            steps.push({ op: spec.op, applied: true, detail: `${spec.system ?? "cylindrical"}${spec.inverse ? " → Cartesian" : ""}: ${r.numArrays} array(s) rewritten, ${r.numSingular} point(s) on the axis` });
+            break;
+          }
+          case "estimateNormals": {
+            const o: Record<string, unknown> = {};
+            if (spec.neighbours !== undefined) o.k = spec.neighbours;
+            if (spec.orientation !== undefined) o.orientation = spec.orientation;
+            const r = m.estimateNormals(mesh, o);
+            mesh = r.mesh;
+            steps.push({ op: spec.op, applied: true, detail: `${r.numComponents} orientation component(s), ${r.numDegenerate} degenerate neighbourhood(s)` });
+            if (r.numDegenerate > 0) warnings.push(`estimateNormals: ${r.numDegenerate} point(s) have no fitted plane and carry NaN normals.`);
+            break;
+          }
+          case "reconstructSurface": {
+            const o: Record<string, unknown> = {};
+            for (const key of ["k", "cellSize", "maxDistance"] as const) if (spec[key] !== undefined) o[key] = spec[key];
+            const r = m.reconstructSurface(mesh, o);
+            mesh = r.mesh;
+            steps.push({ op: spec.op, applied: true, detail: `${r.numTriangles} triangles from ${r.numSamples} samples (cell ${Number(r.cellSize).toPrecision(4)}, reach ${Number(r.maxDistance).toPrecision(4)}), ${r.numComponents} component(s), ${r.numUndefined} undefined lattice node(s)${r.estimatedNormals ? ", normals estimated" : ""}` });
+            break;
+          }
+          case "geodesicDistance": {
+            if (spec.sources === undefined && !spec.sourceRegion) throw new Error("geodesicDistance needs source point ids (sources) or a point region (sourceRegion)");
+            const o: Record<string, unknown> = {};
+            if (spec.sourceRegion) o.sourceRegion = spec.sourceRegion;
+            const r = m.geodesicDistance(mesh, spec.sources ?? [], o);
+            mesh = r.mesh;
+            steps.push({ op: spec.op, applied: true, detail: `${r.numSources} source(s), max distance ${Number(r.maxDistance).toPrecision(6)} → point data "geodesic:distance"${r.numUnreached > 0 ? `, ${r.numUnreached} unreached` : ""}` });
+            if (!r.converged) warnings.push("geodesicDistance: a solve did not converge.");
+            if (r.numUnreached > 0) warnings.push(`geodesicDistance: ${r.numUnreached} point(s) are in no triangle or in a piece with no source (NaN).`);
+            break;
+          }
+          case "parameterize": {
+            const o: Record<string, unknown> = {};
+            for (const key of ["padding", "maxDepth", "maxStretch"] as const) if (spec[key] !== undefined) o[key] = spec[key];
+            const r = m.parameterize(mesh, o);
+            mesh = r.mesh;
+            steps.push({ op: spec.op, applied: true, detail: `${r.numCharts} chart(s), ${r.numFlipped} flipped triangle(s), stretch ${Number(r.stretch).toPrecision(4)}, packing ${(100 * Number(r.packingEfficiency)).toFixed(1)} % → point data "uv"` });
+            if (r.numFlipped > 0) warnings.push(`parameterize: ${r.numFlipped} triangle(s) are flipped in UV space.`);
+            break;
+          }
+          case "laplacianEigenmodes": {
+            const o: Record<string, unknown> = {};
+            if (spec.numModes !== undefined) o.numModes = spec.numModes;
+            const r = m.laplacianEigenmodes(mesh, o);
+            mesh = r.mesh;
+            steps.push({ op: spec.op, applied: true, detail: `${r.eigenvalues.length} mode(s), eigenvalues ${r.eigenvalues.slice(0, 6).map((e: number) => Number(e).toPrecision(4)).join(", ")}${r.eigenvalues.length > 6 ? ", …" : ""} → point data "laplacian:modes"` });
+            if (!r.converged) warnings.push(`laplacianEigenmodes: not converged (max residual ${Number(r.maxResidual).toExponential(2)}).`);
             break;
           }
           default:
@@ -2027,6 +2105,229 @@ export async function analyzeSurfaceMesh(
     for (const p of paths) {
       try { m.FS.unlink(p); } catch { /* already gone */ }
     }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// meshio++ 18.1: read-only surface geometry, graph adjacency, rigid registration
+
+export type SurfaceGeometrySpec =
+  | { kind: "geodesic"; sources?: number[]; sourceRegion?: string; timeFactor?: number }
+  | { kind: "parameterize"; padding?: number; maxDepth?: number; maxStretch?: number }
+  | { kind: "eigenmodes"; numModes?: number };
+
+export interface SurfaceGeometryResult {
+  kind: SurfaceGeometrySpec["kind"];
+  numTriangles: number;
+  numPoints: number;
+  geodesic?: {
+    numSources: number;
+    numUnreached: number;
+    numDegenerate: number;
+    maxDistance: number;
+    meanDistance: number | null;
+    /** 0-based point id of the point farthest from every source, or -1 when nothing was reached. */
+    farthestPoint: number;
+    converged: boolean;
+    heatIterations: number;
+    poissonIterations: number;
+  };
+  parameterization?: {
+    numCharts: number;
+    numFlipped: number;
+    stretch: number;
+    packingEfficiency: number;
+    numSeamPoints: number;
+  };
+  eigenmodes?: {
+    eigenvalues: number[];
+    iterations: number;
+    maxResidual: number;
+    converged: boolean;
+  };
+  warnings: string[];
+}
+
+/** Largest `numModes` / source count a caller can ask for through the headless tool. */
+export const SURFACE_GEOMETRY_MAX_MODES = 64;
+
+/** Facts about a triangle surface (STL boundary in): geodesic distance, UV atlas quality, Laplace-Beltrami eigenvalues. */
+export async function analyzeSurfaceGeometry(stlBytes: Uint8Array, spec: SurfaceGeometrySpec): Promise<SurfaceGeometryResult> {
+  const m = await getMeshio();
+  const path = "/sg0.stl";
+  try {
+    // A Node Buffer may be a view into a pool: copy before handing it to MEMFS.
+    m.FS.writeFile(path, stlBytes.slice());
+    const mesh = m.readMesh(path, "stl");
+    let numTriangles = 0;
+    for (const b of mesh.cells as Array<{ type: string; data: ArrayLike<unknown> }>) {
+      if (b.type === "triangle") numTriangles += Math.floor(b.data.length / 3);
+    }
+    const base = { numTriangles, numPoints: mesh.points.length / mesh.dim };
+    const warnings = (w: unknown): string[] => (Array.isArray(w) ? (w as unknown[]).map(String) : []);
+    if (spec.kind === "geodesic") {
+      const o: Record<string, unknown> = {};
+      if (spec.sourceRegion) o.sourceRegion = spec.sourceRegion;
+      if (spec.timeFactor !== undefined) o.timeFactor = spec.timeFactor;
+      const r = m.geodesicDistance(mesh, spec.sources ?? [], o);
+      const d = r.mesh.point_data?.["geodesic:distance"] as ArrayLike<number> | undefined;
+      let sum = 0, count = 0, farthest = -1, far = -Infinity;
+      for (let i = 0; d && i < d.length; i++) {
+        const v = Number(d[i]);
+        if (!Number.isFinite(v)) continue;
+        sum += v; count++;
+        if (v > far) { far = v; farthest = i; }
+      }
+      const out: string[] = [];
+      if (!r.converged) out.push("A geodesic solve did not converge; the distances are approximate.");
+      return { kind: "geodesic", ...base, geodesic: {
+        numSources: Number(r.numSources), numUnreached: Number(r.numUnreached), numDegenerate: Number(r.numDegenerate),
+        maxDistance: Number(r.maxDistance), meanDistance: count > 0 ? sum / count : null, farthestPoint: farthest,
+        converged: r.converged === true, heatIterations: Number(r.heatIterations), poissonIterations: Number(r.poissonIterations),
+      }, warnings: out };
+    }
+    if (spec.kind === "parameterize") {
+      const o: Record<string, unknown> = {};
+      for (const key of ["padding", "maxDepth", "maxStretch"] as const) if (spec[key] !== undefined) o[key] = spec[key];
+      const r = m.parameterize(mesh, o);
+      return { kind: "parameterize", ...base, parameterization: {
+        numCharts: Number(r.numCharts), numFlipped: Number(r.numFlipped), stretch: Number(r.stretch),
+        packingEfficiency: Number(r.packingEfficiency), numSeamPoints: Number(r.numSeamPoints ?? 0),
+      }, warnings: warnings((r as { warnings?: unknown }).warnings) };
+    }
+    const r = m.laplacianEigenmodes(mesh, spec.numModes === undefined ? {} : { numModes: spec.numModes });
+    return { kind: "eigenmodes", ...base, eigenmodes: {
+      eigenvalues: Array.from(r.eigenvalues as ArrayLike<number>).map(Number), iterations: Number(r.iterations),
+      maxResidual: Number(r.maxResidual), converged: r.converged === true,
+    }, warnings: r.converged === true ? [] : ["The eigensolver did not converge; the eigenvalues are approximate."] };
+  } catch (err) {
+    throw wrapMeshioFault(err);
+  } finally {
+    try { m.FS.unlink(path); } catch { /* already gone */ }
+  }
+}
+
+export type MeshAdjacencyKind = "node" | "clique" | "cell";
+
+export interface MeshAdjacencyResult {
+  kind: MeshAdjacencyKind;
+  numVertices: number;
+  /** Undirected edges (each stored both ways in the CSR graph). */
+  numEdges: number;
+  minDegree: number;
+  maxDegree: number;
+  meanDegree: number;
+  numIsolated: number;
+  /** The METIS / Scotch graph file, only when one was asked for. */
+  graph?: { format: "metis" | "scotch"; bytes: Uint8Array; numVertices: number; numEdges: number; maxDegree: number };
+}
+
+/** The mesh's graph as degree facts, and optionally as a METIS (`.graph`) or Scotch (`.grf`) partitioner input. */
+export async function meshAdjacency(
+  sourceBytes: Uint8Array,
+  meshioFormat: string,
+  kind: MeshAdjacencyKind,
+  graphFormat: "metis" | "scotch" | undefined,
+  sourceName?: string,
+  companions?: readonly MeshioCompanion[]
+): Promise<MeshAdjacencyResult> {
+  const m = await getMeshio();
+  const graphPath = graphFormat === "scotch" ? "/adj.grf" : "/adj.graph";
+  let allPaths: string[] = [];
+  try {
+    const staged = stageMeshioSource(m, sourceBytes, meshioFormat, sourceName, companions);
+    allPaths = staged.allPaths;
+    const mesh = m.readMesh(staged.primaryPath, meshioFormat);
+    const { indptr, indices } = m.adjacency(mesh, kind);
+    const n = indptr.length - 1;
+    let min = Infinity, max = 0, isolated = 0;
+    for (let i = 0; i < n; i++) {
+      const d = indptr[i + 1] - indptr[i];
+      if (d < min) min = d;
+      if (d > max) max = d;
+      if (d === 0) isolated++;
+    }
+    const result: MeshAdjacencyResult = {
+      kind, numVertices: n, numEdges: indices.length / 2,
+      minDegree: n > 0 ? min : 0, maxDegree: max, meanDegree: n > 0 ? indices.length / n : 0, numIsolated: isolated,
+    };
+    if (graphFormat) {
+      const w = m.writeGraph(mesh, graphPath, kind, graphFormat);
+      result.graph = { format: graphFormat, bytes: m.FS.readFile(graphPath) as Uint8Array, numVertices: Number(w.numVertices), numEdges: Number(w.numEdges), maxDegree: Number(w.maxDegree) };
+    }
+    return result;
+  } catch (err) {
+    throw wrapMeshioFault(err);
+  } finally {
+    unstageMeshioSource(m, allPaths, [graphPath]);
+  }
+}
+
+export interface RegisterMeshesOptions {
+  method?: "point_to_point" | "point_to_plane";
+  maxIterations?: number;
+  tolerance?: number;
+  maxDistance?: number;
+  /** Row-major 4x4 starting pose (16 numbers). */
+  initial?: number[];
+}
+
+export interface RegisterMeshesResult {
+  /** Row-major 4x4 rigid transform that lays the source on the target. */
+  matrix: number[];
+  initialRms: number;
+  rms: number;
+  iterations: number;
+  numPairs: number;
+  converged: boolean;
+  /** The source with the transform applied, only when an output extension was given. */
+  bytes?: Uint8Array;
+  warnings: string[];
+}
+
+/** Rigid ICP registration of one STL-boundary surface onto another; optionally writes the moved source. */
+export async function registerMeshes(
+  sourceStl: Uint8Array,
+  targetStl: Uint8Array,
+  options: RegisterMeshesOptions,
+  outExtension?: string
+): Promise<RegisterMeshesResult> {
+  const m = await getMeshio();
+  const outPath = outExtension ? `/rg.${outExtension}` : undefined;
+  const paths = ["/rg0.stl", "/rg1.stl"];
+  try {
+    m.FS.writeFile(paths[0], sourceStl.slice());
+    m.FS.writeFile(paths[1], targetStl.slice());
+    const source = m.readMesh(paths[0], "stl");
+    const target = m.readMesh(paths[1], "stl");
+    const o: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(options)) if (v !== undefined) o[k] = v;
+    const r = m.registerRigid(source, target, o);
+    const matrix = Array.from(r.matrix as ArrayLike<number>).map(Number);
+    const warnings: string[] = [];
+    if (r.converged !== true) warnings.push("ICP did not converge within the iteration limit; the pose is the best found, not a fit.");
+    const result: RegisterMeshesResult = {
+      matrix, initialRms: Number(r.initialRms), rms: Number(r.rms), iterations: Number(r.iterations),
+      numPairs: Number(r.numPairs), converged: r.converged === true, warnings,
+    };
+    if (outPath) {
+      const dim = source.dim as number;
+      const p = source.points as ArrayLike<number>;
+      const moved = new Float64Array(p.length);
+      for (let i = 0; i < p.length; i += dim) {
+        const x = p[i], y = p[i + 1], z = dim > 2 ? p[i + 2] : 0;
+        moved[i] = matrix[0] * x + matrix[1] * y + matrix[2] * z + matrix[3];
+        moved[i + 1] = matrix[4] * x + matrix[5] * y + matrix[6] * z + matrix[7];
+        if (dim > 2) moved[i + 2] = matrix[8] * x + matrix[9] * y + matrix[10] * z + matrix[11];
+      }
+      m.writeMesh(outPath, { ...source, points: moved });
+      result.bytes = m.FS.readFile(outPath) as Uint8Array;
+    }
+    return result;
+  } catch (err) {
+    throw wrapMeshioFault(err);
+  } finally {
+    unstageMeshioSource(m, paths, outPath ? [outPath] : []);
   }
 }
 

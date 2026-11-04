@@ -2101,6 +2101,11 @@ body:not(:has(#side.visible)) #status {
   gap: 4px;
 }
 
+/* An author `display` beats the UA `[hidden]` rule: the Mesh ops parameter rows toggle `hidden`. */
+.meshing-field[hidden] {
+  display: none;
+}
+
 .meshing-checkbox {
   justify-content: space-between;
 }

@@ -375,8 +375,8 @@ try {
   assert(capsText.length > 100, "resources/read cad-preview://capabilities returns JSON text");
 
   const tools = (await request("tools/list", {})).tools.map((t) => t.name);
-  assert(tools.length === 90, `tools/list exposes 90 tools (got ${tools.length}: ${tools.join(", ")})`);
-  for (const t of ["check_draft", "check_printability", "list_workspace_models", "check_interference_all", "generate_bom", "generate_hole_table", "render_ops_prefix", "check_tolerance", "inspect_meshio_fields", "pin_annotation", "import_svg", "save_mesh_preset", "list_mesh_presets", "apply_mesh_preset", "compare_mesh_refinement", "export_tessellated_stl", "estimate_mesh_budget", "analyze_passages", "measure_mesh_deviation", "save_sheet_template", "list_sheet_templates", "batch_export", "check_handoff_manifest", "generate_prep_report", "job_status", "job_cancel", "check_brep_health", "list_scad_parameters", "convert_scad", "list_layers", "set_layer", "assign_layer", "segment_mesh_surface", "fit_mesh_to_cad", "mesh_cad_surface", "check_mesh_conformity", "find_mesh_intersections", "measure_mesh_thickness", "select_mesh_region", "project_to_cad", "grow_prism_layers", "iga_sample", "iga_refine", "iga_evaluate", "check_mesh_quality", "set_configuration"]) {
+  assert(tools.length === 93, `tools/list exposes 93 tools (got ${tools.length}: ${tools.join(", ")})`);
+  for (const t of ["check_draft", "check_printability", "list_workspace_models", "check_interference_all", "generate_bom", "generate_hole_table", "render_ops_prefix", "check_tolerance", "inspect_meshio_fields", "pin_annotation", "import_svg", "save_mesh_preset", "list_mesh_presets", "apply_mesh_preset", "compare_mesh_refinement", "export_tessellated_stl", "estimate_mesh_budget", "analyze_passages", "measure_mesh_deviation", "save_sheet_template", "list_sheet_templates", "batch_export", "check_handoff_manifest", "generate_prep_report", "job_status", "job_cancel", "check_brep_health", "list_scad_parameters", "convert_scad", "list_layers", "set_layer", "assign_layer", "segment_mesh_surface", "fit_mesh_to_cad", "mesh_cad_surface", "check_mesh_conformity", "find_mesh_intersections", "measure_mesh_thickness", "select_mesh_region", "analyze_surface_geometry", "mesh_adjacency", "register_meshes", "project_to_cad", "grow_prism_layers", "iga_sample", "iga_refine", "iga_evaluate", "check_mesh_quality", "set_configuration"]) {
     assert(tools.includes(t), `tools/list exposes ${t}`);
   }
 
@@ -7693,6 +7693,95 @@ try {
   assert(sa18Pts.selection.numSelected === 4, "...and a box over the bottom picks its 4 vertices");
   const sa18Brep = await call("measure_mesh_thickness", { path: octreeBlock });
   assert(sa18Brep.supported === false, "the surface analyses decline a B-rep source (export to STL first)");
+
+  // meshio++ 18.1 (probe meshio-1810-surface.ts): analytic answers over block.stp's tets (3 x 4 x 5 box, volume 60, area 94) and the 10 mm cube.
+  const m181Tet = path.join(dir, "m1810-block.msh");
+  await call("export_mesh", { path: octreeBlock, format: "msh", outputPath: m181Tet, options: { engine: "octreemesh", octreeMeshMaxSize: 2, octreeMeshLevels: 2 } });
+  const m181Hull = path.join(dir, "m1810-hull.vtu");
+  const m181Ops = await call("transform_mesh", {
+    path: m181Tet,
+    outputPath: m181Hull,
+    ops: [{ op: "untangle" }, { op: "convexHull" }, { op: "prepareMetric", arrays: ["nope"] }],
+  });
+  assert(
+    m181Ops.supported === true && m181Ops.steps[0].applied === true && /inverted cells 0 → 0/.test(m181Ops.steps[0].detail),
+    `untangle leaves a clean octreemesh tet mesh with no inverted cell (got ${JSON.stringify(m181Ops.steps[0])})`
+  );
+  assert(
+    m181Ops.steps[1].applied === true && /3-D hull: 8 vertices, 12 facets, area 94\.0000, volume 60\.0000/.test(m181Ops.steps[1].detail),
+    `convexHull of the block's tets is the 3 x 4 x 5 box: 8 vertices, area 94, volume 60 (got ${JSON.stringify(m181Ops.steps[1])})`
+  );
+  assert(
+    m181Ops.steps[2].applied === false && /no point data named 'nope'/.test(m181Ops.steps[2].detail),
+    `prepareMetric over a missing array is reported with the kernel's reason, not thrown (got ${JSON.stringify(m181Ops.steps[2])})`
+  );
+  const m181Cloud = await call("transform_mesh", {
+    path: m181Tet,
+    outputPath: path.join(dir, "m1810-recon.vtu"),
+    ops: [{ op: "estimateNormals", neighbours: 10 }, { op: "reconstructSurface" }, { op: "delaunay2d" }],
+  });
+  assert(
+    m181Cloud.steps.every((st) => st.applied === true) && /triangles from \d+ samples/.test(m181Cloud.steps[1].detail),
+    `estimateNormals then reconstructSurface then delaunay2d run over the same point cloud (got ${JSON.stringify(m181Cloud.steps)})`
+  );
+  const m181Adj = await call("mesh_adjacency", { path: m181Tet, outputPath: path.join(dir, "m1810.graph") });
+  const m181Header = fs.readFileSync(path.join(dir, "m1810.graph"), "utf8").split("\n")[0].trim().split(/\s+/).map(Number);
+  assert(
+    m181Adj.supported === true && m181Adj.kind === "node" && m181Adj.numIsolated === 0 && m181Adj.minDegree >= 3 &&
+      Math.abs(m181Adj.meanDegree * m181Adj.numVertices - 2 * m181Adj.numEdges) < 1e-6 &&
+      m181Header[0] === m181Adj.numVertices && m181Header[1] === m181Adj.numEdges && m181Adj.graph.format === "metis",
+    `mesh_adjacency: the METIS header "n m" equals the reported vertices/edges and the degrees sum to twice the edges (got ${JSON.stringify(m181Adj)} header ${m181Header})`
+  );
+  const m181Cell = await call("mesh_adjacency", { path: m181Tet, kind: "cell", outputPath: path.join(dir, "m1810.grf") });
+  assert(m181Cell.graph.format === "scotch" && m181Cell.numVertices > m181Adj.numVertices && m181Cell.maxDegree <= 4,
+    `mesh_adjacency kind cell joins tets across facets (degree <= 4) and a .grf path writes Scotch (got ${JSON.stringify(m181Cell)})`);
+  const m181Brep = await call("mesh_adjacency", { path: octreeBlock });
+  assert(m181Brep.supported === false, "mesh_adjacency declines a B-rep source (export a mesh first)");
+  const m181Geo = await call("analyze_surface_geometry", { path: sa18Cube, kind: "geodesic", sources: [0] });
+  assert(
+    m181Geo.supported === true && m181Geo.geodesic.numSources === 1 && m181Geo.geodesic.numUnreached === 0 && m181Geo.geodesic.converged === true &&
+      m181Geo.geodesic.maxDistance > 15 && m181Geo.geodesic.maxDistance < 26,
+    `geodesic distance from one corner of the 10 mm cube reaches every point; the heat method on 12 triangles under-reads the exact 22.36 (sqrt(10^2 + 20^2)) antipode, measured 20.2 (got ${JSON.stringify(m181Geo.geodesic)})`
+  );
+  const m181Eig = await call("analyze_surface_geometry", { path: sa18Cube, kind: "eigenmodes", numModes: 3 });
+  const m181Ev = m181Eig.eigenmodes.eigenvalues;
+  assert(
+    m181Ev.length === 3 && Math.abs(m181Ev[0]) < 1e-9 && m181Ev[1] > 0 && m181Ev[1] <= m181Ev[2] + 1e-12 && m181Eig.eigenmodes.converged === true,
+    `the closed cube's lowest Laplace-Beltrami eigenvalue is 0, the next ones positive and ascending (got ${JSON.stringify(m181Eig.eigenmodes)})`
+  );
+  const m181Uv = await call("analyze_surface_geometry", { path: sa18Cube, kind: "parameterize" });
+  assert(m181Uv.parameterization.numCharts >= 1 && m181Uv.parameterization.numFlipped === 0, `parameterize atlas of the cube has no flipped triangle (got ${JSON.stringify(m181Uv.parameterization)})`);
+  const m181NoSource = await request("tools/call", { name: "analyze_surface_geometry", arguments: { path: sa18Cube, kind: "geodesic" } });
+  assert(m181NoSource.isError === true && /at least one source/.test(m181NoSource.content?.[0]?.text ?? ""), "analyze_surface_geometry geodesic without sources is refused by name");
+  assert((await call("analyze_surface_geometry", { path: octreeBlock, kind: "eigenmodes" })).supported === false, "analyze_surface_geometry declines a B-rep source");
+  // The same per-point results as files: geodesicDistance written through transform_mesh reads back with its array.
+  const m181Vtk = path.join(dir, "m1810-cube.vtk");
+  fs.copyFileSync(path.join(ROOT, "examples", "VTK", "cube.vtk"), m181Vtk);
+  const m181GeoOut = path.join(dir, "m1810-geodesic.vtu");
+  const m181GeoOps = await call("transform_mesh", { path: m181Vtk, outputPath: m181GeoOut, ops: [{ op: "geodesicDistance", sources: [0] }, { op: "laplacianEigenmodes", numModes: 2 }] });
+  assert(m181GeoOps.steps.every((st) => st.applied === true), `geodesicDistance and laplacianEigenmodes run through transform_mesh (got ${JSON.stringify(m181GeoOps.steps)})`);
+  const m181Fields = await call("inspect_meshio_fields", { path: m181GeoOut });
+  const m181Names = m181Fields.arrays.map((x) => x.name);
+  assert(
+    m181Names.includes("geodesic:distance") && m181Names.includes("laplacian:modes"),
+    `the written .vtu carries geodesic:distance and laplacian:modes as point data (got ${m181Names.join(", ")})`
+  );
+  // ICP: the cube registered onto a copy shifted by (0.5, 0, 0) gives a rigid transform, a smaller residual and a moved copy inside the target.
+  const m181Shift = path.join(dir, "m1810-shift.stl");
+  fs.writeFileSync(m181Shift, fs.readFileSync(sa18Cube, "utf8").replace(/vertex\s+(\S+)\s+(\S+)\s+(\S+)/g, (_m, x, y, z) => `vertex ${Number(x) + 0.5} ${y} ${z}`));
+  const m181Moved = path.join(dir, "m1810-moved.stl");
+  const m181Reg = await call("register_meshes", { path: m181Shift, targetPath: sa18Cube, maxIterations: 50, outputPath: m181Moved });
+  const m181M = m181Reg.matrix;
+  const det3 = m181M[0] * (m181M[5] * m181M[10] - m181M[6] * m181M[9]) - m181M[1] * (m181M[4] * m181M[10] - m181M[6] * m181M[8]) + m181M[2] * (m181M[4] * m181M[9] - m181M[5] * m181M[8]);
+  assert(
+    m181Reg.supported === true && m181M.length === 16 && Math.abs(det3 - 1) < 1e-6 && m181M[12] === 0 && m181M[15] === 1 &&
+      m181Reg.rms < m181Reg.initialRms && m181Reg.rms < 0.05 && m181Reg.initialRms > 0.3 && m181Reg.written === m181Moved,
+    `register_meshes returns a proper rigid 4x4 (det 1) that cuts the RMS from ~0.35 to under 0.05 (got ${JSON.stringify({ ...m181Reg, matrix: m181M.map((v) => +v.toFixed(4)) })})`
+  );
+  const m181MovedBox = (fs.readFileSync(m181Moved, "latin1").match(/vertex\s+(\S+)\s+\S+\s+\S+/g) ?? []).map((l) => Number(l.trim().split(/\s+/)[1]));
+  assert(m181MovedBox.length > 0 && Math.max(...m181MovedBox) <= 5.05 && Math.min(...m181MovedBox) >= -5.05, `the written, registered copy sits inside the target cube's x range (got ${Math.min(...m181MovedBox)}..${Math.max(...m181MovedBox)})`);
+  const m181RegSelf = await request("tools/call", { name: "register_meshes", arguments: { path: m181Shift, targetPath: sa18Cube, outputPath: sa18Cube } });
+  assert(m181RegSelf.isError === true, "register_meshes refuses to write over its target");
 
   const ocmHexMsh = path.join(dir, "octreemesh-block-hex.msh");
   await call("export_mesh", { path: octreeBlock, format: "msh", outputPath: ocmHexMsh, options: { ...ocmOpts, octreeMeshOutput: "hex" } });

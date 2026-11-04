@@ -163,9 +163,9 @@ import type {
 } from "./stepPartsService";
 import type { compareModels, CompareSource } from "./modelDiffHost";
 import type { ModelDiff } from "./modelDiff";
-import type { MeshConformityFacts, SurfaceAnalysisResult, SurfaceAnalysisSpec } from "./meshioService";
-import { SURFACE_ANALYSIS_MAX_ENTRIES } from "./meshioService";
-import type { convertToStlBoundary, convertToStlBoundaryWithRegions, convertFoamCaseToStlBoundary, exportViaMeshio, readMeshioMetadata, checkMeshQuality, checkMeshConformity, analyzeSurfaceMesh, readMeshioDataInfo, readMeshioProvenance, runMeshioOps, MeshioDataArrayInfo } from "./meshioService";
+import type { MeshConformityFacts, SurfaceAnalysisResult, SurfaceAnalysisSpec, SurfaceGeometryResult, SurfaceGeometrySpec, MeshAdjacencyResult, MeshAdjacencyKind, RegisterMeshesOptions, RegisterMeshesResult } from "./meshioService";
+import { SURFACE_ANALYSIS_MAX_ENTRIES, SURFACE_GEOMETRY_MAX_MODES } from "./meshioService";
+import type { convertToStlBoundary, convertToStlBoundaryWithRegions, convertFoamCaseToStlBoundary, exportViaMeshio, readMeshioMetadata, checkMeshQuality, checkMeshConformity, analyzeSurfaceMesh, analyzeSurfaceGeometry, meshAdjacency, registerMeshes, readMeshioDataInfo, readMeshioProvenance, runMeshioOps, MeshioDataArrayInfo } from "./meshioService";
 import { buildPartsFromMeshioRegions } from "./meshioRegionParts";
 import { buildPartsFromCsgColors, csgColorPartsNote, type CsgColorGroup } from "./csgColorParts";
 import { validateMmgOptions, type MmgOptions } from "./mmgOptions";
@@ -353,6 +353,9 @@ export interface Pipeline {
   checkMeshQuality: typeof checkMeshQuality;
   checkMeshConformity: typeof checkMeshConformity;
   analyzeSurfaceMesh: typeof analyzeSurfaceMesh;
+  analyzeSurfaceGeometry: typeof analyzeSurfaceGeometry;
+  meshAdjacency: typeof meshAdjacency;
+  registerMeshes: typeof registerMeshes;
   readMeshioDataInfo: typeof readMeshioDataInfo;
   readMeshioProvenance: typeof readMeshioProvenance;
   coarsenStlBoundary: typeof coarsenStlBoundary;
@@ -2863,6 +2866,145 @@ export async function selectMeshRegionTool(
     throw new Error("select_mesh_region needs at least one criterion: box, plane, sphere, component or seed.");
   }
   return runSurfaceAnalysis(ctx, "select_mesh_region", params.path, undefined, spec);
+}
+
+// ---------------------------------------------------------------------------
+// meshio++ 18.1: analyze_surface_geometry / mesh_adjacency / register_meshes
+
+/** Most source points `analyze_surface_geometry` accepts for one geodesic call. */
+const GEODESIC_MAX_SOURCES = 1000;
+
+/**
+ * `analyze_surface_geometry` — read-only facts about a triangle surface:
+ * geodesic distance from source points (heat method), the quality of a UV atlas
+ * (charts, flipped triangles, stretch, packing) or the lowest Laplace-Beltrami
+ * eigenvalues. Nothing is written; to keep the per-point result as a file, run the
+ * same operation through `transform_mesh` (`geodesicDistance`, `parameterize`,
+ * `laplacianEigenmodes`).
+ */
+export async function analyzeSurfaceGeometryTool(
+  ctx: ToolContext,
+  params: {
+    path: string;
+    kind: SurfaceGeometrySpec["kind"];
+    sources?: number[];
+    sourceRegion?: string;
+    timeFactor?: number;
+    padding?: number;
+    maxDepth?: number;
+    maxStretch?: number;
+    numModes?: number;
+  }
+): Promise<{ supported: boolean; warnings: string[] } & Partial<SurfaceGeometryResult>> {
+  let spec: SurfaceGeometrySpec;
+  if (params.kind === "geodesic") {
+    const sources = params.sources ?? [];
+    if (!Array.isArray(sources) || sources.length > GEODESIC_MAX_SOURCES || !sources.every((v) => Number.isInteger(v) && v >= 0)) {
+      throw new Error(`sources must be at most ${GEODESIC_MAX_SOURCES} non-negative integer point ids (0-based).`);
+    }
+    if (sources.length === 0) throw new Error("kind geodesic needs at least one source point id in sources.");
+    if (params.timeFactor !== undefined && !(Number.isFinite(params.timeFactor) && params.timeFactor > 0)) throw new Error("timeFactor must be a positive number.");
+    spec = { kind: "geodesic", sources, timeFactor: params.timeFactor };
+  } else if (params.kind === "parameterize") {
+    requireNonNegative("padding", params.padding);
+    requireNonNegative("maxDepth", params.maxDepth);
+    if (params.maxStretch !== undefined && !(Number.isFinite(params.maxStretch) && params.maxStretch > 0)) throw new Error("maxStretch must be a positive number.");
+    spec = { kind: "parameterize", padding: params.padding, maxDepth: params.maxDepth, maxStretch: params.maxStretch };
+  } else if (params.kind === "eigenmodes") {
+    if (params.numModes !== undefined && !(Number.isInteger(params.numModes) && params.numModes >= 1 && params.numModes <= SURFACE_GEOMETRY_MAX_MODES)) {
+      throw new Error(`numModes must be an integer between 1 and ${SURFACE_GEOMETRY_MAX_MODES}.`);
+    }
+    spec = { kind: "eigenmodes", numModes: params.numModes };
+  } else {
+    throw new Error(`kind must be geodesic, parameterize or eigenmodes (got ${String(params.kind)}).`);
+  }
+  const warnings: string[] = [];
+  const src = await resolveSurfaceStl(ctx, params.path, "analyze_surface_geometry", warnings);
+  if ("unsupported" in src) return { supported: false, warnings: [src.unsupported] };
+  const result = await ctx.pipeline.analyzeSurfaceGeometry(src.stl, spec);
+  return { supported: true, ...result, warnings: [...warnings, ...result.warnings.map((w) => envelope(w, "meshio warning"))] };
+}
+
+/**
+ * `mesh_adjacency` — the mesh's graph (nodes joined by a cell edge, nodes sharing a
+ * cell, or cells sharing a facet) as degree facts, and with `outputPath` as a METIS or
+ * Scotch graph file for an external partitioner. Meshio-readable sources only: the graph
+ * of a volume mesh needs its cells, which the STL boundary does not keep.
+ */
+export async function meshAdjacencyTool(
+  ctx: ToolContext,
+  params: { path: string; kind?: MeshAdjacencyKind; outputPath?: string; graphFormat?: "metis" | "scotch" }
+): Promise<{ format: CadFormat; supported: boolean; warnings: string[]; written?: string } & Partial<Omit<MeshAdjacencyResult, "graph">> & { graph?: Omit<NonNullable<MeshAdjacencyResult["graph"]>, "bytes"> }> {
+  const kind = params.kind ?? "node";
+  if (!["node", "clique", "cell"].includes(kind)) throw new Error(`kind must be node, clique or cell (got ${String(params.kind)}).`);
+  if (params.graphFormat !== undefined && params.graphFormat !== "metis" && params.graphFormat !== "scotch") throw new Error("graphFormat must be metis or scotch.");
+  const route = requireRoute(params.path);
+  if (route.strategy !== "meshio") {
+    return {
+      format: route.format,
+      supported: false,
+      warnings: [`mesh_adjacency operates on meshio++-readable sources (${MESHIO_FORMATS.join("/")}); ${route.format} is not one. Export a mesh with export_mesh first.`],
+    };
+  }
+  let outputPath: string | undefined;
+  let graphFormat = params.graphFormat;
+  if (params.outputPath !== undefined) {
+    outputPath = path.resolve(params.outputPath);
+    assertNotSourcePath(params.path, outputPath);
+    const ext = path.extname(outputPath).toLowerCase();
+    graphFormat ??= ext === ".grf" ? "scotch" : "metis";
+    if (!outputPath || (ext !== ".graph" && ext !== ".grf")) throw new Error("outputPath must end in .graph (METIS) or .grf (Scotch).");
+    if ((graphFormat === "scotch") !== (ext === ".grf")) throw new Error(`graphFormat ${graphFormat} does not match the ${ext} extension.`);
+  } else if (graphFormat !== undefined) {
+    throw new Error("graphFormat needs an outputPath to write the graph to.");
+  }
+  const bytes = await readModelBytes(params.path);
+  const companions = await resolveMeshioCompanions(params.path, route.format, bytes);
+  const result = await ctx.pipeline.meshAdjacency(bytes, route.format, kind, graphFormat, path.basename(params.path), companions);
+  const { graph, ...facts } = result;
+  const out: Awaited<ReturnType<typeof meshAdjacencyTool>> = { format: route.format, supported: true, ...facts, warnings: [] };
+  if (graph && outputPath) {
+    await fs.writeFile(outputPath, graph.bytes);
+    out.written = outputPath;
+    const { bytes: _bytes, ...graphFacts } = graph;
+    out.graph = graphFacts;
+  }
+  return out;
+}
+
+/**
+ * `register_meshes` — rigid ICP registration of a movable mesh onto a fixed one.
+ * Returns the row-major 4x4 matrix and the residual before and after (facts, not a
+ * verdict on the fit); `outputPath` additionally writes the movable mesh with the
+ * transform applied. Both inputs are read as their triangle surface.
+ */
+export async function registerMeshesTool(
+  ctx: ToolContext,
+  params: { path: string; targetPath: string; method?: RegisterMeshesOptions["method"]; maxIterations?: number; tolerance?: number; maxDistance?: number; initial?: number[]; outputPath?: string }
+): Promise<{ supported: boolean; warnings: string[]; written?: string } & Partial<Omit<RegisterMeshesResult, "bytes" | "warnings">>> {
+  if (params.method !== undefined && params.method !== "point_to_point" && params.method !== "point_to_plane") throw new Error("method must be point_to_point or point_to_plane.");
+  if (params.maxIterations !== undefined && !(Number.isInteger(params.maxIterations) && params.maxIterations >= 1 && params.maxIterations <= 10000)) throw new Error("maxIterations must be an integer between 1 and 10000.");
+  requireNonNegative("tolerance", params.tolerance);
+  requireNonNegative("maxDistance", params.maxDistance);
+  if (params.initial !== undefined && !(params.initial.length === 16 && params.initial.every(Number.isFinite))) throw new Error("initial must be 16 finite numbers (a row-major 4x4 matrix).");
+  let outputPath: string | undefined;
+  if (params.outputPath !== undefined) {
+    outputPath = path.resolve(params.outputPath);
+    assertNotSourcePath(params.path, outputPath);
+    assertNotSourcePath(params.targetPath, outputPath);
+  }
+  const warnings: string[] = [];
+  const source = await resolveSurfaceStl(ctx, params.path, "register_meshes", warnings);
+  if ("unsupported" in source) return { supported: false, warnings: [source.unsupported] };
+  const target = await resolveSurfaceStl(ctx, params.targetPath, "register_meshes", warnings);
+  if ("unsupported" in target) return { supported: false, warnings: [`targetPath: ${target.unsupported}`] };
+  const { method, maxIterations, tolerance, maxDistance, initial } = params;
+  const outExtension = outputPath ? path.basename(outputPath).split(".").slice(1).join(".") || undefined : undefined;
+  if (outputPath && !outExtension) throw new Error("outputPath needs a file extension (it selects the output format).");
+  const result = await ctx.pipeline.registerMeshes(source.stl, target.stl, { method, maxIterations, tolerance, maxDistance, initial }, outExtension);
+  const { bytes, warnings: kernelWarnings, ...facts } = result;
+  if (bytes && outputPath) await fs.writeFile(outputPath, bytes);
+  return { supported: true, ...facts, ...(bytes && outputPath ? { written: outputPath } : {}), warnings: [...warnings, ...kernelWarnings.map((w) => envelope(w, "meshio warning"))] };
 }
 
 export async function checkMeshHealthTool(

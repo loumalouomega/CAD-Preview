@@ -24,6 +24,9 @@ import {
   checkMeshConformityTool,
   findMeshIntersectionsTool,
   measureMeshThicknessTool,
+  analyzeSurfaceGeometryTool,
+  meshAdjacencyTool,
+  registerMeshesTool,
   selectMeshRegionTool,
   projectToCadTool,
   growPrismLayersTool,
@@ -665,6 +668,9 @@ function fakePipeline(overrides: Partial<Pipeline> = {}): Pipeline {
       numBoundaryFacets: 12, numNonManifoldFacets: 0, conforming: true, interfaceMode: "conforming", warnings: [],
     })),
     analyzeSurfaceMesh: vi.fn(async (_b: Uint8Array, spec: { kind: "thickness" | "intersections" | "select" }) => ({ kind: spec.kind, numTriangles: 12, warnings: [] })),
+    analyzeSurfaceGeometry: vi.fn(async (_b: Uint8Array, spec: { kind: "geodesic" | "parameterize" | "eigenmodes" }) => ({ kind: spec.kind, numTriangles: 12, numPoints: 8, warnings: [] })),
+    meshAdjacency: vi.fn(async (_b: Uint8Array, _f: string, kind: "node" | "clique" | "cell") => ({ kind, numVertices: 8, numEdges: 18, minDegree: 3, maxDegree: 6, meanDegree: 4.5, numIsolated: 0 })),
+    registerMeshes: vi.fn(async () => ({ matrix: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1], initialRms: 0, rms: 0, iterations: 1, numPairs: 8, converged: true, warnings: [] })),
     readMeshioDataInfo: vi.fn(async () => []),
     readMeshioProvenance: vi.fn(async () => null),
     runMeshioOps: vi.fn(async () => ({ bytes: new Uint8Array([1, 2, 3]), steps: [], warnings: [] })),
@@ -2501,6 +2507,85 @@ describe("inspect_meshio_fields", () => {
     const stp = await measureMeshThicknessTool(c, { path: stpModel });
     expect(stp.supported).toBe(false);
     expect(analyzeSurfaceMesh).toHaveBeenCalledTimes(3);
+  });
+
+  it("analyze_surface_geometry validates the spec, passes the STL boundary and refuses B-rep", async () => {
+    const analyzeSurfaceGeometry = vi.fn(async (_b: Uint8Array, spec: { kind: "geodesic" | "parameterize" | "eigenmodes" }) => ({ kind: spec.kind, numTriangles: 12, numPoints: 8, warnings: ["w"] }));
+    const c = ctx(fakePipeline({ analyzeSurfaceGeometry }));
+    const stl = path.join(dir, "sg.stl");
+    await fs.writeFile(stl, "solid x\nendsolid x\n", "utf8");
+    const g = await analyzeSurfaceGeometryTool(c, { path: stl, kind: "geodesic", sources: [0, 3] });
+    expect(analyzeSurfaceGeometry).toHaveBeenLastCalledWith(expect.any(Uint8Array), { kind: "geodesic", sources: [0, 3], timeFactor: undefined });
+    expect(g).toMatchObject({ supported: true, kind: "geodesic" });
+    expect(g.warnings).toContain("⟦meshio warning: w⟧");
+    await analyzeSurfaceGeometryTool(c, { path: stl, kind: "eigenmodes", numModes: 4 });
+    expect(analyzeSurfaceGeometry).toHaveBeenLastCalledWith(expect.any(Uint8Array), { kind: "eigenmodes", numModes: 4 });
+    await analyzeSurfaceGeometryTool(c, { path: stl, kind: "parameterize", maxStretch: 3 });
+    expect(analyzeSurfaceGeometry).toHaveBeenLastCalledWith(expect.any(Uint8Array), { kind: "parameterize", padding: undefined, maxDepth: undefined, maxStretch: 3 });
+    await expect(analyzeSurfaceGeometryTool(c, { path: stl, kind: "geodesic" })).rejects.toThrow(/at least one source/);
+    await expect(analyzeSurfaceGeometryTool(c, { path: stl, kind: "geodesic", sources: [-1] })).rejects.toThrow(/non-negative integer/);
+    await expect(analyzeSurfaceGeometryTool(c, { path: stl, kind: "eigenmodes", numModes: 0 })).rejects.toThrow(/numModes must be/);
+    await expect(analyzeSurfaceGeometryTool(c, { path: stl, kind: "nope" as never })).rejects.toThrow(/kind must be/);
+    const stp = await analyzeSurfaceGeometryTool(c, { path: stpModel, kind: "eigenmodes" });
+    expect(stp.supported).toBe(false);
+    expect(analyzeSurfaceGeometry).toHaveBeenCalledTimes(3);
+  });
+
+  it("mesh_adjacency reports degree facts, writes a graph file only on request and checks the extension", async () => {
+    const graphBytes = new TextEncoder().encode("8 18\n");
+    const meshAdjacency = vi.fn(async (_b: Uint8Array, _f: string, kind: "node" | "clique" | "cell", graphFormat?: "metis" | "scotch") => ({
+      kind, numVertices: 8, numEdges: 18, minDegree: 3, maxDegree: 6, meanDegree: 4.5, numIsolated: 0,
+      ...(graphFormat ? { graph: { format: graphFormat, bytes: graphBytes, numVertices: 8, numEdges: 18, maxDegree: 6 } } : {}),
+    }));
+    const c = ctx(fakePipeline({ meshAdjacency }));
+    const med = await medModel("adj.med");
+    const plain = await meshAdjacencyTool(c, { path: med });
+    expect(meshAdjacency).toHaveBeenLastCalledWith(expect.any(Uint8Array), "med", "node", undefined, "adj.med", []);
+    expect(plain).toMatchObject({ supported: true, kind: "node", numEdges: 18 });
+    expect(plain.graph).toBeUndefined();
+    const out = path.join(dir, "adj-out.grf");
+    const withGraph = await meshAdjacencyTool(c, { path: med, kind: "clique", outputPath: out });
+    expect(meshAdjacency).toHaveBeenLastCalledWith(expect.any(Uint8Array), "med", "clique", "scotch", "adj.med", []);
+    expect(withGraph.written).toBe(out);
+    expect(withGraph.graph).toEqual({ format: "scotch", numVertices: 8, numEdges: 18, maxDegree: 6 });
+    expect(new Uint8Array(await fs.readFile(out))).toEqual(graphBytes);
+    await expect(meshAdjacencyTool(c, { path: med, outputPath: path.join(dir, "adj-out.txt") })).rejects.toThrow(/\.graph \(METIS\) or \.grf/);
+    await expect(meshAdjacencyTool(c, { path: med, outputPath: path.join(dir, "x.graph"), graphFormat: "scotch" })).rejects.toThrow(/does not match/);
+    await expect(meshAdjacencyTool(c, { path: med, graphFormat: "metis" })).rejects.toThrow(/needs an outputPath/);
+    await expect(meshAdjacencyTool(c, { path: med, kind: "edge" as never })).rejects.toThrow(/kind must be/);
+    const stp = await meshAdjacencyTool(c, { path: stpModel });
+    expect(stp.supported).toBe(false);
+  });
+
+  it("register_meshes validates its options, forwards them and never writes over an input", async () => {
+    const moved = new Uint8Array([9, 9, 9]);
+    const registerMeshes = vi.fn(async (_s: Uint8Array, _t: Uint8Array, _o: unknown, ext?: string) => ({
+      matrix: [1, 0, 0, 2, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1], initialRms: 2, rms: 0.01, iterations: 7, numPairs: 8, converged: true,
+      ...(ext ? { bytes: moved } : {}), warnings: ["w"],
+    }));
+    const c = ctx(fakePipeline({ registerMeshes }));
+    const a = path.join(dir, "reg-a.stl");
+    const b = path.join(dir, "reg-b.stl");
+    await fs.writeFile(a, "solid x\nendsolid x\n", "utf8");
+    await fs.writeFile(b, "solid y\nendsolid y\n", "utf8");
+    const r = await registerMeshesTool(c, { path: a, targetPath: b, method: "point_to_plane", maxIterations: 20 });
+    expect(registerMeshes).toHaveBeenLastCalledWith(expect.any(Uint8Array), expect.any(Uint8Array), { method: "point_to_plane", maxIterations: 20, tolerance: undefined, maxDistance: undefined, initial: undefined }, undefined);
+    expect(r).toMatchObject({ supported: true, rms: 0.01, converged: true });
+    expect(r.written).toBeUndefined();
+    expect(r.warnings).toContain("⟦meshio warning: w⟧");
+    const out = path.join(dir, "reg-out.vtk");
+    const w = await registerMeshesTool(c, { path: a, targetPath: b, outputPath: out });
+    expect(registerMeshes).toHaveBeenLastCalledWith(expect.any(Uint8Array), expect.any(Uint8Array), expect.any(Object), "vtk");
+    expect(w.written).toBe(out);
+    expect(new Uint8Array(await fs.readFile(out))).toEqual(moved);
+    await expect(registerMeshesTool(c, { path: a, targetPath: b, outputPath: b })).rejects.toThrow();
+    await expect(registerMeshesTool(c, { path: a, targetPath: b, outputPath: path.join(dir, "noext") })).rejects.toThrow(/extension/);
+    await expect(registerMeshesTool(c, { path: a, targetPath: b, method: "x" as never })).rejects.toThrow(/method must be/);
+    await expect(registerMeshesTool(c, { path: a, targetPath: b, initial: [1, 2] })).rejects.toThrow(/16 finite/);
+    await expect(registerMeshesTool(c, { path: a, targetPath: b, maxIterations: 0 })).rejects.toThrow(/maxIterations/);
+    const stp = await registerMeshesTool(c, { path: a, targetPath: stpModel });
+    expect(stp.supported).toBe(false);
+    expect(stp.warnings[0]).toMatch(/^targetPath:/);
   });
 
   it("returns the pipeline's per-array facts verbatim for a meshio source", async () => {

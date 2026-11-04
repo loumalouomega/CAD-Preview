@@ -81,6 +81,9 @@ import {
   findMeshIntersectionsTool,
   measureMeshThicknessTool,
   selectMeshRegionTool,
+  analyzeSurfaceGeometryTool,
+  meshAdjacencyTool,
+  registerMeshesTool,
   projectToCadTool,
   growPrismLayersTool,
   pinAnnotation,
@@ -892,7 +895,7 @@ server.registerTool(
   "transform_mesh",
   {
     description:
-      "Run a declarative list of meshio++ mesh operations over a meshio-readable source and write the result to a new file. ONE tool for the whole family rather than one per operation (the same shape run_parametric_script uses): pass `ops` as an ordered array of {op, ...params} and get a per-step report back saying which steps actually did something. Operations: clean (weld/drop degenerate+duplicate cells), decimate (quadric edge-collapse; `ratio` = fraction of faces to KEEP, surface meshes only), smooth (`method` taubin|laplacian, `iterations`), subdivide, refine (`levels`), agglomerate (`targetGroupSize`), convertCells (`mode` linearize|simplexify|elevate — simplexify splits quads/hexes into triangles/tets), tetToPoly (meshio++ 18: tets → their polyhedral median dual, one polyhedron per vertex; write to vtu/ensight/cgns/med/openfoam -- MDPA and the other writers refuse polyhedra by name), polyToTet (polyhedra → tets, a polyhedron that already is a tet stays one), optimizeVolume (tet meshes: raise the worst dihedral angle; `iterations`, `objective` worst|energy, `maxRingSize`; boundary blocks are dropped), adapt (MMG remesh to a constant `hsiz` within `hausd`, source units; surface or tet meshes), discretizeLevelset (MMG: insert the `isovalue` interface of the point-data array `levelSet`). A step that cannot run is reported with applied:false and its reason, and the pipeline continues. The CAD source is never modified. B-rep and mesh-parser (stl/obj/ply/gltf) sources return supported:false — a B-rep has exact geometry and should be edited with apply_edit_ops instead.",
+      "Run a declarative list of meshio++ mesh operations over a meshio-readable source and write the result to a new file. ONE tool for the whole family rather than one per operation (the same shape run_parametric_script uses): pass `ops` as an ordered array of {op, ...params} and get a per-step report back saying which steps actually did something. Operations: clean (weld/drop degenerate+duplicate cells), decimate (quadric edge-collapse; `ratio` = fraction of faces to KEEP, surface meshes only), smooth (`method` taubin|laplacian, `iterations`), subdivide, refine (`levels`), agglomerate (`targetGroupSize`), convertCells (`mode` linearize|simplexify|elevate — simplexify splits quads/hexes into triangles/tets), tetToPoly (meshio++ 18: tets → their polyhedral median dual, one polyhedron per vertex; write to vtu/ensight/cgns/med/openfoam -- MDPA and the other writers refuse polyhedra by name), polyToTet (polyhedra → tets, a polyhedron that already is a tet stays one), optimizeVolume (tet meshes: raise the worst dihedral angle; `iterations`, `objective` worst|energy, `maxRingSize`; boundary blocks are dropped), adapt (MMG remesh to a constant `hsiz` within `hausd`, source units; surface or tet meshes), discretizeLevelset (MMG: insert the `isovalue` interface of the point-data array `levelSet`). meshio++ 18.1 adds: untangle (tet/hex: move nodes until no cell is inverted; `iterations` = sweeps, `fixBoundary`), prepareMetric (intersect, normalise, clamp and grade 6-component point-data metric fields named in `arrays` into `output`; upper-triangular order xx,xy,xz,yy,yz,zz; set `hmin`/`hmax`/`gradation`/`targetVertices`), morph (displace the boundary by the 3-component point-data array `array`, relax the interior; `steps`, `stiffening`, `allowInverted`), convexHull (of the points, `dimension` 2|3|0), delaunay2d (of the x-y plane), convertCoordinates (`system` cylindrical|spherical about `axis`/`origin`, rewriting the vector/tensor point-data `arrays`; `inverse` goes back), estimateNormals (`neighbours`, `orientation` consistent|viewpoint|none; writes point data `normals`), reconstructSurface (surface through an oriented point cloud; `k`, `cellSize`, `maxDistance`, 0 = automatic), geodesicDistance (heat method from `sources` point ids or `sourceRegion` -> point data geodesic:distance, triangle surfaces), parameterize (UV atlas -> point data uv; `padding`, `maxDepth`, `maxStretch`), laplacianEigenmodes (`numModes` -> point data laplacian:modes). A step that cannot run is reported with applied:false and its reason, and the pipeline continues. The CAD source is never modified. B-rep and mesh-parser (stl/obj/ply/gltf) sources return supported:false — a B-rep has exact geometry and should be edited with apply_edit_ops instead.",
     inputSchema: {
       path: modelPath,
       ops: z
@@ -968,6 +971,59 @@ server.registerTool(
     },
   },
   wrap((args: Parameters<typeof selectMeshRegionTool>[1]) => selectMeshRegionTool(ctx, args))
+);
+
+server.registerTool(
+  "analyze_surface_geometry",
+  {
+    description:
+      "Read-only facts about a triangle surface of a mesh-format source (meshio++ 18.1). kind geodesic: geodesic distance by the heat method from `sources` (0-based point ids; the same ids as mesh-vertex-N) -- maxDistance, meanDistance, the farthest point, unreached points, convergence. kind parameterize: the quality of a UV atlas (charts, flipped triangles, L2 stretch, packing efficiency, seam points) with optional padding/maxDepth/maxStretch. kind eigenmodes: the `numModes` lowest Laplace-Beltrami eigenvalues (the first of a closed surface is 0) with solver residual. A cell type that is not a linear triangle is refused by the kernel. Facts only, nothing is written: to keep the per-point distances, UVs or modes in a file run transform_mesh with geodesicDistance / parameterize / laplacianEigenmodes. B-rep sources return supported:false; export them to STL first.",
+    inputSchema: {
+      path: modelPath,
+      kind: z.enum(["geodesic", "parameterize", "eigenmodes"]).describe("Which analysis to run"),
+      sources: z.array(z.number().int().min(0)).optional().describe("geodesic: 0-based source point ids (required, at most 1000)"),
+      timeFactor: z.number().positive().optional().describe("geodesic: heat-method time step as a multiple of the mean squared edge length"),
+      padding: z.number().min(0).optional().describe("parameterize: chart padding in UV space"),
+      maxDepth: z.number().int().min(0).optional().describe("parameterize: how many times a folding or over-stretched chart is halved"),
+      maxStretch: z.number().positive().optional().describe("parameterize: L2 stretch above which a chart is split"),
+      numModes: z.number().int().min(1).max(64).optional().describe("eigenmodes: how many of the lowest modes to compute"),
+    },
+  },
+  wrap((args: Parameters<typeof analyzeSurfaceGeometryTool>[1]) => analyzeSurfaceGeometryTool(ctx, args))
+);
+
+server.registerTool(
+  "mesh_adjacency",
+  {
+    description:
+      "The graph of a meshio++-readable mesh (meshio++ 18.1): kind node (default) joins nodes that share a cell edge, clique joins nodes that share a cell (the finite-element sparsity pattern), cell joins cells that share a facet. Returns facts -- numVertices, numEdges (undirected), min/max/mean degree, isolated vertices. With `outputPath` (.graph = METIS, .grf = Scotch) also writes the graph as a partitioner input and reports what was written. The source is never modified. B-rep and mesh-parser (stl/obj/ply/gltf) sources return supported:false -- export a mesh with export_mesh first.",
+    inputSchema: {
+      path: modelPath,
+      kind: z.enum(["node", "clique", "cell"]).optional().describe("Which graph (default node)"),
+      outputPath: z.string().optional().describe("Write the graph here; must end in .graph (METIS) or .grf (Scotch)"),
+      graphFormat: z.enum(["metis", "scotch"]).optional().describe("Defaults from the outputPath extension; must agree with it"),
+    },
+  },
+  wrap((args: Parameters<typeof meshAdjacencyTool>[1]) => meshAdjacencyTool(ctx, args))
+);
+
+server.registerTool(
+  "register_meshes",
+  {
+    description:
+      "Rigid registration (iterative closest points, meshio++ 18.1) of a movable mesh `path` onto a fixed mesh `targetPath`, both read as their triangle surface (pending mesh edits are baked). Returns the row-major 4x4 `matrix` that lays the source on the target, the RMS point-to-surface distance before (initialRms) and after (rms), iterations, matched pairs and `converged` -- facts, not a verdict that the two shapes are the same part. method point_to_point (default) or point_to_plane; `maxDistance` ignores pairs farther apart than that (source units; the pose estimate degrades on outliers otherwise); `initial` is a row-major 4x4 starting pose (ICP only finds a LOCAL optimum, so a far-off start can converge to a wrong pose). With `outputPath` the source is also written with the transform applied (the extension selects the format). The inputs are never modified. B-rep sources return supported:false; export them to STL first.",
+    inputSchema: {
+      path: modelPath,
+      targetPath: z.string().describe("The fixed mesh the source is registered onto"),
+      method: z.enum(["point_to_point", "point_to_plane"]).optional().describe("Distance metric (default point_to_point)"),
+      maxIterations: z.number().int().min(1).max(10000).optional().describe("Iteration limit"),
+      tolerance: z.number().min(0).optional().describe("Stop when the RMS improves by less than this"),
+      maxDistance: z.number().min(0).optional().describe("Ignore point pairs farther apart than this (source units)"),
+      initial: z.array(z.number()).length(16).optional().describe("Starting pose, a row-major 4x4 matrix"),
+      outputPath: z.string().optional().describe("Also write the transformed source here"),
+    },
+  },
+  wrap((args: Parameters<typeof registerMeshesTool>[1]) => registerMeshesTool(ctx, args))
 );
 
 server.registerTool(

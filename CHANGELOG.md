@@ -6,6 +6,14 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/); thi
 
 ## [Unreleased]
 
+### Added
+
+- **meshio++ 18.1.0: eleven Mesh Ops / `transform_mesh` operations and three tools.** The 13 new `Meshio` methods are all adopted. As operations (Mesh Ops panel and `transform_mesh`): `untangle` (tet/hex meshes), `prepareMetric`, `morph`, `convexHull` (the 3 × 4 × 5 block's tets give 8 vertices, area 94, volume 60), `delaunay2d`, `convertCoordinates` (cylindrical/spherical), `estimateNormals`, `reconstructSurface`, and `geodesicDistance` / `parameterize` / `laplacianEigenmodes`, which write their results as point data (`geodesic:distance`, `uv`, `laplacian:modes`) so the file opens with Colour by field. As tools: `analyze_surface_geometry` (geodesic distance, UV-atlas quality, Laplace-Beltrami eigenvalues — facts only), `mesh_adjacency` (node / clique / cell graph degree facts, optionally written as a METIS `.graph` or Scotch `.grf` file for a partitioner) and `register_meshes` (rigid ICP; a cube registered onto a copy shifted by 0.5 recovers the translation −0.5 and cuts the RMS from 0.354 to 7e-10). `validateMeshioOpSpec` refuses a `prepareMetric` with no `arrays`, a `morph` with no `array` and a `geodesicDistance` with no source up front; a step the kernel cannot run (an unknown array, a surface op on a volume mesh) is reported with `applied: false`. `tools/list` is now 93 tools. Probe: `scripts/probe/examples/meshio-1810-surface.ts`; `mcp:smoke` pins the analytic cases.
+
+### Changed
+
+- **`@meshioplusplus/wasm` upgraded from 18.0.0 to 18.1.0.** Purely additive in the typings; `npm test`, `npm run compat` (83/83) and `npm run mcp:smoke` were green on the bump alone.
+
 ## [3.35.0] - 2026-11-04
 
 ### Added
