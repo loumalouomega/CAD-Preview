@@ -766,8 +766,8 @@
     {
       "id": "report-issue-command-flow",
       "section": "Report issue from a failure (roadmap 2.43)",
-      "gap": "the Report Issue\u2026 host flow (reportIssueRequest -> untitled draft tab -> Open on GitHub -> prefilled URL) is covered by a test:integration case that has been written but never seen green: this environment cannot download VS Code. The webview halves (row button, File menu, kernel-crash button) are covered by test:webview.",
-      "status": "test-written",
+      "gap": "the Report Issue\u2026 host flow (reportIssueRequest -> untitled draft tab -> Open on GitHub -> prefilled URL) is covered by a test:integration case, seen green in CI on PR #171.",
+      "status": "closed",
       "closedBy": [
         "Report Issue\u2026 drafts the failed op, redacted, and hands the prefilled URL to the browser only on a click"
       ]
@@ -781,8 +781,8 @@
     {
       "id": "open-sample-command-flow",
       "section": "Welcome walkthrough and sample gallery (roadmap 2.44)",
-      "gap": "the Open Sample\u2026 flow (gallery quick-pick -> folder chooser -> copy -> open the copy) is covered by a test:integration case that has been written but never seen green: this environment cannot download VS Code. The walkthrough contribution itself (its look and step completion in VS Code's Welcome page) is F5-only.",
-      "status": "test-written",
+      "gap": "the Open Sample\u2026 flow (gallery quick-pick -> folder chooser -> copy -> open the copy) is covered by a test:integration case, seen green in CI on PR #171. Residual, F5-only: how the Get-started walkthrough looks and completes on VS Code's Welcome page.",
+      "status": "closed",
       "closedBy": [
         "Open Sample\u2026 copies the chosen sample into the chosen folder, opens the copy, and never touches the bundled original"
       ]
