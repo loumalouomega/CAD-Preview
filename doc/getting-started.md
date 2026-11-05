@@ -40,7 +40,7 @@ CAD Preview contributes a few cross-document defaults under **CAD Preview** in V
 | `cadPreview.kernelTimeoutMinutes` | `5` | Watchdog for a single kernel job (load, mesh, export…): a job running longer is killed and the kernel worker respawned. Applies to newly opened documents |
 | `cadPreview.tessellationQuality` | `standard` | B-rep (STEP/IGES/BREP/CSG/SCAD) tessellation density — `draft`/`standard`/`fine`; `standard` is identical to every previous version's fixed behavior. Unlike the other settings here, re-read on every edit, so a change applies to the next edit without reopening the file. Face triangle density only — does not affect edge display or the FE Mesh panel's own (separate) mesh generation |
 | `cadPreview.upAxis` | `y` | Default up-axis for newly opened models — set to `z` for Z-up source conventions |
-| `cadPreview.navigationPreset` | `default` | Mouse navigation: `default` (left-drag orbits, middle-drag zooms, right-drag pans) or `fusion` (middle-drag pans, Shift+middle-drag orbits, the left button is free for selection). The wheel always zooms; applied when a viewer opens |
+| `cadPreview.navigationPreset` | `default` | Mouse navigation: `default` (left-drag orbits, middle-drag zooms, right-drag pans) `fusion` (middle-drag pans, Shift+middle-drag orbits, the left button is free for selection) or `touchpad` (left-drag orbits; a two-finger scroll pans and a pinch zooms — a physical mouse wheel sends the same plain scroll events, so it pans too). The wheel zooms under the other presets; applied when a viewer opens |
 | `cadPreview.singleKeyCommands` | `false` | Turns on the single-letter [command keys](#command-search-and-single-key-commands) (E Extrude, R Revolve, F Fillet, C Chamfer, H Hole, M Move, S Shell, P Linear Pattern, Q Measure mode) and Shift+R to repeat the last command. Off by default because single keys collide with typing habits; read when a viewer opens |
 
 ## Opening a File
@@ -52,6 +52,10 @@ Open any supported file — for example, from the Explorer or via `File > Open F
 You can also drag a file from the OS file explorer (or another editor tab) and drop it onto the 3D view to open it the same way. If the browser drop event doesn't expose a real filesystem path for the dropped item, CAD Preview falls back to showing the normal **Open…** dialog instead of silently failing.
 
 The **CAD Preview** icon in the Activity Bar opens the **Models** view: every CAD/mesh file in the open workspace folder(s), discovered with the same routing rules (and the same depth cap and `.git`/`node_modules` exclusions) as the headless `list_workspace_models` tool. Click a file to open it in the 3D viewer; the toolbar offers **Open…**, **Refresh**, and **New Blank Model…** (new empty session — always visible, even when the workspace already has models). With no folder open — or no models found — the view shows **Open CAD File…** and **New Blank Model…** buttons instead.
+
+### Samples and the welcome walkthrough
+
+**CAD Preview: Open Sample…** (Command Palette, and a link in the empty Models view) offers three small bundled models — a STEP ring, an STL cube and an OpenSCAD `.csg` bracket. Pick one, then pick a folder: the sample is **copied** there and the copy opens. The bundled original is never opened (that would write `.edits.json`/`.view.json` sidecars inside the extension), and a file of the same name in the folder is never overwritten. **Get started with CAD Preview** in VS Code's *Welcome* page walks through opening a model, editing and saving, generating a mesh and connecting an agent.
 
 ### Starting from Scratch
 
@@ -194,6 +198,8 @@ Every item is also a VS Code command (`CAD Preview: …` in the Command Palette)
 ### Reporting a problem
 
 **CAD Preview: Report Issue…** (Command Palette, with a CAD tab focused) opens a draft in a new editor tab: the first operation that did not apply (its kind, parameters and diagnostic), the file's name, and the extension, kernel-package, VS Code and OS versions. Absolute paths are replaced by file names and the model itself is never attached. Edit the draft freely; only if you click **Open on GitHub** in the prompt is a prefilled issue page opened in your browser. An agent gets the same text from the `diagnostics_report` MCP tool.
+
+The same draft is reachable from the viewer: **File ▸ Report Issue…**, the **Report…** link beside a ⚠ row in the Edits history (it drafts that specific op), and a **Report issue…** button next to a kernel-crash or timeout error in the status line (the crash message goes into the draft).
 
 ### What's New
 
@@ -546,6 +552,8 @@ The **Edits** panel (below the Parts panel) applies non-destructive **edit opera
 
 Every parameter form previews **live**: while a form is open, the viewer shows what that op *would* produce as a translucent overlay, re-computed as you type (~250 ms debounce) and coloured by intent — green where material is added, red where it is removed, blue for wire/reference results (points, lines, sketch faces), neutral for transforms and fillet/chamfer. Switching forms or changing the selection cancels the preview; only **Apply** commits anything to the history.
 
+Each open form starts with a header — the op name, a dot in the preview's intent colour (green adds, red removes, blue reference, grey neutral) and a ▾ chevron. Collapsing the header hides the fields and cancels the live preview without discarding anything you typed; expanding it brings the values back and re-previews. The **Apply** row stays pinned below either way.
+
 The **Extrude**, **Revolve**, **Shell**, and **Draft** forms also carry a **Pin query** row: pick exactly one face, choose the producing op and bucket role it came from (e.g. an extrude's end cap), and click **Synthesize** to name that face as a stored query. The query is attached when you click **Apply** (as long as the selection hasn't changed since) and survives later edits renumbering the model's faces — the same mechanism agents use headlessly, now available interactively. Edge/volume operands and multi-face picks can't be pinned yet; the row says so rather than offering a dead button.
 
 The operation buttons are also on the [ribbon](#the-ribbon)'s Model tab, and the panel's own button grid is collapsed behind the grid button in its header by default (see above).
@@ -687,6 +695,7 @@ Under the Variables table, the collapsible **Configurations** section is a grid:
 - **Pick a row** with its radio button to make it the active configuration: every op field bound to a variable re-resolves, and the viewer rebuilds. **Base** returns to the plain variables.
 - **Edit a cell** to override that variable in that configuration. An empty cell (shown with the base expression as a faint placeholder) inherits the variable's own expression; the small number beside the cell is the evaluated value. Overridden cells are bold.
 - A cell whose expression cannot be evaluated is marked with a warning, and the model **freezes** at that variable's last good value instead of failing.
+- **Suppress ops** (the last column) takes history row numbers, e.g. `3, 5`: under that configuration replay skips those rows, so one model can have a fillet in one configuration and not in another. The stored ops never change; the History row shows a dotted, italic cue (distinct from the ● suppress strike-through, which is yours and applies everywhere). Rows already saved into the source cannot be listed.
 - Rename a configuration by editing its name; **×** deletes it. Renaming a variable carries its overrides along.
 
 Configurations are saved in `<model>.edits.json` ([format](./file-formats.md#configurations-design-table)); switching is not part of the op undo/redo history. For headless use, `set_configuration` defines them and the export and meshing tools take a `configuration` parameter ([MCP server](./mcp-server.md)); **Batch Export** can write one file per configuration.
@@ -785,6 +794,7 @@ The **Mass Properties** panel (below the FE Mesh panel) computes volume, surface
 
 1. With nothing selected, click **Compute** for whole-model properties. To inspect one entity instead, enter **Select** mode, pick exactly one volume, surface, or edge, then click **Compute** — selecting more than one entity shows a guidance message instead of a (possibly misleading) combined result.
 2. The panel shows whichever fields apply: a volume/solid gets **Volume**, **Area**, **Center of mass**, and **Ixx/Iyy/Izz**; a single face gets **Area** only; a single edge gets **Length** only.
+3. Tick **Show centre of mass in view** to drop a ring marker at the computed centre of mass (in the model's own frame, so it follows the up-axis rotation). It is a scene overlay, never pickable, redrawn on every new result and removed by unticking or by any model rebuild. For a mesh selection that is not watertight the point is the area centroid, not a volume centre.
 
 For STEP/IGES/BREP files this runs in the extension host via OpenCascade.js's `BRepGProp`; for STL/OBJ/PLY/glTF files it's computed entirely in the webview from the displayed triangle mesh (no moments of inertia for mesh sources in this first cut). Volume/Area/Length/Center of mass are labeled and shown in whatever unit the view-controls **Units** dropdown is set to (see [Units](#units) above) — switching it live-rescales an already-computed result with no need to click **Compute** again; **Ixx/Iyy/Izz** are always shown raw, unaffected by that setting.
 

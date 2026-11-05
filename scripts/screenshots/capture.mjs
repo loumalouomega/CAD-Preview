@@ -200,7 +200,8 @@ const SHOTS = [
     // with Import/Export DXF (285 → 342), one more with Export Technical
     // Drawing (342 → 371), and one more plus a separator with New Blank Model
     // (371 → 410), and one more with Export Drawing Sheet (410 → 439).
-    target: { clip: { x: 0, y: 0, width: 320, height: 446 } },
+    // (439 → 474 with Report Issue…)
+    target: { clip: { x: 0, y: 0, width: 320, height: 474 } },
   },
   // The toolbar's four dropdowns. `clip` rather than `sel: "#toolbar"` — a
   // locator screenshot clips to the element box, which would cut off the
@@ -467,6 +468,8 @@ const SHOTS = [
         activeConfiguration: "Tall",
       });
       await sleep(250);
+      // The Suppress ops column makes the grid wider than the default sidebar: widen it so the shot shows every column.
+      await page.evaluate(() => document.body.style.setProperty("--side-width", "480px"));
       await page.click("#config-toggle");
       await sleep(250);
     },

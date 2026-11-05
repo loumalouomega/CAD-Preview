@@ -32,7 +32,7 @@ import {
 import type { EntityType, PaneViewState } from "../protocol";
 import type { SelectedEntity } from "./selection";
 import type { UpAxis } from "../viewerDefaults";
-import { NAVIGATION_PRESETS, type MouseAction, type NavigationPreset } from "../navigationPresets";
+import { NAVIGATION_PRESETS, wheelBehaviourOf, wheelPanOffset, type MouseAction, type NavigationPreset } from "../navigationPresets";
 import { unionSelectionBounds, padBoxToMinSize } from "./selectionBounds";
 import { applyPreviewTint } from "./opPreviewBands";
 import { createRenderScheduler, type FrameTick } from "./renderScheduler";
@@ -217,6 +217,7 @@ export class Viewer {
   /** Display-only overlay (marker, line, label) for the in-progress/completed
    * measurement — a scene sibling of `model`, same pattern as `meshOverlay`. */
   private measurementOverlay: THREE.Object3D | null = null;
+  private centreOfMassMarker: THREE.Object3D | null = null;
   /** The overlay's label sprite, if any — rescaled every frame in `animate()`
    * to stay a constant on-screen size regardless of camera distance/zoom
    * (unlike point sprites, which only need to stay visible, a label
@@ -370,6 +371,8 @@ export class Viewer {
     // the cube hit-test or OrbitControls' bubble handlers see the event.
     this.renderer.domElement.addEventListener("pointerdown", this.onGatePointerDown, true);
     this.renderer.domElement.addEventListener("wheel", this.onGateWheel, { capture: true, passive: true });
+    // Touchpad preset: a plain wheel pans. Non-passive + capture + registered before OrbitControls' own listener.
+    this.renderer.domElement.addEventListener("wheel", this.onTouchpadWheel, { capture: true, passive: false });
     // Capture-phase so a face click is handled before OrbitControls starts a drag.
     this.renderer.domElement.addEventListener("pointerdown", this.onGizmoPointerDown, true);
     // Entity picking: select on a click (down+up without a drag) so orbit still works.
@@ -698,6 +701,7 @@ export class Viewer {
     this.setColorFieldOverlay(null);
     this.setOpPreview(null); // a preview computed from the OLD geometry must not linger over the new model
     this.clearMeasurementOverlay();
+    this.clearCentreOfMassMarker(); // its point refers to the OLD geometry
     this.clearModel();
     this.model = object;
     // Z-up source data displayed in this Three.js (Y-up) scene: rotate the model
@@ -2117,6 +2121,39 @@ export class Viewer {
     this.requestRender();
   }
 
+  /**
+   * Marks the centre of mass (Mass Properties' "Show in view"). `local` is in the
+   * model's own frame, so it goes through `model.localToWorld` (the up-axis
+   * rotation). Lives in the scene, not under `model`, so it is never picked; it
+   * is independent of the measurement overlay and survives a measurement.
+   */
+  showCentreOfMassMarker(local: THREE.Vector3): void {
+    this.clearCentreOfMassMarker();
+    const marker = makeMeasureMarkerSprite();
+    const world = local.clone();
+    this.model?.updateMatrixWorld(true);
+    this.model?.localToWorld(world);
+    marker.position.copy(world);
+    marker.scale.setScalar(this.pointSpriteScale * 3.0);
+    this.centreOfMassMarker = marker;
+    this.scene.add(marker);
+    this.requestRender();
+  }
+
+  clearCentreOfMassMarker(): void {
+    if (!this.centreOfMassMarker) return;
+    this.scene.remove(this.centreOfMassMarker);
+    disposeMeasureObject(this.centreOfMassMarker);
+    this.centreOfMassMarker = null;
+    this.requestRender();
+  }
+
+  /** World position of the centre-of-mass marker, or `null` — a test accessor. */
+  getCentreOfMassMarkerWorld(): [number, number, number] | null {
+    const m = this.centreOfMassMarker;
+    return m ? [m.position.x, m.position.y, m.position.z] : null;
+  }
+
   /** Disposes and removes the current measurement overlay (marker or line+label), if any. */
   clearMeasurementOverlay(): void {
     if (!this.measurementOverlay) return;
@@ -2606,6 +2643,7 @@ export class Viewer {
     window.removeEventListener("resize", this.onResize);
     this.renderer.domElement.removeEventListener("pointerdown", this.onGatePointerDown, true);
     this.renderer.domElement.removeEventListener("wheel", this.onGateWheel, { capture: true });
+    this.renderer.domElement.removeEventListener("wheel", this.onTouchpadWheel, { capture: true });
     this.renderer.domElement.removeEventListener("pointerdown", this.onGizmoPointerDown, true);
     this.renderer.domElement.removeEventListener("pointerdown", this.onSelectPointerDown);
     this.renderer.domElement.removeEventListener("pointerup", this.onSelectPointerUp);
@@ -2667,6 +2705,36 @@ export class Viewer {
 
   private onGateWheel = (event: WheelEvent): void => {
     this.gateToPane(event.clientX, event.clientY, false);
+  };
+
+  /**
+   * `touchpad` preset: a two-finger scroll (a wheel event without Ctrl) pans the pane under the
+   * pointer, moving camera and target together along the camera's own axes so the scene follows
+   * the fingers. A pinch (Ctrl-wheel) is left to OrbitControls, which zooms it. Does nothing
+   * under any other preset, where the wheel zooms.
+   */
+  private onTouchpadWheel = (event: WheelEvent): void => {
+    if (wheelBehaviourOf(this.navigationPreset) !== "pan" || event.ctrlKey) return;
+    const rect = this.renderer.domElement.getBoundingClientRect();
+    const index = paneAtPoint(this.paneRects, event.clientX - rect.left, event.clientY - rect.top);
+    if (index < 0) return;
+    event.preventDefault();
+    event.stopImmediatePropagation(); // OrbitControls must not also dolly
+    const pane = this.panes[index];
+    const cam = pane.active;
+    const target = pane.controls.target;
+    const worldHeight =
+      cam instanceof THREE.PerspectiveCamera
+        ? 2 * cam.position.distanceTo(target) * Math.tan((cam.fov * Math.PI) / 360)
+        : (cam.top - cam.bottom) / cam.zoom;
+    const { right, up } = wheelPanOffset(event.deltaX, event.deltaY, event.deltaMode, worldHeight, this.paneRects[index].height);
+    cam.updateMatrixWorld();
+    const e = cam.matrixWorld.elements;
+    const delta = new THREE.Vector3(e[0] * right + e[4] * up, e[1] * right + e[5] * up, e[2] * right + e[6] * up);
+    cam.position.add(delta);
+    target.add(delta);
+    pane.controls.update();
+    this.requestRender();
   };
 
   private gateToPane(clientX: number, clientY: number, updateFocus: boolean): void {

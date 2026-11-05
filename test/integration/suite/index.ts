@@ -37,7 +37,7 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import * as vscode from "vscode";
-import { installModalStubs, pick, save, cancel, input, open as openAnswer, waitForFile, waitFor, type ModalAnswer } from "./modalStubs";
+import { installModalStubs, setInfoButtonAnswer, pick, save, cancel, input, open as openAnswer, waitForFile, waitFor, type ModalAnswer } from "./modalStubs";
 import { writeParts } from "../../../src/partsStore";
 import { serializeEditsJson } from "../../../src/editsSidecar";
 import { hashBytes, serializeSaveJournal } from "../../../src/saveJournal";
@@ -63,6 +63,7 @@ interface SaveTestApi {
   markDirtyDocument?: (uri: vscode.Uri) => void;
   simulateWebviewMessage?: (uri: vscode.Uri, msg: unknown) => Promise<void>;
   setExportMeshStub?: (stub: ((format: string) => Uint8Array | undefined) | undefined) => void;
+  setOpenExternalStub?: (stub: ((url: string) => void) | undefined) => void;
   setSheetFormAnswer?: (answer: ((opts: unknown) => Promise<unknown>) | undefined) => void;
 }
 
@@ -277,7 +278,7 @@ test("the extension is installed, activates, and registers its commands", async 
     "cad-preview.open", "cad-preview.compareModels", "cad-preview.whatsNew",
     "cad-preview.export", "cad-preview.saveAs", "cad-preview.exportSvg",
     "cad-preview.exportDxf", "cad-preview.savePreprocess", "cad-preview.loadPreprocess",
-    "cad-preview.refreshModels", "cad-preview.new", "cad-preview.connectAgent",
+    "cad-preview.refreshModels", "cad-preview.new", "cad-preview.connectAgent", "cad-preview.openSample",
   ]) {
     assert(commands.includes(id), `command ${id} is registered`);
   }
@@ -1072,6 +1073,45 @@ test("Compressed glTF (Draco and meshopt) loads under the real webview CSP", asy
     const buf = fs.readFileSync(out);
     const count = buf.length >= 84 ? buf.readUInt32LE(80) : 0;
     assert(count === 12, `cube.wrl: the displayed model carries the cube's 12 triangles (got ${count})`);
+    await closeAll();
+  }
+});
+
+test("Report Issue… drafts the failed op, redacted, and hands the prefilled URL to the browser only on a click", async () => {
+  const api = await saveTestApi();
+  assert(!!api?.setOpenExternalStub && !!api.simulateWebviewMessage, "the open-external seam is available");
+  const staged = stage(STEP_FIXTURE);
+  // An op whose target does not exist: replay skips it with a diagnostic (a forced failure).
+  fs.writeFileSync(
+    `${staged}.edits.json`,
+    JSON.stringify({ version: 1, source: path.basename(staged), ops: [{ op: "translate", targets: ["solid-99"], vec: [5, 0, 0] }] })
+  );
+  assert(await openDocument(staged), "the STEP fixture opens with a failing op");
+  const urls: string[] = [];
+  api!.setOpenExternalStub!((u) => urls.push(u));
+  try {
+    setInfoButtonAnswer("Open on GitHub");
+    const record = await withModals([], async () => {
+      await api!.simulateWebviewMessage!(vscode.Uri.file(staged), { type: "reportIssueRequest" });
+      // The handler is fire-and-forget and opens an editor tab before it prompts: wait for its outcome
+      // INSIDE the stub window, or the stubs are restored before the prompt ever appears.
+      await waitFor(() => urls.length >= 1, 15000);
+    });
+    assert(record.infos.some((m) => /Nothing is sent until you do/.test(m)), "the review prompt was shown first");
+    assert(urls.length === 1, `exactly one URL was handed to the browser (got ${urls.length})`);
+    const decoded = decodeURIComponent(urls[0]);
+    assert(/translate/.test(decoded), "the draft names the failed op");
+    assert(!decoded.includes(path.dirname(staged)), "the draft carries no absolute directory");
+    // Declining the button sends nothing.
+    setInfoButtonAnswer(undefined);
+    await withModals([], async () => {
+      await api!.simulateWebviewMessage!(vscode.Uri.file(staged), { type: "reportIssueRequest", opIndex: 0 });
+      await sleep(3000); // long enough for the draft tab and the (dismissed) prompt to have happened
+    });
+    assert(urls.length === 1, "dismissing the prompt opens nothing");
+  } finally {
+    setInfoButtonAnswer(undefined);
+    api!.setOpenExternalStub!(undefined);
     await closeAll();
   }
 });
@@ -2638,6 +2678,35 @@ test("New Blank Model refuses to overwrite an existing file", async () => {
     fs.readFileSync(dest).equals(original),
     "the pre-existing file is byte-identical after the refused create"
   );
+});
+
+test("Open Sample… copies the chosen sample into the chosen folder, opens the copy, and never touches the bundled original", async () => {
+  await closeAll();
+  const bundled = path.join(ROOT, "dist", "samples");
+  const listing = () => fs.readdirSync(bundled).sort().join(",");
+  const before = listing();
+  const folder = tempDir();
+  const record = await withModals([pick("10 mm cube (STL)"), openAnswer(folder)], async () => {
+    await vscode.commands.executeCommand("cad-preview.openSample");
+    await sleep(1500);
+  });
+  assert(record.quickPicks[0]?.labels.length === 3, `the gallery offers the three samples (got ${JSON.stringify(record.quickPicks[0]?.labels)})`);
+  const copy = path.join(folder, "cube.stl");
+  assert(fs.existsSync(copy), "the sample was copied into the chosen folder");
+  assert(fs.readFileSync(copy).equals(fs.readFileSync(path.join(bundled, "cube.stl"))), "the copy is byte-identical to the bundled sample");
+  assert(listing() === before, "no sidecar or other file appeared beside the bundled original");
+  const active = vscode.window.tabGroups.activeTabGroup.activeTab?.label;
+  assert(active === "cube.stl", `the copy is the opened document (active tab ${JSON.stringify(active)})`);
+  await closeAll();
+
+  // A second run into the same folder is refused and leaves the (now edited) copy alone.
+  fs.writeFileSync(copy, "EDITED");
+  const again = await withModals([pick("10 mm cube (STL)"), openAnswer(folder)], async () => {
+    await vscode.commands.executeCommand("cad-preview.openSample");
+    await sleep(800);
+  });
+  assert(fs.readFileSync(copy, "utf8") === "EDITED", "an existing file is never overwritten");
+  assert(again.errors.some((m) => /already exists/.test(m)), `the refusal names the reason (got ${JSON.stringify(again.errors)})`);
 });
 
 test("session-gated commands are silent no-ops with no editor focused", async () => {

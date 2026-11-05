@@ -7,7 +7,7 @@ import { evalExpr } from "../paramExpr";
 import { normalizeDecimalComma } from "../localeNumber";
 import { profilePlacementFromPlane } from "../planeFrame";
 import { OP_CATALOG, describeOp, type CatalogCategory, type PanelOpId } from "./opCatalog";
-import { QUERYABLE_PANEL_FORMS, catalogLocation } from "./opCatalog";
+import { QUERYABLE_PANEL_FORMS, catalogLocation, allCatalogEntries } from "./opCatalog";
 import { OP_ICONS } from "./opIcons";
 import { allHoleSizes, depthPresetsFor, findHoleSize } from "../holeStandards";
 import { TOOLBAR_ICONS } from "../toolbarIcons";
@@ -129,6 +129,8 @@ export interface EditsPanelCallbacks {
   /** Remove a single op from anywhere in the history list (not just the last one). */
   onRemoveOp: (index: number) => void;
   /** Suppress/unsuppress and/or rename the op at `index` (wired to `EditsModel.setState`). */
+  /** ⚠ row's "Report" button: draft an issue about this op. */
+  onReportIssue?: (index: number) => void;
   onSetOpState: (index: number, state: { suppressed?: boolean; label?: string | null }) => void;
   /** Jump the op stack straight to timeline position `index` in one splice
    * (op-history scrubbing): applied rows roll the
@@ -220,6 +222,8 @@ export interface EditsPanelCallbacks {
    * retarget the Transform Gizmo for `"translate"`/`"rotate"`/`"scale"`
    * without this panel needing to know the gizmo exists. */
   onFormChanged: (id: PanelOpId | null) => void;
+  /** Intent tint of an op's preview (`add` green, `cut` red, `ref` blue) for the form header's chip; `undefined` = neutral. */
+  opTint?: (id: PanelOpId) => "add" | "cut" | "ref" | undefined;
   /** A field in the open op form changed (or the form just opened) — the live
    * operation preview re-reads {@link EditsPanel.currentDraft} and schedules a
    * debounced preview. Fired from one delegated listener on `#edits-params`
@@ -236,6 +240,9 @@ export interface EditsPanelCallbacks {
    * the real selection's rendering. The ids are `face-N` strings; the wiring
    * maps them to `{entityType: "surface"}` entities. */
   onHighlightBucket: (ids: string[] | null) => void;
+  /** Pointer over (or off) an applied history row: transiently tints the faces its op produced
+   * (`ids`), `null` on leave. Never touches the selection; the wiring repaints the real one. */
+  onHoverBucket?: (ids: string[] | null) => void;
   /** Induce a stored operand query for the currently-selected faces against
    * the given producing op's `role` bucket (the "pin as query" row in
    * `QUERYABLE_PANEL_FORMS` forms). The wiring reads the live selection,
@@ -289,6 +296,13 @@ export class EditsPanel {
    * viewport (click-toggle). Reset on every render — a model rebuild already
    * restores the real selection's rendering via `refreshColors()`. */
   private activeBucketOp: number | null = null;
+  private hoverActive = false;
+  private pinnedBucketIdsByOp = new Map<number, string[]>();
+
+  /** Face ids of the chip currently pinned by a click, or null. */
+  private pinnedBucketIds(): string[] | null {
+    return this.activeBucketOp === null ? null : this.pinnedBucketIdsByOp.get(this.activeBucketOp) ?? null;
+  }
   /** Panel-local mirror of the captured boolean-A count (display only; the ids
    * themselves live in the wiring). Survives form re-renders. */
   private booleanACount = 0;
@@ -729,6 +743,11 @@ export class EditsPanel {
     // a model rebuild + `refreshColors()`, which already restores the real
     // selection's rendering.
     this.activeBucketOp = null;
+    this.pinnedBucketIdsByOp.clear();
+    if (this.hoverActive) {
+      this.hoverActive = false; // the hovered row is about to be destroyed — its pointerleave never fires
+      this.cb.onHoverBucket?.(null);
+    }
 
     this.body.innerHTML = "";
     if (ops.length === 0 && (redoOps?.length ?? 0) === 0) {
@@ -777,6 +796,10 @@ export class EditsPanel {
       if (op.suppressed) {
         li.classList.add("edit-row-suppressed");
         label.title = "Suppressed — replay skips this op";
+      } else if (outcome?.suppressed) {
+        // Skipped by replay although the op itself is not suppressed: the ACTIVE configuration suppresses it.
+        li.classList.add("edit-row-config-suppressed");
+        label.title = "Suppressed by the active configuration — replay skips this op";
       }
       if (!opts.pending && !opts.baked) {
         label.addEventListener("dblclick", (e) => {
@@ -853,10 +876,22 @@ export class EditsPanel {
           warn.className = "edit-skip-warning";
           warn.textContent = "⚠";
           li.appendChild(warn);
+          if (this.cb.onReportIssue) {
+            const rep = document.createElement("button");
+            rep.className = "edit-report";
+            rep.textContent = "Report…";
+            rep.title = "Draft a redacted GitHub issue for this op (opens a draft for review; nothing is sent)";
+            rep.addEventListener("click", (e) => {
+              e.stopPropagation();
+              this.cb.onReportIssue?.(i);
+            });
+            li.appendChild(rep);
+          }
         }
         const bucket = opts.bucket;
         if (bucket) {
           const allIds = Object.values(bucket.roles).flat();
+          this.pinnedBucketIdsByOp.set(bucket.op, allIds);
           const chip = document.createElement("button");
           chip.className = "edit-bucket";
           chip.textContent = `+${allIds.length}`;
@@ -878,6 +913,16 @@ export class EditsPanel {
             }
           });
           li.appendChild(chip);
+          // Hover preview of the same faces. While a chip is pinned the pinned ids come back on leave.
+          li.addEventListener("pointerenter", () => {
+            this.hoverActive = true;
+            this.cb.onHoverBucket?.(allIds);
+          });
+          li.addEventListener("pointerleave", () => {
+            this.hoverActive = false;
+            this.cb.onHoverBucket?.(null);
+            if (this.activeBucketOp !== null) this.cb.onHighlightBucket(this.pinnedBucketIds());
+          });
         }
       } else {
         const redoMark = document.createElement("span");
@@ -1712,9 +1757,55 @@ export class EditsPanel {
       f.appendChild(applyRow);
       this.pendingApplyRow = null;
     }
+    this.wrapFormInHeader(id, f);
     // A freshly-opened form previews immediately from its default field
     // values — opening "Box" shows the default box before anything is typed.
     if (this.draftReader) this.cb.onPreviewDraftChanged();
+  }
+
+  /**
+   * Gives the open form a header (op name, intent-tint chip, collapse chevron).
+   * The fields are MOVED into a body wrapper (never rebuilt), so collapsing
+   * keeps every typed value; only `renderParams` destroys them. The Apply row
+   * stays a direct child of `#edits-params` (the sticky-footer rule and its
+   * test select it there). Collapsing cancels the live preview, expanding
+   * re-previews from the kept values.
+   */
+  private wrapFormInHeader(id: PanelOpId, f: HTMLElement): void {
+    const footer = f.querySelector(":scope > .compose-footer");
+    const body = document.createElement("div");
+    body.className = "edits-form-body";
+    while (f.firstChild) {
+      if (f.firstChild === footer) break;
+      body.appendChild(f.firstChild);
+    }
+    const header = document.createElement("div");
+    header.className = "edits-form-header";
+    const chev = document.createElement("button");
+    chev.type = "button";
+    chev.className = "edits-form-toggle";
+    chev.setAttribute("aria-expanded", "true");
+    chev.title = "Collapse form (values are kept)";
+    const label = document.createElement("span");
+    label.className = "edits-form-title";
+    label.textContent = allCatalogEntries().find((e) => e.id === id)?.label ?? id;
+    const tint = this.cb.opTint?.(id);
+    const chip = document.createElement("span");
+    chip.className = `edits-form-tint edits-form-tint-${tint ?? "neutral"}`;
+    chip.title = tint === "add" ? "Adds material" : tint === "cut" ? "Removes material" : tint === "ref" ? "Reference geometry" : "Neutral";
+    chev.textContent = "▾";
+    header.append(chev, label, chip);
+    chev.addEventListener("click", () => {
+      const collapsed = !body.hidden;
+      body.hidden = collapsed;
+      chev.setAttribute("aria-expanded", String(!collapsed));
+      chev.textContent = collapsed ? "▸" : "▾";
+      f.classList.toggle("edits-form-collapsed", collapsed);
+      if (collapsed) this.cb.onPreviewCancel();
+      else if (this.draftReader) this.cb.onPreviewDraftChanged();
+    });
+    f.insertBefore(body, f.firstChild);
+    f.insertBefore(header, body);
   }
 
   private renderBooleanForm(kind: BooleanKind): void {

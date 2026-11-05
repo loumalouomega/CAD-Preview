@@ -1844,7 +1844,7 @@ server.registerTool(
   "set_configuration",
   {
     description:
-      "Design table: create, update, rename, activate or remove a named CONFIGURATION of the model's variables (e.g. M6 / M8). A configuration is a sparse map of variable name -> expression override, stored in <model>.edits.json; the ops and their `exprs` never change — the active configuration is overlaid onto the variables before every expression resolves, so the same op list yields different geometry per configuration. `overrides` merges (an empty string or null removes one override; `replaceOverrides` replaces the whole map); `active: true` makes this the applied configuration (false un-applies it if it is the active one); `copyFrom` seeds a new configuration from another. A cell whose expression fails freezes at the variable's last-good value and is reported in `table[].errors`, never a crash. Variables are the only thing a configuration changes (not Parts, mesh options or layers). To evaluate a configuration WITHOUT changing the stored selection, pass `configuration` to an export or meshing tool (export_brep, export_mesh, generate_mesh, get_mass_properties, ...) or `configurations`/`allConfigurations` to batch_export. Returns every configuration's evaluated values (`table`).",
+      "Design table: create, update, rename, activate or remove a named CONFIGURATION of the model's variables (e.g. M6 / M8). A configuration is a sparse map of variable name -> expression override, stored in <model>.edits.json; the ops and their `exprs` never change — the active configuration is overlaid onto the variables before every expression resolves, so the same op list yields different geometry per configuration. `overrides` merges (an empty string or null removes one override; `replaceOverrides` replaces the whole map); `active: true` makes this the applied configuration (false un-applies it if it is the active one); `copyFrom` seeds a new configuration from another. A cell whose expression fails freezes at the variable's last-good value and is reported in `table[].errors`, never a crash. Variables — and, with `suppress`/`unsuppress`, which ops replay skips (a per-configuration list of op indices, overlaid at replay; the user's own per-op suppress toggle is separate) — are the only things a configuration changes (not Parts, mesh options or layers). To evaluate a configuration WITHOUT changing the stored selection, pass `configuration` to an export or meshing tool (export_brep, export_mesh, generate_mesh, get_mass_properties, ...) or `configurations`/`allConfigurations` to batch_export. Returns every configuration's evaluated values (`table`).",
     inputSchema: {
       path: modelPath,
       name: z.string().describe("Configuration name (the upsert key), 1-64 characters"),
@@ -1854,6 +1854,8 @@ server.registerTool(
       active: z.boolean().optional().describe("true applies this configuration; false un-applies it when it is the active one"),
       remove: z.boolean().optional().describe("Delete the configuration"),
       copyFrom: z.string().optional().describe("When creating, start from a copy of this configuration's overrides"),
+      suppress: z.array(z.number().int().min(0)).optional().describe("0-based op indices this configuration suppresses (replay skips them; stored ops never change). Baked-prefix indices are refused"),
+      unsuppress: z.array(z.number().int().min(0)).optional().describe("0-based op indices to stop suppressing in this configuration"),
     },
   },
   wrap(
@@ -1866,6 +1868,8 @@ server.registerTool(
       active?: boolean;
       remove?: boolean;
       copyFrom?: string;
+      suppress?: number[];
+      unsuppress?: number[];
     }) => setConfiguration(args)
   )
 );

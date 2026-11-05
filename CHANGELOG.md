@@ -6,6 +6,16 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/); thi
 
 ## [Unreleased]
 
+### Added
+
+- **Open Sample… and a Get-started walkthrough.** `CAD Preview: Open Sample…` (also a link in the empty Models view) copies one of three bundled models — `annulus.stp`, `cube.stl`, `bracket.csg`, 19.6 KB together, all repo-authored — into a folder you choose and opens the copy; it never opens the bundled original and never overwrites. A four-step walkthrough (open, edit and save, mesh, connect an agent) is contributed to the Welcome page. Samples ship from `dist/samples/` (index in `samples/index.json`); `compat:vsix` prints their size. The command-flow `test:integration` case is written but not yet seen green (registered gap).
+- **`cadPreview.navigationPreset: touchpad`.** Left-drag orbits as before; a two-finger scroll (a plain wheel event) pans the pane under the pointer by `wheelPanOffset`, and a pinch (Ctrl-wheel) zooms. A physical mouse wheel sends the same plain events, so it pans too (stated in the setting). An OpenSCAD preset is declined: its mapping equals Default. `test:webview` pins pan (centroid moves, area stays), pinch zoom and Default's wheel zoom with scripted events; a real trackpad remains a registered verification gap.
+- **Hovering an Edits history row tints the faces its op produced.** The same faces the `+N` chip pins, shown while the pointer is over the row and restored on leave (the real selection, or a pinned chip, comes back). B-rep sources only. Folders and drag reorder remain on the roadmap.
+- **A configuration can suppress ops.** The Config Table gains a **Suppress ops** column (history row numbers) and `set_configuration` takes `suppress` / `unsuppress` (0-based indices): replay skips those ops under that configuration only — an M6 without the fillet an M8 keeps — while the stored ops, the user's own ● toggle and every other configuration are untouched. Applied at replay consumption in the host, the mesh rebuild and the headless readers (so `configuration` on the export and meshing tools, and `batch_export` per configuration, inherit it); deleting an op shifts the later indices; baked-prefix indices are refused; `save_model` / Save in place refuse while the active configuration suppresses an unsaved op. `mcp:smoke` pins 276 (suppressed) against 580 (kept).
+- **Report an issue from the viewer.** **File ▸ Report Issue…**, a **Report…** link on every ⚠ history row (the draft is about that op) and a **Report issue…** button beside a kernel-crash or watchdog-timeout error. Webview message `reportIssueRequest`. The host-flow `test:integration` case is written but not yet seen green (registered in the verification-gap registry).
+- **A collapsible header on every operation form.** The op name, an intent-tint dot and a chevron; collapsing hides the fields and cancels the preview, expanding restores the typed values and re-previews. The docked placement remains on the roadmap.
+- **Mass Properties can mark the centre of mass in the view.** A **Show centre of mass in view** box under the result drops a ring at the computed centroid (B-rep and mesh sources; the area centroid for a non-watertight mesh selection). `test:webview` pins it by pixel diff on, off and after untick. Zebra stripes remain on the roadmap.
+
 ## [3.37.0] - 2026-11-05
 
 ### Added

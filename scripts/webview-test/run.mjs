@@ -1847,7 +1847,7 @@ test("dropdowns: clicking an open trigger's inner icon closes it", async (page) 
  * failure text rather than a guess. If one of these fails: measure, then update
  * BOTH this test and the clip in `capture.mjs` together.
  */
-const FILE_MENU_CLIP = { x: 0, y: 0, width: 320, height: 446 };
+const FILE_MENU_CLIP = { x: 0, y: 0, width: 320, height: 474 };
 const TOOLBAR_MENU_CLIP = { x: 750, y: 119, width: 610, height: 500 };
 
 const panelBox = (page, id) =>
@@ -3822,6 +3822,42 @@ test("command bar: a typed op the kernel skips reports it on the bar", async (pa
   assert(/translate was skipped: none of the target ids/.test(msg), `a skipped typed op is reported on the bar (got ${JSON.stringify(msg)})`);
 });
 
+test("report issue: a ⚠ row button, the File menu and a kernel-crash error all post reportIssueRequest", async (page) => {
+  await page.evaluate(() => {
+    window.__lastGeometry = null;
+    window.addEventListener("message", (e) => {
+      if (e.data?.type === "geometry") window.__lastGeometry = e.data;
+    });
+  });
+  await populate(page);
+  await typeCommand(page, 'translate {"targets":["solid-0"],"vec":[1,0,0]}');
+  const count = await page.evaluate(() => (window.__sent ?? []).findLast((x) => x.type === "editsChanged").ops.length);
+  const outcomes = Array.from({ length: count }, (_, i) =>
+    i === count - 1 ? { index: i, kind: "translate", applied: false, diagnostic: "none of the target ids resolve to a solid" } : { index: i, kind: "x", applied: true });
+  await page.evaluate((o) => window.postMessage({ ...window.__lastGeometry, opOutcomes: o }, "*"), outcomes);
+  await sleep(400);
+  const buttons = await page.evaluate(() => document.querySelectorAll(".edit-report").length);
+  assert(buttons === 1, `exactly the one skipped row offers Report… (got ${buttons})`);
+  await page.evaluate(() => document.querySelector(".edit-report").click());
+  const req = await lastSent(page, "reportIssueRequest");
+  assert(req && req.opIndex === count - 1, `the row button names its op (got ${JSON.stringify(req)})`);
+
+  const before = await sentCount(page, "reportIssueRequest");
+  await page.evaluate(() => document.getElementById("menu-report-issue").click());
+  const menuReq = await lastSent(page, "reportIssueRequest");
+  assert((await sentCount(page, "reportIssueRequest")) === before + 1 && menuReq.opIndex === undefined, "the File-menu entry posts a bare request");
+
+  await post(page, { type: "error", message: "Fillet radius too large" });
+  await sleep(100);
+  assert(await page.evaluate(() => document.getElementById("status-report-issue") === null), "an ordinary error offers no report button");
+  await post(page, { type: "error", message: "kernel worker exited unexpectedly (code=1, signal=null)" });
+  await sleep(100);
+  assert(await page.evaluate(() => document.getElementById("status-report-issue")?.offsetParent !== null), "a kernel crash shows the Report issue… button");
+  await page.evaluate(() => document.getElementById("status-report-issue").click());
+  const crash = await lastSent(page, "reportIssueRequest");
+  assert(/kernel worker exited/.test(crash?.error ?? ""), `...which carries the crash message (got ${JSON.stringify(crash)})`);
+});
+
 test("command bar: the row sits above the status bar, the canvas ends above it, and the dock and toast clear it", async (page) => {
   await populate(page);
   const geo = () =>
@@ -5592,6 +5628,56 @@ test("navigation presets: Fusion pans on middle-drag and orbits on Shift+middle-
   assert(back > MOVED, `Default again: the left-drag that did nothing under Fusion orbits (${back} pixels changed)`);
 });
 
+test("navigation presets: Touchpad pans on a two-finger scroll and zooms on a pinch; Default zooms on any wheel", async (page) => {
+  await populate(page);
+  const defaults = (navigationPreset) => ({ type: "viewerDefaults", background: "#1e1e1e", meshSizePreset: "medium", showGridAndAxes: false, upAxis: "y", singleKeyCommands: false, navigationPreset });
+  await post(page, defaults("touchpad"));
+  await sleep(900);
+  const box = await viewportBox(page);
+  const cx = box.x + box.width / 2, cy = box.y + box.height / 2;
+  // Centroid and area of everything that is not the flat background: the model alone (grid and axes are off).
+  const bounds = (b64) => page.evaluate(async (b) => {
+    const bmp = await createImageBitmap(await (await fetch(`data:image/png;base64,${b}`)).blob());
+    const c = document.createElement("canvas");
+    c.width = bmp.width; c.height = bmp.height;
+    c.getContext("2d").drawImage(bmp, 0, 0);
+    const { data } = c.getContext("2d").getImageData(0, 0, c.width, c.height);
+    const bg = [data[0], data[1], data[2]];
+    let n = 0, sx = 0, sy = 0;
+    for (let y = 0; y < c.height; y++) for (let x = 0; x < c.width; x++) {
+      const i = (y * c.width + x) * 4;
+      if (Math.abs(data[i] - bg[0]) + Math.abs(data[i + 1] - bg[1]) + Math.abs(data[i + 2] - bg[2]) > 24) { n++; sx += x; sy += y; }
+    }
+    return { cx: n ? sx / n : 0, cy: n ? sy / n : 0, area: n };
+  }, b64);
+  const base = await bounds(await parkedShot(page));
+  assert(base.area > 2000, `precondition: the model is visible (${JSON.stringify(base)})`);
+  await page.mouse.move(cx, cy);
+  await page.mouse.wheel(0, 60); // plain wheel = two-finger scroll
+  await sleep(700);
+  const panned = await bounds(await parkedShot(page));
+  assert(Math.abs(panned.cy - base.cy) > 8 && Math.abs(panned.area - base.area) < base.area * 0.08,
+    `Touchpad: a plain scroll pans — the model moves (${base.cy.toFixed(1)} → ${panned.cy.toFixed(1)}) without changing size (area ${base.area} → ${panned.area})`);
+  assert(panned.cy < base.cy, `...scrolling down moves the content up (${base.cy.toFixed(1)} → ${panned.cy.toFixed(1)})`);
+  // Pinch = a wheel event with ctrlKey: OrbitControls zooms it.
+  await page.evaluate(([x, y]) => {
+    const canvas = document.querySelector("#app canvas:last-of-type") ?? document.querySelector("canvas");
+    canvas.dispatchEvent(new WheelEvent("wheel", { deltaY: -30, ctrlKey: true, clientX: x, clientY: y, bubbles: true, cancelable: true }));
+  }, [cx, cy]);
+  await sleep(700);
+  const zoomed = await bounds(await parkedShot(page));
+  assert(zoomed.area > panned.area * 1.15, `Touchpad: a pinch (Ctrl-wheel) zooms in (area ${panned.area} → ${zoomed.area})`);
+  // Default: the same plain wheel zooms.
+  await post(page, defaults("default"));
+  await sleep(900);
+  const before = await bounds(await parkedShot(page));
+  await page.mouse.move(cx, cy);
+  await page.mouse.wheel(0, -200);
+  await sleep(700);
+  const after = await bounds(await parkedShot(page));
+  assert(Math.abs(after.area - before.area) > before.area * 0.1, `Default: a plain wheel zooms (area ${before.area} → ${after.area})`);
+});
+
 test("look at face: the context-menu entry fetches the face normal and turns the camera onto it", async (page) => {
   await populate(page);
   await enablePicking(page, "surface");
@@ -5663,6 +5749,37 @@ test("form ergonomics: the Apply row stays inside the scrolling Edits area on a 
   await page.setViewportSize({ width: 1280, height: 800 });
 });
 
+test("form ergonomics: the form header collapses the fields and keeps every typed value", async (page) => {
+  await populate(page);
+  await page.evaluate(() => [...document.querySelectorAll(".op-btn")].find((b) => b.querySelector(".op-name")?.textContent === "Box")?.click());
+  await sleep(200);
+  const hdr = await page.evaluate(() => ({
+    title: document.querySelector("#edits-params > .edits-form-header .edits-form-title")?.textContent,
+    tint: document.querySelector("#edits-params .edits-form-tint")?.className ?? "",
+    footerDirect: !!document.querySelector("#edits-params > .compose-footer"),
+  }));
+  assert(hdr.title === "Box", `the header names the op (got ${JSON.stringify(hdr.title)})`);
+  assert(/edits-form-tint-add/.test(hdr.tint), `Box carries the add tint (got ${hdr.tint})`);
+  assert(hdr.footerDirect, "the Apply row is still a direct child of #edits-params");
+  const field = await page.evaluate(() => {
+    const el = document.querySelector("#edits-params .edits-form-body input");
+    el.value = "37.5";
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+    return el.getAttribute("data-name") ?? el.name ?? "";
+  });
+  const visible = () => page.evaluate(() => document.querySelector("#edits-params .edits-form-body input")?.offsetParent !== null);
+  assert(await visible(), "precondition: the field is rendered");
+  await page.click("#edits-params .edits-form-toggle");
+  await sleep(150);
+  assert(!(await visible()), "collapsing hides the fields (rendered, not just the attribute)");
+  assert(await page.evaluate(() => document.querySelector("#edits-params > .compose-footer") !== null), "the Apply row survives the collapse");
+  await page.click("#edits-params .edits-form-toggle");
+  await sleep(150);
+  assert(await visible(), "expanding shows them again");
+  const kept = await page.evaluate(() => document.querySelector("#edits-params .edits-form-body input").value);
+  assert(kept === "37.5", `the typed value survives collapse and expand (got ${JSON.stringify(kept)}, field ${field})`);
+});
+
 test("history rows: suppress toggles replay state, rename commits/cancels, delete warns about dependents", async (page) => {
   await populate(page);
   await post(page, {
@@ -5721,6 +5838,54 @@ test("parameters table: promoting a model parameter makes the op follow the vari
 
 const CONFIG_OPS = [{ op: "addBox", center: [0, 0, 0], size: [1, 1, 1], exprs: { "size[0]": "D" } }];
 const CONFIG_VARS = [{ name: "D", expr: "6", value: 6 }];
+
+test("configurations: Suppress ops stores 0-based indices per configuration and never touches the posted ops", async (page) => {
+  await populate(page);
+  await post(page, {
+    type: "edits",
+    ops: CONFIG_OPS,
+    variables: CONFIG_VARS,
+    configurations: [{ name: "M6", overrides: {} }, { name: "M8", overrides: { D: "8" } }],
+    activeConfiguration: null,
+  });
+  await sleep(300);
+  await page.evaluate(() => document.getElementById("config-toggle").click());
+  await sleep(150);
+  const exists = await page.evaluate(() => ({
+    m8: document.querySelector('.config-row[data-config="M8"] .config-suppress') !== null,
+    base: document.querySelector('.config-row[data-base="1"] .config-suppress') === null,
+  }));
+  assert(exists.m8 && exists.base, `every configuration row has a Suppress ops field, the Base row does not (got ${JSON.stringify(exists)})`);
+  await page.evaluate(() => {
+    const input = document.querySelector('.config-row[data-config="M8"] .config-suppress');
+    input.value = "1, 1";
+    input.dispatchEvent(new Event("change"));
+  });
+  await sleep(300);
+  let sent = (await sentOf(page, "editsChanged")).pop();
+  const m8 = sent.configurations.find((c) => c.name === "M8");
+  assert(JSON.stringify(m8.suppressed) === "[0]", `row number 1 is stored as index 0, de-duplicated (got ${JSON.stringify(m8.suppressed)})`);
+  assert(sent.configurations.find((c) => c.name === "M6").suppressed === undefined, "an untouched configuration stays byte-identical (no field)");
+  assert(sent.ops.every((o) => o.suppressed === undefined), "the posted ops are never stamped with the suppression");
+  const shown = await page.evaluate(() => document.querySelector('.config-row[data-config="M8"] .config-suppress').value);
+  assert(shown === "1", `the field shows the 1-based row (got ${JSON.stringify(shown)})`);
+  const before = await sentCount(page, "editsChanged");
+  await page.evaluate(() => {
+    const input = document.querySelector('.config-row[data-config="M8"] .config-suppress');
+    input.value = "abc";
+    input.dispatchEvent(new Event("change"));
+  });
+  await sleep(250);
+  assert((await sentCount(page, "editsChanged")) === before, "a non-numeric entry is refused without writing");
+  await page.evaluate(() => {
+    const input = document.querySelector('.config-row[data-config="M8"] .config-suppress');
+    input.value = "";
+    input.dispatchEvent(new Event("change"));
+  });
+  await sleep(300);
+  sent = (await sentOf(page, "editsChanged")).pop();
+  assert(sent.configurations.find((c) => c.name === "M8").suppressed === undefined, "clearing the field removes the list again");
+});
 
 test("configurations: the Config Table switches the active configuration through the overlay, a failing cell freezes, no-configuration documents are unchanged", async (page) => {
   await populate(page);
@@ -6081,6 +6246,36 @@ test("external edits: the appended op flashes its produced faces once, then rest
   // (tens of thousands here). The absolute bound keeps the noise case honest
   // without letting a partial restore through.
   assert(restoredDiff < 1000, `the highlight restores after the one-shot window (${restoredDiff} pixels vs control; a missed restore would differ by ${flashDiff})`);
+});
+
+test("history rows: hovering a row tints the faces its op produced and leaving restores", async (page) => {
+  await populate(page);
+  await post(page, { type: "edits", ops: SAVE_POINT_OPS, variables: [], bakedThrough: 0 });
+  await sleep(300);
+  const geometry = fixture("geometry");
+  const opBuckets = [{ op: 1, kind: "translate", roles: { body: ["face-0", "face-1", "face-2", "face-3"] } }];
+  await post(page, { ...geometry, autoFit: false, opBuckets });
+  await sleep(400);
+  const baseline = await parkedShot(page);
+  const row = (i) => page.locator(`#edits-body li[data-op-index="${i}"], .edit-row[data-op-index="${i}"]`).first();
+  const hoverRow = async (i) => {
+    await row(i).hover({ position: { x: 20, y: 8 } }); // scrolls the row into view first
+    await sleep(300);
+  };
+  await hoverRow(1);
+  const hovered = await canvasShot(page);
+  const tinted = await canvasDiffCount(page, baseline, hovered);
+  assert(tinted > 100, `hovering the op's row tints its produced faces (${tinted} pixels differ)`);
+  await hoverRow(0); // op 0 has no bucket: the row offers no preview
+  const other = await canvasShot(page);
+  const stillTinted = await canvasDiffCount(page, baseline, other);
+  assert(stillTinted < 1000, `a row without a bucket tints nothing and the previous tint is gone (${stillTinted} pixels differ)`);
+  const box = await viewportBox(page);
+  await page.mouse.move(box.x + box.width / 2, box.y - 40);
+  await sleep(300);
+  const left = await canvasShot(page);
+  const restored = await canvasDiffCount(page, baseline, left);
+  assert(restored < 1000, `leaving restores the real rendering (${restored} pixels vs baseline; a missed restore would differ by ${tinted})`);
 });
 
 // ── Saved view bookmarks (roadmap Tier 1 "Saved view bookmarks") ─────────────
@@ -7342,6 +7537,47 @@ test("mass properties: a mesh source computes locally and never posts a request"
   assert((await sentCount(page, "massPropertiesRequest")) === 0, "a mesh source posts zero massPropertiesRequest messages");
   const text = await massText(page);
   assert(/Volume/.test(text) && /1,?000/.test(text), `the cube's volume is computed client-side (got ${JSON.stringify(text.slice(0, 120))})`);
+});
+
+test("mass properties: Show centre of mass in view draws a marker at the centroid and removes it again", async (page) => {
+  await populate(page);
+  await openAdvanced(page);
+  await page.click("#mass-refresh");
+  const req = await lastSent(page, "massPropertiesRequest");
+  await post(page, { type: "massPropertiesResult", requestId: req.requestId, properties: massReply() });
+  await sleep(150);
+  assert(await page.evaluate(() => !!document.getElementById("mass-show-com")), "a result with a centre of mass offers the Show-in-view box");
+  const grab = async () => {
+    await setPanelHidden(page, true);
+    const shot = (await shotWithoutToast(page, () => page.locator("#app").screenshot())).toString("base64");
+    await setPanelHidden(page, false);
+    return shot;
+  };
+  const diff = (a, b) => page.evaluate(async ([x, y]) => {
+    const px = async (b64) => {
+      const bmp = await createImageBitmap(await (await fetch(`data:image/png;base64,${b64}`)).blob());
+      const c = document.createElement("canvas");
+      c.width = bmp.width; c.height = bmp.height;
+      c.getContext("2d").drawImage(bmp, 0, 0);
+      return c.getContext("2d").getImageData(0, 0, c.width, c.height).data;
+    };
+    const [A, B] = [await px(x), await px(y)];
+    let n = 0;
+    for (let i = 0; i < A.length; i += 4)
+      if (Math.abs(A[i] - B[i]) + Math.abs(A[i + 1] - B[i + 1]) + Math.abs(A[i + 2] - B[i + 2]) > 30) n++;
+    return n;
+  }, [a, b]);
+  const off = await grab();
+  await page.click("#mass-show-com");
+  await sleep(300);
+  const on = await grab();
+  const drawn = await diff(off, on);
+  assert(drawn > 20, `ticking the box draws a marker (differing pixels ${drawn})`);
+  await page.click("#mass-show-com");
+  await sleep(300);
+  const after = await grab();
+  const left = await diff(off, after);
+  assert(left < drawn / 4, `unticking removes it (before ${drawn}, after ${left})`);
 });
 
 // ── Pin + tolerance fields (measurement annotations) ──────────────────────

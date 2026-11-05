@@ -794,7 +794,7 @@ Sent in reply to `meshingGenerate`/`meshingExport` when GMSH throws or the docum
 
 ### `viewerDefaults`
 
-Sent once, alongside `parts`/`meshingOptions` in the `ready` handshake, reading `workspace.getConfiguration("cadPreview")` (`src/viewerDefaults.ts`'s `normalizeViewerDefaults` is the tolerance gate — same clamp-per-field style as `validateMeshOptions`). Arrives in no deterministic order relative to `geometry`/`loadUrl` (B-rep tessellation is async), so the webview's handler must tolerate either order — `background`/`showGridAndAxes` apply immediately (scene-level), `upAxis` is stored and applied at the next `Viewer.setModel()` call, and `meshSizePreset` feeds the same bbox-derived seed `syncMeshSizeSeed()` already computes. `navigationPreset` (`"default"` or `"fusion"`; anything else falls back to `"default"`) maps the mouse buttons on every pane's `OrbitControls` through the one table in `src/navigationPresets.ts`. `singleKeyCommands` mirrors `cadPreview.singleKeyCommands` (default `false`; anything but a real boolean falls back to it) and gates the webview's single-letter command keys and Shift+R; Ctrl+K / `/` command search is always on. These are cross-document **defaults only** — a persisted per-document `.mesh.json` value or the toolbar Grid toggle always wins once set.
+Sent once, alongside `parts`/`meshingOptions` in the `ready` handshake, reading `workspace.getConfiguration("cadPreview")` (`src/viewerDefaults.ts`'s `normalizeViewerDefaults` is the tolerance gate — same clamp-per-field style as `validateMeshOptions`). Arrives in no deterministic order relative to `geometry`/`loadUrl` (B-rep tessellation is async), so the webview's handler must tolerate either order — `background`/`showGridAndAxes` apply immediately (scene-level), `upAxis` is stored and applied at the next `Viewer.setModel()` call, and `meshSizePreset` feeds the same bbox-derived seed `syncMeshSizeSeed()` already computes. `navigationPreset` (`"default"`, `"fusion"` or `"touchpad"`; anything else falls back to `"default"`) maps the mouse buttons on every pane's `OrbitControls` through the one table in `src/navigationPresets. `touchpad` also gives the table a `wheel: "pan"` field: `Viewer.onTouchpadWheel` (capture, non-passive, before OrbitControls) pans the pane under the pointer by `wheelPanOffset` for a plain wheel event and leaves a Ctrl-wheel pinch to OrbitControls' zoom.ts`. `singleKeyCommands` mirrors `cadPreview.singleKeyCommands` (default `false`; anything but a real boolean falls back to it) and gates the webview's single-letter command keys and Shift+R; Ctrl+K / `/` command search is always on. These are cross-document **defaults only** — a persisted per-document `.mesh.json` value or the toolbar Grid toggle always wins once set.
 
 ```json
 { "type": "viewerDefaults", "background": "#1e1e1e", "meshSizePreset": "medium", "showGridAndAxes": true, "upAxis": "y", "singleKeyCommands": false }
@@ -1121,6 +1121,7 @@ type WebviewToHost =
   | { type: 'saveSidecars' }
   | { type: 'exportRequest' }
   | { type: 'exportSvgRequest' }
+  | { type: 'reportIssueRequest'; opIndex?: number; error?: string }
   | { type: 'exportResult'; requestId: string; data: string; binary: boolean }
   | { type: 'exportError'; requestId: string; message: string }
   | { type: 'meshingChanged'; options: MeshOptions }
@@ -1377,6 +1378,17 @@ Deliberately **not** folded into `exportRequest`: an `"svg"` member of `CadForma
 
 ```json
 { "type": "exportSvgRequest" }
+```
+
+### `reportIssueRequest`
+
+Sent by **File ▸ Report Issue…** (`#menu-report-issue`), by the **Report…** button beside a ⚠ history row, and by the **Report issue…** button that appears next to a kernel-crash / watchdog-timeout error in the status line. No `requestId` and no result message: the host opens the redacted draft in an untitled tab and, only on **Open on GitHub**, hands the prefilled URL to the browser (the same flow as the `cad-preview.reportIssue` command).
+
+- `opIndex?` — full-history index of the op the draft is about (the ⚠ row's own index). Omitted = the first op that did not apply.
+- `error?` — a message to include (the kernel-crash text); redacted by `buildIssueDraft` like every other field.
+
+```json
+{ "type": "reportIssueRequest", "opIndex": 3 }
 ```
 
 ### `exportDxfRequest`

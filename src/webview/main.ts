@@ -1,4 +1,5 @@
 import * as THREE from "three";
+import { isKernelFailureMessage } from "../issueDraft";
 import { Viewer } from "./viewer";
 import { refreshPalette } from "./palette";
 import { allCatalogEntries, buildEntityReferenceIndex, QUERYABLE_PANEL_FORMS } from "./opCatalog";
@@ -44,7 +45,7 @@ import type { PanelOpId } from "./opCatalog";
 import { VariablesModel } from "./variablesModel";
 import { ConfigurationsModel } from "./configurationsModel";
 import { ConfigTablePanel } from "./configTablePanel";
-import { evaluateEffective } from "../configurations";
+import { evaluateEffective, applySuppression, findConfiguration } from "../configurations";
 import { VariablesPanel } from "./variablesPanel";
 import { collectVariableUsage, type VariableUsage } from "../variableUsage";
 import { evaluateVariables, resolveEditOps, dimensionIssues, parseVariablesCsv, parseVariablesJson, serializeVariablesCsv, serializeVariablesJson, promoteField } from "../editVariables";
@@ -653,6 +654,13 @@ function currentResolvedOps(): { ops: EditOp[]; issues: string[] } {
   return { ops, issues: [...variableIssues, ...dimensionIssues(editsModel.list(), variablesModel.list()), ...planeIssues] };
 }
 
+/** The ops a mesh replay consumes: the resolved ops with the active configuration's suppressed indices overlaid.
+ * Not folded into {@link currentResolvedOps}: that result is posted to the host and persisted. */
+function effectiveResolvedOps(): EditOp[] {
+  const state = configurationsModel.state;
+  return applySuppression(currentResolvedOps().ops, findConfiguration(state, state.activeConfiguration));
+}
+
 /** Who references each variable (op fields + other variables): drives the delete warning and the Used-by list. */
 function variableUsage(): Map<string, VariableUsage> {
   return collectVariableUsage(editsModel.list(), variablesModel.list());
@@ -833,6 +841,7 @@ const configTablePanel = new ConfigTablePanel(
     onRename: (from, to) => configurationsModel.rename(from, to),
     onActivate: (name) => configurationsModel.activate(name),
     onSetCell: (name, variable, expr, baseExpr) => configurationsModel.setCell(name, variable, expr, baseExpr),
+    onSetSuppressed: (name, indices) => configurationsModel.setSuppressed(name, indices, editsModel.savePoint),
     report: (text, isError) => setStatus(text, isError),
   }
 );
@@ -1203,8 +1212,10 @@ const editsPanel = new EditsPanel(document.getElementById("edits-panel")!, {
       return;
     }
     pendingRemoveConfirm = null;
-    if (!editsModel.remove(index) && index < editsModel.savePoint) setStatus(SAVE_POINT_REFUSAL, true);
+    if (editsModel.remove(index)) configurationsModel.opRemoved(index);
+    else if (index < editsModel.savePoint) setStatus(SAVE_POINT_REFUSAL, true);
   },
+  onReportIssue: (index) => post({ type: "reportIssueRequest", opIndex: index }),
   onSetOpState: (index, state) => {
     if (!editsModel.setState(index, state) && index < editsModel.savePoint) setStatus(SAVE_POINT_REFUSAL, true);
   },
@@ -1219,6 +1230,12 @@ const editsPanel = new EditsPanel(document.getElementById("edits-panel")!, {
   // re-running `renderHighlight()` (the selection-groups context menu's
   // hover-preview precedent). Bucket ids are all faces in Phase 1.
   onHighlightBucket: (ids) => {
+    if (!ids || ids.length === 0) { renderHighlight(); return; }
+    viewer.renderSelection(ids.map((entityId) => ({ entityType: "surface" as const, entityId })));
+  },
+  // Hover preview of a history row's produced faces: same repaint route as the chip, never the SelectionSet.
+  // Leaving repaints the real selection (a pinned chip repaints its own ids from the panel).
+  onHoverBucket: (ids) => {
     if (!ids || ids.length === 0) { renderHighlight(); return; }
     viewer.renderSelection(ids.map((entityId) => ({ entityType: "surface" as const, entityId })));
   },
@@ -1493,6 +1510,7 @@ const editsPanel = new EditsPanel(document.getElementById("edits-panel")!, {
     setStatus("");
   },
   onFormChanged: updateGizmoForForm,
+  opTint: (id) => tintForPanelOp(id, id === "wrap" ? lastWrapPreviewVariant : undefined),
   onPreviewDraftChanged: () => scheduleOpPreview(),
   onPreviewCancel: () => cancelOpPreview(),
   onSynthesizeQuery: (bucketOp, role) => {
@@ -1854,9 +1872,19 @@ function renderMassProperties(
     convertLengthBasedProperties(raw, currentDisplayUnit) as MassPropertiesDisplay,
     currentDisplayUnit
   );
+  syncCentreOfMassMarker();
+}
+
+/** Shows the marker at the cached raw (mm, model-frame) centre when the box is ticked, else removes it.
+ * A stale result (cache cleared by a model replace) never leaves a marker: `setModel()` clears it too. */
+function syncCentreOfMassMarker(): void {
+  const c = lastRawMassProperties?.centerOfMass;
+  if (massPropertiesPanel.isMarkerOn() && c) viewer.showCentreOfMassMarker(new THREE.Vector3(c[0], c[1], c[2]));
+  else viewer.clearCentreOfMassMarker();
 }
 
 const massPropertiesPanel = new MassPropertiesPanel(document.getElementById("mass-panel")!, {
+  onToggleMarker: () => syncCentreOfMassMarker(),
   onRefresh: () => {
     const list = selection.list();
     if (list.length > 1) {
@@ -3511,7 +3539,7 @@ async function runOpPreview(entry: { id: PanelOpId; draft: Record<string, unknow
     // Tier 0 Phase 3 — preview replays the unbaked tail only (baked prefix
     // already lives in the pristine file after a mesh save-in-place).
     // `replayTail` is the same helper the host uses — one tail definition.
-    applyEditsMesh(clone, [...replayTail(currentResolvedOps().ops, editsModel.savePoint), clean]);
+    applyEditsMesh(clone, [...replayTail(effectiveResolvedOps(), editsModel.savePoint), clean]);
     viewer.setOpPreview(clone, tint);
     return;
   }
@@ -3618,7 +3646,7 @@ let importedRegionInfo: { triangleRegion: Int32Array } | null = null;
  */
 function rebuildMeshModel(opts?: { autoFit?: boolean }): void {
   if (!pristineMesh) return;
-  const ops = replayTail(currentResolvedOps().ops, editsModel.savePoint);
+  const ops = replayTail(effectiveResolvedOps(), editsModel.savePoint);
   const outcomes: OpOutcome[] = [];
   const edited = applyEditsMesh(pristineMesh.clone(), ops, outcomes, setStatus);
   lastOpOutcomes = outcomes; // mesh sources report their own replay outcomes (no host round trip)
@@ -3919,6 +3947,15 @@ function setStatus(text: string, isError = false): void {
   statusEl.textContent = text;
   statusEl.style.display = text ? "block" : "none";
   statusEl.classList.toggle("error", isError);
+  if (isError && isKernelFailureMessage(text)) {
+    // A kernel crash / timeout: offer the redacted issue draft right beside it.
+    const btn = document.createElement("button");
+    btn.id = "status-report-issue";
+    btn.textContent = "Report issue…";
+    btn.addEventListener("click", () => post({ type: "reportIssueRequest", error: text }));
+    statusEl.appendChild(document.createTextNode(" "));
+    statusEl.appendChild(btn);
+  }
 }
 
 function showTree(root: TreeNode, upgrade = false): void {
@@ -4817,6 +4854,7 @@ function setupFileMenu(): void {
   item("menu-load-preprocess", () => post({ type: "loadPreprocessRequest" }));
   item("menu-import-svg", () => post({ type: "importSvgRequest" }));
   item("menu-import-dxf", () => post({ type: "importDxfRequest" }));
+  item("menu-report-issue", () => post({ type: "reportIssueRequest" }));
   item("menu-export-svg", () => post({ type: "exportSvgRequest" }));
   item("menu-export-dxf", () => post({ type: "exportDxfRequest" }));
   item("menu-export-drawing", () => post({ type: "exportDrawingRequest" }));

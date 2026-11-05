@@ -103,6 +103,7 @@ import { isMeshSourceRoute, resolveMeshSourceInput } from "./meshSourceInput";
 import { runMeshSweep, validateSweepSizes, sweepOutputName, SWEEP_NOTE } from "./meshSweep";
 import { getNonce } from "./nonce";
 import { showLatestWhatsNew } from "./whatsNew";
+import { bundledSamplesDir, parseSampleIndex } from "./samples";
 import { buildIssueDraft, issueUrl } from "./issueDraft";
 import { runCompareModelsCommand } from "./modelComparePanel";
 import { runBatchExportCommand } from "./batchExportCommand";
@@ -122,7 +123,7 @@ import { FIT_TO_CAD_LEVELS } from "./fitToCadLevels";
 import { emitPrimitiveOps } from "./primitiveEmit";
 import { compileParametricScript } from "./parametricScript";
 import { evaluateVariables } from "./editVariables";
-import { effectiveVariables, validateConfigurationState, type Configuration, type ConfigurationState } from "./configurations";
+import { effectiveVariables, applySuppression, findConfiguration, validateConfigurationState, type Configuration, type ConfigurationState } from "./configurations";
 import { fetchThumbnail, ThumbCache } from "./standardPartsThumbs";
 import * as path from "path";
 import * as os from "os";
@@ -540,6 +541,8 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
       // Deliberately NOT `withSession` — like `open`/`loadPreprocess`, this
       // creates a document and so must work with no CAD tab focused.
       vscode.commands.registerCommand("cad-preview.new", () => void this.newBlankModelDialog()),
+      // Session-free too: copies a bundled sample into a chosen folder, then opens the COPY.
+      vscode.commands.registerCommand("cad-preview.openSample", () => void this.openSampleDialog()),
       vscode.commands.registerCommand("cad-preview.save", withSession((s) => void s.save())),
       vscode.commands.registerCommand("cad-preview.saveAs", withSession((s) => s.export())),
       vscode.commands.registerCommand("cad-preview.export", withSession((s) => s.export())),
@@ -709,6 +712,60 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
       await vscode.commands.executeCommand("vscode.openWith", destUri, CadPreviewProvider.viewType);
     } catch (err) {
       void vscode.window.showErrorMessage(`New blank model failed: ${(err as Error).message}`);
+    }
+  }
+
+  /**
+   * "Open Sample…": pick one of the bundled models (`dist/samples/`), pick a
+   * folder, copy it there and open the copy. The bundled original is NEVER
+   * opened — doing so would write `.edits.json`/`.view.json` sidecars inside
+   * the extension directory — and an existing file in the folder is refused,
+   * not overwritten (its sidecars would replay against different geometry).
+   */
+  private async openSampleDialog(): Promise<void> {
+    try {
+      const dir = bundledSamplesDir(this.context.extensionPath);
+      let samples: ReturnType<typeof parseSampleIndex> = [];
+      try {
+        samples = parseSampleIndex(Buffer.from(await vscode.workspace.fs.readFile(vscode.Uri.file(path.join(dir, "index.json")))).toString("utf8"));
+      } catch {
+        /* no index staged: handled below */
+      }
+      if (samples.length === 0) {
+        void vscode.window.showErrorMessage("No sample models are bundled with this build.");
+        return;
+      }
+      const picked = await vscode.window.showQuickPick(
+        samples.map((s) => ({ label: s.label, description: s.file, detail: s.description, sample: s })),
+        { placeHolder: "Choose a sample model — it is copied into a folder you pick", matchOnDescription: true }
+      );
+      if (!picked) return;
+      const folders = await vscode.window.showOpenDialog({
+        canSelectFiles: false,
+        canSelectFolders: true,
+        canSelectMany: false,
+        openLabel: "Copy sample here",
+        defaultUri: vscode.workspace.workspaceFolders?.[0]?.uri,
+      });
+      const folder = folders?.[0];
+      if (!folder) return;
+      const dest = vscode.Uri.joinPath(folder, picked.sample.file);
+      let exists = true;
+      try {
+        await vscode.workspace.fs.stat(dest);
+      } catch {
+        exists = false;
+      }
+      if (exists) {
+        void vscode.window.showErrorMessage(
+          `"${picked.sample.file}" already exists in that folder. Open Sample only creates new files — open the existing one with File ▸ Open…, or pick another folder.`
+        );
+        return;
+      }
+      await vscode.workspace.fs.copy(vscode.Uri.file(path.join(dir, picked.sample.file)), dest, { overwrite: false });
+      await vscode.commands.executeCommand("vscode.openWith", dest, CadPreviewProvider.viewType);
+    } catch (err) {
+      void vscode.window.showErrorMessage(`Open sample failed: ${(err as Error).message}`);
     }
   }
 
@@ -886,6 +943,17 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
     let currentConfigurations: Configuration[] = [];
     let currentActiveConfiguration: string | null = null;
     const configState = (): ConfigurationState => ({ configurations: currentConfigurations, activeConfiguration: currentActiveConfiguration });
+    // The ops every replay consumes: `currentEdits` with the ACTIVE configuration's suppressed indices overlaid
+    // (clones carrying `suppressed: true`). `currentEdits` itself — what is persisted, posted back and rebound — is
+    // never touched, so the user's own suppress toggle stays independent of the configuration's.
+    /** Saving bakes the replayed tail into the source and moves the watermark past every op, so a tail op the ACTIVE
+     * configuration suppresses would vanish from every configuration. Returns the refusal text, or null. */
+    const configSuppressionSaveRefusal = (): string | null => {
+      const active = findConfiguration(configState(), currentActiveConfiguration);
+      const hit = (active?.suppressed ?? []).filter((i) => i >= currentBakedThrough && i < currentEdits.length);
+      return hit.length === 0 ? null : `configuration "${active!.name}" suppresses unsaved op(s) ${hit.join(", ")}; saving would bake that suppression into the file for every configuration. Switch to Base (or unsuppress them) first.`;
+    };
+    const effectiveEdits = (): EditOp[] => applySuppression(currentEdits, findConfiguration(configState(), currentActiveConfiguration));
     // Tier 0 save-in-place watermark: the file on disk already contains
     // `currentEdits[0..currentBakedThrough]`, so every kernel replay consumes
     // only the tail (`replayTail`). 0 on pre-watermark documents. Adopted from
@@ -1186,7 +1254,12 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
         post({ type: "error", message: `Save in place failed: ${(err as Error).message}` });
         return false;
       }
-      const tail = replayTail(currentEdits, currentBakedThrough);
+      const suppressionRefusal = configSuppressionSaveRefusal();
+      if (suppressionRefusal) {
+        post({ type: "error", message: `Save in place refused: ${suppressionRefusal}` });
+        return false;
+      }
+      const tail = replayTail(effectiveEdits(), currentBakedThrough);
       try {
         const scadWarnings: string[] = [];
         const src = await this.readOcctSource(document.uri, route.format, scadWarnings);
@@ -1295,7 +1368,7 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
             currentEdits,
             newBytes,
             route.format as Extract<CadFormat, "step" | "iges" | "brep">,
-            replayTail(currentEdits, currentBakedThrough),
+            replayTail(effectiveEdits(), currentBakedThrough),
             currentParts,
             currentAnnotations,
             currentLayers
@@ -1400,6 +1473,11 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
         assertNotDirty(editsSidecarUri(document.uri));
       } catch (err) {
         post({ type: "error", message: `Save in place failed: ${(err as Error).message}` });
+        return false;
+      }
+      const suppressionRefusal = configSuppressionSaveRefusal();
+      if (suppressionRefusal) {
+        post({ type: "error", message: `Save in place refused: ${suppressionRefusal}` });
         return false;
       }
       const tailLength = currentEdits.length - currentBakedThrough;
@@ -1605,7 +1683,7 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
       if (!groups || groups.length === 0) return;
       try {
         await partsHydration;
-        if (replayTail(currentEdits, currentBakedThrough).length > 0) return;
+        if (replayTail(effectiveEdits(), currentBakedThrough).length > 0) return;
         if (currentParts.length > 0 || (await readParts(document.uri)).length > 0) return;
         const parts = buildPartsFromCsgColors(groups);
         if (parts.length === 0) return;
@@ -1638,7 +1716,7 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
         const autoFit = !showProgress;
         // Tier 0: replay only the unbaked tail — the baked prefix already
         // lives in the file on disk.
-        const resolvedEdits = resolvePlaneRefs(replayTail(currentEdits, currentBakedThrough), currentPlanes).ops;
+        const resolvedEdits = resolvePlaneRefs(replayTail(effectiveEdits(), currentBakedThrough), currentPlanes).ops;
         if (showProgress) {
           void vscode.window.withProgress(
             {
@@ -2210,7 +2288,7 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
     const session: EditorSession = {
       uri: document.uri,
       export: () => {
-        if (route) this.handleExport(document.uri, route, post, pending, currentEdits, currentParts, currentBakedThrough, (f) => performSaveInPlace(f));
+        if (route) this.handleExport(document.uri, route, post, pending, effectiveEdits(), currentParts, currentBakedThrough, (f) => performSaveInPlace(f));
       },
       save: flushSidecars,
       savePreprocess: () => {
@@ -2223,22 +2301,22 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
         void this.handleScreenshot(document.uri, post, pending);
       },
       exportSvg: () => {
-        if (route) void this.handleExportSvg(document.uri, route, post, currentEdits, currentViewState, "svg", currentAnnotations, currentLayers, false, currentBakedThrough);
+        if (route) void this.handleExportSvg(document.uri, route, post, effectiveEdits(), currentViewState, "svg", currentAnnotations, currentLayers, false, currentBakedThrough);
       },
       exportMesh: () => {
-        void this.handleExportMesh(document.uri, route, currentEdits, currentMeshOptions, post, currentBakedThrough);
+        void this.handleExportMesh(document.uri, route, effectiveEdits(), currentMeshOptions, post, currentBakedThrough);
       },
       zoomToSelection: () => {
         post({ type: "zoomToSelection" });
       },
       exportDxf: () => {
-        if (route) void this.handleExportSvg(document.uri, route, post, currentEdits, currentViewState, "dxf", currentAnnotations, currentLayers, false, currentBakedThrough);
+        if (route) void this.handleExportSvg(document.uri, route, post, effectiveEdits(), currentViewState, "dxf", currentAnnotations, currentLayers, false, currentBakedThrough);
       },
       exportDrawing: () => {
-        if (route) void this.handleExportSvg(document.uri, route, post, currentEdits, currentViewState, "svg", currentAnnotations, currentLayers, true, currentBakedThrough);
+        if (route) void this.handleExportSvg(document.uri, route, post, effectiveEdits(), currentViewState, "svg", currentAnnotations, currentLayers, true, currentBakedThrough);
       },
       exportSheet: () => {
-        if (route) void this.handleExportSheet(document.uri, route, post, currentEdits, currentAnnotations, currentLayers, currentBakedThrough);
+        if (route) void this.handleExportSheet(document.uri, route, post, effectiveEdits(), currentAnnotations, currentLayers, currentBakedThrough);
       },
       post,
     };
@@ -2314,7 +2392,7 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
                   this.context.extensionPath,
                   bytes,
                   format as Extract<CadFormat, "step" | "iges" | "brep" | "csg">,
-                  replayTail(currentEdits, currentBakedThrough),
+                  replayTail(effectiveEdits(), currentBakedThrough),
                   currentParts
                 );
                 if (selected.parts !== currentParts) {
@@ -2592,7 +2670,7 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
       if (msg.type === "meshDeviationRequest") {
         try {
           if (!route) throw new Error("Unsupported file type.");
-          const input = await this.resolveMeshInput(document.uri, route, currentEdits, msg.stl, "mm", currentBakedThrough);
+          const input = await this.resolveMeshInput(document.uri, route, effectiveEdits(), msg.stl, "mm", currentBakedThrough);
           if (!input) throw new Error("No mesh geometry available: missing STL data.");
           const { parts, options } = await this.resolveMeshPartsAndOptions(document.uri, input, msg.options);
           let reference: Parameters<KernelClient["measureMeshDeviation"]>[1];
@@ -2602,7 +2680,7 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
               kind: "brep",
               bytes: src.bytes,
               format: src.format as "step" | "iges" | "brep" | "csg",
-              ops: replayTail(currentEdits, currentBakedThrough),
+              ops: replayTail(effectiveEdits(), currentBakedThrough),
             };
           } else if (input.kind === "stl") {
             reference = { kind: "stl", stlBytes: input.stlBytes };
@@ -2634,7 +2712,7 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
       if (msg.type === "meshingGenerate") {
         try {
           await this.runMeshingJob(document.uri, msg.requestId, post, async () => {
-            const input = await this.resolveMeshInput(document.uri, route, currentEdits, msg.stl, "mm", currentBakedThrough);
+            const input = await this.resolveMeshInput(document.uri, route, effectiveEdits(), msg.stl, "mm", currentBakedThrough);
             if (!input) throw new Error("No mesh geometry available: missing STL data.");
             const { parts, options } = await this.resolveMeshPartsAndOptions(document.uri, input, msg.options);
             const startedAt = Date.now();
@@ -2702,7 +2780,7 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
             outDir = picked[0];
           }
           await this.runMeshingJob(document.uri, msg.requestId, post, async () => {
-            const input = await this.resolveMeshInput(document.uri, route, currentEdits, msg.stl, "mm", currentBakedThrough);
+            const input = await this.resolveMeshInput(document.uri, route, effectiveEdits(), msg.stl, "mm", currentBakedThrough);
             if (!input) throw new Error("No mesh geometry available: missing STL data.");
             // Every run overrides sizeMin/sizeMax, so the panel's own sizes are inert here.
             const { parts, options } = await this.resolveMeshPartsAndOptions(document.uri, input, msg.options);
@@ -2763,7 +2841,7 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
       }
 
       if (msg.type === "meshingExport") {
-        await this.runMeshExport(document.uri, route, currentEdits, msg.target, msg.options, msg.stl, msg.unit ?? "mm", post, currentBakedThrough, msg.manifest === true, msg.requestId);
+        await this.runMeshExport(document.uri, route, effectiveEdits(), msg.target, msg.options, msg.stl, msg.unit ?? "mm", post, currentBakedThrough, msg.manifest === true, msg.requestId);
         return;
       }
 
@@ -2790,7 +2868,7 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
       }
 
       if (msg.type === "exportRequest") {
-        if (route) this.handleExport(document.uri, route, post, pending, currentEdits, currentParts, currentBakedThrough, (f) => performSaveInPlace(f));
+        if (route) this.handleExport(document.uri, route, post, pending, effectiveEdits(), currentParts, currentBakedThrough, (f) => performSaveInPlace(f));
         return;
       }
 
@@ -2861,7 +2939,7 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
             this.context.extensionPath,
             bytes,
             format as Extract<CadFormat, "step" | "iges" | "brep" | "csg">,
-            replayTail(currentEdits, currentBakedThrough),
+            replayTail(effectiveEdits(), currentBakedThrough),
             msg.entityId
           );
           post({ type: "massPropertiesResult", requestId: msg.requestId, properties });
@@ -2897,7 +2975,7 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
             this.context.extensionPath,
             src.bytes,
             src.format as Extract<CadFormat, "step" | "iges" | "brep" | "csg">,
-            replayTail(currentEdits, currentBakedThrough),
+            replayTail(effectiveEdits(), currentBakedThrough),
             parts
           );
           post({ type: "bomResult", requestId: msg.requestId, rows: result.rows, warnings: [...scadWarnings, ...result.warnings] });
@@ -2924,7 +3002,7 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
             this.context.extensionPath,
             src.bytes,
             src.format as Extract<CadFormat, "step" | "iges" | "brep" | "csg">,
-            replayTail(currentEdits, currentBakedThrough)
+            replayTail(effectiveEdits(), currentBakedThrough)
           );
           post({ type: "holeTableResult", requestId: msg.requestId, rows: result.rows, warnings: [...scadWarnings, ...result.warnings] });
         } catch (err) {
@@ -2984,7 +3062,7 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
             this.context.extensionPath,
             bytes,
             format as Extract<CadFormat, "step" | "iges" | "brep" | "csg">,
-            replayTail(currentEdits, currentBakedThrough),
+            replayTail(effectiveEdits(), currentBakedThrough),
             idsA,
             idsB,
             ...(msg.minClearance !== undefined ? [msg.minClearance] : [])
@@ -3033,7 +3111,7 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
             this.context.extensionPath,
             bytes,
             format as Extract<CadFormat, "step" | "iges" | "brep" | "csg">,
-            replayTail(currentEdits, currentBakedThrough),
+            replayTail(effectiveEdits(), currentBakedThrough),
             usable.map((p) => p.volumes),
             msg.maxPairs !== undefined || msg.maxBooleans !== undefined || msg.minClearance !== undefined
               ? { maxPairs: msg.maxPairs, maxBooleans: msg.maxBooleans, ...(msg.minClearance !== undefined ? { minClearance: msg.minClearance } : {}) }
@@ -3268,7 +3346,7 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
             this.context.extensionPath,
             bytes,
             format as Extract<CadFormat, "step" | "iges" | "brep" | "csg">,
-            replayTail(currentEdits, currentBakedThrough),
+            replayTail(effectiveEdits(), currentBakedThrough),
             msg.entityId
           );
           post({ type: "entityFactsResult", requestId: msg.requestId, facts });
@@ -3295,7 +3373,7 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
           // Tier 0: the webview addresses buckets by FULL-history row (the
           // geometry post rebases kernel indices for display); the kernel
           // replays the tail, so translate back to replay-list-relative here.
-          const tailEdits = replayTail(currentEdits, currentBakedThrough);
+          const tailEdits = replayTail(effectiveEdits(), currentBakedThrough);
           const replayOp = msg.op - currentBakedThrough;
           for (const entityId of msg.entityIds) {
             try {
@@ -3420,8 +3498,13 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
         return;
       }
 
+      if (msg.type === "reportIssueRequest") {
+        void this.reportIssue(document.uri.fsPath, currentEdits, this.lastOpOutcomes.get(document.uri.toString()) ?? [], msg.error, msg.opIndex);
+        return;
+      }
+
       if (msg.type === "exportSvgRequest") {
-        if (route) void this.handleExportSvg(document.uri, route, post, currentEdits, currentViewState, "svg", currentAnnotations, currentLayers, false, currentBakedThrough);
+        if (route) void this.handleExportSvg(document.uri, route, post, effectiveEdits(), currentViewState, "svg", currentAnnotations, currentLayers, false, currentBakedThrough);
         return;
       }
 
@@ -3443,17 +3526,17 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
       }
 
       if (msg.type === "exportDxfRequest") {
-        if (route) void this.handleExportSvg(document.uri, route, post, currentEdits, currentViewState, "dxf", currentAnnotations, currentLayers, false, currentBakedThrough);
+        if (route) void this.handleExportSvg(document.uri, route, post, effectiveEdits(), currentViewState, "dxf", currentAnnotations, currentLayers, false, currentBakedThrough);
         return;
       }
 
       if (msg.type === "exportDrawingRequest") {
-        if (route) void this.handleExportSvg(document.uri, route, post, currentEdits, currentViewState, "svg", currentAnnotations, currentLayers, true, currentBakedThrough);
+        if (route) void this.handleExportSvg(document.uri, route, post, effectiveEdits(), currentViewState, "svg", currentAnnotations, currentLayers, true, currentBakedThrough);
         return;
       }
 
       if (msg.type === "exportSheetRequest") {
-        if (route) void this.handleExportSheet(document.uri, route, post, currentEdits, currentAnnotations, currentLayers, currentBakedThrough);
+        if (route) void this.handleExportSheet(document.uri, route, post, effectiveEdits(), currentAnnotations, currentLayers, currentBakedThrough);
         return;
       }
 
@@ -3471,7 +3554,7 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
             this.context.extensionPath,
             bytes,
             format as Extract<CadFormat, "step" | "iges" | "brep" | "csg">,
-            replayTail(currentEdits, currentBakedThrough),
+            replayTail(effectiveEdits(), currentBakedThrough),
             msg.kind,
             msg.entityIdA,
             msg.entityIdB
@@ -3484,7 +3567,7 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
       }
 
       if (msg.type === "opPreviewRequest") {
-        void this.handleOpPreview(document.uri, route, post, replayTail(currentEdits, currentBakedThrough), documentKey, msg.requestId, msg.op);
+        void this.handleOpPreview(document.uri, route, post, replayTail(effectiveEdits(), currentBakedThrough), documentKey, msg.requestId, msg.op);
         return;
       }
 
@@ -3596,7 +3679,7 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
             const pipeline = this.docPipeline(document.uri);
             if (options.adaptField && msg.source === "generated") throw new Error("Adapting to a field needs the original FE mesh file — a freshly generated mesh carries no result fields");
             if (msg.source === "generated") {
-              const input = await this.resolveMeshInput(document.uri, route, currentEdits, msg.stl, "mm", currentBakedThrough);
+              const input = await this.resolveMeshInput(document.uri, route, effectiveEdits(), msg.stl, "mm", currentBakedThrough);
               if (!input) throw new Error("No geometry to generate a mesh from");
               const resolved = await this.resolveMeshPartsAndOptions(document.uri, input, msg.meshOptions);
               const generated = await pipeline.generateMesh(this.context.extensionPath, input, resolved.options, resolved.parts);
@@ -3609,7 +3692,7 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
               name = path.basename(document.uri.fsPath);
               format = route.format;
               companions = await resolveMeshioCompanionsFor(document.uri, name, format, bytes);
-              if (replayTail(currentEdits, currentBakedThrough).length) warnings.push("File mode remeshes the original FE mesh; display edits are not baked in. Use generated mode for edited geometry.");
+              if (replayTail(effectiveEdits(), currentBakedThrough).length) warnings.push("File mode remeshes the original FE mesh; display edits are not baked in. Use generated mode for edited geometry.");
             }
             const result = await pipeline.remeshMesh(this.context.extensionPath, bytes, format, options, name, companions);
             const boundary = await pipeline.convertToStlBoundaryWithRegions(result.bytes, "med");
@@ -3679,7 +3762,7 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
             this.context.extensionPath,
             src.bytes,
             src.format as Extract<CadFormat, "step" | "iges" | "brep" | "csg">,
-            replayTail(currentEdits, currentBakedThrough)
+            replayTail(effectiveEdits(), currentBakedThrough)
           );
           post({ type: "primitiveRecognizeResult", requestId: msg.requestId, report });
         } catch (err) {
@@ -3700,7 +3783,7 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
             this.context.extensionPath,
             src.bytes,
             src.format as Extract<CadFormat, "step" | "iges" | "brep" | "csg">,
-            replayTail(currentEdits, currentBakedThrough)
+            replayTail(effectiveEdits(), currentBakedThrough)
           );
           post({ type: "brepHealthResult", requestId: msg.requestId, report });
         } catch (err) {
@@ -3734,7 +3817,7 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
             this.context.extensionPath,
             src.bytes,
             src.format as Extract<CadFormat, "step" | "iges" | "brep" | "csg">,
-            replayTail(currentEdits, currentBakedThrough),
+            replayTail(effectiveEdits(), currentBakedThrough),
             { targetCells: msg.targetCells, sizeMax, parts: currentParts }
           );
           post({ type: "passagesResult", requestId: msg.requestId, report, sizeMax });
@@ -3756,7 +3839,7 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
               kind: "brep",
               bytes: src.bytes,
               format: src.format as Extract<CadFormat, "step" | "iges" | "brep" | "csg">,
-              ops: replayTail(currentEdits, currentBakedThrough),
+              ops: replayTail(effectiveEdits(), currentBakedThrough),
             };
           } else {
             if (DISPLAY_ONLY_MESH_FORMATS.has(route.format)) throw new Error(displayOnlyMeshMessage(route.format, "a draft check"));
@@ -3794,7 +3877,7 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
               kind: "brep",
               bytes: src.bytes,
               format: src.format as Extract<CadFormat, "step" | "iges" | "brep" | "csg">,
-              ops: replayTail(currentEdits, currentBakedThrough),
+              ops: replayTail(effectiveEdits(), currentBakedThrough),
             };
           } else {
             if (DISPLAY_ONLY_MESH_FORMATS.has(route.format)) throw new Error(displayOnlyMeshMessage(route.format, "a printability check"));
@@ -3829,12 +3912,12 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
       }
 
       if (msg.type === "decomposeExportClicked") {
-        if (route) void this.handleDecomposeExport(document.uri, route, post, replayTail(currentEdits, currentBakedThrough), currentVariables);
+        if (route) void this.handleDecomposeExport(document.uri, route, post, replayTail(effectiveEdits(), currentBakedThrough), currentVariables);
         return;
       }
 
       if (msg.type === "decomposeSaveMacroClicked") {
-        if (route) void this.handleDecomposeSaveMacro(document.uri, route, post, replayTail(currentEdits, currentBakedThrough), currentVariables);
+        if (route) void this.handleDecomposeSaveMacro(document.uri, route, post, replayTail(effectiveEdits(), currentBakedThrough), currentVariables);
         return;
       }
     });
@@ -5441,8 +5524,17 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
    * review, then — only on an explicit click — hands the prefilled URL to the
    * browser. Nothing is sent automatically and model bytes are never attached.
    */
-  private async reportIssue(modelPath: string, ops: EditOp[], outcomes: import("./editOps").OpOutcome[]): Promise<void> {
-    const failed = outcomes.find((o) => !o.applied && !o.suppressed);
+  private async reportIssue(
+    modelPath: string,
+    ops: EditOp[],
+    outcomes: import("./editOps").OpOutcome[],
+    error?: string,
+    opIndex?: number
+  ): Promise<void> {
+    // A ⚠ row names its op; the File menu / command takes the first op that did not apply.
+    const failed = opIndex !== undefined
+      ? outcomes.find((o) => o.index === opIndex)
+      : outcomes.find((o) => !o.applied && !o.suppressed);
     const pkg = this.context.extension.packageJSON as { version?: string; dependencies?: Record<string, string>; repository?: { url?: string } };
     const kernels: Record<string, string> = {};
     for (const k of ["opencascade.js", "@loumalouomega/gmsh-wasm", "@meshioplusplus/wasm", "float-tetwild-wasm", "@loumalouomega/mmg-wasm", "@loumalouomega/openscad-wasm", "manifold-3d"]) {
@@ -5452,6 +5544,7 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
       modelPath,
       op: failed ? ops[failed.index] : undefined,
       outcome: failed,
+      error,
       env: { extensionVersion: pkg.version ?? "unknown", vscodeVersion: vscode.version, platform: `${process.platform} ${process.arch}`, kernels },
       scrub: [os.homedir(), path.dirname(modelPath), ...(vscode.workspace.workspaceFolders ?? []).map((f) => f.uri.fsPath)],
     });
@@ -5460,9 +5553,14 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
     const pick = await vscode.window.showInformationMessage("Review the draft, then open it as a GitHub issue? Nothing is sent until you do.", "Open on GitHub");
     if (pick === "Open on GitHub") {
       const edited = doc.getText().replace(/^# .*\n\n/, "");
-      await vscode.env.openExternal(vscode.Uri.parse(issueUrl(pkg.repository?.url ?? "https://github.com/loumalouomega/CAD-Preview", { title: draft.title, body: edited })));
+      const url = issueUrl(pkg.repository?.url ?? "https://github.com/loumalouomega/CAD-Preview", { title: draft.title, body: edited });
+      if (CadPreviewProvider.testOpenExternalStub) CadPreviewProvider.testOpenExternalStub(url);
+      else await vscode.env.openExternal(vscode.Uri.parse(url));
     }
   }
+
+  /** Test seam (ExtensionMode.Test only, installed through `extension.ts`): captures the issue URL instead of opening a browser. */
+  static testOpenExternalStub: ((url: string) => void) | undefined;
 
   private async handleScreenshot(
     uri: vscode.Uri,

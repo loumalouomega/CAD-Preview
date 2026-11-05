@@ -6793,6 +6793,40 @@ describe("set_configuration (design table)", () => {
     await expect(configurationScope.run({ configuration: "nope" }, () => exportBRepTool(c, { path: stpModel, targetFormat: "brep", outputPath: path.join(dir, "x.brep") }))).rejects.toThrow(/Unknown configuration "nope".*M6, M8/);
   });
 
+  it("a configuration's suppressed ops are skipped at replay without touching the stored ops or the user's own toggle", async () => {
+    const c = ctx();
+    await applyEditOps(c, {
+      path: stpModel,
+      ops: [
+        { op: "addBox", center: [0, 0, 0], size: [2, 2, 2] },
+        { op: "addBox", center: [9, 0, 0], size: [1, 1, 1] },
+      ],
+    });
+    await setConfiguration({ path: stpModel, name: "full" });
+    const r = await setConfiguration({ path: stpModel, name: "lean", suppress: [1, 7, 0, 1] });
+    expect(r.configurations.find((x) => x.name === "lean")?.suppressed).toEqual([0, 1]);
+    expect(r.warnings.some((w) => /Op 7 does not exist/.test(w))).toBe(true);
+    const replayed = async (config?: string): Promise<boolean[]> => {
+      vi.mocked(c.pipeline.exportBRep).mockClear();
+      const run = () => exportBRepTool(c, { path: stpModel, targetFormat: "brep", outputPath: path.join(dir, `sup-${config ?? "none"}.brep`) });
+      await (config ? configurationScope.run({ configuration: config }, run) : run());
+      return (vi.mocked(c.pipeline.exportBRep).mock.calls[0][4] as Array<{ suppressed?: boolean }>).map((o) => o.suppressed === true);
+    };
+    expect(await replayed("lean")).toEqual([true, true]);
+    expect(await replayed("full")).toEqual([false, false]);
+    expect(await replayed()).toEqual([false, false]); // not active
+    const stored = await readEdits(stpModel);
+    expect(stored.ops.some((o) => o.suppressed)).toBe(false); // stored ops never change
+    expect(stored.configurations?.find((x) => x.name === "lean")?.suppressed).toEqual([0, 1]);
+    await setConfiguration({ path: stpModel, name: "lean", active: true });
+    expect(await replayed()).toEqual([true, true]); // active applies by default
+    // Removing op 0 shifts the remaining index so the suppression keeps naming the same op.
+    await removeEditOp(c, { path: stpModel, index: 0 });
+    expect((await readEdits(stpModel)).configurations?.find((x) => x.name === "lean")?.suppressed).toEqual([0]);
+    await setConfiguration({ path: stpModel, name: "lean", unsuppress: [0] });
+    expect((await readEdits(stpModel)).configurations?.find((x) => x.name === "lean")).toEqual({ name: "lean", overrides: {} });
+  });
+
   it("batch_export writes one file per configuration as <stem>-<config>.<ext>, evaluating each without changing the stored one", async () => {
     const c = ctx();
     await parametricBox(c);

@@ -65,13 +65,13 @@ Existing implementation references were checked against the repository where not
 
 **Closed 2026-11-03 (Command search).** Extension, not a planning review: nothing was re-ranked. 2.34 shipped (Ctrl+K / `/` command search over every op, toolbar action and panel; opt-in `cadPreview.singleKeyCommands` letter keys with Shift+R to repeat the last command) and left this list; the 2.35 number is unchanged.
 
-**Closed 2026-11-03 (Configurations first increment).** Extension, not a planning review: nothing was re-ranked. 2.33 shipped its first increment: named configurations (sparse variable overrides plus `activeConfiguration`, additive in `.edits.json`), the Config Table under the Variables section, `set_configuration`, the `configuration` parameter on the export, meshing and mass tools, and a Batch Export mode (`configurations` / `allConfigurations`, and a Batch Export command prompt) that writes one file per configuration. 2.33 stays in the list for the one phase left, per-configuration feature suppression, which is now unblocked (2.37 shipped the per-op suppressed state).
+**Closed 2026-11-03 (Configurations first increment).** Extension, not a planning review: nothing was re-ranked. 2.33 shipped its first increment: named configurations (sparse variable overrides plus `activeConfiguration`, additive in `.edits.json`), the Config Table under the Variables section, `set_configuration`, the `configuration` parameter on the export, meshing and mass tools, and a Batch Export mode (`configurations` / `allConfigurations`, and a Batch Export command prompt) that writes one file per configuration. The remaining phase, per-configuration feature suppression, shipped on 2026-11-05 and 2.33 left the list.
 
 **Closed 2026-11-03 (Ribbon command strip).** Extension, not a planning review: nothing was re-ranked. 2.35 shipped (a View · Model · Inspect · Mesh · Export ribbon under the menu bar, generated from the op catalog plus a small table of non-op actions, with an overflow ▸ menu, a compact preference, a persisted tab and the Edits panel's button grid behind a toggle) and left this list; the 2.36 number is unchanged, and the two-tone icon set is now the one item left in the Interface depth theme.
 
 **Closed 2026-11-03 (Two-tone icon set).** Extension, not a planning review: nothing was re-ranked. 2.36 shipped (a reserved TikZ `blue` fill maps to `--ui-icon-accent`, which follows the theme's button colour and collapses to `currentColor` in high contrast; 17 Model-tab op icons redrawn two-tone) and left this list; the 2.37 number is unchanged, and the Interface depth theme has no open items left. The remaining op icons and the toolbar icons stay one-tone until a later pass.
 
-**Extended 2026-11-01 (SolidCraft review).** Extension, not a planning review: nothing was re-ranked and no existing ID moved. The [SolidCraft review](#solidcraft-review) compared this extension's interface against a full parametric modeller's, and added fourteen items to Ready product work and four probes. The Ready product work items are [the parameters table](#parameters-table) (2.31), [configurations](#configurations-design-table) (2.33), command search and keyboard-first commands (2.34, since shipped and removed), a ribbon command strip (2.35, since shipped and removed), [a two-tone icon set](#two-tone-icon-set) (2.36), [history timeline depth](#history-timeline-depth) (2.37), [a unified Browser tree](#unified-browser-tree) (2.38), [navigation upgrades](#navigation-upgrades) (2.39), [zebra stripes and a centre-of-mass marker](#zebra-stripes-and-centre-of-mass-marker) (2.40), [feature form ergonomics](#feature-form-ergonomics) (2.41), named materials in the Parts panel (2.42, since shipped and removed), [an issue draft from a failure](#issue-draft-from-a-failure) (2.43) and [a welcome walkthrough with samples](#welcome-walkthrough-and-samples) (2.44). The probes are [curvature, minimum radius and isocurve overlays](#curvature-and-isocurve-overlays) (3.18), [sheet-metal flat patterns of an imported part](#sheet-metal-flat-pattern) (3.19), [frame members along wireframe edges](#frame-members-along-edges) (3.20) and [on-canvas parameter handles](#on-canvas-parameter-handles) (5.5). Section 2 resumes at 2.31: 2.29 and 2.30 belonged to items that have shipped and left the list, and 2.30 is still cited for stepping through entities under the cursor, so neither number is reused. A new area tag, *Interface*, covers items whose main product is the webview's interaction design. One new Rejected-scope entry was added: a photoreal render workspace. The constraint-sketcher rejection was re-read against SolidCraft and stands.
+**Extended 2026-11-01 (SolidCraft review).** Extension, not a planning review: nothing was re-ranked and no existing ID moved. The [SolidCraft review](#solidcraft-review) compared this extension's interface against a full parametric modeller's, and added fourteen items to Ready product work and four probes. The Ready product work items are [the parameters table](#parameters-table) (2.31), configurations (2.33, since shipped and removed), command search and keyboard-first commands (2.34, since shipped and removed), a ribbon command strip (2.35, since shipped and removed), [a two-tone icon set](#two-tone-icon-set) (2.36), [history timeline depth](#history-timeline-depth) (2.37), [a unified Browser tree](#unified-browser-tree) (2.38), navigation upgrades (2.39, since shipped and removed), [zebra stripes and a centre-of-mass marker](#zebra-stripes-and-centre-of-mass-marker) (2.40), [feature form ergonomics](#feature-form-ergonomics) (2.41), named materials in the Parts panel (2.42, since shipped and removed), an issue draft from a failure (2.43, since shipped and removed) and a welcome walkthrough with samples (2.44, since shipped and removed). The probes are [curvature, minimum radius and isocurve overlays](#curvature-and-isocurve-overlays) (3.18), [sheet-metal flat patterns of an imported part](#sheet-metal-flat-pattern) (3.19), [frame members along wireframe edges](#frame-members-along-edges) (3.20) and [on-canvas parameter handles](#on-canvas-parameter-handles) (5.5). Section 2 resumes at 2.31: 2.29 and 2.30 belonged to items that have shipped and left the list, and 2.30 is still cited for stepping through entities under the cursor, so neither number is reused. A new area tag, *Interface*, covers items whose main product is the webview's interaction design. One new Rejected-scope entry was added: a photoreal render workspace. The constraint-sketcher rejection was re-read against SolidCraft and stands.
 
 Everything previously shipped is tracked in `CHANGELOG.md`, and `CLAUDE.md` holds the invariants, traps and verified kernel facts that a future change could break (not per-feature history, which lives in git) — this page is for what's **not** built yet, plus the Non-goals that record why a direction was rejected so it isn't re-proposed.
 
@@ -304,19 +304,19 @@ One project, read from its documentation and a screenshot. Nothing was built or 
 | Parameters dialog: Unit and Comment columns, favourite, reorder, filter, CSV/JSON import and export, apply-on-leave toggle | SolidCraft | Shipped (Parameters table) |
 | Model parameters: every feature's dimensions listed by feature, each one able to reference a user parameter (`d1 = width`) | SolidCraft | Shipped (Parameters table, Model parameters) |
 | `parameters.list_users`, the parameter graph, and expression autocomplete (arrow keys, Enter/Tab, Escape) | SolidCraft | Shipped (Variable "Used by" and autocomplete) |
-| Configurations and the Config Table (rows of parameter values, ordered rules, per-row suppression) | SolidCraft | Shipped except per-row suppression, which is [Configurations: feature suppression](#configurations-design-table) (2.33) |
+| Configurations and the Config Table (rows of parameter values, ordered rules, per-row suppression) | SolidCraft | Shipped (2.33, since removed from the list) |
 | Search commands (shortcut shown), single-letter command keys, Shift+R to repeat the last command | SolidCraft | Shipped (Command search) |
 | Workspace-tab ribbon with labelled groups, toolbar overflow, a "hide ribbon labels" preference | SolidCraft | Shipped (Ribbon command strip) |
 | Two-tone modelling icons on a 64 grid | SolidCraft | Shipped as a TikZ redraw (two-tone op icons; see `icons/README.md`) |
 | Timeline: suppress, rename, feature folders, drag reorder with dependency checks, delete that lists dependents, hover highlights of modified faces | SolidCraft | [History timeline depth](#history-timeline-depth) (2.37). Already shipped: the jump rollback (click a history row), per-row delete, and click-to-highlight of produced faces |
 | Browser tree (Document Settings, Named Views, Origin, Bodies, Sketches, Features; eye per row; Expand/Collapse All) | SolidCraft | [Unified Browser tree](#unified-browser-tree) (2.38). Already shipped in pieces: the Components tree, the Parts and Layers panels, and view bookmarks |
-| Clickable X/Y/Z axis tips, 26 snapped standard and diagonal views, Normal to Selection, navigation presets (Touchpad, Fusion, OpenSCAD) | SolidCraft | [Navigation upgrades](#navigation-upgrades) (2.39) |
+| Clickable X/Y/Z axis tips, 26 snapped standard and diagonal views, Normal to Selection, navigation presets (Touchpad, Fusion, OpenSCAD) | SolidCraft | Navigation upgrades (2.39, shipped and removed; an OpenSCAD preset is declined because its mapping equals Default) |
 | Zebra analysis; centre of mass shown in the view | SolidCraft | [Zebra stripes and a centre-of-mass marker](#zebra-stripes-and-centre-of-mass-marker) (2.40) |
 | Curvature map and comb, isocurves, minimum radius, continuity | SolidCraft | [Curvature, minimum radius and isocurve overlays](#curvature-and-isocurve-overlays) (3.18, probe); continuity is out of that probe's scope |
 | Feature dialogs docked on the right; collapsible header that keeps its values; OK/Cancel outside the scroll area | SolidCraft | [Feature form ergonomics](#feature-form-ergonomics) (2.41). Already shipped: the live preview (an intent-coloured overlay, debounced) |
 | Named appearances and material assignment | SolidCraft | Shipped (Named materials in the Parts panel, 2.42, removed); textures and PBR looks are not proposed |
-| "Report a bug" in the header; Create Issue from a feature error as an editable draft; crash reports that are never sent automatically | SolidCraft | [Issue draft from a failure](#issue-draft-from-a-failure) (2.43) |
-| Start view with sample cards and recent items | SolidCraft | [Welcome walkthrough and samples](#welcome-walkthrough-and-samples) (2.44). VS Code supplies recent files |
+| "Report a bug" in the header; Create Issue from a feature error as an editable draft; crash reports that are never sent automatically | SolidCraft | Issue draft from a failure (2.43, shipped and removed) |
+| Start view with sample cards and recent items | SolidCraft | Welcome walkthrough and samples (2.44, shipped and removed). VS Code supplies recent files |
 | Sheet metal: unfold, flat pattern, DXF and bend-table export | SolidCraft | [Sheet-metal flat pattern](#sheet-metal-flat-pattern) (3.19, probe), framed as unfolding an *imported* part; authoring flanges, hems and reliefs is not proposed |
 | Weldments: frame members along a skeleton, from a profile library | SolidCraft | [Frame members along wireframe edges](#frame-members-along-edges) (3.20, probe) |
 | On-canvas drag handles with value boxes (extrude distance, fillet radius, shell thickness, hole depth) | SolidCraft | [On-canvas parameter handles](#on-canvas-parameter-handles) (5.5, probe). Already shipped: the transform gizmo, which sets the precedent |
@@ -409,25 +409,16 @@ These are outcome groupings, not release numbers. Independent small items can sh
 - **Out of scope:** units on mesh sizes (they already follow the document unit), temperature offsets (`degC`), and any unit in the sidecar's stored numbers.
 - **Done when:** `W = 5[deg]` on a length field warns and still applies, and MCP and the Edits panel report the same warning (the 50.8 conversion and the unchanged-sidecar round trip are covered).
 
-#### 2.33 Configurations: feature suppression {#configurations-design-table}
-
-*Area: Parity, Interface. Effort: S–M.*
-
-- **Shipped (2026-11-03):** named configurations of the document variables, the Config Table, `set_configuration`, the `configuration` parameter on the export and meshing tools, and one-file-per-configuration batch export. See [Configurations](./getting-started.md#configurations-design-table) and the [file format](./file-formats.md#configurations-design-table).
-- **What is left:** a configuration that also suppresses ops. The per-op suppressed state now exists (shipped with History timeline depth); what remains is a per-configuration list of suppressed op indices overlaid at the same point as the variable overrides, so stored ops still never change.
-- **Out of scope:** configurations of Parts, mesh options or layers. Variables (and, in this phase, op suppression) are the only things a configuration changes.
-- **Done when:** a configuration that suppresses a fillet exports a model without it while the other configuration keeps it, from the table and through `set_configuration`, with `mcp:smoke` pinning both volumes.
-
 #### 2.37 History timeline depth {#history-timeline-depth}
 
 *Area: Interface, Parity. Effort: S–M.*
 
 - **Shipped (2026-11-04):** suppress/unsuppress (`suppressed: true`, skipped by every replay fold, outcome `suppressed`), rename (`label`), delete with a dependents confirm, and `set_edit_op_state` (`get_state` reports both).
+- **Shipped (2026-11-05):** hover highlight — pointing at an applied row tints the faces its op produced.
 - **What is left:**
   - **Folders:** display-only `{name, from, to}` index ranges stored beside the ops in `.edits.json`; collapsing hides rows and changes nothing in replay.
-  - **Hover highlight:** hovering a row tints the faces its op produced, reusing the click-highlight chip's bucket lookup.
   - **Drag reorder** (S–M): allowed only when the dependency check finds no reference crossing the move; rebound as a non-append change.
-- **Done when:** folders round-trip an old sidecar unchanged and collapse without changing `opOutcomes`; hover tints the bucket faces; a reorder across a `pointRefs` user is refused.
+- **Done when:** folders round-trip an old sidecar unchanged and collapse without changing `opOutcomes`; a reorder across a `pointRefs` user is refused.
 
 #### 2.38 Unified Browser tree {#unified-browser-tree}
 
@@ -448,57 +439,30 @@ These are outcome groupings, not release numbers. Independent small items can sh
 - **Layout:** visibility composes through `applyVisibilityState()`, the one place where Part hide and isolate and layer visibility already meet. Tree group rows expand to descendant leaves (`treeGroups.ts`).
 - **Done when:** a `test:webview` case hides a body from the Browser and the Components tree reflects it; restoring a view from the Browser and from View ▾ yields the same camera.
 
-#### 2.39 Navigation upgrades {#navigation-upgrades}
-
-*Area: Interface. Effort: S–M.*
-
-- **Shipped (2026-11-04):** the orientation cube's 26 snapped views (faces, edges, corners), clickable axis arrow heads, **Look at face** in the context menu, and `cadPreview.navigationPreset` with Default and Fusion (one table, `src/navigationPresets.ts`; `test:webview` drives real drags).
-- **What is left (S):** an **OpenSCAD** preset (its mapping is the same as Default, so it needs a reason to exist beyond a name) and a **Touchpad** preset (two-finger pan and pinch zoom arrive as wheel events, so it needs wheel-gesture handling and a real trackpad to verify). Free orbit with roll stays off; the trackball is not proposed.
-- **Done when:** the Touchpad preset maps a scripted two-finger scroll to a pan and a ctrl-wheel pinch to a zoom.
-
 #### 2.40 Zebra stripes and a centre-of-mass marker {#zebra-stripes-and-centre-of-mass-marker}
 
 *Area: Interface, Parity. Effort: S.*
 
-- **Today:** there is no surface-continuity overlay. Mass Properties reports the centroid as a number only.
-- **First increment (S):**
+- **Shipped (2026-11-05):** the centre-of-mass marker (Mass Properties ▸ Show centre of mass in view; `Viewer.showCentreOfMassMarker`, pixel-diff case in `test:webview`).
+- **Today:** there is no surface-continuity overlay.
+- **Remaining increment (S):**
   - **Zebra:** a display overlay that colours faces by `step(fract(k · reflect(view, normal) · axis))`, a stripe environment mapped through the shading normal. It works on the shared tessellation, so on B-rep and mesh sources alike. Stripe count and direction are dock controls.
     - It is a material swap that composes with Part colours. It never writes `mat.color` (`CLAUDE.md`'s theme rule).
     - It stays live during a drag through `requestRender()`.
     - Stripe continuity across an edge is a fact about the *tessellation's* normals, and the overlay says so. It is sampled, not certified, like the deviation map.
-  - **Centre-of-mass marker:** a sprite at the centroid Mass Properties already computes, for the selected solid or the whole model, removed when the panel closes.
 - **Parity:** zebra is webview-only, and the closest headless view is `render_snapshot`. The display mode is added to the snapshot `display` enum only if the shader runs in the snapshot harness, and is recorded as webview-only otherwise.
-- **Done when:** a `test:webview` pixel probe shows continuous stripes across a tangent fillet edge and broken stripes across a sharp box edge on the same model; the marker sits at block.stp's origin (±1e-6).
+- **Done when:** a `test:webview` pixel probe shows continuous stripes across a tangent fillet edge and broken stripes across a sharp box edge on the same model.
 
 #### 2.41 Feature form ergonomics {#feature-form-ergonomics}
 
 *Area: Interface. Effort: S.*
 
 - **Shipped (2026-11-04):** the sticky Apply footer (`.compose-footer`, pinned inside `#edits-scroll`; `test:webview` pins it against an unpinned control).
+- **Shipped (2026-11-05):** the collapsible form header (op name, intent tint, chevron; collapsing keeps every value and cancels the preview).
 - **What is left (S):**
-  - **Collapsible form header:** the header shows the op name and its intent tint, and collapsing it keeps every value.
   - **Optional placement:** a setting docks forms as a right-hand overlay on the viewport, as in SolidCraft. Same DOM, moved never duplicated; obeys the one-WebGL-context rule and never covers the orientation cube.
 - **Rules kept:** the preview is still cancelled on form switch, on selection change and before commit; Escape restores before it blurs; every toggled element gets its `[hidden]` override.
-- **Done when:** collapsing and expanding keeps typed values, and the docked placement passes the same Apply-visibility case.
-
-#### 2.43 Issue draft from a failure {#issue-draft-from-a-failure}
-
-*Area: Platform. Effort: S.*
-
-- **Shipped (2026-11-04):** the redacted draft (`src/issueDraft.ts`), the `CAD Preview: Report Issue…` command (draft in an untitled tab, then an explicit **Open on GitHub**) and the `diagnostics_report` MCP tool.
-- **What is left:** a **Report issue…** button on ⚠ history rows and a File-menu entry in the webview, and the same entry on kernel-crash notifications (they need the crash message routed into `buildIssueDraft`'s `error`).
-- **Done when:** a `test:integration` case drives the command from a forced op failure and captures the URL through a stub.
-
-#### 2.44 Welcome walkthrough and sample gallery {#welcome-walkthrough-and-samples}
-
-*Area: Ecosystem. Effort: S.*
-
-- **Today:** the empty Models view offers Open and New Blank Model. There is a What's New tab (`src/whatsNew.ts`), but no `walkthroughs` contribution and no way to open the bundled `examples/` without cloning the repository.
-- **First increment (S):**
-  - **A VS Code walkthrough:** open a model, edit and save, generate a mesh, connect an agent. Its steps call existing commands.
-  - **Open Sample…:** a gallery of a few small, licence-clear fixtures, for example `block.stp`, `bull.stp`, `cube.stl`, a `.csg` and the cantilever tutorial. Each one is copied into a folder the user picks, because opening a sample must never write sidecars inside the extension directory.
-- **Cost:** sample size counts against the VSIX. Prefer fixtures under 100 KB, and record the total in `compat:vsix`.
-- **Done when:** `test:integration` opens a sample through the command, finds its copy in the chosen folder, and finds no sidecar beside the bundled original.
+- **Done when:** the docked placement passes the same Apply-visibility case.
 
 ### Probe-gated — establish feasibility before estimating
 

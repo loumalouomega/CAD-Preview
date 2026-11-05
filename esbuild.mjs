@@ -233,6 +233,29 @@ function copySheetTemplates() {
 }
 
 /**
+ * Stage the bundled sample models ("Open Sample…") into dist/samples/. The
+ * single source of truth is samples/index.json; each entry's `from` file is
+ * copied under its `file` name. Samples ship from dist/, never from examples/
+ * (the VSIX forbids examples/), and `.vscodeignore` carve-outs list each file.
+ */
+function copySamples() {
+  const indexSrc = path.join(__dirname, "samples", "index.json");
+  const outDir = path.join(__dirname, "dist", "samples");
+  fs.rmSync(outDir, { recursive: true, force: true });
+  fs.mkdirSync(outDir, { recursive: true });
+  const index = JSON.parse(fs.readFileSync(indexSrc, "utf8"));
+  let bytes = 0;
+  for (const s of index.samples) {
+    const dst = path.join(outDir, s.file);
+    fs.copyFileSync(path.join(__dirname, s.from), dst);
+    bytes += fs.statSync(dst).size;
+  }
+  // The index shipped to dist/ omits the repo-only `from` paths.
+  fs.writeFileSync(path.join(outDir, "index.json"), JSON.stringify({ version: index.version, samples: index.samples.map(({ file, label, description }) => ({ file, label, description })) }, null, 2) + "\n");
+  console.log(`Copied ${index.samples.length} samples → dist/samples/ (${(bytes / 1e3).toFixed(1)} KB)`);
+}
+
+/**
  * Stage the Draco decoders (roadmap "Compressed glTF"). Two different sets, for
  * two different runtimes:
  *  - `dist/draco/` — three's glTF-variant WEB decoder (wrapper + wasm, ~250 KB),
@@ -289,6 +312,7 @@ if (watch) {
   copyMeshPresets();
   copyProcessLimits();
   copySheetTemplates();
+  copySamples();
   copyDracoDecoders();
   copyManifold();
   console.log("esbuild: watching…");
@@ -304,6 +328,7 @@ if (watch) {
   copyMeshPresets();
   copyProcessLimits();
   copySheetTemplates();
+  copySamples();
   copyDracoDecoders();
   copyManifold();
 }

@@ -56,13 +56,29 @@ import {
  */
 export const configurationScope = new AsyncLocalStorage<{ configuration: string }>();
 
-async function readEditsResolved(modelPath: string): Promise<{ ops: EditOp[]; fullOps: EditOp[]; variables: ParamVariable[]; bakedThrough: number; configurations: Configuration[]; activeConfiguration: string | null }> {
+/** Indices at or past the watermark the effective configuration suppresses (empty when none). */
+function tailSuppressed(config: Configuration | null, bakedThrough: number): number[] {
+  return (config?.suppressed ?? []).filter((i) => i >= bakedThrough);
+}
+
+/** save_model writes the replayed tail INTO the source and advances the watermark past every op, so a tail op the active configuration suppresses would be dropped for good from every configuration. Refuse instead. */
+function assertNoConfigSuppression(r: { configSuppressed: number[]; activeConfiguration: string | null }): void {
+  if (r.configSuppressed.length > 0) {
+    throw new Error(
+      `Configuration "${r.activeConfiguration ?? "?"}" suppresses unsaved op(s) ${r.configSuppressed.join(", ")}; saving would bake that suppression into the source for every configuration. Deactivate the configuration (set_configuration with active:false) or unsuppress those ops first.`
+    );
+  }
+}
+
+async function readEditsResolved(modelPath: string): Promise<{ ops: EditOp[]; fullOps: EditOp[]; variables: ParamVariable[]; bakedThrough: number; configurations: Configuration[]; activeConfiguration: string | null; configSuppressed: number[] }> {
   const parsed = await readEditsRaw(modelPath);
   const bakedThrough = parsed.bakedThrough;
   const configurations = parsed.configurations ?? [];
   const activeConfiguration = parsed.activeConfiguration ?? null;
   let parsedOps = parsed.ops;
   const requested = configurationScope.getStore()?.configuration;
+  // The configuration whose op suppression applies at replay: the requested one, else the stored active one.
+  const effective = findConfiguration({ configurations, activeConfiguration }, requested !== undefined ? requested : activeConfiguration);
   if (requested !== undefined && requested !== activeConfiguration) {
     const state = { configurations, activeConfiguration };
     if (!findConfiguration(state, requested)) {
@@ -81,9 +97,9 @@ async function readEditsResolved(modelPath: string): Promise<{ ops: EditOp[]; fu
     // pre-watermark documents behave byte-for-byte as before); `fullOps`
     // keeps display/index/persist semantics for history, stackLength,
     // outcome offsets and sidecar writes.
-    return { ops: replayTail(fullOps, bakedThrough), fullOps, variables: parsed.variables, bakedThrough, configurations, activeConfiguration };
+    return { ops: replayTail(applySuppression(fullOps, effective), bakedThrough), fullOps, variables: parsed.variables, bakedThrough, configurations, activeConfiguration, configSuppressed: tailSuppressed(effective, bakedThrough) };
   } catch {
-    return { ops: replayTail(parsedOps, bakedThrough), fullOps: parsedOps, variables: parsed.variables, bakedThrough, configurations, activeConfiguration };
+    return { ops: replayTail(applySuppression(parsedOps, effective), bakedThrough), fullOps: parsedOps, variables: parsed.variables, bakedThrough, configurations, activeConfiguration, configSuppressed: tailSuppressed(effective, bakedThrough) };
   }
 }
 import { AsyncLocalStorage } from "async_hooks";
@@ -95,6 +111,9 @@ import {
   renameConfiguration,
   activateConfiguration,
   setConfigurationCell,
+  setConfigurationSuppressed,
+  shiftSuppressedAfterRemove,
+  applySuppression,
   configurationTable,
   configurationFileSlug,
   normalizeConfigurationName,
@@ -4104,7 +4123,7 @@ export async function getState(params: { path: string }) {
     })),
     // Design table: sparse variable overrides per named configuration. With one
     // active, `effectiveVariables` shows what the document resolves with.
-    configurations: configurations.map((c) => ({ name: c.name, active: c.name === activeConfiguration, overrides: c.overrides })),
+    configurations: configurations.map((c) => ({ name: c.name, active: c.name === activeConfiguration, overrides: c.overrides, ...(c.suppressed?.length ? { suppressed: c.suppressed } : {}) })),
     activeConfiguration,
     ...(activeEval
       ? {
@@ -4545,7 +4564,7 @@ async function currentEntitySummary(
     return null;
   }
   const current = await readEditsResolved(modelPath);
-  const result = await ctx.pipeline.loadBRep(ctx.extensionPath, src.bytes, src.format as BRepFormat, replayTail(current.fullOps, current.bakedThrough));
+  const result = await ctx.pipeline.loadBRep(ctx.extensionPath, src.bytes, src.format as BRepFormat, current.ops);
   return entitySummary(result);
 }
 
@@ -4849,7 +4868,9 @@ export async function removeEditOp(ctx: ToolContext, params: { path: string; ind
   const oldOps = current.fullOps;
   const newOps = [...oldOps.slice(0, params.index), ...oldOps.slice(params.index + 1)];
   const removed = oldOps[params.index];
-  await writeEdits(modelPath, newOps, current.variables, current.bakedThrough);
+  // A configuration's suppressed indices are positional: keep them naming the same ops.
+  const shifted = shiftSuppressedAfterRemove({ configurations: current.configurations, activeConfiguration: current.activeConfiguration }, params.index);
+  await writeEdits(modelPath, newOps, current.variables, current.bakedThrough, shifted);
 
   const warnings: string[] = [];
   const rebind = await maybeRebindParts(ctx, modelPath, route, oldOps, newOps, warnings, current.bakedThrough);
@@ -5385,6 +5406,10 @@ export async function setConfiguration(params: {
   remove?: boolean;
   /** Start a new configuration from a copy of this one's overrides. */
   copyFrom?: string;
+  /** 0-based op indices this configuration suppresses (added to its list). Baked-prefix indices are refused with a warning. */
+  suppress?: number[];
+  /** 0-based op indices to stop suppressing in this configuration. */
+  unsuppress?: number[];
 }) {
   const modelPath = params.path;
   requireRoute(modelPath);
@@ -5408,6 +5433,17 @@ export async function setConfiguration(params: {
     const name = normalizeConfigurationName(params.name)!;
     if (params.replaceOverrides) {
       state = { ...state, configurations: state.configurations.map((c) => (c.name === name ? { ...c, overrides: {} } : c)) };
+    }
+    for (const [list, on] of [[params.unsuppress, false], [params.suppress, true]] as const) {
+      for (const index of list ?? []) {
+        if (on && Number.isInteger(index) && index >= current.fullOps.length) {
+          warnings.push(`Op ${index} does not exist (the stack has ${current.fullOps.length}); not suppressed.`);
+          continue;
+        }
+        const res = setConfigurationSuppressed(state, name, index, on, current.bakedThrough);
+        if (res.error) warnings.push(res.error);
+        else state = res.state;
+      }
     }
     const known = new Set(current.variables.map((v) => v.name));
     for (const [variable, expr] of Object.entries(params.overrides ?? {})) {
@@ -5438,11 +5474,12 @@ export async function setConfiguration(params: {
   const table = configurationTable(current.variables, state);
   return {
     activeConfiguration: state.activeConfiguration,
-    configurations: state.configurations.map((c) => ({ name: c.name, active: c.name === state.activeConfiguration, overrides: c.overrides })),
+    configurations: state.configurations.map((c) => ({ name: c.name, active: c.name === state.activeConfiguration, overrides: c.overrides, suppressed: c.suppressed ?? [] })),
     /** One row per configuration (plus the base): every variable's evaluated value, with an error string when a cell fails (it freezes at the cached value). */
     table: table.map((row) => ({
       configuration: row.name,
       active: row.active,
+      suppressed: row.suppressed,
       values: Object.fromEntries(row.cells.map((c) => [c.variable, c.value])),
       errors: Object.fromEntries(row.cells.filter((c) => c.error).map((c) => [c.variable, c.error])),
     })),
@@ -7487,7 +7524,9 @@ export async function saveModelTool(ctx: ToolContext, params: { path: string }) 
       `${recovered.message} Refusing to save over a source that matches neither the pre-save nor the baked bytes; restore ${path.basename(modelPath)}.bak or resolve the marker first.`
     );
   }
-  const { ops, fullOps, variables } = await readEditsResolved(modelPath);
+  const resolvedEdits = await readEditsResolved(modelPath);
+  assertNoConfigSuppression(resolvedEdits);
+  const { ops, fullOps, variables } = resolvedEdits;
   if (ops.length === 0) {
     return { written: path.resolve(modelPath), baked: 0, editsBaked: fullOps.length, warnings };
   }
@@ -7621,7 +7660,9 @@ async function saveMeshModel(ctx: ToolContext, modelPath: string, format: "stl" 
   // one, and report it: a `finish` here is a save the caller never saw land.
   const recovered = await recoverInterruptedSaveHeadless(modelPath, format);
   if (recovered.message) warnings.push(recovered.message);
-  const { ops, fullOps, variables } = await readEditsResolved(modelPath);
+  const resolvedEdits = await readEditsResolved(modelPath);
+  assertNoConfigSuppression(resolvedEdits);
+  const { ops, fullOps, variables } = resolvedEdits;
   if (ops.length === 0) {
     return { written: path.resolve(modelPath), baked: 0, editsBaked: fullOps.length, warnings };
   }

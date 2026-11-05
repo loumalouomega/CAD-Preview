@@ -86,3 +86,12 @@ export function issueUrl(repoUrl: string, draft: IssueDraft, maxBody = 6000): st
   const body = draft.body.length > maxBody ? `${draft.body.slice(0, maxBody)}\n\n… (draft truncated — paste the full text from the editor tab)` : draft.body;
   return `${base}/issues/new?title=${encodeURIComponent(draft.title)}&body=${encodeURIComponent(body)}`;
 }
+
+/**
+ * True for the kernel-worker crash / watchdog messages (`kernelClient.ts`: "kernel worker exited unexpectedly …",
+ * "… did not respond within N …"). The webview offers "Report issue…" beside such an error; any other message does not.
+ * Deliberately a narrow match on those two phrases — it is not the per-kernel abort vocabulary.
+ */
+export function isKernelFailureMessage(message: string): boolean {
+  return /kernel worker exited|did not respond within/i.test(message);
+}

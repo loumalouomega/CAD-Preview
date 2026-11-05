@@ -47,6 +47,12 @@ export const pick = (label: string): ModalAnswer => ({ kind: "pick", label });
 export const save = (path: string): ModalAnswer => ({ kind: "save", path });
 export const open = (...paths: string[]): ModalAnswer => ({ kind: "open", paths });
 export const input = (value: string): ModalAnswer => ({ kind: "input", value });
+/** When set, an information message offering a button with this label is answered by pressing it. */
+export let infoButtonAnswer: string | undefined;
+export function setInfoButtonAnswer(label: string | undefined): void {
+  infoButtonAnswer = label;
+}
+
 export const cancel = (): ModalAnswer => ({ kind: "cancel" });
 
 /** What the user was actually shown — assertable, not just the outcome. */
@@ -180,9 +186,11 @@ export function installModalStubs(answers: ModalAnswer[]): ModalSession {
   // core API to capture a report panel's HTML broke the three webview-driven
   // mesh-save recovery cases, which post through a real panel. The tally alone
   // distinguishes "the good file failed" from "the good file was skipped".
-  win.showInformationMessage = async (message: string) => {
+  win.showInformationMessage = async (message: string, ...items: unknown[]) => {
     record.infos.push(String(message));
-    return undefined;
+    // A button is only pressed when the test asked for it (`infoButtonAnswer`); otherwise it is dismissed.
+    const want = infoButtonAnswer;
+    return want === undefined ? undefined : items.find((i) => labelOf(i) === want);
   };
 
   // Queued like a quick-pick: the in-place-save confirmation is a modal
