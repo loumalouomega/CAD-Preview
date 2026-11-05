@@ -6,6 +6,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/); thi
 
 ## [Unreleased]
 
+## [3.37.0] - 2026-11-05
+
 ### Added
 
 - **`cadPreview.navigationPreset`: a Fusion-style mouse mapping.** `fusion` makes middle-drag pan and Shift+middle-drag orbit, leaving the left button free for selection; `default` keeps today's mapping. One table (`navigationPresets.ts`) drives every pane. The OpenSCAD preset (identical to Default) and a Touchpad preset (two-finger pan and pinch zoom) remain on the roadmap.
@@ -1117,6 +1119,7 @@ This release republishes v1.9.0's full changelog (below) unchanged; v1.9.0 itsel
 
 - Initial release: read-only 3D preview for CAD and mesh files (STEP, IGES, BREP, STL, OBJ, PLY, glTF) inside a VS Code custom editor, using OpenCascade.js (OCCT WASM) in the extension host for B-rep formats and Three.js in the webview for rendering.
 
+[3.37.0]: https://github.com/loumalouomega/CAD-Preview/compare/v3.36.1...v3.37.0
 [3.36.1]: https://github.com/loumalouomega/CAD-Preview/compare/v3.36.0...v3.36.1
 [3.36.0]: https://github.com/loumalouomega/CAD-Preview/compare/v3.35.0...v3.36.0
 [3.35.0]: https://github.com/loumalouomega/CAD-Preview/compare/v3.34.0...v3.35.0
