@@ -1854,9 +1854,19 @@ function renderMassProperties(
     convertLengthBasedProperties(raw, currentDisplayUnit) as MassPropertiesDisplay,
     currentDisplayUnit
   );
+  syncCentreOfMassMarker();
+}
+
+/** Shows the marker at the cached raw (mm, model-frame) centre when the box is ticked, else removes it.
+ * A stale result (cache cleared by a model replace) never leaves a marker: `setModel()` clears it too. */
+function syncCentreOfMassMarker(): void {
+  const c = lastRawMassProperties?.centerOfMass;
+  if (massPropertiesPanel.isMarkerOn() && c) viewer.showCentreOfMassMarker(new THREE.Vector3(c[0], c[1], c[2]));
+  else viewer.clearCentreOfMassMarker();
 }
 
 const massPropertiesPanel = new MassPropertiesPanel(document.getElementById("mass-panel")!, {
+  onToggleMarker: () => syncCentreOfMassMarker(),
   onRefresh: () => {
     const list = selection.list();
     if (list.length > 1) {

@@ -217,6 +217,7 @@ export class Viewer {
   /** Display-only overlay (marker, line, label) for the in-progress/completed
    * measurement — a scene sibling of `model`, same pattern as `meshOverlay`. */
   private measurementOverlay: THREE.Object3D | null = null;
+  private centreOfMassMarker: THREE.Object3D | null = null;
   /** The overlay's label sprite, if any — rescaled every frame in `animate()`
    * to stay a constant on-screen size regardless of camera distance/zoom
    * (unlike point sprites, which only need to stay visible, a label
@@ -698,6 +699,7 @@ export class Viewer {
     this.setColorFieldOverlay(null);
     this.setOpPreview(null); // a preview computed from the OLD geometry must not linger over the new model
     this.clearMeasurementOverlay();
+    this.clearCentreOfMassMarker(); // its point refers to the OLD geometry
     this.clearModel();
     this.model = object;
     // Z-up source data displayed in this Three.js (Y-up) scene: rotate the model
@@ -2115,6 +2117,39 @@ export class Viewer {
     this.measurementLabel = label;
     this.scene.add(group);
     this.requestRender();
+  }
+
+  /**
+   * Marks the centre of mass (Mass Properties' "Show in view"). `local` is in the
+   * model's own frame, so it goes through `model.localToWorld` (the up-axis
+   * rotation). Lives in the scene, not under `model`, so it is never picked; it
+   * is independent of the measurement overlay and survives a measurement.
+   */
+  showCentreOfMassMarker(local: THREE.Vector3): void {
+    this.clearCentreOfMassMarker();
+    const marker = makeMeasureMarkerSprite();
+    const world = local.clone();
+    this.model?.updateMatrixWorld(true);
+    this.model?.localToWorld(world);
+    marker.position.copy(world);
+    marker.scale.setScalar(this.pointSpriteScale * 3.0);
+    this.centreOfMassMarker = marker;
+    this.scene.add(marker);
+    this.requestRender();
+  }
+
+  clearCentreOfMassMarker(): void {
+    if (!this.centreOfMassMarker) return;
+    this.scene.remove(this.centreOfMassMarker);
+    disposeMeasureObject(this.centreOfMassMarker);
+    this.centreOfMassMarker = null;
+    this.requestRender();
+  }
+
+  /** World position of the centre-of-mass marker, or `null` — a test accessor. */
+  getCentreOfMassMarkerWorld(): [number, number, number] | null {
+    const m = this.centreOfMassMarker;
+    return m ? [m.position.x, m.position.y, m.position.z] : null;
   }
 
   /** Disposes and removes the current measurement overlay (marker or line+label), if any. */

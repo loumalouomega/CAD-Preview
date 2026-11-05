@@ -785,6 +785,7 @@ The **Mass Properties** panel (below the FE Mesh panel) computes volume, surface
 
 1. With nothing selected, click **Compute** for whole-model properties. To inspect one entity instead, enter **Select** mode, pick exactly one volume, surface, or edge, then click **Compute** — selecting more than one entity shows a guidance message instead of a (possibly misleading) combined result.
 2. The panel shows whichever fields apply: a volume/solid gets **Volume**, **Area**, **Center of mass**, and **Ixx/Iyy/Izz**; a single face gets **Area** only; a single edge gets **Length** only.
+3. Tick **Show centre of mass in view** to drop a ring marker at the computed centre of mass (in the model's own frame, so it follows the up-axis rotation). It is a scene overlay, never pickable, redrawn on every new result and removed by unticking or by any model rebuild. For a mesh selection that is not watertight the point is the area centroid, not a volume centre.
 
 For STEP/IGES/BREP files this runs in the extension host via OpenCascade.js's `BRepGProp`; for STL/OBJ/PLY/glTF files it's computed entirely in the webview from the displayed triangle mesh (no moments of inertia for mesh sources in this first cut). Volume/Area/Length/Center of mass are labeled and shown in whatever unit the view-controls **Units** dropdown is set to (see [Units](#units) above) — switching it live-rescales an already-computed result with no need to click **Compute** again; **Ixx/Iyy/Izz** are always shown raw, unaffected by that setting.
 

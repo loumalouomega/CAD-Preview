@@ -17,6 +17,8 @@ export interface MassPropertiesDisplay {
 
 export interface MassPropertiesPanelCallbacks {
   onRefresh: () => void;
+  /** "Show in view" toggled; the caller owns the marker and re-applies it after each result. */
+  onToggleMarker?: (on: boolean) => void;
 }
 
 function formatNum(n: number): string {
@@ -34,10 +36,18 @@ function formatNum(n: number): string {
  */
 export class MassPropertiesPanel {
   private readonly body: HTMLElement;
+  private readonly cb: MassPropertiesPanelCallbacks;
+  private markerOn = false;
 
   constructor(panel: HTMLElement, cb: MassPropertiesPanelCallbacks) {
+    this.cb = cb;
     this.body = panel.querySelector("#mass-body")!;
     panel.querySelector("#mass-refresh")?.addEventListener("click", () => cb.onRefresh());
+  }
+
+  /** Whether the "Show in view" box is ticked. */
+  isMarkerOn(): boolean {
+    return this.markerOn;
   }
 
   /** Shows a plain status line — "Computing…", a guidance message, or an error. */
@@ -64,6 +74,21 @@ export class MassPropertiesPanel {
     if (props.length != null) rows.push([`Length${unitLabel ? ` (${unitLabel})` : ""}`, formatNum(props.length)]);
     if (props.centerOfMass) {
       rows.push([`Center of mass${unitLabel ? ` (${unitLabel})` : ""}`, `(${props.centerOfMass.map(formatNum).join(", ")})`]);
+    }
+    if (props.centerOfMass && this.cb.onToggleMarker) {
+      const row = document.createElement("label");
+      row.className = "mass-row mass-marker-toggle";
+      const box = document.createElement("input");
+      box.type = "checkbox";
+      box.id = "mass-show-com";
+      box.checked = this.markerOn;
+      box.addEventListener("change", () => {
+        this.markerOn = box.checked;
+        this.cb.onToggleMarker?.(this.markerOn);
+      });
+      row.appendChild(box);
+      row.appendChild(document.createTextNode(" Show centre of mass in view"));
+      this.body.appendChild(row);
     }
     if (props.momentsOfInertia) {
       const m = props.momentsOfInertia;

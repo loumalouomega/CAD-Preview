@@ -7344,6 +7344,47 @@ test("mass properties: a mesh source computes locally and never posts a request"
   assert(/Volume/.test(text) && /1,?000/.test(text), `the cube's volume is computed client-side (got ${JSON.stringify(text.slice(0, 120))})`);
 });
 
+test("mass properties: Show centre of mass in view draws a marker at the centroid and removes it again", async (page) => {
+  await populate(page);
+  await openAdvanced(page);
+  await page.click("#mass-refresh");
+  const req = await lastSent(page, "massPropertiesRequest");
+  await post(page, { type: "massPropertiesResult", requestId: req.requestId, properties: massReply() });
+  await sleep(150);
+  assert(await page.evaluate(() => !!document.getElementById("mass-show-com")), "a result with a centre of mass offers the Show-in-view box");
+  const grab = async () => {
+    await setPanelHidden(page, true);
+    const shot = (await shotWithoutToast(page, () => page.locator("#app").screenshot())).toString("base64");
+    await setPanelHidden(page, false);
+    return shot;
+  };
+  const diff = (a, b) => page.evaluate(async ([x, y]) => {
+    const px = async (b64) => {
+      const bmp = await createImageBitmap(await (await fetch(`data:image/png;base64,${b64}`)).blob());
+      const c = document.createElement("canvas");
+      c.width = bmp.width; c.height = bmp.height;
+      c.getContext("2d").drawImage(bmp, 0, 0);
+      return c.getContext("2d").getImageData(0, 0, c.width, c.height).data;
+    };
+    const [A, B] = [await px(x), await px(y)];
+    let n = 0;
+    for (let i = 0; i < A.length; i += 4)
+      if (Math.abs(A[i] - B[i]) + Math.abs(A[i + 1] - B[i + 1]) + Math.abs(A[i + 2] - B[i + 2]) > 30) n++;
+    return n;
+  }, [a, b]);
+  const off = await grab();
+  await page.click("#mass-show-com");
+  await sleep(300);
+  const on = await grab();
+  const drawn = await diff(off, on);
+  assert(drawn > 20, `ticking the box draws a marker (differing pixels ${drawn})`);
+  await page.click("#mass-show-com");
+  await sleep(300);
+  const after = await grab();
+  const left = await diff(off, after);
+  assert(left < drawn / 4, `unticking removes it (before ${drawn}, after ${left})`);
+});
+
 // ── Pin + tolerance fields (measurement annotations) ──────────────────────
 //
 // The tolerance maths is unit-tested (`toleranceBand.test.ts`) and the

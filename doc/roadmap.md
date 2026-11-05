@@ -449,15 +449,15 @@ These are outcome groupings, not release numbers. Independent small items can sh
 
 *Area: Interface, Parity. Effort: S.*
 
-- **Today:** there is no surface-continuity overlay. Mass Properties reports the centroid as a number only.
-- **First increment (S):**
+- **Shipped (2026-11-05):** the centre-of-mass marker (Mass Properties ▸ Show centre of mass in view; `Viewer.showCentreOfMassMarker`, pixel-diff case in `test:webview`).
+- **Today:** there is no surface-continuity overlay.
+- **Remaining increment (S):**
   - **Zebra:** a display overlay that colours faces by `step(fract(k · reflect(view, normal) · axis))`, a stripe environment mapped through the shading normal. It works on the shared tessellation, so on B-rep and mesh sources alike. Stripe count and direction are dock controls.
     - It is a material swap that composes with Part colours. It never writes `mat.color` (`CLAUDE.md`'s theme rule).
     - It stays live during a drag through `requestRender()`.
     - Stripe continuity across an edge is a fact about the *tessellation's* normals, and the overlay says so. It is sampled, not certified, like the deviation map.
-  - **Centre-of-mass marker:** a sprite at the centroid Mass Properties already computes, for the selected solid or the whole model, removed when the panel closes.
 - **Parity:** zebra is webview-only, and the closest headless view is `render_snapshot`. The display mode is added to the snapshot `display` enum only if the shader runs in the snapshot harness, and is recorded as webview-only otherwise.
-- **Done when:** a `test:webview` pixel probe shows continuous stripes across a tangent fillet edge and broken stripes across a sharp box edge on the same model; the marker sits at block.stp's origin (±1e-6).
+- **Done when:** a `test:webview` pixel probe shows continuous stripes across a tangent fillet edge and broken stripes across a sharp box edge on the same model.
 
 #### 2.41 Feature form ergonomics {#feature-form-ergonomics}
 
