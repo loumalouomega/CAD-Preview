@@ -240,6 +240,9 @@ export interface EditsPanelCallbacks {
    * the real selection's rendering. The ids are `face-N` strings; the wiring
    * maps them to `{entityType: "surface"}` entities. */
   onHighlightBucket: (ids: string[] | null) => void;
+  /** Pointer over (or off) an applied history row: transiently tints the faces its op produced
+   * (`ids`), `null` on leave. Never touches the selection; the wiring repaints the real one. */
+  onHoverBucket?: (ids: string[] | null) => void;
   /** Induce a stored operand query for the currently-selected faces against
    * the given producing op's `role` bucket (the "pin as query" row in
    * `QUERYABLE_PANEL_FORMS` forms). The wiring reads the live selection,
@@ -293,6 +296,13 @@ export class EditsPanel {
    * viewport (click-toggle). Reset on every render — a model rebuild already
    * restores the real selection's rendering via `refreshColors()`. */
   private activeBucketOp: number | null = null;
+  private hoverActive = false;
+  private pinnedBucketIdsByOp = new Map<number, string[]>();
+
+  /** Face ids of the chip currently pinned by a click, or null. */
+  private pinnedBucketIds(): string[] | null {
+    return this.activeBucketOp === null ? null : this.pinnedBucketIdsByOp.get(this.activeBucketOp) ?? null;
+  }
   /** Panel-local mirror of the captured boolean-A count (display only; the ids
    * themselves live in the wiring). Survives form re-renders. */
   private booleanACount = 0;
@@ -733,6 +743,11 @@ export class EditsPanel {
     // a model rebuild + `refreshColors()`, which already restores the real
     // selection's rendering.
     this.activeBucketOp = null;
+    this.pinnedBucketIdsByOp.clear();
+    if (this.hoverActive) {
+      this.hoverActive = false; // the hovered row is about to be destroyed — its pointerleave never fires
+      this.cb.onHoverBucket?.(null);
+    }
 
     this.body.innerHTML = "";
     if (ops.length === 0 && (redoOps?.length ?? 0) === 0) {
@@ -876,6 +891,7 @@ export class EditsPanel {
         const bucket = opts.bucket;
         if (bucket) {
           const allIds = Object.values(bucket.roles).flat();
+          this.pinnedBucketIdsByOp.set(bucket.op, allIds);
           const chip = document.createElement("button");
           chip.className = "edit-bucket";
           chip.textContent = `+${allIds.length}`;
@@ -897,6 +913,16 @@ export class EditsPanel {
             }
           });
           li.appendChild(chip);
+          // Hover preview of the same faces. While a chip is pinned the pinned ids come back on leave.
+          li.addEventListener("pointerenter", () => {
+            this.hoverActive = true;
+            this.cb.onHoverBucket?.(allIds);
+          });
+          li.addEventListener("pointerleave", () => {
+            this.hoverActive = false;
+            this.cb.onHoverBucket?.(null);
+            if (this.activeBucketOp !== null) this.cb.onHighlightBucket(this.pinnedBucketIds());
+          });
         }
       } else {
         const redoMark = document.createElement("span");

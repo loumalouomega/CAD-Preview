@@ -1233,6 +1233,12 @@ const editsPanel = new EditsPanel(document.getElementById("edits-panel")!, {
     if (!ids || ids.length === 0) { renderHighlight(); return; }
     viewer.renderSelection(ids.map((entityId) => ({ entityType: "surface" as const, entityId })));
   },
+  // Hover preview of a history row's produced faces: same repaint route as the chip, never the SelectionSet.
+  // Leaving repaints the real selection (a pinned chip repaints its own ids from the panel).
+  onHoverBucket: (ids) => {
+    if (!ids || ids.length === 0) { renderHighlight(); return; }
+    viewer.renderSelection(ids.map((entityId) => ({ entityType: "surface" as const, entityId })));
+  },
   onApplyTransform: (draft) => {
     const id = draft.kind === "translate" ? "translate" : draft.kind === "rotate" ? "rotate" : draft.kind === "scale" ? "scale" : "mirror";
     const resolved = buildOpForPanel(id, draft);

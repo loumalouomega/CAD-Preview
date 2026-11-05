@@ -403,11 +403,11 @@ These are outcome groupings, not release numbers. Independent small items can sh
 *Area: Interface, Parity. Effort: S–M.*
 
 - **Shipped (2026-11-04):** suppress/unsuppress (`suppressed: true`, skipped by every replay fold, outcome `suppressed`), rename (`label`), delete with a dependents confirm, and `set_edit_op_state` (`get_state` reports both).
+- **Shipped (2026-11-05):** hover highlight — pointing at an applied row tints the faces its op produced.
 - **What is left:**
   - **Folders:** display-only `{name, from, to}` index ranges stored beside the ops in `.edits.json`; collapsing hides rows and changes nothing in replay.
-  - **Hover highlight:** hovering a row tints the faces its op produced, reusing the click-highlight chip's bucket lookup.
   - **Drag reorder** (S–M): allowed only when the dependency check finds no reference crossing the move; rebound as a non-append change.
-- **Done when:** folders round-trip an old sidecar unchanged and collapse without changing `opOutcomes`; hover tints the bucket faces; a reorder across a `pointRefs` user is refused.
+- **Done when:** folders round-trip an old sidecar unchanged and collapse without changing `opOutcomes`; a reorder across a `pointRefs` user is refused.
 
 #### 2.38 Unified Browser tree {#unified-browser-tree}
 

@@ -6198,6 +6198,36 @@ test("external edits: the appended op flashes its produced faces once, then rest
   assert(restoredDiff < 1000, `the highlight restores after the one-shot window (${restoredDiff} pixels vs control; a missed restore would differ by ${flashDiff})`);
 });
 
+test("history rows: hovering a row tints the faces its op produced and leaving restores", async (page) => {
+  await populate(page);
+  await post(page, { type: "edits", ops: SAVE_POINT_OPS, variables: [], bakedThrough: 0 });
+  await sleep(300);
+  const geometry = fixture("geometry");
+  const opBuckets = [{ op: 1, kind: "translate", roles: { body: ["face-0", "face-1", "face-2", "face-3"] } }];
+  await post(page, { ...geometry, autoFit: false, opBuckets });
+  await sleep(400);
+  const baseline = await parkedShot(page);
+  const row = (i) => page.locator(`#edits-body li[data-op-index="${i}"], .edit-row[data-op-index="${i}"]`).first();
+  const hoverRow = async (i) => {
+    await row(i).hover({ position: { x: 20, y: 8 } }); // scrolls the row into view first
+    await sleep(300);
+  };
+  await hoverRow(1);
+  const hovered = await canvasShot(page);
+  const tinted = await canvasDiffCount(page, baseline, hovered);
+  assert(tinted > 100, `hovering the op's row tints its produced faces (${tinted} pixels differ)`);
+  await hoverRow(0); // op 0 has no bucket: the row offers no preview
+  const other = await canvasShot(page);
+  const stillTinted = await canvasDiffCount(page, baseline, other);
+  assert(stillTinted < 1000, `a row without a bucket tints nothing and the previous tint is gone (${stillTinted} pixels differ)`);
+  const box = await viewportBox(page);
+  await page.mouse.move(box.x + box.width / 2, box.y - 40);
+  await sleep(300);
+  const left = await canvasShot(page);
+  const restored = await canvasDiffCount(page, baseline, left);
+  assert(restored < 1000, `leaving restores the real rendering (${restored} pixels vs baseline; a missed restore would differ by ${tinted})`);
+});
+
 // ── Saved view bookmarks (roadmap Tier 1 "Saved view bookmarks") ─────────────
 //
 // A named collection of inspection viewpoints persisted as a top-level
