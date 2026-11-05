@@ -5628,6 +5628,56 @@ test("navigation presets: Fusion pans on middle-drag and orbits on Shift+middle-
   assert(back > MOVED, `Default again: the left-drag that did nothing under Fusion orbits (${back} pixels changed)`);
 });
 
+test("navigation presets: Touchpad pans on a two-finger scroll and zooms on a pinch; Default zooms on any wheel", async (page) => {
+  await populate(page);
+  const defaults = (navigationPreset) => ({ type: "viewerDefaults", background: "#1e1e1e", meshSizePreset: "medium", showGridAndAxes: false, upAxis: "y", singleKeyCommands: false, navigationPreset });
+  await post(page, defaults("touchpad"));
+  await sleep(900);
+  const box = await viewportBox(page);
+  const cx = box.x + box.width / 2, cy = box.y + box.height / 2;
+  // Centroid and area of everything that is not the flat background: the model alone (grid and axes are off).
+  const bounds = (b64) => page.evaluate(async (b) => {
+    const bmp = await createImageBitmap(await (await fetch(`data:image/png;base64,${b}`)).blob());
+    const c = document.createElement("canvas");
+    c.width = bmp.width; c.height = bmp.height;
+    c.getContext("2d").drawImage(bmp, 0, 0);
+    const { data } = c.getContext("2d").getImageData(0, 0, c.width, c.height);
+    const bg = [data[0], data[1], data[2]];
+    let n = 0, sx = 0, sy = 0;
+    for (let y = 0; y < c.height; y++) for (let x = 0; x < c.width; x++) {
+      const i = (y * c.width + x) * 4;
+      if (Math.abs(data[i] - bg[0]) + Math.abs(data[i + 1] - bg[1]) + Math.abs(data[i + 2] - bg[2]) > 24) { n++; sx += x; sy += y; }
+    }
+    return { cx: n ? sx / n : 0, cy: n ? sy / n : 0, area: n };
+  }, b64);
+  const base = await bounds(await parkedShot(page));
+  assert(base.area > 2000, `precondition: the model is visible (${JSON.stringify(base)})`);
+  await page.mouse.move(cx, cy);
+  await page.mouse.wheel(0, 60); // plain wheel = two-finger scroll
+  await sleep(700);
+  const panned = await bounds(await parkedShot(page));
+  assert(Math.abs(panned.cy - base.cy) > 8 && Math.abs(panned.area - base.area) < base.area * 0.08,
+    `Touchpad: a plain scroll pans — the model moves (${base.cy.toFixed(1)} → ${panned.cy.toFixed(1)}) without changing size (area ${base.area} → ${panned.area})`);
+  assert(panned.cy < base.cy, `...scrolling down moves the content up (${base.cy.toFixed(1)} → ${panned.cy.toFixed(1)})`);
+  // Pinch = a wheel event with ctrlKey: OrbitControls zooms it.
+  await page.evaluate(([x, y]) => {
+    const canvas = document.querySelector("#app canvas:last-of-type") ?? document.querySelector("canvas");
+    canvas.dispatchEvent(new WheelEvent("wheel", { deltaY: -30, ctrlKey: true, clientX: x, clientY: y, bubbles: true, cancelable: true }));
+  }, [cx, cy]);
+  await sleep(700);
+  const zoomed = await bounds(await parkedShot(page));
+  assert(zoomed.area > panned.area * 1.15, `Touchpad: a pinch (Ctrl-wheel) zooms in (area ${panned.area} → ${zoomed.area})`);
+  // Default: the same plain wheel zooms.
+  await post(page, defaults("default"));
+  await sleep(900);
+  const before = await bounds(await parkedShot(page));
+  await page.mouse.move(cx, cy);
+  await page.mouse.wheel(0, -200);
+  await sleep(700);
+  const after = await bounds(await parkedShot(page));
+  assert(Math.abs(after.area - before.area) > before.area * 0.1, `Default: a plain wheel zooms (area ${before.area} → ${after.area})`);
+});
+
 test("look at face: the context-menu entry fetches the face normal and turns the camera onto it", async (page) => {
   await populate(page);
   await enablePicking(page, "surface");

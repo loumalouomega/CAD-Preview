@@ -32,7 +32,7 @@ import {
 import type { EntityType, PaneViewState } from "../protocol";
 import type { SelectedEntity } from "./selection";
 import type { UpAxis } from "../viewerDefaults";
-import { NAVIGATION_PRESETS, type MouseAction, type NavigationPreset } from "../navigationPresets";
+import { NAVIGATION_PRESETS, wheelBehaviourOf, wheelPanOffset, type MouseAction, type NavigationPreset } from "../navigationPresets";
 import { unionSelectionBounds, padBoxToMinSize } from "./selectionBounds";
 import { applyPreviewTint } from "./opPreviewBands";
 import { createRenderScheduler, type FrameTick } from "./renderScheduler";
@@ -371,6 +371,8 @@ export class Viewer {
     // the cube hit-test or OrbitControls' bubble handlers see the event.
     this.renderer.domElement.addEventListener("pointerdown", this.onGatePointerDown, true);
     this.renderer.domElement.addEventListener("wheel", this.onGateWheel, { capture: true, passive: true });
+    // Touchpad preset: a plain wheel pans. Non-passive + capture + registered before OrbitControls' own listener.
+    this.renderer.domElement.addEventListener("wheel", this.onTouchpadWheel, { capture: true, passive: false });
     // Capture-phase so a face click is handled before OrbitControls starts a drag.
     this.renderer.domElement.addEventListener("pointerdown", this.onGizmoPointerDown, true);
     // Entity picking: select on a click (down+up without a drag) so orbit still works.
@@ -2641,6 +2643,7 @@ export class Viewer {
     window.removeEventListener("resize", this.onResize);
     this.renderer.domElement.removeEventListener("pointerdown", this.onGatePointerDown, true);
     this.renderer.domElement.removeEventListener("wheel", this.onGateWheel, { capture: true });
+    this.renderer.domElement.removeEventListener("wheel", this.onTouchpadWheel, { capture: true });
     this.renderer.domElement.removeEventListener("pointerdown", this.onGizmoPointerDown, true);
     this.renderer.domElement.removeEventListener("pointerdown", this.onSelectPointerDown);
     this.renderer.domElement.removeEventListener("pointerup", this.onSelectPointerUp);
@@ -2702,6 +2705,36 @@ export class Viewer {
 
   private onGateWheel = (event: WheelEvent): void => {
     this.gateToPane(event.clientX, event.clientY, false);
+  };
+
+  /**
+   * `touchpad` preset: a two-finger scroll (a wheel event without Ctrl) pans the pane under the
+   * pointer, moving camera and target together along the camera's own axes so the scene follows
+   * the fingers. A pinch (Ctrl-wheel) is left to OrbitControls, which zooms it. Does nothing
+   * under any other preset, where the wheel zooms.
+   */
+  private onTouchpadWheel = (event: WheelEvent): void => {
+    if (wheelBehaviourOf(this.navigationPreset) !== "pan" || event.ctrlKey) return;
+    const rect = this.renderer.domElement.getBoundingClientRect();
+    const index = paneAtPoint(this.paneRects, event.clientX - rect.left, event.clientY - rect.top);
+    if (index < 0) return;
+    event.preventDefault();
+    event.stopImmediatePropagation(); // OrbitControls must not also dolly
+    const pane = this.panes[index];
+    const cam = pane.active;
+    const target = pane.controls.target;
+    const worldHeight =
+      cam instanceof THREE.PerspectiveCamera
+        ? 2 * cam.position.distanceTo(target) * Math.tan((cam.fov * Math.PI) / 360)
+        : (cam.top - cam.bottom) / cam.zoom;
+    const { right, up } = wheelPanOffset(event.deltaX, event.deltaY, event.deltaMode, worldHeight, this.paneRects[index].height);
+    cam.updateMatrixWorld();
+    const e = cam.matrixWorld.elements;
+    const delta = new THREE.Vector3(e[0] * right + e[4] * up, e[1] * right + e[5] * up, e[2] * right + e[6] * up);
+    cam.position.add(delta);
+    target.add(delta);
+    pane.controls.update();
+    this.requestRender();
   };
 
   private gateToPane(clientX: number, clientY: number, updateFocus: boolean): void {

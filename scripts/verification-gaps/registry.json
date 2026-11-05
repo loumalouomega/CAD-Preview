@@ -771,6 +771,12 @@
       "closedBy": [
         "Report Issue\u2026 drafts the failed op, redacted, and hands the prefilled URL to the browser only on a click"
       ]
+    },
+    {
+      "id": "touchpad-real-trackpad",
+      "section": "Touchpad navigation preset (roadmap 2.39)",
+      "gap": "the Touchpad preset is verified with scripted wheel events (page.mouse.wheel and a synthetic ctrlKey WheelEvent); how it feels on a real trackpad (inertia, macOS Shift+scroll axis swap, browsers that deliver pinch differently) has not been exercised.",
+      "status": "open"
     }
   ]
 }
