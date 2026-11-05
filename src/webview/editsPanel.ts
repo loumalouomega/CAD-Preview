@@ -129,6 +129,8 @@ export interface EditsPanelCallbacks {
   /** Remove a single op from anywhere in the history list (not just the last one). */
   onRemoveOp: (index: number) => void;
   /** Suppress/unsuppress and/or rename the op at `index` (wired to `EditsModel.setState`). */
+  /** ⚠ row's "Report" button: draft an issue about this op. */
+  onReportIssue?: (index: number) => void;
   onSetOpState: (index: number, state: { suppressed?: boolean; label?: string | null }) => void;
   /** Jump the op stack straight to timeline position `index` in one splice
    * (op-history scrubbing): applied rows roll the
@@ -855,6 +857,17 @@ export class EditsPanel {
           warn.className = "edit-skip-warning";
           warn.textContent = "⚠";
           li.appendChild(warn);
+          if (this.cb.onReportIssue) {
+            const rep = document.createElement("button");
+            rep.className = "edit-report";
+            rep.textContent = "Report…";
+            rep.title = "Draft a redacted GitHub issue for this op (opens a draft for review; nothing is sent)";
+            rep.addEventListener("click", (e) => {
+              e.stopPropagation();
+              this.cb.onReportIssue?.(i);
+            });
+            li.appendChild(rep);
+          }
         }
         const bucket = opts.bucket;
         if (bucket) {

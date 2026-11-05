@@ -762,6 +762,15 @@
       "section": "Two-tone icon set (roadmap item, closed)",
       "gap": "the two-tone op icons were checked in the Playwright harness (dark, light and both high-contrast classes via the 'ribbon: two-tone icons' test:webview case) and in generated screenshots, but not in a real Extension Development Host: the accent colour against a real theme's --vscode-button-background (Dark+, Light+, a high-contrast theme) and its legibility at 1em on the ribbon and Edits panel have not been eyeballed in F5.",
       "status": "open"
+    },
+    {
+      "id": "report-issue-command-flow",
+      "section": "Report issue from a failure (roadmap 2.43)",
+      "gap": "the Report Issue\u2026 host flow (reportIssueRequest -> untitled draft tab -> Open on GitHub -> prefilled URL) is covered by a test:integration case that has been written but never seen green: this environment cannot download VS Code. The webview halves (row button, File menu, kernel-crash button) are covered by test:webview.",
+      "status": "test-written",
+      "closedBy": [
+        "Report Issue\u2026 drafts the failed op, redacted, and hands the prefilled URL to the browser only on a click"
+      ]
     }
   ]
 }

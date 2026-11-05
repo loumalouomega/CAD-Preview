@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { buildIssueDraft, redactText, issueUrl } from "./issueDraft";
+import { buildIssueDraft, redactText, issueUrl, isKernelFailureMessage } from "./issueDraft";
 import type { EditOp } from "./editOps";
 
 const env = { extensionVersion: "3.36.1", vscodeVersion: "1.100.0", platform: "linux x64", kernels: { "opencascade.js": "1.1.1", "@meshioplusplus/wasm": "18.3.0" } };
@@ -42,5 +42,13 @@ describe("buildIssueDraft", () => {
     const url = issueUrl("https://github.com/o/r.git", draft);
     expect(url.startsWith("https://github.com/o/r/issues/new?title=")).toBe(true);
     expect(decodeURIComponent(url)).toContain("did not apply");
+  });
+});
+
+describe("isKernelFailureMessage", () => {
+  it("matches the worker-crash and watchdog phrases only", () => {
+    expect(isKernelFailureMessage("kernel worker exited unexpectedly (code=1, signal=null)")).toBe(true);
+    expect(isKernelFailureMessage("The kernel did not respond within 5 minutes")).toBe(true);
+    expect(isKernelFailureMessage("Fillet radius too large")).toBe(false);
   });
 });

@@ -37,6 +37,7 @@ export interface CadPreviewTestApi {
    */
   setExportMeshStub: (stub: ((format: string) => Uint8Array | undefined) | undefined) => void;
   /** Answers the Export Drawing Sheet form without showing it (undefined restores the real form). */
+  setOpenExternalStub: (stub: ((url: string) => void) | undefined) => void;
   setSheetFormAnswer: (answer: ((opts: unknown) => Promise<unknown>) | undefined) => void;
 }
 
@@ -56,6 +57,9 @@ export function activate(context: vscode.ExtensionContext): CadPreviewTestApi | 
           CadPreviewProvider.testSaveDocumentAs(uri, destination),
         setExportMeshStub: (stub) => {
           CadPreviewProvider.testExportMeshStub = stub;
+        },
+        setOpenExternalStub: (stub) => {
+          CadPreviewProvider.testOpenExternalStub = stub;
         },
         setSheetFormAnswer: (answer) => setTestSheetFormAnswer(answer as Parameters<typeof setTestSheetFormAnswer>[0]),
       }

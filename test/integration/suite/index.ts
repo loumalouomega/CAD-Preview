@@ -37,7 +37,7 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import * as vscode from "vscode";
-import { installModalStubs, pick, save, cancel, input, open as openAnswer, waitForFile, waitFor, type ModalAnswer } from "./modalStubs";
+import { installModalStubs, setInfoButtonAnswer, pick, save, cancel, input, open as openAnswer, waitForFile, waitFor, type ModalAnswer } from "./modalStubs";
 import { writeParts } from "../../../src/partsStore";
 import { serializeEditsJson } from "../../../src/editsSidecar";
 import { hashBytes, serializeSaveJournal } from "../../../src/saveJournal";
@@ -63,6 +63,7 @@ interface SaveTestApi {
   markDirtyDocument?: (uri: vscode.Uri) => void;
   simulateWebviewMessage?: (uri: vscode.Uri, msg: unknown) => Promise<void>;
   setExportMeshStub?: (stub: ((format: string) => Uint8Array | undefined) | undefined) => void;
+  setOpenExternalStub?: (stub: ((url: string) => void) | undefined) => void;
   setSheetFormAnswer?: (answer: ((opts: unknown) => Promise<unknown>) | undefined) => void;
 }
 
@@ -1072,6 +1073,41 @@ test("Compressed glTF (Draco and meshopt) loads under the real webview CSP", asy
     const buf = fs.readFileSync(out);
     const count = buf.length >= 84 ? buf.readUInt32LE(80) : 0;
     assert(count === 12, `cube.wrl: the displayed model carries the cube's 12 triangles (got ${count})`);
+    await closeAll();
+  }
+});
+
+test("Report Issue… drafts the failed op, redacted, and hands the prefilled URL to the browser only on a click", async () => {
+  const api = await saveTestApi();
+  assert(!!api?.setOpenExternalStub && !!api.simulateWebviewMessage, "the open-external seam is available");
+  const staged = stage(STEP_FIXTURE);
+  // An op whose target does not exist: replay skips it with a diagnostic (a forced failure).
+  fs.writeFileSync(
+    `${staged}.edits.json`,
+    JSON.stringify({ version: 1, source: path.basename(staged), ops: [{ op: "translate", targets: ["solid-99"], vec: [5, 0, 0] }] })
+  );
+  assert(await openDocument(staged), "the STEP fixture opens with a failing op");
+  const urls: string[] = [];
+  api!.setOpenExternalStub!((u) => urls.push(u));
+  try {
+    setInfoButtonAnswer("Open on GitHub");
+    const record = await withModals([], async () => {
+      await api!.simulateWebviewMessage!(vscode.Uri.file(staged), { type: "reportIssueRequest" });
+    });
+    assert(record.infos.some((m) => /Nothing is sent until you do/.test(m)), "the review prompt was shown first");
+    assert(urls.length === 1, `exactly one URL was handed to the browser (got ${urls.length})`);
+    const decoded = decodeURIComponent(urls[0]);
+    assert(/translate/.test(decoded), "the draft names the failed op");
+    assert(!decoded.includes(path.dirname(staged)), "the draft carries no absolute directory");
+    // Declining the button sends nothing.
+    setInfoButtonAnswer(undefined);
+    await withModals([], async () => {
+      await api!.simulateWebviewMessage!(vscode.Uri.file(staged), { type: "reportIssueRequest", opIndex: 0 });
+    });
+    assert(urls.length === 1, "dismissing the prompt opens nothing");
+  } finally {
+    setInfoButtonAnswer(undefined);
+    api!.setOpenExternalStub!(undefined);
     await closeAll();
   }
 });

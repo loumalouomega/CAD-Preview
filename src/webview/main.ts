@@ -1,4 +1,5 @@
 import * as THREE from "three";
+import { isKernelFailureMessage } from "../issueDraft";
 import { Viewer } from "./viewer";
 import { refreshPalette } from "./palette";
 import { allCatalogEntries, buildEntityReferenceIndex, QUERYABLE_PANEL_FORMS } from "./opCatalog";
@@ -1205,6 +1206,7 @@ const editsPanel = new EditsPanel(document.getElementById("edits-panel")!, {
     pendingRemoveConfirm = null;
     if (!editsModel.remove(index) && index < editsModel.savePoint) setStatus(SAVE_POINT_REFUSAL, true);
   },
+  onReportIssue: (index) => post({ type: "reportIssueRequest", opIndex: index }),
   onSetOpState: (index, state) => {
     if (!editsModel.setState(index, state) && index < editsModel.savePoint) setStatus(SAVE_POINT_REFUSAL, true);
   },
@@ -3930,6 +3932,15 @@ function setStatus(text: string, isError = false): void {
   statusEl.textContent = text;
   statusEl.style.display = text ? "block" : "none";
   statusEl.classList.toggle("error", isError);
+  if (isError && isKernelFailureMessage(text)) {
+    // A kernel crash / timeout: offer the redacted issue draft right beside it.
+    const btn = document.createElement("button");
+    btn.id = "status-report-issue";
+    btn.textContent = "Report issue…";
+    btn.addEventListener("click", () => post({ type: "reportIssueRequest", error: text }));
+    statusEl.appendChild(document.createTextNode(" "));
+    statusEl.appendChild(btn);
+  }
 }
 
 function showTree(root: TreeNode, upgrade = false): void {
@@ -4828,6 +4839,7 @@ function setupFileMenu(): void {
   item("menu-load-preprocess", () => post({ type: "loadPreprocessRequest" }));
   item("menu-import-svg", () => post({ type: "importSvgRequest" }));
   item("menu-import-dxf", () => post({ type: "importDxfRequest" }));
+  item("menu-report-issue", () => post({ type: "reportIssueRequest" }));
   item("menu-export-svg", () => post({ type: "exportSvgRequest" }));
   item("menu-export-dxf", () => post({ type: "exportDxfRequest" }));
   item("menu-export-drawing", () => post({ type: "exportDrawingRequest" }));

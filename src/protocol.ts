@@ -1060,6 +1060,9 @@ export type WebviewToHost =
    * so there is nothing to correlate and no result message: success/failure come
    * back through the generic `status`/`error` messages. */
   | { type: "exportSvgRequest" }
+  /** File ▸ Report Issue… and a ⚠ history row's button. `opIndex` (full-history index) names the op the draft is about;
+   * omitted = the first op that did not apply. `error` is a replay or kernel message to include (redacted by the host). */
+  | { type: "reportIssueRequest"; opIndex?: number; error?: string }
   | { type: "exportDxfRequest" }
   /** File ▸ Export Technical Drawing… — the hidden-line counterpart of the two
    *  silhouette exports; the host owns the view/unit picks and the save dialog. */

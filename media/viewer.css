@@ -3563,6 +3563,8 @@ input[type="range"].meshing-slider:focus {
 .edits-form-tint-add { background: #2fbf4f; }
 .edits-form-tint-cut { background: #e23b3b; }
 .edits-form-tint-ref { background: #3b82f6; }
+button.edit-report { background: none; border: none; color: var(--vscode-textLink-foreground, #3794ff); cursor: pointer; padding: 0 4px; font-size: var(--ui-fs-sm); width: auto; }
+button.edit-report:hover { text-decoration: underline; }
 .edits-form-body { display: flex; flex-direction: column; gap: 3px; }
 .edits-form-body[hidden] { display: none; }
 /* The form's Apply row is pinned to the bottom of the scrolling #edits-scroll,

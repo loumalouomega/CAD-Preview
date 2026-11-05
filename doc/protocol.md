@@ -1121,6 +1121,7 @@ type WebviewToHost =
   | { type: 'saveSidecars' }
   | { type: 'exportRequest' }
   | { type: 'exportSvgRequest' }
+  | { type: 'reportIssueRequest'; opIndex?: number; error?: string }
   | { type: 'exportResult'; requestId: string; data: string; binary: boolean }
   | { type: 'exportError'; requestId: string; message: string }
   | { type: 'meshingChanged'; options: MeshOptions }
@@ -1377,6 +1378,17 @@ Deliberately **not** folded into `exportRequest`: an `"svg"` member of `CadForma
 
 ```json
 { "type": "exportSvgRequest" }
+```
+
+### `reportIssueRequest`
+
+Sent by **File ▸ Report Issue…** (`#menu-report-issue`), by the **Report…** button beside a ⚠ history row, and by the **Report issue…** button that appears next to a kernel-crash / watchdog-timeout error in the status line. No `requestId` and no result message: the host opens the redacted draft in an untitled tab and, only on **Open on GitHub**, hands the prefilled URL to the browser (the same flow as the `cad-preview.reportIssue` command).
+
+- `opIndex?` — full-history index of the op the draft is about (the ⚠ row's own index). Omitted = the first op that did not apply.
+- `error?` — a message to include (the kernel-crash text); redacted by `buildIssueDraft` like every other field.
+
+```json
+{ "type": "reportIssueRequest", "opIndex": 3 }
 ```
 
 ### `exportDxfRequest`

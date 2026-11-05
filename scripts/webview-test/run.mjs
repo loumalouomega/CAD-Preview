@@ -3822,6 +3822,42 @@ test("command bar: a typed op the kernel skips reports it on the bar", async (pa
   assert(/translate was skipped: none of the target ids/.test(msg), `a skipped typed op is reported on the bar (got ${JSON.stringify(msg)})`);
 });
 
+test("report issue: a ⚠ row button, the File menu and a kernel-crash error all post reportIssueRequest", async (page) => {
+  await page.evaluate(() => {
+    window.__lastGeometry = null;
+    window.addEventListener("message", (e) => {
+      if (e.data?.type === "geometry") window.__lastGeometry = e.data;
+    });
+  });
+  await populate(page);
+  await typeCommand(page, 'translate {"targets":["solid-0"],"vec":[1,0,0]}');
+  const count = await page.evaluate(() => (window.__sent ?? []).findLast((x) => x.type === "editsChanged").ops.length);
+  const outcomes = Array.from({ length: count }, (_, i) =>
+    i === count - 1 ? { index: i, kind: "translate", applied: false, diagnostic: "none of the target ids resolve to a solid" } : { index: i, kind: "x", applied: true });
+  await page.evaluate((o) => window.postMessage({ ...window.__lastGeometry, opOutcomes: o }, "*"), outcomes);
+  await sleep(400);
+  const buttons = await page.evaluate(() => document.querySelectorAll(".edit-report").length);
+  assert(buttons === 1, `exactly the one skipped row offers Report… (got ${buttons})`);
+  await page.evaluate(() => document.querySelector(".edit-report").click());
+  const req = await lastSent(page, "reportIssueRequest");
+  assert(req && req.opIndex === count - 1, `the row button names its op (got ${JSON.stringify(req)})`);
+
+  const before = await sentCount(page, "reportIssueRequest");
+  await page.evaluate(() => document.getElementById("menu-report-issue").click());
+  const menuReq = await lastSent(page, "reportIssueRequest");
+  assert((await sentCount(page, "reportIssueRequest")) === before + 1 && menuReq.opIndex === undefined, "the File-menu entry posts a bare request");
+
+  await post(page, { type: "error", message: "Fillet radius too large" });
+  await sleep(100);
+  assert(await page.evaluate(() => document.getElementById("status-report-issue") === null), "an ordinary error offers no report button");
+  await post(page, { type: "error", message: "kernel worker exited unexpectedly (code=1, signal=null)" });
+  await sleep(100);
+  assert(await page.evaluate(() => document.getElementById("status-report-issue")?.offsetParent !== null), "a kernel crash shows the Report issue… button");
+  await page.evaluate(() => document.getElementById("status-report-issue").click());
+  const crash = await lastSent(page, "reportIssueRequest");
+  assert(/kernel worker exited/.test(crash?.error ?? ""), `...which carries the crash message (got ${JSON.stringify(crash)})`);
+});
+
 test("command bar: the row sits above the status bar, the canvas ends above it, and the dock and toast clear it", async (page) => {
   await populate(page);
   const geo = () =>

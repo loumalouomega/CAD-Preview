@@ -3420,6 +3420,11 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
         return;
       }
 
+      if (msg.type === "reportIssueRequest") {
+        void this.reportIssue(document.uri.fsPath, currentEdits, this.lastOpOutcomes.get(document.uri.toString()) ?? [], msg.error, msg.opIndex);
+        return;
+      }
+
       if (msg.type === "exportSvgRequest") {
         if (route) void this.handleExportSvg(document.uri, route, post, currentEdits, currentViewState, "svg", currentAnnotations, currentLayers, false, currentBakedThrough);
         return;
@@ -5441,8 +5446,17 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
    * review, then — only on an explicit click — hands the prefilled URL to the
    * browser. Nothing is sent automatically and model bytes are never attached.
    */
-  private async reportIssue(modelPath: string, ops: EditOp[], outcomes: import("./editOps").OpOutcome[]): Promise<void> {
-    const failed = outcomes.find((o) => !o.applied && !o.suppressed);
+  private async reportIssue(
+    modelPath: string,
+    ops: EditOp[],
+    outcomes: import("./editOps").OpOutcome[],
+    error?: string,
+    opIndex?: number
+  ): Promise<void> {
+    // A ⚠ row names its op; the File menu / command takes the first op that did not apply.
+    const failed = opIndex !== undefined
+      ? outcomes.find((o) => o.index === opIndex)
+      : outcomes.find((o) => !o.applied && !o.suppressed);
     const pkg = this.context.extension.packageJSON as { version?: string; dependencies?: Record<string, string>; repository?: { url?: string } };
     const kernels: Record<string, string> = {};
     for (const k of ["opencascade.js", "@loumalouomega/gmsh-wasm", "@meshioplusplus/wasm", "float-tetwild-wasm", "@loumalouomega/mmg-wasm", "@loumalouomega/openscad-wasm", "manifold-3d"]) {
@@ -5452,6 +5466,7 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
       modelPath,
       op: failed ? ops[failed.index] : undefined,
       outcome: failed,
+      error,
       env: { extensionVersion: pkg.version ?? "unknown", vscodeVersion: vscode.version, platform: `${process.platform} ${process.arch}`, kernels },
       scrub: [os.homedir(), path.dirname(modelPath), ...(vscode.workspace.workspaceFolders ?? []).map((f) => f.uri.fsPath)],
     });
@@ -5460,9 +5475,14 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
     const pick = await vscode.window.showInformationMessage("Review the draft, then open it as a GitHub issue? Nothing is sent until you do.", "Open on GitHub");
     if (pick === "Open on GitHub") {
       const edited = doc.getText().replace(/^# .*\n\n/, "");
-      await vscode.env.openExternal(vscode.Uri.parse(issueUrl(pkg.repository?.url ?? "https://github.com/loumalouomega/CAD-Preview", { title: draft.title, body: edited })));
+      const url = issueUrl(pkg.repository?.url ?? "https://github.com/loumalouomega/CAD-Preview", { title: draft.title, body: edited });
+      if (CadPreviewProvider.testOpenExternalStub) CadPreviewProvider.testOpenExternalStub(url);
+      else await vscode.env.openExternal(vscode.Uri.parse(url));
     }
   }
+
+  /** Test seam (ExtensionMode.Test only, installed through `extension.ts`): captures the issue URL instead of opening a browser. */
+  static testOpenExternalStub: ((url: string) => void) | undefined;
 
   private async handleScreenshot(
     uri: vscode.Uri,
