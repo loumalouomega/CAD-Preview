@@ -3111,6 +3111,8 @@ input[type="range"].meshing-slider:focus {
   font-size: var(--ui-fs-sm);
 }
 
+label.mass-marker-toggle { justify-content: flex-start; align-items: center; gap: 6px; cursor: pointer; }
+
 .mass-label {
   opacity: 0.75;
 }
@@ -5522,6 +5524,9 @@ body:has(#side.visible) #kernel-status {
 .config-cell { min-width: 64px; }
 .config-input { width: 64px; min-width: 0; font: inherit; color: inherit; background: transparent; border: 1px solid transparent; border-radius: var(--ui-r-xs); padding: 1px 2px; }
 .config-input::placeholder { opacity: 0.45; }
+.config-suppress { width: 56px; min-width: 0; font: inherit; color: inherit; background: transparent; border: 1px solid transparent; border-radius: var(--ui-r-xs); padding: 1px 2px; }
+.config-suppress:hover { border-color: var(--vscode-input-border, #3c3c3c); }
+.config-suppress:focus { outline: none; background: var(--vscode-input-background, #1e1e1e); border-color: var(--vscode-focusBorder, #007fd4); }
 .config-cell.overridden .config-input { font-weight: 600; }
 .config-value { margin-left: 3px; opacity: 0.65; }
 .config-cell.error .config-value, .config-cell.error .config-input { color: var(--vscode-errorForeground, #f48771); }
