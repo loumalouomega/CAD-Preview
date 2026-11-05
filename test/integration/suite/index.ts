@@ -1093,6 +1093,9 @@ test("Report Issue… drafts the failed op, redacted, and hands the prefilled UR
     setInfoButtonAnswer("Open on GitHub");
     const record = await withModals([], async () => {
       await api!.simulateWebviewMessage!(vscode.Uri.file(staged), { type: "reportIssueRequest" });
+      // The handler is fire-and-forget and opens an editor tab before it prompts: wait for its outcome
+      // INSIDE the stub window, or the stubs are restored before the prompt ever appears.
+      await waitFor(() => urls.length >= 1, 15000);
     });
     assert(record.infos.some((m) => /Nothing is sent until you do/.test(m)), "the review prompt was shown first");
     assert(urls.length === 1, `exactly one URL was handed to the browser (got ${urls.length})`);
@@ -1103,6 +1106,7 @@ test("Report Issue… drafts the failed op, redacted, and hands the prefilled UR
     setInfoButtonAnswer(undefined);
     await withModals([], async () => {
       await api!.simulateWebviewMessage!(vscode.Uri.file(staged), { type: "reportIssueRequest", opIndex: 0 });
+      await sleep(3000); // long enough for the draft tab and the (dismissed) prompt to have happened
     });
     assert(urls.length === 1, "dismissing the prompt opens nothing");
   } finally {
