@@ -45,7 +45,7 @@ import type { PanelOpId } from "./opCatalog";
 import { VariablesModel } from "./variablesModel";
 import { ConfigurationsModel } from "./configurationsModel";
 import { ConfigTablePanel } from "./configTablePanel";
-import { evaluateEffective } from "../configurations";
+import { evaluateEffective, applySuppression, findConfiguration } from "../configurations";
 import { VariablesPanel } from "./variablesPanel";
 import { collectVariableUsage, type VariableUsage } from "../variableUsage";
 import { evaluateVariables, resolveEditOps, dimensionIssues, parseVariablesCsv, parseVariablesJson, serializeVariablesCsv, serializeVariablesJson, promoteField } from "../editVariables";
@@ -654,6 +654,13 @@ function currentResolvedOps(): { ops: EditOp[]; issues: string[] } {
   return { ops, issues: [...variableIssues, ...dimensionIssues(editsModel.list(), variablesModel.list()), ...planeIssues] };
 }
 
+/** The ops a mesh replay consumes: the resolved ops with the active configuration's suppressed indices overlaid.
+ * Not folded into {@link currentResolvedOps}: that result is posted to the host and persisted. */
+function effectiveResolvedOps(): EditOp[] {
+  const state = configurationsModel.state;
+  return applySuppression(currentResolvedOps().ops, findConfiguration(state, state.activeConfiguration));
+}
+
 /** Who references each variable (op fields + other variables): drives the delete warning and the Used-by list. */
 function variableUsage(): Map<string, VariableUsage> {
   return collectVariableUsage(editsModel.list(), variablesModel.list());
@@ -834,6 +841,7 @@ const configTablePanel = new ConfigTablePanel(
     onRename: (from, to) => configurationsModel.rename(from, to),
     onActivate: (name) => configurationsModel.activate(name),
     onSetCell: (name, variable, expr, baseExpr) => configurationsModel.setCell(name, variable, expr, baseExpr),
+    onSetSuppressed: (name, indices) => configurationsModel.setSuppressed(name, indices, editsModel.savePoint),
     report: (text, isError) => setStatus(text, isError),
   }
 );
@@ -1204,7 +1212,8 @@ const editsPanel = new EditsPanel(document.getElementById("edits-panel")!, {
       return;
     }
     pendingRemoveConfirm = null;
-    if (!editsModel.remove(index) && index < editsModel.savePoint) setStatus(SAVE_POINT_REFUSAL, true);
+    if (editsModel.remove(index)) configurationsModel.opRemoved(index);
+    else if (index < editsModel.savePoint) setStatus(SAVE_POINT_REFUSAL, true);
   },
   onReportIssue: (index) => post({ type: "reportIssueRequest", opIndex: index }),
   onSetOpState: (index, state) => {
@@ -3524,7 +3533,7 @@ async function runOpPreview(entry: { id: PanelOpId; draft: Record<string, unknow
     // Tier 0 Phase 3 — preview replays the unbaked tail only (baked prefix
     // already lives in the pristine file after a mesh save-in-place).
     // `replayTail` is the same helper the host uses — one tail definition.
-    applyEditsMesh(clone, [...replayTail(currentResolvedOps().ops, editsModel.savePoint), clean]);
+    applyEditsMesh(clone, [...replayTail(effectiveResolvedOps(), editsModel.savePoint), clean]);
     viewer.setOpPreview(clone, tint);
     return;
   }
@@ -3631,7 +3640,7 @@ let importedRegionInfo: { triangleRegion: Int32Array } | null = null;
  */
 function rebuildMeshModel(opts?: { autoFit?: boolean }): void {
   if (!pristineMesh) return;
-  const ops = replayTail(currentResolvedOps().ops, editsModel.savePoint);
+  const ops = replayTail(effectiveResolvedOps(), editsModel.savePoint);
   const outcomes: OpOutcome[] = [];
   const edited = applyEditsMesh(pristineMesh.clone(), ops, outcomes, setStatus);
   lastOpOutcomes = outcomes; // mesh sources report their own replay outcomes (no host round trip)

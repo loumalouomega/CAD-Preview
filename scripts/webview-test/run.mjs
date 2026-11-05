@@ -5789,6 +5789,54 @@ test("parameters table: promoting a model parameter makes the op follow the vari
 const CONFIG_OPS = [{ op: "addBox", center: [0, 0, 0], size: [1, 1, 1], exprs: { "size[0]": "D" } }];
 const CONFIG_VARS = [{ name: "D", expr: "6", value: 6 }];
 
+test("configurations: Suppress ops stores 0-based indices per configuration and never touches the posted ops", async (page) => {
+  await populate(page);
+  await post(page, {
+    type: "edits",
+    ops: CONFIG_OPS,
+    variables: CONFIG_VARS,
+    configurations: [{ name: "M6", overrides: {} }, { name: "M8", overrides: { D: "8" } }],
+    activeConfiguration: null,
+  });
+  await sleep(300);
+  await page.evaluate(() => document.getElementById("config-toggle").click());
+  await sleep(150);
+  const exists = await page.evaluate(() => ({
+    m8: document.querySelector('.config-row[data-config="M8"] .config-suppress') !== null,
+    base: document.querySelector('.config-row[data-base="1"] .config-suppress') === null,
+  }));
+  assert(exists.m8 && exists.base, `every configuration row has a Suppress ops field, the Base row does not (got ${JSON.stringify(exists)})`);
+  await page.evaluate(() => {
+    const input = document.querySelector('.config-row[data-config="M8"] .config-suppress');
+    input.value = "1, 1";
+    input.dispatchEvent(new Event("change"));
+  });
+  await sleep(300);
+  let sent = (await sentOf(page, "editsChanged")).pop();
+  const m8 = sent.configurations.find((c) => c.name === "M8");
+  assert(JSON.stringify(m8.suppressed) === "[0]", `row number 1 is stored as index 0, de-duplicated (got ${JSON.stringify(m8.suppressed)})`);
+  assert(sent.configurations.find((c) => c.name === "M6").suppressed === undefined, "an untouched configuration stays byte-identical (no field)");
+  assert(sent.ops.every((o) => o.suppressed === undefined), "the posted ops are never stamped with the suppression");
+  const shown = await page.evaluate(() => document.querySelector('.config-row[data-config="M8"] .config-suppress').value);
+  assert(shown === "1", `the field shows the 1-based row (got ${JSON.stringify(shown)})`);
+  const before = await sentCount(page, "editsChanged");
+  await page.evaluate(() => {
+    const input = document.querySelector('.config-row[data-config="M8"] .config-suppress');
+    input.value = "abc";
+    input.dispatchEvent(new Event("change"));
+  });
+  await sleep(250);
+  assert((await sentCount(page, "editsChanged")) === before, "a non-numeric entry is refused without writing");
+  await page.evaluate(() => {
+    const input = document.querySelector('.config-row[data-config="M8"] .config-suppress');
+    input.value = "";
+    input.dispatchEvent(new Event("change"));
+  });
+  await sleep(300);
+  sent = (await sentOf(page, "editsChanged")).pop();
+  assert(sent.configurations.find((c) => c.name === "M8").suppressed === undefined, "clearing the field removes the list again");
+});
+
 test("configurations: the Config Table switches the active configuration through the overlay, a failing cell freezes, no-configuration documents are unchanged", async (page) => {
   await populate(page);
   // A document with no configurations: the section exists, collapsed, with no rows to pick.

@@ -691,6 +691,7 @@ Under the Variables table, the collapsible **Configurations** section is a grid:
 - **Pick a row** with its radio button to make it the active configuration: every op field bound to a variable re-resolves, and the viewer rebuilds. **Base** returns to the plain variables.
 - **Edit a cell** to override that variable in that configuration. An empty cell (shown with the base expression as a faint placeholder) inherits the variable's own expression; the small number beside the cell is the evaluated value. Overridden cells are bold.
 - A cell whose expression cannot be evaluated is marked with a warning, and the model **freezes** at that variable's last good value instead of failing.
+- **Suppress ops** (the last column) takes history row numbers, e.g. `3, 5`: under that configuration replay skips those rows, so one model can have a fillet in one configuration and not in another. The stored ops never change; the History row shows a dotted, italic cue (distinct from the ● suppress strike-through, which is yours and applies everywhere). Rows already saved into the source cannot be listed.
 - Rename a configuration by editing its name; **×** deletes it. Renaming a variable carries its overrides along.
 
 Configurations are saved in `<model>.edits.json` ([format](./file-formats.md#configurations-design-table)); switching is not part of the op undo/redo history. For headless use, `set_configuration` defines them and the export and meshing tools take a `configuration` parameter ([MCP server](./mcp-server.md)); **Batch Export** can write one file per configuration.

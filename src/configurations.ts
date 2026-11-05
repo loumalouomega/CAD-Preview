@@ -6,18 +6,25 @@
  * BEFORE the existing resolve-on-read, so stored ops (and their `exprs`) never
  * change: the same op list yields an M6 or an M8 depending only on which
  * configuration is applied. Variables are the only thing a configuration
- * changes — never Parts, mesh options or layers.
+ * changes — never Parts, mesh options or layers — plus, optionally, a list of
+ * op indices the configuration SUPPRESSES. That list is overlaid at replay
+ * consumption (`applySuppression`), never onto the stored ops: the stored ops
+ * are posted back and persisted, and the user's own per-op suppress toggle
+ * must stay independent of it.
  *
  * Stored additively in `<model>.edits.json` (`configurations`,
  * `activeConfiguration`); a sidecar without them behaves exactly as before.
  */
 import { evaluateVariables, type ParamVariable } from "./editVariables";
 import { isValidVariableName } from "./paramExpr";
+import type { EditOp } from "./editOps";
 
 export interface Configuration {
   name: string;
   /** Sparse: variable name → expression replacing that variable's own `expr`. */
   overrides: Record<string, string>;
+  /** Sorted, unique, 0-based indices into the FULL op list that replay skips under this configuration. Omitted when empty. */
+  suppressed?: number[];
 }
 
 export interface ConfigurationState {
@@ -29,6 +36,7 @@ export interface ConfigurationState {
 export const EMPTY_CONFIGURATION_STATE: ConfigurationState = { configurations: [], activeConfiguration: null };
 
 export const MAX_CONFIGURATIONS = 64;
+export const MAX_SUPPRESSED_PER_CONFIGURATION = 4096;
 export const MAX_CONFIGURATION_NAME_LENGTH = 64;
 const MAX_OVERRIDE_EXPR_LENGTH = 256;
 
@@ -66,9 +74,34 @@ export function validateConfigurations(raw: unknown): Configuration[] {
       }
     }
     seen.add(name);
-    out.push({ name, overrides: { ...overrides } });
+    const suppressed = validateSuppressedIndices(c.suppressed);
+    out.push({ name, overrides: { ...overrides }, ...(suppressed.length > 0 ? { suppressed } : {}) });
   }
   return out;
+}
+
+/** Tolerant parse of a suppressed-index list: non-negative integers, de-duplicated, sorted, bounded. */
+export function validateSuppressedIndices(raw: unknown): number[] {
+  if (!Array.isArray(raw)) return [];
+  const set = new Set<number>();
+  for (const v of raw) {
+    if (set.size >= MAX_SUPPRESSED_PER_CONFIGURATION) break;
+    if (typeof v === "number" && Number.isInteger(v) && v >= 0) set.add(v);
+  }
+  return [...set].sort((a, b) => a - b);
+}
+
+/**
+ * The ops `config` replays: clones of the suppressed ones carrying
+ * `suppressed: true`. Everything else (and an op the user already suppressed)
+ * is returned as the same object; a null configuration, or one that suppresses
+ * nothing, returns `ops` itself. Pure — the stored ops never change.
+ */
+export function applySuppression(ops: EditOp[], config: Configuration | null): EditOp[] {
+  const idx = config?.suppressed;
+  if (!idx || idx.length === 0) return ops;
+  const set = new Set(idx);
+  return ops.map((op, i) => (set.has(i) && op.suppressed !== true ? ({ ...op, suppressed: true } as EditOp) : op));
 }
 
 /** Validates the pair; an `activeConfiguration` that names nothing becomes null. */
@@ -148,7 +181,7 @@ export function addConfiguration(state: ConfigurationState, rawName: string, cop
   return {
     state: {
       ...state,
-      configurations: [...state.configurations, { name, overrides: source ? { ...source.overrides } : {} }],
+      configurations: [...state.configurations, { name, overrides: source ? { ...source.overrides } : {}, ...(source?.suppressed?.length ? { suppressed: [...source.suppressed] } : {}) }],
     },
   };
 }
@@ -213,6 +246,57 @@ export function setConfigurationCell(
   };
 }
 
+/**
+ * Mark op `index` suppressed (or not) in one configuration. Refuses an index
+ * inside the baked prefix (`bakedThrough`): those ops are already in the source.
+ */
+export function setConfigurationSuppressed(
+  state: ConfigurationState,
+  name: string,
+  index: number,
+  suppressed: boolean,
+  bakedThrough = 0
+): ConfigurationResult {
+  if (!findConfiguration(state, name)) return { state, error: `No configuration named "${name}".` };
+  if (!Number.isInteger(index) || index < 0) return { state, error: `"${index}" is not an op index.` };
+  if (index < bakedThrough) return { state, error: `Op ${index} is already baked into the source file and cannot be suppressed.` };
+  return {
+    state: {
+      ...state,
+      configurations: state.configurations.map((c) => {
+        if (c.name !== name) return c;
+        const set = new Set(c.suppressed ?? []);
+        if (suppressed) {
+          if (set.size >= MAX_SUPPRESSED_PER_CONFIGURATION) return c;
+          set.add(index);
+        } else set.delete(index);
+        const { suppressed: _drop, ...rest } = c;
+        void _drop;
+        return set.size > 0 ? { ...rest, suppressed: [...set].sort((a, b) => a - b) } : rest;
+      }),
+    },
+  };
+}
+
+/**
+ * Op `removed` was deleted from the full list: drop it from every
+ * configuration's suppressed list and shift the later indices down, so a
+ * suppression keeps naming the same op.
+ */
+export function shiftSuppressedAfterRemove(state: ConfigurationState, removed: number): ConfigurationState {
+  if (!state.configurations.some((c) => c.suppressed?.length)) return state;
+  return {
+    ...state,
+    configurations: state.configurations.map((c) => {
+      if (!c.suppressed?.length) return c;
+      const next = c.suppressed.filter((i) => i !== removed).map((i) => (i > removed ? i - 1 : i));
+      const { suppressed: _drop, ...rest } = c;
+      void _drop;
+      return next.length > 0 ? { ...rest, suppressed: next } : rest;
+    }),
+  };
+}
+
 /** Variable renamed: carry every configuration's override across. */
 export function renameVariableInConfigurations(state: ConfigurationState, from: string, to: string): ConfigurationState {
   if (from === to) return state;
@@ -248,6 +332,8 @@ export interface ConfigTableRow {
   name: string | null;
   active: boolean;
   cells: ConfigTableCell[];
+  /** Op indices this configuration suppresses (empty for Base). */
+  suppressed: number[];
 }
 
 /**
@@ -263,6 +349,7 @@ export function configurationTable(variables: readonly ParamVariable[], state: C
     return {
       name: config ? config.name : null,
       active: (config ? config.name : null) === state.activeConfiguration,
+      suppressed: config?.suppressed ? [...config.suppressed] : [],
       cells: eff.map((v) => {
         const override = config && typeof config.overrides[v.name] === "string" ? config.overrides[v.name] : null;
         const error = errors.get(v.name);

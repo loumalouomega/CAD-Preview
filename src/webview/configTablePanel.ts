@@ -9,6 +9,8 @@ export interface ConfigTablePanelCallbacks {
   /** null = the plain variables ("Base"). */
   onActivate: (name: string | null) => string | null;
   onSetCell: (name: string, variable: string, expr: string, baseExpr: string) => string | null;
+  /** 0-based op indices the configuration suppresses (the field shows 1-based, like the History rows). */
+  onSetSuppressed: (name: string, indices: number[]) => string | null;
   report: (text: string, isError: boolean) => void;
 }
 
@@ -108,6 +110,10 @@ export class ConfigTablePanel {
       th.title = `${v.name} = ${v.expr}`;
       head.appendChild(th);
     }
+    const suppressHead = document.createElement("th");
+    suppressHead.textContent = "Suppress ops";
+    suppressHead.title = "History row numbers this configuration skips on replay, e.g. 3, 5 (the stored ops never change)";
+    head.appendChild(suppressHead);
     table.appendChild(head);
 
     for (const row of configurationTable(variables, state)) {
@@ -215,6 +221,44 @@ export class ConfigTablePanel {
         }
         tr.appendChild(td);
       }
+      const sup = document.createElement("td");
+      sup.className = "config-suppress-cell";
+      if (row.name === null) sup.textContent = "—";
+      else {
+        const name = row.name;
+        const shown = row.suppressed.map((i) => i + 1).join(", ");
+        const input = document.createElement("input");
+        input.type = "text";
+        input.className = "config-suppress";
+        input.value = shown;
+        input.placeholder = "e.g. 3, 5";
+        input.spellcheck = false;
+        input.title = "History row numbers this configuration skips (1-based, comma separated)";
+        input.addEventListener("change", () => {
+          const parts = input.value.split(/[\s,]+/).filter((p) => p !== "");
+          const nums = parts.map((p) => Number(p));
+          if (nums.some((n) => !Number.isInteger(n) || n < 1)) {
+            this.cb.report("Suppress ops takes history row numbers (1, 2, 3 …).", true);
+            input.value = shown;
+            return;
+          }
+          const err = this.cb.onSetSuppressed(name, nums.map((n) => n - 1));
+          if (err) {
+            this.cb.report(err, true);
+            input.value = shown;
+          }
+        });
+        input.addEventListener("keydown", (e) => {
+          e.stopPropagation();
+          if (e.key === "Enter") input.blur();
+          else if (e.key === "Escape") {
+            input.value = shown;
+            input.blur();
+          }
+        });
+        sup.appendChild(input);
+      }
+      tr.appendChild(sup);
       table.appendChild(tr);
     }
     this.grid.appendChild(table);

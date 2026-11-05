@@ -8798,6 +8798,29 @@ try {
     const b8 = (await call("get_mass_properties", { path: path.join(cfgOut, "config-box-M8.brep") })).volume;
     assert(near(b6, 276) && near(b8, 572), `the batched files hold 276 and 572 (got ${b6}, ${b8})`);
     assert((await call("get_state", { path: cfgModel })).activeConfiguration === "M8", "batch_export left the stored active configuration alone");
+
+    // --- Per-configuration op suppression: a second feature (a 2 x 2 x 2 box, +8 mm3) that the M6 configuration
+    // suppresses and M8 keeps. The stored ops never change; only the replay skips op 1 under M6. ---
+    const cfgApplied2 = await callWithCleanRetry("apply_edit_ops", {
+      path: cfgModel,
+      ops: [{ op: "addBox", center: [-20, 0, 0], size: [2, 2, 2] }],
+    }, () => {});
+    assert(cfgApplied2.applied === 1, `the second feature applies (got ${JSON.stringify(cfgApplied2.report)})`);
+    await call("set_configuration", { path: cfgModel, name: "M6", suppress: [1] });
+    const lean = await volOf({ configuration: "M6" });
+    const full = await volOf({ configuration: "M8" });
+    assert(near(lean, 276), `M6 suppresses the extra box: 60 + 6^3 = 276 (got ${lean})`);
+    assert(near(full, 580), `M8 keeps it: 60 + 8^3 + 8 = 580 (got ${full})`);
+    const leanOut = path.join(dir, "config-box-lean.brep");
+    await call("export_brep", { path: cfgModel, targetFormat: "brep", outputPath: leanOut, configuration: "M6" });
+    assert(near((await call("get_mass_properties", { path: leanOut })).volume, 276), "the BREP exported under M6 re-measures 276 without the suppressed box");
+    const supStored = JSON.parse(fs.readFileSync(`${cfgModel}.edits.json`, "utf8"));
+    assert(supStored.ops.length === 2 && supStored.ops.every((o) => o.suppressed === undefined), "the stored ops are not stamped suppressed");
+    assert(JSON.stringify(supStored.configurations.find((c) => c.name === "M6").suppressed) === "[1]", "the suppressed index lives on the configuration");
+    // Saving while the ACTIVE configuration suppresses an unsaved op would bake the suppression in for good: refused.
+    await call("set_configuration", { path: cfgModel, name: "M6", active: true });
+    const refusedSave = await request("tools/call", { name: "save_model", arguments: { path: cfgModel } });
+    assert(refusedSave.isError === true, "save_model refuses while the active configuration suppresses an unsaved op");
   }
 
   // --- 3D text via outline import (roadmap "3D text via outline import",

@@ -781,6 +781,10 @@ export class EditsPanel {
       if (op.suppressed) {
         li.classList.add("edit-row-suppressed");
         label.title = "Suppressed — replay skips this op";
+      } else if (outcome?.suppressed) {
+        // Skipped by replay although the op itself is not suppressed: the ACTIVE configuration suppresses it.
+        li.classList.add("edit-row-config-suppressed");
+        label.title = "Suppressed by the active configuration — replay skips this op";
       }
       if (!opts.pending && !opts.baked) {
         label.addEventListener("dblclick", (e) => {

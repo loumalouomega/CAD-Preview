@@ -1,5 +1,11 @@
 import { describe, it, expect } from "vitest";
+import { serializeEditsJson } from "./editsSidecar";
+import type { EditOp } from "./editOps";
 import {
+  applySuppression,
+  setConfigurationSuppressed,
+  shiftSuppressedAfterRemove,
+  type Configuration,
   EMPTY_CONFIGURATION_STATE,
   activateConfiguration,
   addConfiguration,
@@ -149,5 +155,58 @@ describe("configurationFileSlug", () => {
     expect(configurationFileSlug("M8 coarse/fine")).toBe("M8_coarse_fine");
     expect(configurationFileSlug("../..")).toBe("config");
     expect(configurationFileSlug("  ")).toBe("config");
+  });
+});
+
+describe("configuration op suppression", () => {
+  const ops = [{ op: "addBox" }, { op: "fillet" }, { op: "translate" }] as unknown as EditOp[];
+  const base = (): ConfigurationState => ({ configurations: [{ name: "plain", overrides: {} }, { name: "M8", overrides: {} }], activeConfiguration: null });
+
+  it("sets and clears indices sorted and unique, omitting the field when empty", () => {
+    let s = setConfigurationSuppressed(base(), "plain", 2, true).state;
+    s = setConfigurationSuppressed(s, "plain", 1, true).state;
+    s = setConfigurationSuppressed(s, "plain", 1, true).state;
+    expect(s.configurations[0].suppressed).toEqual([1, 2]);
+    expect(s.configurations[1]).toEqual({ name: "M8", overrides: {} });
+    s = setConfigurationSuppressed(s, "plain", 1, false).state;
+    s = setConfigurationSuppressed(s, "plain", 2, false).state;
+    expect("suppressed" in s.configurations[0]).toBe(false);
+  });
+
+  it("refuses the baked prefix, a bad index and an unknown configuration", () => {
+    expect(setConfigurationSuppressed(base(), "plain", 1, true, 2).error).toMatch(/baked/);
+    expect(setConfigurationSuppressed(base(), "plain", -1, true).error).toBeTruthy();
+    expect(setConfigurationSuppressed(base(), "nope", 1, true).error).toMatch(/No configuration/);
+  });
+
+  it("overlays suppression on clones and never mutates the stored ops", () => {
+    const cfg: Configuration = { name: "plain", overrides: {}, suppressed: [1] };
+    const out = applySuppression(ops, cfg);
+    expect(out[1].suppressed).toBe(true);
+    expect(out[0]).toBe(ops[0]);
+    expect(ops[1].suppressed).toBeUndefined();
+    expect(applySuppression(ops, null)).toBe(ops);
+    expect(applySuppression(ops, { name: "x", overrides: {} })).toBe(ops);
+  });
+
+  it("shifts later indices down when an op is removed", () => {
+    const s = setConfigurationSuppressed(setConfigurationSuppressed(base(), "plain", 1, true).state, "plain", 3, true).state;
+    expect(shiftSuppressedAfterRemove(s, 1).configurations[0].suppressed).toEqual([2]);
+    expect(shiftSuppressedAfterRemove(s, 0).configurations[0].suppressed).toEqual([0, 2]);
+  });
+
+  it("tolerant parse drops bad entries and copies on add-from", () => {
+    const [c] = validateConfigurations([{ name: "a", overrides: {}, suppressed: [3, 3, -1, 1.5, "x", 0] }]);
+    expect(c.suppressed).toEqual([0, 3]);
+    const s = addConfiguration({ configurations: [c], activeConfiguration: null }, "b", "a").state;
+    expect(s.configurations[1].suppressed).toEqual([0, 3]);
+    expect(s.configurations[1].suppressed).not.toBe(c.suppressed);
+  });
+
+  it("serializes through the sidecar and an old file stays byte-identical", () => {
+    const text = serializeEditsJson("m.step", [], [], 0, { configurations: [{ name: "a", overrides: {}, suppressed: [2] }], activeConfiguration: "a" });
+    expect(JSON.parse(text).configurations[0].suppressed).toEqual([2]);
+    const plain = serializeEditsJson("m.step", [], [], 0, { configurations: [{ name: "a", overrides: {} }], activeConfiguration: null });
+    expect(plain).not.toContain("suppressed");
   });
 });

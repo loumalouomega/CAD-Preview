@@ -6,6 +6,8 @@ import {
   renameConfiguration,
   renameVariableInConfigurations,
   setConfigurationCell,
+  setConfigurationSuppressed,
+  shiftSuppressedAfterRemove,
   validateConfigurationState,
   type ConfigurationResult,
   type ConfigurationState,
@@ -66,6 +68,32 @@ export class ConfigurationsModel {
     const res = setConfigurationCell(this.current, name, variable, expr, baseExpr);
     if (!res.error && JSON.stringify(res.state) === JSON.stringify(before)) return null;
     return this.apply(res);
+  }
+
+  /** Replace one configuration's suppressed op list (0-based; baked-prefix indices are refused). */
+  setSuppressed(name: string, indices: number[], bakedThrough: number): string | null {
+    let state = this.current;
+    const cfg = state.configurations.find((c) => c.name === name);
+    if (!cfg) return `No configuration named "${name}".`;
+    const want = new Set(indices);
+    for (const i of cfg.suppressed ?? []) {
+      if (!want.has(i)) state = setConfigurationSuppressed(state, name, i, false, 0).state;
+    }
+    for (const i of want) {
+      const res = setConfigurationSuppressed(state, name, i, true, bakedThrough);
+      if (res.error) return res.error;
+      state = res.state;
+    }
+    if (JSON.stringify(state) === JSON.stringify(this.current)) return null;
+    return this.apply({ state });
+  }
+
+  /** An op was deleted: every configuration's suppressed indices shift so they keep naming the same ops. */
+  opRemoved(index: number): void {
+    const next = shiftSuppressedAfterRemove(this.current, index);
+    if (JSON.stringify(next) === JSON.stringify(this.current)) return;
+    this.current = next;
+    this.onChangeFn();
   }
 
   /** A variable was renamed: keep every configuration's override attached to it. */

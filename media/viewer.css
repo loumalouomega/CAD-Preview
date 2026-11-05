@@ -3226,6 +3226,7 @@ input[type="range"].meshing-slider:focus {
  * hint. Warning color matches the editor theme's error/warning foreground. */
 .edit-row-skipped .edit-label { opacity: 0.45; }
 /* Suppressed (replay skips it): struck through, not a warning. */
+.edit-row-config-suppressed .edit-label { opacity: 0.45; font-style: italic; text-decoration: underline dotted; }
 .edit-row-suppressed .edit-label { opacity: 0.45; text-decoration: line-through; }
 .edit-suppress {
   flex-shrink: 0; font: inherit; font-size: var(--ui-fs-label); line-height: 1;
