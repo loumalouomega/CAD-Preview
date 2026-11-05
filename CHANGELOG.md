@@ -6,6 +6,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/); thi
 
 ## [Unreleased]
 
+## [3.38.0] - 2026-11-05
+
 ### Added
 
 - **Open Sample… and a Get-started walkthrough.** `CAD Preview: Open Sample…` (also a link in the empty Models view) copies one of three bundled models — `annulus.stp`, `cube.stl`, `bracket.csg`, 19.6 KB together, all repo-authored — into a folder you choose and opens the copy; it never opens the bundled original and never overwrites. A four-step walkthrough (open, edit and save, mesh, connect an agent) is contributed to the Welcome page. Samples ship from `dist/samples/` (index in `samples/index.json`); `compat:vsix` prints their size. The command-flow `test:integration` case is written but not yet seen green (registered gap).
@@ -15,6 +17,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/); thi
 - **Report an issue from the viewer.** **File ▸ Report Issue…**, a **Report…** link on every ⚠ history row (the draft is about that op) and a **Report issue…** button beside a kernel-crash or watchdog-timeout error. Webview message `reportIssueRequest`. The host-flow `test:integration` case is written but not yet seen green (registered in the verification-gap registry).
 - **A collapsible header on every operation form.** The op name, an intent-tint dot and a chevron; collapsing hides the fields and cancels the preview, expanding restores the typed values and re-previews. The docked placement remains on the roadmap.
 - **Mass Properties can mark the centre of mass in the view.** A **Show centre of mass in view** box under the result drops a ring at the computed centroid (B-rep and mesh sources; the area centroid for a non-watertight mesh selection). `test:webview` pins it by pixel diff on, off and after untick. Zebra stripes remain on the roadmap.
+
+### Fixed
+
+- **A rule-defined Part now keeps the faces an edit adds.** The geometric rebind pass ran after stored selectors were re-resolved, so it read the rule's new-state ids as pre-op ids and dropped them — a `plane` rule gained its new face and lost it again in the same replay. Rebind now runs first and the selectors re-resolve on its result, in the MCP handler and the interactive Edits path. A regression test pins the call order.
 
 ## [3.37.0] - 2026-11-05
 
@@ -1129,6 +1135,7 @@ This release republishes v1.9.0's full changelog (below) unchanged; v1.9.0 itsel
 
 - Initial release: read-only 3D preview for CAD and mesh files (STEP, IGES, BREP, STL, OBJ, PLY, glTF) inside a VS Code custom editor, using OpenCascade.js (OCCT WASM) in the extension host for B-rep formats and Three.js in the webview for rendering.
 
+[3.38.0]: https://github.com/loumalouomega/CAD-Preview/compare/v3.37.0...v3.38.0
 [3.37.0]: https://github.com/loumalouomega/CAD-Preview/compare/v3.36.1...v3.37.0
 [3.36.1]: https://github.com/loumalouomega/CAD-Preview/compare/v3.36.0...v3.36.1
 [3.36.0]: https://github.com/loumalouomega/CAD-Preview/compare/v3.35.0...v3.36.0
