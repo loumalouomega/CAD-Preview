@@ -48,7 +48,7 @@ export async function buildPrimitivesFile(
 
     const warnings: string[] = [];
     for (const o of outcomes) {
-      if (!o.applied) warnings.push(`op ${o.index} (${(ops[o.index] as any)?.op}) did not apply: ${o.diagnostic ?? "no reason"}`);
+      if (!o.applied && !o.suppressed) warnings.push(`op ${o.index} (${(ops[o.index] as any)?.op}) did not apply: ${o.diagnostic ?? "no reason"}`);
     }
 
     const factor = unitScaleFactor(unit);

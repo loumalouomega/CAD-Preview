@@ -11,6 +11,7 @@ import { QUERYABLE_PANEL_FORMS, catalogLocation } from "./opCatalog";
 import { OP_ICONS } from "./opIcons";
 import { allHoleSizes, depthPresetsFor, findHoleSize } from "../holeStandards";
 import { TOOLBAR_ICONS } from "../toolbarIcons";
+import { attachExpressionAutocomplete } from "./expressionAutocomplete";
 
 // Re-exported for compatibility — `describeOp` now lives in the pure, headless-
 // testable opCatalog module.
@@ -92,6 +93,7 @@ export type WireframeDraft = (
   | { kind: "addBezier"; controlPoints: Vec3[] }
   | { kind: "addEllipseArc"; center: Vec3; normal: Vec3; up: Vec3; radiusX: number; radiusY: number; startAngleDeg: number; endAngleDeg: number }
   | { kind: "addHelix"; center: Vec3; axis: Vec3; radius: number; pitch: number; turns: number }
+  | { kind: "addParametricCurve"; x: string; y: string; z: string; sMin: number; sMax: number; samples: number; as: "spline" | "polyline"; close: boolean; plane?: { origin: Vec3; normal: Vec3; up: Vec3 } }
 ) & { exprs?: ExprMap; guide?: boolean; /** `point-N` references standing in for coordinate slots (their `at` already fills the slot's Vec3). */ pointRefs?: PointRefs };
 
 /** A modify-op draft minus its selection operands: shell's `openingFaces` and
@@ -126,6 +128,8 @@ export interface EditsPanelCallbacks {
   onClear: () => void;
   /** Remove a single op from anywhere in the history list (not just the last one). */
   onRemoveOp: (index: number) => void;
+  /** Suppress/unsuppress and/or rename the op at `index` (wired to `EditsModel.setState`). */
+  onSetOpState: (index: number, state: { suppressed?: boolean; label?: string | null }) => void;
   /** Jump the op stack straight to timeline position `index` in one splice
    * (op-history scrubbing): applied rows roll the
    * model back past them, pending-redo rows re-apply through them. Wired
@@ -754,9 +758,13 @@ export class EditsPanel {
         li.classList.add("edit-row-baked");
         li.title = "Saved into the file itself — cannot be undone or removed (File ▸ Revert File drops back to the save).";
       }
-      li.addEventListener("click", () => this.cb.onJumpTo(i));
+      li.dataset.opIndex = String(i);
+      li.addEventListener("click", () => {
+        this.revealedOp = null;
+        this.cb.onJumpTo(i);
+      });
       const outcome = opts.outcome;
-      if (outcome && !outcome.applied) {
+      if (outcome && !outcome.applied && !outcome.suppressed) {
         li.classList.add("edit-row-skipped");
         li.title = `Did not apply — ${outcome.diagnostic ?? "no reason recorded"}${outcome.hint ? `\nHint: ${outcome.hint}` : ""}`;
       }
@@ -765,7 +773,40 @@ export class EditsPanel {
       idx.textContent = `${i + 1}.`;
       const label = document.createElement("span");
       label.className = "edit-label";
-      label.textContent = describeOp(op);
+      label.textContent = op.label ?? describeOp(op);
+      if (op.suppressed) {
+        li.classList.add("edit-row-suppressed");
+        label.title = "Suppressed — replay skips this op";
+      }
+      if (!opts.pending && !opts.baked) {
+        label.addEventListener("dblclick", (e) => {
+          e.stopPropagation();
+          const input = document.createElement("input");
+          input.type = "text";
+          input.className = "edit-rename";
+          input.value = op.label ?? "";
+          input.placeholder = describeOp(op);
+          let done = false;
+          const commit = (save: boolean): void => {
+            if (done) return;
+            done = true;
+            // Escape restores before blurring: the swap-back must not re-commit.
+            if (save) this.cb.onSetOpState(i, { label: input.value });
+            else input.replaceWith(label);
+          };
+          input.addEventListener("keydown", (ke) => {
+            if (ke.key === "Enter") { ke.preventDefault(); commit(true); }
+            else if (ke.key === "Escape") { ke.preventDefault(); commit(false); input.blur(); }
+            ke.stopPropagation();
+          });
+          input.addEventListener("blur", () => commit(true));
+          input.addEventListener("click", (ce) => ce.stopPropagation());
+          label.replaceWith(input);
+          input.focus();
+          input.select();
+        });
+        label.title = label.title || "Double-click to rename";
+      }
       li.appendChild(idx);
       li.appendChild(label);
       if (!opts.pending && this.externalFrom !== null && i >= this.externalFrom) {
@@ -785,6 +826,16 @@ export class EditsPanel {
       if (!opts.pending) {
         // No ✕ on baked rows — removal is refused, so offering it would lie.
         if (!opts.baked) {
+          const sup = document.createElement("button");
+          sup.className = "edit-suppress";
+          sup.textContent = op.suppressed ? "○" : "●";
+          sup.title = op.suppressed ? "Unsuppress this edit" : "Suppress this edit (keep it, skip it in replay)";
+          sup.setAttribute("aria-pressed", String(op.suppressed === true));
+          sup.addEventListener("click", (e) => {
+            e.stopPropagation();
+            this.cb.onSetOpState(i, { suppressed: !op.suppressed });
+          });
+          li.appendChild(sup);
           const del = document.createElement("button");
           del.className = "edit-remove";
           del.innerHTML = TOOLBAR_ICONS.close;
@@ -797,7 +848,7 @@ export class EditsPanel {
         }
         // A skipped op's warning marker sits between the label and the remove
         // button so it can't be mistaken for a row-level action.
-        if (outcome && !outcome.applied) {
+        if (outcome && !outcome.applied && !outcome.suppressed) {
           const warn = document.createElement("span");
           warn.className = "edit-skip-warning";
           warn.textContent = "⚠";
@@ -839,6 +890,30 @@ export class EditsPanel {
     ops.forEach((op, i) => row(op, i, { pending: false, outcome: outcomeOf.get(i), bucket: bucketOf.get(i), baked: i < bakedThrough }));
     (redoOps ?? []).forEach((op, k) => row(op, ops.length + k, { pending: true }));
     this.body.appendChild(ol);
+    if (this.revealedOp !== null) this.revealRow(this.revealedOp);
+  }
+
+  /** The history row last revealed from the Variables panel's Used-by list. */
+  private revealedOp: number | null = null;
+
+  /**
+   * Select and scroll to history row `index` WITHOUT jumping the timeline (a
+   * row click scrubs the stack; a Used-by click must only point at the op).
+   * The mark survives re-renders until the user clicks a row.
+   */
+  revealRow(index: number): void {
+    this.revealedOp = index;
+    let found = false;
+    for (const li of this.body.querySelectorAll<HTMLElement>(".edit-row")) {
+      const on = li.dataset.opIndex === String(index);
+      li.classList.toggle("edit-row-selected", on);
+      li.setAttribute("aria-selected", on ? "true" : "false");
+      if (on) {
+        found = true;
+        li.scrollIntoView({ block: "nearest" });
+      }
+    }
+    if (!found) this.revealedOp = null;
   }
 
   /** Enables/disables the B-rep-only controls (whole 2D subtab + individual
@@ -1354,6 +1429,35 @@ export class EditsPanel {
           }), (d) => this.cb.onApplyWireframe(d));
         break;
 
+      case "addParametricCurve":
+        f.appendChild(this.hint("x(s), y(s), z(s) are expressions in s and the document variables (trig in degrees)"));
+        f.appendChild(this.exprTextField("x", "x(s)", "s"));
+        f.appendChild(this.exprTextField("y", "y(s)", "0.1*sin(360*s)"));
+        f.appendChild(this.exprTextField("z", "z(s)", "0"));
+        f.appendChild(this.numField("sMin", "s min", 0));
+        f.appendChild(this.numField("sMax", "s max", 1));
+        f.appendChild(this.numField("samples", "Samples", 41));
+        f.appendChild(this.enumField("as", "Fit", [["spline", "Spline (approximating)"], ["polyline", "Polyline"]], "spline"));
+        f.appendChild(this.boolField("close", "Close into a face", false));
+        f.appendChild(this.hint("Sketch plane: sample (x, y, z) lands at origin + x·u + y·v + z·n (defaults = world axes)"));
+        f.appendChild(this.vecField("origin", "Origin", [0, 0, 0]));
+        f.appendChild(this.vecField("normal", "Normal", [0, 0, 1]));
+        f.appendChild(this.vecField("up", "Up", [1, 0, 0]));
+        this.applyButtonDraft("Add", "Add the curve (no selection needed); \"Close into a face\" also builds the face for Extrude/Revolve", (): WireframeDraft => {
+            const sMin = this.readNum("sMin");
+            const curve = {
+              x: this.readText("x"), y: this.readText("y"), z: this.readText("z") || "0",
+              sMin, sMax: this.readNum("sMax"), samples: this.readNum("samples"),
+              as: this.readEnum("as", "spline") === "polyline" ? "polyline" as const : "spline" as const,
+              close: this.readBool("close"),
+            };
+            for (const k of ["x", "y", "z"] as const) this.checkCurveExpr(k, curve[k], sMin);
+            const origin = this.readVec("origin"), normal = this.readVec("normal"), up = this.readVec("up");
+            const world = origin.every((v) => v === 0) && normal[0] === 0 && normal[1] === 0 && normal[2] === 1 && up[0] === 1 && up[1] === 0 && up[2] === 0;
+            return { kind: "addParametricCurve", ...curve, ...(world ? {} : { plane: { origin, normal, up } }) };
+          }, (d) => this.cb.onApplyWireframe(d));
+        break;
+
       // ── GEOMETRY 2D · sketch profiles ──
       case "addCircleProfile":
         f.appendChild(this.vecField("center", "Center", [0, 0, 0]));
@@ -1601,8 +1705,11 @@ export class EditsPanel {
     // The form's Apply row, registered by `applyButtonDraft` during the
     // switch above — appended here, after every param row, so no form can
     // silently render without its commit button (see its doc comment).
-    if (this.pendingApplyRow) {
-      f.appendChild(this.pendingApplyRow);
+    const applyRow = this.pendingApplyRow as HTMLElement | null;
+    if (applyRow) {
+      // Sticky footer: a long form (sweep, loft, wrap) scrolls under it, Apply stays reachable.
+      applyRow.classList.add("compose-footer");
+      f.appendChild(applyRow);
       this.pendingApplyRow = null;
     }
     // A freshly-opened form previews immediately from its default field
@@ -2103,7 +2210,39 @@ export class EditsPanel {
     input.spellcheck = false;
     input.autocomplete = "off";
     input.className = "compose-num";
+    attachExpressionAutocomplete(input, () => Object.keys(this.variableValues));
     return input;
+  }
+
+  /** A free-text expression input (`x(s)` of a parametric curve): offers `s` plus the document variables. */
+  private exprTextField(name: string, label: string, def: string): HTMLElement {
+    const row = document.createElement("label");
+    row.className = "compose-field";
+    const span = document.createElement("span");
+    span.className = "compose-label";
+    span.textContent = label;
+    row.appendChild(span);
+    const input = document.createElement("input");
+    input.type = "text";
+    input.spellcheck = false;
+    input.autocomplete = "off";
+    input.className = "compose-num";
+    input.dataset.name = name;
+    input.value = def;
+    attachExpressionAutocomplete(input, () => ["s", ...Object.keys(this.variableValues)]);
+    row.appendChild(input);
+    return row;
+  }
+
+  private readText(name: string): string {
+    const inp = this.paramsEl.querySelector<HTMLInputElement>(`input[data-name="${name}"]`);
+    return inp ? inp.value.trim() : "";
+  }
+
+  /** Evaluates a curve expression once (at `s = sMin`) so a typo is reported inline instead of after the host drops the op. */
+  private checkCurveExpr(name: string, src: string, sMin: number): void {
+    const r = evalExpr(src, { ...this.variableValues, s: sMin });
+    if (!r.ok) this.pendingErrors.push(`${name}(s): ${r.error}`);
   }
 
   private numField(name: string, label: string, def: number): HTMLElement {

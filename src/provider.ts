@@ -103,6 +103,7 @@ import { isMeshSourceRoute, resolveMeshSourceInput } from "./meshSourceInput";
 import { runMeshSweep, validateSweepSizes, sweepOutputName, SWEEP_NOTE } from "./meshSweep";
 import { getNonce } from "./nonce";
 import { showLatestWhatsNew } from "./whatsNew";
+import { buildIssueDraft, issueUrl } from "./issueDraft";
 import { runCompareModelsCommand } from "./modelComparePanel";
 import { runBatchExportCommand } from "./batchExportCommand";
 import { runPrepReportCommand } from "./prepReportCommand";
@@ -117,11 +118,14 @@ import {
   parseMeshPresetsJson,
   serializeMeshPresetsJson,
 } from "./meshPresets";
+import { FIT_TO_CAD_LEVELS } from "./fitToCadLevels";
 import { emitPrimitiveOps } from "./primitiveEmit";
 import { compileParametricScript } from "./parametricScript";
 import { evaluateVariables } from "./editVariables";
+import { effectiveVariables, validateConfigurationState, type Configuration, type ConfigurationState } from "./configurations";
 import { fetchThumbnail, ThumbCache } from "./standardPartsThumbs";
 import * as path from "path";
+import * as os from "os";
 
 /** Debounce window for autosaving the parts/edits/mesh-options sidecars after changes. */
 const PARTS_SAVE_DEBOUNCE_MS = 500;
@@ -235,6 +239,8 @@ interface EditorSession {
   savePreprocess(): void;
   /** Save the current 3D view as a PNG (save dialog). */
   screenshot(): void;
+  /** Assemble a redacted issue draft for the first failed op (or the whole model), open it for review. */
+  reportIssue(): void;
   /** Export a 2D outline (silhouette) of the model as an SVG drawing. */
   exportSvg(): void;
   /** Export a 2D outline (silhouette) of the model as a DXF drawing. */
@@ -540,6 +546,7 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
       vscode.commands.registerCommand("cad-preview.savePreprocess", withSession((s) => s.savePreprocess())),
       vscode.commands.registerCommand("cad-preview.loadPreprocess", () => void this.loadPreprocessDialog()),
       vscode.commands.registerCommand("cad-preview.whatsNew", () => void showLatestWhatsNew(this.context)),
+      vscode.commands.registerCommand("cad-preview.reportIssue", withSession((s) => s.reportIssue())),
       vscode.commands.registerCommand("cad-preview.screenshot", withSession((s) => s.screenshot())),
       vscode.commands.registerCommand("cad-preview.exportSvg", withSession((s) => s.exportSvg())),
       vscode.commands.registerCommand("cad-preview.exportDxf", withSession((s) => s.exportDxf())),
@@ -874,6 +881,11 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
     // persisted and echoed back. The source CAD file is never modified.
     let currentEdits: EditOp[] = [];
     let currentVariables: ParamVariable[] = [];
+    // Design table: named variable-override sets + the applied one. Resolution
+    // happens in the webview (resolve-on-read); the host only carries them.
+    let currentConfigurations: Configuration[] = [];
+    let currentActiveConfiguration: string | null = null;
+    const configState = (): ConfigurationState => ({ configurations: currentConfigurations, activeConfiguration: currentActiveConfiguration });
     // Tier 0 save-in-place watermark: the file on disk already contains
     // `currentEdits[0..currentBakedThrough]`, so every kernel replay consumes
     // only the tail (`replayTail`). 0 on pre-watermark documents. Adopted from
@@ -937,6 +949,8 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
         type: "edits",
         ops: currentEdits,
         variables: currentVariables,
+        configurations: currentConfigurations,
+        activeConfiguration: currentActiveConfiguration,
         bakedThrough: currentBakedThrough,
         ...(externalFrom !== undefined ? { externalFrom } : {}),
       });
@@ -1007,7 +1021,7 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
           writeLayers(document.uri, currentLayers, currentLayersNextId),
           writeAnnotations(document.uri, currentAnnotations),
           writePlanes(document.uri, currentPlanes),
-          writeEdits(document.uri, currentEdits, currentVariables, currentBakedThrough),
+          writeEdits(document.uri, currentEdits, currentVariables, currentBakedThrough, configState()),
           ...(currentMeshOptions
             ? [writeMeshOptions(document.uri, currentMeshOptions), writeGeoScript(document.uri, currentMeshOptions)]
             : []),
@@ -1055,7 +1069,7 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
           await vscode.workspace.fs.delete(sibling(name));
         },
         readEdits: () => readEdits(document.uri),
-        writeEdits: (ops, variables, bakedThrough) => writeEdits(document.uri, ops, variables, bakedThrough),
+        writeEdits: (ops, variables, bakedThrough) => writeEdits(document.uri, ops, variables, bakedThrough, configState()),
         askUnrecognised: async (info) => {
           // The same shape as the sidecar-conflict prompt, including the `{}`
           // options argument — without it VS Code treats the buttons as
@@ -1152,6 +1166,8 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
         const settled = await readEdits(document.uri);
         currentEdits = resolvePlaneRefs(settled.ops, await readPlanes(document.uri)).ops;
         currentVariables = settled.variables;
+        currentConfigurations = settled.configurations ?? [];
+        currentActiveConfiguration = settled.activeConfiguration ?? null;
         currentBakedThrough = settled.bakedThrough;
         postEdits();
         if (recovered.sourceChanged) loadModel(true);
@@ -1242,7 +1258,7 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
         const watermarkBefore = currentBakedThrough;
         currentBakedThrough = currentEdits.length;
         try {
-          await writeEdits(document.uri, currentEdits, currentVariables, currentBakedThrough);
+          await writeEdits(document.uri, currentEdits, currentVariables, currentBakedThrough, configState());
         } catch (wmErr) {
           currentBakedThrough = watermarkBefore;
           try {
@@ -1372,6 +1388,8 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
         const settled = await readEdits(document.uri);
         currentEdits = resolvePlaneRefs(settled.ops, await readPlanes(document.uri)).ops;
         currentVariables = settled.variables;
+        currentConfigurations = settled.configurations ?? [];
+        currentActiveConfiguration = settled.activeConfiguration ?? null;
         currentBakedThrough = settled.bakedThrough;
         postEdits();
         if (recovered.sourceChanged) loadModel(true);
@@ -1457,7 +1475,7 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
         const watermarkBefore = currentBakedThrough;
         currentBakedThrough = currentEdits.length;
         try {
-          await writeEdits(document.uri, currentEdits, currentVariables, currentBakedThrough);
+          await writeEdits(document.uri, currentEdits, currentVariables, currentBakedThrough, configState());
         } catch (wmErr) {
           currentBakedThrough = watermarkBefore;
           try {
@@ -1534,12 +1552,14 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
       currentBakedThrough = parsed.bakedThrough;
       currentEdits = parsed.ops.slice(0, parsed.bakedThrough);
       currentVariables = parsed.variables;
+      currentConfigurations = parsed.configurations ?? [];
+      currentActiveConfiguration = parsed.activeConfiguration ?? null;
       currentParts = parts;
       currentLayers = layersFile.layers;
       currentLayersNextId = layersFile.nextId;
       currentAnnotations = annotations;
       currentPlanes = planes;
-      await writeEdits(document.uri, currentEdits, currentVariables, currentBakedThrough);
+      await writeEdits(document.uri, currentEdits, currentVariables, currentBakedThrough, configState());
       postEdits();
       post({ type: "parts", parts: currentParts });
       post({ type: "layers", layers: currentLayers, nextId: currentLayersNextId });
@@ -1837,7 +1857,7 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
 
     /** Writes local state now, bypassing the conflict gate (an explicit overwrite). */
     const writeLocal = async (kind: SidecarKind): Promise<void> => {
-      if (kind === "edits") await writeEdits(document.uri, currentEdits, currentVariables, currentBakedThrough);
+      if (kind === "edits") await writeEdits(document.uri, currentEdits, currentVariables, currentBakedThrough, configState());
       else if (kind === "parts") await writeParts(document.uri, currentParts);
       else if (kind === "layers") await writeLayers(document.uri, currentLayers, currentLayersNextId);
       else if (kind === "planes") await writePlanes(document.uri, currentPlanes);
@@ -2033,7 +2053,8 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
     watchSidecar("edits", async () => {
       const parsed = await readEdits(document.uri);
       const { ops: resolvedOps } = resolvePlaneRefs(parsed.ops, currentPlanes);
-      if (JSON.stringify(resolvedOps) === JSON.stringify(currentEdits) && JSON.stringify(parsed.variables) === JSON.stringify(currentVariables)) {
+      if (JSON.stringify(resolvedOps) === JSON.stringify(currentEdits) && JSON.stringify(parsed.variables) === JSON.stringify(currentVariables) &&
+        JSON.stringify([parsed.configurations ?? [], parsed.activeConfiguration ?? null]) === JSON.stringify([currentConfigurations, currentActiveConfiguration])) {
         return null;
       }
       return {
@@ -2042,6 +2063,10 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
           const previousOps = currentEdits;
           currentEdits = resolvedOps;
           currentVariables = parsed.variables;
+          currentConfigurations = parsed.configurations ?? [];
+          currentActiveConfiguration = parsed.activeConfiguration ?? null;
+      currentConfigurations = parsed.configurations ?? [];
+      currentActiveConfiguration = parsed.activeConfiguration ?? null;
           // Tier 0: an external writer (only this extension's own save-in-place
           // sets it today) may have moved the watermark — adopt it so the tail
           // slice below stays aligned with the file on disk.
@@ -2191,6 +2216,9 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
       savePreprocess: () => {
         void flushSidecars().then(() => this.handleSavePreprocess(document.uri, post));
       },
+      reportIssue: () => {
+        void this.reportIssue(document.uri.fsPath, currentEdits, this.lastOpOutcomes.get(document.uri.toString()) ?? []);
+      },
       screenshot: () => {
         void this.handleScreenshot(document.uri, post, pending);
       },
@@ -2258,6 +2286,8 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
         const { ops: resolvedEdits } = resolvePlaneRefs(parsed.ops, planesInitial);
         currentEdits = resolvedEdits;
         currentVariables = parsed.variables;
+      currentConfigurations = parsed.configurations ?? [];
+      currentActiveConfiguration = parsed.activeConfiguration ?? null;
         currentBakedThrough = parsed.bakedThrough;
         currentPlanes = planesInitial;
         loadModel(true);
@@ -2442,10 +2472,28 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
         return;
       }
 
+      if (msg.type === "exportVariables") {
+        const ext = msg.format === "json" ? "json" : "csv";
+        const text = typeof msg.text === "string" ? msg.text.slice(0, 1_000_000) : "";
+        await this.promptSaveAndWrite(
+          document.uri.with({ path: document.uri.path.replace(/\.[^./]+$/, "") + ".variables.x" }),
+          ext,
+          ext.toUpperCase(),
+          async () => new TextEncoder().encode(text),
+          post
+        );
+        return;
+      }
+
       if (msg.type === "editsChanged") {
         const previousOps = currentEdits;
         currentEdits = msg.ops;
         currentVariables = msg.variables;
+        if (msg.configurations !== undefined) {
+          const cfg = validateConfigurationState(msg.configurations, msg.activeConfiguration);
+          currentConfigurations = cfg.configurations;
+          currentActiveConfiguration = cfg.activeConfiguration;
+        }
         // Tier 0 Phase 2+3 — dirty tracking: an unbaked tail on a source
         // that can bake it marks the editor dirty (VS Code clears it when a
         // save/revert completes). The predicate is `isDocumentDirty` (defined
@@ -3033,7 +3081,7 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
           if (!entry) throw new Error(`No saved macro named "${msg.name}".`);
 
           const { script, unknownNames } = mergeScriptOverrides(entry.script, msg.parameters);
-          const { values } = evaluateVariables(currentVariables);
+          const { values } = evaluateVariables(effectiveVariables(currentVariables, configState()).variables);
           const compiled = compileParametricScript(script, values);
           if (compiled.ops.length === 0) {
             throw new Error(compiled.issues[0] ?? `"${msg.name}" compiled to no ops.`);
@@ -3880,6 +3928,9 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
       });
     }
 
+    /** Latest replay outcomes per document (full-history indexed) — feeds "Report issue…". */
+    private readonly lastOpOutcomes = new Map<string, import("./editOps").OpOutcome[]>();
+
     private async handleBRep(
      uri: vscode.Uri,
      format: Extract<CadFormat, "step" | "iges" | "brep" | "csg" | "scad">,
@@ -3949,6 +4000,7 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
             ...opOutcomes.map((o) => ({ ...o, index: o.index + bakedThrough })),
           ]
         : opOutcomes;
+      this.lastOpOutcomes.set(uri.toString(), rebasedOutcomes);
       const rebasedBuckets = bakedThrough > 0 ? opBuckets.map((b) => ({ ...b, op: b.op + bakedThrough })) : opBuckets;
       post({
         type: "geometry",
@@ -4322,6 +4374,8 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
       meshSizePreset: cfg.get("defaultMeshSizePreset"),
       showGridAndAxes: cfg.get("showGridAndAxesOnOpen"),
       upAxis: cfg.get("upAxis"),
+      singleKeyCommands: cfg.get("singleKeyCommands"),
+      navigationPreset: cfg.get("navigationPreset"),
     });
     post({ type: "viewerDefaults", ...defaults });
   }
@@ -4771,6 +4825,14 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
     }
     const meshFormat = route.format as MeshParseFormat;
 
+    // How hard to try: the default leaves a rough (optimizer or scan) skin mostly
+    // faceted; refining the patches first is the measured fix. A dismissed pick writes nothing.
+    const level = await vscode.window.showQuickPick(
+      FIT_TO_CAD_LEVELS.map((l) => ({ label: l.label, detail: l.detail, level: l })),
+      { title: "Fit to CAD", placeHolder: "How should the surface patches be fitted?" }
+    );
+    if (!level) return;
+
     const baseName = uri.path.slice(uri.path.lastIndexOf("/") + 1).replace(/\.[^.]+$/, "");
     const saveUri = await vscode.window.showSaveDialog({
       defaultUri: vscode.Uri.joinPath(uri, "..", `${baseName}.step`),
@@ -4784,7 +4846,7 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
       const result = await this.docPipeline(uri).fitMeshToCad(
         sourceBytes,
         meshFormat,
-        {},
+        { ...level.level.options },
         await resolveGltfBuffersFor(uri, meshFormat, sourceBytes, this.decodeGltf)
       );
       this.assertMeshingJobActive();
@@ -5374,6 +5436,34 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
    * through the same `pending` map), minus the format `showQuickPick` — the
    * format is always PNG.
    */
+  /**
+   * "Report issue…": opens the redacted draft in an untitled editor tab for
+   * review, then — only on an explicit click — hands the prefilled URL to the
+   * browser. Nothing is sent automatically and model bytes are never attached.
+   */
+  private async reportIssue(modelPath: string, ops: EditOp[], outcomes: import("./editOps").OpOutcome[]): Promise<void> {
+    const failed = outcomes.find((o) => !o.applied && !o.suppressed);
+    const pkg = this.context.extension.packageJSON as { version?: string; dependencies?: Record<string, string>; repository?: { url?: string } };
+    const kernels: Record<string, string> = {};
+    for (const k of ["opencascade.js", "@loumalouomega/gmsh-wasm", "@meshioplusplus/wasm", "float-tetwild-wasm", "@loumalouomega/mmg-wasm", "@loumalouomega/openscad-wasm", "manifold-3d"]) {
+      if (pkg.dependencies?.[k]) kernels[k] = pkg.dependencies[k];
+    }
+    const draft = buildIssueDraft({
+      modelPath,
+      op: failed ? ops[failed.index] : undefined,
+      outcome: failed,
+      env: { extensionVersion: pkg.version ?? "unknown", vscodeVersion: vscode.version, platform: `${process.platform} ${process.arch}`, kernels },
+      scrub: [os.homedir(), path.dirname(modelPath), ...(vscode.workspace.workspaceFolders ?? []).map((f) => f.uri.fsPath)],
+    });
+    const doc = await vscode.workspace.openTextDocument({ language: "markdown", content: `# ${draft.title}\n\n${draft.body}\n` });
+    await vscode.window.showTextDocument(doc, { preview: false });
+    const pick = await vscode.window.showInformationMessage("Review the draft, then open it as a GitHub issue? Nothing is sent until you do.", "Open on GitHub");
+    if (pick === "Open on GitHub") {
+      const edited = doc.getText().replace(/^# .*\n\n/, "");
+      await vscode.env.openExternal(vscode.Uri.parse(issueUrl(pkg.repository?.url ?? "https://github.com/loumalouomega/CAD-Preview", { title: draft.title, body: edited })));
+    }
+  }
+
   private async handleScreenshot(
     uri: vscode.Uri,
     post: (msg: HostToWebview) => void,
@@ -5872,7 +5962,7 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
       }
       if (contents.edits !== undefined) {
         const parsed = parseEditsJson(contents.edits);
-        await writeEdits(destUri, parsed.ops, parsed.variables, parsed.bakedThrough);
+        await writeEdits(destUri, parsed.ops, parsed.variables, parsed.bakedThrough, { configurations: parsed.configurations, activeConfiguration: parsed.activeConfiguration });
       }
       if (contents.meshOptions !== undefined) {
         const options = parseMeshJson(contents.meshOptions);

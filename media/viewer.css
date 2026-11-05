@@ -96,7 +96,9 @@ body.vscode-high-contrast-light {
  *   --cad-*  scene DATA. Read by `palette.ts` via getComputedStyle, fed to THREE
  *            materials, byte-identical to PALETTE_FALLBACKS. Never styles chrome.
  *   --ui-*   chrome METRICS ONLY — radii, spacing, elevation, type scale, control
- *            heights. It carries NO COLOUR.
+ *            heights. It carries NO COLOUR, with ONE named exception:
+ *            `--ui-icon-accent` (below), which is a pure `var(--vscode-*)` alias
+ *            — no literal palette — consumed by the two-tone icon SVGs.
  *
  * Every chrome colour still resolves through `var(--vscode-*, <literal>)`, which
  * is what makes light and high-contrast themes work with no per-theme chrome
@@ -149,6 +151,18 @@ body.vscode-high-contrast-light {
   --ui-h-ctl: 24px;
   --ui-statusbar-h: 24px;
   --ui-cmdbar-h: 28px;
+
+  /* Two-tone icons (icons/svgIconPostProcess.mjs maps the reserved TikZ `blue`
+   * fill to `var(--ui-icon-accent, currentColor)`). Theme button colour, then
+   * focus colour; the trailing literal is only the screenshot harness's, which
+   * defines neither. Blue, never magenta/violet. High-contrast bodies reset it
+   * to `currentColor` below so those themes stay monochrome. */
+  --ui-icon-accent: var(--vscode-button-background, var(--vscode-focusBorder, #0e639c));
+}
+
+body.vscode-high-contrast,
+body.vscode-high-contrast-light {
+  --ui-icon-accent: currentColor;
 }
 
 /* Elevation is the one metric that must react to theme: a near-black drop shadow
@@ -949,7 +963,9 @@ body.sidebar-resizing {
  * variable, so a light or high-contrast theme gets its own container for free. */
 #toolbar {
   position: absolute;
-  top: 42px;
+  /* 42px below the menubar, plus the ribbon strip that now sits between the
+   * menubar and the canvas (`--ribbon-h`, defined with the ribbon rules below). */
+  top: calc(42px + var(--ribbon-h, 0px));
   right: 8px;
   display: flex;
   align-items: center;
@@ -1738,6 +1754,33 @@ body:not(:has(#side.visible)) #status {
   opacity: 0.6;
   flex-shrink: 0;
 }
+/* The rule picker, like the density field, stays out of the row until hovered
+   or focused unless the part already carries a rule. */
+.part-rule {
+  max-width: 7em;
+  flex-shrink: 0;
+  font: inherit;
+  font-size: var(--ui-fs-label);
+  color: inherit;
+  background: var(--vscode-dropdown-background, transparent);
+  border: 1px solid var(--vscode-input-border, #3c3c3c);
+  border-radius: var(--ui-r-xs);
+}
+.part-row:not(:hover):not(:focus-within) .part-rule:not(.has-rule) { display: none; }
+
+/* The material picker shares the rule picker's hover-reveal behaviour; a Part
+   whose density was picked from the table keeps its name visible. */
+.part-material {
+  max-width: 7em;
+  flex-shrink: 0;
+  font: inherit;
+  font-size: var(--ui-fs-label);
+  color: inherit;
+  background: var(--vscode-dropdown-background, transparent);
+  border: 1px solid var(--vscode-input-border, #3c3c3c);
+  border-radius: var(--ui-r-xs);
+}
+.part-row:not(:hover):not(:focus-within) .part-material:not(.has-material) { display: none; }
 
 /* Parametric variables table (inside the Edits panel scroll area). */
 #variables-header {
@@ -2056,6 +2099,11 @@ body:not(:has(#side.visible)) #status {
   display: flex;
   align-items: center;
   gap: 4px;
+}
+
+/* An author `display` beats the UA `[hidden]` rule: the Mesh ops parameter rows toggle `hidden`. */
+.meshing-field[hidden] {
+  display: none;
 }
 
 .meshing-checkbox {
@@ -3177,6 +3225,15 @@ input[type="range"].meshing-slider:focus {
  * the row dims and carries a ⚠ marker whose tooltip holds the diagnostic +
  * hint. Warning color matches the editor theme's error/warning foreground. */
 .edit-row-skipped .edit-label { opacity: 0.45; }
+/* Suppressed (replay skips it): struck through, not a warning. */
+.edit-row-suppressed .edit-label { opacity: 0.45; text-decoration: line-through; }
+.edit-suppress {
+  flex-shrink: 0; font: inherit; font-size: var(--ui-fs-label); line-height: 1;
+  width: 16px; height: 16px; padding: 0; border: none; border-radius: var(--ui-r-xs);
+  color: var(--vscode-foreground, #ccc); background: transparent; cursor: pointer; opacity: 0.5;
+}
+.edit-suppress:hover { opacity: 1; background: var(--vscode-toolbar-hoverBackground, rgba(255,255,255,0.1)); }
+.edit-rename { flex: 1; min-width: 0; font: inherit; font-size: var(--ui-fs-sm); }
 
 /* Tier 0 Phase 2 — rows saved into the source file itself: dimmed with a 🔒
  * marker (no ✕ remove button — removal is refused, so offering it would lie).
@@ -3499,6 +3556,17 @@ input[type="range"].meshing-slider:focus {
   margin-top: 6px;
 }
 #edits-params:empty { margin-top: 0; }
+/* The form's Apply row is pinned to the bottom of the scrolling #edits-scroll,
+ * so the button never scrolls out of view on a long form. */
+#edits-params > .compose-footer {
+  position: sticky;
+  bottom: 0;
+  z-index: 2;
+  margin-bottom: 0;
+  padding: 4px 0;
+  background: var(--vscode-sideBar-background, var(--vscode-editor-background, #252526));
+  border-top: 1px solid var(--vscode-sideBar-border, rgba(128, 128, 128, 0.35));
+}
 
 /* ── Mode toggles and segmented tool rows inside the toolbar dropdowns ──
  *
@@ -3576,7 +3644,7 @@ input[type="range"].meshing-slider:focus {
    * when the toolbar was a bare strip of buttons and would now overlap it by
    * ~3px the moment a measurement appeared. Nothing else about this row's
    * geometry changed. */
-  top: 84px;
+  top: calc(84px + var(--ribbon-h, 0px));
   right: 8px;
   z-index: 12;
   display: flex;
@@ -3822,7 +3890,7 @@ input[type="range"].meshing-slider:focus {
    * restyle, not a new component (the selection-driven `entityFactsRequest` and
    * `renderInspectorCard` are unchanged). */
   right: 8px;
-  top: 86px;
+  top: calc(86px + var(--ribbon-h, 0px));
   min-width: 168px;
   max-width: min(28vw, 260px);
   padding: 6px 9px;
@@ -4794,6 +4862,77 @@ body:has(#side.visible) #kernel-status {
   bottom: calc(var(--ui-s-5) + 132px + var(--ui-statusbar-h) + var(--ui-cmdbar-h));
 }
 
+/* ── Command search (Ctrl+K) ───────────────────────────────────────────── */
+
+#cmd-palette {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  padding-top: 10vh;
+  background: rgba(0, 0, 0, 0.25);
+  font-family: var(--ui-font);
+  font-size: var(--ui-fs-md);
+}
+#cmd-palette[hidden] { display: none; }
+#cmd-palette .cmd-palette-box {
+  width: min(560px, calc(100vw - 32px));
+  max-height: 70vh;
+  display: flex;
+  flex-direction: column;
+  color: var(--vscode-quickInput-foreground, var(--vscode-foreground, #ccc));
+  background: var(--vscode-quickInput-background, var(--vscode-editorWidget-background, #252526));
+  border: 1px solid var(--vscode-editorWidget-border, #454545);
+  border-radius: var(--ui-r-md);
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.4);
+}
+#cmd-palette-input {
+  box-sizing: border-box;
+  margin: var(--ui-s-3);
+  padding: 4px var(--ui-s-3);
+  font: inherit;
+  color: var(--vscode-input-foreground, #ccc);
+  background: var(--vscode-input-background, #3c3c3c);
+  border: 1px solid var(--vscode-input-border, transparent);
+}
+#cmd-palette-input:focus { outline: 1px solid var(--vscode-focusBorder, #007fd4); outline-offset: -1px; }
+#cmd-palette-list { list-style: none; margin: 0; padding: 0 0 var(--ui-s-2); overflow-y: auto; }
+#cmd-palette-list .cmd-row {
+  display: flex;
+  align-items: center;
+  gap: var(--ui-s-3);
+  padding: 3px var(--ui-s-4);
+  cursor: pointer;
+}
+#cmd-palette-list .cmd-row:hover { background: var(--vscode-list-hoverBackground, #2a2d2e); }
+#cmd-palette-list .cmd-row.selected {
+  color: var(--vscode-list-activeSelectionForeground, #fff);
+  background: var(--vscode-list-activeSelectionBackground, #04395e);
+}
+#cmd-palette-list .cmd-row.disabled { opacity: 0.5; }
+#cmd-palette-list .cmd-icon { flex: none; width: 16px; height: 16px; display: inline-flex; }
+#cmd-palette-list .cmd-icon svg { width: 16px; height: 16px; }
+#cmd-palette-list .cmd-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#cmd-palette-list .cmd-group { flex: none; opacity: 0.65; font-size: var(--ui-fs-label); }
+#cmd-palette-list .cmd-key {
+  flex: none;
+  padding: 0 5px;
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: var(--ui-fs-label);
+  border: 1px solid var(--vscode-editorWidget-border, #454545);
+  border-radius: var(--ui-r-xs);
+}
+#cmd-palette-list .cmd-key.off { opacity: 0.45; }
+#cmd-palette-list .cmd-empty { padding: 6px var(--ui-s-4); opacity: 0.7; }
+#cmd-palette .cmd-palette-foot {
+  padding: 3px var(--ui-s-4);
+  font-size: var(--ui-fs-label);
+  opacity: 0.65;
+  border-top: 1px solid var(--vscode-editorWidget-border, #454545);
+}
+
 /* ── Command bar ───────────────────────────────────────────────────────── */
 
 #cmdbar {
@@ -5292,3 +5431,378 @@ body:has(#side.visible) #kernel-status {
   overflow-wrap: anywhere;
 }
 .surface-result-warning { opacity: 0.8; }
+
+/* Parameters table (roadmap 2.31) */
+#variables-tools { display: flex; gap: 4px; padding: 2px 6px; align-items: center; }
+#variables-tools #variables-filter { flex: 1; min-width: 0; font: inherit; color: inherit; background: var(--vscode-input-background, #1e1e1e); border: 1px solid var(--vscode-input-border, #3c3c3c); border-radius: var(--ui-r-xs); padding: 1px 4px; }
+#variables-defer { display: flex; gap: 6px; align-items: center; padding: 0 6px 2px; font-size: 11px; opacity: 0.85; }
+#variables-defer-actions[hidden] { display: none; }
+#variables-import-file[hidden] { display: none; }
+.variable-row .variable-unit,
+.variable-row .variable-comment { min-width: 0; font: inherit; color: inherit; background: transparent; border: 1px solid transparent; border-radius: var(--ui-r-xs); padding: 1px 2px; }
+.variable-row .variable-unit { width: 44px; flex: none; }
+.variable-row .variable-comment { flex: 1.5; opacity: 0.8; }
+.variable-row .variable-comment:hover,
+.variable-row .variable-unit:hover { border-color: var(--vscode-input-border, #3c3c3c); }
+.variable-row .variable-comment:focus { outline: none; background: var(--vscode-input-background, #1e1e1e); border-color: var(--vscode-focusBorder, #007fd4); }
+.variable-row .variable-star { cursor: pointer; background: none; border: none; color: inherit; opacity: 0.4; padding: 0 2px; }
+.variable-row .variable-star.on { opacity: 1; color: var(--vscode-charts-yellow, #cca700); }
+.variable-row .variable-move { background: none; border: none; color: inherit; opacity: 0.6; padding: 0 1px; cursor: pointer; }
+#model-params-title { padding: 4px 6px 2px; font-size: 11px; text-transform: uppercase; opacity: 0.7; }
+#model-params-body { padding-bottom: 4px; }
+.mp-group { padding: 2px 6px 0; font-size: 11px; opacity: 0.8; }
+.mp-row { display: flex; align-items: center; gap: 4px; padding: 0 6px 0 14px; height: 22px; }
+.mp-row .mp-name { flex: 1; }
+.mp-row input.mp-value { width: 70px; font: inherit; color: inherit; background: transparent; border: 1px solid transparent; border-radius: var(--ui-r-xs); padding: 1px 3px; }
+.mp-row input.mp-value:hover { border-color: var(--vscode-input-border, #3c3c3c); }
+.mp-row .mp-expr { opacity: 0.7; font-style: italic; }
+.mp-row .mp-promote { font-size: 11px; }
+
+/* Variable Used-by disclosure + expression autocomplete. */
+.variable-row .variable-used { background: none; border: none; color: inherit; opacity: 0.7; padding: 0 2px; cursor: pointer; font-size: 11px; white-space: nowrap; }
+.variable-row .variable-used:hover { opacity: 1; }
+.variable-usedby { display: flex; flex-direction: column; align-items: flex-start; gap: 1px; padding: 0 6px 3px 24px; font-size: 11px; }
+.variable-usedby .usedby-op { background: none; border: none; color: var(--vscode-textLink-foreground, #3794ff); padding: 0; cursor: pointer; text-align: left; font: inherit; }
+.variable-usedby .usedby-op:hover { text-decoration: underline; }
+.variable-usedby .usedby-var { opacity: 0.8; }
+.edit-row.edit-row-selected { outline: 1px solid var(--vscode-focusBorder, #007fd4); outline-offset: -1px; background: var(--vscode-list-activeSelectionBackground, rgba(0,127,212,0.25)); }
+#expr-suggest {
+  position: fixed; z-index: 1000; margin: 0; padding: 2px 0; list-style: none; max-height: 160px; overflow-y: auto;
+  font-size: 12px; color: var(--vscode-editorSuggestWidget-foreground, var(--vscode-foreground));
+  background: var(--vscode-editorSuggestWidget-background, var(--vscode-editorWidget-background, #252526));
+  border: 1px solid var(--vscode-editorSuggestWidget-border, var(--vscode-widget-border, #454545));
+  border-radius: var(--ui-r-xs);
+}
+#expr-suggest[hidden] { display: none; }
+#expr-suggest .expr-suggest-item { display: flex; justify-content: space-between; gap: 12px; padding: 1px 8px; cursor: pointer; }
+#expr-suggest .expr-suggest-item.active { background: var(--vscode-editorSuggestWidget-selectedBackground, var(--vscode-list-activeSelectionBackground, #04395e)); color: var(--vscode-list-activeSelectionForeground, inherit); }
+#expr-suggest .expr-suggest-kind { opacity: 0.6; }
+
+/* ── Config Table (design table) — built by configTablePanel.ts inside #variables-section ── */
+#config-section { border-top: 1px solid var(--vscode-sideBar-border, #3c3c3c); }
+#config-toggle {
+  display: flex; align-items: center; gap: 4px; width: 100%;
+  padding: 4px 8px; font: inherit; font-size: var(--ui-fs-label);
+  font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; text-align: left;
+  color: var(--vscode-sideBarSectionHeader-foreground, #bbb);
+  background: transparent; border: 0; cursor: pointer;
+}
+#config-toggle:hover { background: var(--vscode-list-hoverBackground, rgba(255,255,255,0.06)); }
+#config-count { opacity: 0.7; font-weight: 400; }
+#config-body[hidden] { display: none; }
+#config-tools { display: flex; gap: 4px; padding: 2px 8px 4px; }
+#config-new-name {
+  flex: 1; min-width: 0; font: inherit; color: var(--vscode-input-foreground, inherit);
+  background: var(--vscode-input-background, #1e1e1e); border: 1px solid var(--vscode-input-border, #3c3c3c);
+  border-radius: var(--ui-r-xs); padding: 1px 4px;
+}
+#config-grid { overflow-x: auto; padding: 0 4px 4px; }
+.config-table { border-collapse: collapse; width: max-content; min-width: 100%; font-size: var(--ui-fs-label); }
+.config-table th, .config-table td { padding: 1px 3px; text-align: left; white-space: nowrap; vertical-align: middle; }
+.config-table th { font-weight: 600; opacity: 0.8; }
+.config-row.active { background: var(--vscode-list-activeSelectionBackground, rgba(0,127,212,0.25)); }
+.config-name-cell { display: flex; align-items: center; gap: 3px; }
+.config-name { width: 84px; min-width: 0; font: inherit; color: inherit; background: transparent; border: 1px solid transparent; border-radius: var(--ui-r-xs); padding: 1px 2px; }
+.config-name:hover, .config-input:hover { border-color: var(--vscode-input-border, #3c3c3c); }
+.config-name:focus, .config-input:focus { outline: none; background: var(--vscode-input-background, #1e1e1e); border-color: var(--vscode-focusBorder, #007fd4); }
+.config-delete { font: inherit; padding: 0 4px; background: transparent; color: inherit; border: 0; cursor: pointer; opacity: 0.6; }
+.config-delete:hover { opacity: 1; }
+.config-cell { min-width: 64px; }
+.config-input { width: 64px; min-width: 0; font: inherit; color: inherit; background: transparent; border: 1px solid transparent; border-radius: var(--ui-r-xs); padding: 1px 2px; }
+.config-input::placeholder { opacity: 0.45; }
+.config-cell.overridden .config-input { font-weight: 600; }
+.config-value { margin-left: 3px; opacity: 0.65; }
+.config-cell.error .config-value, .config-cell.error .config-input { color: var(--vscode-errorForeground, #f48771); }
+#config-status, .config-empty { padding: 0 8px 4px; opacity: 0.75; font-size: var(--ui-fs-label); }
+/* ── Ribbon command strip ───────────────────────────────────────────────
+ * A tabbed strip of large icon-over-label buttons between the menubar and the
+ * canvas. Generated by `ribbonStrip.ts` from `ribbon.ts` (the op catalog plus a
+ * small table of non-op actions); only the skeleton is static markup.
+ *
+ * Its height is a FIXED metric (`--ribbon-h`, flipped by `body.ribbon-compact`)
+ * rather than measured, because two things are anchored to it by arithmetic:
+ * `#toolbar` and `#measure-readout-row` sit `top: 42px / 84px + --ribbon-h` from
+ * the viewport, and the fixed screenshot clips in `capture.mjs` are derived from
+ * the same numbers. Change a height here and re-check both.
+ *
+ * Every rule is `#ribbon`-scoped: `#toolbar button` (1,0,1) paints solid blue
+ * only inside `#toolbar`, so nothing here inherits it, but the converse also
+ * holds — a bare `button` rule written here would not be out-specified by it. */
+:root {
+  --ribbon-h: 89px;
+}
+body.ribbon-compact {
+  --ribbon-h: 63px;
+}
+
+#ribbon {
+  position: relative;
+  z-index: 19;
+  flex-shrink: 0;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  height: var(--ribbon-h);
+  font-family: var(--ui-font);
+  font-size: var(--ui-fs-md);
+  color: var(--vscode-foreground, #ccc);
+  background: var(--vscode-editor-background, #1e1e1e);
+  border-bottom: 1px solid var(--vscode-editorWidget-border, #454545);
+}
+
+#ribbon-tabbar {
+  flex: 0 0 26px;
+  box-sizing: border-box;
+  display: flex;
+  align-items: flex-end;
+  gap: var(--ui-s-3);
+  padding: 0 var(--ui-s-3);
+}
+
+#ribbon-tabs {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  gap: var(--ui-s-0);
+}
+
+#ribbon .ribbon-tab {
+  font: inherit;
+  padding: 3px 12px 2px;
+  color: var(--vscode-descriptionForeground, #9d9d9d);
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  border-radius: var(--ui-r-xs) var(--ui-r-xs) 0 0;
+  cursor: pointer;
+}
+#ribbon .ribbon-tab:hover {
+  color: var(--vscode-foreground, #ccc);
+  background: var(--vscode-toolbar-hoverBackground, rgba(90, 93, 94, 0.31));
+}
+#ribbon .ribbon-tab.active {
+  color: var(--vscode-foreground, #ccc);
+  border-bottom-color: var(--vscode-focusBorder, #007fd4);
+}
+
+#ribbon-compact {
+  font: inherit;
+  font-size: var(--ui-fs-sm);
+  margin-bottom: 2px;
+  padding: 1px 8px;
+  color: var(--vscode-descriptionForeground, #9d9d9d);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--ui-r-sm);
+  cursor: pointer;
+}
+#ribbon-compact:hover {
+  background: var(--vscode-toolbar-hoverBackground, rgba(90, 93, 94, 0.31));
+}
+#ribbon-compact[aria-pressed="true"] {
+  color: var(--vscode-foreground, #ccc);
+  border-color: var(--vscode-focusBorder, #007fd4);
+}
+
+#ribbon-row {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  align-items: stretch;
+  padding: 0 var(--ui-s-3);
+  border-top: 1px solid var(--vscode-editorWidget-border, #454545);
+}
+
+/* nowrap + overflow hidden is the contract with `planOverflow`: items that do
+ * not fit are measured, hidden and moved to the More menu, never wrapped. */
+#ribbon-groups {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  overflow: hidden;
+}
+
+#ribbon .ribbon-group {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  padding: var(--ui-s-0) var(--ui-s-2) 0;
+  border-right: 1px solid var(--vscode-editorWidget-border, #454545);
+}
+#ribbon .ribbon-group:last-child {
+  border-right: none;
+}
+#ribbon .ribbon-group[hidden] {
+  display: none;
+}
+
+#ribbon .ribbon-group-buttons {
+  flex: 1 1 auto;
+  display: flex;
+  align-items: stretch;
+  gap: var(--ui-s-0);
+}
+
+#ribbon .ribbon-group-title {
+  flex: 0 0 auto;
+  text-align: center;
+  font-size: var(--ui-fs-micro);
+  line-height: 14px;
+  color: var(--vscode-descriptionForeground, #9d9d9d);
+  white-space: nowrap;
+}
+
+#ribbon .ribbon-btn {
+  flex: 0 0 auto;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-start;
+  gap: var(--ui-s-0);
+  min-width: 46px;
+  max-width: 78px;
+  padding: 3px 4px;
+  font: inherit;
+  font-size: var(--ui-fs-label);
+  line-height: 1.2;
+  color: inherit;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--ui-r-sm);
+  cursor: pointer;
+}
+#ribbon .ribbon-btn[hidden] {
+  display: none;
+}
+#ribbon .ribbon-btn:hover:not(:disabled) {
+  background: var(--vscode-toolbar-hoverBackground, rgba(90, 93, 94, 0.31));
+}
+#ribbon .ribbon-btn:disabled,
+#ribbon .ribbon-more-item:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+/* Pressed = the target's mode is on, or the op's form is open. Same idiom as
+ * `#toolbar .tb-menu.active`; the label does not say which mode is live. */
+#ribbon .ribbon-btn.active {
+  background: var(--vscode-inputValidation-infoBackground, #063b49);
+  border-color: var(--vscode-focusBorder, #007fd4);
+}
+
+#ribbon .ribbon-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  font-size: 24px;
+  line-height: 1;
+}
+#ribbon .ribbon-icon svg {
+  width: 1em;
+  height: 1em;
+}
+
+#ribbon .ribbon-label {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Compact: icons only. The name stays on `title` and `aria-label`. Group
+ * titles go too, so the strip is one short row. */
+body.ribbon-compact #ribbon .ribbon-btn .ribbon-label,
+body.ribbon-compact #ribbon .ribbon-group-title {
+  display: none;
+}
+body.ribbon-compact #ribbon .ribbon-btn {
+  min-width: 0;
+  padding: 3px 5px;
+}
+/* The overflow rows keep their labels in compact mode: a menu of bare icons is unreadable. */
+body.ribbon-compact #ribbon .ribbon-more-item .ribbon-label {
+  display: inline;
+}
+
+/* The More menu. Right-anchored: the trigger is at the strip's right edge. */
+#ribbon-more-wrap {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  padding-left: var(--ui-s-2);
+}
+#ribbon-more-wrap[hidden] {
+  display: none;
+}
+#ribbon-more {
+  font: inherit;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--ui-s-1);
+  padding: 4px 8px;
+  color: var(--vscode-foreground, #ccc);
+  background: transparent;
+  border: 1px solid var(--vscode-editorWidget-border, #454545);
+  border-radius: var(--ui-r-sm);
+  cursor: pointer;
+}
+#ribbon-more:hover,
+#ribbon-more[aria-expanded="true"] {
+  background: var(--vscode-toolbar-hoverBackground, rgba(90, 93, 94, 0.31));
+}
+#ribbon-more-dropdown {
+  right: 0;
+  max-height: 60vh;
+  overflow-y: auto;
+}
+#ribbon-more-dropdown.hidden {
+  display: none;
+}
+#ribbon .ribbon-more-head {
+  padding: 6px 12px 2px;
+  font-size: var(--ui-fs-micro);
+  text-transform: uppercase;
+  letter-spacing: var(--ui-track-caps);
+  color: var(--vscode-descriptionForeground, #9d9d9d);
+}
+#ribbon .ribbon-more-item {
+  font: inherit;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 12px;
+  color: inherit;
+  background: transparent;
+  border: none;
+  border-radius: var(--ui-r-xs);
+  text-align: left;
+  cursor: pointer;
+}
+#ribbon .ribbon-more-item .ribbon-icon {
+  width: 18px;
+  height: 18px;
+  font-size: 18px;
+}
+#ribbon .ribbon-more-item:hover:not(:disabled) {
+  background: var(--vscode-menu-selectionBackground, var(--vscode-list-activeSelectionBackground, #094771));
+  color: var(--vscode-menu-selectionForeground, var(--vscode-list-activeSelectionForeground, #fff));
+}
+#ribbon .ribbon-more-item.active {
+  font-weight: 600;
+}
+
+/* The Edits panel's op button grid sits behind a toggle once the ribbon covers
+ * it. Hides the tab rows and the grids; the parameter form (`#edits-params`)
+ * and the history stay. No `!important`: the panel only ever sets inline
+ * display to "" or "none", so this class rule wins whenever it should. */
+#edits-panel.grid-collapsed .edits-tabs,
+#edits-panel.grid-collapsed .edits-subtabs,
+#edits-panel.grid-collapsed .edits-tab-content {
+  display: none;
+}
+#edits-grid-toggle[aria-pressed="true"] {
+  color: var(--vscode-foreground, #ccc);
+  background: var(--vscode-toolbar-hoverBackground, rgba(90, 93, 94, 0.31));
+}

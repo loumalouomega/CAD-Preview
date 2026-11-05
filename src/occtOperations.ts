@@ -1,3 +1,4 @@
+import { loopSelfIntersects } from "./parametricCurve";
 import type { EditOp, Vec3, OpOutcome, OutcomeFail, RegionPick } from "./editOps";
 import { TOPOLOGY_CHANGING_OPS, COINCIDENT_CURVE_KINDS, curveEndpointSlots, getVec3Slot, setVec3Slot } from "./editOps";
 import type { OpBucket } from "./opBuckets";
@@ -237,6 +238,11 @@ export function applyEditsBRep(oc: any, baseShape: any, ops: EditOp[], cleanup: 
     const op = ops[index];
     const before = shape;
     const outcome: OpOutcome = { index, kind: op.op, applied: true };
+    if (op.suppressed) {
+      // History "suppress": the stored op stays, replay passes the shape through.
+      outcomes?.push({ index, kind: op.op, applied: false, suppressed: true, note: "suppressed" });
+      continue;
+    }
     // First `fail` call wins for this op; every helper calls it immediately
     // before returning the unmodified shape at a skip site.
     const fail: OutcomeFail = (diagnostic, hint) => {
@@ -512,6 +518,20 @@ export function applyOneOp(oc: any, shape: any, op: EditOp, cleanup: Array<{ del
     case "addEllipseArc":
     case "addHelix":
       return addWireframePrimitive(oc, shape, op, cleanup, fail, guideCollector, pointRefSink);
+    case "addParametricCurve": {
+      // Drawn from the cached samples `resolveEditOps` refreshed; the existing
+      // spline/polyline builders do the OCCT work.
+      if (!op.points) {
+        fail?.("addParametricCurve has no evaluated samples", "Resolve the op against the document variables first (apply_edit_ops and load do this); check its x/y/z expressions.");
+        return shape;
+      }
+      const close = op.close === true;
+      const plain: EditOp = op.as === "polyline"
+        ? { op: "addPolyline", points: op.points, closed: op.closed === true && !close, ...(op.guide ? { guide: true } : {}) }
+        : { op: "addSpline", points: op.points, ...(op.guide ? { guide: true } : {}) };
+      if (!close) return addWireframePrimitive(oc, shape, plain, cleanup, fail, guideCollector, pointRefSink);
+      return addClosedParametricCurve(oc, shape, op.points, plain, cleanup, fail, guideCollector, pointRefSink);
+    }
     case "addSurfaceFromLines":
       return addSurfaceFromLines(oc, shape, op, cleanup, fail, guideCollector);
     case "addSurfaceFilling":
@@ -3975,6 +3995,55 @@ function edgeFromCurveHandle(oc: any, handle: any, cleanup: Array<{ delete(): vo
 }
 
 /**
+ * `addParametricCurve { close: true }`: draws the curve with the existing
+ * spline/polyline builder, adds the straight closing segment from its last
+ * sample back to its first (skipped when the curve already ends where it
+ * starts), then builds the planar face the two bound through
+ * `buildSurfaceFromLines` — the same recipe as `addSurfaceFromLines`, with the
+ * minimum edge count relaxed (a spline plus one segment is two edges). The
+ * new edges are the tail of the edge enumeration (appended compounds keep
+ * order), so their ids are known without a lookup. A face that will not build
+ * leaves the curve (and closing segment) drawn and reports through `fail`.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function addClosedParametricCurve(oc: any, shape: any, points: Vec3[], curveOp: EditOp, cleanup: Array<{ delete(): void }>, fail?: OutcomeFail, guideCollector?: GuideCollector, pointRefSink?: Array<Omit<PointRefResolution, "opIndex">>): any {
+  const before = collectEdges(oc, shape, cleanup).length;
+  let out = addWireframePrimitive(oc, shape, curveOp, cleanup, fail, guideCollector, pointRefSink);
+  if (out === shape) return shape;
+  const first = points[0];
+  const last = points[points.length - 1];
+  const gap = Math.hypot(first[0] - last[0], first[1] - last[1], first[2] - last[2]);
+  if (gap > 1e-7) {
+    const withLine = addWireframePrimitive(oc, out, { op: "addLine", start: last, end: first }, cleanup, fail, guideCollector, pointRefSink);
+    if (withLine === out) return out;
+    out = withLine;
+  }
+  if (loopSelfIntersects(points)) {
+    fail?.(
+      "the curve touches or crosses its own closing segment, so it bounds regions of opposite winding (zero net area)",
+      "close a single lobe instead (narrow sMin..sMax so the curve stays on one side of the segment from its end back to its start); the open curve and segment are still drawn",
+    );
+    return out;
+  }
+  const after = collectEdges(oc, out, cleanup).length;
+  const edges: string[] = [];
+  for (let i = before; i < after; i++) edges.push(`edge-${i}`);
+  const face = buildSurfaceFromLines(oc, out, { op: "addSurfaceFromLines", edges }, cleanup, fail, 1);
+  if (!face) {
+    fail?.("the closed parametric curve did not bound a face", "the curve may cross itself or its closing segment; the open curve and segment are still drawn");
+    return out;
+  }
+  const comp = new oc.TopoDS_Compound();
+  cleanup.push(comp);
+  const builder = new oc.BRep_Builder();
+  cleanup.push(builder);
+  builder.MakeCompound(comp);
+  builder.Add(comp, out);
+  builder.Add(comp, face);
+  return comp;
+}
+
+/**
  * Builds a standalone flat face from the wire(s) formed by the selected edges
  * and **appends** it — same non-destructive `compound(existing shape + new
  * face)` pattern as {@link addProfile}, and it likewise benefits from the
@@ -4145,13 +4214,13 @@ const COPLANAR_ABS_FLOOR = 1e-7;
  * `addSurfaceFromLines`'s doc comment for the multi-loop path this covers).
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function buildSurfaceFromLines(oc: any, shape: any, op: Extract<EditOp, { op: "addSurfaceFromLines" }>, cleanup: Array<{ delete(): void }>, fail?: OutcomeFail): any {
+function buildSurfaceFromLines(oc: any, shape: any, op: Extract<EditOp, { op: "addSurfaceFromLines" }>, cleanup: Array<{ delete(): void }>, fail?: OutcomeFail, minEdges = 3): any {
   const keep = <T extends { delete(): void }>(h: T): T => { cleanup.push(h); return h; };
   try {
     const edges = collectEdges(oc, shape, cleanup);
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const picked = op.edges.map((id) => edges[edgeIndex(id)]).filter((e): e is any => e != null);
-    if (picked.length < 3) {
+    if (picked.length < minEdges) {
       fail?.("addSurfaceFromLines needs at least 3 edge-N ids", "a closed loop needs at least 3 edges");
       return null;
     }

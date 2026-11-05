@@ -1,10 +1,15 @@
-% Op icon: sphere — filled circle with equator + meridian ellipses (globe hint).
+% Op icon: sphere (two-tone) - neutral globe, accent polar cap.
 \documentclass[tikz,border=2mm]{standalone}
 \usetikzlibrary{arrows.meta,calc,shapes.geometric}
 \begin{document}
 \begin{tikzpicture}[line width=1.3pt, line cap=round, line join=round, >=Stealth, x=1mm,y=1mm]
-  \draw[thick, fill=gray!15] (0,0) circle (10);
+  \fill[gray!65] (0,0) circle (10);
+  \begin{scope}
+    \clip (0,0) circle (10);
+    \fill[blue] (-10,4) .. controls (-4,1) and (4,1) .. (10,4) -- (10,12) -- (-12,12) -- cycle;
+    \draw[thick] (-10,4) .. controls (-4,1) and (4,1) .. (10,4);
+  \end{scope}
   \draw[dashed] (0,0) ellipse (10 and 3);
-  \draw[dashed] (0,0) ellipse (3 and 10);
+  \draw[thick] (0,0) circle (10);
 \end{tikzpicture}
 \end{document}

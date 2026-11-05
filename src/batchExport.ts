@@ -25,6 +25,8 @@ export interface BatchRow {
   editsBaked: number;
   error?: string;
   warnings: string[];
+  /** Set when the row was exported under a named configuration (design table). */
+  configuration?: string;
 }
 
 export interface BatchSummary {
@@ -36,11 +38,15 @@ export interface BatchSummary {
 }
 
 /** `{stem}` = input basename without its (possibly compound) extension, `{ext}` = target extension, `{name}` = full basename. */
-export function outputNameFor(inputPath: string, ext: string, naming = "{stem}.{ext}"): string {
+export function outputNameFor(inputPath: string, ext: string, naming = "{stem}.{ext}", configSlug?: string): string {
   const base = path.basename(inputPath);
   const dot = base.indexOf(".");
   const stem = dot > 0 ? base.slice(0, dot) : base;
-  const name = naming.replace(/\{stem\}/g, stem).replace(/\{ext\}/g, ext).replace(/\{name\}/g, base);
+  const name = naming
+    .replace(/\{stem\}/g, stem)
+    .replace(/\{ext\}/g, ext)
+    .replace(/\{name\}/g, base)
+    .replace(/\{config\}/g, configSlug ?? "");
   if (name.includes("/") || name.includes("\\") || name === "" || name === "." || name === "..") {
     throw new Error(`The naming pattern "${naming}" must produce a bare file name (got "${name}").`);
   }
@@ -83,6 +89,8 @@ export interface BatchRunOptions {
   /** Target file extension for naming (e.g. "step", "svg"). */
   ext: string;
   naming?: string;
+  /** Design-table mode: the configuration every row in this run is exported under. `{config}` in `naming` becomes its file-name slug. */
+  configuration?: { name: string; slug: string };
   onCollision?: CollisionPolicy;
   exists: (p: string) => boolean;
   /** Exports one input to `outPath`; returns written paths, baked-op count and warnings. Throw to fail the row. */
@@ -109,7 +117,7 @@ export async function runBatch(inputs: readonly string[], options: BatchRunOptio
     }
     let row: BatchRow;
     try {
-      const desired = path.join(options.outDir, outputNameFor(input, options.ext, options.naming));
+      const desired = path.join(options.outDir, outputNameFor(input, options.ext, options.naming, options.configuration?.slug));
       const resolved = resolveCollision(desired, policy, options.exists, inputSet, taken);
       if (!resolved.path) {
         row = { input, status: "skipped", outputs: [], editsBaked: 0, warnings: [], error: resolved.reason };
@@ -151,6 +159,7 @@ export async function runBatch(inputs: readonly string[], options: BatchRunOptio
     } catch (err) {
       row = { input, status: "failed", outputs: [], editsBaked: 0, warnings: [], error: ((err as Error)?.message ?? String(err)).split("\n")[0] };
     }
+    if (options.configuration) row = { ...row, configuration: options.configuration.name };
     rows.push(row);
     options.onProgress?.(i + 1, inputs.length, row);
   }
@@ -161,8 +170,14 @@ export async function runBatch(inputs: readonly string[], options: BatchRunOptio
 /** Spreadsheet-ready TSV of the rows. */
 export function batchTsv(rows: readonly BatchRow[]): string {
   const clean = (s: string) => s.replace(/[\t\n\r]/g, " ");
-  const lines = ["input\tstatus\toutputs\tedits_baked\terror\twarnings"];
-  for (const r of rows) lines.push([r.input, r.status, r.outputs.join(";"), String(r.editsBaked), r.error ?? "", r.warnings.join(" | ")].map(clean).join("\t"));
+  // The configuration column exists only when a row carries one, so a plain
+  // batch keeps its exact previous table.
+  const withConfig = rows.some((r) => r.configuration !== undefined);
+  const lines = [`input\t${withConfig ? "configuration\t" : ""}status\toutputs\tedits_baked\terror\twarnings`];
+  for (const r of rows) {
+    const cells = [r.input, ...(withConfig ? [r.configuration ?? ""] : []), r.status, r.outputs.join(";"), String(r.editsBaked), r.error ?? "", r.warnings.join(" | ")];
+    lines.push(cells.map(clean).join("\t"));
+  }
   return lines.join("\n") + "\n";
 }
 
@@ -172,7 +187,7 @@ export function batchReportHtml(rows: readonly BatchRow[], summary: BatchSummary
   const body = rows
     .map((r) => {
       const detail = [r.error ?? "", ...r.warnings.map((w) => `⚠ ${w}`)].filter(Boolean).join("<br/>");
-      return `<tr class="st-${r.status}">${cell(path.basename(r.input))}<td class="status">${escapeHtml(r.status)}</td>${cell(
+      return `<tr class="st-${r.status}">${cell(path.basename(r.input) + (r.configuration ? ` [${r.configuration}]` : ""))}<td class="status">${escapeHtml(r.status)}</td>${cell(
         r.outputs.map((o) => path.basename(o)).join(", ")
       )}${cell(String(r.editsBaked))}<td>${detail
         .split("<br/>")

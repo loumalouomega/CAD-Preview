@@ -32,6 +32,7 @@ import {
 import type { EntityType, PaneViewState } from "../protocol";
 import type { SelectedEntity } from "./selection";
 import type { UpAxis } from "../viewerDefaults";
+import { NAVIGATION_PRESETS, type MouseAction, type NavigationPreset } from "../navigationPresets";
 import { unionSelectionBounds, padBoxToMinSize } from "./selectionBounds";
 import { applyPreviewTint } from "./opPreviewBands";
 import { createRenderScheduler, type FrameTick } from "./renderScheduler";
@@ -43,6 +44,8 @@ import { applyNativeColor, copyNativeColor, isNativeColor, nativeBaseHex } from 
  * (`palette.ts`); resolved per call so a theme change takes effect on the next
  * `renderSelection()`, which `main.ts`'s `refreshColors()` already runs. */
 const selectionColor = (): number => paletteColor("accent");
+/** What a click on the hovered entity would do: add it to the selection (accent) or remove it (the fail hue). */
+const hoverIntentColor = (intent: "add" | "remove"): number => paletteColor(intent === "add" ? "accent" : "accentFail");
 /**
  * How strongly a selected FACE glows in the accent colour. Full strength (1)
  * added a whole blue channel on top of the face's own colour, so an orange
@@ -193,6 +196,10 @@ export class Viewer {
   private hoverCandidates: PickResult[] = [];
   private hoverSignature = "";
   private hoverStep = 0;
+  /** Decides, per hovered entity, whether a click would add or remove it (supplied by main.ts from the live selection). */
+  private hoverIntent: ((r: PickResult) => "add" | "remove") | null = null;
+  /** Undo closures for the transient hover tint; empty when nothing is tinted. */
+  private hoverTintRestore: Array<() => void> = [];
   private onCandidateStep: ((index: number, count: number) => void) | null = null;
   private lastHoverAt = 0;
   /** Right-click reporting; `null` until `setContextMenuHandler` registers one. */
@@ -448,6 +455,7 @@ export class Viewer {
     // autosave — see `onViewChanged`'s doc comment.
     for (const cb of this.viewChangeCallbacks) controls.addEventListener("change", cb);
     const pane: PaneState = { persp, ortho, active: persp, controls, orthoHalfHeight };
+    this.applyNavigationPreset(pane);
     this.applySpeedCompensation(pane, rect);
     return pane;
   }
@@ -739,12 +747,27 @@ export class Viewer {
    * Only ever *initial* state — the toolbar Grid toggle remains a per-session
    * runtime override on top of this, never persisted.
    */
-  applyDefaults(d: { background: string; showGridAndAxes: boolean; upAxis: UpAxis }): void {
+  applyDefaults(d: { background: string; showGridAndAxes: boolean; upAxis: UpAxis; navigationPreset?: NavigationPreset }): void {
+    this.navigationPreset = d.navigationPreset ?? "default";
+    for (const pane of this.panes) this.applyNavigationPreset(pane);
     this.scene.background = new THREE.Color(d.background);
     this.grid.visible = d.showGridAndAxes;
     this.axes.visible = d.showGridAndAxes;
     this.upAxis = d.upAxis;
     this.requestRender();
+  }
+
+  private navigationPreset: NavigationPreset = "default";
+
+  /** Maps the active preset's buttons onto one pane's `OrbitControls` (-1 = no action). */
+  private applyNavigationPreset(pane: PaneState): void {
+    const m = NAVIGATION_PRESETS[this.navigationPreset];
+    const act = (a: MouseAction): number => (a === "rotate" ? THREE.MOUSE.ROTATE : a === "dolly" ? THREE.MOUSE.DOLLY : a === "pan" ? THREE.MOUSE.PAN : -1);
+    (pane.controls as unknown as { mouseButtons: Record<string, number> }).mouseButtons = {
+      LEFT: act(m.left),
+      MIDDLE: act(m.middle),
+      RIGHT: act(m.right),
+    };
   }
 
   private clearModel(): void {
@@ -1778,6 +1801,7 @@ export class Viewer {
   /** Clears only the ENTITY hover (tooltip). Used where a coordinate has already
    * been reported for this move and must not be immediately undone. */
   private clearEntityHover = (): void => {
+    this.clearHoverTint();
     if (this.lastHoverKey !== null) {
       this.lastHoverKey = null;
       this.onEntityHover?.(null);
@@ -1792,8 +1816,65 @@ export class Viewer {
     const key = `${r.entityType}:${r.entityId}`;
     if (key !== this.lastHoverKey) {
       this.lastHoverKey = key;
+      this.applyHoverTint(r);
       this.onEntityHover?.(r);
     }
+  }
+
+  /** Registers the add-vs-remove decision that colours the hovered entity (`null` = no tint). */
+  setHoverIntentResolver(fn: ((r: PickResult) => "add" | "remove") | null): void {
+    this.hoverIntent = fn;
+    this.clearHoverTint();
+  }
+
+  /** Undoes the hover tint, restoring exactly what it overwrote. */
+  private clearHoverTint(): void {
+    if (this.hoverTintRestore.length === 0) return;
+    for (const undo of this.hoverTintRestore) undo();
+    this.hoverTintRestore = [];
+    this.requestRender();
+  }
+
+  /**
+   * Tints the hovered entity by what a click would do. Transient and
+   * restore-based: it never touches `baseColor`, and `renderSelection` drops
+   * it before repainting so a selection change can never be undone by a stale
+   * restore.
+   */
+  private applyHoverTint(r: PickResult): void {
+    this.clearHoverTint();
+    if (!this.hoverIntent || !this.model) return;
+    const tint = hoverIntentColor(this.hoverIntent(r));
+    this.model.traverse((obj) => {
+      const ud = obj.userData;
+      if (obj instanceof THREE.Mesh && ud.entityType === "surface" && (r.entityType === "volume" ? ud.groupId === r.entityId : r.entityType === "surface" && ud.entityId === r.entityId)) {
+        const mat = obj.material as THREE.Material;
+        if ("emissive" in mat) {
+          const std = mat as THREE.MeshStandardMaterial;
+          const hex = std.emissive.getHex();
+          const intensity = std.emissiveIntensity;
+          std.emissive.setHex(tint);
+          std.emissiveIntensity = SELECTION_EMISSIVE;
+          this.hoverTintRestore.push(() => { std.emissive.setHex(hex); std.emissiveIntensity = intensity; });
+        } else {
+          const basic = mat as THREE.MeshBasicMaterial;
+          const prev = basic.color.getHex();
+          basic.color.setHex((ud.baseColor as number | undefined) ?? defaultFaceColor()).lerp(new THREE.Color(tint), SELECTION_FLAT_MIX);
+          this.hoverTintRestore.push(() => basic.color.setHex(prev));
+        }
+      } else if (obj instanceof THREE.Line && r.entityType === "line" && ud.entityType === "line" && ud.entityId === r.entityId) {
+        const mat = obj.material as THREE.LineBasicMaterial;
+        const prev = mat.color.getHex();
+        mat.color.setHex(tint);
+        this.hoverTintRestore.push(() => mat.color.setHex(prev));
+      } else if (obj instanceof THREE.Sprite && r.entityType === "point" && ud.entityType === "point" && ud.entityId === r.entityId) {
+        const mat = obj.material as THREE.SpriteMaterial;
+        const prev = mat.color.getHex();
+        mat.color.setHex(tint);
+        this.hoverTintRestore.push(() => mat.color.setHex(prev));
+      }
+    });
+    this.requestRender();
   }
 
   /** Registers the "k of n under the cursor" consumer (`0, 0` = nothing to step). */
@@ -2087,6 +2168,10 @@ export class Viewer {
 
   /** Highlights the transiently-selected entities over their base colours. */
   renderSelection(selected: SelectedEntity[]): void {
+    // The tint's restore closures hold pre-selection values: drop them unrun
+    // (every material is repainted below) and re-derive the tint afterwards.
+    const hovered = this.lastHoverKey !== null ? this.hoverCandidates[this.hoverStep] : undefined;
+    this.hoverTintRestore = [];
     const keys = new Set(selected.map((e) => `${e.entityType}:${e.entityId}`));
     this.model?.traverse((obj) => {
       const ud = obj.userData;
@@ -2115,6 +2200,7 @@ export class Viewer {
         mat.color.setHex(keys.has(`point:${ud.entityId}`) ? selectionColor() : base);
       }
     });
+    if (hovered) this.applyHoverTint(hovered);
     this.requestRender();
   }
 

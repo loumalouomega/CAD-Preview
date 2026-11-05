@@ -1,9 +1,11 @@
-% Op icon: chamfer — sharp corner ghosted dashed, beveled edge overlaid solid.
+% Op icon: chamfer (two-tone) - the sharp corner cut off (accent), bevelled body neutral.
 \documentclass[tikz,border=2mm]{standalone}
 \usetikzlibrary{arrows.meta,calc,shapes.geometric}
 \begin{document}
 \begin{tikzpicture}[line width=1.3pt, line cap=round, line join=round, >=Stealth, x=1mm,y=1mm]
-  \draw[dashed] (-10,-10) -- (-10,10) -- (10,10);
-  \draw[very thick] (-10,-10) -- (-10,2) -- (2,10) -- (10,10);
+  \fill[blue] (-10,2) -- (-2,10) -- (-10,10) -- cycle;
+  \draw[dashed] (-10,2) -- (-10,10) -- (-2,10);
+  \draw[thick, fill=gray!70] (-10,-10) -- (10,-10) -- (10,10) -- (-2,10) -- (-10,2) -- cycle;
+  \draw[very thick] (-10,2) -- (-2,10);
 \end{tikzpicture}
 \end{document}

@@ -1,9 +1,11 @@
-% Op icon: boolean union — two overlapping circles, both filled solid.
+% Op icon: boolean union (two-tone) - the joined result is the accent.
 \documentclass[tikz,border=2mm]{standalone}
 \usetikzlibrary{arrows.meta,calc,shapes.geometric}
 \begin{document}
 \begin{tikzpicture}[line width=1.3pt, line cap=round, line join=round, >=Stealth, x=1mm,y=1mm]
-  \filldraw[fill=gray!25] (-3,0) circle (7);
-  \filldraw[fill=gray!25] (3,0) circle (7);
+  \fill[blue] (-3,0) circle (7);
+  \fill[blue] (3,0) circle (7);
+  \draw[thick] (-3,0) circle (7);
+  \draw[thick] (3,0) circle (7);
 \end{tikzpicture}
 \end{document}

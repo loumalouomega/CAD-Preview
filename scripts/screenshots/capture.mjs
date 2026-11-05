@@ -132,6 +132,23 @@ async function heroSelection(page) {
   await sleep(200);
 }
 
+/** The Advanced group ships collapsed; open it so its panels are visible. */
+async function openAdvanced(page) {
+  const collapsed = await page.evaluate(() => document.getElementById("advanced-group")?.classList.contains("collapsed") ?? false);
+  if (collapsed) await page.click("#advanced-header > .panel-chevron");
+  await sleep(150);
+}
+
+/** Answer the panel's last `requestType` message with a fixture, keyed to its requestId. */
+async function answer(page, requestType, fixtureName) {
+  const requestId = await page.waitForFunction((t) => {
+    const req = (window.__sent || []).findLast((m) => m.type === t);
+    return req ? req.requestId : false;
+  }, requestType).then((h) => h.jsonValue());
+  await post(page, { ...fixture(fixtureName), requestId });
+  await sleep(250);
+}
+
 // ── Shot list ────────────────────────────────────────────────────────────
 async function populateMmg(page) {
   // A new MED document has no bull.stp tree/op history. Hydrate the same
@@ -158,6 +175,22 @@ const SHOTS = [
     target: {}, // full UI with model + panels
   },
   { file: "toolbar.png", setup: populate, target: { sel: "#toolbar" } },
+  // The ribbon command strip. At the 1360px shot width the Model tab overflows
+  // (it has 60+ buttons), so these show the real thing: the leading groups and
+  // the More button; the second shot opens the menu, which hangs below the
+  // strip over the canvas, so it needs a fixed clip with the usual silent-cut
+  // hazard: the menu is max-height 60vh (540px at 900) and scrolls past that.
+  { file: "ribbon.png", setup: populate, target: { sel: "#ribbon" } },
+  {
+    file: "ribbon-inspect.png",
+    setup: async (page) => { await populate(page); await page.click("#ribbon-tab-inspect"); await sleep(200); },
+    target: { sel: "#ribbon" },
+  },
+  {
+    file: "ribbon-more.png",
+    setup: async (page) => { await populate(page); await page.click("#ribbon-more"); await sleep(200); },
+    target: { clip: { x: 840, y: 35, width: 520, height: 600 } },
+  },
   {
     file: "file-menu.png",
     setup: async (page) => { await populate(page); await page.click("#file-menu"); await sleep(150); },
@@ -167,7 +200,7 @@ const SHOTS = [
     // with Import/Export DXF (285 → 342), one more with Export Technical
     // Drawing (342 → 371), and one more plus a separator with New Blank Model
     // (371 → 410), and one more with Export Drawing Sheet (410 → 439).
-    target: { clip: { x: 0, y: 0, width: 320, height: 439 } },
+    target: { clip: { x: 0, y: 0, width: 320, height: 446 } },
   },
   // The toolbar's four dropdowns. `clip` rather than `sel: "#toolbar"` — a
   // locator screenshot clips to the element box, which would cut off the
@@ -187,7 +220,11 @@ const SHOTS = [
     // (470→500). The trigger chevrons became icons (chrome redesign, pass 3),
     // which widened the toolbar and pushed the View panel's left edge to
     // x=766.9 — the clip went 770→750.
-    target: { clip: { x: 750, y: 30, width: 610, height: 500 } },
+    // The ribbon strip sits between the menu bar and the toolbar, which pushed
+    // the toolbar (and so every panel hanging off it) down by `--ribbon-h`
+    // (89px with labels): y 30 -> 119, same height. The tallest panel still
+    // ends well inside it; re-check when a menu grows a row.
+    target: { clip: { x: 750, y: 119, width: 610, height: 500 } },
   })),
   { file: "view-controls.png", setup: populate, target: { sel: "#view-controls" } },
   {
@@ -361,10 +398,89 @@ const SHOTS = [
     },
     target: { sel: "#surface-tools-panel" },
   },
+  // The next three answer a real panel click with the real host report from
+  // fixtures-entry.ts (mass-properties / brep-health / primitives), keyed to the
+  // requestId the click generated, like the Mesh Health and Surface Tools shots.
+  {
+    file: "mass-properties.png",
+    setup: async (page) => {
+      await populate(page);
+      await openAdvanced(page);
+      await page.click("#mass-refresh");
+      await answer(page, "massPropertiesRequest", "mass-properties");
+    },
+    target: { sel: "#mass-panel" },
+  },
+  {
+    file: "brep-health.png",
+    setup: async (page) => {
+      await populate(page);
+      await openAdvanced(page);
+      await page.click("#brep-health-check");
+      await answer(page, "brepHealthRequest", "brep-health");
+    },
+    target: { sel: "#brep-health-panel" },
+  },
+  {
+    file: "primitives.png",
+    setup: async (page) => {
+      await populate(page);
+      await openAdvanced(page);
+      await page.click("#primitives-recognize");
+      await answer(page, "primitiveRecognizeRequest", "primitives");
+    },
+    target: { sel: "#primitives-panel" },
+  },
+  {
+    // Layers: the sidebar starts with no layers; post two realistic ones (one
+    // locked, one hidden) over bull.stp's real face/edge ids.
+    file: "layers-panel.png",
+    setup: async (page) => {
+      await populate(page);
+      await post(page, {
+        type: "layers",
+        nextId: 3,
+        layers: [
+          { id: "layer-1", name: "Construction", color: "#3b82f6", visible: true, locked: true, volumes: [], surfaces: ["face-0", "face-1"], lines: [], points: [] },
+          { id: "layer-2", name: "Centre lines", color: "#f59e0b", visible: false, locked: false, volumes: [], surfaces: [], lines: ["edge-0", "edge-1", "edge-2"], points: [] },
+        ],
+      });
+      await sleep(250);
+    },
+    target: { sel: "#layers-panel" },
+  },
+  {
+    // Configurations (design table): two named override sets over the two
+    // shipped variables, "Tall" active.
+    file: "configurations.png",
+    setup: async (page) => {
+      // Tall viewport: the section lives in the Edits scroller, which clips it otherwise.
+      await page.setViewportSize({ width: 1360, height: 1400 });
+      await populate(page);
+      const edits = fixture("edits");
+      await post(page, {
+        ...edits,
+        configurations: [
+          { name: "Short", overrides: { L: "12" } },
+          { name: "Tall", overrides: { L: "30", H: "L / 3" } },
+        ],
+        activeConfiguration: "Tall",
+      });
+      await sleep(250);
+      await page.click("#config-toggle");
+      await sleep(250);
+    },
+    target: { sel: "#config-section" },
+  },
   {
     file: "edits-geometry.png",
     setup: async (page) => {
+      // The ribbon took 89px of height from the sidebar; give it back so the
+      // panel is not squeezed below the form (an element shot clips to its box).
+      await page.setViewportSize({ width: 1360, height: 989 });
       await populate(page);
+      // The op button grid is collapsed behind a toggle now the ribbon covers it.
+      await page.click("#edits-grid-toggle");
       await page.locator(".edits-tab", { hasText: "Geometry" }).click();
       await page.locator(".edits-subtab", { hasText: "3D" }).click();
       await page.locator(".op-btn", { hasText: "Box" }).first().click();
@@ -375,7 +491,9 @@ const SHOTS = [
   {
     file: "edits-edit.png",
     setup: async (page) => {
+      await page.setViewportSize({ width: 1360, height: 989 });
       await populate(page);
+      await page.click("#edits-grid-toggle");
       await page.locator(".edits-tab", { hasText: "Edit" }).click();
       await sleep(200);
     },

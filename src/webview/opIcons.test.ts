@@ -34,6 +34,24 @@ describe("OP_ICONS", () => {
     }
   });
 
+  // Keep in step with the "Two-tone op icons" list in icons/README.md.
+  const TWO_TONE = [
+    "addBox", "addCylinder", "addSphere", "extrude", "revolve", "fillet", "chamfer", "addHole", "shell",
+    "booleanUnion", "booleanSubtract", "booleanIntersect", "mirror", "patternLinear", "patternCircular",
+    "translate", "rotate",
+  ];
+
+  it("exactly the documented two-tone icons use the accent variable, and none leaves a literal blue", () => {
+    const withAccent = Object.entries(OP_ICONS)
+      .filter(([, svg]) => svg.includes("var(--ui-icon-accent, currentColor)"))
+      .map(([id]) => id)
+      .sort();
+    expect(withAccent).toEqual([...TWO_TONE].sort());
+    for (const [id, svg] of Object.entries(OP_ICONS)) {
+      expect(svg, `${id} should not contain a literal blue`).not.toMatch(/rgb\([\d.]+%, [\d.]+%, 100%\)/);
+    }
+  });
+
   it("never emits a duplicate fill-opacity attribute on the same path", () => {
     for (const [id, svg] of Object.entries(OP_ICONS)) {
       for (const path of svg.match(/<path[^/]*\/>/g) ?? []) {

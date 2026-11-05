@@ -4,6 +4,21 @@ import type { EditOp } from "../editOps";
 
 const T = (x: number): EditOp => ({ op: "translate", targets: ["solid-0"], vec: [x, 0, 0] });
 
+describe("EditsModel.setState", () => {
+  it("suppresses, relabels, refuses the save point, and no-ops when unchanged", () => {
+    const onChange = vi.fn();
+    const m = new EditsModel(onChange);
+    m.load([T(1), T(2)], 1);
+    expect(m.setState(0, { suppressed: true })).toBe(false); // baked
+    expect(m.setState(1, { suppressed: true, label: " Slide " })).toBe(true);
+    expect(m.list()[1]).toMatchObject({ suppressed: true, label: "Slide" });
+    expect(onChange).toHaveBeenCalledTimes(1);
+    expect(m.setState(1, { suppressed: true })).toBe(false);
+    expect(m.setState(1, { suppressed: false, label: null })).toBe(true);
+    expect(m.list()[1]).toEqual(T(2));
+  });
+});
+
 describe("EditsModel", () => {
   it("push appends in order and fires onChange", () => {
     const onChange = vi.fn();
@@ -278,5 +293,17 @@ describe("EditsModel save point (Tier 0 Phase 2)", () => {
     expect(m.undo()).toBe(true); // pops the pushed tail op
     expect(m.redo()).toBe(true);
     expect(m.list().map((o) => (o as { vec: number[] }).vec[0])).toEqual([1, 2, 9]);
+  });
+});
+
+describe("EditsModel.replaceAt", () => {
+  it("replaces in place, clears redo, and refuses inside the save point", () => {
+    const m = new EditsModel(() => {});
+    const box = (x: number) => ({ op: "addBox", center: [0, 0, 0], size: [x, 1, 1] }) as never;
+    m.load([box(1), box(2), box(3)], 1);
+    expect(m.replaceAt(0, box(9))).toBe(false);
+    expect(m.replaceAt(5, box(9))).toBe(false);
+    expect(m.replaceAt(2, box(7))).toBe(true);
+    expect((m.list()[2] as unknown as { size: number[] }).size[0]).toBe(7);
   });
 });

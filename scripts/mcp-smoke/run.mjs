@@ -375,8 +375,8 @@ try {
   assert(capsText.length > 100, "resources/read cad-preview://capabilities returns JSON text");
 
   const tools = (await request("tools/list", {})).tools.map((t) => t.name);
-  assert(tools.length === 86, `tools/list exposes 86 tools (got ${tools.length}: ${tools.join(", ")})`);
-  for (const t of ["check_draft", "check_printability", "list_workspace_models", "check_interference_all", "generate_bom", "generate_hole_table", "render_ops_prefix", "check_tolerance", "inspect_meshio_fields", "pin_annotation", "import_svg", "save_mesh_preset", "list_mesh_presets", "apply_mesh_preset", "compare_mesh_refinement", "export_tessellated_stl", "estimate_mesh_budget", "analyze_passages", "measure_mesh_deviation", "save_sheet_template", "list_sheet_templates", "batch_export", "check_handoff_manifest", "generate_prep_report", "job_status", "job_cancel", "check_brep_health", "list_scad_parameters", "convert_scad", "list_layers", "set_layer", "assign_layer", "segment_mesh_surface", "fit_mesh_to_cad", "mesh_cad_surface", "check_mesh_conformity", "project_to_cad", "grow_prism_layers", "iga_sample", "iga_refine", "iga_evaluate", "check_mesh_quality"]) {
+  assert(tools.length === 95, `tools/list exposes 95 tools (got ${tools.length}: ${tools.join(", ")})`);
+  for (const t of ["check_draft", "check_printability", "list_workspace_models", "check_interference_all", "generate_bom", "generate_hole_table", "render_ops_prefix", "check_tolerance", "inspect_meshio_fields", "pin_annotation", "import_svg", "save_mesh_preset", "list_mesh_presets", "apply_mesh_preset", "compare_mesh_refinement", "export_tessellated_stl", "estimate_mesh_budget", "analyze_passages", "measure_mesh_deviation", "save_sheet_template", "list_sheet_templates", "batch_export", "check_handoff_manifest", "generate_prep_report", "job_status", "job_cancel", "check_brep_health", "list_scad_parameters", "convert_scad", "list_layers", "set_layer", "assign_layer", "segment_mesh_surface", "fit_mesh_to_cad", "mesh_cad_surface", "check_mesh_conformity", "find_mesh_intersections", "measure_mesh_thickness", "select_mesh_region", "analyze_surface_geometry", "mesh_adjacency", "register_meshes", "project_to_cad", "grow_prism_layers", "iga_sample", "iga_refine", "iga_evaluate", "check_mesh_quality", "set_configuration"]) {
     assert(tools.includes(t), `tools/list exposes ${t}`);
   }
 
@@ -2636,6 +2636,48 @@ try {
     removeState.edits.length === 1 && /addSphere/.test(JSON.stringify(removeState.edits[0])),
     `only the sphere op remains in the stack after removing the box (got: ${JSON.stringify(removeState.edits.map((e) => e.op))})`
   );
+
+  // History timeline depth: suppress/unsuppress. Own copy; box + sphere, Part on the sphere's face.
+  const suppressModel = path.join(dir, "bull-for-suppress-test.stp");
+  fs.copyFileSync(FIXTURE, suppressModel);
+  const suppressBase = await call("load_model", { path: suppressModel });
+  const suppressApplied = await call("apply_edit_ops", {
+    path: suppressModel,
+    ops: [
+      { op: "addBox", center: [bbox.max[0] + 3 * s, 0, 0], size: [s, s, s] },
+      { op: "addSphere", center: [bbox.max[0] + 6 * s, 0, 0], radius: s / 2 },
+    ],
+  });
+  const suppressSolidsFull = suppressApplied.model.solids.length;
+  assert(suppressSolidsFull === suppressBase.solids.length + 2, "box + sphere add two solids before suppression");
+  const sphereFace2 = suppressApplied.model.solids[suppressSolidsFull - 1].faceIds[0];
+  const sphereBefore2 = await call("inspect", { path: suppressModel, entityId: sphereFace2 });
+  await call("set_part", { path: suppressModel, name: "SuppressTest", surfaces: [sphereFace2] });
+  await call("set_edit_op_state", { path: suppressModel, index: 0, suppressed: true, label: "Skipped box" });
+  const suppressedState = await call("get_state", { path: suppressModel });
+  assert(suppressedState.edits[0].suppressed === true && suppressedState.edits[0].description === "Skipped box", "get_state reports suppressed + label");
+  const suppressedLoad = await call("load_model", { path: suppressModel });
+  assert(suppressedLoad.solids.length === suppressSolidsFull - 1, `a suppressed box drops one solid (got ${suppressedLoad.solids.length}, want ${suppressSolidsFull - 1})`);
+  assert(!JSON.stringify(suppressedLoad.warnings ?? []).includes("did NOT apply"), "a suppressed op raises no 'did NOT apply' warning");
+  const suppressedPart = suppressedState.parts.find((p) => p.name === "SuppressTest");
+  const sphereMid = await call("inspect", { path: suppressModel, entityId: suppressedPart.surfaces[0] });
+  assert(Math.abs(sphereMid.area - sphereBefore2.area) < 1e-6, "the Part still sits on the sphere face while the box is suppressed");
+  await call("set_edit_op_state", { path: suppressModel, index: 0, suppressed: false });
+  const unsuppressedLoad = await call("load_model", { path: suppressModel });
+  assert(unsuppressedLoad.solids.length === suppressSolidsFull, "unsuppressing restores the box solid");
+  const unsuppressedPart = (await call("get_state", { path: suppressModel })).parts.find((p) => p.name === "SuppressTest");
+  const sphereAfter2 = await call("inspect", { path: suppressModel, entityId: unsuppressedPart.surfaces[0] });
+  assert(Math.abs(sphereAfter2.area - sphereBefore2.area) < 1e-6, "the Part is back on the sphere face after unsuppress");
+
+  // Issue draft from a failure: a fillet on a nonexistent edge fails; the draft names it, redacts paths, attaches no bytes.
+  const issueReportModel = path.join(dir, "bull-for-issue-draft-test.stp");
+  fs.copyFileSync(FIXTURE, issueReportModel);
+  await call("apply_edit_ops", { path: issueReportModel, ops: [{ op: "fillet", edges: ["edge-99999"], radius: 1 }] });
+  const draft = await call("diagnostics_report", { path: issueReportModel });
+  assert(draft.opIndex === 0 && draft.opApplied === false, `diagnostics_report finds the failed op (got ${JSON.stringify([draft.opIndex, draft.opApplied])})`);
+  assert(/fillet/.test(draft.title) && /edge-99999/.test(draft.body) && /CAD Preview \d/.test(draft.body), "the draft names the op, its parameters and the extension version");
+  assert(!draft.body.includes(dir) && !draft.body.includes(os.homedir()), "the draft contains neither the working directory nor the home directory");
+  assert(/bull-for-issue-draft-test\.stp/.test(draft.body), "the model is named by basename only");
 
   // The pure-TRUNCATION path (remove_edit_op on the LAST index — structurally
   // identical to what an interactive "undo" does, since there's no separate
@@ -5537,6 +5579,22 @@ try {
       Math.abs(cadEval.normals[0] - 1) < 1e-9 && Math.abs(cadEval.normals[1]) < 1e-9 && Math.abs(cadEval.normals[2]) < 1e-9 && cadEval.inside?.[0] === 1,
     `iga_evaluate(face 0 @ uv 0.5,0.5): on the x=5 face with a unit +x normal, inside (got ${JSON.stringify({ p: cadEval.points, n: cadEval.normals, i: cadEval.inside })})`
   );
+  // meshio++ 18.3 `cadRead` on a STEP source: heal report + deflection control.
+  {
+    const bullStep = path.join(ROOT, "examples", "STP", "bull.stp");
+    const blockStep = path.join(ROOT, "examples", "STP", "block.stp");
+    const plain = await call("iga_sample", { path: blockStep });
+    assert(plain.heal === undefined, `iga_sample(block.stp) without cadRead carries no heal report (got ${JSON.stringify(plain.heal)})`);
+    const healed = await call("iga_sample", { path: blockStep, cadRead: { heal: true } });
+    assert(
+      healed.model?.faces === 6 && healed.heal?.healed === true && healed.heal?.freeEdgesBefore === 0 && healed.heal?.freeEdgesAfter === 0,
+      `iga_sample(block.stp, cadRead.heal): 6 faces, healed, no free edges (got ${JSON.stringify(healed.heal)})`
+    );
+    const sewn = await call("iga_sample", { path: bullStep, cadRead: { sewTolerance: 1e-3 } });
+    assert(sewn.heal?.healed === false && sewn.heal?.sewTolerance === 0.001, `iga_sample(bull.stp, sewTolerance): sewn at 1e-3 without heal (got ${JSON.stringify(sewn.heal)})`);
+    const ignored = await call("iga_sample", { path: cadJsonFile, cadRead: { heal: true } });
+    assert(ignored.heal === undefined && ignored.warnings?.some((w) => /cadRead applies to STEP\/IGES/.test(w)), `cadRead on a .cad.json is ignored with a warning (got ${JSON.stringify(ignored.warnings)})`);
+  }
   const cadRefinedPath = path.join(dir, "cube-refined.cad.json");
   const cadRefine = await call("iga_refine", { path: cadJsonFile, outputPath: cadRefinedPath, elevate: 1, subdivisions: 1 });
   assert(
@@ -7666,6 +7724,123 @@ try {
   );
   const confBrep = await call("check_mesh_conformity", { path: octreeBlock });
   assert(confBrep.supported === false, "check_mesh_conformity declines a B-rep source (export a mesh first)");
+  // meshio++ 18 surface analyses over the 10 mm cube (examples/STL/cube.stl, spans -5..5): analytic answers.
+  const sa18Cube = path.join(dir, "sa18-cube.stl");
+  fs.copyFileSync(path.join(ROOT, "examples", "STL", "cube.stl"), sa18Cube);
+  const sa18Thick = await call("measure_mesh_thickness", { path: sa18Cube, threshold: 11 });
+  assert(
+    sa18Thick.supported === true && sa18Thick.thickness.direction === "inward" && sa18Thick.thickness.numHit === 12 &&
+      Math.abs(sa18Thick.thickness.min - 10) < 1e-9 && Math.abs(sa18Thick.thickness.max - 10) < 1e-9 && sa18Thick.thickness.numBelow === 12,
+    `measure_mesh_thickness reads the 10 mm cube as 10 mm thick on all 12 triangles (got ${JSON.stringify(sa18Thick.thickness)})`
+  );
+  const sa18Out = await call("measure_mesh_thickness", { path: sa18Cube, direction: "outward" });
+  assert(sa18Out.thickness.numHit === 0 && sa18Out.thickness.min === null, "...and an outward clearance ray from the lone cube hits nothing (min is null, not NaN)");
+  const sa18Self = await call("find_mesh_intersections", { path: sa18Cube });
+  assert(sa18Self.supported === true && sa18Self.intersections.numPairs === 0 && sa18Self.intersections.clean === true, `a lone cube does not intersect itself (got ${JSON.stringify(sa18Self.intersections)})`);
+  const sa18Shift = path.join(dir, "sa18-shift.stl");
+  fs.writeFileSync(sa18Shift, fs.readFileSync(sa18Cube, "utf8").replace(/vertex\s+(\S+)\s+(\S+)\s+(\S+)/g, (_m, x, y, z) => `vertex ${Number(x) + 5} ${Number(y) + 5} ${Number(z) + 5}`));
+  const sa18Pair = await call("find_mesh_intersections", { path: sa18Cube, otherPath: sa18Shift, maxPairs: 2 });
+  assert(
+    sa18Pair.intersections.numPairs === 18 && sa18Pair.intersections.numSegments === 6 && sa18Pair.intersections.clean === false &&
+      sa18Pair.intersections.truncated === true && sa18Pair.intersections.pairs.length === 4 && sa18Pair.intersections.segments.length === 36,
+    `a cube against a copy shifted by (5,5,5) meets in 18 triangle pairs / 6 segments, with maxPairs=2 truncating the list but not the count (got ${JSON.stringify({ ...sa18Pair.intersections, segments: sa18Pair.intersections.segments.length })})`
+  );
+  const sa18Top = await call("select_mesh_region", { path: sa18Cube, plane: [0, 0, 5, 0, 0, 1] });
+  assert(sa18Top.selection.numSelected === 2 && sa18Top.selection.entries.length === 2, `select_mesh_region on the plane z>=5 picks exactly the cube's 2 top triangles (got ${JSON.stringify(sa18Top.selection)})`);
+  const sa18Pts = await call("select_mesh_region", { path: sa18Cube, kind: "point", box: [-6, -6, -6, 6, 6, -4] });
+  assert(sa18Pts.selection.numSelected === 4, "...and a box over the bottom picks its 4 vertices");
+  const sa18Brep = await call("measure_mesh_thickness", { path: octreeBlock });
+  assert(sa18Brep.supported === false, "the surface analyses decline a B-rep source (export to STL first)");
+
+  // meshio++ 18.1 (probe meshio-1810-surface.ts): analytic answers over block.stp's tets (3 x 4 x 5 box, volume 60, area 94) and the 10 mm cube.
+  const m181Tet = path.join(dir, "m1810-block.msh");
+  await call("export_mesh", { path: octreeBlock, format: "msh", outputPath: m181Tet, options: { engine: "octreemesh", octreeMeshMaxSize: 2, octreeMeshLevels: 2 } });
+  const m181Hull = path.join(dir, "m1810-hull.vtu");
+  const m181Ops = await call("transform_mesh", {
+    path: m181Tet,
+    outputPath: m181Hull,
+    ops: [{ op: "untangle" }, { op: "convexHull" }, { op: "prepareMetric", arrays: ["nope"] }],
+  });
+  assert(
+    m181Ops.supported === true && m181Ops.steps[0].applied === true && /inverted cells 0 → 0/.test(m181Ops.steps[0].detail),
+    `untangle leaves a clean octreemesh tet mesh with no inverted cell (got ${JSON.stringify(m181Ops.steps[0])})`
+  );
+  assert(
+    m181Ops.steps[1].applied === true && /3-D hull: 8 vertices, 12 facets, area 94\.0000, volume 60\.0000/.test(m181Ops.steps[1].detail),
+    `convexHull of the block's tets is the 3 x 4 x 5 box: 8 vertices, area 94, volume 60 (got ${JSON.stringify(m181Ops.steps[1])})`
+  );
+  assert(
+    m181Ops.steps[2].applied === false && /no point data named 'nope'/.test(m181Ops.steps[2].detail),
+    `prepareMetric over a missing array is reported with the kernel's reason, not thrown (got ${JSON.stringify(m181Ops.steps[2])})`
+  );
+  const m181Cloud = await call("transform_mesh", {
+    path: m181Tet,
+    outputPath: path.join(dir, "m1810-recon.vtu"),
+    ops: [{ op: "estimateNormals", neighbours: 10 }, { op: "reconstructSurface" }, { op: "delaunay2d" }],
+  });
+  assert(
+    m181Cloud.steps.every((st) => st.applied === true) && /triangles from \d+ samples/.test(m181Cloud.steps[1].detail),
+    `estimateNormals then reconstructSurface then delaunay2d run over the same point cloud (got ${JSON.stringify(m181Cloud.steps)})`
+  );
+  const m181Adj = await call("mesh_adjacency", { path: m181Tet, outputPath: path.join(dir, "m1810.graph") });
+  const m181Header = fs.readFileSync(path.join(dir, "m1810.graph"), "utf8").split("\n")[0].trim().split(/\s+/).map(Number);
+  assert(
+    m181Adj.supported === true && m181Adj.kind === "node" && m181Adj.numIsolated === 0 && m181Adj.minDegree >= 3 &&
+      Math.abs(m181Adj.meanDegree * m181Adj.numVertices - 2 * m181Adj.numEdges) < 1e-6 &&
+      m181Header[0] === m181Adj.numVertices && m181Header[1] === m181Adj.numEdges && m181Adj.graph.format === "metis",
+    `mesh_adjacency: the METIS header "n m" equals the reported vertices/edges and the degrees sum to twice the edges (got ${JSON.stringify(m181Adj)} header ${m181Header})`
+  );
+  const m181Cell = await call("mesh_adjacency", { path: m181Tet, kind: "cell", outputPath: path.join(dir, "m1810.grf") });
+  assert(m181Cell.graph.format === "scotch" && m181Cell.numVertices > m181Adj.numVertices && m181Cell.maxDegree <= 4,
+    `mesh_adjacency kind cell joins tets across facets (degree <= 4) and a .grf path writes Scotch (got ${JSON.stringify(m181Cell)})`);
+  const m181Brep = await call("mesh_adjacency", { path: octreeBlock });
+  assert(m181Brep.supported === false, "mesh_adjacency declines a B-rep source (export a mesh first)");
+  const m181Geo = await call("analyze_surface_geometry", { path: sa18Cube, kind: "geodesic", sources: [0] });
+  assert(
+    m181Geo.supported === true && m181Geo.geodesic.numSources === 1 && m181Geo.geodesic.numUnreached === 0 && m181Geo.geodesic.converged === true &&
+      m181Geo.geodesic.maxDistance > 15 && m181Geo.geodesic.maxDistance < 26,
+    `geodesic distance from one corner of the 10 mm cube reaches every point; the heat method on 12 triangles under-reads the exact 22.36 (sqrt(10^2 + 20^2)) antipode, measured 20.2 (got ${JSON.stringify(m181Geo.geodesic)})`
+  );
+  const m181Eig = await call("analyze_surface_geometry", { path: sa18Cube, kind: "eigenmodes", numModes: 3 });
+  const m181Ev = m181Eig.eigenmodes.eigenvalues;
+  assert(
+    m181Ev.length === 3 && Math.abs(m181Ev[0]) < 1e-9 && m181Ev[1] > 0 && m181Ev[1] <= m181Ev[2] + 1e-12 && m181Eig.eigenmodes.converged === true,
+    `the closed cube's lowest Laplace-Beltrami eigenvalue is 0, the next ones positive and ascending (got ${JSON.stringify(m181Eig.eigenmodes)})`
+  );
+  const m181Uv = await call("analyze_surface_geometry", { path: sa18Cube, kind: "parameterize" });
+  assert(m181Uv.parameterization.numCharts >= 1 && m181Uv.parameterization.numFlipped === 0, `parameterize atlas of the cube has no flipped triangle (got ${JSON.stringify(m181Uv.parameterization)})`);
+  const m181NoSource = await request("tools/call", { name: "analyze_surface_geometry", arguments: { path: sa18Cube, kind: "geodesic" } });
+  assert(m181NoSource.isError === true && /at least one source/.test(m181NoSource.content?.[0]?.text ?? ""), "analyze_surface_geometry geodesic without sources is refused by name");
+  assert((await call("analyze_surface_geometry", { path: octreeBlock, kind: "eigenmodes" })).supported === false, "analyze_surface_geometry declines a B-rep source");
+  // The same per-point results as files: geodesicDistance written through transform_mesh reads back with its array.
+  const m181Vtk = path.join(dir, "m1810-cube.vtk");
+  fs.copyFileSync(path.join(ROOT, "examples", "VTK", "cube.vtk"), m181Vtk);
+  const m181GeoOut = path.join(dir, "m1810-geodesic.vtu");
+  const m181GeoOps = await call("transform_mesh", { path: m181Vtk, outputPath: m181GeoOut, ops: [{ op: "geodesicDistance", sources: [0] }, { op: "laplacianEigenmodes", numModes: 2 }] });
+  assert(m181GeoOps.steps.every((st) => st.applied === true), `geodesicDistance and laplacianEigenmodes run through transform_mesh (got ${JSON.stringify(m181GeoOps.steps)})`);
+  const m181Fields = await call("inspect_meshio_fields", { path: m181GeoOut });
+  const m181Names = m181Fields.arrays.map((x) => x.name);
+  assert(
+    m181Names.includes("geodesic:distance") && m181Names.includes("laplacian:modes"),
+    `the written .vtu carries geodesic:distance and laplacian:modes as point data (got ${m181Names.join(", ")})`
+  );
+  // ICP: the cube registered onto a copy shifted by (0.5, 0, 0) gives a rigid transform, a smaller residual and a moved copy inside the target.
+  const m181Shift = path.join(dir, "m1810-shift.stl");
+  fs.writeFileSync(m181Shift, fs.readFileSync(sa18Cube, "utf8").replace(/vertex\s+(\S+)\s+(\S+)\s+(\S+)/g, (_m, x, y, z) => `vertex ${Number(x) + 0.5} ${y} ${z}`));
+  const m181Moved = path.join(dir, "m1810-moved.stl");
+  const m181Reg = await call("register_meshes", { path: m181Shift, targetPath: sa18Cube, maxIterations: 50, outputPath: m181Moved });
+  const m181M = m181Reg.matrix;
+  const det3 = m181M[0] * (m181M[5] * m181M[10] - m181M[6] * m181M[9]) - m181M[1] * (m181M[4] * m181M[10] - m181M[6] * m181M[8]) + m181M[2] * (m181M[4] * m181M[9] - m181M[5] * m181M[8]);
+  assert(
+    m181Reg.supported === true && m181M.length === 16 && Math.abs(det3 - 1) < 1e-6 && m181M[12] === 0 && m181M[15] === 1 &&
+      m181Reg.rms < m181Reg.initialRms && m181Reg.rms < 0.05 && m181Reg.initialRms > 0.3 && m181Reg.written === m181Moved,
+    `register_meshes returns a proper rigid 4x4 (det 1) that cuts the RMS from ~0.35 to under 0.05 (got ${JSON.stringify({ ...m181Reg, matrix: m181M.map((v) => +v.toFixed(4)) })})`
+  );
+  const m181MovedBox = (fs.readFileSync(m181Moved, "latin1").match(/vertex\s+(\S+)\s+\S+\s+\S+/g) ?? []).map((l) => Number(l.trim().split(/\s+/)[1]));
+  assert(m181MovedBox.length > 0 && Math.max(...m181MovedBox) <= 5.05 && Math.min(...m181MovedBox) >= -5.05, `the written, registered copy sits inside the target cube's x range (got ${Math.min(...m181MovedBox)}..${Math.max(...m181MovedBox)})`);
+  const m181RegSelf = await request("tools/call", { name: "register_meshes", arguments: { path: m181Shift, targetPath: sa18Cube, outputPath: sa18Cube } });
+  assert(m181RegSelf.isError === true, "register_meshes refuses to write over its target");
+
   const ocmHexMsh = path.join(dir, "octreemesh-block-hex.msh");
   await call("export_mesh", { path: octreeBlock, format: "msh", outputPath: ocmHexMsh, options: { ...ocmOpts, octreeMeshOutput: "hex" } });
   const ocmHexVol = mshCellVolumes(fs.readFileSync(ocmHexMsh, "utf8"));
@@ -8507,6 +8682,126 @@ try {
       xorRejected.rejected === 1,
       `standalone wrap with targets is rejected at validation (got ${JSON.stringify(xorRejected.report)})`
     );
+  }
+
+  // --- Parametric curve (roadmap "Parametric-curve profile"): an
+  // addParametricCurve op expands on read into an addSpline, closes with a
+  // polyline into a face, and re-evaluates when a document variable changes.
+  // y = 0.5 + A*s*(1-s) on s in [0,1] (endpoints fixed at y = 0.5): the face
+  // under it (down to y = 0) has area exactly 0.5 + A/6 (the approximating spline is exact for a parabola to well
+  // inside the 1e-4 tolerance). Fresh block.stp: 12 edges, 6 faces, so the
+  // curve is edge-12, the closing polyline edge-13..15 and the face face-6. ---
+  {
+    const curveModel = path.join(dir, "param-curve.stp");
+    const resetCurve = () => {
+      fs.copyFileSync(path.join(ROOT, "examples", "STP", "block.stp"), curveModel);
+      for (const ext of [".edits.json"]) fs.rmSync(`${curveModel}${ext}`, { force: true });
+    };
+    resetCurve();
+    await call("set_variables", { path: curveModel, variables: [{ name: "A", expr: "0.3" }] });
+    const applied = await callWithCleanRetry("apply_edit_ops", {
+      path: curveModel,
+      ops: [
+        { op: "addParametricCurve", x: "s", y: "0.5 + A*s*(1-s)", sMin: 0, sMax: 1, samples: 24 },
+        { op: "addPolyline", points: [[1, 0.5, 0], [1, 0, 0], [0, 0, 0], [0, 0.5, 0]], closed: false },
+        { op: "addSurfaceFromLines", edges: ["edge-12", "edge-13", "edge-14", "edge-15"] },
+      ],
+    }, resetCurve);
+    assert(applied.applied === 3, `all three curve ops apply (got ${JSON.stringify(applied.report)})`);
+    const stored = JSON.parse(fs.readFileSync(`${curveModel}.edits.json`, "utf8"));
+    assert(stored.ops[0].op === "addParametricCurve", "the sidecar keeps the parametric op, not its expansion");
+    const areaA = (await call("inspect", { path: curveModel, entityId: "face-6" })).area;
+    assert(Math.abs(areaA - (0.5 + 0.3 / 6)) < 1e-3, `curve face area is 0.5 + A/6 = 0.55 for A = 0.3 (got ${areaA})`);
+    await call("set_variables", { path: curveModel, variables: [{ name: "A", expr: "0.6" }] });
+    const areaB = (await call("inspect", { path: curveModel, entityId: "face-6" })).area;
+    assert(Math.abs(areaB - (0.5 + 0.6 / 6)) < 1e-3, `changing A re-evaluates the curve: 0.6 for A = 0.6 (got ${areaB})`);
+
+    // `close: true` (roadmap "Parametric-curve profile"): the curve plus its
+    // straight closing segment bound a face that extrudes directly. One hump of
+    // y = 0.1*sin(360*s) (s in [0, 0.5]) closed by the chord encloses
+    // 0.1/pi = 0.03183 of area, so a 2 mm extrusion is 0.06366 mm3 (the
+    // approximating spline lands within ~1e-4 of it). Fresh block.stp: the face
+    // is face-6 and the extruded body solid-1.
+    resetCurve();
+    const closedCurve = { op: "addParametricCurve", x: "s", y: "0.1*sin(360*s)", sMin: 0, sMax: 0.5, samples: 41, close: true };
+    const closedApplied = await callWithCleanRetry("apply_edit_ops", { path: curveModel, ops: [closedCurve] }, resetCurve);
+    assert(closedApplied.applied === 1, `the closed curve applies (got ${JSON.stringify(closedApplied.report)})`);
+    assert(JSON.parse(fs.readFileSync(`${curveModel}.edits.json`, "utf8")).ops[0].close === true, "the sidecar keeps close on the parametric op");
+    const lobeFace = (await call("inspect", { path: curveModel, entityId: "face-6" })).area;
+    assert(Math.abs(lobeFace - 0.1 / Math.PI) < 1e-4, `the closed lobe face has area 0.1/pi = 0.03183 (got ${lobeFace})`);
+    const closedSidecar = fs.readFileSync(`${curveModel}.edits.json`);
+    const lobeExtruded = await callWithCleanRetry("apply_edit_ops", {
+      path: curveModel, ops: [{ op: "extrude", profile: "face-6", dir: [0, 0, 1], length: 2 }],
+    }, () => fs.writeFileSync(`${curveModel}.edits.json`, closedSidecar));
+    assert(lobeExtruded.applied === 1, `the closed lobe extrudes (got ${JSON.stringify(lobeExtruded.report)})`);
+    const lobeVol = (await call("get_mass_properties", { path: curveModel, entityId: "solid-1" })).volume;
+    assert(Math.abs(lobeVol - 0.2 / Math.PI) < 5e-4, `the extruded lobe has volume 0.2/pi = 0.06366 (got ${lobeVol})`);
+    // A full period touches its own closing segment (net-zero signed area): refused by name, curve still drawn.
+    resetCurve();
+    const figureEight = await callWithCleanRetry("apply_edit_ops", {
+      path: curveModel,
+      ops: [{ op: "addParametricCurve", x: "s", y: "0.1*sin(360*s)", sMin: 0, sMax: 1, samples: 41, close: true }],
+    }, resetCurve);
+    assert(
+      figureEight.applied === 0 && /opposite winding/.test(figureEight.report[0]?.diagnostic ?? ""),
+      `a closed full sine period is refused as zero-net-area (got ${JSON.stringify(figureEight.report)})`
+    );
+  }
+
+  // --- Configurations (roadmap "Configurations (design table)"): a parametric
+  // cube D x D x D parked beside block.stp (60 mm3). Volume = 60 + D^3:
+  // M6 = 60 + 216 = 276, M8 = 60 + 512 = 572. The `configuration` parameter
+  // evaluates one WITHOUT changing the stored activeConfiguration; the exported
+  // STEPs are re-measured through a separate load, and batch_export writes one
+  // file per configuration. ---
+  {
+    const cfgModel = path.join(dir, "config-box.stp");
+    const resetCfg = () => {
+      fs.copyFileSync(path.join(ROOT, "examples", "STP", "block.stp"), cfgModel);
+      fs.rmSync(`${cfgModel}.edits.json`, { force: true });
+    };
+    resetCfg();
+    await call("set_variables", { path: cfgModel, variables: [{ name: "D", expr: "6" }] });
+    const cfgApplied = await callWithCleanRetry("apply_edit_ops", {
+      path: cfgModel,
+      ops: [{ op: "addBox", center: [20, 0, 0], size: [1, 1, 1], exprs: { "size[0]": "D", "size[1]": "D", "size[2]": "D" } }],
+    }, resetCfg);
+    assert(cfgApplied.applied === 1, `the parametric cube applies (got ${JSON.stringify(cfgApplied.report)})`);
+    await call("set_configuration", { path: cfgModel, name: "M6" });
+    const cfgSet = await call("set_configuration", { path: cfgModel, name: "M8", overrides: { D: "8" } });
+    assert(cfgSet.activeConfiguration === null && cfgSet.table.length === 3, `two configurations stored, none active (got ${JSON.stringify(cfgSet.table)})`);
+    const volOf = async (args) => (await call("get_mass_properties", { path: cfgModel, ...args })).volume;
+    const near = (a, b) => Math.abs(a - b) / b < 1e-3;
+    const v0 = await volOf({});
+    const v6 = await volOf({ configuration: "M6" });
+    const v8 = await volOf({ configuration: "M8" });
+    assert(near(v0, 276) && near(v6, 276), `no configuration and M6 give 60 + 6^3 = 276 (got ${v0}, ${v6})`);
+    assert(near(v8, 572), `configuration M8 gives 60 + 8^3 = 572 (got ${v8})`);
+    assert((await call("get_state", { path: cfgModel })).activeConfiguration === null, "evaluating M8 did not change the stored active configuration");
+    const bad = await request("tools/call", { name: "get_mass_properties", arguments: { path: cfgModel, configuration: "nope" } });
+    assert(bad.isError === true, "an unknown configuration is an error, not a silent fallback");
+    // Export through the parameter, then measure the written file on its own.
+    const exp8 = path.join(dir, "config-box-m8.brep");
+    await call("export_brep", { path: cfgModel, targetFormat: "brep", outputPath: exp8, configuration: "M8" });
+    const exp8Vol = (await call("get_mass_properties", { path: exp8 })).volume;
+    assert(near(exp8Vol, 572), `the BREP exported under M8 re-measures 572 (got ${exp8Vol})`);
+    // Activating re-resolves the stored ops; the sidecar keeps exprs and the base variable.
+    await call("set_configuration", { path: cfgModel, name: "M8", active: true });
+    const cfgStored = JSON.parse(fs.readFileSync(`${cfgModel}.edits.json`, "utf8"));
+    assert(cfgStored.activeConfiguration === "M8" && cfgStored.variables[0].expr === "6", "the sidecar stores activeConfiguration and leaves the base variable alone");
+    assert(cfgStored.ops[0].exprs["size[0]"] === "D" && cfgStored.ops[0].size[0] === 8, "the stored op keeps its expression and caches the active value");
+    assert(near(await volOf({}), 572) && near(await volOf({ configuration: "M6" }), 276), "with M8 active, the default is 572 and an explicit M6 still gives 276");
+    // One file per configuration.
+    const cfgOut = path.join(dir, "config-batch");
+    const batched = await call("batch_export", { inputs: [cfgModel], target: "brep", outDir: cfgOut, allConfigurations: true });
+    assert(
+      batched.summary.ok === 2 && fs.existsSync(path.join(cfgOut, "config-box-M6.brep")) && fs.existsSync(path.join(cfgOut, "config-box-M8.brep")),
+      `batch_export writes config-box-M6.brep and config-box-M8.brep (got ${JSON.stringify(batched.rows.map((r) => [r.configuration, r.status, r.error]))})`
+    );
+    const b6 = (await call("get_mass_properties", { path: path.join(cfgOut, "config-box-M6.brep") })).volume;
+    const b8 = (await call("get_mass_properties", { path: path.join(cfgOut, "config-box-M8.brep") })).volume;
+    assert(near(b6, 276) && near(b8, 572), `the batched files hold 276 and 572 (got ${b6}, ${b8})`);
+    assert((await call("get_state", { path: cfgModel })).activeConfiguration === "M8", "batch_export left the stored active configuration alone");
   }
 
   // --- 3D text via outline import (roadmap "3D text via outline import",

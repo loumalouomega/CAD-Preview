@@ -26,6 +26,7 @@ import type { ServerRequest, ServerNotification } from "@modelcontextprotocol/sd
 import { z } from "zod";
 import type { SnapshotClipInput } from "./snapshotOptions";
 import { errorToolResult, mergeFieldsIntoResult, mergeWarningsIntoResult, splitUnknownKeys, unknownKeyWarnings } from "./mcpErrors";
+import { CONFIGURATION_PARAM_TOOLS } from "./configurations";
 import { REVISION_GUARDED_TOOLS, assertRevision, currentRevision, lockKey, withSidecarLock } from "./mcpRevision";
 import { AsyncLocalStorage } from "async_hooks";
 import { createKernelClient, JobCancelledError, type JobOptions, type ScopedPipeline } from "./kernelClient";
@@ -77,6 +78,12 @@ import {
   remeshMeshTool,
   inspectMeshioFieldsTool,
   checkMeshConformityTool,
+  findMeshIntersectionsTool,
+  measureMeshThicknessTool,
+  selectMeshRegionTool,
+  analyzeSurfaceGeometryTool,
+  meshAdjacencyTool,
+  registerMeshesTool,
   projectToCadTool,
   growPrismLayersTool,
   pinAnnotation,
@@ -93,9 +100,13 @@ import {
   importSvgTool,
   runParametricScriptTool,
   removeEditOp,
+  diagnosticsReport,
+  setEditOpState,
   runSavedScript,
   saveParametricScript,
   setVariables,
+  setConfiguration,
+  configurationScope,
   setPart,
   setPlane,
   listLayers,
@@ -272,17 +283,42 @@ const server = new McpServer({ name: "cad-preview", version: "1.0.0" }, { instru
             ),
         }
       : shape;
-    const known = Object.keys(fullShape);
-    return baseRegisterTool(name, { ...config, inputSchema: z.looseObject(fullShape) }, async (args: unknown, extra: unknown) => {
+    // Design table (src/configurations.ts): a read-only export/meshing tool
+    // gains an optional `configuration`, injected once here. The handler runs
+    // inside `configurationScope`, the single seam `readEditsResolved` reads,
+    // so the named configuration is evaluated WITHOUT touching the stored
+    // activeConfiguration.
+    const takesConfiguration = CONFIGURATION_PARAM_TOOLS.includes(name);
+    const shapeWithConfiguration = takesConfiguration
+      ? {
+          ...fullShape,
+          configuration: z
+            .string()
+            .optional()
+            .describe(
+              "Design table: evaluate the model with this named configuration's variable overrides instead of the stored active one (set_configuration defines them). The stored activeConfiguration is not changed. Omit to use the active configuration (or the plain variables when none is active)."
+            ),
+        }
+      : fullShape;
+    const known = Object.keys(shapeWithConfiguration);
+    return baseRegisterTool(name, { ...config, inputSchema: z.looseObject(shapeWithConfiguration) }, async (rawArgs: unknown, extra: unknown) => {
+      let args = rawArgs;
+      let scopedConfiguration: string | undefined;
+      if (takesConfiguration && rawArgs && typeof rawArgs === "object") {
+        const { configuration, ...rest } = rawArgs as Record<string, unknown>;
+        if (typeof configuration === "string" && configuration !== "") scopedConfiguration = configuration;
+        args = rest;
+      }
+      const inner = (a: unknown, e: unknown) => (scopedConfiguration === undefined ? cb(a, e) : configurationScope.run({ configuration: scopedConfiguration }, () => cb(a, e)));
       const { kept, unknown } = splitUnknownKeys(args, known);
       if (!guardKind) {
-        const result = await cb(kept, extra);
+        const result = await inner(kept, extra);
         return mergeWarningsIntoResult(result, unknownKeyWarnings(unknown, known));
       }
       const { expectedRevision, ...handlerArgs } = kept as Record<string, unknown> & { expectedRevision?: unknown };
       const modelFile = typeof handlerArgs.path === "string" ? handlerArgs.path : null;
       if (modelFile === null) {
-        const result = await cb(handlerArgs, extra);
+        const result = await inner(handlerArgs, extra);
         return mergeWarningsIntoResult(result, unknownKeyWarnings(unknown, known));
       }
       const dryRun = handlerArgs.dryRun === true;
@@ -292,7 +328,7 @@ const server = new McpServer({ name: "cad-preview", version: "1.0.0" }, { instru
         } catch (err) {
           return errorToolResult(err);
         }
-        const res = await cb(handlerArgs, extra);
+        const res = await inner(handlerArgs, extra);
         // Report the post-write revision so a caller can chain writes without
         // another get_state. Read inside the lock, so it is this call's write.
         return !dryRun && !(res as { isError?: boolean }).isError
@@ -861,7 +897,7 @@ server.registerTool(
   "transform_mesh",
   {
     description:
-      "Run a declarative list of meshio++ mesh operations over a meshio-readable source and write the result to a new file. ONE tool for the whole family rather than one per operation (the same shape run_parametric_script uses): pass `ops` as an ordered array of {op, ...params} and get a per-step report back saying which steps actually did something. Operations: clean (weld/drop degenerate+duplicate cells), decimate (quadric edge-collapse; `ratio` = fraction of faces to KEEP, surface meshes only), smooth (`method` taubin|laplacian, `iterations`), subdivide, refine (`levels`), agglomerate (`targetGroupSize`), convertCells (`mode` linearize|simplexify|elevate — simplexify splits quads/hexes into triangles/tets). A step that cannot run is reported with applied:false and its reason, and the pipeline continues. The CAD source is never modified. B-rep and mesh-parser (stl/obj/ply/gltf) sources return supported:false — a B-rep has exact geometry and should be edited with apply_edit_ops instead.",
+      "Run a declarative list of meshio++ mesh operations over a meshio-readable source and write the result to a new file. ONE tool for the whole family rather than one per operation (the same shape run_parametric_script uses): pass `ops` as an ordered array of {op, ...params} and get a per-step report back saying which steps actually did something. Operations: clean (weld/drop degenerate+duplicate cells), decimate (quadric edge-collapse; `ratio` = fraction of faces to KEEP, surface meshes only), smooth (`method` taubin|laplacian, `iterations`), subdivide, refine (`levels`), agglomerate (`targetGroupSize`), convertCells (`mode` linearize|simplexify|elevate — simplexify splits quads/hexes into triangles/tets), tetToPoly (meshio++ 18: tets → their polyhedral median dual, one polyhedron per vertex; write to vtu/ensight/cgns/med/openfoam -- MDPA and the other writers refuse polyhedra by name), polyToTet (polyhedra → tets, a polyhedron that already is a tet stays one), optimizeVolume (tet meshes: raise the worst dihedral angle; `iterations`, `objective` worst|energy, `maxRingSize`; boundary blocks are dropped), adapt (MMG remesh to a constant `hsiz` within `hausd`, source units; surface or tet meshes), discretizeLevelset (MMG: insert the `isovalue` interface of the point-data array `levelSet`). meshio++ 18.1 adds: untangle (tet/hex: move nodes until no cell is inverted; `iterations` = sweeps, `fixBoundary`), prepareMetric (intersect, normalise, clamp and grade 6-component point-data metric fields named in `arrays` into `output`; upper-triangular order xx,xy,xz,yy,yz,zz; set `hmin`/`hmax`/`gradation`/`targetVertices`), morph (displace the boundary by the 3-component point-data array `array`, relax the interior; `steps`, `stiffening`, `allowInverted`), convexHull (of the points, `dimension` 2|3|0), delaunay2d (of the x-y plane), convertCoordinates (`system` cylindrical|spherical about `axis`/`origin`, rewriting the vector/tensor point-data `arrays`; `inverse` goes back), estimateNormals (`neighbours`, `orientation` consistent|viewpoint|none; writes point data `normals`), reconstructSurface (surface through an oriented point cloud; `k`, `cellSize`, `maxDistance`, 0 = automatic), geodesicDistance (heat method from `sources` point ids or `sourceRegion` -> point data geodesic:distance, triangle surfaces), parameterize (UV atlas -> point data uv; `padding`, `maxDepth`, `maxStretch`), laplacianEigenmodes (`numModes` -> point data laplacian:modes). A step that cannot run is reported with applied:false and its reason, and the pipeline continues. The CAD source is never modified. B-rep and mesh-parser (stl/obj/ply/gltf) sources return supported:false — a B-rep has exact geometry and should be edited with apply_edit_ops instead.",
     inputSchema: {
       path: modelPath,
       ops: z
@@ -884,6 +920,112 @@ server.registerTool(
     },
   },
   wrap((args: { path: string; tolerance?: number }) => checkMeshConformityTool(ctx, args))
+);
+
+server.registerTool(
+  "find_mesh_intersections",
+  {
+    description:
+      "Where a triangle surface intersects itself, or (otherPath) where it interpenetrates or touches a second surface, by exact triangle-triangle tests (meshio++ 18 findIntersections). Facts only: numPairs, numTrianglePairs, numCoplanar, numSegments, clean, truncated, the (capped) triangle-pair list as flat [meshTriangle, otherTriangle] indices and the intersection segments as flat xyz endpoint pairs. Mesh-format sources only (stl/obj/ply/gltf and meshio++ boundaries; pending mesh edits are baked); a B-rep source returns supported:false -- export it to STL first.",
+    inputSchema: {
+      path: modelPath,
+      otherPath: z.string().optional().describe("A second mesh-format file: report where the two surfaces meet instead of self-intersections"),
+      maxPairs: z.number().optional().describe("Keep at most this many pairs (default 5000); the counts still cover every pair and truncated says so"),
+      segments: z.boolean().optional().describe("Return the intersection segments (default true)"),
+    },
+  },
+  wrap((args: { path: string; otherPath?: string; maxPairs?: number; segments?: boolean }) => findMeshIntersectionsTool(ctx, args))
+);
+
+server.registerTool(
+  "measure_mesh_thickness",
+  {
+    description:
+      "Wall thickness (inward) or clearance (outward) per triangle, by a ray from each triangle's centroid along its normal (meshio++ 18 thickness). Facts only: direction used, numHit/numMissed, numBelow (hits closer than threshold), min/max/mean distance (null when nothing was hit), the triangle of the least distance and its point. Exact rays over the mesh -- complements check_printability's sampled wall check. Mesh-format sources only (pending edits baked); a B-rep source returns supported:false.",
+    inputSchema: {
+      path: modelPath,
+      otherPath: z.string().optional().describe("Measure toward a second mesh-format file instead of the mesh itself"),
+      direction: z.enum(["auto", "inward", "outward"]).optional().describe("inward = thickness, outward = clearance, auto (default) picks by the surface's own orientation"),
+      maxDistance: z.number().optional().describe("The longest ray (default: the bounding-box diagonal)"),
+      threshold: z.number().optional().describe("Count the hits closer than this (numBelow); default none"),
+    },
+  },
+  wrap((args: { path: string; otherPath?: string; direction?: "auto" | "inward" | "outward"; maxDistance?: number; threshold?: number }) => measureMeshThicknessTool(ctx, args))
+);
+
+server.registerTool(
+  "select_mesh_region",
+  {
+    description:
+      "Selects triangles (kind cell, default) or vertices (kind point) of a mesh-format source by a box [xmin,ymin,zmin,xmax,ymax,zmax], plane [px,py,pz,nx,ny,nz] (inside is (p - point).normal >= 0), sphere [cx,cy,cz,r], the k-th node-connected component, or a patch grown from a seed point [x,y,z] across edges no sharper than featureAngle degrees (meshio++ 18 selectRegion). Returns the true counts and the selected indices (capped) in the surface's own order -- the mesh-triangle-N / mesh-vertex-N ids headless tools use. Read-only; nothing is written. At least one criterion is required. B-rep sources return supported:false.",
+    inputSchema: {
+      path: modelPath,
+      name: z.string().optional().describe("Region name (default 'selection')"),
+      kind: z.enum(["cell", "point"]).optional().describe("Select triangles (default) or vertices"),
+      mode: z.enum(["all", "any", "centroid"]).optional().describe("How a triangle reduces its vertices for box/plane/sphere (default all)"),
+      box: z.array(z.number()).optional().describe("[xmin, ymin, zmin, xmax, ymax, zmax]"),
+      plane: z.array(z.number()).optional().describe("[px, py, pz, nx, ny, nz]"),
+      sphere: z.array(z.number()).optional().describe("[cx, cy, cz, r]"),
+      component: z.number().int().optional().describe("The k-th node-connected component (0-based)"),
+      seed: z.array(z.number()).optional().describe("[x, y, z]: grow a patch from the triangle nearest this point"),
+      featureAngle: z.number().optional().describe("Largest dihedral angle in degrees the seed growth crosses (default 30)"),
+      normalTolerance: z.number().optional().describe("Largest angle in degrees to the seed's normal (default 0 = off)"),
+    },
+  },
+  wrap((args: Parameters<typeof selectMeshRegionTool>[1]) => selectMeshRegionTool(ctx, args))
+);
+
+server.registerTool(
+  "analyze_surface_geometry",
+  {
+    description:
+      "Read-only facts about a triangle surface of a mesh-format source (meshio++ 18.1). kind geodesic: geodesic distance by the heat method from `sources` (0-based point ids; the same ids as mesh-vertex-N) -- maxDistance, meanDistance, the farthest point, unreached points, convergence. kind parameterize: the quality of a UV atlas (charts, flipped triangles, L2 stretch, packing efficiency, seam points) with optional padding/maxDepth/maxStretch. kind eigenmodes: the `numModes` lowest Laplace-Beltrami eigenvalues (the first of a closed surface is 0) with solver residual. A cell type that is not a linear triangle is refused by the kernel. Facts only, nothing is written: to keep the per-point distances, UVs or modes in a file run transform_mesh with geodesicDistance / parameterize / laplacianEigenmodes. B-rep sources return supported:false; export them to STL first.",
+    inputSchema: {
+      path: modelPath,
+      kind: z.enum(["geodesic", "parameterize", "eigenmodes"]).describe("Which analysis to run"),
+      sources: z.array(z.number().int().min(0)).optional().describe("geodesic: 0-based source point ids (required, at most 1000)"),
+      timeFactor: z.number().positive().optional().describe("geodesic: heat-method time step as a multiple of the mean squared edge length"),
+      padding: z.number().min(0).optional().describe("parameterize: chart padding in UV space"),
+      maxDepth: z.number().int().min(0).optional().describe("parameterize: how many times a folding or over-stretched chart is halved"),
+      maxStretch: z.number().positive().optional().describe("parameterize: L2 stretch above which a chart is split"),
+      numModes: z.number().int().min(1).max(64).optional().describe("eigenmodes: how many of the lowest modes to compute"),
+    },
+  },
+  wrap((args: Parameters<typeof analyzeSurfaceGeometryTool>[1]) => analyzeSurfaceGeometryTool(ctx, args))
+);
+
+server.registerTool(
+  "mesh_adjacency",
+  {
+    description:
+      "The graph of a meshio++-readable mesh (meshio++ 18.1): kind node (default) joins nodes that share a cell edge, clique joins nodes that share a cell (the finite-element sparsity pattern), cell joins cells that share a facet. Returns facts -- numVertices, numEdges (undirected), min/max/mean degree, isolated vertices. With `outputPath` (.graph = METIS, .grf = Scotch) also writes the graph as a partitioner input and reports what was written. The source is never modified. B-rep and mesh-parser (stl/obj/ply/gltf) sources return supported:false -- export a mesh with export_mesh first.",
+    inputSchema: {
+      path: modelPath,
+      kind: z.enum(["node", "clique", "cell"]).optional().describe("Which graph (default node)"),
+      outputPath: z.string().optional().describe("Write the graph here; must end in .graph (METIS) or .grf (Scotch)"),
+      graphFormat: z.enum(["metis", "scotch"]).optional().describe("Defaults from the outputPath extension; must agree with it"),
+    },
+  },
+  wrap((args: Parameters<typeof meshAdjacencyTool>[1]) => meshAdjacencyTool(ctx, args))
+);
+
+server.registerTool(
+  "register_meshes",
+  {
+    description:
+      "Rigid registration (iterative closest points, meshio++ 18.1) of a movable mesh `path` onto a fixed mesh `targetPath`, both read as their triangle surface (pending mesh edits are baked). Returns the row-major 4x4 `matrix` that lays the source on the target, the RMS point-to-surface distance before (initialRms) and after (rms), iterations, matched pairs and `converged` -- facts, not a verdict that the two shapes are the same part. method point_to_point (default) or point_to_plane; `maxDistance` ignores pairs farther apart than that (source units; the pose estimate degrades on outliers otherwise); `initial` is a row-major 4x4 starting pose (ICP only finds a LOCAL optimum, so a far-off start can converge to a wrong pose). With `outputPath` the source is also written with the transform applied (the extension selects the format). The inputs are never modified. B-rep sources return supported:false; export them to STL first.",
+    inputSchema: {
+      path: modelPath,
+      targetPath: z.string().describe("The fixed mesh the source is registered onto"),
+      method: z.enum(["point_to_point", "point_to_plane"]).optional().describe("Distance metric (default point_to_point)"),
+      maxIterations: z.number().int().min(1).max(10000).optional().describe("Iteration limit"),
+      tolerance: z.number().min(0).optional().describe("Stop when the RMS improves by less than this"),
+      maxDistance: z.number().min(0).optional().describe("Ignore point pairs farther apart than this (source units)"),
+      initial: z.array(z.number()).length(16).optional().describe("Starting pose, a row-major 4x4 matrix"),
+      outputPath: z.string().optional().describe("Also write the transformed source here"),
+    },
+  },
+  wrap((args: Parameters<typeof registerMeshesTool>[1]) => registerMeshesTool(ctx, args))
 );
 
 server.registerTool(
@@ -1036,8 +1178,9 @@ server.registerTool(
       segmentMethod: z.enum(["angle", "primitive"]).optional().describe("Segmentation stage: patch boundaries at dihedral edges (default) or where the underlying surface changes (primitive)"),
       backend: z.enum(["auto", "occt", "native"]).optional().describe("Engine that builds the solid: occt (OpenCASCADE, sewn and B-rep-checked), native (kernel-free; no volume, no B-rep check -- reported as null/false) or auto (default = occt)"),
       mergeFaces: z.boolean().optional().describe("Merge faces on one surface once the solid is built (default true)"),
-      refineSegmentation: z.boolean().optional().describe("First refine the patches by variational shape approximation inside fitCad. On a tessellated bull.stp: explained area 52% -> 97%, volume ratio 0.955 -> 1.0004, max deviation 1.75 -> 0.144 (default false)"),
-      freeformMode: z.enum(["legacy", "adaptive", "network", "auto"]).optional().describe("Freeform B-spline treatment of patches no primitive explains (default legacy)"),
+      refineSegmentation: z.boolean().optional().describe("First refine the patches by variational shape approximation inside fitCad. On a tessellated bull.stp: explained area 52% -> 97%, volume ratio 0.955 -> 1.0004, max deviation 1.75 -> 0.144 (default false). The first thing to try on a rough or organic skin (an optimizer's output, a scan): with refineTolerance 0.002 a 22k-triangle optimized hook went from 94.7% to 41.9% faceted area in about three minutes"),
+      refineTolerance: z.number().optional().describe("Only with refineSegmentation: how far a point may lie from its refined patch's primitive, as a fraction of the bounding-box diagonal, in (0, 1] (kernel default 0.001). Loosen to just above the skin's roughness (0.002-0.003 on an optimizer's skin); the solid may then lie that far from the skin"),
+      freeformMode: z.enum(["legacy", "adaptive", "network", "auto"]).optional().describe("Freeform B-spline treatment of patches no primitive explains (default legacy). Slow: measured 8-12x the time and a larger skin deviation for a modest gain in B-spline area, and with refineSegmentation it can exceed the kernel worker's five-minute watchdog on a few thousand triangles -- try refineSegmentation first"),
       faceDeviation: z.boolean().optional().describe("Also measure the two-sided solid-to-skin Hausdorff distance and RMS (occt backend only)"),
     },
   },
@@ -1125,6 +1268,13 @@ server.registerTool(
   wrap((args: Parameters<typeof growPrismLayersTool>[1]) => growPrismLayersTool(ctx, args))
 );
 
+const cadReadSchema = z.object({
+  deflection: z.number().optional().describe("Linear deflection of the triangulation (a length; 0 or less is automatic)"),
+  angularDeflection: z.number().optional().describe("Angular deflection in radians (default 0.5)"),
+  heal: z.boolean().optional().describe("Heal the shape (ShapeFix_Shape, then sewing) before it is extracted"),
+  sewTolerance: z.number().optional().describe("Sewing tolerance (0 or less is automatic); a positive value sews without heal"),
+});
+
 server.registerTool(
   "iga_sample",
   {
@@ -1132,6 +1282,7 @@ server.registerTool(
       "Sample a NURBS model's every face into Lagrange cells (meshio++ iga_sample) and report the model's B-rep inventory plus the sampled cells, facts only. Sources: a Kratos CAD JSON model (.cad.json) or, since the full artifact attaches the same side channel to B-rep reads, a STEP/IGES file. The report: breps/faces/edges/vertices counts, per-face trim flags (trimmedFaces/rationalFaces), per-patch degrees + knot spans + control-net size, and the sampled inventory (points, cells by type, bounds). sampleSubdivisions sets the cells per knot span and direction (0 = automatic); trimSamples the points per span of a trimming curve; edges/trim control 3-D-curve edge sampling and trimming-loop clipping. Nothing is stored or written -- iga_refine changes the model's representation and writes it, iga_evaluate evaluates one face at explicit (u, v).",
     inputSchema: {
       path: modelPath,
+      cadRead: cadReadSchema.optional().describe("STEP/IGES sources only: how the shape is read (meshio++ 18.3) -- deflection/angularDeflection of the triangulation, heal (ShapeFix_Shape + sewing) and sewTolerance; the response then carries a `heal` report. Ignored with a warning for .cad.json"),
       sampleSubdivisions: z.number().optional().describe("Cells per knot span and direction of the sampling; 0 is automatic (default automatic)"),
       trimSamples: z.number().optional().describe("Points per knot span a trimming curve is sampled at, 2..4096"),
       edges: z.boolean().optional().describe("Also sample the edges that have a 3-D curve"),
@@ -1148,6 +1299,7 @@ server.registerTool(
       "Refine a NURBS model EXACTLY (meshio++ iga_refine): degree elevation by elevate, then knot insertion splitting each knot span in subdivisions parts (a number, or one per direction), and write the refined model as a NEW .cad.json file at outputPath. Geometry, fields and a trimmed face's trimming loops do not change -- only the representation (degrees, knot vectors, control nets) grows, which is exactly what a finer isogeometric analysis or a denser exact sampling needs. The response states per-patch degrees/knot spans/control-net size BEFORE and AFTER plus the refined model's own sampled-cell inventory, so the shape-unchanged claim is checkable. Sources: .cad.json or STEP/IGES (a B-rep source refines into CAD JSON -- the representation the refined model serializes to; warned). One-shot export: the source file is untouched. Opens with load_model like any .cad.json.",
     inputSchema: {
       path: modelPath,
+      cadRead: cadReadSchema.optional().describe("STEP/IGES sources only: how the shape is read (meshio++ 18.3) -- deflection/angularDeflection of the triangulation, heal (ShapeFix_Shape + sewing) and sewTolerance; the response then carries a `heal` report. Ignored with a warning for .cad.json"),
       outputPath: z.string().describe("Absolute path to write the refined model to as .cad.json (must not be the source path)"),
       subdivisions: z.union([z.number(), z.array(z.number())]).optional().describe("Knot-insertion splits per span -- one number, or one per parametric direction"),
       elevate: z.union([z.number(), z.array(z.number())]).optional().describe("Degree elevation -- one number, or one per parametric direction"),
@@ -1167,6 +1319,7 @@ server.registerTool(
       "Evaluate one NURBS face at explicit parametric coordinates (meshio++ iga_evaluate): the exact surface point(s), optionally with first derivatives (derivatives: 1 adds them plus the unit normals of a surface) and the inside flag (1 where the face's trimming loops contain the point). `face` is the 0-based face index (iga_sample reports the inventory); `params` is a flat array with 2 numbers (u, v) per point. An out-of-range (u, v) throws with the knot range named. Facts only, nothing written. Sources: .cad.json or STEP/IGES.",
     inputSchema: {
       path: modelPath,
+      cadRead: cadReadSchema.optional().describe("STEP/IGES sources only: how the shape is read (meshio++ 18.3) -- deflection/angularDeflection of the triangulation, heal (ShapeFix_Shape + sewing) and sewTolerance; the response then carries a `heal` report. Ignored with a warning for .cad.json"),
       face: z.number().describe("0-based face index to evaluate (iga_sample's inventory lists the faces)"),
       params: z.array(z.number()).describe("Flat parametric-coordinate array: 2 numbers (u, v) per point"),
       derivatives: z.number().optional().describe("1 also returns first derivatives and unit normals (default 0)"),
@@ -1315,13 +1468,13 @@ server.registerTool(
   "batch_export",
   {
     description:
-      "Export MANY models in one call, one row per file: a B-rep format (step/iges/brep), a one-view technical drawing (svg/dxf), or a drawing sheet (sheet-svg/sheet-dxf). Each file goes through the same single-file tool (export_brep / export_technical_drawing / export_drawing_sheet), so a batched output is identical to exporting it alone. One bad file is a failed row, never an aborted batch. Sources are never written; an output that would overwrite an input is always refused; existing outputs follow onCollision (skip by default, suffix, or overwrite). Each row states editsBaked (B-rep sources bake their whole op list; mesh sources' drawings bake their pending edits through the headless mesh-edit replay and say so). Sequential, with per-file progress; cancelling stops before the next file and keeps what was written. Also returns a TSV table (optionally written to reportPath).",
+      "Export MANY models in one call, one row per file: a B-rep format (step/iges/brep), a one-view technical drawing (svg/dxf), or a drawing sheet (sheet-svg/sheet-dxf). Each file goes through the same single-file tool (export_brep / export_technical_drawing / export_drawing_sheet), so a batched output is identical to exporting it alone. One bad file is a failed row, never an aborted batch. Sources are never written; an output that would overwrite an input is always refused; existing outputs follow onCollision (skip by default, suffix, or overwrite). Each row states editsBaked (B-rep sources bake their whole op list; mesh sources' drawings bake their pending edits through the headless mesh-edit replay and say so). Sequential, with per-file progress; cancelling stops before the next file and keeps what was written. Design table: `configurations` (names) or `allConfigurations` writes one file per input per configuration (<stem>-<config>.<ext>) through the same writers, without changing any model's stored active configuration. Also returns a TSV table (optionally written to reportPath).",
     inputSchema: {
       inputs: z.array(z.string()).optional().describe("Model paths (give this OR root)"),
       root: z.string().optional().describe("Folder scanned like list_workspace_models (give this OR inputs)"),
       target: z.enum(["step", "iges", "brep", "svg", "dxf", "sheet-svg", "sheet-dxf"]),
       outDir: z.string().describe("Output folder (created if missing)"),
-      naming: z.string().optional().describe('Output name pattern: {stem}, {ext}, {name} (default "{stem}.{ext}")'),
+      naming: z.string().optional().describe('Output name pattern: {stem}, {ext}, {name}, {config} (default "{stem}.{ext}")'),
       onCollision: z.enum(["skip", "suffix", "overwrite"]).optional().describe('Existing outputs: default "skip"'),
       unit: z.string().optional().describe("B-rep and one-view targets: export unit (default mm)"),
       view: z.string().optional().describe("svg/dxf targets: named view (default front)"),
@@ -1329,11 +1482,15 @@ server.registerTool(
       libraryPath: z.string().optional().describe("sheet targets: user sheet-template library"),
       reportPath: z.string().optional().describe("Also write the TSV table here"),
       deterministic: z.boolean().optional().describe("step and sheet targets: byte-reproducible output (see export_brep / export_drawing_sheet)"),
+      configurations: z.array(z.string()).optional().describe("Design table: export every input once per named configuration, as <stem>-<config>.<ext> ({config} in naming). The stored activeConfiguration is not changed."),
+      allConfigurations: z.boolean().optional().describe("Design table: export every input under each configuration it stores (an input with none is a skipped row)"),
     },
   },
   wrap(
     (
       args: {
+        configurations?: string[];
+        allConfigurations?: boolean;
         inputs?: string[];
         root?: string;
         target: string;
@@ -1484,6 +1641,35 @@ server.registerTool(
     inputSchema: { path: modelPath, index: z.number().int().describe("0-based index into the op stack") },
   },
   wrap((args: { path: string; index: number }) => removeEditOp(ctx, args))
+);
+
+server.registerTool(
+  "diagnostics_report",
+  {
+    description:
+      "Assemble a redacted issue draft (title + markdown body) for a failing edit op: the op's kind and parameters, the replay diagnostic, and the extension/kernel/OS versions. Absolute paths are reduced to basenames; model bytes are never included and nothing is sent or opened — show the text to your user. Pass opIndex to name an op, or omit it to use the first op that did not apply.",
+    inputSchema: {
+      path: modelPath,
+      opIndex: z.number().int().optional().describe("0-based op index; default = the first op that failed to apply"),
+      error: z.string().optional().describe("Optional free-text error (e.g. a kernel crash message) to include, redacted"),
+    },
+  },
+  wrap((args: { path: string; opIndex?: number; error?: string }) => diagnosticsReport(ctx, args))
+);
+
+server.registerTool(
+  "set_edit_op_state",
+  {
+    description:
+      "Suppress/unsuppress and/or rename one op by 0-based index (the history row's eye and rename). A suppressed op stays in the stack but replay skips it (its opOutcome reads suppressed, not a failure); stored ops are never edited otherwise. Refused inside the baked prefix. Part ids are rebound best-effort like remove_edit_op.",
+    inputSchema: {
+      path: modelPath,
+      index: z.number().int().describe("0-based index into the op stack"),
+      suppressed: z.boolean().optional().describe("true to suppress, false to restore"),
+      label: z.string().nullable().optional().describe("Display name for the row; null or empty clears it"),
+    },
+  },
+  wrap((args: { path: string; index: number; suppressed?: boolean; label?: string | null }) => setEditOpState(ctx, args))
 );
 
 const libraryPath = z.string().describe("Absolute path to the script-library JSON file (you name it; it is created on first save)");
@@ -1643,13 +1829,45 @@ server.registerTool(
   "set_variables",
   {
     description:
-      "Replace the model's named parametric variables (e.g. L = 20) and re-resolve every op expression against them — geometry rebuilds from the new values on the next load/mesh. A variable's expression may reference only variables defined above it in the list. Op fields bind to variables via each op's `exprs` map.",
+      "Replace the model's named parametric variables (e.g. L = 20) and re-resolve every op expression against them — geometry rebuilds from the new values on the next load/mesh. A variable's expression may reference only variables defined above it in the list. Optional `comment` (a note) and `favourite` (pin in the Parameters table) are kept from the current list when omitted and cleared by an empty string or false. Op fields bind to variables via each op's `exprs` map.",
     inputSchema: {
       path: modelPath,
-      variables: z.array(z.object({ name: z.string(), expr: z.string() })).describe("Full ordered variable list"),
+      variables: z
+        .array(z.object({ name: z.string(), expr: z.string(), comment: z.string().optional(), favourite: z.boolean().optional() }))
+        .describe("Full ordered variable list"),
     },
   },
-  wrap((args: { path: string; variables: Array<{ name: string; expr: string }> }) => setVariables(args))
+  wrap((args: { path: string; variables: Array<{ name: string; expr: string; comment?: string; favourite?: boolean }> }) => setVariables(args))
+);
+
+server.registerTool(
+  "set_configuration",
+  {
+    description:
+      "Design table: create, update, rename, activate or remove a named CONFIGURATION of the model's variables (e.g. M6 / M8). A configuration is a sparse map of variable name -> expression override, stored in <model>.edits.json; the ops and their `exprs` never change — the active configuration is overlaid onto the variables before every expression resolves, so the same op list yields different geometry per configuration. `overrides` merges (an empty string or null removes one override; `replaceOverrides` replaces the whole map); `active: true` makes this the applied configuration (false un-applies it if it is the active one); `copyFrom` seeds a new configuration from another. A cell whose expression fails freezes at the variable's last-good value and is reported in `table[].errors`, never a crash. Variables are the only thing a configuration changes (not Parts, mesh options or layers). To evaluate a configuration WITHOUT changing the stored selection, pass `configuration` to an export or meshing tool (export_brep, export_mesh, generate_mesh, get_mass_properties, ...) or `configurations`/`allConfigurations` to batch_export. Returns every configuration's evaluated values (`table`).",
+    inputSchema: {
+      path: modelPath,
+      name: z.string().describe("Configuration name (the upsert key), 1-64 characters"),
+      overrides: z.record(z.string(), z.string().nullable()).optional().describe("Variable name -> expression override; empty string or null clears that override"),
+      replaceOverrides: z.boolean().optional().describe("Replace the whole override map instead of merging"),
+      rename: z.string().optional().describe("New name for this configuration"),
+      active: z.boolean().optional().describe("true applies this configuration; false un-applies it when it is the active one"),
+      remove: z.boolean().optional().describe("Delete the configuration"),
+      copyFrom: z.string().optional().describe("When creating, start from a copy of this configuration's overrides"),
+    },
+  },
+  wrap(
+    (args: {
+      path: string;
+      name: string;
+      overrides?: Record<string, string | null>;
+      replaceOverrides?: boolean;
+      rename?: string;
+      active?: boolean;
+      remove?: boolean;
+      copyFrom?: string;
+    }) => setConfiguration(args)
+  )
 );
 
 server.registerTool(

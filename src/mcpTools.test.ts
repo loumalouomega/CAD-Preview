@@ -22,6 +22,12 @@ import {
   repairMeshTool,
   inspectMeshioFieldsTool,
   checkMeshConformityTool,
+  findMeshIntersectionsTool,
+  measureMeshThicknessTool,
+  analyzeSurfaceGeometryTool,
+  meshAdjacencyTool,
+  registerMeshesTool,
+  selectMeshRegionTool,
   projectToCadTool,
   growPrismLayersTool,
   inspectEntity,
@@ -70,7 +76,10 @@ import {
   listStandardHoleSizes,
   explainEditOpRejection,
   removeEditOp,
+  setEditOpState,
   setVariables,
+  setConfiguration,
+  configurationScope,
   setPart,
   setPlane,
   listLayers,
@@ -659,6 +668,10 @@ function fakePipeline(overrides: Partial<Pipeline> = {}): Pipeline {
       dimension: 3, numHangingNodes: 0, numTJunctions: 0, numPartialOverlaps: 0, numUnweldedFacets: 0,
       numBoundaryFacets: 12, numNonManifoldFacets: 0, conforming: true, interfaceMode: "conforming", warnings: [],
     })),
+    analyzeSurfaceMesh: vi.fn(async (_b: Uint8Array, spec: { kind: "thickness" | "intersections" | "select" }) => ({ kind: spec.kind, numTriangles: 12, warnings: [] })),
+    analyzeSurfaceGeometry: vi.fn(async (_b: Uint8Array, spec: { kind: "geodesic" | "parameterize" | "eigenmodes" }) => ({ kind: spec.kind, numTriangles: 12, numPoints: 8, warnings: [] })),
+    meshAdjacency: vi.fn(async (_b: Uint8Array, _f: string, kind: "node" | "clique" | "cell") => ({ kind, numVertices: 8, numEdges: 18, minDegree: 3, maxDegree: 6, meanDegree: 4.5, numIsolated: 0 })),
+    registerMeshes: vi.fn(async () => ({ matrix: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1], initialRms: 0, rms: 0, iterations: 1, numPairs: 8, converged: true, warnings: [] })),
     readMeshioDataInfo: vi.fn(async () => []),
     readMeshioProvenance: vi.fn(async () => null),
     runMeshioOps: vi.fn(async () => ({ bytes: new Uint8Array([1, 2, 3]), steps: [], warnings: [] })),
@@ -2343,12 +2356,12 @@ describe("fit_mesh_to_cad", () => {
     const c = ctx();
     await fitMeshToCadTool(c, {
       path: stlModel, outputPath: path.join(dir, "fitted2.step"),
-      backend: "occt", refineSegmentation: true, freeformMode: "adaptive", faceDeviation: true, mergeFaces: false, segmentMethod: "primitive",
+      backend: "occt", refineSegmentation: true, refineTolerance: 2e-3, freeformMode: "adaptive", faceDeviation: true, mergeFaces: false, segmentMethod: "primitive",
     });
     expect(c.pipeline.fitMeshToCad).toHaveBeenCalledWith(
       expect.any(Uint8Array),
       "stl",
-      { backend: "occt", refineSegmentation: true, freeformMode: "adaptive", faceDeviation: true, mergeFaces: false, segmentMethod: "primitive", cadJson: false },
+      { backend: "occt", refineSegmentation: true, refineTolerance: 2e-3, freeformMode: "adaptive", faceDeviation: true, mergeFaces: false, segmentMethod: "primitive", cadJson: false },
       undefined
     );
   });
@@ -2473,6 +2486,107 @@ describe("inspect_meshio_fields", () => {
     expect(stp.supported).toBe(false);
     expect(stp.warnings[0]).toMatch(/export_mesh first/);
     await expect(checkMeshConformityTool(c, { path: await medModel(), tolerance: -1 })).rejects.toThrow(/tolerance must be/);
+  });
+
+  it("surface analyses pass the STL boundary and the validated spec to the pipeline; B-rep is unsupported", async () => {
+    const analyzeSurfaceMesh = vi.fn(async (_b: Uint8Array, spec: { kind: "thickness" | "intersections" | "select" }) => ({ kind: spec.kind, numTriangles: 12, warnings: ["w"] }));
+    const c = ctx(fakePipeline({ analyzeSurfaceMesh }));
+    const stl = path.join(dir, "sa.stl");
+    await fs.writeFile(stl, "solid x\nendsolid x\n", "utf8");
+    const t = await measureMeshThicknessTool(c, { path: stl, direction: "inward", threshold: 2 });
+    expect(analyzeSurfaceMesh).toHaveBeenLastCalledWith(expect.any(Uint8Array), { kind: "thickness", direction: "inward", maxDistance: undefined, threshold: 2 }, null);
+    expect(t).toMatchObject({ supported: true, kind: "thickness" });
+    expect(t.warnings).toContain("⟦meshio warning: w⟧");
+    await findMeshIntersectionsTool(c, { path: stl, otherPath: stl });
+    expect(analyzeSurfaceMesh).toHaveBeenLastCalledWith(expect.any(Uint8Array), expect.objectContaining({ kind: "intersections", useOther: true, maxPairs: 5000 }), expect.any(Uint8Array));
+    await selectMeshRegionTool(c, { path: stl, box: [0, 0, 0, 1, 1, 1], name: "r" });
+    expect(analyzeSurfaceMesh).toHaveBeenLastCalledWith(expect.any(Uint8Array), expect.objectContaining({ kind: "select", name: "r", box: [0, 0, 0, 1, 1, 1] }), null);
+    await expect(selectMeshRegionTool(c, { path: stl })).rejects.toThrow(/at least one criterion/);
+    await expect(selectMeshRegionTool(c, { path: stl, box: [1, 2] })).rejects.toThrow(/box must be 6/);
+    await expect(measureMeshThicknessTool(c, { path: stl, threshold: -1 })).rejects.toThrow(/threshold must be/);
+    await expect(findMeshIntersectionsTool(c, { path: stl, maxPairs: -1 })).rejects.toThrow(/maxPairs must be/);
+    const stp = await measureMeshThicknessTool(c, { path: stpModel });
+    expect(stp.supported).toBe(false);
+    expect(analyzeSurfaceMesh).toHaveBeenCalledTimes(3);
+  });
+
+  it("analyze_surface_geometry validates the spec, passes the STL boundary and refuses B-rep", async () => {
+    const analyzeSurfaceGeometry = vi.fn(async (_b: Uint8Array, spec: { kind: "geodesic" | "parameterize" | "eigenmodes" }) => ({ kind: spec.kind, numTriangles: 12, numPoints: 8, warnings: ["w"] }));
+    const c = ctx(fakePipeline({ analyzeSurfaceGeometry }));
+    const stl = path.join(dir, "sg.stl");
+    await fs.writeFile(stl, "solid x\nendsolid x\n", "utf8");
+    const g = await analyzeSurfaceGeometryTool(c, { path: stl, kind: "geodesic", sources: [0, 3] });
+    expect(analyzeSurfaceGeometry).toHaveBeenLastCalledWith(expect.any(Uint8Array), { kind: "geodesic", sources: [0, 3], timeFactor: undefined });
+    expect(g).toMatchObject({ supported: true, kind: "geodesic" });
+    expect(g.warnings).toContain("⟦meshio warning: w⟧");
+    await analyzeSurfaceGeometryTool(c, { path: stl, kind: "eigenmodes", numModes: 4 });
+    expect(analyzeSurfaceGeometry).toHaveBeenLastCalledWith(expect.any(Uint8Array), { kind: "eigenmodes", numModes: 4 });
+    await analyzeSurfaceGeometryTool(c, { path: stl, kind: "parameterize", maxStretch: 3 });
+    expect(analyzeSurfaceGeometry).toHaveBeenLastCalledWith(expect.any(Uint8Array), { kind: "parameterize", padding: undefined, maxDepth: undefined, maxStretch: 3 });
+    await expect(analyzeSurfaceGeometryTool(c, { path: stl, kind: "geodesic" })).rejects.toThrow(/at least one source/);
+    await expect(analyzeSurfaceGeometryTool(c, { path: stl, kind: "geodesic", sources: [-1] })).rejects.toThrow(/non-negative integer/);
+    await expect(analyzeSurfaceGeometryTool(c, { path: stl, kind: "eigenmodes", numModes: 0 })).rejects.toThrow(/numModes must be/);
+    await expect(analyzeSurfaceGeometryTool(c, { path: stl, kind: "nope" as never })).rejects.toThrow(/kind must be/);
+    const stp = await analyzeSurfaceGeometryTool(c, { path: stpModel, kind: "eigenmodes" });
+    expect(stp.supported).toBe(false);
+    expect(analyzeSurfaceGeometry).toHaveBeenCalledTimes(3);
+  });
+
+  it("mesh_adjacency reports degree facts, writes a graph file only on request and checks the extension", async () => {
+    const graphBytes = new TextEncoder().encode("8 18\n");
+    const meshAdjacency = vi.fn(async (_b: Uint8Array, _f: string, kind: "node" | "clique" | "cell", graphFormat?: "metis" | "scotch") => ({
+      kind, numVertices: 8, numEdges: 18, minDegree: 3, maxDegree: 6, meanDegree: 4.5, numIsolated: 0,
+      ...(graphFormat ? { graph: { format: graphFormat, bytes: graphBytes, numVertices: 8, numEdges: 18, maxDegree: 6 } } : {}),
+    }));
+    const c = ctx(fakePipeline({ meshAdjacency }));
+    const med = await medModel("adj.med");
+    const plain = await meshAdjacencyTool(c, { path: med });
+    expect(meshAdjacency).toHaveBeenLastCalledWith(expect.any(Uint8Array), "med", "node", undefined, "adj.med", []);
+    expect(plain).toMatchObject({ supported: true, kind: "node", numEdges: 18 });
+    expect(plain.graph).toBeUndefined();
+    const out = path.join(dir, "adj-out.grf");
+    const withGraph = await meshAdjacencyTool(c, { path: med, kind: "clique", outputPath: out });
+    expect(meshAdjacency).toHaveBeenLastCalledWith(expect.any(Uint8Array), "med", "clique", "scotch", "adj.med", []);
+    expect(withGraph.written).toBe(out);
+    expect(withGraph.graph).toEqual({ format: "scotch", numVertices: 8, numEdges: 18, maxDegree: 6 });
+    expect(new Uint8Array(await fs.readFile(out))).toEqual(graphBytes);
+    await expect(meshAdjacencyTool(c, { path: med, outputPath: path.join(dir, "adj-out.txt") })).rejects.toThrow(/\.graph \(METIS\) or \.grf/);
+    await expect(meshAdjacencyTool(c, { path: med, outputPath: path.join(dir, "x.graph"), graphFormat: "scotch" })).rejects.toThrow(/does not match/);
+    await expect(meshAdjacencyTool(c, { path: med, graphFormat: "metis" })).rejects.toThrow(/needs an outputPath/);
+    await expect(meshAdjacencyTool(c, { path: med, kind: "edge" as never })).rejects.toThrow(/kind must be/);
+    const stp = await meshAdjacencyTool(c, { path: stpModel });
+    expect(stp.supported).toBe(false);
+  });
+
+  it("register_meshes validates its options, forwards them and never writes over an input", async () => {
+    const moved = new Uint8Array([9, 9, 9]);
+    const registerMeshes = vi.fn(async (_s: Uint8Array, _t: Uint8Array, _o: unknown, ext?: string) => ({
+      matrix: [1, 0, 0, 2, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1], initialRms: 2, rms: 0.01, iterations: 7, numPairs: 8, converged: true,
+      ...(ext ? { bytes: moved } : {}), warnings: ["w"],
+    }));
+    const c = ctx(fakePipeline({ registerMeshes }));
+    const a = path.join(dir, "reg-a.stl");
+    const b = path.join(dir, "reg-b.stl");
+    await fs.writeFile(a, "solid x\nendsolid x\n", "utf8");
+    await fs.writeFile(b, "solid y\nendsolid y\n", "utf8");
+    const r = await registerMeshesTool(c, { path: a, targetPath: b, method: "point_to_plane", maxIterations: 20 });
+    expect(registerMeshes).toHaveBeenLastCalledWith(expect.any(Uint8Array), expect.any(Uint8Array), { method: "point_to_plane", maxIterations: 20, tolerance: undefined, maxDistance: undefined, initial: undefined }, undefined);
+    expect(r).toMatchObject({ supported: true, rms: 0.01, converged: true });
+    expect(r.written).toBeUndefined();
+    expect(r.warnings).toContain("⟦meshio warning: w⟧");
+    const out = path.join(dir, "reg-out.vtk");
+    const w = await registerMeshesTool(c, { path: a, targetPath: b, outputPath: out });
+    expect(registerMeshes).toHaveBeenLastCalledWith(expect.any(Uint8Array), expect.any(Uint8Array), expect.any(Object), "vtk");
+    expect(w.written).toBe(out);
+    expect(new Uint8Array(await fs.readFile(out))).toEqual(moved);
+    await expect(registerMeshesTool(c, { path: a, targetPath: b, outputPath: b })).rejects.toThrow();
+    await expect(registerMeshesTool(c, { path: a, targetPath: b, outputPath: path.join(dir, "noext") })).rejects.toThrow(/extension/);
+    await expect(registerMeshesTool(c, { path: a, targetPath: b, method: "x" as never })).rejects.toThrow(/method must be/);
+    await expect(registerMeshesTool(c, { path: a, targetPath: b, initial: [1, 2] })).rejects.toThrow(/16 finite/);
+    await expect(registerMeshesTool(c, { path: a, targetPath: b, maxIterations: 0 })).rejects.toThrow(/maxIterations/);
+    const stp = await registerMeshesTool(c, { path: a, targetPath: stpModel });
+    expect(stp.supported).toBe(false);
+    expect(stp.warnings[0]).toMatch(/^targetPath:/);
   });
 
   it("returns the pipeline's per-array facts verbatim for a meshio source", async () => {
@@ -3298,6 +3412,25 @@ describe("run_parametric_script", () => {
   });
 });
 
+describe("set_edit_op_state", () => {
+  it("suppresses, relabels, reports it in get_state, and refuses baked/out-of-range", async () => {
+    const c = ctx();
+    await applyEditOps(c, { path: stpModel, ops: [{ op: "addBox", center: [0, 0, 0], size: [1, 1, 1] }, { op: "addSphere", center: [0, 0, 0], radius: 2 }] });
+    const r = await setEditOpState(c, { path: stpModel, index: 1, suppressed: true, label: "Ball" });
+    expect(r).toMatchObject({ suppressed: true, label: "Ball" });
+    const persisted = (await readEdits(stpModel)).ops[1] as { suppressed?: boolean; label?: string };
+    expect(persisted).toMatchObject({ suppressed: true, label: "Ball" });
+    const state = await getState({ path: stpModel });
+    expect(state.edits[1]).toMatchObject({ suppressed: true, label: "Ball", description: "Ball" });
+    await setEditOpState(c, { path: stpModel, index: 1, suppressed: false, label: null });
+    expect((await readEdits(stpModel)).ops[1]).toEqual({ op: "addSphere", center: [0, 0, 0], radius: 2 });
+    await expect(setEditOpState(c, { path: stpModel, index: 9, suppressed: true })).rejects.toThrow(/out of range/);
+    await expect(setEditOpState(c, { path: stpModel, index: 1 })).rejects.toThrow(/suppressed and\/or label/);
+    await writeEdits(stpModel, (await readEdits(stpModel)).ops, [], 2);
+    await expect(setEditOpState(c, { path: stpModel, index: 0, suppressed: true })).rejects.toThrow(/baked prefix/);
+  });
+});
+
 describe("remove_edit_op", () => {
   it("removes by index and rejects out-of-range", async () => {
     const c = ctx();
@@ -3785,8 +3918,8 @@ describe("set_variables", () => {
       ],
     });
     expect(result.variables).toEqual([
-      { name: "L", expr: "20", value: 20, error: null },
-      { name: "W", expr: "L/2", value: 10, error: null },
+      { name: "L", expr: "20", value: 20, comment: "", favourite: false, error: null },
+      { name: "W", expr: "L/2", value: 10, comment: "", favourite: false, error: null },
     ]);
     const { ops } = await readEdits(stpModel);
     expect((ops[0] as { size: number[] }).size[0]).toBe(20);
@@ -3803,6 +3936,20 @@ describe("set_variables", () => {
     expect(result.variables[0].error).toBeTruthy();
     expect(result.variables[0].value).toBe(0); // frozen at the (fresh) cache
     expect(result.variables[1].value).toBe(5);
+  });
+});
+
+describe("set_variables comment/favourite", () => {
+  it("stores them, keeps them when omitted on a later call, and clears with \"\"/false", async () => {
+    await setVariables({ path: stpModel, variables: [{ name: "L", expr: "20", comment: "length", favourite: true }] });
+    expect((await readEdits(stpModel)).variables[0]).toMatchObject({ comment: "length", favourite: true });
+    const kept = await setVariables({ path: stpModel, variables: [{ name: "L", expr: "21" }] });
+    expect(kept.variables[0]).toMatchObject({ comment: "length", favourite: true, value: 21 });
+    const cleared = await setVariables({ path: stpModel, variables: [{ name: "L", expr: "21", comment: "", favourite: false }] });
+    expect(cleared.variables[0]).toMatchObject({ comment: "", favourite: false });
+    const stored = (await readEdits(stpModel)).variables[0];
+    expect(stored.comment).toBeUndefined();
+    expect(stored.favourite).toBeUndefined();
   });
 });
 
@@ -6553,5 +6700,128 @@ describe("3MF is display-only on the host", () => {
     await expect(exportSvgSilhouetteTool(c, { path: threeMfModel, outputPath: path.join(dir, "o.svg") })).rejects.toThrow(/display-only formats/);
     await expect(generateMeshTool(c, { path: threeMfModel })).rejects.toThrow(/display-only mesh format/);
     expect(c.pipeline.generateMesh).not.toHaveBeenCalled();
+  });
+});
+
+describe("set_configuration (design table)", () => {
+  async function parametricBox(c: ToolContext): Promise<void> {
+    await applyEditOps(c, {
+      path: stpModel,
+      ops: [{ op: "addBox", center: [0, 0, 0], size: [1, 1, 1], exprs: { "size[0]": "D", "size[1]": "D", "size[2]": "D" } }],
+    });
+    await setVariables({ path: stpModel, variables: [{ name: "D", expr: "6" }] });
+  }
+  const sizeOf = (ops: unknown[]): number[] => (ops[0] as { size: number[] }).size;
+
+  it("stores sparse overrides, activates one, and re-resolves the ops without touching exprs or base variables", async () => {
+    const c = ctx();
+    await parametricBox(c);
+    await setConfiguration({ path: stpModel, name: "M6" });
+    const r = await setConfiguration({ path: stpModel, name: "M8", overrides: { D: "8" }, active: true });
+    expect(r.activeConfiguration).toBe("M8");
+    expect(r.table.map((row) => row.configuration)).toEqual([null, "M6", "M8"]);
+    expect(r.table[2].values).toEqual({ D: 8 });
+    expect(r.table[1].values).toEqual({ D: 6 });
+    const stored = await readEdits(stpModel);
+    expect(sizeOf(stored.ops)).toEqual([8, 8, 8]);
+    expect((stored.ops[0] as { exprs: object }).exprs).toEqual({ "size[0]": "D", "size[1]": "D", "size[2]": "D" });
+    expect(stored.variables[0]).toMatchObject({ name: "D", expr: "6", value: 6 });
+    expect(stored.configurations).toEqual([
+      { name: "M6", overrides: {} },
+      { name: "M8", overrides: { D: "8" } },
+    ]);
+    // Deactivating returns to the plain variables.
+    await setConfiguration({ path: stpModel, name: "M8", active: false });
+    expect(sizeOf((await readEdits(stpModel)).ops)).toEqual([6, 6, 6]);
+  });
+
+  it("other sidecar writes (apply_edit_ops, set_variables) keep the configurations", async () => {
+    const c = ctx();
+    await parametricBox(c);
+    await setConfiguration({ path: stpModel, name: "M8", overrides: { D: "8" }, active: true });
+    await applyEditOps(c, { path: stpModel, ops: [{ op: "addBox", center: [5, 0, 0], size: [1, 1, 1] }] });
+    await setVariables({ path: stpModel, variables: [{ name: "D", expr: "7" }] });
+    const stored = await readEdits(stpModel);
+    expect(stored.activeConfiguration).toBe("M8");
+    expect(stored.configurations).toHaveLength(1);
+    // The new base value does not leak into the active configuration's result.
+    expect(sizeOf(stored.ops)).toEqual([8, 8, 8]);
+  });
+
+  it("refuses bad names/unknown copies, and a failing override freezes instead of throwing", async () => {
+    const c = ctx();
+    await parametricBox(c);
+    await expect(setConfiguration({ path: stpModel, name: "" })).rejects.toThrow(/name/);
+    await expect(setConfiguration({ path: stpModel, name: "X", remove: true })).rejects.toThrow(/No configuration/);
+    const r = await setConfiguration({ path: stpModel, name: "bad", overrides: { D: "oops(" }, active: true });
+    expect(r.table[1].errors.D).toBeTruthy();
+    expect(r.table[1].values.D).toBe(6); // frozen at the cached value
+    expect(sizeOf((await readEdits(stpModel)).ops)).toEqual([6, 6, 6]);
+  });
+
+  it("get_state lists configurations; renaming and removing keep the active pointer coherent", async () => {
+    const c = ctx();
+    await parametricBox(c);
+    await setConfiguration({ path: stpModel, name: "M8", overrides: { D: "8" }, active: true });
+    const state = await getState({ path: stpModel });
+    expect(state.activeConfiguration).toBe("M8");
+    expect(state.configurations).toEqual([{ name: "M8", active: true, overrides: { D: "8" } }]);
+    expect(state.effectiveVariables?.[0]).toMatchObject({ name: "D", expr: "8", value: 8 });
+    const renamed = await setConfiguration({ path: stpModel, name: "M8", rename: "Eight" });
+    expect(renamed.activeConfiguration).toBe("Eight");
+    const removed = await setConfiguration({ path: stpModel, name: "Eight", remove: true });
+    expect(removed.activeConfiguration).toBeNull();
+    expect((await getState({ path: stpModel })).configurations).toEqual([]);
+  });
+
+  it("configurationScope evaluates a named configuration for an export WITHOUT changing the stored one", async () => {
+    const c = ctx();
+    await parametricBox(c);
+    await setConfiguration({ path: stpModel, name: "M6" });
+    await setConfiguration({ path: stpModel, name: "M8", overrides: { D: "8" } });
+    const before = await fs.readFile(`${stpModel}.edits.json`, "utf8");
+    const exported = async (config?: string): Promise<number[]> => {
+      vi.mocked(c.pipeline.exportBRep).mockClear();
+      const run = () => exportBRepTool(c, { path: stpModel, targetFormat: "brep", outputPath: path.join(dir, `scoped-${config ?? "none"}.brep`) });
+      await (config ? configurationScope.run({ configuration: config }, run) : run());
+      return sizeOf(vi.mocked(c.pipeline.exportBRep).mock.calls[0][4] as unknown[]);
+    };
+    expect(await exported("M8")).toEqual([8, 8, 8]);
+    expect(await exported("M6")).toEqual([6, 6, 6]);
+    expect(await exported()).toEqual([6, 6, 6]);
+    expect(await fs.readFile(`${stpModel}.edits.json`, "utf8")).toBe(before);
+    await expect(configurationScope.run({ configuration: "nope" }, () => exportBRepTool(c, { path: stpModel, targetFormat: "brep", outputPath: path.join(dir, "x.brep") }))).rejects.toThrow(/Unknown configuration "nope".*M6, M8/);
+  });
+
+  it("batch_export writes one file per configuration as <stem>-<config>.<ext>, evaluating each without changing the stored one", async () => {
+    const c = ctx();
+    await parametricBox(c);
+    await setConfiguration({ path: stpModel, name: "M6" });
+    await setConfiguration({ path: stpModel, name: "M8 coarse", overrides: { D: "8" } });
+    const before = await fs.readFile(`${stpModel}.edits.json`, "utf8");
+    vi.mocked(c.pipeline.exportBRep).mockClear();
+    const outDir = path.join(dir, "cfg-batch");
+    const r = await batchExportTool(c, { inputs: [stpModel], target: "brep", outDir, allConfigurations: true });
+    expect(r.rows.map((x) => [x.configuration, x.status])).toEqual([
+      ["M6", "ok"],
+      ["M8 coarse", "ok"],
+    ]);
+    expect(r.rows.map((x) => path.basename(x.outputs[0]))).toEqual(["model-M6.brep", "model-M8_coarse.brep"]);
+    expect(vi.mocked(c.pipeline.exportBRep).mock.calls.map((call) => sizeOf(call[4] as unknown[]))).toEqual([
+      [6, 6, 6],
+      [8, 8, 8],
+    ]);
+    expect(r.table.split("\n")[0]).toBe("input\tconfiguration\tstatus\toutputs\tedits_baked\terror\twarnings");
+    expect(await fs.readFile(`${stpModel}.edits.json`, "utf8")).toBe(before);
+    // Named subset; a name the model lacks is a failed row, not an aborted batch.
+    const subset = await batchExportTool(c, { inputs: [stpModel], target: "brep", outDir: path.join(dir, "cfg-batch2"), configurations: ["M6", "ghost"] });
+    expect(subset.rows.map((x) => x.status)).toEqual(["ok", "failed"]);
+    expect(subset.rows[1].error).toMatch(/Unknown configuration "ghost"/);
+    // A model with no configurations is a skipped row under allConfigurations.
+    const none = await batchExportTool(c, { inputs: [stpModel2], target: "brep", outDir: path.join(dir, "cfg-batch3"), allConfigurations: true });
+    expect(none.rows[0]).toMatchObject({ status: "skipped", error: "this model has no configurations" });
+    // Without the new options the table keeps its previous shape.
+    const plain = await batchExportTool(c, { inputs: [stpModel2], target: "brep", outDir: path.join(dir, "cfg-batch4") });
+    expect(plain.table.split("\n")[0]).toBe("input\tstatus\toutputs\tedits_baked\terror\twarnings");
   });
 });

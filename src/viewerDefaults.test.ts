@@ -12,7 +12,7 @@ describe("normalizeViewerDefaults", () => {
   });
 
   it("accepts a well-formed object unchanged", () => {
-    const opts = { background: "#000000", meshSizePreset: "fine" as const, showGridAndAxes: false, upAxis: "z" as const };
+    const opts = { background: "#000000", meshSizePreset: "fine" as const, showGridAndAxes: false, upAxis: "z" as const, singleKeyCommands: true, navigationPreset: "fusion" as const };
     expect(normalizeViewerDefaults(opts)).toEqual(opts);
   });
 
@@ -43,6 +43,13 @@ describe("normalizeViewerDefaults", () => {
   it("defaults upAxis unless exactly y/z", () => {
     expect(normalizeViewerDefaults({ upAxis: "z" }).upAxis).toBe("z");
     expect(normalizeViewerDefaults({ upAxis: "x" }).upAxis).toBe(DEFAULT_VIEWER_DEFAULTS.upAxis);
+  });
+
+  it("singleKeyCommands is off by default and only true for a real boolean", () => {
+    expect(DEFAULT_VIEWER_DEFAULTS.singleKeyCommands).toBe(false);
+    expect(normalizeViewerDefaults({ singleKeyCommands: true }).singleKeyCommands).toBe(true);
+    expect(normalizeViewerDefaults({ singleKeyCommands: "true" }).singleKeyCommands).toBe(false);
+    expect(normalizeViewerDefaults({ singleKeyCommands: 1 }).singleKeyCommands).toBe(false);
   });
 
   it("DEFAULT_VIEWER_DEFAULTS is itself valid", () => {

@@ -1,11 +1,13 @@
-% Op icon: revolve — dash-dot axis, profile rectangle, curved sweep arrow, ghost ellipse.
+% Op icon: revolve (two-tone) - profile (accent) swept about a dash-dot axis.
 \documentclass[tikz,border=2mm]{standalone}
 \usetikzlibrary{arrows.meta,calc,shapes.geometric}
 \begin{document}
 \begin{tikzpicture}[line width=1.3pt, line cap=round, line join=round, >=Stealth, x=1mm,y=1mm]
   \draw[dash dot] (0,-12) -- (0,12);
-  \draw[dashed] (0,-9) ellipse (10 and 3);
-  \draw[thick, fill=gray!25] (4,-4) rectangle (10,4);
-  \draw[->, thick] (0,8) to[out=20,in=160] (14,8);
+  \fill[gray!80] (0,6) ellipse (9 and 2.8);
+  \draw[dashed] (0,6) ellipse (9 and 2.8);
+  \draw[dashed] (0,-6) ellipse (9 and 2.8);
+  \draw[thick, fill=blue] (3,-6) rectangle (9,6);
+  \draw[->, thick] (-8,11) to[out=15,in=165] (8,11);
 \end{tikzpicture}
 \end{document}

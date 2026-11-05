@@ -97,6 +97,7 @@ describe("REVISION_GUARDED_TOOLS", () => {
     expect(REVISION_GUARDED_TOOLS).toMatchObject({
       apply_edit_ops: "edits",
       set_variables: "edits",
+      set_configuration: "edits",
       set_part: "parts",
       set_plane: "planes",
       assign_layer: "layers",

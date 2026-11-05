@@ -301,7 +301,7 @@ Entity ids are the stable topological ids assigned during extraction (`solid-*`,
 
 A part may be **rule-defined**: a stored `selector` of `{"version": 1, "source": {"kind": "scene", "filter": [...]}}` is re-evaluated against the current model after every edit (instead of its ids being rebound), and its `surfaces` list is overwritten with the result. Besides the older leaves, a `filter` may use `{"kind": "plane", "point": [-50, 0, 0], "normal": [1, 0, 0]}` (planar faces on that plane, either orientation), `{"kind": "box", "mode": "inside" | "intersects", "min": [-51, null, null], "max": [-49, null, null]}` (face bounding box inside, or overlapping, the box; `null` = unbounded on that side) and `{"kind": "surfaceType", "type": "cylinder", "radius": 5}`. Tolerances default to `1e-3 ×` the model's bounding-box diagonal (the same figure the rebinder uses) and can be set with a leaf's own `tol`. A rule that selects nothing keeps the cached ids with a warning; a rule whose result changes reports "Part X: rule re-evaluated — N faces added, M lost". Faces only.
 
-A part may carry an optional `density` (g/cm³, a positive finite number — anything else is dropped on read); `generate_bom` and `get_mass_properties` turn it into a mass in grams (`volume mm³ / 1000 × density`), and a part without one reports its mass as missing, never zero. A part may additionally carry a re-executable `selector` (a SelectorQuery, same shape `resolve_selector` takes) beside its raw `surfaces` cache, plus a `selectorOpKind` tag naming the producing op's kind at synthesis time. The host re-resolves the query against the current op list on open and after every op-list change, overwriting `surfaces` only on an oracle-clean result — otherwise the cache freezes with a warning (a stored op index that now addresses a different op kind freezes rather than repointing). A malformed selector is dropped while the part survives on its raw ids. `set_part` accepts the query and derives the kind tag server-side from the current op list, so write-time mismatch is impossible by construction.
+A part may carry an optional `density` (g/cm³, a positive finite number — anything else is dropped on read; the Parts panel's Material picker and `set_part`'s `material` both store only this number, never the material name); `generate_bom` and `get_mass_properties` turn it into a mass in grams (`volume mm³ / 1000 × density`), and a part without one reports its mass as missing, never zero. A part may additionally carry a re-executable `selector` (a SelectorQuery, same shape `resolve_selector` takes) beside its raw `surfaces` cache, plus a `selectorOpKind` tag naming the producing op's kind at synthesis time. The host re-resolves the query against the current op list on open and after every op-list change, overwriting `surfaces` only on an oracle-clean result — otherwise the cache freezes with a warning (a stored op index that now addresses a different op kind freezes rather than repointing). A malformed selector is dropped while the part survives on its raw ids. `set_part` accepts the query and derives the kind tag server-side from the current op list, so write-time mismatch is impossible by construction.
 
 ## Layers Sidecar (`<model>.layers.json`)
 
@@ -340,6 +340,8 @@ User-applied **edit operations** (transforms and booleans, and — in later mile
 
 The source file is written only by an explicit, confirmed action — Ctrl+S on a dirty tab (for STEP/IGES/BREP/STL/OBJ/PLY), an Export pick of the source's own format ("save in place"), or the headless `save_model` MCP tool — never as a side effect of applying or autosaving an edit. That save **bakes** the unbaked op tail into the file and records how far via a `bakedThrough` watermark: the file on disk already contains `ops[0..bakedThrough]`, so replay starts after it and every kernel replay consumes only the tail. The field is omitted when `0`, so a never-saved-in-place document's sidecar is byte-identical to before this feature existed; parsing clamps an out-of-range value instead of throwing. Undo cannot cross the save point, and `remove_edit_op` refuses an index inside the baked prefix headless.
 
+Each op may carry two additive display/replay fields: `suppressed: true` (omitted when false — replay skips the op) and `label` (a short row name). Neither changes the op's parameters, and a file without them parses unchanged.
+
 ### Recovering an interrupted save (`<model>.save-journal.json`)
 
 A save-in-place (STEP/IGES/BREP or STL/OBJ/PLY) writes the geometry and **then** advances the `bakedThrough` watermark. A process that stops between those two writes leaves the file on disk baked while the sidecar still says otherwise — and reopening then replays the same edit over geometry that already contains it.
@@ -372,10 +374,11 @@ A leftover `<base>.save-tmp.<ext>` from a death between writing it and renaming 
 
 ### Parametric variables
 
-The optional top-level `variables` array holds the document's named **parametric variables** (`{name, expr, value}`), and any op may carry an optional `exprs` annotation mapping a numeric field path (`length`, `size[1]`, `points[2][0]`) to an expression string over them. Editing a variable in the panel re-resolves every annotated op and rebuilds the geometry live. Rules:
+The optional top-level `variables` array holds the document's named **parametric variables** (`{name, expr, value}` plus optional `comment` and `favourite`), and any op may carry an optional `exprs` annotation mapping a numeric field path (`length`, `size[1]`, `points[2][0]`) to an expression string over them. Editing a variable in the panel re-resolves every annotated op and rebuilds the geometry live. Rules:
 
 - **Numeric fields are last-good caches.** The addressed field always holds the most recent successful evaluation, so a consumer that ignores `exprs` (or an older extension version) still sees a fully-resolved op. Parsing re-resolves ops against the variables (`parseEditsJson`), so hand-editing a variable's `expr` in the sidecar takes effect on the next open.
 - **Expressions** support numbers, variable names, `+ - * / ^`, parentheses, `sqrt/abs/min/max/floor/ceil/round/sin/cos/tan` (trig in **degrees**, matching the `*Deg` angle fields), and `pi`. A number may carry a bracketed unit — `2[in]`, `10[mm]`, `1.5[ft]`, `5[deg]`, `0.5[rad]` (`mm cm m in ft`, `deg rad`) — converted to the pipeline's millimetres / degrees (`2[in]` is `50.8`); a plain number keeps its meaning, and the suffix must touch the number. Evaluation is a small closed interpreter (`src/paramExpr.ts`) — never `eval()`.
+- **`comment` / `favourite` are additive and optional:** both are absent when empty/false, so a sidecar written before they existed parses and re-serialises unchanged. `favourite` only pins the row in the panel's view; the array order is the evaluation order.
 - **A variable may reference only variables defined above it** in the list (derived values like `W = L/2` work; cycles are unrepresentable). A variable whose expression fails keeps its cached `value`.
 - **Failures freeze, never crash:** an op whose expression references a deleted variable — or whose resolved values would violate a cross-field invariant (e.g. a torus with `minorRadius ≥ majorRadius`) — keeps its previous numbers and a warning is shown; replay continues.
 
@@ -426,6 +429,29 @@ The bottom-up wireframe ops (`addPoint`/`addLine`/`addArc`/`addSurfaceFromLines`
 Op order is preserved (replay depends on it). Parsing is tolerant: malformed ops are dropped via `validateEditOp` (`src/editOps.ts`) and a corrupt or missing sidecar yields an empty list rather than blocking the model. **Export bakes the edits in** — the export pipeline re-applies the same ops to the exported geometry.
 
 > **Entity-id drift:** topology-changing ops (booleans, fillet, feature modeling) re-tessellate into new `face-*`/`edge-*` ids, so a part assignment made before such an op may no longer resolve afterwards. The tolerant parts parser drops unresolved ids on reload, so this degrades gracefully rather than erroring.
+
+
+### Configurations (design table)
+
+The optional top-level `configurations` array and `activeConfiguration` string hold **named sets of variable values** (an M6 and an M8 variant of one model). Both are additive and omitted when empty, so a sidecar written before they existed parses and re-serialises byte-for-byte unchanged.
+
+```json
+{
+  "variables": [{ "name": "D", "expr": "6", "value": 6 }],
+  "configurations": [
+    { "name": "M6", "overrides": {} },
+    { "name": "M8", "overrides": { "D": "8" } }
+  ],
+  "activeConfiguration": "M8",
+  "ops": [{ "op": "addBox", "center": [0, 0, 0], "size": [8, 8, 8], "exprs": { "size[0]": "D", "size[1]": "D", "size[2]": "D" } }]
+}
+```
+
+- **Sparse overrides.** A configuration maps a variable name to an expression that replaces that variable's own `expr`; a variable it does not mention keeps the base expression. A cell equal to the base expression is stored as no override.
+- **Overlay before resolve, stored ops never change.** The active configuration is overlaid onto the variables (on clones) before the existing resolve-on-read, so the ops' `exprs`, the base `variables` and their cached `value`s are untouched; only the ops' cached numeric fields take the configuration's values (they are caches, healed on every read). `activeConfiguration` that names nothing falls back to the plain variables.
+- **Tolerant parse.** Entries with an empty, over-long (64), control-character or duplicate name are dropped; an override whose key is not a valid variable name, or whose value is not a bounded string, is dropped on its own. Up to 64 configurations.
+- **Failures freeze.** A cell that cannot evaluate keeps the variable's last-good cached value (and its dependents use it); the Config Table flags the cell. Nothing throws.
+- **Scope.** Variables are the only thing a configuration changes: not Parts, mesh options or layers. The sidecar writers in `src/editsStore.ts` and `src/mcpSidecars.ts` keep the configurations on disk when a caller does not pass them, so an older code path can never drop them.
 
 ### Blank documents
 
@@ -517,7 +543,10 @@ The persisted **camera orientation, display mode, ortho/perspective toggle, and 
     { "viewDirection": [0, 1, 0], "cameraUp": [0, 0, 1], "orthographic": true }
   ],
   "collapsedPanels": ["meshing-panel", "standard-parts-panel"],
-  "sidebarWidth": 300
+  "sidebarWidth": 300,
+  "ribbonTab": "inspect",
+  "ribbonCompact": true,
+  "editsGridOpen": true
 }
 ```
 
@@ -526,6 +555,8 @@ The persisted **camera orientation, display mode, ortho/perspective toggle, and 
 `collapsedPanels` is a third such optional top-level sibling: the sidebar sections currently collapsed to just their header, by panel id. Valid ids come only from `COLLAPSIBLE_PANELS` (`src/webview/collapsiblePanels.ts`), and a hand-edited or newer-build list is filtered against it on read, so an unknown id is dropped rather than reaching some other element. Absent or empty (the default) means every section is expanded, so an older sidecar restores exactly as before and an untouched one stays byte-stable — again purely additive, no version bump.
 
 `sidebarWidth` (roadmap "Sidebar layout and keyboard usability") is a fourth such optional sibling: the resizable sidebar's width in px. Read values are clamped through `clampSidebarWidth` (`src/webview/sidebarResizer.ts`, range 176..420) — a hand-edited out-of-range number falls back to the clamp bounds, never the raw value, and a non-numeric value means "unpersisted". Absent **or exactly 220** (the pre-resizer fixed width) writes nothing, so an unresized document's sidecar stays byte-stable. Same shape, same no-version-bump rule, same exclusion from the Preprocess Archive and from MCP as `collapsedPanels`.
+
+`ribbonTab`, `ribbonCompact` and `editsGridOpen` (roadmap "Ribbon command strip") are three more optional top-level siblings: the command strip's active tab (`view`, `model`, `inspect`, `mesh` or `export`), whether its button labels are hidden, and whether the Edits panel's op button grid is expanded. Each is omitted at its default (tab `model`, labels shown, grid collapsed), so an untouched ribbon leaves the file byte-identical to the older shape; an unknown tab id or a non-boolean flag falls back to the default without discarding the rest of the record. Display preferences only: no MCP surface, no geometry.
 
 `viewDirection`/`cameraUp` are a normalized direction (target → camera) and up vector, not a raw position/target/distance — `Viewer.frame(direction)` already re-derives both from the model's current bounding box, so this survives edits that change the model's extents. `clip.offsetFrac` is likewise a fraction of the model's bbox, not a raw plane constant — measured along the clip's **active normal**. `clip` may carry an optional explicit unit `normal` (`{axis, offsetFrac, normal?}`) which wins over `axis` when present; `axis` is still always written, set to that normal's dominant axis, so an older build restores a sensible neighbouring clip instead of none. A malformed `normal` drops only itself, leaving the clip as its axis form — unlike a malformed `axis`, which still drops the whole `clip`. Parsing is tolerant like the other three sidecars, with one stricter rule: a missing or degenerate (all-zero) `viewDirection`/`cameraUp` rejects the WHOLE record (falls back to no persisted view, i.e. the default isometric) rather than feeding NaN/zero into the camera — every other field falls back individually (an unrecognized `displayMode` → `"shaded"`, a malformed `clip` → `null`, an unknown `layout` → ignored as `"1x1"`, a bad per-pane entry → falls back to `view`'s own direction/up/ortho for that pane, a short/long `panes` array → padded/truncated to `paneCount(layout)`).
 

@@ -1,6 +1,8 @@
 import type { Part } from "../protocol";
 import { UI_GLYPHS } from "../uiGlyphs";
 import type { VisibilityState } from "./visibilityState";
+import { MATERIALS, materialLabel } from "../materialDensity";
+import { describeRule, type RuleKind } from "../ruleFromSelection";
 
 export interface PartsPanelCallbacks {
   onCreate: () => void;
@@ -10,7 +12,11 @@ export interface PartsPanelCallbacks {
   onRecolor: (index: number, color: string) => void;
   /** Sets (a positive g/cm³ number) or clears (`undefined`) the part's material density. */
   onSetDensity: (index: number, density: number | undefined) => void;
+  /** Picks a named material: stores its density (never the name) and offers its suggested colour. */
+  onPickMaterial: (index: number, density: number, color: string) => void;
   onRemoveEntity: (index: number, entityType: "volume" | "surface" | "line" | "point", entityId: string) => void;
+  /** Defines the part's rule from the current face selection, or clears it (`"clear"`). */
+  onDefineRule: (index: number, kind: RuleKind | "clear") => void;
   onSelectPart: (index: number | null) => void;
   /** Toggles whether this part's entities are hidden (display-only, never persisted). */
   onToggleVisible: (index: number) => void;
@@ -97,6 +103,9 @@ export class PartsPanel {
     );
   }
 
+  /** Session-only presentation of the picked material name, by part index. */
+  private readonly shownMaterial = new Map<number, { name: string; density: number }>();
+
   private buildPart(part: Part, index: number): HTMLElement {
     const item = document.createElement("div");
     item.className = "part-item";
@@ -174,6 +183,63 @@ export class PartsPanel {
     });
     density.addEventListener("click", (e) => e.stopPropagation());
     row.appendChild(density);
+
+    // Material picker (roadmap "Named materials in the Parts panel"). Only the
+    // NUMBER is stored; the shown name is session-only and valid only while the
+    // Part's density still equals the density it was picked with, so editing
+    // the density by hand (or any other path) clears it.
+    const shown = this.shownMaterial.get(index);
+    const shownName = shown && part.density === shown.density ? shown.name : "";
+    const material = document.createElement("select");
+    material.className = "part-material";
+    material.title = "Named material — sets the density (and a suggested colour); only the number is saved";
+    material.setAttribute("aria-label", "Material");
+    const none = document.createElement("option");
+    none.value = "";
+    none.textContent = "Material…";
+    material.appendChild(none);
+    for (const m of MATERIALS) {
+      const o = document.createElement("option");
+      o.value = m.name;
+      o.textContent = `${materialLabel(m.name)} (${m.density})`;
+      material.appendChild(o);
+    }
+    material.value = shownName;
+    material.classList.toggle("has-material", shownName !== "");
+    material.addEventListener("change", () => {
+      const m = MATERIALS.find((x) => x.name === material.value);
+      if (!m) return;
+      this.shownMaterial.set(index, { name: m.name, density: m.density });
+      this.cb.onPickMaterial(index, m.density, m.color);
+    });
+    material.addEventListener("click", (e) => e.stopPropagation());
+    row.appendChild(material);
+
+    const rule = document.createElement("select");
+    rule.className = "part-rule";
+    rule.title = "Define this part by a rule taken from the selected faces (kept as the model changes)";
+    rule.setAttribute("aria-label", "Define part by rule");
+    const current = describeRule(part.selector);
+    rule.classList.toggle("has-rule", current !== null);
+    for (const [value, label] of [
+      ["", current ? `Rule: ${current}` : "Rule…"],
+      ["plane", "On the selected plane"],
+      ["box", "Inside the selection's box"],
+      ["type", "Same surface type and radius"],
+      ...(current ? [["clear", "Clear rule"]] : []),
+    ]) {
+      const o = document.createElement("option");
+      o.value = value;
+      o.textContent = label;
+      rule.appendChild(o);
+    }
+    rule.addEventListener("change", () => {
+      const v = rule.value;
+      rule.value = "";
+      if (v) this.cb.onDefineRule(index, v as RuleKind | "clear");
+    });
+    rule.addEventListener("click", (e) => e.stopPropagation());
+    row.appendChild(rule);
 
     const badge = document.createElement("span");
     badge.className = "part-badge";

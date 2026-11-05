@@ -30,6 +30,11 @@ const FUNCTIONS: Record<string, (...args: number[]) => number> = {
 
 const CONSTANTS: Record<string, number> = { pi: Math.PI };
 
+/** Callable function names, for autocomplete (the table itself stays private). */
+export const EXPR_FUNCTION_NAMES: readonly string[] = Object.keys(FUNCTIONS);
+/** Constant names (`pi`), for autocomplete. */
+export const EXPR_CONSTANT_NAMES: readonly string[] = Object.keys(CONSTANTS);
+
 const RESERVED = new Set([...Object.keys(FUNCTIONS), ...Object.keys(CONSTANTS)]);
 
 /**
@@ -49,8 +54,11 @@ export function isValidVariableName(s: string): boolean {
   return /^[A-Za-z_][A-Za-z0-9_]*$/.test(s) && !RESERVED.has(s);
 }
 
+/** Physical dimension of an expression: `none` is a plain number (compatible with any field). */
+export type ExprDim = "none" | "length" | "angle" | "mixed";
+
 type Token =
-  | { kind: "num"; value: number }
+  | { kind: "num"; value: number; dim?: ExprDim }
   | { kind: "ident"; name: string }
   | { kind: "punct"; ch: string };
 
@@ -68,6 +76,7 @@ function tokenizeRaw(src: string): Token[] | null {
       if (!Number.isFinite(value)) return null;
       i += m[0].length;
       let scaled = value;
+      let dim: ExprDim | undefined;
       if (src[i] === "[") {
         const close = src.indexOf("]", i);
         if (close < 0) throw new Error("missing ']' after unit");
@@ -76,10 +85,11 @@ function tokenizeRaw(src: string): Token[] | null {
           throw new Error(`unknown unit '${unit}' — use ${Object.keys(EXPR_UNITS).join(", ")}`);
         }
         scaled = value * EXPR_UNITS[unit];
+        dim = unit === "deg" || unit === "rad" ? "angle" : "length";
         i = close + 1;
       }
       if (!Number.isFinite(scaled)) return null;
-      tokens.push({ kind: "num", value: scaled });
+      tokens.push({ kind: "num", value: scaled, dim });
       continue;
     }
     if (/[A-Za-z_]/.test(c)) {
@@ -198,6 +208,90 @@ class Parser {
       this.fail(`unknown variable '${t.name}'`);
     }
     this.fail(`unexpected '${(t as { ch: string }).ch}'`);
+  }
+}
+
+/**
+ * Static dimension walk over the same grammar as {@link Parser}: a bracketed
+ * unit gives a number `length`/`angle`; sums keep a shared dimension (two
+ * different ones are `mixed`); a product with a plain number keeps the other
+ * factor's dimension, and anything cleverer (length*length, powers, trig,
+ * sqrt) is `none` — "don't know" never warns.
+ */
+class DimParser {
+  private pos = 0;
+  constructor(private tokens: Token[], private varDims: Record<string, ExprDim>) {}
+  private isPunct(ch: string): boolean {
+    const t = this.tokens[this.pos];
+    return !!t && t.kind === "punct" && t.ch === ch;
+  }
+  parse(): ExprDim {
+    const d = this.expr();
+    if (this.pos !== this.tokens.length) throw new Error("unexpected trailing input");
+    return d;
+  }
+  private expr(): ExprDim {
+    let d = this.term();
+    while (this.isPunct("+") || this.isPunct("-")) {
+      this.pos++;
+      const r = this.term();
+      d = d === "none" ? r : r === "none" || r === d ? d : "mixed";
+    }
+    return d;
+  }
+  private term(): ExprDim {
+    let d = this.factor();
+    while (this.isPunct("*") || this.isPunct("/")) {
+      const div = this.tokens[this.pos++] as { ch: string };
+      const r = this.factor();
+      if (d === "mixed" || r === "mixed") d = "mixed";
+      else if (d === "none") d = div.ch === "*" ? r : "none";
+      else if (r !== "none") d = "none";
+    }
+    return d;
+  }
+  private factor(): ExprDim {
+    if (this.isPunct("-") || this.isPunct("+")) { this.pos++; return this.factor(); }
+    const d = this.primary();
+    if (this.isPunct("^")) { this.pos++; this.factor(); return "none"; }
+    return d;
+  }
+  private primary(): ExprDim {
+    const t = this.tokens[this.pos++];
+    if (!t) throw new Error("unexpected end of expression");
+    if (t.kind === "num") return t.dim ?? "none";
+    if (t.kind === "punct" && t.ch === "(") {
+      const d = this.expr();
+      if (!this.isPunct(")")) throw new Error("missing ')'");
+      this.pos++;
+      return d;
+    }
+    if (t.kind === "ident") {
+      if (this.isPunct("(")) {
+        this.pos++;
+        const dims = [this.expr()];
+        while (this.isPunct(",")) { this.pos++; dims.push(this.expr()); }
+        if (!this.isPunct(")")) throw new Error("missing ')'");
+        this.pos++;
+        if (["abs", "min", "max", "floor", "ceil", "round"].includes(t.name)) {
+          return dims.reduce<ExprDim>((a, b) => (a === "none" ? b : b === "none" || b === a ? a : "mixed"), "none");
+        }
+        return "none";
+      }
+      return this.varDims[t.name] ?? "none";
+    }
+    throw new Error("unexpected token");
+  }
+}
+
+/** Deduced dimension of `src` given each variable's own; null when it does not parse. */
+export function exprDimension(src: string, varDims: Record<string, ExprDim> = {}): ExprDim | null {
+  const tokens = tokenize(src);
+  if (!tokens || tokens.length === 0) return null;
+  try {
+    return new DimParser(tokens, varDims).parse();
+  } catch {
+    return null;
   }
 }
 

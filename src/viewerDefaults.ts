@@ -11,12 +11,17 @@
 
 export type MeshSizePreset = "coarse" | "medium" | "fine";
 export type UpAxis = "y" | "z";
+import { normalizeNavigationPreset, type NavigationPreset } from "./navigationPresets";
 
 export interface ViewerDefaults {
   background: string; // CSS hex color
   meshSizePreset: MeshSizePreset;
   showGridAndAxes: boolean;
   upAxis: UpAxis;
+  /** `cadPreview.singleKeyCommands`: opt-in single-letter op shortcuts and Shift+R repeat. */
+  singleKeyCommands: boolean;
+  /** `cadPreview.navigationPreset`: how the mouse buttons map to orbit / pan / zoom. */
+  navigationPreset: NavigationPreset;
 }
 
 export const DEFAULT_VIEWER_DEFAULTS: ViewerDefaults = {
@@ -24,6 +29,8 @@ export const DEFAULT_VIEWER_DEFAULTS: ViewerDefaults = {
   meshSizePreset: "medium",
   showGridAndAxes: true,
   upAxis: "y",
+  singleKeyCommands: false,
+  navigationPreset: "default",
 };
 
 const HEX_COLOR_RE = /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/;
@@ -52,5 +59,8 @@ export function normalizeViewerDefaults(raw: unknown): ViewerDefaults {
 
   const upAxis: UpAxis = o.upAxis === "y" || o.upAxis === "z" ? o.upAxis : DEFAULT_VIEWER_DEFAULTS.upAxis;
 
-  return { background, meshSizePreset, showGridAndAxes, upAxis };
+  const singleKeyCommands =
+    typeof o.singleKeyCommands === "boolean" ? o.singleKeyCommands : DEFAULT_VIEWER_DEFAULTS.singleKeyCommands;
+
+  return { background, meshSizePreset, showGridAndAxes, upAxis, singleKeyCommands, navigationPreset: normalizeNavigationPreset(o.navigationPreset) };
 }

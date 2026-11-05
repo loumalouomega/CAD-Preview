@@ -248,6 +248,20 @@ export interface AddPolylineOp {
   /** What to do when a raw (non-`point-N`) endpoint coincides with an existing `point-N` within the model tolerance: `"reuse"` snaps it to that point and shares its vertex (no new `point-N`); `"independent"`/unset builds its own vertex there, as before, and notes the coincidence. Recorded on the op so replay is deterministic. */
   coincident?: "reuse" | "independent";
 }
+/**
+ * A curve given as functions of a parameter `s` over [`sMin`, `sMax`], sampled at `samples` points. `x`/`y`/`z` (default `"0"`) are expressions in `s` and the document variables. Expanded on read into an `addSpline` (or an `addPolyline`, which may be `closed`) — see `parametricCurve.ts` — so the kernel never sees this kind and a changed variable re-evaluates the curve.
+ */
+export interface AddParametricCurveOp {
+  op: "addParametricCurve"; x: string; y: string; z?: string;
+  sMin: number; sMax: number; samples: number;
+  as?: "spline" | "polyline"; closed?: boolean; guide?: boolean;
+  /** Also close the curve with a straight segment from its last sample back to its first and build the planar face that wire bounds (the `addSurfaceFromLines` recipe), so the result feeds `extrude`/`revolve` directly. The curve and the closing segment become ordinary `edge-N`s and the face a free face. Needs ≥ 3 samples, no `guide`; supersedes `closed`. */
+  close?: boolean;
+  /** Sketch plane: sample (x, y, z) map to `origin + x·u + y·v + z·n`, with n = `normal`, u = `up` made perpendicular to n, v = n × u. Absent = the world XYZ frame. */
+  plane?: { origin: Vec3; normal: Vec3; up: Vec3 };
+  /** Last-good sampled points (annotation + cache, like a numeric field next to its `exprs`): refreshed by `resolveEditOps` against the document variables, read by the kernel. Absent until the op has been resolved once. */
+  points?: Vec3[];
+}
 /** Add a standalone circular-arc edge through three points (must not be collinear — a collinear triple is skipped by the engine). */
 export interface AddThreePointArcOp {
   op: "addThreePointArc"; p1: Vec3; p2: Vec3; p3: Vec3; guide?: boolean;
@@ -337,12 +351,16 @@ export type EditOp = (
   | AddCircleProfileOp | AddRectangleProfileOp | AddPolygonProfileOp
   | AddEllipseProfileOp | AddRoundedRectangleProfileOp | AddSlotProfileOp | AddTrapezoidProfileOp
   | AddPointOp | AddLineOp | AddArcOp
-  | AddPolylineOp | AddThreePointArcOp | AddSplineOp | AddBezierOp | AddEllipseArcOp | AddHelixOp
+  | AddPolylineOp | AddThreePointArcOp | AddSplineOp | AddBezierOp | AddEllipseArcOp | AddHelixOp | AddParametricCurveOp
   | AddEdgeSlotOp
   | AddSurfaceFromLinesOp | AddSurfaceFillingOp |  AddVolumeFromSurfacesOp | FilletProfileOp
   | AlignOp | PatternLinearOp | PatternCircularOp | DrillOp
  ) & {
   exprs?: ExprMap;
+  /** History "suppress": replay skips the op (outcome `suppressed`), the stored op is untouched. Persisted only when `true`. */
+  suppressed?: boolean;
+  /** History "rename": shown instead of the generated description. Display only. */
+  label?: string;
   /**
    * Optional per-operand-field stored queries (roadmap "Selector synthesis",
    * op-operand persistence) — e.g. `{ a: {...}, b: {...} }` on a boolean —
@@ -472,7 +490,7 @@ export const QUERYABLE_OPERAND_FIELDS: Record<EditOpKind, readonly string[]> = {
   addCircleProfile: [], addRectangleProfile: [], addPolygonProfile: [],
   addEllipseProfile: [], addRoundedRectangleProfile: [], addSlotProfile: [], addTrapezoidProfile: [],
   addPoint: [], addLine: [], addArc: [],
-  addPolyline: [], addThreePointArc: [], addSpline: [], addBezier: [], addEllipseArc: [], addHelix: [],
+  addPolyline: [], addThreePointArc: [], addSpline: [], addBezier: [], addEllipseArc: [], addHelix: [], addParametricCurve: [],
   addEdgeSlot: ["edge"],
   addSurfaceFromLines: ["edges"], addVolumeFromSurfaces: ["faces"], filletProfile: ["edges"], addSurfaceFilling: ["edges"],
   align: ["targets"], patternLinear: ["targets"], patternCircular: ["targets"],
@@ -518,6 +536,8 @@ export interface OpOutcome {
   hint?: string;
   /** Informational, only on an op that DID apply (e.g. a new point coincides with an existing one, or was collapsed into it). Never makes `applied` false. */
   note?: string;
+  /** True when the op was skipped because it is suppressed — not a failure: warnings and ⚠ rows ignore it. */
+  suppressed?: boolean;
 }
 
 /** Called by an op helper at each of its skip sites, immediately before
@@ -550,7 +570,7 @@ export const BREP_ONLY_OPS: ReadonlySet<EditOpKind> = new Set([
   "addCircleProfile", "addRectangleProfile", "addPolygonProfile",
   "addEllipseProfile", "addRoundedRectangleProfile", "addSlotProfile", "addTrapezoidProfile",
   "addPoint", "addLine", "addArc",
-  "addPolyline", "addThreePointArc", "addSpline", "addBezier", "addEllipseArc", "addHelix",
+  "addPolyline", "addThreePointArc", "addSpline", "addBezier", "addEllipseArc", "addHelix", "addParametricCurve",
   "addSurfaceFromLines", "addSurfaceFilling", "addVolumeFromSurfaces", "addEdgeSlot", "filletProfile", "drill",
 ]);
 
@@ -957,6 +977,9 @@ function exprKeySlot(key: string): string {
   return key.replace(/\[\d+\]$/, "");
 }
 
+/** Longest accepted history label. */
+export const MAX_OP_LABEL = 80;
+
 export function validateEditOp(raw: unknown): EditOp | null {
   const lifted = liftPointRefs(raw);
   if (lifted === null) return null;
@@ -977,6 +1000,12 @@ export function validateEditOp(raw: unknown): EditOp | null {
   const rawCoincident = (raw as Record<string, unknown>).coincident;
   if ((rawCoincident === "reuse" || rawCoincident === "independent") && COINCIDENT_CURVE_KINDS.has(clean.op as EditOpKind)) {
     (clean as unknown as Record<string, unknown>).coincident = rawCoincident;
+  }
+  if ((raw as Record<string, unknown>).suppressed === true) clean.suppressed = true;
+  const rawLabel = (raw as Record<string, unknown>).label;
+  if (typeof rawLabel === "string") {
+    const label = rawLabel.trim().slice(0, MAX_OP_LABEL);
+    if (label) clean.label = label;
   }
   const exprs = sanitizeExprs((raw as Record<string, unknown>).exprs, clean);
   if (exprs) clean.exprs = exprs;
@@ -1541,6 +1570,35 @@ function validateEditOpCore(raw: unknown): EditOp | null {
     case "addSpline": {
       const points = asVec3Array(o.points, 2);
       return points ? { op: "addSpline", points } : null;
+    }
+    case "addParametricCurve": {
+      const expr = (v: unknown): string | null => (typeof v === "string" && v.trim() !== "" && v.length <= 256 ? v : null);
+      const x = expr(o.x);
+      const y = expr(o.y);
+      const z = o.z === undefined ? undefined : expr(o.z);
+      const as = o.as === "polyline" ? "polyline" : "spline";
+      const closed = o.closed === true;
+      if (!x || !y || z === null) return null;
+      if (!isFiniteNumber(o.sMin) || !isFiniteNumber(o.sMax) || o.sMax <= o.sMin) return null;
+      if (!Number.isInteger(o.samples) || (o.samples as number) < 2 || (o.samples as number) > 2000) return null;
+      const close = o.close === true;
+      if (closed && (as !== "polyline" || (o.samples as number) < 3)) return null;
+      if (close && ((o.samples as number) < 3 || o.guide === true)) return null;
+      let plane: AddParametricCurveOp["plane"];
+      if (o.plane !== undefined) {
+        const pl = o.plane as Record<string, unknown> | null;
+        const origin = pl && typeof pl === "object" ? asVec3(pl.origin) : null;
+        const normal = pl && typeof pl === "object" ? asNonZeroVec3(pl.normal) : null;
+        const up = pl && typeof pl === "object" ? asNonZeroVec3(pl.up) : null;
+        if (!origin || !normal || !up || !notParallel(normal, up)) return null;
+        plane = { origin, normal, up };
+      }
+      const cached = o.points === undefined ? null : asVec3Array(o.points, 2);
+      return {
+        op: "addParametricCurve", x, y, ...(cached ? { points: cached } : {}), ...(z !== undefined ? { z } : {}),
+        sMin: o.sMin, sMax: o.sMax, samples: o.samples as number,
+        ...(as === "polyline" ? { as } : {}), ...(closed && !close ? { closed } : {}), ...(close ? { close } : {}), ...(plane ? { plane } : {}),
+      };
     }
     case "addBezier": {
       const controlPoints = asVec3Array(o.controlPoints, 2, false);

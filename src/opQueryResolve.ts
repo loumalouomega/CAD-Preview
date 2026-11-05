@@ -157,6 +157,10 @@ export function resolveOpOperandQueries(oc: any, baseShape: any, ops: EditOp[], 
   for (let i = 0; i < ops.length; i++) {
     const op = ops[i];
     const queries = op.targetQueries;
+    if (op.suppressed) {
+      resolved.push(op);
+      continue;
+    }
     if (!queries) {
       current = applyOneOp(oc, current, op, cleanup, () => undefined);
       resolved.push(op);

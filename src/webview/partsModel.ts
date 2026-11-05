@@ -65,6 +65,25 @@ export class PartsModel {
     this.onChange();
   }
 
+  /**
+   * Defines (or, with `undefined`, clears) the Part's scene rule. The faces
+   * the rule matched right now become the cached membership; the host
+   * re-evaluates the rule after every replay.
+   */
+  setRule(index: number, rule: { query: Part["selector"]; surfaces: string[] } | undefined): void {
+    const p = this.parts[index];
+    if (!p) return;
+    if (rule && rule.query) {
+      p.selector = rule.query;
+      p.selectorOpKind = "scene";
+      p.surfaces = [...rule.surfaces];
+    } else {
+      delete p.selector;
+      delete p.selectorOpKind;
+    }
+    this.onChange();
+  }
+
   setMeshSize(index: number, size: number | undefined): void {
     const p = this.parts[index];
     if (!p) return;
@@ -76,6 +95,20 @@ export class PartsModel {
     const p = this.parts[index];
     if (!p) return;
     p.density = density;
+    this.onChange();
+  }
+
+  /**
+   * Picks a named material: stores ONLY the density (the name is presentation,
+   * as for headless `set_part`). `suggestedColor` replaces the Part's colour
+   * only while it is still the auto-assigned palette colour, so a colour the
+   * user chose is never overwritten. One `onChange`, so it is one persist.
+   */
+  setMaterial(index: number, density: number, suggestedColor?: string): void {
+    const p = this.parts[index];
+    if (!p) return;
+    p.density = density;
+    if (suggestedColor && PALETTE.includes(p.color)) p.color = suggestedColor;
     this.onChange();
   }
 
