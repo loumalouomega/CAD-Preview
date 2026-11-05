@@ -1287,6 +1287,8 @@ interface RibbonHandle { getState(); setState(partial | null); refresh(); fit() 
 
 ### `EditsPanel`
 
+Every open form is wrapped by `wrapFormInHeader` after `renderParams`: a `.edits-form-header` (title from `allCatalogEntries()`, a tint chip from the optional `EditsPanelCallbacks.opTint`, and a collapse chevron) followed by `.edits-form-body`, into which the already-built fields are *moved* (so collapse keeps values). `.compose-footer` stays a direct child of `#edits-params`. Collapse sets `[hidden]` on the body (with an explicit `.edits-form-body[hidden]` override), calls `onPreviewCancel`; expand calls `onPreviewDraftChanged`.
+
 Manages the `#edits-panel` DOM: two top-level tabs — **GEOMETRY** (creation ops, split into **2D**/**3D** subtabs) and **EDIT** (modification ops, one categorized list) — each rendered from `OP_CATALOG` as grids of icon op-buttons (`.op-grid`/`.op-btn`), a single shared parameter-form area (`#edits-params`) under the grids, the Undo/Redo/Clear control row, and the ordered op-history list with a one-line summary each (`describeOp`). Clicking an op button renders its parameter form; clicking it again collapses it. There is only one op stack regardless of which tab an op came from. VS Code webviews block `prompt()`, so all input is via inline fields.
 
 ```typescript

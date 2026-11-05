@@ -5663,6 +5663,37 @@ test("form ergonomics: the Apply row stays inside the scrolling Edits area on a 
   await page.setViewportSize({ width: 1280, height: 800 });
 });
 
+test("form ergonomics: the form header collapses the fields and keeps every typed value", async (page) => {
+  await populate(page);
+  await page.evaluate(() => [...document.querySelectorAll(".op-btn")].find((b) => b.querySelector(".op-name")?.textContent === "Box")?.click());
+  await sleep(200);
+  const hdr = await page.evaluate(() => ({
+    title: document.querySelector("#edits-params > .edits-form-header .edits-form-title")?.textContent,
+    tint: document.querySelector("#edits-params .edits-form-tint")?.className ?? "",
+    footerDirect: !!document.querySelector("#edits-params > .compose-footer"),
+  }));
+  assert(hdr.title === "Box", `the header names the op (got ${JSON.stringify(hdr.title)})`);
+  assert(/edits-form-tint-add/.test(hdr.tint), `Box carries the add tint (got ${hdr.tint})`);
+  assert(hdr.footerDirect, "the Apply row is still a direct child of #edits-params");
+  const field = await page.evaluate(() => {
+    const el = document.querySelector("#edits-params .edits-form-body input");
+    el.value = "37.5";
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+    return el.getAttribute("data-name") ?? el.name ?? "";
+  });
+  const visible = () => page.evaluate(() => document.querySelector("#edits-params .edits-form-body input")?.offsetParent !== null);
+  assert(await visible(), "precondition: the field is rendered");
+  await page.click("#edits-params .edits-form-toggle");
+  await sleep(150);
+  assert(!(await visible()), "collapsing hides the fields (rendered, not just the attribute)");
+  assert(await page.evaluate(() => document.querySelector("#edits-params > .compose-footer") !== null), "the Apply row survives the collapse");
+  await page.click("#edits-params .edits-form-toggle");
+  await sleep(150);
+  assert(await visible(), "expanding shows them again");
+  const kept = await page.evaluate(() => document.querySelector("#edits-params .edits-form-body input").value);
+  assert(kept === "37.5", `the typed value survives collapse and expand (got ${JSON.stringify(kept)}, field ${field})`);
+});
+
 test("history rows: suppress toggles replay state, rename commits/cancels, delete warns about dependents", async (page) => {
   await populate(page);
   await post(page, {

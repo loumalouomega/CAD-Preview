@@ -1493,6 +1493,7 @@ const editsPanel = new EditsPanel(document.getElementById("edits-panel")!, {
     setStatus("");
   },
   onFormChanged: updateGizmoForForm,
+  opTint: (id) => tintForPanelOp(id, id === "wrap" ? lastWrapPreviewVariant : undefined),
   onPreviewDraftChanged: () => scheduleOpPreview(),
   onPreviewCancel: () => cancelOpPreview(),
   onSynthesizeQuery: (bucketOp, role) => {

@@ -464,11 +464,11 @@ These are outcome groupings, not release numbers. Independent small items can sh
 *Area: Interface. Effort: S.*
 
 - **Shipped (2026-11-04):** the sticky Apply footer (`.compose-footer`, pinned inside `#edits-scroll`; `test:webview` pins it against an unpinned control).
+- **Shipped (2026-11-05):** the collapsible form header (op name, intent tint, chevron; collapsing keeps every value and cancels the preview).
 - **What is left (S):**
-  - **Collapsible form header:** the header shows the op name and its intent tint, and collapsing it keeps every value.
   - **Optional placement:** a setting docks forms as a right-hand overlay on the viewport, as in SolidCraft. Same DOM, moved never duplicated; obeys the one-WebGL-context rule and never covers the orientation cube.
 - **Rules kept:** the preview is still cancelled on form switch, on selection change and before commit; Escape restores before it blurs; every toggled element gets its `[hidden]` override.
-- **Done when:** collapsing and expanding keeps typed values, and the docked placement passes the same Apply-visibility case.
+- **Done when:** the docked placement passes the same Apply-visibility case.
 
 #### 2.43 Issue draft from a failure {#issue-draft-from-a-failure}
 

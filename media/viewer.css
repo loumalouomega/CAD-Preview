@@ -3556,6 +3556,15 @@ input[type="range"].meshing-slider:focus {
   margin-top: 6px;
 }
 #edits-params:empty { margin-top: 0; }
+.edits-form-header { display: flex; align-items: center; gap: 6px; font-size: var(--ui-fs-sm); font-weight: 600; padding: 2px 0; }
+.edits-form-header .edits-form-toggle { background: none; border: none; color: inherit; padding: 0 2px; cursor: pointer; width: auto; }
+.edits-form-title { flex: 1; }
+.edits-form-tint { width: 8px; height: 8px; border-radius: 50%; background: var(--vscode-descriptionForeground, #888); }
+.edits-form-tint-add { background: #2fbf4f; }
+.edits-form-tint-cut { background: #e23b3b; }
+.edits-form-tint-ref { background: #3b82f6; }
+.edits-form-body { display: flex; flex-direction: column; gap: 3px; }
+.edits-form-body[hidden] { display: none; }
 /* The form's Apply row is pinned to the bottom of the scrolling #edits-scroll,
  * so the button never scrolls out of view on a long form. */
 #edits-params > .compose-footer {

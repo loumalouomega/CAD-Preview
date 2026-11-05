@@ -546,6 +546,8 @@ The **Edits** panel (below the Parts panel) applies non-destructive **edit opera
 
 Every parameter form previews **live**: while a form is open, the viewer shows what that op *would* produce as a translucent overlay, re-computed as you type (~250 ms debounce) and coloured by intent — green where material is added, red where it is removed, blue for wire/reference results (points, lines, sketch faces), neutral for transforms and fillet/chamfer. Switching forms or changing the selection cancels the preview; only **Apply** commits anything to the history.
 
+Each open form starts with a header — the op name, a dot in the preview's intent colour (green adds, red removes, blue reference, grey neutral) and a ▾ chevron. Collapsing the header hides the fields and cancels the live preview without discarding anything you typed; expanding it brings the values back and re-previews. The **Apply** row stays pinned below either way.
+
 The **Extrude**, **Revolve**, **Shell**, and **Draft** forms also carry a **Pin query** row: pick exactly one face, choose the producing op and bucket role it came from (e.g. an extrude's end cap), and click **Synthesize** to name that face as a stored query. The query is attached when you click **Apply** (as long as the selection hasn't changed since) and survives later edits renumbering the model's faces — the same mechanism agents use headlessly, now available interactively. Edge/volume operands and multi-face picks can't be pinned yet; the row says so rather than offering a dead button.
 
 The operation buttons are also on the [ribbon](#the-ribbon)'s Model tab, and the panel's own button grid is collapsed behind the grid button in its header by default (see above).

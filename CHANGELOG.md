@@ -8,6 +8,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/); thi
 
 ### Added
 
+- **A collapsible header on every operation form.** The op name, an intent-tint dot and a chevron; collapsing hides the fields and cancels the preview, expanding restores the typed values and re-previews. The docked placement remains on the roadmap.
 - **Mass Properties can mark the centre of mass in the view.** A **Show centre of mass in view** box under the result drops a ring at the computed centroid (B-rep and mesh sources; the area centroid for a non-watertight mesh selection). `test:webview` pins it by pixel diff on, off and after untick. Zebra stripes remain on the roadmap.
 
 ## [3.37.0] - 2026-11-05

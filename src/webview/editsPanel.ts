@@ -7,7 +7,7 @@ import { evalExpr } from "../paramExpr";
 import { normalizeDecimalComma } from "../localeNumber";
 import { profilePlacementFromPlane } from "../planeFrame";
 import { OP_CATALOG, describeOp, type CatalogCategory, type PanelOpId } from "./opCatalog";
-import { QUERYABLE_PANEL_FORMS, catalogLocation } from "./opCatalog";
+import { QUERYABLE_PANEL_FORMS, catalogLocation, allCatalogEntries } from "./opCatalog";
 import { OP_ICONS } from "./opIcons";
 import { allHoleSizes, depthPresetsFor, findHoleSize } from "../holeStandards";
 import { TOOLBAR_ICONS } from "../toolbarIcons";
@@ -220,6 +220,8 @@ export interface EditsPanelCallbacks {
    * retarget the Transform Gizmo for `"translate"`/`"rotate"`/`"scale"`
    * without this panel needing to know the gizmo exists. */
   onFormChanged: (id: PanelOpId | null) => void;
+  /** Intent tint of an op's preview (`add` green, `cut` red, `ref` blue) for the form header's chip; `undefined` = neutral. */
+  opTint?: (id: PanelOpId) => "add" | "cut" | "ref" | undefined;
   /** A field in the open op form changed (or the form just opened) — the live
    * operation preview re-reads {@link EditsPanel.currentDraft} and schedules a
    * debounced preview. Fired from one delegated listener on `#edits-params`
@@ -1712,9 +1714,55 @@ export class EditsPanel {
       f.appendChild(applyRow);
       this.pendingApplyRow = null;
     }
+    this.wrapFormInHeader(id, f);
     // A freshly-opened form previews immediately from its default field
     // values — opening "Box" shows the default box before anything is typed.
     if (this.draftReader) this.cb.onPreviewDraftChanged();
+  }
+
+  /**
+   * Gives the open form a header (op name, intent-tint chip, collapse chevron).
+   * The fields are MOVED into a body wrapper (never rebuilt), so collapsing
+   * keeps every typed value; only `renderParams` destroys them. The Apply row
+   * stays a direct child of `#edits-params` (the sticky-footer rule and its
+   * test select it there). Collapsing cancels the live preview, expanding
+   * re-previews from the kept values.
+   */
+  private wrapFormInHeader(id: PanelOpId, f: HTMLElement): void {
+    const footer = f.querySelector(":scope > .compose-footer");
+    const body = document.createElement("div");
+    body.className = "edits-form-body";
+    while (f.firstChild) {
+      if (f.firstChild === footer) break;
+      body.appendChild(f.firstChild);
+    }
+    const header = document.createElement("div");
+    header.className = "edits-form-header";
+    const chev = document.createElement("button");
+    chev.type = "button";
+    chev.className = "edits-form-toggle";
+    chev.setAttribute("aria-expanded", "true");
+    chev.title = "Collapse form (values are kept)";
+    const label = document.createElement("span");
+    label.className = "edits-form-title";
+    label.textContent = allCatalogEntries().find((e) => e.id === id)?.label ?? id;
+    const tint = this.cb.opTint?.(id);
+    const chip = document.createElement("span");
+    chip.className = `edits-form-tint edits-form-tint-${tint ?? "neutral"}`;
+    chip.title = tint === "add" ? "Adds material" : tint === "cut" ? "Removes material" : tint === "ref" ? "Reference geometry" : "Neutral";
+    chev.textContent = "▾";
+    header.append(chev, label, chip);
+    chev.addEventListener("click", () => {
+      const collapsed = !body.hidden;
+      body.hidden = collapsed;
+      chev.setAttribute("aria-expanded", String(!collapsed));
+      chev.textContent = collapsed ? "▸" : "▾";
+      f.classList.toggle("edits-form-collapsed", collapsed);
+      if (collapsed) this.cb.onPreviewCancel();
+      else if (this.draftReader) this.cb.onPreviewDraftChanged();
+    });
+    f.insertBefore(body, f.firstChild);
+    f.insertBefore(header, body);
   }
 
   private renderBooleanForm(kind: BooleanKind): void {
