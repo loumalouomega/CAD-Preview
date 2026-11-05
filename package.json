@@ -217,6 +217,10 @@
         "title": "CAD Preview: Load Preprocess (.zip)…"
       },
       {
+        "command": "cad-preview.reportIssue",
+        "title": "CAD Preview: Report Issue…"
+      },
+      {
         "command": "cad-preview.whatsNew",
         "title": "CAD Preview: Show What's New"
       },
@@ -475,6 +479,16 @@
           ],
           "default": "y",
           "description": "Default up-axis orientation for newly opened models."
+        },
+        "cadPreview.navigationPreset": {
+          "type": "string",
+          "enum": ["default", "fusion"],
+          "enumDescriptions": [
+            "Left-drag orbits, middle-drag zooms, right-drag pans.",
+            "Fusion-style: middle-drag pans, Shift+middle-drag orbits; the left button is free for selection."
+          ],
+          "default": "default",
+          "description": "How the mouse buttons navigate the 3D view. The wheel always zooms. Applied when a viewer opens or the setting changes for new viewers."
         },
         "cadPreview.singleKeyCommands": {
           "type": "boolean",

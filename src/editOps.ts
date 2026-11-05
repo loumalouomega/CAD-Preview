@@ -357,6 +357,10 @@ export type EditOp = (
   | AlignOp | PatternLinearOp | PatternCircularOp | DrillOp
  ) & {
   exprs?: ExprMap;
+  /** History "suppress": replay skips the op (outcome `suppressed`), the stored op is untouched. Persisted only when `true`. */
+  suppressed?: boolean;
+  /** History "rename": shown instead of the generated description. Display only. */
+  label?: string;
   /**
    * Optional per-operand-field stored queries (roadmap "Selector synthesis",
    * op-operand persistence) — e.g. `{ a: {...}, b: {...} }` on a boolean —
@@ -532,6 +536,8 @@ export interface OpOutcome {
   hint?: string;
   /** Informational, only on an op that DID apply (e.g. a new point coincides with an existing one, or was collapsed into it). Never makes `applied` false. */
   note?: string;
+  /** True when the op was skipped because it is suppressed — not a failure: warnings and ⚠ rows ignore it. */
+  suppressed?: boolean;
 }
 
 /** Called by an op helper at each of its skip sites, immediately before
@@ -971,6 +977,9 @@ function exprKeySlot(key: string): string {
   return key.replace(/\[\d+\]$/, "");
 }
 
+/** Longest accepted history label. */
+export const MAX_OP_LABEL = 80;
+
 export function validateEditOp(raw: unknown): EditOp | null {
   const lifted = liftPointRefs(raw);
   if (lifted === null) return null;
@@ -991,6 +1000,12 @@ export function validateEditOp(raw: unknown): EditOp | null {
   const rawCoincident = (raw as Record<string, unknown>).coincident;
   if ((rawCoincident === "reuse" || rawCoincident === "independent") && COINCIDENT_CURVE_KINDS.has(clean.op as EditOpKind)) {
     (clean as unknown as Record<string, unknown>).coincident = rawCoincident;
+  }
+  if ((raw as Record<string, unknown>).suppressed === true) clean.suppressed = true;
+  const rawLabel = (raw as Record<string, unknown>).label;
+  if (typeof rawLabel === "string") {
+    const label = rawLabel.trim().slice(0, MAX_OP_LABEL);
+    if (label) clean.label = label;
   }
   const exprs = sanitizeExprs((raw as Record<string, unknown>).exprs, clean);
   if (exprs) clean.exprs = exprs;

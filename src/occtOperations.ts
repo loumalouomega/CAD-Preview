@@ -238,6 +238,11 @@ export function applyEditsBRep(oc: any, baseShape: any, ops: EditOp[], cleanup: 
     const op = ops[index];
     const before = shape;
     const outcome: OpOutcome = { index, kind: op.op, applied: true };
+    if (op.suppressed) {
+      // History "suppress": the stored op stays, replay passes the shape through.
+      outcomes?.push({ index, kind: op.op, applied: false, suppressed: true, note: "suppressed" });
+      continue;
+    }
     // First `fail` call wins for this op; every helper calls it immediately
     // before returning the unmodified shape at a skip site.
     const fail: OutcomeFail = (diagnostic, hint) => {

@@ -40,6 +40,7 @@ CAD Preview contributes a few cross-document defaults under **CAD Preview** in V
 | `cadPreview.kernelTimeoutMinutes` | `5` | Watchdog for a single kernel job (load, mesh, export…): a job running longer is killed and the kernel worker respawned. Applies to newly opened documents |
 | `cadPreview.tessellationQuality` | `standard` | B-rep (STEP/IGES/BREP/CSG/SCAD) tessellation density — `draft`/`standard`/`fine`; `standard` is identical to every previous version's fixed behavior. Unlike the other settings here, re-read on every edit, so a change applies to the next edit without reopening the file. Face triangle density only — does not affect edge display or the FE Mesh panel's own (separate) mesh generation |
 | `cadPreview.upAxis` | `y` | Default up-axis for newly opened models — set to `z` for Z-up source conventions |
+| `cadPreview.navigationPreset` | `default` | Mouse navigation: `default` (left-drag orbits, middle-drag zooms, right-drag pans) or `fusion` (middle-drag pans, Shift+middle-drag orbits, the left button is free for selection). The wheel always zooms; applied when a viewer opens |
 | `cadPreview.singleKeyCommands` | `false` | Turns on the single-letter [command keys](#command-search-and-single-key-commands) (E Extrude, R Revolve, F Fillet, C Chamfer, H Hole, M Move, S Shell, P Linear Pattern, Q Measure mode) and Shift+R to repeat the last command. Off by default because single keys collide with typing habits; read when a viewer opens |
 
 ## Opening a File
@@ -189,6 +190,10 @@ A full-width menu bar sits at the very top of the editor with a single **File �
 ![The File dropdown open, showing New Blank Model, Open, Save, Save As, Export, Save Preprocess, Load Preprocess, Import SVG, Import DXF, and the silhouette/technical-drawing exports.](/screenshots/file-menu.png)
 
 Every item is also a VS Code command (`CAD Preview: …` in the Command Palette). The keyboard shortcuts are scoped to a focused CAD Preview tab, so they don't override VS Code's global Open/Save elsewhere.
+
+### Reporting a problem
+
+**CAD Preview: Report Issue…** (Command Palette, with a CAD tab focused) opens a draft in a new editor tab: the first operation that did not apply (its kind, parameters and diagnostic), the file's name, and the extension, kernel-package, VS Code and OS versions. Absolute paths are replaced by file names and the model itself is never attached. Edit the draft freely; only if you click **Open on GitHub** in the prompt is a prefilled issue page opened in your browser. An agent gets the same text from the `diagnostics_report` MCP tool.
 
 ### What's New
 
@@ -420,6 +425,8 @@ Click any face of the cube to snap the camera to that standard view:
 | **+Y / -Y** | Top / Bottom |
 | **+Z / -Z** | Front / Back |
 
+The cube is a 3×3 grid of hit regions, so it offers **26** views: the middle of a face snaps to that face's view, the strip along a border snaps to the **edge** view between two faces (45° between them), and a corner square snaps to the **corner** view (an isometric-style direction). The coloured axis arrow heads are clickable too: clicking one looks along that axis. Right-click a planar B-rep face and choose **Look at face** to view it head-on.
+
 The same views are on the keyboard (ignored while typing in a text field, and with Ctrl, Cmd or Alt held; the optional [single-letter command keys](#command-search-and-single-key-commands) never take these):
 
 | Key | View   | Key | View   |
@@ -616,7 +623,7 @@ Opening **Move**, **Rotate**, or **Scale** with a selection active also attaches
 
 Reference helpers: the op model itself accepts **references instead of typed coordinates** — **Mirror**, **Split**, and **Section** can take `midplaneFaces: [faceA, faceB]` (two planar, parallel faces; the op acts on the plane halfway between them) and **Circular Pattern** can take `midaxisOf: [cylA, cylB]` (two cylindrical faces or two parallel edges), each mutually exclusive with the typed-in vectors. These are authorable headlessly via `apply_edit_ops` (see `doc/mcp-server.md`) and degrade with a clear diagnostic when the referenced faces are missing, non-planar, or not parallel; mesh files only accept the typed-in coordinates. Interactively, the **Planes** panel's **Midplane…** button (below the saved-plane list) builds a new named plane halfway between two already-saved ones — the same math, computed client-side.
 
-Header controls: **↶ / ↷** undo / redo the last operation; **Clear** removes all operations (back to the original model). To remove one specific operation without discarding everything applied after it, hover its row in the history list and click the **✕** that appears — unlike Undo, which only pops the most recent operation, this removes any row directly. The history is also a clickable timeline: undone-but-redoable steps appear as dimmed rows with continued numbering, and clicking **any** row — applied or dimmed — rolls the whole stack straight to that point in one step (clicking a dimmed row re-applies through it).
+Header controls: **↶ / ↷** undo / redo the last operation; **Clear** removes all operations (back to the original model). To remove one specific operation without discarding everything applied after it, hover its row in the history list and click the **✕** that appears — unlike Undo, which only pops the most recent operation, this removes any row directly. The history is also a clickable timeline: undone-but-redoable steps appear as dimmed rows with continued numbering, and clicking **any** row — applied or dimmed — rolls the whole stack straight to that point in one step (clicking a dimmed row re-applies through it). The **●** button on a row *suppresses* it: the row is struck through and replay skips it, but the operation stays in the list and ○ restores it (Parts follow the geometry, as with a removal). Double-click a row's name to rename it (Enter commits, Escape cancels). Removing a row that later operations or Parts mention asks for a second click on ✕ and names what may stop resolving. Rows inside the saved prefix (🔒) can do none of this.
 
 ![The operation-history list — an ordered, individually-removable stack of applied edits.](/screenshots/edit-history.png)
 

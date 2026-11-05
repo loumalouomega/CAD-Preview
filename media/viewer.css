@@ -3225,6 +3225,15 @@ input[type="range"].meshing-slider:focus {
  * the row dims and carries a ⚠ marker whose tooltip holds the diagnostic +
  * hint. Warning color matches the editor theme's error/warning foreground. */
 .edit-row-skipped .edit-label { opacity: 0.45; }
+/* Suppressed (replay skips it): struck through, not a warning. */
+.edit-row-suppressed .edit-label { opacity: 0.45; text-decoration: line-through; }
+.edit-suppress {
+  flex-shrink: 0; font: inherit; font-size: var(--ui-fs-label); line-height: 1;
+  width: 16px; height: 16px; padding: 0; border: none; border-radius: var(--ui-r-xs);
+  color: var(--vscode-foreground, #ccc); background: transparent; cursor: pointer; opacity: 0.5;
+}
+.edit-suppress:hover { opacity: 1; background: var(--vscode-toolbar-hoverBackground, rgba(255,255,255,0.1)); }
+.edit-rename { flex: 1; min-width: 0; font: inherit; font-size: var(--ui-fs-sm); }
 
 /* Tier 0 Phase 2 — rows saved into the source file itself: dimmed with a 🔒
  * marker (no ✕ remove button — removal is refused, so offering it would lie).
@@ -3547,6 +3556,17 @@ input[type="range"].meshing-slider:focus {
   margin-top: 6px;
 }
 #edits-params:empty { margin-top: 0; }
+/* The form's Apply row is pinned to the bottom of the scrolling #edits-scroll,
+ * so the button never scrolls out of view on a long form. */
+#edits-params > .compose-footer {
+  position: sticky;
+  bottom: 0;
+  z-index: 2;
+  margin-bottom: 0;
+  padding: 4px 0;
+  background: var(--vscode-sideBar-background, var(--vscode-editor-background, #252526));
+  border-top: 1px solid var(--vscode-sideBar-border, rgba(128, 128, 128, 0.35));
+}
 
 /* ── Mode toggles and segmented tool rows inside the toolbar dropdowns ──
  *

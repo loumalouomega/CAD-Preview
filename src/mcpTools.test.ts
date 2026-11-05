@@ -76,6 +76,7 @@ import {
   listStandardHoleSizes,
   explainEditOpRejection,
   removeEditOp,
+  setEditOpState,
   setVariables,
   setConfiguration,
   configurationScope,
@@ -3375,6 +3376,25 @@ describe("run_parametric_script", () => {
       dryRun: true,
     });
     expect(c.pipeline.rebindPartsAcrossOps).not.toHaveBeenCalled();
+  });
+});
+
+describe("set_edit_op_state", () => {
+  it("suppresses, relabels, reports it in get_state, and refuses baked/out-of-range", async () => {
+    const c = ctx();
+    await applyEditOps(c, { path: stpModel, ops: [{ op: "addBox", center: [0, 0, 0], size: [1, 1, 1] }, { op: "addSphere", center: [0, 0, 0], radius: 2 }] });
+    const r = await setEditOpState(c, { path: stpModel, index: 1, suppressed: true, label: "Ball" });
+    expect(r).toMatchObject({ suppressed: true, label: "Ball" });
+    const persisted = (await readEdits(stpModel)).ops[1] as { suppressed?: boolean; label?: string };
+    expect(persisted).toMatchObject({ suppressed: true, label: "Ball" });
+    const state = await getState({ path: stpModel });
+    expect(state.edits[1]).toMatchObject({ suppressed: true, label: "Ball", description: "Ball" });
+    await setEditOpState(c, { path: stpModel, index: 1, suppressed: false, label: null });
+    expect((await readEdits(stpModel)).ops[1]).toEqual({ op: "addSphere", center: [0, 0, 0], radius: 2 });
+    await expect(setEditOpState(c, { path: stpModel, index: 9, suppressed: true })).rejects.toThrow(/out of range/);
+    await expect(setEditOpState(c, { path: stpModel, index: 1 })).rejects.toThrow(/suppressed and\/or label/);
+    await writeEdits(stpModel, (await readEdits(stpModel)).ops, [], 2);
+    await expect(setEditOpState(c, { path: stpModel, index: 0, suppressed: true })).rejects.toThrow(/baked prefix/);
   });
 });
 

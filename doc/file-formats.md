@@ -340,6 +340,8 @@ User-applied **edit operations** (transforms and booleans, and — in later mile
 
 The source file is written only by an explicit, confirmed action — Ctrl+S on a dirty tab (for STEP/IGES/BREP/STL/OBJ/PLY), an Export pick of the source's own format ("save in place"), or the headless `save_model` MCP tool — never as a side effect of applying or autosaving an edit. That save **bakes** the unbaked op tail into the file and records how far via a `bakedThrough` watermark: the file on disk already contains `ops[0..bakedThrough]`, so replay starts after it and every kernel replay consumes only the tail. The field is omitted when `0`, so a never-saved-in-place document's sidecar is byte-identical to before this feature existed; parsing clamps an out-of-range value instead of throwing. Undo cannot cross the save point, and `remove_edit_op` refuses an index inside the baked prefix headless.
 
+Each op may carry two additive display/replay fields: `suppressed: true` (omitted when false — replay skips the op) and `label` (a short row name). Neither changes the op's parameters, and a file without them parses unchanged.
+
 ### Recovering an interrupted save (`<model>.save-journal.json`)
 
 A save-in-place (STEP/IGES/BREP or STL/OBJ/PLY) writes the geometry and **then** advances the `bakedThrough` watermark. A process that stops between those two writes leaves the file on disk baked while the sidecar still says otherwise — and reopening then replays the same edit over geometry that already contains it.

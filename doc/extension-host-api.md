@@ -316,6 +316,7 @@ interface ViewerDefaults {
   showGridAndAxes: boolean
   upAxis: UpAxis
   singleKeyCommands: boolean   // cadPreview.singleKeyCommands (default false)
+  navigationPreset: "default" | "fusion"   // cadPreview.navigationPreset (default "default")
 }
 
 const DEFAULT_VIEWER_DEFAULTS: ViewerDefaults

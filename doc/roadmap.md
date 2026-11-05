@@ -65,7 +65,7 @@ Existing implementation references were checked against the repository where not
 
 **Closed 2026-11-03 (Command search).** Extension, not a planning review: nothing was re-ranked. 2.34 shipped (Ctrl+K / `/` command search over every op, toolbar action and panel; opt-in `cadPreview.singleKeyCommands` letter keys with Shift+R to repeat the last command) and left this list; the 2.35 number is unchanged.
 
-**Closed 2026-11-03 (Configurations first increment).** Extension, not a planning review: nothing was re-ranked. 2.33 shipped its first increment: named configurations (sparse variable overrides plus `activeConfiguration`, additive in `.edits.json`), the Config Table under the Variables section, `set_configuration`, the `configuration` parameter on the export, meshing and mass tools, and a Batch Export mode (`configurations` / `allConfigurations`, and a Batch Export command prompt) that writes one file per configuration. 2.33 stays in the list for the one phase left, per-configuration feature suppression, which waits on 2.37.
+**Closed 2026-11-03 (Configurations first increment).** Extension, not a planning review: nothing was re-ranked. 2.33 shipped its first increment: named configurations (sparse variable overrides plus `activeConfiguration`, additive in `.edits.json`), the Config Table under the Variables section, `set_configuration`, the `configuration` parameter on the export, meshing and mass tools, and a Batch Export mode (`configurations` / `allConfigurations`, and a Batch Export command prompt) that writes one file per configuration. 2.33 stays in the list for the one phase left, per-configuration feature suppression, which is now unblocked (2.37 shipped the per-op suppressed state).
 
 **Closed 2026-11-03 (Ribbon command strip).** Extension, not a planning review: nothing was re-ranked. 2.35 shipped (a View · Model · Inspect · Mesh · Export ribbon under the menu bar, generated from the op catalog plus a small table of non-op actions, with an overflow ▸ menu, a compact preference, a persisted tab and the Edits panel's button grid behind a toggle) and left this list; the 2.36 number is unchanged, and the two-tone icon set is now the one item left in the Interface depth theme.
 
@@ -403,30 +403,20 @@ These are outcome groupings, not release numbers. Independent small items can sh
 *Area: Parity, Interface. Effort: S–M.*
 
 - **Shipped (2026-11-03):** named configurations of the document variables, the Config Table, `set_configuration`, the `configuration` parameter on the export and meshing tools, and one-file-per-configuration batch export. See [Configurations](./getting-started.md#configurations-design-table) and the [file format](./file-formats.md#configurations-design-table).
-- **What is left:** a configuration that also suppresses ops. It needs the suppressed state that [History timeline depth](#history-timeline-depth) (2.37) gives an op, then a per-configuration list of suppressed op indices overlaid at the same point as the variable overrides, so stored ops still never change.
+- **What is left:** a configuration that also suppresses ops. The per-op suppressed state now exists (shipped with History timeline depth); what remains is a per-configuration list of suppressed op indices overlaid at the same point as the variable overrides, so stored ops still never change.
 - **Out of scope:** configurations of Parts, mesh options or layers. Variables (and, in this phase, op suppression) are the only things a configuration changes.
 - **Done when:** a configuration that suppresses a fillet exports a model without it while the other configuration keeps it, from the table and through `set_configuration`, with `mcp:smoke` pinning both volumes.
 
 #### 2.37 History timeline depth {#history-timeline-depth}
 
-*Area: Interface, Parity. Effort: M.*
+*Area: Interface, Parity. Effort: S–M.*
 
-- **Today:** a history row can be jumped to (rows after the marker dim), deleted, and clicked to highlight the faces its op produced. There is no suppress, rename, folder or reorder. Deleting a row that later ops reference gives no warning, even though those references stop resolving.
-- **First increment (M):**
-  - **Suppress:** an additive `suppressed: true` on the stored op. Replay skips it, and its `OpOutcome` reads `applied: false` with a "suppressed" note.
-    - Suppressing or unsuppressing is a topology change, so it goes through `rebindPartsAcrossOps` exactly as a removal and re-insertion would.
-    - It is refused across the save point, like remove and undo.
-    - `remove_edit_op` stays the only way to delete an op.
-  - **Rename:** an additive `label` shown instead of `describeOp`'s text. The op `kind` is never touched.
-  - **Folders:** display-only groups stored as `{name, from, to}` index ranges beside the ops in `.edits.json`. Collapsing a folder hides its rows and changes nothing in replay.
-  - **Delete with dependents:** before a delete, list everything that would stop resolving: `pointRefs` and `planeId` users, stored `targetQueries`, and Parts whose ids the op produced.
+- **Shipped (2026-11-04):** suppress/unsuppress (`suppressed: true`, skipped by every replay fold, outcome `suppressed`), rename (`label`), delete with a dependents confirm, and `set_edit_op_state` (`get_state` reports both).
+- **What is left:**
+  - **Folders:** display-only `{name, from, to}` index ranges stored beside the ops in `.edits.json`; collapsing hides rows and changes nothing in replay.
   - **Hover highlight:** hovering a row tints the faces its op produced, reusing the click-highlight chip's bucket lookup.
-- **Later phase (S–M):** drag reorder, allowed only when the dependency check above finds no reference that crosses the move. It is rebound as a non-append change (one direct whole-shape match).
-- **Parity:** `set_edit_op_state {index, suppressed?, label?}`, and `get_state` reports both fields.
-- **Done when:**
-  - `test:integration` suppresses a fillet, sees the edge count change and a Part keep its faces, then unsuppresses back to an identical `opOutcomes` list;
-  - the dependents list names a `pointRefs` user;
-  - an old sidecar parses unchanged.
+  - **Drag reorder** (S–M): allowed only when the dependency check finds no reference crossing the move; rebound as a non-append change.
+- **Done when:** folders round-trip an old sidecar unchanged and collapse without changing `opOutcomes`; hover tints the bucket faces; a reorder across a `pointRefs` user is refused.
 
 #### 2.38 Unified Browser tree {#unified-browser-tree}
 
@@ -451,15 +441,9 @@ These are outcome groupings, not release numbers. Independent small items can sh
 
 *Area: Interface. Effort: S–M.*
 
-- **Today:** the orientation cube snaps to its six faces, `1`–`6` and `i` give the standard views, and the view-controls dock carries reset, fit, zoom and display mode. The axis helper is not clickable. Mouse mapping is fixed: left-drag orbits, right-drag pans, the wheel zooms.
-- **First increment (S):**
-  - **Clickable axis tips** on the triad: click +X/−X/+Y/−Y/+Z/−Z to look along that axis.
-  - **26 snapped views:** the cube's 12 edges and 8 corners become hit regions beside its 6 faces, as in SolidCraft. These are pure camera targets in `orientationCube.ts`, and its tests extend to them.
-  - **Look at selection:** from the context menu, view along a selected planar face's normal. Clip ▸ Face already computes that normal.
-- **Second increment (S):**
-  - **Navigation presets:** a `cadPreview.navigationPreset` setting with Default, Fusion (middle-drag pan, Shift+middle orbit), OpenSCAD and Touchpad (two-finger pan, pinch zoom). One mapping table drives every preset. SpaceMouse input is unaffected.
-  - Free orbit with roll stays off. The trackball is not proposed.
-- **Done when:** `test:webview` snaps to a corner view and pins the camera direction (±1e-6). Each preset maps one scripted gesture to the expected camera change.
+- **Shipped (2026-11-04):** the orientation cube's 26 snapped views (faces, edges, corners), clickable axis arrow heads, **Look at face** in the context menu, and `cadPreview.navigationPreset` with Default and Fusion (one table, `src/navigationPresets.ts`; `test:webview` drives real drags).
+- **What is left (S):** an **OpenSCAD** preset (its mapping is the same as Default, so it needs a reason to exist beyond a name) and a **Touchpad** preset (two-finger pan and pinch zoom arrive as wheel events, so it needs wheel-gesture handling and a real trackpad to verify). Free orbit with roll stays off; the trackball is not proposed.
+- **Done when:** the Touchpad preset maps a scripted two-finger scroll to a pan and a ctrl-wheel pinch to a zoom.
 
 #### 2.40 Zebra stripes and a centre-of-mass marker {#zebra-stripes-and-centre-of-mass-marker}
 
@@ -479,29 +463,20 @@ These are outcome groupings, not release numbers. Independent small items can sh
 
 *Area: Interface. Effort: S.*
 
-- **Today:** op forms open inline in the Edits panel, below the button grid. A long form (sweep, loft, wrap) scrolls its Apply button out of view. A collapsed panel loses the form's place.
-- **First increment (S):**
-  - **Sticky footer:** Apply, Cancel and the live-preview toggle are pinned outside the scrolling area.
+- **Shipped (2026-11-04):** the sticky Apply footer (`.compose-footer`, pinned inside `#edits-scroll`; `test:webview` pins it against an unpinned control).
+- **What is left (S):**
   - **Collapsible form header:** the header shows the op name and its intent tint, and collapsing it keeps every value.
-  - **Optional placement:** a setting docks forms as a right-hand overlay on the viewport, as in SolidCraft. The overlay has the same DOM and moves, never duplicates. It obeys the one-WebGL-context rule and never covers the orientation cube.
-- **Rules kept:**
-  - The preview is still cancelled on form switch, on selection change and before commit.
-  - Escape restores before it blurs.
-  - Every toggled element gets its `[hidden]` override.
-- **Done when:** `test:webview` asserts that Apply is visible (`offsetParent !== null`) on the longest form at the smallest supported height; collapsing and expanding keeps typed values; the docked placement passes the same cases.
+  - **Optional placement:** a setting docks forms as a right-hand overlay on the viewport, as in SolidCraft. Same DOM, moved never duplicated; obeys the one-WebGL-context rule and never covers the orientation cube.
+- **Rules kept:** the preview is still cancelled on form switch, on selection change and before commit; Escape restores before it blurs; every toggled element gets its `[hidden]` override.
+- **Done when:** collapsing and expanding keeps typed values, and the docked placement passes the same Apply-visibility case.
 
 #### 2.43 Issue draft from a failure {#issue-draft-from-a-failure}
 
 *Area: Platform. Effort: S.*
 
-- **Today:** a failed op shows a ⚠ history row with its diagnostic and hint, and a kernel crash shows a coded notification. Reporting either upstream means copying text by hand, and the versions that matter (extension, kernels, VS Code) are not in that text.
-- **First increment (S):**
-  - **Report issue…** appears on ⚠ rows, on kernel-crash notifications and in the File menu.
-  - It assembles a draft: the op kind and parameters, the `OpOutcome` diagnostic, the extension and kernel package versions, VS Code and the OS.
-  - The draft opens in an editor tab for review, then goes to a prefilled `issues/new` URL through `vscode.env.openExternal`.
-  - **Nothing is sent automatically.** Absolute paths are redacted to the file's basename. Model bytes are never attached; the draft says how to attach a file deliberately.
-- **Parity:** an MCP `diagnostics_report` tool returns the same text for an agent to show its user. It never opens a URL.
-- **Done when:** a unit test pins the redaction (no home path, no workspace path in the output); `test:integration` drives the command from a forced op failure and captures the URL through a stub.
+- **Shipped (2026-11-04):** the redacted draft (`src/issueDraft.ts`), the `CAD Preview: Report Issue…` command (draft in an untitled tab, then an explicit **Open on GitHub**) and the `diagnostics_report` MCP tool.
+- **What is left:** a **Report issue…** button on ⚠ history rows and a File-menu entry in the webview, and the same entry on kernel-crash notifications (they need the crash message routed into `buildIssueDraft`'s `error`).
+- **Done when:** a `test:integration` case drives the command from a forced op failure and captures the URL through a stub.
 
 #### 2.44 Welcome walkthrough and sample gallery {#welcome-walkthrough-and-samples}
 

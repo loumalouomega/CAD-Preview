@@ -3859,7 +3859,7 @@ test("context menu: right-clicking geometry offers groups with member counts", a
   assert((await menuShown()) === true, "right-clicking a face opens the context menu");
 
   const rows = await page.evaluate(() =>
-    [...document.querySelectorAll("#context-menu button:not(#ctx-pin-note):not(#ctx-copy-reference)")].map((b) => b.textContent)
+    [...document.querySelectorAll("#context-menu button:not(#ctx-pin-note):not(#ctx-copy-reference):not(#ctx-look-at-face)")].map((b) => b.textContent)
   );
   assert(rows.length > 0, `the menu offers at least one group (got ${JSON.stringify(rows)})`);
   assert(
@@ -3888,12 +3888,12 @@ test("context menu: choosing a group selects exactly the members it advertised",
   await sleep(250);
 
   const advertised = await page.evaluate(() => {
-    const b = document.querySelector("#context-menu button:not(#ctx-pin-note):not(#ctx-copy-reference)");
+    const b = document.querySelector("#context-menu button:not(#ctx-pin-note):not(#ctx-copy-reference):not(#ctx-look-at-face)");
     return b ? Number(b.textContent.match(/(\d+)$/)?.[1] ?? "0") : null;
   });
   assert(advertised !== null && advertised > 1, `the first group advertises a count (got ${advertised})`);
 
-  await page.evaluate(() => document.querySelector("#context-menu button:not(#ctx-pin-note):not(#ctx-copy-reference)")?.click());
+  await page.evaluate(() => document.querySelector("#context-menu button:not(#ctx-pin-note):not(#ctx-copy-reference):not(#ctx-look-at-face)")?.click());
   await sleep(300);
 
   // The status line reports what was actually selected — it must agree with
@@ -5552,6 +5552,149 @@ test("parameters table: reorder is refused across a dependency, import reports t
   assert(view[0] === "D", `a favourite renders first (got ${view})`);
   const sent = (await sentOf(page, "editsChanged")).pop();
   assert(sent.variables.map((v) => v.name).join() === "L,W,A,B,C,D" && sent.variables[5].favourite === true, "the stored order is unchanged and carries favourite");
+});
+
+test("navigation presets: Fusion pans on middle-drag and orbits on Shift+middle-drag; Default orbits on left-drag", async (page) => {
+  await populate(page);
+  await sleep(900); // let any settling animation finish
+  const box = await viewportBox(page);
+  const cx = box.x + box.width / 2, cy = box.y + box.height / 2;
+  // How many canvas pixels a drag changes (pointer parked afterwards, so hover tint is not counted).
+  const pixelsMoved = async (button, shift) => {
+    const before = await parkedShot(page);
+    if (shift) await page.keyboard.down("Shift");
+    await page.mouse.move(cx, cy);
+    await page.mouse.down({ button });
+    await page.mouse.move(cx + 120, cy + 60, { steps: 12 });
+    await page.mouse.up({ button });
+    if (shift) await page.keyboard.up("Shift");
+    await sleep(900); // damping settles
+    return canvasDiffCount(page, before, await parkedShot(page));
+  };
+  const defaults = (navigationPreset) => ({ type: "viewerDefaults", background: "#1e1e1e", meshSizePreset: "medium", showGridAndAxes: true, upAxis: "y", singleKeyCommands: false, navigationPreset });
+  // A real camera move changes >100k canvas pixels; hover-tint residue changes a few thousand at most.
+  const MOVED = 60000, STILL = 25000;
+  const base = await pixelsMoved("left", false);
+  assert(base > MOVED, `Default: a left-drag orbits (${base} pixels changed)`);
+  await post(page, defaults("fusion"));
+  await sleep(900);
+  const fusionLeft = await pixelsMoved("left", false);
+  assert(fusionLeft < STILL, `Fusion: a left-drag does not move the camera (${fusionLeft} pixels changed)`);
+  const fusionRight = await pixelsMoved("right", false);
+  assert(fusionRight < STILL, `Fusion: a right-drag does not move the camera (${fusionRight} pixels changed)`);
+  const fusionMiddle = await pixelsMoved("middle", false);
+  assert(fusionMiddle > MOVED, `Fusion: a middle-drag pans (${fusionMiddle} pixels changed)`);
+  const fusionOrbit = await pixelsMoved("middle", true);
+  assert(fusionOrbit > MOVED, `Fusion: Shift+middle-drag orbits (${fusionOrbit} pixels changed)`);
+  await post(page, defaults("default"));
+  await sleep(900);
+  const back = await pixelsMoved("left", false);
+  assert(back > MOVED, `Default again: the left-drag that did nothing under Fusion orbits (${back} pixels changed)`);
+});
+
+test("look at face: the context-menu entry fetches the face normal and turns the camera onto it", async (page) => {
+  await populate(page);
+  await enablePicking(page, "surface");
+  const box = await viewportBox(page);
+  await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2, { button: "right" });
+  await sleep(250);
+  const shown = await page.evaluate(() => { const b = document.getElementById("ctx-look-at-face"); return !!b && b.getClientRects().length > 0; });
+  assert(shown, "right-clicking a B-rep face offers Look at face");
+  await page.evaluate(() => (window.__sent.length = 0));
+  await page.evaluate(() => document.getElementById("ctx-look-at-face").click());
+  await sleep(250);
+  const req = await page.evaluate(() => (window.__sent ?? []).find((m) => m.type === "entityFactsRequest" && String(m.requestId).startsWith("lookat-")) ?? null);
+  assert(req !== null, "choosing it issues its own entityFactsRequest");
+  // A non-planar reply refuses by name and does not move the camera.
+  await post(page, { type: "entityFactsResult", requestId: req.requestId, facts: { entityId: req.entityId, entityType: "surface", surfaceType: "cylinder" } });
+  await sleep(200);
+  const refused = await page.evaluate(() => document.getElementById("status")?.textContent ?? "");
+  assert(/cylinder face — pick a planar face/.test(refused), `a non-planar face is refused by name (got ${JSON.stringify(refused)})`);
+  // A planar reply turns the camera to ±normal (the sign follows the current side).
+  await page.evaluate(() => (window.__sent.length = 0));
+  await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2, { button: "right" });
+  await sleep(250);
+  await page.evaluate(() => document.getElementById("ctx-look-at-face").click());
+  await sleep(250);
+  const req2 = await page.evaluate(() => (window.__sent ?? []).filter((m) => m.type === "entityFactsRequest" && String(m.requestId).startsWith("lookat-")).at(-1));
+  await post(page, { type: "entityFactsResult", requestId: req2.requestId, facts: { entityId: req2.entityId, entityType: "surface", normal: [1, 0, 0], planeOrigin: [0, 0, 0] } });
+  await sleep(700);
+  const dir = await page.evaluate(() => (window.__sent ?? []).filter((m) => m.type === "viewChanged").at(-1)?.view?.viewDirection ?? null);
+  assert(Array.isArray(dir) && Math.abs(Math.abs(dir[0]) - 1) < 1e-6 && Math.abs(dir[1]) < 1e-6 && Math.abs(dir[2]) < 1e-6, `the camera looks along ±X (got ${JSON.stringify(dir)})`);
+});
+
+test("form ergonomics: the Apply row stays inside the scrolling Edits area on a long form at a short height", async (page) => {
+  await populate(page);
+  await page.setViewportSize({ width: 820, height: 640 });
+  // Give the Edits section the sidebar: the tree and Parts sections would otherwise take all of it.
+  await page.evaluate(() => { for (const id of ["tree-panel", "parts-panel"]) document.getElementById(id)?.classList.add("collapsed"); });
+  await sleep(300);
+  const names = ["Loft", "Sweep", "Wrap", "Extrude"];
+  let report = null;
+  for (const n of names) {
+    await page.evaluate((name) => [...document.querySelectorAll(".op-btn")].find((b) => b.querySelector(".op-name")?.textContent === name)?.click(), n);
+    await sleep(250);
+    report = await page.evaluate(() => {
+      const scroll = document.getElementById("edits-scroll");
+      const row = document.querySelector("#edits-params > .compose-footer");
+      if (!scroll || !row) return null;
+      // Scroll the form's top to the top of the area (how a user reaches a long form).
+      const top = document.getElementById("edits-params").getBoundingClientRect().top - scroll.getBoundingClientRect().top + scroll.scrollTop;
+      scroll.scrollTop = top;
+      const sr = scroll.getBoundingClientRect();
+      const rr = row.getBoundingClientRect();
+      return { name: document.querySelector(".op-btn.active .op-name")?.textContent ?? "?", formHeight: document.getElementById("edits-params").getBoundingClientRect().height, scrollHeight: sr.height, rowBottom: rr.bottom, scrollBottom: sr.bottom, shown: row.getClientRects().length > 0 };
+    });
+    if (report && report.formHeight > report.scrollHeight) break;
+    await page.evaluate((name) => [...document.querySelectorAll(".op-btn")].find((b) => b.querySelector(".op-name")?.textContent === name)?.click(), n); // collapse
+    await sleep(150);
+  }
+  assert(report !== null, "a form with an Apply footer was opened");
+  assert(report.formHeight > report.scrollHeight, `precondition: the form (${report.name}) is taller than the scroll area (${Math.round(report.formHeight)} vs ${Math.round(report.scrollHeight)})`);
+  assert(report.shown && report.rowBottom <= report.scrollBottom + 1, `the Apply row is pinned inside the scroll area while the form fills it (row bottom ${report.rowBottom}, area bottom ${report.scrollBottom})`);
+  // Control: without the sticky class the same row sits below the fold.
+  const unpinned = await page.evaluate(() => {
+    const row = document.querySelector("#edits-params > .compose-footer");
+    row.classList.remove("compose-footer");
+    const sc = document.getElementById("edits-scroll");
+    return row.getBoundingClientRect().bottom > sc.getBoundingClientRect().bottom;
+  });
+  assert(unpinned, "control: an unpinned Apply row is below the fold on the same form");
+  await page.setViewportSize({ width: 1280, height: 800 });
+});
+
+test("history rows: suppress toggles replay state, rename commits/cancels, delete warns about dependents", async (page) => {
+  await populate(page);
+  await post(page, {
+    type: "edits",
+    ops: [{ op: "addBox", center: [0, 0, 0], size: [4, 5, 6] }, { op: "addSphere", center: [9, 0, 0], radius: 2 }],
+    variables: [],
+  });
+  await sleep(300);
+  const visible = (sel) => page.evaluate((q) => { const e = document.querySelector(q); return !!e && e.getClientRects().length > 0; }, sel);
+  assert(await visible('.edit-row[data-op-index="1"] .edit-suppress'), "the suppress button renders on an unbaked row");
+  await page.evaluate(() => document.querySelector('.edit-row[data-op-index="1"] .edit-suppress').click());
+  await sleep(300);
+  let sent = (await sentOf(page, "editsChanged")).pop();
+  assert(sent.ops[1].suppressed === true && sent.ops[0].suppressed === undefined, `suppress posts suppressed:true on that op only (got ${JSON.stringify(sent.ops)})`);
+  assert(await page.evaluate(() => document.querySelector('.edit-row[data-op-index="1"]').classList.contains("edit-row-suppressed") && !document.querySelector('.edit-row[data-op-index="1"]').classList.contains("edit-row-skipped")), "a suppressed row is struck through, not shown as a failure");
+  await page.evaluate(() => document.querySelector('.edit-row[data-op-index="1"] .edit-suppress').click());
+  await sleep(300);
+  sent = (await sentOf(page, "editsChanged")).pop();
+  assert(sent.ops[1].suppressed === undefined, "unsuppress removes the flag again");
+  // Rename: Escape cancels, Enter commits.
+  const dbl = () => page.evaluate(() => document.querySelector('.edit-row[data-op-index="0"] .edit-label').dispatchEvent(new MouseEvent("dblclick", { bubbles: true })));
+  await dbl();
+  await page.evaluate(() => { const i = document.querySelector(".edit-rename"); i.value = "Nope"; i.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); });
+  await sleep(200);
+  sent = (await sentOf(page, "editsChanged")).pop();
+  assert(sent.ops[0].label === undefined, "Escape cancels the rename");
+  await dbl();
+  await page.evaluate(() => { const i = document.querySelector(".edit-rename"); i.value = "Base block"; i.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true })); });
+  await sleep(300);
+  sent = (await sentOf(page, "editsChanged")).pop();
+  assert(sent.ops[0].label === "Base block", `Enter commits the label (got ${sent.ops[0].label})`);
+  assert(await page.evaluate(() => document.querySelector('.edit-row[data-op-index="0"] .edit-label').textContent === "Base block"), "the row shows the label");
 });
 
 test("parameters table: promoting a model parameter makes the op follow the variable", async (page) => {

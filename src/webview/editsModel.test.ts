@@ -4,6 +4,21 @@ import type { EditOp } from "../editOps";
 
 const T = (x: number): EditOp => ({ op: "translate", targets: ["solid-0"], vec: [x, 0, 0] });
 
+describe("EditsModel.setState", () => {
+  it("suppresses, relabels, refuses the save point, and no-ops when unchanged", () => {
+    const onChange = vi.fn();
+    const m = new EditsModel(onChange);
+    m.load([T(1), T(2)], 1);
+    expect(m.setState(0, { suppressed: true })).toBe(false); // baked
+    expect(m.setState(1, { suppressed: true, label: " Slide " })).toBe(true);
+    expect(m.list()[1]).toMatchObject({ suppressed: true, label: "Slide" });
+    expect(onChange).toHaveBeenCalledTimes(1);
+    expect(m.setState(1, { suppressed: true })).toBe(false);
+    expect(m.setState(1, { suppressed: false, label: null })).toBe(true);
+    expect(m.list()[1]).toEqual(T(2));
+  });
+});
+
 describe("EditsModel", () => {
   it("push appends in order and fires onChange", () => {
     const onChange = vi.fn();

@@ -133,6 +133,8 @@ import { setupSidebarResizer, clampSidebarWidth, SIDEBAR_DEFAULT_PX, type Sideba
 import { sanitizeBookmarks } from "../viewStateSidecar";
 import { MarkupModel, type MarkupStroke, type MarkupTool, type Point } from "./markupModel";
 import { redrawAll } from "./markupCanvas";
+import { lookAtFaceDirection } from "./lookAtFace";
+import { findOpDependents, describeDependents } from "../opDependents";
 import { setupDropdown } from "./dropdownMenu";
 import type { HostToWebview, WebviewToHost, TreeNode, EntityType, EditOp, ViewState, ViewBookmark, Annotation, SurfaceToolParams } from "../protocol";
 import type { OpOutcome, RegionPick, PointRefs } from "../editOps";
@@ -700,6 +702,8 @@ let lastOpOutcomes: OpOutcome[] | null = null;
  * `src/opBuckets.ts`) — set by the B-rep `"geometry"` handler, cleared by
  * `rebuildMeshModel()` (mesh sources have no B-rep buckets). Consumed by
  * `renderEditsUi()` so history rows can show +N chips. */
+/** Row whose ✕ is waiting for a dependents confirm. */
+let pendingRemoveConfirm: number | null = null;
 let lastOpBuckets: import("../opBuckets").OpBucket[] | null = null;
 /** Guide-entity ids from the last B-rep `geometry` post — construction
  * geometry the feature ops (extrude/revolve/sweep/loft/buildSurface/
@@ -1188,7 +1192,21 @@ const editsPanel = new EditsPanel(document.getElementById("edits-panel")!, {
     if (!editsModel.clear() && editsModel.size > 0) setStatus(SAVE_POINT_REFUSAL, true);
   },
   onRemoveOp: (index) => {
+    // Delete-with-dependents: a second click on the same row confirms.
+    const bucket = lastOpBuckets?.find((b) => b.op === index);
+    const produced = bucket ? Object.values(bucket.roles).flat() : [];
+    const partIds = partsModel.list().flatMap((p) => [...p.volumes, ...p.surfaces, ...p.lines, ...p.points]);
+    const deps = findOpDependents(editsModel.list(), index, produced, partIds);
+    if (!deps.none && pendingRemoveConfirm !== index) {
+      pendingRemoveConfirm = index;
+      setStatus(`Removing edit ${index + 1} may break: ${describeDependents(deps)}. Click ✕ again to confirm.`, true);
+      return;
+    }
+    pendingRemoveConfirm = null;
     if (!editsModel.remove(index) && index < editsModel.savePoint) setStatus(SAVE_POINT_REFUSAL, true);
+  },
+  onSetOpState: (index, state) => {
+    if (!editsModel.setState(index, state) && index < editsModel.savePoint) setStatus(SAVE_POINT_REFUSAL, true);
   },
   // One splice + one onChange/editsChanged/re-tessellate round trip per
   // click — never a looped undo()/redo() sequence (op-history scrubbing).
@@ -4168,6 +4186,20 @@ function setupSelectionControls(): void {
     });
     ctxMenu.append(noteBtn);
 
+    // Look at face (roadmap "Navigation upgrades"): view a planar B-rep face head-on.
+    if (sourceKind === "brep" && result.entityType === "surface") {
+      const lookBtn = document.createElement("button");
+      lookBtn.id = "ctx-look-at-face";
+      lookBtn.setAttribute("role", "menuitem");
+      lookBtn.textContent = "Look at face";
+      lookBtn.title = `Turn the camera to view ${result.entityId} head-on (planar faces only)`;
+      lookBtn.addEventListener("click", () => {
+        closeMenu();
+        lookAtFace(result.entityId);
+      });
+      ctxMenu.append(lookBtn);
+    }
+
     // Copy reference (roadmap "Quotable entity references"): the MCP server runs
     // in another process and cannot see the selection, so this puts a
     // self-describing, paste-ready line on the clipboard. The right-clicked
@@ -5284,6 +5316,24 @@ function requestClipFromFace(): void {
   if (!face) return;
   clipFaceFactsRequestId = `clipface-${Date.now()}-${Math.random()}`;
   post({ type: "entityFactsRequest", requestId: clipFaceFactsRequestId, entityId: face.entityId });
+}
+
+/** Look at face: one facts round trip (own request id), then a camera snap along the normal. */
+function lookAtFace(entityId: string): void {
+  const requestId = `lookat-${Date.now()}-${Math.random()}`;
+  ruleFactWaiters.set(requestId, (facts, error) => {
+    if (!facts) { setStatus(error ?? "Could not read that face.", true); return; }
+    if (!facts.normal) {
+      setStatus(`${facts.entityId} is ${facts.surfaceType ? `a ${facts.surfaceType} face` : "not planar"} — pick a planar face.`, true);
+      return;
+    }
+    const cur = viewer.getViewDirection();
+    const dir = lookAtFaceDirection(facts.normal, [cur.x, cur.y, cur.z]);
+    if (!dir) { setStatus("That face has no usable normal.", true); return; }
+    viewer.setViewDirection(new THREE.Vector3(dir[0], dir[1], dir[2]));
+    setStatus(`Looking at ${facts.entityId}.`);
+  });
+  post({ type: "entityFactsRequest", requestId, entityId });
 }
 
 /** Applies a clip plane from a completed Clip ▸ Face round trip. */
