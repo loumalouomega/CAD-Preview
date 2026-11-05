@@ -278,7 +278,7 @@ test("the extension is installed, activates, and registers its commands", async 
     "cad-preview.open", "cad-preview.compareModels", "cad-preview.whatsNew",
     "cad-preview.export", "cad-preview.saveAs", "cad-preview.exportSvg",
     "cad-preview.exportDxf", "cad-preview.savePreprocess", "cad-preview.loadPreprocess",
-    "cad-preview.refreshModels", "cad-preview.new", "cad-preview.connectAgent",
+    "cad-preview.refreshModels", "cad-preview.new", "cad-preview.connectAgent", "cad-preview.openSample",
   ]) {
     assert(commands.includes(id), `command ${id} is registered`);
   }
@@ -2674,6 +2674,35 @@ test("New Blank Model refuses to overwrite an existing file", async () => {
     fs.readFileSync(dest).equals(original),
     "the pre-existing file is byte-identical after the refused create"
   );
+});
+
+test("Open Sample… copies the chosen sample into the chosen folder, opens the copy, and never touches the bundled original", async () => {
+  await closeAll();
+  const bundled = path.join(ROOT, "dist", "samples");
+  const listing = () => fs.readdirSync(bundled).sort().join(",");
+  const before = listing();
+  const folder = tempDir();
+  const record = await withModals([pick("10 mm cube (STL)"), openAnswer(folder)], async () => {
+    await vscode.commands.executeCommand("cad-preview.openSample");
+    await sleep(1500);
+  });
+  assert(record.quickPicks[0]?.labels.length === 3, `the gallery offers the three samples (got ${JSON.stringify(record.quickPicks[0]?.labels)})`);
+  const copy = path.join(folder, "cube.stl");
+  assert(fs.existsSync(copy), "the sample was copied into the chosen folder");
+  assert(fs.readFileSync(copy).equals(fs.readFileSync(path.join(bundled, "cube.stl"))), "the copy is byte-identical to the bundled sample");
+  assert(listing() === before, "no sidecar or other file appeared beside the bundled original");
+  const active = vscode.window.tabGroups.activeTabGroup.activeTab?.label;
+  assert(active === "cube.stl", `the copy is the opened document (active tab ${JSON.stringify(active)})`);
+  await closeAll();
+
+  // A second run into the same folder is refused and leaves the (now edited) copy alone.
+  fs.writeFileSync(copy, "EDITED");
+  const again = await withModals([pick("10 mm cube (STL)"), openAnswer(folder)], async () => {
+    await vscode.commands.executeCommand("cad-preview.openSample");
+    await sleep(800);
+  });
+  assert(fs.readFileSync(copy, "utf8") === "EDITED", "an existing file is never overwritten");
+  assert(again.errors.some((m) => /already exists/.test(m)), `the refusal names the reason (got ${JSON.stringify(again.errors)})`);
 });
 
 test("session-gated commands are silent no-ops with no editor focused", async () => {

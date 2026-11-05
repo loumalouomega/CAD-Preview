@@ -3,6 +3,7 @@
 .opencode/**
 .vscode/**
 .vscode-test/**
+samples/**
 src/**
 test/**
 third-party/**
@@ -20,6 +21,11 @@ third-party/**
 !dist/mesh-presets/starter-presets.json
 !dist/process-limits/starter-limits.json
 !dist/sheet-templates/starter-templates.json
+# Bundled sample models ("Open Sample…"), staged from samples/index.json by esbuild.mjs's copySamples().
+!dist/samples/index.json
+!dist/samples/annulus.stp
+!dist/samples/cube.stl
+!dist/samples/bracket.csg
 # Draco decoders (roadmap "Compressed glTF"): the web pair three's DRACOLoader
 # fetches in the webview, the Node wasm the kernel worker hands to draco3d, and
 # the Apache-2.0 text. Staged by esbuild.mjs's copyDracoDecoders().

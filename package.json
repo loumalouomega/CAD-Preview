@@ -174,10 +174,45 @@
         }
       ]
     },
+    "walkthroughs": [
+      {
+        "id": "cad-preview.welcome",
+        "title": "Get started with CAD Preview",
+        "description": "Open a model, edit it, mesh it and connect an agent.",
+        "steps": [
+          {
+            "id": "open",
+            "title": "Open a model",
+            "description": "Open a STEP, IGES, BREP, STL, OBJ, PLY, glTF or FE-mesh file, or copy a bundled sample into a folder.\n[Open CAD File…](command:cad-preview.open)\n[Open Sample…](command:cad-preview.openSample)",
+            "media": { "markdown": "media/walkthrough/open.md" },
+            "completionEvents": ["onCommand:cad-preview.open", "onCommand:cad-preview.openSample"]
+          },
+          {
+            "id": "edit",
+            "title": "Edit and save",
+            "description": "Edits are stored beside the file in a sidecar; the source is written only when you save.\n[Show What's New](command:cad-preview.whatsNew)",
+            "media": { "markdown": "media/walkthrough/edit.md" }
+          },
+          {
+            "id": "mesh",
+            "title": "Generate a mesh",
+            "description": "Use the FE Mesh panel to mesh a B-rep or a surface mesh with Gmsh, and export it for a solver.",
+            "media": { "markdown": "media/walkthrough/mesh.md" }
+          },
+          {
+            "id": "agent",
+            "title": "Connect an agent",
+            "description": "The bundled MCP server lets an agent inspect, edit and mesh the same models.\n[Connect an agent…](command:cad-preview.connectAgent)",
+            "media": { "markdown": "media/walkthrough/agent.md" },
+            "completionEvents": ["onCommand:cad-preview.connectAgent"]
+          }
+        ]
+      }
+    ],
     "viewsWelcome": [
       {
         "view": "cad-preview.models",
-        "contents": "No CAD models found in this workspace.\n[Open CAD File…](command:cad-preview.open)\n[New Blank Model…](command:cad-preview.new)"
+        "contents": "No CAD models found in this workspace.\n[Open CAD File…](command:cad-preview.open)\n[New Blank Model…](command:cad-preview.new)\n[Open Sample…](command:cad-preview.openSample)"
       }
     ],
     "commands": [
@@ -190,6 +225,11 @@
         "command": "cad-preview.new",
         "title": "CAD Preview: New Blank Model…",
         "icon": "$(new-file)"
+      },
+      {
+        "command": "cad-preview.openSample",
+        "title": "CAD Preview: Open Sample…",
+        "icon": "$(library)"
       },
       {
         "command": "cad-preview.refreshModels",

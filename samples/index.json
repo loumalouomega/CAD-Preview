@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "samples": [
+    {
+      "file": "annulus.stp",
+      "from": "examples/STP/passages/annulus.stp",
+      "label": "Annulus (STEP)",
+      "description": "A small B-rep ring built by this extension's own edit ops — try Edit ▸ Fillet, or Measure."
+    },
+    {
+      "file": "cube.stl",
+      "from": "examples/STL/cube.stl",
+      "label": "10 mm cube (STL)",
+      "description": "A mesh source: edits replay in the viewer, Gmsh can mesh it, and Save writes it back."
+    },
+    {
+      "file": "bracket.csg",
+      "from": "examples/OpenSCAD/bracket.csg",
+      "label": "Bracket (OpenSCAD .csg)",
+      "description": "An OpenSCAD CSG tree rebuilt as an OpenCascade B-rep, with its colours."
+    }
+  ]
+}

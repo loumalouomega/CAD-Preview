@@ -61,6 +61,8 @@ Hand-written `.csg` fixtures (no OpenSCAD binary is needed to produce them — t
 
 ## STP
 
+> **Bundled samples.** `samples/index.json` lists the three files copied into `dist/samples/` for **Open Sample…**: `STP/passages/annulus.stp`, `STL/cube.stl` and `OpenSCAD/bracket.csg`. They are repo-authored, so they carry no third-party licence; the NIST-derived STEP files below do not have a recorded licence and are deliberately not shipped.
+
 Real-world STEP AP203 models, mostly drawn from the public [NIST/STEP Tools AP203 test file library](https://www.steptools.com/docs/stpfiles/ap203/index.html). `bull.stp` is the primary fixture used throughout `CLAUDE.md`'s manual verification steps (parts, edits, wireframe modeling); the rest exercise the tessellation and edge pipelines against a wide range of solids and assemblies.
 
 | File | Size | Header name / description |

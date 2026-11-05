@@ -25,6 +25,7 @@ if (!fs.existsSync(vsix)) {
   process.exit(1);
 }
 
+let sampleBytes = 0;
 const entries = new Set(
   listNames(fs.readFileSync(vsix))
     .filter((n) => n.startsWith("extension/"))
@@ -38,6 +39,7 @@ function listNames(bytes) {
   unzipSync(new Uint8Array(bytes), {
     filter: (f) => {
       names.push(f.name);
+      if (f.name.startsWith("extension/dist/samples/")) sampleBytes += f.originalSize;
       return false;
     },
   });
@@ -69,6 +71,7 @@ const required = [...new Set([
   "dist/mesh-presets/starter-presets.json",
   "dist/process-limits/starter-limits.json",
   "dist/sheet-templates/starter-templates.json",
+  "dist/samples/index.json",
   // Draco decoders for compressed glTF: web pair + Node wasm + licence text.
   "dist/draco/draco_wasm_wrapper.js",
   "dist/draco/draco_decoder.wasm",
@@ -108,6 +111,7 @@ const leaked = [...entries].filter(
     (f.includes("node_modules/") && !requiredSet.has(f) && !f.endsWith(".d.ts"))
 );
 
+console.log(`bundled samples: ${(sampleBytes / 1e3).toFixed(1)} KB uncompressed in dist/samples/`);
 console.log(`VSIX ${path.basename(vsix)}: ${entries.size} files, ${required.length} required (${carveOuts.length} from .vscodeignore carve-outs)`);
 for (const f of missing) console.log(`✗ missing ${f}`);
 for (const f of leaked) console.log(`✗ must not ship ${f}`);

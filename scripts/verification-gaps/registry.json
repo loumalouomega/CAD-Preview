@@ -777,6 +777,15 @@
       "section": "Touchpad navigation preset (roadmap 2.39)",
       "gap": "the Touchpad preset is verified with scripted wheel events (page.mouse.wheel and a synthetic ctrlKey WheelEvent); how it feels on a real trackpad (inertia, macOS Shift+scroll axis swap, browsers that deliver pinch differently) has not been exercised.",
       "status": "open"
+    },
+    {
+      "id": "open-sample-command-flow",
+      "section": "Welcome walkthrough and sample gallery (roadmap 2.44)",
+      "gap": "the Open Sample\u2026 flow (gallery quick-pick -> folder chooser -> copy -> open the copy) is covered by a test:integration case that has been written but never seen green: this environment cannot download VS Code. The walkthrough contribution itself (its look and step completion in VS Code's Welcome page) is F5-only.",
+      "status": "test-written",
+      "closedBy": [
+        "Open Sample\u2026 copies the chosen sample into the chosen folder, opens the copy, and never touches the bundled original"
+      ]
     }
   ]
 }

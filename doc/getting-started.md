@@ -53,6 +53,10 @@ You can also drag a file from the OS file explorer (or another editor tab) and d
 
 The **CAD Preview** icon in the Activity Bar opens the **Models** view: every CAD/mesh file in the open workspace folder(s), discovered with the same routing rules (and the same depth cap and `.git`/`node_modules` exclusions) as the headless `list_workspace_models` tool. Click a file to open it in the 3D viewer; the toolbar offers **Open…**, **Refresh**, and **New Blank Model…** (new empty session — always visible, even when the workspace already has models). With no folder open — or no models found — the view shows **Open CAD File…** and **New Blank Model…** buttons instead.
 
+### Samples and the welcome walkthrough
+
+**CAD Preview: Open Sample…** (Command Palette, and a link in the empty Models view) offers three small bundled models — a STEP ring, an STL cube and an OpenSCAD `.csg` bracket. Pick one, then pick a folder: the sample is **copied** there and the copy opens. The bundled original is never opened (that would write `.edits.json`/`.view.json` sidecars inside the extension), and a file of the same name in the folder is never overwritten. **Get started with CAD Preview** in VS Code's *Welcome* page walks through opening a model, editing and saving, generating a mesh and connecting an agent.
+
 ### Starting from Scratch
 
 You don't need an existing file. **File ▾ → New Blank Model…** (also `CAD Preview: New Blank Model…` in the Command Palette, and the **New** button in the Models view toolbar) asks where to put a new `.brep` file, creates it empty, and opens it. From there the **Edits** panel's whole creation vocabulary is available — primitives (Box, Sphere, Cylinder, Cone, Torus, Prism, Wedge), 2D sketch profiles to extrude/revolve/sweep/loft, and bottom-up wireframe modeling (points → lines/arcs → **Build → Surface** → **Build → Volume**) — plus booleans, fillets, chamfers, patterns and everything else that works on a B-rep source.

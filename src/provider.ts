@@ -103,6 +103,7 @@ import { isMeshSourceRoute, resolveMeshSourceInput } from "./meshSourceInput";
 import { runMeshSweep, validateSweepSizes, sweepOutputName, SWEEP_NOTE } from "./meshSweep";
 import { getNonce } from "./nonce";
 import { showLatestWhatsNew } from "./whatsNew";
+import { bundledSamplesDir, parseSampleIndex } from "./samples";
 import { buildIssueDraft, issueUrl } from "./issueDraft";
 import { runCompareModelsCommand } from "./modelComparePanel";
 import { runBatchExportCommand } from "./batchExportCommand";
@@ -540,6 +541,8 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
       // Deliberately NOT `withSession` — like `open`/`loadPreprocess`, this
       // creates a document and so must work with no CAD tab focused.
       vscode.commands.registerCommand("cad-preview.new", () => void this.newBlankModelDialog()),
+      // Session-free too: copies a bundled sample into a chosen folder, then opens the COPY.
+      vscode.commands.registerCommand("cad-preview.openSample", () => void this.openSampleDialog()),
       vscode.commands.registerCommand("cad-preview.save", withSession((s) => void s.save())),
       vscode.commands.registerCommand("cad-preview.saveAs", withSession((s) => s.export())),
       vscode.commands.registerCommand("cad-preview.export", withSession((s) => s.export())),
@@ -709,6 +712,60 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
       await vscode.commands.executeCommand("vscode.openWith", destUri, CadPreviewProvider.viewType);
     } catch (err) {
       void vscode.window.showErrorMessage(`New blank model failed: ${(err as Error).message}`);
+    }
+  }
+
+  /**
+   * "Open Sample…": pick one of the bundled models (`dist/samples/`), pick a
+   * folder, copy it there and open the copy. The bundled original is NEVER
+   * opened — doing so would write `.edits.json`/`.view.json` sidecars inside
+   * the extension directory — and an existing file in the folder is refused,
+   * not overwritten (its sidecars would replay against different geometry).
+   */
+  private async openSampleDialog(): Promise<void> {
+    try {
+      const dir = bundledSamplesDir(this.context.extensionPath);
+      let samples: ReturnType<typeof parseSampleIndex> = [];
+      try {
+        samples = parseSampleIndex(Buffer.from(await vscode.workspace.fs.readFile(vscode.Uri.file(path.join(dir, "index.json")))).toString("utf8"));
+      } catch {
+        /* no index staged: handled below */
+      }
+      if (samples.length === 0) {
+        void vscode.window.showErrorMessage("No sample models are bundled with this build.");
+        return;
+      }
+      const picked = await vscode.window.showQuickPick(
+        samples.map((s) => ({ label: s.label, description: s.file, detail: s.description, sample: s })),
+        { placeHolder: "Choose a sample model — it is copied into a folder you pick", matchOnDescription: true }
+      );
+      if (!picked) return;
+      const folders = await vscode.window.showOpenDialog({
+        canSelectFiles: false,
+        canSelectFolders: true,
+        canSelectMany: false,
+        openLabel: "Copy sample here",
+        defaultUri: vscode.workspace.workspaceFolders?.[0]?.uri,
+      });
+      const folder = folders?.[0];
+      if (!folder) return;
+      const dest = vscode.Uri.joinPath(folder, picked.sample.file);
+      let exists = true;
+      try {
+        await vscode.workspace.fs.stat(dest);
+      } catch {
+        exists = false;
+      }
+      if (exists) {
+        void vscode.window.showErrorMessage(
+          `"${picked.sample.file}" already exists in that folder. Open Sample only creates new files — open the existing one with File ▸ Open…, or pick another folder.`
+        );
+        return;
+      }
+      await vscode.workspace.fs.copy(vscode.Uri.file(path.join(dir, picked.sample.file)), dest, { overwrite: false });
+      await vscode.commands.executeCommand("vscode.openWith", dest, CadPreviewProvider.viewType);
+    } catch (err) {
+      void vscode.window.showErrorMessage(`Open sample failed: ${(err as Error).message}`);
     }
   }
 
