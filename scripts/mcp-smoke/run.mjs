@@ -8168,12 +8168,16 @@ try {
       });
       assert(noBox.ids.length === 0, `a box that fully contains no face selects nothing, honestly (got ${JSON.stringify(noBox.ids)})`);
       // A second box with a face on the SAME plane: the rule gains it, the id bag does not.
+      // Snapshot the state just before the grow op, so a WASM-abort retry restores the beam too
+      // (resetRule() would drop it, and the retry would then check an empty model).
+      const preGrow = [ruleModel, `${ruleModel}.edits.json`, `${ruleModel}.parts.json`].map((f) => [f, fs.readFileSync(f)]);
+      const restoreGrow = () => {
+        for (const [f, bytes] of preGrow) fs.writeFileSync(f, bytes);
+      };
       const grown = await callWithCleanRetry(
         "apply_edit_ops",
         { path: ruleModel, ops: [{ op: "addBox", center: [-45, 20, 0], size: [10, 10, 10] }] },
-        () => {
-          resetRule();
-        }
+        restoreGrow
       );
       const ruleParts = (await call("get_state", { path: ruleModel })).parts;
       const ruleEnd = ruleParts.find((p) => p.name === "RuleEnd");

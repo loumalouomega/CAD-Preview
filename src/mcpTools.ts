@@ -4355,35 +4355,36 @@ async function maybeRebindParts(
     return null;
   }
   const { bytes, format } = src;
-  // Stored selectors resolve first (authoritative); the heuristic rebind pass
-  // below runs on the result, same order as the interactive path.
-  const selected = await ctx.pipeline.resolvePartSelectors(
-    ctx.extensionPath,
-    bytes,
-    format as BRepFormat,
-    newTail,
-    parts
-  );
-  const resolvedParts = selected.parts;
-  if (selected.parts !== parts) await writeParts(modelPath, selected.parts);
+  // Rebind FIRST: the geometric pass maps the stored (pre-op) ids onto the new
+  // state. Stored selectors then re-resolve against the new state, so their ids
+  // are already new-state ids. Running the rebind after them would read a rule's
+  // freshly added face as an unknown pre-op id and drop it (roadmap 2.27).
   const result = await ctx.pipeline.rebindPartsAcrossOps(
     ctx.extensionPath,
     bytes,
     format as BRepFormat,
     oldTail,
     newTail,
-    resolvedParts,
+    parts,
     annotations,
     layers
   );
-  const partsChanged = result.parts !== parts;
+  const selected = await ctx.pipeline.resolvePartSelectors(
+    ctx.extensionPath,
+    bytes,
+    format as BRepFormat,
+    newTail,
+    result.parts
+  );
+  const finalParts = selected.parts;
+  const partsChanged = finalParts !== parts;
   const annotationsChanged = result.annotations !== annotations;
   const layersChanged = result.layers !== layers;
   // A frozen selector still warns even when nothing persisted — dropping the
   // warnings here would make a silently-stale query, the failure this whole
   // feature exists to prevent.
   if (!partsChanged && !annotationsChanged && !layersChanged && selected.warnings.length === 0) return null; // nothing topology-changing, or nothing matched
-  if (partsChanged) await writeParts(modelPath, result.parts);
+  if (partsChanged) await writeParts(modelPath, finalParts);
   if (annotationsChanged) await writeAnnotations(modelPath, result.annotations);
   if (layersChanged) await writeLayers(modelPath, result.layers, layersNextId);
   return {

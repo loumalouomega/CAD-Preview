@@ -398,6 +398,17 @@ These are outcome groupings, not release numbers. Independent small items can sh
 - **What is left (S):** the cross-repository check — open the exported `.mdpa` in VSCode-MDPA-Preview and confirm both SubModelParts populate. It needs that extension and is not exercised from this repository.
 - **Done when:** that check passes, and KKSS's tutorial links to the page.
 
+#### 2.26 Unit-aware document variables {#unit-aware-document-variables}
+
+*Area: Geometry, Parity. Effort: S–M.*
+
+- **Evidence today:** document variables (`src/editVariables.ts`, evaluated by `src/paramExpr.ts`) are plain numbers in the document's own length unit; `set_variables` and `get_state` expose them headless. A value pasted from a drawing in inches, or an angle written in radians, is silently taken as millimetres or degrees. ElmerStudio's `core/units.py` (read at `b1be253`) shows a cheap, well-bounded design: `10[mm]`, `2[in]`, `5[deg]` bind a unit to the operand just before it, every value is reduced to SI, a deduced dimension (`Dim`, seven base exponents) is checked against what the field expects, and a mismatch **warns but is still applied** ("the SI value is used as it is") — it never rejects, so no existing document can stop loading.
+- **Done so far (2026-11-01):** the bracketed-unit suffix shipped in `paramExpr.ts` — `mm cm m in ft` convert to millimetres and `deg rad` to degrees (`EXPR_UNITS`, lengths from `lengthUnits.ts`), the suffix must touch the number, an unknown unit is a specific error, plain numbers and stored sidecars are unchanged. `W = 2[in]` resolves to 50.8 and drives an op field.
+- **What is left (S):** a dimension check per op field (length, angle, dimensionless count) reported as an Edits-panel warning and as a `warnings` entry on `apply_edit_ops`/`set_variables`, never as a refusal (a mismatch is applied as written); `get_state` returns each variable's `expr`, resolved value and deduced unit. This needs a field→dimension table over the op kinds and a unit carried through evaluation instead of folded into the number.
+- **Why now:** KKSS's geometry-parameter sweep drives these variables through `set_variables`; a unit-checked parameter table is what makes a swept row's value unambiguous in its provenance.
+- **Out of scope:** units on mesh sizes (they already follow the document unit), temperature offsets (`degC`), and any unit in the sidecar's stored numbers.
+- **Done when:** `W = 5[deg]` on a length field warns and still applies, and MCP and the Edits panel report the same warning (the 50.8 conversion and the unchanged-sidecar round trip are covered).
+
 #### 2.37 History timeline depth {#history-timeline-depth}
 
 *Area: Interface, Parity. Effort: S–M.*
