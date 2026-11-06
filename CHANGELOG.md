@@ -6,6 +6,17 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/); thi
 
 ## [Unreleased]
 
+## [3.38.1] - 2026-11-06
+
+### Changed
+
+- **Dependency updates.** `three-mesh-bvh` 0.9.16 → 0.9.17; the dev-dependencies group to `@types/node` 26.6.6, `@types/vscode` 1.144.0, `@vscode/vsce` 4.1.0 and `vitest` 5.1.0.
+- **VS Code 1.144 or newer is required.** `engines.vscode` rises from `^1.140.0` to `^1.144.0` to match `@types/vscode`; `doc/development.md` states the same floor.
+
+### Fixed
+
+- **The Report Issue… and Open Sample… host flows are verified.** Both `test:integration` cases ran green in CI on PR #171: Report Issue… (`reportIssueRequest` → untitled draft tab → Open on GitHub → prefilled URL) and Open Sample… (gallery quick-pick → folder chooser → copy → open the copy). Their verification-gap entries are closed (open gaps 56 → 54); the Get-started walkthrough's look and step completion on VS Code's Welcome page remains an F5-only check.
+
 ## [3.38.0] - 2026-11-05
 
 ### Added
@@ -1135,6 +1146,7 @@ This release republishes v1.9.0's full changelog (below) unchanged; v1.9.0 itsel
 
 - Initial release: read-only 3D preview for CAD and mesh files (STEP, IGES, BREP, STL, OBJ, PLY, glTF) inside a VS Code custom editor, using OpenCascade.js (OCCT WASM) in the extension host for B-rep formats and Three.js in the webview for rendering.
 
+[3.38.1]: https://github.com/loumalouomega/CAD-Preview/compare/v3.38.0...v3.38.1
 [3.38.0]: https://github.com/loumalouomega/CAD-Preview/compare/v3.37.0...v3.38.0
 [3.37.0]: https://github.com/loumalouomega/CAD-Preview/compare/v3.36.1...v3.37.0
 [3.36.1]: https://github.com/loumalouomega/CAD-Preview/compare/v3.36.0...v3.36.1
