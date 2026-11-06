@@ -329,7 +329,10 @@ describe("view-state: hidden ribbon", () => {
 
   it("is byte-identical at the default and ignores junk", () => {
     const plain = serializeViewStateJson("bull.stp", validView);
-    expect(serializeViewStateJson("bull.stp", { ...validView, ribbonHidden: false })).toBe(plain);
+    // An explicit `false` IS written now (it overrides `cadPreview.ribbon: false`);
+    // an absent value is what leaves the sidecar byte-identical.
+    expect(serializeViewStateJson("bull.stp", validView)).toBe(plain);
+    expect(JSON.parse(serializeViewStateJson("bull.stp", { ...validView, ribbonHidden: false })).ribbonHidden).toBe(false);
     expect(parseViewStateJson(JSON.stringify({ version: 1, source: "b.stp", view: validView, ribbonHidden: "yes" }))).toEqual(validView);
   });
 });

@@ -6,6 +6,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/); thi
 
 ## [Unreleased]
 
+### Added
+
+- **`cadPreview.ribbon` setting** (default on): whether the ribbon is visible when a viewer opens. Hiding or showing it in a document is saved in that model's `.view.json` (`ribbonHidden`, now also written as `false` when it overrides a turned-off setting) and wins over the setting.
+
 ## [3.39.0] - 2026-11-06
 ### Added
 

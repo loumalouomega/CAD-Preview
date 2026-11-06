@@ -117,7 +117,7 @@ export function parseViewStateJson(text: string): ViewState | null {
   const ribbonTab = sanitizeRibbonTab(file?.ribbonTab);
   if (ribbonTab !== null && ribbonTab !== DEFAULT_RIBBON_TAB) base.ribbonTab = ribbonTab;
   if (file?.ribbonCompact === true) base.ribbonCompact = true;
-  if (file?.ribbonHidden === true) base.ribbonHidden = true;
+  if (typeof file?.ribbonHidden === "boolean") base.ribbonHidden = file.ribbonHidden;
   if (file?.editsGridOpen === true) base.editsGridOpen = true;
   if (file?.formsDocked === true) base.formsDocked = true;
 
@@ -262,7 +262,7 @@ export function serializeViewStateJson(sourceName: string, view: ViewState): str
   const tab = sanitizeRibbonTab(ribbonTab);
   if (tab !== null && tab !== DEFAULT_RIBBON_TAB) (file as SidecarFile).ribbonTab = tab;
   if (ribbonCompact === true) (file as SidecarFile).ribbonCompact = true;
-  if (ribbonHidden === true) (file as SidecarFile).ribbonHidden = true;
+  if (typeof ribbonHidden === "boolean") (file as SidecarFile).ribbonHidden = ribbonHidden;
   if (editsGridOpen === true) (file as SidecarFile).editsGridOpen = true;
   if (formsDocked === true) (file as SidecarFile).formsDocked = true;
   return JSON.stringify(file, null, 2) + "\n";

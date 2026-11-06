@@ -531,6 +531,11 @@
           "default": "default",
           "description": "How the mouse and trackpad navigate the 3D view. The wheel zooms, except under the Touchpad preset where a plain scroll pans and a pinch (Ctrl-wheel) zooms. Applied when a viewer opens or the setting changes for new viewers."
         },
+        "cadPreview.ribbon": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show the ribbon (the tabbed command strip under the menu bar) when a viewer opens. Hiding or showing it in a document is remembered in that model's .view.json sidecar and wins over this setting. Read when a viewer opens."
+        },
         "cadPreview.singleKeyCommands": {
           "type": "boolean",
           "default": false,

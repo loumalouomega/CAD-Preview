@@ -5546,6 +5546,10 @@ let appearanceControls: AppearanceControlsHandle | null = null;
 let clippingControls: ClippingControlsHandle | null = null;
 let collapsiblePanels: CollapsiblePanelsHandle | null = null;
 let ribbon: RibbonHandle | null = null;
+// `cadPreview.ribbon` is the per-document DEFAULT; an explicit sidecar value wins.
+// viewerDefaults and the view state arrive in either order, hence the flag.
+let ribbonDefaultHidden = false;
+let ribbonHiddenExplicit = false;
 let sidebarResizer: SidebarResizerHandle | null = null;
 
 /** While applying a saved bookmark, suppress the echo that would otherwise
@@ -5730,10 +5734,11 @@ function applyViewState(state: ViewState): void {
   // Ribbon tab / compact / grid state — a restore, not an echo (`setState` never
   // fires `onChange`). Absent fields mean the defaults, so a sidecar without
   // them resets a previously-chosen tab exactly as `setCollapsed([])` expands.
+  ribbonHiddenExplicit = state.ribbonHidden !== undefined;
   ribbon?.setState({
     tab: sanitizeRibbonTab(state.ribbonTab) ?? DEFAULT_RIBBON_TAB,
     compact: state.ribbonCompact === true,
-    hidden: state.ribbonHidden === true,
+    hidden: state.ribbonHidden ?? ribbonDefaultHidden,
     editsGridOpen: state.editsGridOpen === true,
   });
   // Docked form placement — silent restore (`setDocked` never fires the change callback).
@@ -5974,7 +5979,7 @@ function scheduleViewSave(): void {
     if (ribbonState) {
       if (ribbonState.tab !== DEFAULT_RIBBON_TAB) view.ribbonTab = ribbonState.tab;
       if (ribbonState.compact) view.ribbonCompact = true;
-      if (ribbonState.hidden) view.ribbonHidden = true;
+      if (ribbonState.hidden !== ribbonDefaultHidden) view.ribbonHidden = ribbonState.hidden;
       if (ribbonState.editsGridOpen) view.editsGridOpen = true;
     }
     if (editsPanel.isDocked()) view.formsDocked = true;
@@ -6403,6 +6408,8 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
       // values and runtime toggles (the toolbar Grid button) always win once set.
       meshSizePreset = msg.meshSizePreset;
       commandPalette.setSingleKeys(msg.singleKeyCommands);
+      ribbonDefaultHidden = msg.ribbon === false;
+      if (!ribbonHiddenExplicit) ribbon?.setState({ hidden: ribbonDefaultHidden });
       viewer.applyDefaults(msg);
       syncMeshSizeSeed();
       {
