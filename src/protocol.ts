@@ -365,11 +365,19 @@ export interface ViewState {
   ribbonTab?: string;
   /** The ribbon's compact preference (labels hidden). Written only when `true`. */
   ribbonCompact?: boolean;
+  /** The ribbon strip is hidden (the menubar's Ribbon button restores it). Written only when `true`. */
+  ribbonHidden?: boolean;
   /**
    * The Edits panel's op button grid is expanded. Written only when `true`:
    * absent means collapsed behind its toggle, because the ribbon covers it.
    */
   editsGridOpen?: boolean;
+  /**
+   * The Edits panel's operation form is docked over the viewport (top right)
+   * instead of sitting in the sidebar. Written only when `true`; absent means
+   * in the panel. A display preference — no MCP surface.
+   */
+  formsDocked?: boolean;
 }
 
 /** One saved meshing preset, as the FE Mesh panel lists it. A preset's own

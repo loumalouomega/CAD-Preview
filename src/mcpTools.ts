@@ -30,6 +30,7 @@ import {
   type EditOpKind,
   type OpOutcome,
 } from "./editOps";
+import { planOpMove } from "./reorderOps";
 import { evaluateVariables, resolveEditOps, validateVariables, dimensionIssues, variableDimensions, type ParamVariable } from "./editVariables";
 import { resolvePlaneRefs } from "./planeRefs";
 import { applyPointRefWriteback, pointRefRebindWarnings, type PointRefHit } from "./pointRefCache";
@@ -113,6 +114,7 @@ import {
   setConfigurationCell,
   setConfigurationSuppressed,
   shiftSuppressedAfterRemove,
+  remapSuppressedAfterMove,
   applySuppression,
   configurationTable,
   configurationFileSlug,
@@ -4109,7 +4111,7 @@ export async function getState(params: { path: string }) {
     // changed in the meantime; every guarded write also returns its new
     // `revision`.
     revisions: await revisionsOf(modelPath),
-    edits: fullOps.map((op, index) => ({ index, op: op.op, description: op.label ?? describeOp(op), suppressed: op.suppressed === true, label: op.label ?? null, json: op })),
+    edits: fullOps.map((op, index) => ({ index, op: op.op, description: op.label ?? describeOp(op), suppressed: op.suppressed === true, label: op.label ?? null, folder: op.folder ?? null, json: op })),
     bakedThrough,
     variables: variables.map((v) => ({
       name: v.name,
@@ -4890,6 +4892,33 @@ export async function removeEditOp(ctx: ToolContext, params: { path: string; ind
 }
 
 /**
+ * Move one op to a new position in the stack (the history row's drag). Refused,
+ * with the reason, by `planOpMove` when the move crosses the saved prefix, a
+ * stored selector query, or two ops that both renumber positional ids. Display
+ * folders and per-configuration suppression follow the op; Parts rebind through
+ * the same whole-shape match any non-append change gets.
+ */
+export async function moveEditOp(ctx: ToolContext, params: { path: string; from: number; to: number }) {
+  const modelPath = params.path;
+  const route = requireRoute(modelPath);
+  const current = await readEditsResolved(modelPath);
+  const parts = await readParts(modelPath);
+  const external = parts.flatMap((p) => (p.selector?.source.kind === "bucket" ? [p.selector.source.op] : []));
+  const plan = planOpMove(current.fullOps, params.from, params.to, current.bakedThrough, external);
+  if (!plan.ok) throw new Error(plan.reason);
+  const oldOps = current.fullOps;
+  const remapped = remapSuppressedAfterMove({ configurations: current.configurations, activeConfiguration: current.activeConfiguration }, plan.mapping);
+  await writeEdits(modelPath, plan.ops, current.variables, current.bakedThrough, remapped);
+  const warnings: string[] = [];
+  const rebind = await maybeRebindParts(ctx, modelPath, route, oldOps, plan.ops, warnings, current.bakedThrough);
+  if (rebind) warnings.push(rebindWarningText(rebind, "after moving an op"));
+  else if (TOPOLOGY_CHANGING_OPS.has(oldOps[params.from].op)) {
+    warnings.push("Moved a topology-changing op: face-N/edge-N ids referenced by later ops or parts may no longer resolve (they degrade gracefully — unresolved operands are skipped).");
+  }
+  return { moved: describeOp(oldOps[params.from]), from: params.from, to: params.to, order: plan.mapping, stackLength: plan.ops.length, warnings };
+}
+
+/**
  * `diagnostics_report` (roadmap "Issue draft from a failure"): the same redacted
  * text the editor's "Report issue…" command assembles, for an agent to show its
  * user. Never opens a URL, never attaches model bytes. With `opIndex` it names
@@ -4935,34 +4964,52 @@ export async function diagnosticsReport(ctx: ToolContext, params: { path: string
 }
 
 /** Suppress/unsuppress and/or rename one op in place (roadmap "History timeline depth"). The op itself is never edited. */
-export async function setEditOpState(ctx: ToolContext, params: { path: string; index: number; suppressed?: boolean; label?: string | null }) {
+export async function setEditOpState(ctx: ToolContext, params: { path: string; index: number; suppressed?: boolean; label?: string | null; folder?: string | null; toIndex?: number }) {
   const modelPath = params.path;
   const route = requireRoute(modelPath);
   const current = await readEditsResolved(modelPath);
   if (!Number.isInteger(params.index) || params.index < 0 || params.index >= current.fullOps.length) {
     throw new Error(`Index ${params.index} out of range — the op stack has ${current.fullOps.length} entries (0-based).`);
   }
-  if (params.suppressed === undefined && params.label === undefined) {
-    throw new Error("Pass suppressed and/or label (label null or empty clears it).");
+  if (params.suppressed === undefined && params.label === undefined && params.folder === undefined) {
+    throw new Error("Pass suppressed and/or label and/or folder (label or folder null or empty clears it).");
+  }
+  if (params.toIndex !== undefined) {
+    if (params.folder === undefined) throw new Error("toIndex only applies to folder (it names the last op of the range).");
+    if (!Number.isInteger(params.toIndex) || params.toIndex < params.index || params.toIndex >= current.fullOps.length) {
+      throw new Error(`toIndex ${params.toIndex} must be an integer from ${params.index} to ${current.fullOps.length - 1}.`);
+    }
   }
   if (params.index < current.bakedThrough) {
-    throw new Error(`Index ${params.index} is inside the baked prefix (ops 0..${current.bakedThrough - 1} are already saved into ${path.basename(modelPath)} itself) — it can no longer be suppressed or renamed.`);
+    throw new Error(`Index ${params.index} is inside the baked prefix (ops 0..${current.bakedThrough - 1} are already saved into ${path.basename(modelPath)} itself) — it can no longer be suppressed, renamed or put in a folder.`);
   }
+  const last = params.toIndex ?? params.index;
   const oldOps = current.fullOps;
-  const next = { ...oldOps[params.index] } as EditOp;
-  if (params.suppressed === true) next.suppressed = true;
-  else if (params.suppressed === false) delete next.suppressed;
-  if (params.label !== undefined) {
-    const trimmed = (params.label ?? "").trim().slice(0, MAX_OP_LABEL);
-    if (trimmed) next.label = trimmed;
-    else delete next.label;
-  }
-  const newOps = oldOps.map((o, i) => (i === params.index ? next : o));
+  const folderName = params.folder === undefined ? undefined : (params.folder ?? "").trim().slice(0, MAX_OP_LABEL);
+  const newOps = oldOps.map((o, i) => {
+    if (i < params.index || i > last) return o;
+    const next = { ...o } as EditOp;
+    if (i === params.index) {
+      if (params.suppressed === true) next.suppressed = true;
+      else if (params.suppressed === false) delete next.suppressed;
+      if (params.label !== undefined) {
+        const trimmed = (params.label ?? "").trim().slice(0, MAX_OP_LABEL);
+        if (trimmed) next.label = trimmed;
+        else delete next.label;
+      }
+    }
+    if (folderName !== undefined) {
+      if (folderName) next.folder = folderName;
+      else delete next.folder;
+    }
+    return next;
+  });
   await writeEdits(modelPath, newOps, current.variables, current.bakedThrough);
+  const next = newOps[params.index];
   const warnings: string[] = [];
   const rebind = params.suppressed === undefined ? null : await maybeRebindParts(ctx, modelPath, route, oldOps, newOps, warnings, current.bakedThrough);
   if (rebind) warnings.push(rebindWarningText(rebind, "after changing an op's suppressed state"));
-  return { index: params.index, op: describeOp(next), suppressed: next.suppressed === true, label: next.label ?? null, warnings };
+  return { index: params.index, op: describeOp(next), suppressed: next.suppressed === true, label: next.label ?? null, folder: next.folder ?? null, ...(params.toIndex !== undefined ? { toIndex: params.toIndex } : {}), warnings };
 }
 
 // ---------------------------------------------------------------------------

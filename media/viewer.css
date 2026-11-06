@@ -682,7 +682,8 @@ body.sidebar-resizing {
   position: relative;
 }
 
-#file-menu {
+#file-menu,
+#ribbon-toggle {
   font: inherit;
   display: inline-flex;
   align-items: center;
@@ -696,9 +697,14 @@ body.sidebar-resizing {
 }
 
 #file-menu:hover,
+#ribbon-toggle:hover,
 #file-menu[aria-expanded="true"] {
   background: var(--vscode-toolbar-hoverBackground, rgba(90, 93, 94, 0.31));
 }
+
+#ribbon-toggle { margin-left: 4px; }
+#ribbon-toggle .ui-glyph svg { width: 12px; height: 12px; transition: transform 0.12s; }
+#ribbon-toggle[aria-pressed="false"] .ui-glyph svg { transform: rotate(-90deg); }
 
 /* ── Document chip ──────────────────────────────────────────────────────
  * Which file this is, its format, and whether it carries unsaved edits — fed by
@@ -3238,6 +3244,31 @@ label.mass-marker-toggle { justify-content: flex-start; align-items: center; gap
 .edit-suppress:hover { opacity: 1; background: var(--vscode-toolbar-hoverBackground, rgba(255,255,255,0.1)); }
 .edit-rename { flex: 1; min-width: 0; font: inherit; font-size: var(--ui-fs-sm); }
 
+/* History folders: display-only groups of consecutive rows. Collapsing hides the
+ * rows with a class (not [hidden]), so they stay in the DOM for revealRow(). */
+.edit-folder-header {
+  display: flex; align-items: center; gap: 4px; padding: 2px 4px; list-style: none;
+  font-size: var(--ui-fs-sm); font-weight: 600;
+  background: var(--vscode-list-hoverBackground, rgba(128,128,128,0.12));
+}
+.edit-folder-toggle, .edit-folder-ungroup, .edit-folder-btn {
+  flex-shrink: 0; font: inherit; line-height: 1; padding: 0 3px; border: none; border-radius: var(--ui-r-xs);
+  color: var(--vscode-foreground, #ccc); background: transparent; cursor: pointer;
+}
+.edit-folder-btn { font-size: var(--ui-fs-label); opacity: 0.5; display: inline-flex; align-items: center; }
+.edit-folder-btn .ui-glyph, .edit-folder-btn svg { width: 12px; height: 12px; }
+.edit-folder-btn:hover { opacity: 1; }
+.edit-folder-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.edit-folder-count { opacity: 0.6; font-weight: 400; }
+.edit-folder-ungroup { font-weight: 400; font-size: var(--ui-fs-label); opacity: 0.7; }
+.edit-folder-ungroup:disabled { opacity: 0.3; cursor: default; }
+.edit-row-in-folder { margin-left: 10px; }
+.edit-row.edit-folder-hidden { display: none; }
+.edit-row-dragging { opacity: 0.45; }
+.edit-row.edit-drop-before { box-shadow: 0 -2px 0 0 var(--vscode-focusBorder, #007fd4); }
+.edit-row.edit-drop-after { box-shadow: 0 2px 0 0 var(--vscode-focusBorder, #007fd4); }
+.edit-folder-input { flex-shrink: 0; width: 7em; font: inherit; font-size: var(--ui-fs-sm); }
+
 /* Tier 0 Phase 2 — rows saved into the source file itself: dimmed with a 🔒
  * marker (no ✕ remove button — removal is refused, so offering it would lie).
  * Clicking still selects/jumps only within the unbaked tail; the model
@@ -3581,6 +3612,35 @@ button.edit-report:hover { text-decoration: underline; }
   background: var(--vscode-sideBar-background, var(--vscode-editor-background, #252526));
   border-top: 1px solid var(--vscode-sideBar-border, rgba(128, 128, 128, 0.35));
 }
+
+/* Docked placement: the same #edits-params node is moved (never copied) into
+ * #form-dock, an overlay at the top right of the viewport. The orientation cube
+ * is at the top LEFT of the focused pane, so the dock never covers it. The dock
+ * owns the scrolling, so the sticky Apply footer pins against it. It is hidden
+ * while it has no form (a :has() rule, so no [hidden] override is needed). */
+#form-dock {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 6;
+  display: flex;
+  flex-direction: column;
+  width: 280px;
+  max-width: calc(100% - 128px);
+  max-height: calc(100% - 16px);
+  overflow-y: auto;
+  padding: 6px 8px;
+  box-sizing: border-box;
+  font-family: var(--ui-font);
+  font-size: var(--ui-fs-md);
+  color: var(--vscode-foreground, #ccc);
+  background: var(--vscode-sideBar-background, var(--vscode-editor-background, #252526));
+  border: 1px solid var(--vscode-editorWidget-border, rgba(128, 128, 128, 0.45));
+  border-radius: 4px;
+}
+#form-dock:not(:has(#edits-params > *)) { display: none; }
+#form-dock #edits-params { margin-top: 0; }
+#edits-dock-toggle[aria-pressed="true"] { outline: 1px solid var(--vscode-focusBorder, #007fd4); }
 
 /* ── Mode toggles and segmented tool rows inside the toolbar dropdowns ──
  *
@@ -5550,6 +5610,14 @@ body:has(#side.visible) #kernel-status {
 }
 body.ribbon-compact {
   --ribbon-h: 63px;
+}
+/* Hidden strip: the height metric drops to 0 so #toolbar and the measurement
+ * readout (both `top: N + --ribbon-h`) slide up with it. Must follow the compact rule. */
+body.ribbon-hidden {
+  --ribbon-h: 0px;
+}
+body.ribbon-hidden #ribbon {
+  display: none;
 }
 
 #ribbon {

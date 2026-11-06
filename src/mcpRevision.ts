@@ -36,6 +36,7 @@ export const REVISION_GUARDED_TOOLS: Readonly<Record<string, SidecarKind>> = {
   apply_edit_ops: "edits",
   run_parametric_script: "edits",
   remove_edit_op: "edits",
+  move_edit_op: "edits",
   set_edit_op_state: "edits",
   set_variables: "edits",
   set_configuration: "edits",

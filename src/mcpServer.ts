@@ -102,6 +102,7 @@ import {
   removeEditOp,
   diagnosticsReport,
   setEditOpState,
+  moveEditOp,
   runSavedScript,
   saveParametricScript,
   setVariables,
@@ -1644,6 +1645,20 @@ server.registerTool(
 );
 
 server.registerTool(
+  "move_edit_op",
+  {
+    description:
+      "Move one op to a new position in the stack (the history row's drag): `from` is its 0-based index, `to` the index it should end up at. Replay then sees the new order, so geometry can differ; ids are positional. Refused with the reason when the move touches the baked prefix, crosses an op a stored selector query names, or swaps two ops that both reshape the model. Folders and configuration suppression follow the op; Parts rebind best-effort like remove_edit_op. `order` maps each old index to its new one.",
+    inputSchema: {
+      path: modelPath,
+      from: z.number().int().describe("0-based index of the op to move"),
+      to: z.number().int().describe("0-based index it should occupy afterwards"),
+    },
+  },
+  wrap((args: { path: string; from: number; to: number }) => moveEditOp(ctx, args))
+);
+
+server.registerTool(
   "diagnostics_report",
   {
     description:
@@ -1661,15 +1676,17 @@ server.registerTool(
   "set_edit_op_state",
   {
     description:
-      "Suppress/unsuppress and/or rename one op by 0-based index (the history row's eye and rename). A suppressed op stays in the stack but replay skips it (its opOutcome reads suppressed, not a failure); stored ops are never edited otherwise. Refused inside the baked prefix. Part ids are rebound best-effort like remove_edit_op.",
+      "Suppress/unsuppress, rename and/or put one op (or a range) into a history folder, by 0-based index (the history row's eye, rename and folder). A suppressed op stays in the stack but replay skips it (its opOutcome reads suppressed, not a failure); a folder only groups consecutive rows in the Edits list (display only, replay never reads it); stored ops are never edited otherwise. Refused inside the baked prefix. Part ids are rebound best-effort like remove_edit_op.",
     inputSchema: {
       path: modelPath,
       index: z.number().int().describe("0-based index into the op stack"),
       suppressed: z.boolean().optional().describe("true to suppress, false to restore"),
       label: z.string().nullable().optional().describe("Display name for the row; null or empty clears it"),
+      folder: z.string().nullable().optional().describe("History folder name for the op (or the whole index..toIndex range); consecutive ops with the same name show as one collapsible group. null or empty takes them out"),
+      toIndex: z.number().int().optional().describe("With folder: last op of the range (inclusive); default = just index"),
     },
   },
-  wrap((args: { path: string; index: number; suppressed?: boolean; label?: string | null }) => setEditOpState(ctx, args))
+  wrap((args: { path: string; index: number; suppressed?: boolean; label?: string | null; folder?: string | null; toIndex?: number }) => setEditOpState(ctx, args))
 );
 
 const libraryPath = z.string().describe("Absolute path to the script-library JSON file (you name it; it is created on first save)");

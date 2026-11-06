@@ -3,6 +3,24 @@ import { parseEditsJson, serializeEditsJson, isExternalAppend, EDITS_SIDECAR_VER
 import type { EditOp } from "./editOps";
 import type { ParamVariable } from "./editVariables";
 
+describe("history folder tag", () => {
+  const plain: EditOp[] = [{ op: "translate", targets: ["solid-0"], vec: [1, 0, 0] }, { op: "translate", targets: ["solid-0"], vec: [2, 0, 0] }];
+
+  it("round-trips, trims, caps, and drops a non-string or blank value", () => {
+    const tagged = [{ ...plain[0], folder: "  Pins " }, { ...plain[1], folder: 7 }, { ...plain[0], folder: "   " }, { ...plain[0], folder: "x".repeat(200) }];
+    const { ops } = parseEditsJson(JSON.stringify({ version: 1, source: "m.stp", ops: tagged }));
+    expect(ops.map((o) => o.folder)).toEqual(["Pins", undefined, undefined, "x".repeat(80)]);
+    const again = parseEditsJson(serializeEditsJson("m.stp", ops));
+    expect(again.ops).toEqual(ops);
+  });
+
+  it("an untagged sidecar stays byte-identical (no `folder` key is ever written)", () => {
+    const text = serializeEditsJson("m.stp", plain);
+    expect(text).not.toContain("folder");
+    expect(serializeEditsJson("m.stp", parseEditsJson(text).ops)).toBe(text);
+  });
+});
+
 describe("parseEditsJson", () => {
   it("parses a well-formed sidecar preserving op order", () => {
     const ops: EditOp[] = [

@@ -19,6 +19,62 @@ describe("EditsModel.setState", () => {
   });
 });
 
+describe("EditsModel.setFolder", () => {
+  it("tags a range with one onChange, clears it, trims, and no-ops when unchanged", () => {
+    const onChange = vi.fn();
+    const m = new EditsModel(onChange);
+    m.load([T(1), T(2), T(3)]);
+    expect(m.setFolder(0, 1, "  Hinge ")).toBe(true);
+    expect(m.list().map((o) => o.folder)).toEqual(["Hinge", "Hinge", undefined]);
+    expect(onChange).toHaveBeenCalledTimes(1);
+    expect(m.setFolder(0, 1, "Hinge")).toBe(false);
+    expect(onChange).toHaveBeenCalledTimes(1);
+    expect(m.setFolder(1, 1, null)).toBe(true);
+    expect(m.list().map((o) => o.folder)).toEqual(["Hinge", undefined, undefined]);
+    expect(m.setFolder(0, 0, "")).toBe(true);
+    expect(m.list()).toEqual([T(1), T(2), T(3)]);
+  });
+
+  it("refuses the save point, reversed and out-of-range ranges", () => {
+    const onChange = vi.fn();
+    const m = new EditsModel(onChange);
+    m.load([T(1), T(2), T(3)], 1);
+    expect(m.setFolder(0, 1, "x")).toBe(false);
+    expect(m.setFolder(2, 1, "x")).toBe(false);
+    expect(m.setFolder(1, 3, "x")).toBe(false);
+    expect(m.setFolder(1.5, 2, "x")).toBe(false);
+    expect(onChange).not.toHaveBeenCalled();
+    expect(m.setFolder(1, 2, "x")).toBe(true);
+  });
+});
+
+describe("EditsModel.move", () => {
+  it("reorders in one onChange, clears redo and returns the mapping", () => {
+    const onChange = vi.fn();
+    const m = new EditsModel(onChange);
+    m.load([T(1), T(2), T(3)]);
+    m.undo(); // one pending redo
+    onChange.mockClear();
+    const r = m.move(1, 0);
+    expect(r).toEqual({ ok: true, mapping: [1, 0] });
+    expect(m.list().map((o) => (o as { vec: number[] }).vec[0])).toEqual([2, 1]);
+    expect(m.canRedo).toBe(false);
+    expect(onChange).toHaveBeenCalledTimes(1);
+  });
+
+  it("refuses without changing anything or firing onChange", () => {
+    const onChange = vi.fn();
+    const m = new EditsModel(onChange);
+    const box = (x: number) => ({ op: "addBox", center: [x, 0, 0], size: [1, 1, 1] }) as never;
+    m.load([box(0), box(5), T(1)], 1);
+    expect(m.move(1, 0)).toMatchObject({ ok: false }); // into the saved prefix
+    expect(m.move(2, 1, [1])).toMatchObject({ ok: false }); // a Part pins op 1
+    expect(onChange).not.toHaveBeenCalled();
+    expect(m.list().map((o) => o.op)).toEqual(["addBox", "addBox", "translate"]);
+    expect(m.move(2, 1)).toMatchObject({ ok: true });
+  });
+});
+
 describe("EditsModel", () => {
   it("push appends in order and fires onChange", () => {
     const onChange = vi.fn();

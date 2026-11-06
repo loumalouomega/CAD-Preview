@@ -318,10 +318,13 @@ export interface RibbonState {
   compact: boolean;
   /** The Edits panel's op button grid is expanded (default: collapsed, the strip covers it). */
   editsGridOpen: boolean;
+  /** The whole strip is hidden (the menubar's Ribbon button brings it back). */
+  hidden: boolean;
 }
 
 export const DEFAULT_RIBBON_STATE: Readonly<RibbonState> = Object.freeze({
   tab: DEFAULT_RIBBON_TAB,
   compact: false,
   editsGridOpen: false,
+  hidden: false,
 });

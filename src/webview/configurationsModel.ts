@@ -8,6 +8,7 @@ import {
   setConfigurationCell,
   setConfigurationSuppressed,
   shiftSuppressedAfterRemove,
+  remapSuppressedAfterMove,
   validateConfigurationState,
   type ConfigurationResult,
   type ConfigurationState,
@@ -91,6 +92,14 @@ export class ConfigurationsModel {
   /** An op was deleted: every configuration's suppressed indices shift so they keep naming the same ops. */
   opRemoved(index: number): void {
     const next = shiftSuppressedAfterRemove(this.current, index);
+    if (JSON.stringify(next) === JSON.stringify(this.current)) return;
+    this.current = next;
+    this.onChangeFn();
+  }
+
+  /** An op was moved (`mapping[old] === new`): every configuration's suppressed indices follow it. */
+  opsMoved(mapping: readonly number[]): void {
+    const next = remapSuppressedAfterMove(this.current, mapping);
     if (JSON.stringify(next) === JSON.stringify(this.current)) return;
     this.current = next;
     this.onChangeFn();

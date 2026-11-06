@@ -1263,7 +1263,7 @@ function ribbonGroups(tab: RibbonTabId): RibbonGroup[]
 function modelGroups(): RibbonGroup[]         // generated from OP_CATALOG, never a hand-kept op list
 function ribbonOpIds(): Set<PanelOpId>        // the reachability set the tests compare to the catalog
 function planOverflow(rights, groupStart, available, moreWidth): number   // items kept on the strip
-interface RibbonState { tab: RibbonTabId; compact: boolean; editsGridOpen: boolean }
+interface RibbonState { tab: RibbonTabId; compact: boolean; editsGridOpen: boolean; hidden: boolean }
 ```
 
 **Single source.** The Model tab's groups are the catalog's categories (a category added to the catalog later lands at the end of the tab automatically). The other tabs come from a small table of non-op actions: click targets name an existing element by selector, panel targets name a `COLLAPSIBLE_PANELS` id. `opCatalog.test.ts` and `ribbon.test.ts` lock that every catalog op is reachable from the strip, that no op button lacks an entry and an icon, and that every click selector and panel id exists in `viewerBodyHtml()`. A new Edits-panel op button therefore appears on the strip with no second list; a new toolbar action needs one row in the table in `ribbon.ts`.
@@ -1281,13 +1281,17 @@ interface RibbonHandle { getState(); setState(partial | null); refresh(); fit() 
 
 **Layout contract.** The strip is in normal flow between `#menubar` and `#layout`, with a fixed height (`--ribbon-h`: 89px with labels, 63px in compact mode). `#toolbar` and `#measure-readout-row`, which are absolutely positioned from the viewport, add `--ribbon-h` to their `top`. Every toggled element carries an explicit `#id[hidden]` override.
 
-**Persistence.** The tab, the compact preference and the Edits-grid toggle ride `ViewState` (`ribbonTab`, `ribbonCompact`, `editsGridOpen`; additive, omitted at their defaults, see [Protocol](./protocol.md#viewstate)). `setState` is the silent restore path and never calls `onChange`. When `editsGridOpen` is false, `#edits-panel` carries `.grid-collapsed`, which hides the Edits panel's GEOMETRY/EDIT tab rows and op button grids; the parameter form and the history stay.
+**Persistence.** The tab, the compact preference, the hidden flag and the Edits-grid toggle ride `ViewState` (`ribbonTab`, `ribbonCompact`, `ribbonHidden`, `editsGridOpen`; additive, omitted at their defaults, see [Protocol](./protocol.md#viewstate)). `setState` is the silent restore path and never calls `onChange`. When `editsGridOpen` is false, `#edits-panel` carries `.grid-collapsed`, which hides the Edits panel's GEOMETRY/EDIT tab rows and op button grids; the parameter form and the history stay.
 
 ## `src/webview/editsPanel.ts`
 
 ### `EditsPanel`
 
 Every open form is wrapped by `wrapFormInHeader` after `renderParams`: a `.edits-form-header` (title from `allCatalogEntries()`, a tint chip from the optional `EditsPanelCallbacks.opTint`, and a collapse chevron) followed by `.edits-form-body`, into which the already-built fields are *moved* (so collapse keeps values). `.compose-footer` stays a direct child of `#edits-params`. Collapse sets `[hidden]` on the body (with an explicit `.edits-form-body[hidden]` override), calls `onPreviewCancel`; expand calls `onPreviewDraftChanged`.
+
+**Docked placement.** `EditsPanel.setDocked(on)` moves the ONE `#edits-params` node between `#edits-compose` and `#form-dock` (an overlay at the top right of `#app`; the orientation cube is top left, so it never covers it). The node is moved, never copied, so typed values, the draft reader and the live preview survive. `#form-dock` is hidden by `:not(:has(#edits-params > *))`, so it needs no `[hidden]` override and shows only while a form is open; it owns the scrolling, so the sticky `.compose-footer` pins against it. `setDocked` is silent; only the `#edits-dock-toggle` click fires `EditsPanelCallbacks.onFormDockChange` (main.ts saves `ViewState.formsDocked`). A restore with `formsDocked` absent undocks.
+
+**History folders and reorder.** An op may carry a display-only `folder`; `render` puts a `.edit-folder-header` above each run of consecutive ops sharing a name and marks the rows `.edit-row-in-folder` (collapse toggles `.edit-folder-hidden` on the rows, which stay in the DOM so `revealRow` can open the folder). `EditsPanelCallbacks.onSetFolder(from, to, name|null)` wires `EditsModel.setFolder`. Applied unsaved rows are `draggable` and focusable: a drop calls `onMoveOp(from, to)` (`to` = the index the op ends up at), as does Alt+↑/↓ (focus follows the row after the re-render). `EditsModel.move` delegates the decision to the pure `planOpMove` in `src/reorderOps.ts` and returns the old→new mapping, which `ConfigurationsModel.opsMoved` applies to each configuration's suppressed indices.
 
 Manages the `#edits-panel` DOM: two top-level tabs — **GEOMETRY** (creation ops, split into **2D**/**3D** subtabs) and **EDIT** (modification ops, one categorized list) — each rendered from `OP_CATALOG` as grids of icon op-buttons (`.op-grid`/`.op-btn`), a single shared parameter-form area (`#edits-params`) under the grids, the Undo/Redo/Clear control row, and the ordered op-history list with a one-line summary each (`describeOp`). Clicking an op button renders its parameter form; clicking it again collapses it. There is only one op stack regardless of which tab an op came from. VS Code webviews block `prompt()`, so all input is via inline fields.
 

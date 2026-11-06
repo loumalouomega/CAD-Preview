@@ -297,6 +297,23 @@ export function shiftSuppressedAfterRemove(state: ConfigurationState, removed: n
   };
 }
 
+/**
+ * An op moved in the full list (`mapping[old] === new`, from `planOpMove`): every
+ * configuration's suppressed indices follow, so a suppression keeps naming the
+ * same op. Identity (same reference) when no configuration suppresses anything.
+ */
+export function remapSuppressedAfterMove(state: ConfigurationState, mapping: readonly number[]): ConfigurationState {
+  if (!state.configurations.some((c) => c.suppressed?.length)) return state;
+  return {
+    ...state,
+    configurations: state.configurations.map((c) => {
+      if (!c.suppressed?.length) return c;
+      const next = c.suppressed.map((i) => (i >= 0 && i < mapping.length ? mapping[i] : i)).sort((a, b) => a - b);
+      return { ...c, suppressed: next };
+    }),
+  };
+}
+
 /** Variable renamed: carry every configuration's override across. */
 export function renameVariableInConfigurations(state: ConfigurationState, from: string, to: string): ConfigurationState {
   if (from === to) return state;
