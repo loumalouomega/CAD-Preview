@@ -370,6 +370,12 @@ export interface ViewState {
    * absent means collapsed behind its toggle, because the ribbon covers it.
    */
   editsGridOpen?: boolean;
+  /**
+   * The Edits panel's operation form is docked over the viewport (top right)
+   * instead of sitting in the sidebar. Written only when `true`; absent means
+   * in the panel. A display preference — no MCP surface.
+   */
+  formsDocked?: boolean;
 }
 
 /** One saved meshing preset, as the FE Mesh panel lists it. A preset's own

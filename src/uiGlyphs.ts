@@ -88,6 +88,7 @@ export const UI_GLYPHS = {
   // Layers section header — same diamond family as `layers` (which the
   // Advanced group keeps) but only two tiers, so the pass-6 "no two headers
   // share an icon" rule holds.
+  folder: g('<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/>'),
   layersDim: g('<path d="m12 2 10 5-10 5L2 7Z"/><path d="m2 17 10 5 10-5"/>'),
 } as const;
 

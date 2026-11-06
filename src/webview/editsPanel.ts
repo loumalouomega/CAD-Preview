@@ -11,6 +11,7 @@ import { QUERYABLE_PANEL_FORMS, catalogLocation, allCatalogEntries } from "./opC
 import { OP_ICONS } from "./opIcons";
 import { allHoleSizes, depthPresetsFor, findHoleSize } from "../holeStandards";
 import { TOOLBAR_ICONS } from "../toolbarIcons";
+import { glyph } from "../uiGlyphs";
 import { attachExpressionAutocomplete } from "./expressionAutocomplete";
 
 // Re-exported for compatibility — `describeOp` now lives in the pure, headless-
@@ -123,6 +124,8 @@ export type PatternDraft = (
 ) & { exprs?: ExprMap };
 
 export interface EditsPanelCallbacks {
+  /** The user toggled the docked form placement (never fired by `setDocked` restores). */
+  onFormDockChange?: (docked: boolean) => void;
   onUndo: () => void;
   onRedo: () => void;
   onClear: () => void;
@@ -132,6 +135,10 @@ export interface EditsPanelCallbacks {
   /** ⚠ row's "Report" button: draft an issue about this op. */
   onReportIssue?: (index: number) => void;
   onSetOpState: (index: number, state: { suppressed?: boolean; label?: string | null }) => void;
+  /** Put ops `from..to` (inclusive) into history folder `name`, or out of any folder with `null` (wired to `EditsModel.setFolder`). */
+  onSetFolder?: (from: number, to: number, name: string | null) => void;
+  /** Move the op at `from` so it ends up at index `to` (history drag, or Alt+↑/↓ on a focused row). The wiring shows the refusal reason. */
+  onMoveOp?: (from: number, to: number) => void;
   /** Jump the op stack straight to timeline position `index` in one splice
    * (op-history scrubbing): applied rows roll the
    * model back past them, pending-redo rows re-apply through them. Wired
@@ -349,6 +356,35 @@ export class EditsPanel {
     this.redoBtn.addEventListener("click", () => cb.onRedo());
     this.clearBtn.addEventListener("click", () => cb.onClear());
     this.buildComposer();
+    this.dockBtn = panel.querySelector("#edits-dock-toggle");
+    this.dockBtn?.addEventListener("click", () => {
+      this.setDocked(!this.docked);
+      cb.onFormDockChange?.(this.docked);
+    });
+  }
+
+  private dockBtn: HTMLElement | null = null;
+  private docked = false;
+
+  /** Whether the parameter form is docked over the viewport. */
+  isDocked(): boolean {
+    return this.docked;
+  }
+
+  /**
+   * Moves the ONE `#edits-params` node between the panel and `#form-dock` — never
+   * a copy, so every typed value, the live preview and the draft reader survive.
+   * Silent: it does not fire `onFormDockChange` (the click handler does).
+   */
+  setDocked(on: boolean): void {
+    const dock = document.getElementById("form-dock");
+    this.docked = on && dock !== null;
+    if (this.docked) dock!.appendChild(this.paramsEl);
+    else this.compose.appendChild(this.paramsEl);
+    this.dockBtn?.setAttribute("aria-pressed", String(this.docked));
+    if (this.dockBtn) this.dockBtn.title = this.docked
+      ? "Return the operation form to the Edits panel"
+      : "Dock the operation form over the viewport (top right)";
   }
 
   /** Updates the evaluated variable values expression fields resolve against.
@@ -778,10 +814,16 @@ export class EditsPanel {
         li.title = "Saved into the file itself — cannot be undone or removed (File ▸ Revert File drops back to the save).";
       }
       li.dataset.opIndex = String(i);
+      if (op.folder && !opts.pending) {
+        li.classList.add("edit-row-in-folder");
+        li.dataset.folder = op.folder;
+        if (this.collapsedFolders.has(op.folder)) li.classList.add("edit-folder-hidden");
+      }
       li.addEventListener("click", () => {
         this.revealedOp = null;
         this.cb.onJumpTo(i);
       });
+      if (!opts.pending && !opts.baked && this.cb.onMoveOp) this.makeMovable(li, i);
       const outcome = opts.outcome;
       if (outcome && !outcome.applied && !outcome.suppressed) {
         li.classList.add("edit-row-skipped");
@@ -859,6 +901,17 @@ export class EditsPanel {
             this.cb.onSetOpState(i, { suppressed: !op.suppressed });
           });
           li.appendChild(sup);
+          if (this.cb.onSetFolder) {
+            const fold = document.createElement("button");
+            fold.className = "edit-folder-btn";
+            fold.innerHTML = glyph("folder");
+            fold.title = op.folder ? `In folder "${op.folder}" — click to move or clear` : "Put this edit in a history folder";
+            fold.addEventListener("click", (e) => {
+              e.stopPropagation();
+              this.promptFolder(fold, i, op.folder ?? ops[i - 1]?.folder ?? "", ops);
+            });
+            li.appendChild(fold);
+          }
           const del = document.createElement("button");
           del.className = "edit-remove";
           del.innerHTML = TOOLBAR_ICONS.close;
@@ -932,10 +985,176 @@ export class EditsPanel {
       }
       ol.appendChild(li);
     };
-    ops.forEach((op, i) => row(op, i, { pending: false, outcome: outcomeOf.get(i), bucket: bucketOf.get(i), baked: i < bakedThrough }));
+    ops.forEach((op, i) => {
+      // A run of consecutive ops sharing a folder name gets one header row above it.
+      if (op.folder && op.folder !== ops[i - 1]?.folder) {
+        let end = i;
+        while (end + 1 < ops.length && ops[end + 1].folder === op.folder) end++;
+        ol.appendChild(this.folderHeader(op.folder, i, end, bakedThrough));
+      }
+      row(op, i, { pending: false, outcome: outcomeOf.get(i), bucket: bucketOf.get(i), baked: i < bakedThrough });
+    });
     (redoOps ?? []).forEach((op, k) => row(op, ops.length + k, { pending: true }));
     this.body.appendChild(ol);
     if (this.revealedOp !== null) this.revealRow(this.revealedOp);
+    if (this.pendingFocusOp !== null) {
+      this.body.querySelector<HTMLElement>(`.edit-row[data-op-index="${this.pendingFocusOp}"]`)?.focus();
+      this.pendingFocusOp = null;
+    }
+  }
+
+  /**
+   * Drag-to-reorder for an applied, unsaved row. The drop target is "before" or
+   * "after" the row under the pointer (top/bottom half); `to` is the index the
+   * dragged op ends up at. Alt+↑/↓ on the focused row is the keyboard path. The
+   * panel decides nothing: `onMoveOp` goes to `EditsModel.move`, whose refusal is
+   * shown in the status bar.
+   */
+  private makeMovable(li: HTMLElement, i: number): void {
+    li.draggable = true;
+    li.tabIndex = 0;
+    const clear = (): void => {
+      for (const el of this.body.querySelectorAll(".edit-drop-before, .edit-drop-after")) el.classList.remove("edit-drop-before", "edit-drop-after");
+    };
+    li.addEventListener("dragstart", (e) => {
+      e.dataTransfer?.setData("text/plain", String(i));
+      if (e.dataTransfer) e.dataTransfer.effectAllowed = "move";
+      this.draggingOp = i;
+      li.classList.add("edit-row-dragging");
+    });
+    li.addEventListener("dragend", () => {
+      this.draggingOp = null;
+      li.classList.remove("edit-row-dragging");
+      clear();
+    });
+    li.addEventListener("dragover", (e) => {
+      if (this.draggingOp === null) return;
+      e.preventDefault();
+      if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
+      const r = li.getBoundingClientRect();
+      const before = e.clientY < r.top + r.height / 2;
+      clear();
+      li.classList.add(before ? "edit-drop-before" : "edit-drop-after");
+    });
+    li.addEventListener("dragleave", () => li.classList.remove("edit-drop-before", "edit-drop-after"));
+    li.addEventListener("drop", (e) => {
+      const from = this.draggingOp;
+      this.draggingOp = null;
+      clear();
+      if (from === null) return;
+      e.preventDefault();
+      const r = li.getBoundingClientRect();
+      const before = e.clientY < r.top + r.height / 2;
+      const slot = before ? i : i + 1; // the gap the op is dropped into, in pre-move indices
+      const to = from < slot ? slot - 1 : slot;
+      if (to !== from) this.cb.onMoveOp?.(from, to);
+    });
+    li.addEventListener("keydown", (e) => {
+      if (e.target !== li || !e.altKey || (e.key !== "ArrowUp" && e.key !== "ArrowDown")) return;
+      e.preventDefault();
+      this.pendingFocusOp = i + (e.key === "ArrowUp" ? -1 : 1);
+      this.cb.onMoveOp?.(i, this.pendingFocusOp);
+    });
+  }
+
+  private draggingOp: number | null = null;
+  /** Row to refocus after the re-render a keyboard move triggers (the list is rebuilt). */
+  private pendingFocusOp: number | null = null;
+
+  /** Folder names whose rows are collapsed — session-only, webview memory. */
+  private readonly collapsedFolders = new Set<string>();
+
+  private folderHeader(name: string, from: number, to: number, bakedThrough: number): HTMLElement {
+    const li = document.createElement("li");
+    li.className = "edit-folder-header";
+    li.dataset.folder = name;
+    li.dataset.from = String(from);
+    const collapsed = this.collapsedFolders.has(name);
+    const chev = document.createElement("button");
+    chev.type = "button";
+    chev.className = "edit-folder-toggle";
+    chev.setAttribute("aria-expanded", String(!collapsed));
+    chev.textContent = collapsed ? "▸" : "▾";
+    const title = document.createElement("span");
+    title.className = "edit-folder-name";
+    title.textContent = name;
+    const count = document.createElement("span");
+    count.className = "edit-folder-count";
+    count.textContent = `${to - from + 1}`;
+    count.title = `${to - from + 1} edit${to === from ? "" : "s"} in this folder (display only — replay ignores folders)`;
+    chev.addEventListener("click", () => this.setFolderCollapsed(name, !this.collapsedFolders.has(name)));
+    li.append(chev, title, count);
+    if (this.cb.onSetFolder) {
+      const un = document.createElement("button");
+      un.type = "button";
+      un.className = "edit-folder-ungroup";
+      un.textContent = "Ungroup";
+      un.title = from < bakedThrough ? "Part of this folder is saved into the file — it cannot be ungrouped" : "Take these edits out of the folder (they stay in the history)";
+      un.disabled = from < bakedThrough;
+      un.addEventListener("click", (e) => {
+        e.stopPropagation();
+        this.cb.onSetFolder?.(from, to, null);
+      });
+      li.appendChild(un);
+    }
+    return li;
+  }
+
+  /** Collapses or expands every row of folder `name` in place (no re-render, no timeline jump). */
+  private setFolderCollapsed(name: string, collapsed: boolean): void {
+    if (collapsed) this.collapsedFolders.add(name);
+    else this.collapsedFolders.delete(name);
+    for (const el of this.body.querySelectorAll<HTMLElement>("[data-folder]")) {
+      if (el.dataset.folder !== name) continue;
+      if (el.classList.contains("edit-folder-header")) {
+        const chev = el.querySelector<HTMLElement>(".edit-folder-toggle");
+        chev?.setAttribute("aria-expanded", String(!collapsed));
+        if (chev) chev.textContent = collapsed ? "▸" : "▾";
+      } else {
+        el.classList.toggle("edit-folder-hidden", collapsed);
+      }
+    }
+  }
+
+  /** Inline folder-name field beside a row (Enter commits, Escape restores before blurring). Prefilled so a row can join the folder above it with one Enter. */
+  private promptFolder(anchor: HTMLElement, index: number, initial: string, ops: EditOp[]): void {
+    const input = document.createElement("input");
+    input.type = "text";
+    input.className = "edit-folder-input";
+    input.value = initial;
+    input.placeholder = "Folder name (empty = none)";
+    input.maxLength = 80;
+    const listId = "edit-folder-names";
+    let list = document.getElementById(listId) as HTMLDataListElement | null;
+    if (!list) {
+      list = document.createElement("datalist");
+      list.id = listId;
+      document.body.appendChild(list);
+    }
+    list.replaceChildren(...[...new Set(ops.map((o) => o.folder).filter((f): f is string => !!f))].map((f) => {
+      const opt = document.createElement("option");
+      opt.value = f;
+      return opt;
+    }));
+    input.setAttribute("list", listId);
+    let done = false;
+    const commit = (save: boolean): void => {
+      if (done) return;
+      done = true;
+      if (save) this.cb.onSetFolder?.(index, index, input.value.trim() || null);
+      // A change re-renders the list (the input is gone); an unchanged name does not, so swap back.
+      if (input.isConnected) input.replaceWith(anchor);
+    };
+    input.addEventListener("keydown", (ke) => {
+      if (ke.key === "Enter") { ke.preventDefault(); commit(true); }
+      else if (ke.key === "Escape") { ke.preventDefault(); commit(false); input.blur(); }
+      ke.stopPropagation();
+    });
+    input.addEventListener("blur", () => commit(true));
+    input.addEventListener("click", (ce) => ce.stopPropagation());
+    anchor.replaceWith(input);
+    input.focus();
+    input.select();
   }
 
   /** The history row last revealed from the Variables panel's Used-by list. */
@@ -955,6 +1174,8 @@ export class EditsPanel {
       li.setAttribute("aria-selected", on ? "true" : "false");
       if (on) {
         found = true;
+        // A row inside a collapsed folder cannot be scrolled to: open its folder first.
+        if (li.classList.contains("edit-folder-hidden") && li.dataset.folder) this.setFolderCollapsed(li.dataset.folder, false);
         li.scrollIntoView({ block: "nearest" });
       }
     }

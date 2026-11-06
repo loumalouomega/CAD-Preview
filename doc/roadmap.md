@@ -71,7 +71,9 @@ Existing implementation references were checked against the repository where not
 
 **Closed 2026-11-03 (Two-tone icon set).** Extension, not a planning review: nothing was re-ranked. 2.36 shipped (a reserved TikZ `blue` fill maps to `--ui-icon-accent`, which follows the theme's button colour and collapses to `currentColor` in high contrast; 17 Model-tab op icons redrawn two-tone) and left this list; the 2.37 number is unchanged, and the Interface depth theme has no open items left. The remaining op icons and the toolbar icons stay one-tone until a later pass.
 
-**Extended 2026-11-01 (SolidCraft review).** Extension, not a planning review: nothing was re-ranked and no existing ID moved. The [SolidCraft review](#solidcraft-review) compared this extension's interface against a full parametric modeller's, and added fourteen items to Ready product work and four probes. The Ready product work items are [the parameters table](#parameters-table) (2.31), configurations (2.33, since shipped and removed), command search and keyboard-first commands (2.34, since shipped and removed), a ribbon command strip (2.35, since shipped and removed), [a two-tone icon set](#two-tone-icon-set) (2.36), [history timeline depth](#history-timeline-depth) (2.37), [a unified Browser tree](#unified-browser-tree) (2.38), navigation upgrades (2.39, since shipped and removed), [zebra stripes and a centre-of-mass marker](#zebra-stripes-and-centre-of-mass-marker) (2.40), [feature form ergonomics](#feature-form-ergonomics) (2.41), named materials in the Parts panel (2.42, since shipped and removed), an issue draft from a failure (2.43, since shipped and removed) and a welcome walkthrough with samples (2.44, since shipped and removed). The probes are [curvature, minimum radius and isocurve overlays](#curvature-and-isocurve-overlays) (3.18), [sheet-metal flat patterns of an imported part](#sheet-metal-flat-pattern) (3.19), [frame members along wireframe edges](#frame-members-along-edges) (3.20) and [on-canvas parameter handles](#on-canvas-parameter-handles) (5.5). Section 2 resumes at 2.31: 2.29 and 2.30 belonged to items that have shipped and left the list, and 2.30 is still cited for stepping through entities under the cursor, so neither number is reused. A new area tag, *Interface*, covers items whose main product is the webview's interaction design. One new Rejected-scope entry was added: a photoreal render workspace. The constraint-sketcher rejection was re-read against SolidCraft and stands.
+**Closed 2026-11-06 (History timeline depth; Feature form ergonomics).** Extension, not a planning review: nothing was re-ranked and no other open ID changed. 2.37 shipped its remainder: history **folders** (a display-only `folder` tag on each op, so it rides every existing sidecar path; grouped, collapsible rows in the Edits list; `set_edit_op_state` takes `folder`/`toIndex`) and **drag reorder** (`planOpMove`, shared by the row drag, Alt+↑/↓ and the new `move_edit_op` tool). The reorder check is stricter than the roadmap's "no reference crossing the move": entity ids are positional, so it also refuses two shape-changing ops crossing each other, a stored selector query naming an op in the span, and anything touching the saved prefix. 2.41 shipped its remainder: the operation form can be **docked** over the viewport (`ViewState.formsDocked`, the one node is moved, not copied). Both left this list.
+
+**Extended 2026-11-01 (SolidCraft review).** Extension, not a planning review: nothing was re-ranked and no existing ID moved. The [SolidCraft review](#solidcraft-review) compared this extension's interface against a full parametric modeller's, and added fourteen items to Ready product work and four probes. The Ready product work items are [the parameters table](#parameters-table) (2.31), configurations (2.33, since shipped and removed), command search and keyboard-first commands (2.34, since shipped and removed), a ribbon command strip (2.35, since shipped and removed), [a two-tone icon set](#two-tone-icon-set) (2.36), history timeline depth (2.37, since shipped and removed), [a unified Browser tree](#unified-browser-tree) (2.38), navigation upgrades (2.39, since shipped and removed), [zebra stripes and a centre-of-mass marker](#zebra-stripes-and-centre-of-mass-marker) (2.40), feature form ergonomics (2.41, since shipped and removed), named materials in the Parts panel (2.42, since shipped and removed), an issue draft from a failure (2.43, since shipped and removed) and a welcome walkthrough with samples (2.44, since shipped and removed). The probes are [curvature, minimum radius and isocurve overlays](#curvature-and-isocurve-overlays) (3.18), [sheet-metal flat patterns of an imported part](#sheet-metal-flat-pattern) (3.19), [frame members along wireframe edges](#frame-members-along-edges) (3.20) and [on-canvas parameter handles](#on-canvas-parameter-handles) (5.5). Section 2 resumes at 2.31: 2.29 and 2.30 belonged to items that have shipped and left the list, and 2.30 is still cited for stepping through entities under the cursor, so neither number is reused. A new area tag, *Interface*, covers items whose main product is the webview's interaction design. One new Rejected-scope entry was added: a photoreal render workspace. The constraint-sketcher rejection was re-read against SolidCraft and stands.
 
 Everything previously shipped is tracked in `CHANGELOG.md`, and `CLAUDE.md` holds the invariants, traps and verified kernel facts that a future change could break (not per-feature history, which lives in git) — this page is for what's **not** built yet, plus the Non-goals that record why a direction was rejected so it isn't re-proposed.
 
@@ -308,12 +310,12 @@ One project, read from its documentation and a screenshot. Nothing was built or 
 | Search commands (shortcut shown), single-letter command keys, Shift+R to repeat the last command | SolidCraft | Shipped (Command search) |
 | Workspace-tab ribbon with labelled groups, toolbar overflow, a "hide ribbon labels" preference | SolidCraft | Shipped (Ribbon command strip) |
 | Two-tone modelling icons on a 64 grid | SolidCraft | Shipped as a TikZ redraw (two-tone op icons; see `icons/README.md`) |
-| Timeline: suppress, rename, feature folders, drag reorder with dependency checks, delete that lists dependents, hover highlights of modified faces | SolidCraft | [History timeline depth](#history-timeline-depth) (2.37). Already shipped: the jump rollback (click a history row), per-row delete, and click-to-highlight of produced faces |
+| Timeline: suppress, rename, feature folders, drag reorder with dependency checks, delete that lists dependents, hover highlights of modified faces | SolidCraft | Shipped (History timeline depth, 2.37, removed): suppress, rename, folders, drag reorder, delete with dependents, hover highlight. Already shipped before it: the jump rollback (click a history row), per-row delete, and click-to-highlight of produced faces |
 | Browser tree (Document Settings, Named Views, Origin, Bodies, Sketches, Features; eye per row; Expand/Collapse All) | SolidCraft | [Unified Browser tree](#unified-browser-tree) (2.38). Already shipped in pieces: the Components tree, the Parts and Layers panels, and view bookmarks |
 | Clickable X/Y/Z axis tips, 26 snapped standard and diagonal views, Normal to Selection, navigation presets (Touchpad, Fusion, OpenSCAD) | SolidCraft | Navigation upgrades (2.39, shipped and removed; an OpenSCAD preset is declined because its mapping equals Default) |
 | Zebra analysis; centre of mass shown in the view | SolidCraft | [Zebra stripes and a centre-of-mass marker](#zebra-stripes-and-centre-of-mass-marker) (2.40) |
 | Curvature map and comb, isocurves, minimum radius, continuity | SolidCraft | [Curvature, minimum radius and isocurve overlays](#curvature-and-isocurve-overlays) (3.18, probe); continuity is out of that probe's scope |
-| Feature dialogs docked on the right; collapsible header that keeps its values; OK/Cancel outside the scroll area | SolidCraft | [Feature form ergonomics](#feature-form-ergonomics) (2.41). Already shipped: the live preview (an intent-coloured overlay, debounced) |
+| Feature dialogs docked on the right; collapsible header that keeps its values; OK/Cancel outside the scroll area | SolidCraft | Shipped (Feature form ergonomics, 2.41, removed): sticky Apply footer, collapsible header, optional docked placement. Already shipped before it: the live preview (an intent-coloured overlay, debounced) |
 | Named appearances and material assignment | SolidCraft | Shipped (Named materials in the Parts panel, 2.42, removed); textures and PBR looks are not proposed |
 | "Report a bug" in the header; Create Issue from a feature error as an editable draft; crash reports that are never sent automatically | SolidCraft | Issue draft from a failure (2.43, shipped and removed) |
 | Start view with sample cards and recent items | SolidCraft | Welcome walkthrough and samples (2.44, shipped and removed). VS Code supplies recent files |
@@ -409,17 +411,6 @@ These are outcome groupings, not release numbers. Independent small items can sh
 - **Out of scope:** units on mesh sizes (they already follow the document unit), temperature offsets (`degC`), and any unit in the sidecar's stored numbers.
 - **Done when:** `W = 5[deg]` on a length field warns and still applies, and MCP and the Edits panel report the same warning (the 50.8 conversion and the unchanged-sidecar round trip are covered).
 
-#### 2.37 History timeline depth {#history-timeline-depth}
-
-*Area: Interface, Parity. Effort: S–M.*
-
-- **Shipped (2026-11-04):** suppress/unsuppress (`suppressed: true`, skipped by every replay fold, outcome `suppressed`), rename (`label`), delete with a dependents confirm, and `set_edit_op_state` (`get_state` reports both).
-- **Shipped (2026-11-05):** hover highlight — pointing at an applied row tints the faces its op produced.
-- **What is left:**
-  - **Folders:** display-only `{name, from, to}` index ranges stored beside the ops in `.edits.json`; collapsing hides rows and changes nothing in replay.
-  - **Drag reorder** (S–M): allowed only when the dependency check finds no reference crossing the move; rebound as a non-append change.
-- **Done when:** folders round-trip an old sidecar unchanged and collapse without changing `opOutcomes`; a reorder across a `pointRefs` user is refused.
-
 #### 2.38 Unified Browser tree {#unified-browser-tree}
 
 *Area: Interface. Effort: M.*
@@ -452,17 +443,6 @@ These are outcome groupings, not release numbers. Independent small items can sh
     - Stripe continuity across an edge is a fact about the *tessellation's* normals, and the overlay says so. It is sampled, not certified, like the deviation map.
 - **Parity:** zebra is webview-only, and the closest headless view is `render_snapshot`. The display mode is added to the snapshot `display` enum only if the shader runs in the snapshot harness, and is recorded as webview-only otherwise.
 - **Done when:** a `test:webview` pixel probe shows continuous stripes across a tangent fillet edge and broken stripes across a sharp box edge on the same model.
-
-#### 2.41 Feature form ergonomics {#feature-form-ergonomics}
-
-*Area: Interface. Effort: S.*
-
-- **Shipped (2026-11-04):** the sticky Apply footer (`.compose-footer`, pinned inside `#edits-scroll`; `test:webview` pins it against an unpinned control).
-- **Shipped (2026-11-05):** the collapsible form header (op name, intent tint, chevron; collapsing keeps every value and cancels the preview).
-- **What is left (S):**
-  - **Optional placement:** a setting docks forms as a right-hand overlay on the viewport, as in SolidCraft. Same DOM, moved never duplicated; obeys the one-WebGL-context rule and never covers the orientation cube.
-- **Rules kept:** the preview is still cancelled on form switch, on selection change and before commit; Escape restores before it blurs; every toggled element gets its `[hidden]` override.
-- **Done when:** the docked placement passes the same Apply-visibility case.
 
 ### Probe-gated — establish feasibility before estimating
 

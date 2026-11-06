@@ -3431,6 +3431,32 @@ describe("set_edit_op_state", () => {
   });
 });
 
+describe("set_edit_op_state folders", () => {
+  it("groups a range, persists it, reports it in get_state, clears it, and never changes replay", async () => {
+    const c = ctx();
+    await applyEditOps(c, { path: stpModel, ops: [
+      { op: "addBox", center: [0, 0, 0], size: [1, 1, 1] },
+      { op: "addSphere", center: [0, 0, 0], radius: 2 },
+      { op: "addBox", center: [5, 0, 0], size: [1, 1, 1] },
+    ] });
+    const before = (await readEdits(stpModel)).ops;
+    const r = await setEditOpState(c, { path: stpModel, index: 1, toIndex: 2, folder: "  Pins  " });
+    expect(r).toMatchObject({ index: 1, toIndex: 2, folder: "Pins" });
+    const ops = (await readEdits(stpModel)).ops as Array<{ folder?: string }>;
+    expect(ops.map((o) => o.folder)).toEqual([undefined, "Pins", "Pins"]);
+    // Display only: every other field of every op is untouched.
+    expect(ops.map((o) => ({ ...o, folder: undefined }))).toEqual(before.map((o) => ({ ...o, folder: undefined })));
+    const state = await getState({ path: stpModel });
+    expect(state.edits.map((e: { folder: string | null }) => e.folder)).toEqual([null, "Pins", "Pins"]);
+    await setEditOpState(c, { path: stpModel, index: 1, toIndex: 2, folder: null });
+    expect((await readEdits(stpModel)).ops).toEqual(before);
+    await expect(setEditOpState(c, { path: stpModel, index: 1, toIndex: 0, folder: "x" })).rejects.toThrow(/toIndex/);
+    await expect(setEditOpState(c, { path: stpModel, index: 1, toIndex: 2, suppressed: true })).rejects.toThrow(/only applies to folder/);
+    await writeEdits(stpModel, (await readEdits(stpModel)).ops, [], 2);
+    await expect(setEditOpState(c, { path: stpModel, index: 0, toIndex: 2, folder: "x" })).rejects.toThrow(/baked prefix/);
+  });
+});
+
 describe("remove_edit_op", () => {
   it("removes by index and rejects out-of-range", async () => {
     const c = ctx();

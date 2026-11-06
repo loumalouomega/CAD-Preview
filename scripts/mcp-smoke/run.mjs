@@ -375,7 +375,7 @@ try {
   assert(capsText.length > 100, "resources/read cad-preview://capabilities returns JSON text");
 
   const tools = (await request("tools/list", {})).tools.map((t) => t.name);
-  assert(tools.length === 95, `tools/list exposes 95 tools (got ${tools.length}: ${tools.join(", ")})`);
+  assert(tools.length === 96, `tools/list exposes 96 tools (got ${tools.length}: ${tools.join(", ")})`);
   for (const t of ["check_draft", "check_printability", "list_workspace_models", "check_interference_all", "generate_bom", "generate_hole_table", "render_ops_prefix", "check_tolerance", "inspect_meshio_fields", "pin_annotation", "import_svg", "save_mesh_preset", "list_mesh_presets", "apply_mesh_preset", "compare_mesh_refinement", "export_tessellated_stl", "estimate_mesh_budget", "analyze_passages", "measure_mesh_deviation", "save_sheet_template", "list_sheet_templates", "batch_export", "check_handoff_manifest", "generate_prep_report", "job_status", "job_cancel", "check_brep_health", "list_scad_parameters", "convert_scad", "list_layers", "set_layer", "assign_layer", "segment_mesh_surface", "fit_mesh_to_cad", "mesh_cad_surface", "check_mesh_conformity", "find_mesh_intersections", "measure_mesh_thickness", "select_mesh_region", "analyze_surface_geometry", "mesh_adjacency", "register_meshes", "project_to_cad", "grow_prism_layers", "iga_sample", "iga_refine", "iga_evaluate", "check_mesh_quality", "set_configuration"]) {
     assert(tools.includes(t), `tools/list exposes ${t}`);
   }
@@ -992,6 +992,33 @@ try {
     );
     const splicedPart = (await call("get_state", { path: persistModel })).parts.find((p) => p.name === "Fillet");
     assert(splicedPart.selector !== undefined, "the stored query itself survives the splice (only the cache may freeze)");
+  }
+
+  // move_edit_op + folders — a rigid transform may move across a feature, two
+  // ops that both renumber positional ids may not, and a folder is display-only.
+  {
+    const moveModel = path.join(dir, "bull-for-move-op-test.stp");
+    fs.copyFileSync(FIXTURE, moveModel);
+    await call("apply_edit_ops", {
+      path: moveModel,
+      ops: [
+        { op: "addBox", center: [bbox.max[0] + 3 * s, 0, 0], size: [s, s, s] },
+        { op: "addBox", center: [bbox.max[0] + 6 * s, 0, 0], size: [s, s, s] },
+        { op: "translate", targets: ["solid-1"], vec: [0, 0, s] },
+      ],
+    });
+    const kinds = async () => (await call("get_state", { path: moveModel })).edits.map((e) => e.op);
+    const moved = await call("move_edit_op", { path: moveModel, from: 2, to: 0 });
+    assert(JSON.stringify(moved.order) === "[1,2,0]" && JSON.stringify(await kinds()) === '["translate","addBox","addBox"]', `a rigid transform moves ahead of two features (got ${JSON.stringify([moved.order, await kinds()])})`);
+    const refused = await callTolerant("move_edit_op", { path: moveModel, from: 2, to: 1 });
+    assert(refused.error && /both reshape the model/.test(refused.error), `swapping two shape-changing ops is refused by name (got ${JSON.stringify(refused)})`);
+    assert(JSON.stringify(await kinds()) === '["translate","addBox","addBox"]', "…and a refusal leaves the stack untouched");
+    const solidsBeforeFold = (await call("load_model", { path: moveModel })).solids.length;
+    const folded = await call("set_edit_op_state", { path: moveModel, index: 1, toIndex: 2, folder: "Boxes" });
+    const edits = (await call("get_state", { path: moveModel })).edits;
+    assert(folded.folder === "Boxes" && edits.map((e) => e.folder).join(",") === ",Boxes,Boxes", `a folder tags the range (got ${JSON.stringify(edits.map((e) => e.folder))})`);
+    const solidsAfterFold = (await call("load_model", { path: moveModel })).solids.length;
+    assert(solidsAfterFold === solidsBeforeFold && solidsAfterFold > 0, `folders never change replay (${solidsBeforeFold} → ${solidsAfterFold} solids)`);
   }
 
   // defeature — block.stp + a 10x20x30 box at [200,0,0], fillet one of the

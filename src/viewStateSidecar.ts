@@ -29,6 +29,7 @@ interface SidecarFile {
   ribbonTab?: unknown;
   ribbonCompact?: unknown;
   editsGridOpen?: unknown;
+  formsDocked?: unknown;
 }
 
 const CLIP_AXES: readonly ClipAxis[] = ["x", "y", "z"];
@@ -116,6 +117,7 @@ export function parseViewStateJson(text: string): ViewState | null {
   if (ribbonTab !== null && ribbonTab !== DEFAULT_RIBBON_TAB) base.ribbonTab = ribbonTab;
   if (file?.ribbonCompact === true) base.ribbonCompact = true;
   if (file?.editsGridOpen === true) base.editsGridOpen = true;
+  if (file?.formsDocked === true) base.formsDocked = true;
 
   // Optional split-view layout — purely additive, tolerant.
   const rawLayout = file?.layout;
@@ -227,8 +229,8 @@ export function sanitizeBookmarks(raw: unknown): ViewBookmark[] {
 
 /** Serializes view state to the sidecar JSON text (pretty-printed, trailing newline). */
 export function serializeViewStateJson(sourceName: string, view: ViewState): string {
-  const { layout, panes, collapsedPanels, sidebarWidth, bookmarks, ribbonTab, ribbonCompact, editsGridOpen, ...viewCore } = view;
-  const file: SidecarFile & { view: Omit<ViewState, "layout" | "panes" | "collapsedPanels" | "sidebarWidth" | "bookmarks" | "ribbonTab" | "ribbonCompact" | "editsGridOpen"> } = {
+  const { layout, panes, collapsedPanels, sidebarWidth, bookmarks, ribbonTab, ribbonCompact, editsGridOpen, formsDocked, ...viewCore } = view;
+  const file: SidecarFile & { view: Omit<ViewState, "layout" | "panes" | "collapsedPanels" | "sidebarWidth" | "bookmarks" | "ribbonTab" | "ribbonCompact" | "editsGridOpen" | "formsDocked"> } = {
     version: VIEW_STATE_SIDECAR_VERSION,
     source: sourceName,
     view: viewCore,
@@ -259,5 +261,6 @@ export function serializeViewStateJson(sourceName: string, view: ViewState): str
   if (tab !== null && tab !== DEFAULT_RIBBON_TAB) (file as SidecarFile).ribbonTab = tab;
   if (ribbonCompact === true) (file as SidecarFile).ribbonCompact = true;
   if (editsGridOpen === true) (file as SidecarFile).editsGridOpen = true;
+  if (formsDocked === true) (file as SidecarFile).formsDocked = true;
   return JSON.stringify(file, null, 2) + "\n";
 }

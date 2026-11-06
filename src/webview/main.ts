@@ -1190,6 +1190,7 @@ viewer.setGizmoHandlers(
 );
 
 const editsPanel = new EditsPanel(document.getElementById("edits-panel")!, {
+  onFormDockChange: () => scheduleViewSave(),
   // Tier 0 Phase 2 — mutations at or inside the save point are refused by the
   // model (the ops live in the file itself); surface the guidance here. The
   // empty-stack no-ops stay silent, exactly as before.
@@ -1218,6 +1219,15 @@ const editsPanel = new EditsPanel(document.getElementById("edits-panel")!, {
   onReportIssue: (index) => post({ type: "reportIssueRequest", opIndex: index }),
   onSetOpState: (index, state) => {
     if (!editsModel.setState(index, state) && index < editsModel.savePoint) setStatus(SAVE_POINT_REFUSAL, true);
+  },
+  onMoveOp: (from, to) => {
+    const external = partsModel.list().flatMap((p) => (p.selector?.source.kind === "bucket" ? [p.selector.source.op] : []));
+    const res = editsModel.move(from, to, external);
+    if (res.ok) configurationsModel.opsMoved(res.mapping);
+    else setStatus(res.reason, true);
+  },
+  onSetFolder: (from, to, name) => {
+    if (!editsModel.setFolder(from, to, name) && from < editsModel.savePoint) setStatus(SAVE_POINT_REFUSAL, true);
   },
   // One splice + one onChange/editsChanged/re-tessellate round trip per
   // click — never a looped undo()/redo() sequence (op-history scrubbing).
@@ -5725,6 +5735,8 @@ function applyViewState(state: ViewState): void {
     compact: state.ribbonCompact === true,
     editsGridOpen: state.editsGridOpen === true,
   });
+  // Docked form placement — silent restore (`setDocked` never fires the change callback).
+  editsPanel.setDocked(state.formsDocked === true);
   // Restore, not echo: `setWidth` deliberately never fires the resizer's
   // `onChange`, so reopening a document can't rewrite the sidecar it just
   // read (the same contract `setCollapsed` keeps above). Clamping HERE too:
@@ -5963,6 +5975,7 @@ function scheduleViewSave(): void {
       if (ribbonState.compact) view.ribbonCompact = true;
       if (ribbonState.editsGridOpen) view.editsGridOpen = true;
     }
+    if (editsPanel.isDocked()) view.formsDocked = true;
     // The webview is the single writer of the bookmark list (save/rename/
     // replace/delete below mutate `viewBookmarks` in place); every view save
     // carries the current list, omitted when empty like every other additive

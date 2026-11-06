@@ -1,4 +1,5 @@
 import { MAX_OP_LABEL, type EditOp } from "../editOps";
+import { planOpMove, type OpMoveRefusal } from "../reorderOps";
 
 /**
  * In-webview op-stack for the replayable edit list. Pure data + operations (no
@@ -154,6 +155,48 @@ export class EditsModel {
     }
     if (JSON.stringify(next) === JSON.stringify(this.ops[index])) return false;
     this.ops[index] = next;
+    this.redoBuffer = [];
+    this.onChange();
+    return true;
+  }
+
+  /**
+   * Moves the op at `from` so it ends up at `to` (history drag). The decision is
+   * `planOpMove`'s — baked prefix, stored selector queries (`externalRefs` adds
+   * the ones Parts hold) and two shape-changing ops are refused with a reason.
+   * Clears the redo buffer like {@link remove}; one `onChange`. Returns the old→new
+   * index mapping so index-keyed lists (configurations) can follow.
+   */
+  move(from: number, to: number, externalRefs: Iterable<number> = []): { ok: true; mapping: number[] } | OpMoveRefusal {
+    const plan = planOpMove(this.ops, from, to, this.bakedThrough, externalRefs);
+    if (!plan.ok) return plan;
+    this.ops = plan.ops.map(clone);
+    this.redoBuffer = [];
+    this.onChange();
+    return { ok: true, mapping: plan.mapping };
+  }
+
+  /**
+   * Puts ops `from..to` (inclusive) into the history folder `name`, or takes
+   * them out with `null`/empty. Display only: replay never reads the tag. One
+   * `onChange` for the whole range; refused inside the save point and for an
+   * out-of-range or reversed range; a range that already matches is a no-op.
+   */
+  setFolder(from: number, to: number, name: string | null): boolean {
+    if (!Number.isInteger(from) || !Number.isInteger(to) || from > to) return false;
+    if (from < this.bakedThrough || from < 0 || to >= this.ops.length) return false;
+    const t = (name ?? "").trim().slice(0, MAX_OP_LABEL);
+    let changed = false;
+    for (let i = from; i <= to; i++) {
+      const next = clone(this.ops[i]);
+      if (t) next.folder = t;
+      else delete next.folder;
+      if (JSON.stringify(next) !== JSON.stringify(this.ops[i])) {
+        this.ops[i] = next;
+        changed = true;
+      }
+    }
+    if (!changed) return false;
     this.redoBuffer = [];
     this.onChange();
     return true;

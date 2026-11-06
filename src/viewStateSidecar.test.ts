@@ -316,6 +316,26 @@ describe("view-state: named view bookmarks", () => {
   });
 });
 
+describe("view-state: docked operation form", () => {
+  it("round-trips as a top-level sibling of `view`, only when true", () => {
+    const view: ViewState = { ...validView, formsDocked: true };
+    const file = JSON.parse(serializeViewStateJson("bull.stp", view));
+    expect(file.formsDocked).toBe(true);
+    expect(file.view.formsDocked).toBeUndefined();
+    expect(parseViewStateJson(serializeViewStateJson("bull.stp", view))).toEqual(view);
+    // Also under a split-view layout (fold-before-the-1x1-return trap).
+    const split = JSON.stringify({ version: 1, source: "b.stp", view: validView, layout: "1x2", formsDocked: true });
+    expect(parseViewStateJson(split)?.formsDocked).toBe(true);
+  });
+
+  it("is byte-identical at the default and ignores non-boolean junk", () => {
+    const plain = serializeViewStateJson("bull.stp", validView);
+    expect(serializeViewStateJson("bull.stp", { ...validView, formsDocked: false })).toBe(plain);
+    expect(JSON.parse(plain)).not.toHaveProperty("formsDocked");
+    expect(parseViewStateJson(JSON.stringify({ version: 1, source: "b.stp", view: validView, formsDocked: "yes" }))).toEqual(validView);
+  });
+});
+
 describe("view-state: ribbon strip state", () => {
   it("round-trips tab, compact and the open Edits grid as top-level siblings of `view`", () => {
     const view: ViewState = { ...validView, ribbonTab: "mesh", ribbonCompact: true, editsGridOpen: true };

@@ -118,6 +118,7 @@ export function viewerBodyHtml(): string {
           <span id="edits-title" class="panel-title">Edits <span id="edits-count" title="Operations in the edit history"></span></span>
           <div id="edits-actions">
             <button id="edits-grid-toggle" type="button" aria-pressed="false" title="Show the op button grid (the ribbon covers it)">${glyph("shapes")}</button>
+            <button id="edits-dock-toggle" type="button" aria-pressed="false" title="Dock the operation form over the viewport (top right)">${glyph("maximize")}</button>
             <button id="edits-undo" title="Undo last edit" disabled>${glyph("undo")}</button>
             <button id="edits-redo" title="Redo edit" disabled>${glyph("redo")}</button>
             <button id="edits-clear" title="Clear all edits" disabled>${glyph("trash")}</button>
@@ -413,6 +414,9 @@ export function viewerBodyHtml(): string {
     <button id="sidebar-resize" type="button" role="separator" title="Drag or press ArrowLeft/ArrowRight to resize the sidebar"></button>
     <div id="app">
       <canvas id="markup-canvas"></canvas>
+      <!-- Docked operation form (Edits panel toggle). Empty and invisible until the
+           panel moves its parameter form here; CSS hides it while it has no child. -->
+      <div id="form-dock" aria-label="Operation form"></div>
       <!-- Geometry display mode legend: one swatch per primitive kind the mode
            draws. Shown only in that mode (main.ts applyDisplayMode). -->
       <div id="geometry-legend" hidden aria-label="Geometry legend">

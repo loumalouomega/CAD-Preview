@@ -340,7 +340,7 @@ User-applied **edit operations** (transforms and booleans, and — in later mile
 
 The source file is written only by an explicit, confirmed action — Ctrl+S on a dirty tab (for STEP/IGES/BREP/STL/OBJ/PLY), an Export pick of the source's own format ("save in place"), or the headless `save_model` MCP tool — never as a side effect of applying or autosaving an edit. That save **bakes** the unbaked op tail into the file and records how far via a `bakedThrough` watermark: the file on disk already contains `ops[0..bakedThrough]`, so replay starts after it and every kernel replay consumes only the tail. The field is omitted when `0`, so a never-saved-in-place document's sidecar is byte-identical to before this feature existed; parsing clamps an out-of-range value instead of throwing. Undo cannot cross the save point, and `remove_edit_op` refuses an index inside the baked prefix headless.
 
-Each op may carry two additive display/replay fields: `suppressed: true` (omitted when false — replay skips the op) and `label` (a short row name). Neither changes the op's parameters, and a file without them parses unchanged.
+Each op may carry three additive display/replay fields: `suppressed: true` (omitted when false — replay skips the op), `label` (a short row name) and `folder` (a history-folder name: consecutive ops with the same name show as one collapsible group in the Edits list; display only, replay never reads it, ≤80 characters, blank/non-string dropped). None changes the op's parameters, and a file without them parses unchanged and re-serialises byte-identically.
 
 ### Recovering an interrupted save (`<model>.save-journal.json`)
 
@@ -547,7 +547,8 @@ The persisted **camera orientation, display mode, ortho/perspective toggle, and 
   "sidebarWidth": 300,
   "ribbonTab": "inspect",
   "ribbonCompact": true,
-  "editsGridOpen": true
+  "editsGridOpen": true,
+  "formsDocked": true
 }
 ```
 
@@ -558,6 +559,8 @@ The persisted **camera orientation, display mode, ortho/perspective toggle, and 
 `sidebarWidth` (roadmap "Sidebar layout and keyboard usability") is a fourth such optional sibling: the resizable sidebar's width in px. Read values are clamped through `clampSidebarWidth` (`src/webview/sidebarResizer.ts`, range 176..420) — a hand-edited out-of-range number falls back to the clamp bounds, never the raw value, and a non-numeric value means "unpersisted". Absent **or exactly 220** (the pre-resizer fixed width) writes nothing, so an unresized document's sidecar stays byte-stable. Same shape, same no-version-bump rule, same exclusion from the Preprocess Archive and from MCP as `collapsedPanels`.
 
 `ribbonTab`, `ribbonCompact` and `editsGridOpen` (roadmap "Ribbon command strip") are three more optional top-level siblings: the command strip's active tab (`view`, `model`, `inspect`, `mesh` or `export`), whether its button labels are hidden, and whether the Edits panel's op button grid is expanded. Each is omitted at its default (tab `model`, labels shown, grid collapsed), so an untouched ribbon leaves the file byte-identical to the older shape; an unknown tab id or a non-boolean flag falls back to the default without discarding the rest of the record. Display preferences only: no MCP surface, no geometry.
+
+`formsDocked` is one more optional top-level sibling: the Edits panel's operation form is docked over the viewport (top right) instead of sitting in the sidebar. Written only when `true`; a non-boolean value is ignored without discarding the rest of the record. Display preference only: no MCP surface, no geometry.
 
 `viewDirection`/`cameraUp` are a normalized direction (target → camera) and up vector, not a raw position/target/distance — `Viewer.frame(direction)` already re-derives both from the model's current bounding box, so this survives edits that change the model's extents. `clip.offsetFrac` is likewise a fraction of the model's bbox, not a raw plane constant — measured along the clip's **active normal**. `clip` may carry an optional explicit unit `normal` (`{axis, offsetFrac, normal?}`) which wins over `axis` when present; `axis` is still always written, set to that normal's dominant axis, so an older build restores a sensible neighbouring clip instead of none. A malformed `normal` drops only itself, leaving the clip as its axis form — unlike a malformed `axis`, which still drops the whole `clip`. Parsing is tolerant like the other three sidecars, with one stricter rule: a missing or degenerate (all-zero) `viewDirection`/`cameraUp` rejects the WHOLE record (falls back to no persisted view, i.e. the default isometric) rather than feeding NaN/zero into the camera — every other field falls back individually (an unrecognized `displayMode` → `"shaded"`, a malformed `clip` → `null`, an unknown `layout` → ignored as `"1x1"`, a bad per-pane entry → falls back to `view`'s own direction/up/ortho for that pane, a short/long `panes` array → padded/truncated to `paneCount(layout)`).
 

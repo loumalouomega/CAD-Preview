@@ -5780,6 +5780,70 @@ test("form ergonomics: the form header collapses the fields and keeps every type
   assert(kept === "37.5", `the typed value survives collapse and expand (got ${JSON.stringify(kept)}, field ${field})`);
 });
 
+test("form ergonomics: the docked placement moves the one form over the viewport, keeps values, Apply and the cube clear", async (page) => {
+  await populate(page);
+  await page.evaluate(() => [...document.querySelectorAll(".op-btn")].find((b) => b.querySelector(".op-name")?.textContent === "Box")?.click());
+  await sleep(200);
+  await page.evaluate(() => {
+    const el = document.querySelector("#edits-params .edits-form-body input");
+    el.value = "41.5";
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  const dockState = () => page.evaluate(() => {
+    const dock = document.getElementById("form-dock");
+    const params = document.getElementById("edits-params");
+    const app = document.getElementById("app").getBoundingClientRect();
+    const dr = dock.getBoundingClientRect();
+    const footer = document.querySelector("#edits-params > .compose-footer");
+    const fr = footer?.getBoundingClientRect();
+    return {
+      inDock: params.parentElement === dock,
+      dockRendered: dock.offsetParent !== null && dr.height > 0,
+      paramCount: document.querySelectorAll("#edits-params").length,
+      value: document.querySelector("#edits-params .edits-form-body input")?.value,
+      clearOfCube: dr.left >= app.left + 96 + 8,
+      insideApp: dr.right <= app.right + 0.5 && dr.top >= app.top - 0.5 && dr.bottom <= app.bottom + 0.5,
+      footerShown: !!fr && fr.height > 0 && fr.bottom <= dr.bottom + 1,
+      pressed: document.getElementById("edits-dock-toggle").getAttribute("aria-pressed"),
+    };
+  });
+  const before = await dockState();
+  assert(!before.inDock && !before.dockRendered && before.pressed === "false", `control: undocked, the dock is not rendered (got ${JSON.stringify(before)})`);
+  await page.evaluate(() => (window.__sent.length = 0));
+  await page.click("#edits-dock-toggle");
+  await sleep(300);
+  const docked = await dockState();
+  assert(docked.inDock && docked.dockRendered && docked.paramCount === 1, `the same form node now lives in the rendered dock (got ${JSON.stringify(docked)})`);
+  assert(docked.value === "41.5", `the typed value survives the move (got ${JSON.stringify(docked.value)})`);
+  assert(docked.clearOfCube && docked.insideApp, `the dock stays inside the viewport and clear of the orientation cube (got ${JSON.stringify(docked)})`);
+  assert(docked.footerShown && docked.pressed === "true", "the Apply row is visible inside the dock and the toggle reads pressed");
+  await sleep(900);
+  const saved = await page.evaluate(() => (window.__sent ?? []).filter((m) => m.type === "viewChanged").at(-1)?.view ?? null);
+  assert(saved?.formsDocked === true, `docking is persisted in the view state (got ${JSON.stringify(saved?.formsDocked)})`);
+  // A field edited while docked is the same field after undocking.
+  await page.evaluate(() => {
+    const el = document.querySelector("#form-dock .edits-form-body input");
+    el.value = "42";
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  await page.click("#edits-dock-toggle");
+  await sleep(200);
+  const back = await dockState();
+  assert(!back.inDock && !back.dockRendered && back.value === "42", `undocking returns the form (and its edited value) to the panel (got ${JSON.stringify(back)})`);
+  await sleep(900);
+  const cleared = await page.evaluate(() => (window.__sent ?? []).filter((m) => m.type === "viewChanged").at(-1)?.view ?? null);
+  assert(cleared && !("formsDocked" in cleared), "the default placement writes nothing (byte-stable sidecar)");
+  // Restore is silent and applies the placement.
+  await page.evaluate(() => (window.__sent.length = 0));
+  const baseView = { viewDirection: [1, 0.8, 1], cameraUp: [0, 1, 0], orthographic: false, displayMode: "shaded", clip: null };
+  await post(page, { type: "viewState", view: { ...baseView, formsDocked: true } });
+  await sleep(500);
+  assert((await dockState()).inDock, "a restored viewState with formsDocked docks the form");
+  await post(page, { type: "viewState", view: baseView });
+  await sleep(500);
+  assert(!(await dockState()).inDock, "…and a sidecar without it returns the form to the panel");
+});
+
 test("history rows: suppress toggles replay state, rename commits/cancels, delete warns about dependents", async (page) => {
   await populate(page);
   await post(page, {
@@ -6246,6 +6310,88 @@ test("external edits: the appended op flashes its produced faces once, then rest
   // (tens of thousands here). The absolute bound keeps the noise case honest
   // without letting a partial restore through.
   assert(restoredDiff < 1000, `the highlight restores after the one-shot window (${restoredDiff} pixels vs control; a missed restore would differ by ${flashDiff})`);
+});
+
+test("history folders: group rows, collapse without touching the timeline, prefill from the row above, ungroup", async (page) => {
+  await populate(page);
+  await post(page, {
+    type: "edits",
+    ops: [{ op: "addBox", center: [0, 0, 0], size: [4, 5, 6] }, { op: "addSphere", center: [9, 0, 0], radius: 2 }, { op: "addBox", center: [20, 0, 0], size: [1, 1, 1] }],
+    variables: [],
+  });
+  await sleep(300);
+  const rendered = (sel) => page.evaluate((q) => { const e = document.querySelector(q); return !!e && e.getClientRects().length > 0; }, sel);
+  const lastOps = async () => (await sentOf(page, "editsChanged")).pop()?.ops;
+  const folderOf = async () => (await lastOps()).map((o) => o.folder ?? null);
+  const nameRow = async (i, text, key) => {
+    await page.evaluate((idx) => document.querySelector(`.edit-row[data-op-index="${idx}"] .edit-folder-btn`).click(), i);
+    await page.evaluate(([t, k]) => { const inp = document.querySelector(".edit-folder-input"); if (t !== null) inp.value = t; inp.dispatchEvent(new KeyboardEvent("keydown", { key: k, bubbles: true })); }, [text, key]);
+    await sleep(300);
+  };
+  // Escape cancels: nothing is posted for it.
+  const before = (await sentOf(page, "editsChanged")).length;
+  await nameRow(1, "Nope", "Escape");
+  assert((await sentOf(page, "editsChanged")).length === before, "Escape on the folder field posts nothing");
+  assert(await rendered('.edit-row[data-op-index="1"] .edit-folder-btn'), "…and the folder button is back");
+  await nameRow(1, "Pins", "Enter");
+  assert(eq(await folderOf(), [null, "Pins", null]), `Enter files only that row in the folder (got ${JSON.stringify(await folderOf())})`);
+  // Row 2's field is prefilled with the folder of the row above, so one Enter joins it.
+  await page.evaluate(() => document.querySelector('.edit-row[data-op-index="2"] .edit-folder-btn').click());
+  assert(await page.evaluate(() => document.querySelector(".edit-folder-input").value) === "Pins", "the field is prefilled with the folder above");
+  await page.evaluate(() => document.querySelector(".edit-folder-input").dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true })));
+  await sleep(300);
+  assert(eq(await folderOf(), [null, "Pins", "Pins"]), `…and Enter joins it (got ${JSON.stringify(await folderOf())})`);
+  const heads = await page.evaluate(() => [...document.querySelectorAll(".edit-folder-header")].map((h) => [h.querySelector(".edit-folder-name").textContent, h.querySelector(".edit-folder-count").textContent]));
+  assert(eq(heads, [["Pins", "2"]]), `one header names the folder and counts its rows (got ${JSON.stringify(heads)})`);
+  // Collapse: rows leave the rendering, others stay, and the timeline is not scrubbed.
+  const posted = (await sentOf(page, "editsChanged")).length;
+  await page.click(".edit-folder-toggle");
+  await sleep(200);
+  assert(!(await rendered('.edit-row[data-op-index="1"]')) && !(await rendered('.edit-row[data-op-index="2"]')), "collapsing hides the folder's rows (rendered, not just the class)");
+  assert(await rendered('.edit-row[data-op-index="0"]'), "control: a row outside the folder stays rendered");
+  assert((await sentOf(page, "editsChanged")).length === posted, "collapsing posts nothing (no timeline jump, no replay)");
+  await page.click(".edit-folder-toggle");
+  await sleep(200);
+  assert(await rendered('.edit-row[data-op-index="1"]'), "expanding shows them again");
+  // Ungroup clears the whole run.
+  await page.click(".edit-folder-ungroup");
+  await sleep(300);
+  assert(eq(await folderOf(), [null, null, null]), `Ungroup takes every row out (got ${JSON.stringify(await folderOf())})`);
+  assert(await page.evaluate(() => document.querySelectorAll(".edit-folder-header").length === 0), "…and the header goes away");
+});
+
+test("history reorder: drag a row, refuse a swap of two shape-changing ops with the reason, Alt+Arrow moves and keeps focus", async (page) => {
+  await populate(page);
+  await post(page, {
+    type: "edits",
+    ops: [{ op: "addBox", center: [0, 0, 0], size: [4, 5, 6] }, { op: "addSphere", center: [9, 0, 0], radius: 2 }, { op: "translate", targets: ["solid-0"], vec: [0, 1, 0] }],
+    variables: [],
+  });
+  await sleep(300);
+  const kinds = async () => (await sentOf(page, "editsChanged")).pop()?.ops.map((o) => o.op);
+  const count = async () => (await sentOf(page, "editsChanged")).length;
+  const row = (i) => `.edit-row[data-op-index="${i}"]`;
+  // Drag the transform onto the TOP half of row 0: it lands first.
+  await page.dragAndDrop(row(2), row(0), { targetPosition: { x: 30, y: 2 } });
+  await sleep(400);
+  assert(eq(await kinds(), ["translate", "addBox", "addSphere"]), `dropping on the top half of row 0 puts the transform first (got ${JSON.stringify(await kinds())})`);
+  // Refusal: the sphere may not cross the box (both reshape the model).
+  const posted = await count();
+  await page.dragAndDrop(row(2), row(1), { targetPosition: { x: 30, y: 2 } });
+  await sleep(400);
+  assert(await count() === posted && eq(await kinds(), ["translate", "addBox", "addSphere"]), "a refused move posts nothing and leaves the list as it was");
+  const msg = await page.evaluate(() => document.getElementById("status").textContent);
+  assert(/both reshape the model/.test(msg), `…and the status names the reason (got ${JSON.stringify(msg)})`);
+  // Control: dropping a row onto its own slot is a no-op, not a refusal.
+  await page.dragAndDrop(row(0), row(0), { targetPosition: { x: 30, y: 2 } });
+  await sleep(300);
+  assert(await count() === posted, "dropping on its own slot posts nothing");
+  // Keyboard: Alt+ArrowDown on the focused transform row moves it down one and keeps focus on it.
+  await page.focus(row(0));
+  await page.keyboard.press("Alt+ArrowDown");
+  await sleep(400);
+  assert(eq(await kinds(), ["addBox", "translate", "addSphere"]), `Alt+ArrowDown moves the row down (got ${JSON.stringify(await kinds())})`);
+  assert(await page.evaluate(() => document.activeElement?.getAttribute("data-op-index")) === "1", "…and focus follows the moved row");
 });
 
 test("history rows: hovering a row tints the faces its op produced and leaving restores", async (page) => {

@@ -60,6 +60,7 @@ The extension host is a Node.js process. These modules run there — never in th
 | `src/dxfSilhouette.ts` | Pure DXF writer for silhouette export over the SAME segment list `svgSilhouette.ts` serializes (imports its `viewBasis`; chained runs → `LWPOLYLINE`s, singletons → `LINE`s), selected by `exportSvgSilhouetteRequest`'s format pick |
 | `src/editsStore.ts` | Read/write the `<model>.edits.json` sidecar (vscode fs) |
 | `src/editsSidecar.ts` | Pure parse/serialize for the edits sidecar (vscode-free, unit-tested) |
+| `src/reorderOps.ts` | Pure `planOpMove(ops, from, to, bakedThrough, externalRefs)`: the one decision behind the history drag (webview `EditsModel.move`) and `move_edit_op`; returns the new list plus the old→new index mapping, or a named refusal (saved prefix, a stored selector query naming an op in the span, two shape-changing ops crossing). `remapIndices` / `configurations.ts`' `remapSuppressedAfterMove` follow index-keyed lists through the mapping |
 | `src/paramExpr.ts` | Parametric expression evaluator + `exprs` field-path addressing (vscode/DOM-free, unit-tested) |
 | `src/configurations.ts` | Configurations (design table): validate, overlay (`applyConfiguration`/`effectiveVariables`/`evaluateEffective`), pure mutations, `configurationTable` (vscode/DOM-free, unit-tested) |
 | `src/editVariables.ts` | `ParamVariable` validate/evaluate + `resolveEditOps` op resolver (vscode/DOM-free, unit-tested) |

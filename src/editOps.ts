@@ -362,6 +362,12 @@ export type EditOp = (
   /** History "rename": shown instead of the generated description. Display only. */
   label?: string;
   /**
+   * History "folder": consecutive ops carrying the same name show as one
+   * collapsible group in the Edits list. Display only — replay, outcomes and ids
+   * never read it.
+   */
+  folder?: string;
+  /**
    * Optional per-operand-field stored queries (roadmap "Selector synthesis",
    * op-operand persistence) — e.g. `{ a: {...}, b: {...} }` on a boolean —
    * resolved host-side against the current op list with the plain id arrays
@@ -1006,6 +1012,11 @@ export function validateEditOp(raw: unknown): EditOp | null {
   if (typeof rawLabel === "string") {
     const label = rawLabel.trim().slice(0, MAX_OP_LABEL);
     if (label) clean.label = label;
+  }
+  const rawFolder = (raw as Record<string, unknown>).folder;
+  if (typeof rawFolder === "string") {
+    const folder = rawFolder.trim().slice(0, MAX_OP_LABEL);
+    if (folder) clean.folder = folder;
   }
   const exprs = sanitizeExprs((raw as Record<string, unknown>).exprs, clean);
   if (exprs) clean.exprs = exprs;
