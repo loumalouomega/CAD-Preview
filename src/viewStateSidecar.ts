@@ -28,6 +28,7 @@ interface SidecarFile {
   bookmarks?: unknown;
   ribbonTab?: unknown;
   ribbonCompact?: unknown;
+  ribbonHidden?: unknown;
   editsGridOpen?: unknown;
   formsDocked?: unknown;
 }
@@ -116,6 +117,7 @@ export function parseViewStateJson(text: string): ViewState | null {
   const ribbonTab = sanitizeRibbonTab(file?.ribbonTab);
   if (ribbonTab !== null && ribbonTab !== DEFAULT_RIBBON_TAB) base.ribbonTab = ribbonTab;
   if (file?.ribbonCompact === true) base.ribbonCompact = true;
+  if (file?.ribbonHidden === true) base.ribbonHidden = true;
   if (file?.editsGridOpen === true) base.editsGridOpen = true;
   if (file?.formsDocked === true) base.formsDocked = true;
 
@@ -229,8 +231,8 @@ export function sanitizeBookmarks(raw: unknown): ViewBookmark[] {
 
 /** Serializes view state to the sidecar JSON text (pretty-printed, trailing newline). */
 export function serializeViewStateJson(sourceName: string, view: ViewState): string {
-  const { layout, panes, collapsedPanels, sidebarWidth, bookmarks, ribbonTab, ribbonCompact, editsGridOpen, formsDocked, ...viewCore } = view;
-  const file: SidecarFile & { view: Omit<ViewState, "layout" | "panes" | "collapsedPanels" | "sidebarWidth" | "bookmarks" | "ribbonTab" | "ribbonCompact" | "editsGridOpen" | "formsDocked"> } = {
+  const { layout, panes, collapsedPanels, sidebarWidth, bookmarks, ribbonTab, ribbonCompact, ribbonHidden, editsGridOpen, formsDocked, ...viewCore } = view;
+  const file: SidecarFile & { view: Omit<ViewState, "layout" | "panes" | "collapsedPanels" | "sidebarWidth" | "bookmarks" | "ribbonTab" | "ribbonCompact" | "ribbonHidden" | "editsGridOpen" | "formsDocked"> } = {
     version: VIEW_STATE_SIDECAR_VERSION,
     source: sourceName,
     view: viewCore,
@@ -260,6 +262,7 @@ export function serializeViewStateJson(sourceName: string, view: ViewState): str
   const tab = sanitizeRibbonTab(ribbonTab);
   if (tab !== null && tab !== DEFAULT_RIBBON_TAB) (file as SidecarFile).ribbonTab = tab;
   if (ribbonCompact === true) (file as SidecarFile).ribbonCompact = true;
+  if (ribbonHidden === true) (file as SidecarFile).ribbonHidden = true;
   if (editsGridOpen === true) (file as SidecarFile).editsGridOpen = true;
   if (formsDocked === true) (file as SidecarFile).formsDocked = true;
   return JSON.stringify(file, null, 2) + "\n";

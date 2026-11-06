@@ -5733,6 +5733,7 @@ function applyViewState(state: ViewState): void {
   ribbon?.setState({
     tab: sanitizeRibbonTab(state.ribbonTab) ?? DEFAULT_RIBBON_TAB,
     compact: state.ribbonCompact === true,
+    hidden: state.ribbonHidden === true,
     editsGridOpen: state.editsGridOpen === true,
   });
   // Docked form placement — silent restore (`setDocked` never fires the change callback).
@@ -5973,6 +5974,7 @@ function scheduleViewSave(): void {
     if (ribbonState) {
       if (ribbonState.tab !== DEFAULT_RIBBON_TAB) view.ribbonTab = ribbonState.tab;
       if (ribbonState.compact) view.ribbonCompact = true;
+      if (ribbonState.hidden) view.ribbonHidden = true;
       if (ribbonState.editsGridOpen) view.editsGridOpen = true;
     }
     if (editsPanel.isDocked()) view.formsDocked = true;

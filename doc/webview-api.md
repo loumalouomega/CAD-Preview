@@ -1263,7 +1263,7 @@ function ribbonGroups(tab: RibbonTabId): RibbonGroup[]
 function modelGroups(): RibbonGroup[]         // generated from OP_CATALOG, never a hand-kept op list
 function ribbonOpIds(): Set<PanelOpId>        // the reachability set the tests compare to the catalog
 function planOverflow(rights, groupStart, available, moreWidth): number   // items kept on the strip
-interface RibbonState { tab: RibbonTabId; compact: boolean; editsGridOpen: boolean }
+interface RibbonState { tab: RibbonTabId; compact: boolean; editsGridOpen: boolean; hidden: boolean }
 ```
 
 **Single source.** The Model tab's groups are the catalog's categories (a category added to the catalog later lands at the end of the tab automatically). The other tabs come from a small table of non-op actions: click targets name an existing element by selector, panel targets name a `COLLAPSIBLE_PANELS` id. `opCatalog.test.ts` and `ribbon.test.ts` lock that every catalog op is reachable from the strip, that no op button lacks an entry and an icon, and that every click selector and panel id exists in `viewerBodyHtml()`. A new Edits-panel op button therefore appears on the strip with no second list; a new toolbar action needs one row in the table in `ribbon.ts`.
@@ -1281,7 +1281,7 @@ interface RibbonHandle { getState(); setState(partial | null); refresh(); fit() 
 
 **Layout contract.** The strip is in normal flow between `#menubar` and `#layout`, with a fixed height (`--ribbon-h`: 89px with labels, 63px in compact mode). `#toolbar` and `#measure-readout-row`, which are absolutely positioned from the viewport, add `--ribbon-h` to their `top`. Every toggled element carries an explicit `#id[hidden]` override.
 
-**Persistence.** The tab, the compact preference and the Edits-grid toggle ride `ViewState` (`ribbonTab`, `ribbonCompact`, `editsGridOpen`; additive, omitted at their defaults, see [Protocol](./protocol.md#viewstate)). `setState` is the silent restore path and never calls `onChange`. When `editsGridOpen` is false, `#edits-panel` carries `.grid-collapsed`, which hides the Edits panel's GEOMETRY/EDIT tab rows and op button grids; the parameter form and the history stay.
+**Persistence.** The tab, the compact preference, the hidden flag and the Edits-grid toggle ride `ViewState` (`ribbonTab`, `ribbonCompact`, `ribbonHidden`, `editsGridOpen`; additive, omitted at their defaults, see [Protocol](./protocol.md#viewstate)). `setState` is the silent restore path and never calls `onChange`. When `editsGridOpen` is false, `#edits-panel` carries `.grid-collapsed`, which hides the Edits panel's GEOMETRY/EDIT tab rows and op button grids; the parameter form and the history stay.
 
 ## `src/webview/editsPanel.ts`
 

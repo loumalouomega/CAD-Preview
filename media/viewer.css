@@ -682,7 +682,8 @@ body.sidebar-resizing {
   position: relative;
 }
 
-#file-menu {
+#file-menu,
+#ribbon-toggle {
   font: inherit;
   display: inline-flex;
   align-items: center;
@@ -696,9 +697,14 @@ body.sidebar-resizing {
 }
 
 #file-menu:hover,
+#ribbon-toggle:hover,
 #file-menu[aria-expanded="true"] {
   background: var(--vscode-toolbar-hoverBackground, rgba(90, 93, 94, 0.31));
 }
+
+#ribbon-toggle { margin-left: 4px; }
+#ribbon-toggle .ui-glyph svg { width: 12px; height: 12px; transition: transform 0.12s; }
+#ribbon-toggle[aria-pressed="false"] .ui-glyph svg { transform: rotate(-90deg); }
 
 /* ── Document chip ──────────────────────────────────────────────────────
  * Which file this is, its format, and whether it carries unsaved edits — fed by
@@ -5604,6 +5610,14 @@ body:has(#side.visible) #kernel-status {
 }
 body.ribbon-compact {
   --ribbon-h: 63px;
+}
+/* Hidden strip: the height metric drops to 0 so #toolbar and the measurement
+ * readout (both `top: N + --ribbon-h`) slide up with it. Must follow the compact rule. */
+body.ribbon-hidden {
+  --ribbon-h: 0px;
+}
+body.ribbon-hidden #ribbon {
+  display: none;
 }
 
 #ribbon {

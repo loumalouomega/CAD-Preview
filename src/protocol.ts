@@ -365,6 +365,8 @@ export interface ViewState {
   ribbonTab?: string;
   /** The ribbon's compact preference (labels hidden). Written only when `true`. */
   ribbonCompact?: boolean;
+  /** The ribbon strip is hidden (the menubar's Ribbon button restores it). Written only when `true`. */
+  ribbonHidden?: boolean;
   /**
    * The Edits panel's op button grid is expanded. Written only when `true`:
    * absent means collapsed behind its toggle, because the ribbon covers it.

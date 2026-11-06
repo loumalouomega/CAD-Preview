@@ -82,6 +82,7 @@ export function setupRibbon(host: RibbonHost): RibbonHandle | null {
   if (!root || !tabsEl || !groupsEl || !moreWrap || !morePanel || !compactBtn) return null;
   const more: DropdownHandle | null = setupDropdown("ribbon-more", "ribbon-more-dropdown");
   const gridBtn = document.getElementById("edits-grid-toggle");
+  const hideBtn = document.getElementById("ribbon-toggle");
   const editsPanel = document.getElementById("edits-panel");
 
   let state: RibbonState = { ...DEFAULT_RIBBON_STATE };
@@ -280,6 +281,9 @@ export function setupRibbon(host: RibbonHost): RibbonHandle | null {
       b.tabIndex = on ? 0 : -1;
     }
     document.body.classList.toggle("ribbon-compact", state.compact);
+    document.body.classList.toggle("ribbon-hidden", state.hidden);
+    hideBtn?.setAttribute("aria-pressed", String(!state.hidden));
+    if (hideBtn) hideBtn.title = state.hidden ? "Show the command ribbon" : "Hide the command ribbon (Edits panel and Ctrl+K still reach every command)";
     compactBtn!.setAttribute("aria-pressed", String(state.compact));
     compactBtn!.title = state.compact ? "Show the button labels" : "Hide the button labels (icons only)";
     editsPanel?.classList.toggle("grid-collapsed", !state.editsGridOpen);
@@ -301,6 +305,12 @@ export function setupRibbon(host: RibbonHost): RibbonHandle | null {
     state = { ...state, compact: !state.compact };
     applyState();
     fit();
+    host.onChange({ ...state });
+  });
+  hideBtn?.addEventListener("click", () => {
+    state = { ...state, hidden: !state.hidden };
+    applyState();
+    if (!state.hidden) fit();
     host.onChange({ ...state });
   });
   gridBtn?.addEventListener("click", () => {
@@ -342,6 +352,7 @@ export function setupRibbon(host: RibbonHost): RibbonHandle | null {
         tab: sanitizeRibbonTab(next?.tab) ?? DEFAULT_RIBBON_STATE.tab,
         compact: next?.compact === true,
         editsGridOpen: next?.editsGridOpen === true,
+        hidden: next?.hidden === true,
       };
       applyState();
       renderTab();

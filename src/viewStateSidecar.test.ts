@@ -316,6 +316,24 @@ describe("view-state: named view bookmarks", () => {
   });
 });
 
+describe("view-state: hidden ribbon", () => {
+  it("round-trips as a top-level sibling, only when true, and survives split view", () => {
+    const view: ViewState = { ...validView, ribbonHidden: true };
+    const file = JSON.parse(serializeViewStateJson("bull.stp", view));
+    expect(file.ribbonHidden).toBe(true);
+    expect(file.view.ribbonHidden).toBeUndefined();
+    expect(parseViewStateJson(serializeViewStateJson("bull.stp", view))).toEqual(view);
+    const split = JSON.stringify({ version: 1, source: "b.stp", view: validView, layout: "1x2", ribbonHidden: true });
+    expect(parseViewStateJson(split)?.ribbonHidden).toBe(true);
+  });
+
+  it("is byte-identical at the default and ignores junk", () => {
+    const plain = serializeViewStateJson("bull.stp", validView);
+    expect(serializeViewStateJson("bull.stp", { ...validView, ribbonHidden: false })).toBe(plain);
+    expect(parseViewStateJson(JSON.stringify({ version: 1, source: "b.stp", view: validView, ribbonHidden: "yes" }))).toEqual(validView);
+  });
+});
+
 describe("view-state: docked operation form", () => {
   it("round-trips as a top-level sibling of `view`, only when true", () => {
     const view: ViewState = { ...validView, formsDocked: true };

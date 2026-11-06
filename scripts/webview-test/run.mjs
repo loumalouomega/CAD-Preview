@@ -5780,6 +5780,43 @@ test("form ergonomics: the form header collapses the fields and keeps every type
   assert(kept === "37.5", `the typed value survives collapse and expand (got ${JSON.stringify(kept)}, field ${field})`);
 });
 
+test("ribbon: the menubar Ribbon button hides the strip, the toolbar slides up, state persists and restores", async (page) => {
+  await populate(page);
+  const geo = () => page.evaluate(() => ({
+    ribbonShown: document.getElementById("ribbon").getClientRects().length > 0,
+    toolbarTop: document.getElementById("toolbar").getBoundingClientRect().top,
+    pressed: document.getElementById("ribbon-toggle").getAttribute("aria-pressed"),
+    btnShown: document.getElementById("ribbon-toggle").getClientRects().length > 0,
+  }));
+  const shown = await geo();
+  assert(shown.ribbonShown && shown.pressed === "true" && shown.btnShown, `control: the ribbon is shown by default and the button is visible (got ${JSON.stringify(shown)})`);
+  await page.evaluate(() => (window.__sent.length = 0));
+  await page.click("#ribbon-toggle");
+  await sleep(300);
+  const hidden = await geo();
+  assert(!hidden.ribbonShown && hidden.pressed === "false" && hidden.btnShown, `clicking hides the strip (rendered) and the button stays reachable (got ${JSON.stringify(hidden)})`);
+  assert(shown.toolbarTop - hidden.toolbarTop >= 60, `the floating toolbar slides up by the strip's height (${shown.toolbarTop} → ${hidden.toolbarTop})`);
+  await sleep(900);
+  const saved = await page.evaluate(() => (window.__sent ?? []).filter((m) => m.type === "viewChanged").at(-1)?.view ?? null);
+  assert(saved?.ribbonHidden === true, `hiding is persisted (got ${JSON.stringify(saved?.ribbonHidden)})`);
+  await page.click("#ribbon-toggle");
+  await sleep(400);
+  const back = await geo();
+  assert(back.ribbonShown && back.toolbarTop === shown.toolbarTop, `clicking again restores the strip and the toolbar position (got ${JSON.stringify(back)})`);
+  const buttons = await page.evaluate(() => [...document.querySelectorAll("#ribbon-groups .ribbon-btn")].filter((b) => b.getClientRects().length > 0).length);
+  assert(buttons > 5, `the strip's buttons lay out again after being shown (got ${buttons} rendered)`);
+  await sleep(900);
+  const cleared = await page.evaluate(() => (window.__sent ?? []).filter((m) => m.type === "viewChanged").at(-1)?.view ?? null);
+  assert(cleared && !("ribbonHidden" in cleared), "the default writes nothing");
+  const baseView = { viewDirection: [1, 0.8, 1], cameraUp: [0, 1, 0], orthographic: false, displayMode: "shaded", clip: null };
+  await post(page, { type: "viewState", view: { ...baseView, ribbonHidden: true } });
+  await sleep(500);
+  assert(!(await geo()).ribbonShown, "a restored viewState with ribbonHidden hides the strip");
+  await post(page, { type: "viewState", view: baseView });
+  await sleep(500);
+  assert((await geo()).ribbonShown, "…and a sidecar without it shows it again");
+});
+
 test("form ergonomics: the docked placement moves the one form over the viewport, keeps values, Apply and the cube clear", async (page) => {
   await populate(page);
   await page.evaluate(() => [...document.querySelectorAll(".op-btn")].find((b) => b.querySelector(".op-name")?.textContent === "Box")?.click());

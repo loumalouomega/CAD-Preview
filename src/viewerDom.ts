@@ -41,6 +41,7 @@ export function viewerBodyHtml(): string {
         <button id="menu-export-sheet" role="menuitem" title="Export a drafting sheet — front, top, right and iso views at one shared scale, with a title block (first-angle projection)">${icon("export")} Export Drawing Sheet…</button>
       </div>
     </div>
+    <button id="ribbon-toggle" class="tb-menu" type="button" aria-pressed="true" title="Hide the command ribbon (Edits panel and Ctrl+K still reach every command)">Ribbon ${glyph("chevronDown")}</button>
     <!-- Document chip: which file this is, its format, and whether it carries
          unsaved edits. Fed by the documentInfo message (nothing else carried the
          name, format or dirty state to the webview). Hidden until the first one
