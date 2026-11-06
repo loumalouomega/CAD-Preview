@@ -365,7 +365,7 @@ export interface ViewState {
   ribbonTab?: string;
   /** The ribbon's compact preference (labels hidden). Written only when `true`. */
   ribbonCompact?: boolean;
-  /** The ribbon strip is hidden (the menubar's Ribbon button restores it). Written only when `true`. */
+  /** The ribbon strip is hidden (the menubar's Ribbon button restores it). Written only when it differs from the `cadPreview.ribbon` default (`true` when the setting is on, `false` when it is off); absent follows the setting. */
   ribbonHidden?: boolean;
   /**
    * The Edits panel's op button grid is expanded. Written only when `true`:

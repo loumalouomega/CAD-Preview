@@ -4459,6 +4459,7 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
       upAxis: cfg.get("upAxis"),
       singleKeyCommands: cfg.get("singleKeyCommands"),
       navigationPreset: cfg.get("navigationPreset"),
+      ribbon: cfg.get("ribbon"),
     });
     post({ type: "viewerDefaults", ...defaults });
   }

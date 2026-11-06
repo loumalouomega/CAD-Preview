@@ -317,6 +317,7 @@ interface ViewerDefaults {
   showGridAndAxes: boolean
   upAxis: UpAxis
   singleKeyCommands: boolean   // cadPreview.singleKeyCommands (default false)
+  ribbon: boolean              // cadPreview.ribbon (default true): initial ribbon visibility; a sidecar ribbonHidden wins
   navigationPreset: "default" | "fusion" | "touchpad"   // cadPreview.navigationPreset (default "default")
 }
 

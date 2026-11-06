@@ -22,6 +22,8 @@ export interface ViewerDefaults {
   singleKeyCommands: boolean;
   /** `cadPreview.navigationPreset`: how the mouse buttons map to orbit / pan / zoom. */
   navigationPreset: NavigationPreset;
+  /** `cadPreview.ribbon`: whether the ribbon starts visible (a per-document choice in the sidecar wins). */
+  ribbon: boolean;
 }
 
 export const DEFAULT_VIEWER_DEFAULTS: ViewerDefaults = {
@@ -31,6 +33,7 @@ export const DEFAULT_VIEWER_DEFAULTS: ViewerDefaults = {
   upAxis: "y",
   singleKeyCommands: false,
   navigationPreset: "default",
+  ribbon: true,
 };
 
 const HEX_COLOR_RE = /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/;
@@ -62,5 +65,7 @@ export function normalizeViewerDefaults(raw: unknown): ViewerDefaults {
   const singleKeyCommands =
     typeof o.singleKeyCommands === "boolean" ? o.singleKeyCommands : DEFAULT_VIEWER_DEFAULTS.singleKeyCommands;
 
-  return { background, meshSizePreset, showGridAndAxes, upAxis, singleKeyCommands, navigationPreset: normalizeNavigationPreset(o.navigationPreset) };
+  const ribbon = typeof o.ribbon === "boolean" ? o.ribbon : DEFAULT_VIEWER_DEFAULTS.ribbon;
+
+  return { background, meshSizePreset, showGridAndAxes, upAxis, singleKeyCommands, navigationPreset: normalizeNavigationPreset(o.navigationPreset), ribbon };
 }
