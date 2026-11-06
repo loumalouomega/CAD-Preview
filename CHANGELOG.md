@@ -6,6 +6,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/); thi
 
 ## [Unreleased]
 
+## [3.40.0] - 2026-11-06
+
 ### Added
 
 - **`cadPreview.ribbon` setting** (default on): whether the ribbon is visible when a viewer opens. Hiding or showing it in a document is saved in that model's `.view.json` (`ribbonHidden`, now also written as `false` when it overrides a turned-off setting) and wins over the setting.
@@ -1158,7 +1160,8 @@ This release republishes v1.9.0's full changelog (below) unchanged; v1.9.0 itsel
 
 - Initial release: read-only 3D preview for CAD and mesh files (STEP, IGES, BREP, STL, OBJ, PLY, glTF) inside a VS Code custom editor, using OpenCascade.js (OCCT WASM) in the extension host for B-rep formats and Three.js in the webview for rendering.
 
-[Unreleased]: https://github.com/loumalouomega/CAD-Preview/compare/v3.39.0...HEAD
+[Unreleased]: https://github.com/loumalouomega/CAD-Preview/compare/v3.40.0...HEAD
+[3.40.0]: https://github.com/loumalouomega/CAD-Preview/compare/v3.39.0...v3.40.0
 [3.39.0]: https://github.com/loumalouomega/CAD-Preview/compare/v3.38.1...v3.39.0
 [3.38.1]: https://github.com/loumalouomega/CAD-Preview/compare/v3.38.0...v3.38.1
 [3.38.0]: https://github.com/loumalouomega/CAD-Preview/compare/v3.37.0...v3.38.0
