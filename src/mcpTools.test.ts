@@ -22,6 +22,7 @@ import {
   repairMeshTool,
   inspectMeshioFieldsTool,
   checkMeshConformityTool,
+  checkTetrahedraTool,
   findMeshIntersectionsTool,
   measureMeshThicknessTool,
   analyzeSurfaceGeometryTool,
@@ -667,6 +668,9 @@ function fakePipeline(overrides: Partial<Pipeline> = {}): Pipeline {
     checkMeshConformity: vi.fn(async () => ({
       dimension: 3, numHangingNodes: 0, numTJunctions: 0, numPartialOverlaps: 0, numUnweldedFacets: 0,
       numBoundaryFacets: 12, numNonManifoldFacets: 0, conforming: true, interfaceMode: "conforming", warnings: [],
+    })),
+    checkTetrahedra: vi.fn(async () => ({
+      numTetrahedra: 12, numInverted: 0, numDegenerate: 0, numOverlaps: 0, minVolume: 1, maxVolume: 2, valid: true, warnings: [],
     })),
     analyzeSurfaceMesh: vi.fn(async (_b: Uint8Array, spec: { kind: "thickness" | "intersections" | "select" }) => ({ kind: spec.kind, numTriangles: 12, warnings: [] })),
     analyzeSurfaceGeometry: vi.fn(async (_b: Uint8Array, spec: { kind: "geodesic" | "parameterize" | "eigenmodes" }) => ({ kind: spec.kind, numTriangles: 12, numPoints: 8, warnings: [] })),
@@ -2486,6 +2490,21 @@ describe("inspect_meshio_fields", () => {
     expect(stp.supported).toBe(false);
     expect(stp.warnings[0]).toMatch(/export_mesh first/);
     await expect(checkMeshConformityTool(c, { path: await medModel(), tolerance: -1 })).rejects.toThrow(/tolerance must be/);
+  });
+
+  it("check_tetrahedra passes the staged source and returns its facts; non-meshio sources are unsupported", async () => {
+    const c = ctx(fakePipeline({
+      checkTetrahedra: vi.fn(async () => ({
+        numTetrahedra: 5, numInverted: 1, numDegenerate: 0, numOverlaps: 0, minVolume: -0.5, maxVolume: 2, valid: false, warnings: ["x"],
+      })),
+    }));
+    const r = await checkTetrahedraTool(c, { path: await medModel(), zeroVolumeFactor: 1e-4 });
+    expect(c.pipeline.checkTetrahedra).toHaveBeenCalledWith(expect.any(Uint8Array), "med", "model.med", [], { zeroVolumeFactor: 1e-4 });
+    expect(r).toMatchObject({ supported: true, valid: false, numInverted: 1, minVolume: -0.5 });
+    expect(r.warnings).toEqual(["⟦meshio warning: x⟧"]);
+    const stp = await checkTetrahedraTool(c, { path: stpModel });
+    expect(stp.supported).toBe(false);
+    await expect(checkTetrahedraTool(c, { path: await medModel(), zeroVolumeFactor: -1 })).rejects.toThrow(/zeroVolumeFactor must be/);
   });
 
   it("surface analyses pass the STL boundary and the validated spec to the pipeline; B-rep is unsupported", async () => {

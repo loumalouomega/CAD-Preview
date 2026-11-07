@@ -247,8 +247,23 @@ export interface OctreeMeshStats {
   numFeatureChains: number;
   numFeatureChainsMissed: number;
   numWarpRefused: number;
+  /** meshio++ 19.0 volume-fix counters (tet output); absent from older results. */
+  volumeFix?: OctreeMeshVolumeFix;
   /** meshio++'s own warnings, verbatim. */
   warnings: string[];
+}
+
+/** What meshio++ 19.0's tetrahedral volume fix did, as it reports it. */
+export interface OctreeMeshVolumeFix {
+  numGapsFilled: number;
+  numGapsSkipped: number;
+  numCollapsed: number;
+  numReordered: number;
+  numOverlaps: number;
+  numCapsRemoved: number;
+  numSplit: number;
+  numSlivers: number;
+  numUntangled: number;
 }
 
 /** One-line readout of an octreemesh generate for the panel status line. */
@@ -256,7 +271,11 @@ export function octreeMeshSummary(stats: OctreeMeshStats): string {
   const cells = stats.output === "tet" ? `${stats.numTetrahedra} tet` : `${stats.numHexahedra} hex`;
   const dihedral = stats.output === "tet" ? ` · dihedral ${stats.minDihedral.toFixed(1)}°–${stats.maxDihedral.toFixed(1)}°` : "";
   const features = stats.numFeatureChains > 0 ? ` · features ${stats.numFeatureChains - stats.numFeatureChainsMissed}/${stats.numFeatureChains}` : "";
-  return `Octree-mesh ${stats.output}: ${cells} · min Jacobian ${stats.minScaledJacobian.toFixed(2)}${dihedral}${features} · ${stats.numInverted} inverted · Parts not preserved`;
+  const fix = stats.volumeFix;
+  const repaired = fix ? fix.numGapsFilled + fix.numCollapsed + fix.numReordered + fix.numCapsRemoved + fix.numSplit + fix.numSlivers + fix.numUntangled : 0;
+  const repairs = repaired > 0 ? ` · volume fix ${repaired}` : "";
+  const overlaps = fix && fix.numOverlaps > 0 ? ` · ${fix.numOverlaps} overlapping` : "";
+  return `Octree-mesh ${stats.output}: ${cells} · min Jacobian ${stats.minScaledJacobian.toFixed(2)}${dihedral}${features}${repairs}${overlaps} · ${stats.numInverted} inverted · Parts not preserved`;
 }
 
 /** One-line readout of an octree generate for the panel status line. */

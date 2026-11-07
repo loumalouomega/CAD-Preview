@@ -375,7 +375,7 @@ try {
   assert(capsText.length > 100, "resources/read cad-preview://capabilities returns JSON text");
 
   const tools = (await request("tools/list", {})).tools.map((t) => t.name);
-  assert(tools.length === 96, `tools/list exposes 96 tools (got ${tools.length}: ${tools.join(", ")})`);
+  assert(tools.length === 97, `tools/list exposes 97 tools (got ${tools.length}: ${tools.join(", ")})`);
   for (const t of ["check_draft", "check_printability", "list_workspace_models", "check_interference_all", "generate_bom", "generate_hole_table", "render_ops_prefix", "check_tolerance", "inspect_meshio_fields", "pin_annotation", "import_svg", "save_mesh_preset", "list_mesh_presets", "apply_mesh_preset", "compare_mesh_refinement", "export_tessellated_stl", "estimate_mesh_budget", "analyze_passages", "measure_mesh_deviation", "save_sheet_template", "list_sheet_templates", "batch_export", "check_handoff_manifest", "generate_prep_report", "job_status", "job_cancel", "check_brep_health", "list_scad_parameters", "convert_scad", "list_layers", "set_layer", "assign_layer", "segment_mesh_surface", "fit_mesh_to_cad", "mesh_cad_surface", "check_mesh_conformity", "find_mesh_intersections", "measure_mesh_thickness", "select_mesh_region", "analyze_surface_geometry", "mesh_adjacency", "register_meshes", "project_to_cad", "grow_prism_layers", "iga_sample", "iga_refine", "iga_evaluate", "check_mesh_quality", "set_configuration"]) {
     assert(tools.includes(t), `tools/list exposes ${t}`);
   }
@@ -7749,6 +7749,36 @@ try {
     confHang.supported === true && confHang.conforming === false && confHang.numHangingNodes > 0,
     `...and the hanging-node octree .msh is non-conforming with hanging nodes (got ${JSON.stringify({ c: confHang.conforming, h: confHang.numHangingNodes })})`
   );
+  // check_tetrahedra (meshio++ 19.0): the stuffed tet mesh is valid; a copy with one tet's node order swapped is not
+  // (the control that the check can say no). Cell order in the .msh is not asserted, only the counts.
+  const tetClean = await call("check_tetrahedra", { path: ocmMsh });
+  assert(
+    tetClean.supported === true && tetClean.numTetrahedra > 0 && tetClean.numInverted === 0 && tetClean.numDegenerate === 0 && tetClean.valid === true && tetClean.minVolume > 0,
+    `check_tetrahedra reports the octreemesh tet .msh as valid with positive volumes (got ${JSON.stringify(tetClean)})`
+  );
+  const tetBadMsh = path.join(dir, "octreemesh-flipped.msh");
+  {
+    const lines = fs.readFileSync(ocmMsh, "utf8").split("\n");
+    // $Elements block: first element line of type 4 (4-node tet): "id 4 ... " in MSH 2, or "id n1 n2 n3 n4" in a type-4 MSH 4.1 block.
+    let inEl = false, inTet = false, done = false;
+    for (let i = 0; i < lines.length && !done; i++) {
+      const l = lines[i].trim();
+      if (l === "$Elements") { inEl = true; continue; }
+      if (!inEl) continue;
+      const hdr = l.split(/\s+/);
+      if (hdr.length === 4 && hdr[2] === "4" && Number(hdr[3]) > 0) { inTet = true; continue; }
+      if (inTet) {
+        const f = l.split(/\s+/);
+        if (f.length === 5) { lines[i] = [f[0], f[1], f[3], f[2], f[4]].join(" "); done = true; }
+      }
+    }
+    assert(done, "check_tetrahedra control: found a tet line to flip in the octreemesh .msh");
+    fs.writeFileSync(tetBadMsh, lines.join("\n"));
+  }
+  const tetBad = await call("check_tetrahedra", { path: tetBadMsh });
+  assert(tetBad.supported === true && tetBad.numInverted === 1 && tetBad.valid === false, `...and the control with one tet's nodes swapped has exactly 1 inverted tet (got ${JSON.stringify({ i: tetBad.numInverted, v: tetBad.valid })})`);
+  const tetBrep = await call("check_tetrahedra", { path: octreeBlock });
+  assert(tetBrep.supported === false, "check_tetrahedra declines a B-rep source (export a mesh first)");
   const confBrep = await call("check_mesh_conformity", { path: octreeBlock });
   assert(confBrep.supported === false, "check_mesh_conformity declines a B-rep source (export a mesh first)");
   // meshio++ 18 surface analyses over the 10 mm cube (examples/STL/cube.stl, spans -5..5): analytic answers.

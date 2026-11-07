@@ -1912,6 +1912,57 @@ export async function checkMeshConformity(
   }
 }
 
+/** Facts `checkTetrahedra` reports (meshio++ 19.0). */
+export interface TetrahedraCheckFacts {
+  numTetrahedra: number;
+  numInverted: number;
+  numDegenerate: number;
+  /** Face-sharing tetrahedron pairs whose opposite nodes lie on the same side. */
+  numOverlaps: number;
+  minVolume: number;
+  maxVolume: number;
+  valid: boolean;
+  warnings: string[];
+}
+
+/**
+ * meshio++ `checkTetrahedra` over a meshio-readable source: inverted,
+ * degenerate and overlapping tetrahedra, facts only (the mesh is not changed).
+ */
+export async function checkTetrahedra(
+  sourceBytes: Uint8Array,
+  meshioFormat: string,
+  sourceName?: string,
+  companions?: readonly MeshioCompanion[],
+  options?: { zeroVolumeFactor?: number } | null
+): Promise<TetrahedraCheckFacts> {
+  const m = await getMeshio();
+  let allPaths: string[] = [];
+  try {
+    const staged = stageMeshioSource(m, sourceBytes, meshioFormat, sourceName, companions);
+    allPaths = staged.allPaths;
+    const mesh = m.readMesh(staged.primaryPath, meshioFormat);
+    // `undefined` crosses the kernel IPC as `null`: pass the options object only when a factor is set.
+    const f = options?.zeroVolumeFactor;
+    const r = (f !== undefined && f !== null ? m.checkTetrahedra(mesh, { zeroVolumeFactor: f }) : m.checkTetrahedra(mesh)) as unknown as Record<string, unknown>;
+    const n = (k: string): number => Number(r[k] ?? 0);
+    return {
+      numTetrahedra: n("numTetrahedra"),
+      numInverted: n("numInverted"),
+      numDegenerate: n("numDegenerate"),
+      numOverlaps: n("numOverlaps"),
+      minVolume: n("minVolume"),
+      maxVolume: n("maxVolume"),
+      valid: r.valid === true,
+      warnings: Array.isArray(r.warnings) ? (r.warnings as unknown[]).map(String) : [],
+    };
+  } catch (err) {
+    throw wrapMeshioFault(err);
+  } finally {
+    unstageMeshioSource(m, allPaths);
+  }
+}
+
 /**
  * meshio++ 18.0 surface analyses over a triangle surface given as STL bytes
  * (the same boundary every mesh-format source already funnels through).
