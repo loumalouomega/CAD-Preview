@@ -6,6 +6,14 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/); thi
 
 ## [Unreleased]
 
+### Changed
+
+- **meshio++ upgraded to 19.0.0.** Upstream flips `modelTolerances` and `virtualFaces` to default **on** for `meshCadSurface`; `mesh_cad_surface` and the `meshcad` engine follow the new defaults (an explicit `false` still opts out; `block.stp` at size 1 stays 252 triangles). The `octreemesh` tet result now carries the 19.0 volume-fix counters as `octreeMesh.volumeFix` and the panel status line mentions repairs and overlaps.
+
+### Added
+
+- **`check_tetrahedra` MCP tool** (meshio++ `checkTetrahedra`): inverted, degenerate and overlapping tetrahedra and the signed-volume extremes of a meshio++-readable mesh, facts only (`zeroVolumeFactor` optional).
+
 ## [3.40.0] - 2026-11-06
 
 ### Added

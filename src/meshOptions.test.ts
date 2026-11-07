@@ -678,6 +678,12 @@ describe("octree-mesh options", () => {
     expect(octreeMeshSummary(tet)).toBe(
       "Octree-mesh tet: 44832 tet · min Jacobian 0.24 · dihedral 35.3°–125.3° · features 10/12 · 0 inverted · Parts not preserved"
     );
+    const fixed = octreeMeshSummary({
+      ...tet,
+      volumeFix: { numGapsFilled: 3, numGapsSkipped: 0, numCollapsed: 1, numReordered: 0, numOverlaps: 2, numCapsRemoved: 0, numSplit: 0, numSlivers: 0, numUntangled: 0 },
+    });
+    expect(fixed).toContain("· volume fix 4 · 2 overlapping ·");
+    expect(octreeMeshSummary(tet)).not.toContain("volume fix");
     const hex = octreeMeshSummary({ ...tet, output: "hex", numTetrahedra: 0, numHexahedra: 7776, numFeatureChains: 0, numFeatureChainsMissed: 0 });
     expect(hex).toBe("Octree-mesh hex: 7776 hex · min Jacobian 0.24 · 0 inverted · Parts not preserved");
   });

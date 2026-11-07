@@ -117,6 +117,21 @@ export async function octreeMeshVolume(stlBytes: Uint8Array, params: OctreeMeshP
         numFeatureChains: r.numFeatureChains,
         numFeatureChainsMissed: r.numFeatureChainsMissed,
         numWarpRefused: r.numWarpRefused,
+        ...(params.output === "tet"
+          ? {
+              volumeFix: {
+                numGapsFilled: r.numGapsFilled ?? 0,
+                numGapsSkipped: r.numGapsSkipped ?? 0,
+                numCollapsed: r.numCollapsed ?? 0,
+                numReordered: r.numReordered ?? 0,
+                numOverlaps: r.numOverlaps ?? 0,
+                numCapsRemoved: r.numCapsRemoved ?? 0,
+                numSplit: r.numSplit ?? 0,
+                numSlivers: r.numSlivers ?? 0,
+                numUntangled: r.numUntangled ?? 0,
+              },
+            }
+          : {}),
         warnings: [...r.warnings],
       },
     };

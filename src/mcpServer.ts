@@ -78,6 +78,7 @@ import {
   remeshMeshTool,
   inspectMeshioFieldsTool,
   checkMeshConformityTool,
+  checkTetrahedraTool,
   findMeshIntersectionsTool,
   measureMeshThicknessTool,
   selectMeshRegionTool,
@@ -924,6 +925,19 @@ server.registerTool(
 );
 
 server.registerTool(
+  "check_tetrahedra",
+  {
+    description:
+      "Facts about the tetrahedra of a meshio++-readable mesh file (meshio++ 19.0 checkTetrahedra): numTetrahedra (tetra + tetra10), numInverted (negative signed volume), numDegenerate (volume within the tolerance), numOverlaps (face-sharing pairs whose opposite nodes lie on the same side), minVolume/maxVolume and valid (none of the three defects). Facts only -- the agent decides whether the mesh is acceptable; a mesh without tetrahedra reports zeros and a warning. Read-only, raw file (pending edits are not baked); B-rep and mesh-parser sources return supported:false (export a mesh first).",
+    inputSchema: {
+      path: modelPath,
+      zeroVolumeFactor: z.number().optional().describe("A volume under this fraction of the longest edge cubed counts as zero (default 1e-6)"),
+    },
+  },
+  wrap((args: { path: string; zeroVolumeFactor?: number }) => checkTetrahedraTool(ctx, args))
+);
+
+server.registerTool(
   "find_mesh_intersections",
   {
     description:
@@ -1215,8 +1229,8 @@ server.registerTool(
       edgeSizes: z.record(z.string(), z.number()).optional().describe("The same per B-rep edge, {\"<edgeIndex>\": size}"),
       metric: z.enum(["mean", "varying"]).optional().describe("mean (default) meshes each face in its mean metric; varying follows its metric"),
       virtualEdges: z.boolean().optional().describe("Sample chains of short edges meeting smoothly as one (default false); the chains are reported"),
-      virtualFaces: z.boolean().optional().describe("Mesh a sliver face together with the neighbour it meets tangentially (default false); each sliver is reported in mergedFaces"),
-      modelTolerances: z.boolean().optional().describe("Accept the gaps the model itself declares in its edges (default false); each use is reported in toleranceUses"),
+      virtualFaces: z.boolean().optional().describe("Mesh a sliver face together with the neighbour it meets tangentially (default true since meshio++ 19.0); each sliver is reported in mergedFaces"),
+      modelTolerances: z.boolean().optional().describe("Accept the gaps the model itself declares in its edges (default true since meshio++ 19.0); each use is reported in toleranceUses"),
       reparamConditionNumber: z.number().optional().describe("Mesh a face whose metric's condition number passes this in a flattening of its coarse mesh; 0 (default) is off, otherwise above 1; at order 2 / 3 the curved nodes follow the flattening"),
       lopCorners: z.boolean().optional().describe("Lop acute corners in place of concentric shells (default false; needs minAngle). On bull.stp it left more refinement unfinished than the default -- check numFacesBelowBound and the warnings"),
       untangle: z.boolean().optional().describe("With order 2 or 3, move a face's own high-order nodes on the surface to untangle a folded curved element (default false)"),

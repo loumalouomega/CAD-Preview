@@ -79,6 +79,7 @@ export const KERNELS_BY_FUNCTION: Record<keyof DocumentPipeline, readonly Kernel
   readMeshioMetadata: M,
   checkMeshQuality: M,
   checkMeshConformity: M,
+  checkTetrahedra: M,
   analyzeSurfaceMesh: M,
   analyzeSurfaceGeometry: M,
   meshAdjacency: M,
