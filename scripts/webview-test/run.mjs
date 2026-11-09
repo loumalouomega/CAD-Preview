@@ -9751,7 +9751,7 @@ test("dock: the collapse control sits at the end of the bar, after the overflow 
     return { toggleLeft: toggle.left, moreRight: more.right, modesShowIcon: modes.some(Boolean), modeCount: modes.length };
   });
   assert(m.toggleLeft >= m.moreRight - 1, `the collapse control follows ⋯ (toggle left ${m.toggleLeft.toFixed(0)}, ⋯ right ${m.moreRight.toFixed(0)})`);
-  assert(m.modeCount === 6 && !m.modesShowIcon, "the display modes are text-only segments");
+  assert(m.modeCount === 7 && !m.modesShowIcon, "the display modes are text-only segments");
   await page.click("#vc-toggle");
   await sleep(80);
   const collapsedRendered = await page.evaluate(() => document.getElementById("vc-toggle").offsetParent !== null);
