@@ -802,6 +802,16 @@ function buildBrowserGroups(): BrowserGroup[] {
   });
 }
 
+/** Expands/collapses the Browser section (display only; the caller saves). */
+function setBrowserOpen(open: boolean): void {
+  const el = document.getElementById("browser-panel");
+  if (!el) return;
+  el.classList.toggle("collapsed", !open);
+  const chevron = el.querySelector(".panel-chevron");
+  chevron?.setAttribute("aria-expanded", String(open));
+  chevron?.setAttribute("title", open ? "Collapse section" : "Expand section");
+}
+
 function refreshBrowser(): void {
   if (!browserPanel) return;
   lastBrowserGroups = buildBrowserGroups();
@@ -5738,8 +5748,11 @@ try {
   const browserEl = document.getElementById("browser-panel");
   if (browserEl) {
     browserPanel = new BrowserPanel(browserEl, browserToggle, browserActivate);
-    browserEl.classList.add("visible");
     refreshBrowser();
+    browserEl.querySelector(".panel-chevron")?.addEventListener("click", () => {
+      setBrowserOpen(browserEl.classList.contains("collapsed"));
+      scheduleViewSave();
+    });
   }
   collapsiblePanels = setupCollapsiblePanels(scheduleViewSave);
   setupAdvancedGroupCount();
@@ -5895,6 +5908,7 @@ function applyViewState(state: ViewState): void {
   });
   // Docked form placement — silent restore (`setDocked` never fires the change callback).
   editsPanel.setDocked(state.formsDocked === true);
+  setBrowserOpen(state.browserOpen === true);
   // Restore, not echo: `setWidth` deliberately never fires the resizer's
   // `onChange`, so reopening a document can't rewrite the sidecar it just
   // read (the same contract `setCollapsed` keeps above). Clamping HERE too:
@@ -6138,6 +6152,7 @@ function scheduleViewSave(): void {
       if (ribbonState.editsGridOpen) view.editsGridOpen = true;
     }
     if (editsPanel.isDocked()) view.formsDocked = true;
+    if (document.getElementById("browser-panel")?.classList.contains("collapsed") === false) view.browserOpen = true;
     // The webview is the single writer of the bookmark list (save/rename/
     // replace/delete below mutate `viewBookmarks` in place); every view save
     // carries the current list, omitted when empty like every other additive

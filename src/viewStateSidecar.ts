@@ -32,6 +32,7 @@ interface SidecarFile {
   ribbonHidden?: unknown;
   editsGridOpen?: unknown;
   formsDocked?: unknown;
+  browserOpen?: unknown;
 }
 
 const CLIP_AXES: readonly ClipAxis[] = ["x", "y", "z"];
@@ -125,6 +126,7 @@ export function parseViewStateJson(text: string): ViewState | null {
   if (typeof file?.ribbonHidden === "boolean") base.ribbonHidden = file.ribbonHidden;
   if (file?.editsGridOpen === true) base.editsGridOpen = true;
   if (file?.formsDocked === true) base.formsDocked = true;
+  if (file?.browserOpen === true) base.browserOpen = true;
 
   // Optional split-view layout — purely additive, tolerant.
   const rawLayout = file?.layout;
@@ -236,8 +238,8 @@ export function sanitizeBookmarks(raw: unknown): ViewBookmark[] {
 
 /** Serializes view state to the sidecar JSON text (pretty-printed, trailing newline). */
 export function serializeViewStateJson(sourceName: string, view: ViewState): string {
-  const { layout, panes, collapsedPanels, zebra, sidebarWidth, bookmarks, ribbonTab, ribbonCompact, ribbonHidden, editsGridOpen, formsDocked, ...viewCore } = view;
-  const file: SidecarFile & { view: Omit<ViewState, "layout" | "panes" | "collapsedPanels" | "zebra" | "sidebarWidth" | "bookmarks" | "ribbonTab" | "ribbonCompact" | "ribbonHidden" | "editsGridOpen" | "formsDocked"> } = {
+  const { layout, panes, collapsedPanels, zebra, sidebarWidth, bookmarks, ribbonTab, ribbonCompact, ribbonHidden, editsGridOpen, formsDocked, browserOpen, ...viewCore } = view;
+  const file: SidecarFile & { view: Omit<ViewState, "layout" | "panes" | "collapsedPanels" | "zebra" | "sidebarWidth" | "bookmarks" | "ribbonTab" | "ribbonCompact" | "ribbonHidden" | "editsGridOpen" | "formsDocked" | "browserOpen"> } = {
     version: VIEW_STATE_SIDECAR_VERSION,
     source: sourceName,
     view: viewCore,
@@ -271,5 +273,6 @@ export function serializeViewStateJson(sourceName: string, view: ViewState): str
   if (typeof ribbonHidden === "boolean") (file as SidecarFile).ribbonHidden = ribbonHidden;
   if (editsGridOpen === true) (file as SidecarFile).editsGridOpen = true;
   if (formsDocked === true) (file as SidecarFile).formsDocked = true;
+  if (browserOpen === true) (file as SidecarFile).browserOpen = true;
   return JSON.stringify(file, null, 2) + "\n";
 }

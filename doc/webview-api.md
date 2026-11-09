@@ -181,7 +181,7 @@ Returns `true` if the root has more than one child (or any grandchild). The tree
 Collapses any sidebar section down to just its header, so the interface can be reduced to the panels actually in use. State persists per document in `<model>.view.json` (`ViewState.collapsedPanels`).
 
 ```typescript
-const COLLAPSIBLE_PANELS: readonly { panel: string; header: string }[]   // the collapsible sections, in #side order (Browser first)
+const COLLAPSIBLE_PANELS: readonly { panel: string; header: string }[]   // the twelve sections, in #side order
 const ADVANCED_CHILDREN: readonly string[]                               // the seven the Advanced group wraps
 
 function sanitizeCollapsedPanels(ids: unknown): string[]

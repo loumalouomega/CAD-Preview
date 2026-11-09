@@ -410,3 +410,16 @@ describe("view-state: zebra stripe settings", () => {
     expect(parseViewStateJson(dflt)?.zebra).toBeUndefined();
   });
 });
+
+describe("view-state: Browser section open flag", () => {
+  it("round-trips true as a top-level sibling and omits the collapsed default", () => {
+    const text = serializeViewStateJson("a.stp", { ...validView, browserOpen: true });
+    const file = JSON.parse(text);
+    expect(file.browserOpen).toBe(true);
+    expect(file.view.browserOpen).toBeUndefined();
+    expect(parseViewStateJson(text)?.browserOpen).toBe(true);
+    expect(JSON.parse(serializeViewStateJson("a.stp", validView)).browserOpen).toBeUndefined();
+    const bad = JSON.stringify({ version: VIEW_STATE_SIDECAR_VERSION, source: "a.stp", view: validView, browserOpen: "yes" });
+    expect(parseViewStateJson(bad)?.browserOpen).toBeUndefined();
+  });
+});

@@ -135,7 +135,7 @@ Opening a STEP/IGES/BREP/CSG/SCAD file for the first time (or reopening one afte
 
 ### The Advanced Group
 
-Every section header reads chevron · icon · title, so a collapsed sidebar is still scannable by icon. The sidebar's top level holds only the sections that **edit** the document — Browser, Components, Parts, Layers, Edits, Customizer (`.scad` sources only), FE Mesh. Everything that only *reports* on it, or pulls from a library, lives under a single collapsible **Advanced** group at the bottom:
+Every section header reads chevron · icon · title, so a collapsed sidebar is still scannable by icon. The sidebar's top level holds only the sections that **edit** the document — Components, Parts, Layers, Edits, Customizer (`.scad` sources only), FE Mesh. Everything that only *reports* on it, or pulls from a library, lives under a single collapsible **Advanced** group at the bottom:
 
 | Advanced ▸ | Sections |
 | --- | --- |
@@ -482,7 +482,7 @@ The **Browser** section at the top of the sidebar is one tree over everything th
 | **Features** | the edit history, baked rows marked | eye suppresses/unsuppresses the op (not available inside the saved prefix) |
 | **Parts**, **Layers** | each Part / layer with its colour | eye hides/shows it (same as the panel) |
 
-A group's own eye drives all of its rows to one state. **Expand all** / **Collapse all** and the search field in the header work across the whole tree; filtering expands the groups so matches are visible. Only **Bodies** opens by default, to leave the sidebar room. Which groups are expanded is not saved. Not shown yet: tessellation quality in the Document group, per-axis or per-plane visibility, and individual sketch rows.
+A group's own eye drives all of its rows to one state. **Expand all** / **Collapse all** and the search field in the header work across the whole tree; filtering expands the groups so matches are visible. The section itself **starts collapsed** (the sidebar column is already full): click its chevron to open it. Whether it is open is saved in the view sidecar; which of its groups are expanded is not (only **Bodies** is open by default). Not shown yet: tessellation quality in the Document group, per-axis or per-plane visibility, and individual sketch rows.
 
 For multi-solid STEP/IGES assemblies or glTF scenes with multiple meshes, the component tree panel shows the model hierarchy. Click any row to highlight that solid/mesh in the 3D view (all others are dimmed). Click the same row again or click an empty area to deselect.
 

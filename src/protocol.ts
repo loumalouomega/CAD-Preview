@@ -384,6 +384,11 @@ export interface ViewState {
    * in the panel. A display preference — no MCP surface.
    */
   formsDocked?: boolean;
+  /**
+   * The sidebar Browser section is expanded. It starts collapsed, so this is
+   * written only when `true`; a display preference — no MCP surface.
+   */
+  browserOpen?: boolean;
 }
 
 /** One saved meshing preset, as the FE Mesh panel lists it. A preset's own

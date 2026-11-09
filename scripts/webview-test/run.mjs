@@ -7897,11 +7897,23 @@ test("zebra: stripes run unbroken across a tangent seam and jump across a crease
 
 // ── Browser (unified view over the existing models) ────────────────────────
 
+const openBrowser = (page) => page.evaluate(() => { const el = document.getElementById("browser-panel"); if (el.classList.contains("collapsed")) el.querySelector(".panel-chevron").click(); });
 const browserGroups = (page) => page.evaluate(() => [...document.querySelectorAll("#browser-body .browser-group")].map((g) => g.dataset.group));
 const browserRowIds = (page) => page.evaluate(() => [...document.querySelectorAll("#browser-body .browser-row")].map((r) => r.dataset.id));
 
+test("browser: the section starts collapsed so the full sidebar column is unchanged", async (page) => {
+  await populate(page);
+  assert(await page.evaluate(() => document.getElementById("browser-panel").classList.contains("collapsed")), "collapsed by default");
+  assert(await page.evaluate(() => document.getElementById("browser-body").offsetParent === null), "its body is not rendered while collapsed");
+});
+
 test("browser: eight groups render from the existing models, and Expand/Collapse All and the filter work", async (page) => {
   await populate(page);
+  await openBrowser(page);
+  assert(await page.evaluate(() => document.getElementById("browser-panel").classList.contains("collapsed")) === false, "the chevron opens the Browser");
+  await sleep(900);
+  const opened = (await sentOf(page, "viewChanged")).at(-1);
+  assert(opened?.view?.browserOpen === true, `opening the Browser persists browserOpen (got ${JSON.stringify(opened?.view?.browserOpen)})`);
   await post(page, {
     type: "layers",
     nextId: 2,
@@ -7934,6 +7946,7 @@ test("browser: eight groups render from the existing models, and Expand/Collapse
 
 test("browser: hiding a body from the Browser hides it in the viewport and the Components tree reflects it", async (page) => {
   await populate(page);
+  await openBrowser(page);
   const treeLeafHidden = () => page.evaluate(() => {
     const eyes = [...document.querySelectorAll("#tree-body .tree-eye")];
     const leaf = eyes.find((e) => /component/i.test(e.getAttribute("title") ?? ""));
@@ -7954,6 +7967,7 @@ test("browser: hiding a body from the Browser hides it in the viewport and the C
 
 test("browser: a layer eye posts layersChanged like the Layers panel, and a feature eye suppresses the op", async (page) => {
   await populate(page);
+  await openBrowser(page);
   await post(page, {
     type: "layers",
     nextId: 1,
@@ -7976,6 +7990,7 @@ test("browser: a layer eye posts layersChanged like the Layers panel, and a feat
 
 test("browser: restoring a named view from the Browser lands on the same camera as View ▾", async (page) => {
   await populate(page);
+  await openBrowser(page);
   const bm = (name, d) => ({ name, viewDirection: d, cameraUp: [0, 1, 0], orthographic: false, displayMode: "shaded", clip: null });
   await postBookmarks(page, [bm("A", [0, 0, 1]), bm("B", [1, 0, 0])]);
   await page.evaluate(() => document.getElementById("browser-expand-all").click());
