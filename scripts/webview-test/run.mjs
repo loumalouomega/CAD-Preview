@@ -7897,20 +7897,23 @@ test("zebra: stripes run unbroken across a tangent seam and jump across a crease
 
 // ── Browser (unified view over the existing models) ────────────────────────
 
-const openBrowser = (page) => page.evaluate(() => { const el = document.getElementById("browser-panel"); if (el.classList.contains("collapsed")) el.querySelector(".panel-chevron").click(); });
+const openBrowser = (page) => page.evaluate(() => { if (document.getElementById("browser-panel").hidden) document.getElementById("browser-toggle").click(); });
 const browserGroups = (page) => page.evaluate(() => [...document.querySelectorAll("#browser-body .browser-group")].map((g) => g.dataset.group));
 const browserRowIds = (page) => page.evaluate(() => [...document.querySelectorAll("#browser-body .browser-row")].map((r) => r.dataset.id));
 
-test("browser: the section starts collapsed so the full sidebar column is unchanged", async (page) => {
+test("browser: the section starts hidden and takes no layout until View ▸ Browser turns it on", async (page) => {
   await populate(page);
-  assert(await page.evaluate(() => document.getElementById("browser-panel").classList.contains("collapsed")), "collapsed by default");
-  assert(await page.evaluate(() => document.getElementById("browser-body").offsetParent === null), "its body is not rendered while collapsed");
+  assert(await page.evaluate(() => document.getElementById("browser-panel").offsetParent === null), "hidden by default (not rendered)");
+  assert(await page.evaluate(() => document.getElementById("browser-toggle").getAttribute("aria-checked")) === "false", "the menu item is unchecked");
+  await openBrowser(page);
+  assert(await page.evaluate(() => document.getElementById("browser-panel").offsetParent !== null), "the menu item shows it");
+  assert(await page.evaluate(() => document.getElementById("browser-toggle").getAttribute("aria-checked")) === "true", "and checks the item");
 });
 
 test("browser: eight groups render from the existing models, and Expand/Collapse All and the filter work", async (page) => {
   await populate(page);
   await openBrowser(page);
-  assert(await page.evaluate(() => document.getElementById("browser-panel").classList.contains("collapsed")) === false, "the chevron opens the Browser");
+  assert(await page.evaluate(() => document.getElementById("browser-panel").hidden) === false, "the View menu item opens the Browser");
   await sleep(900);
   const opened = (await sentOf(page, "viewChanged")).at(-1);
   assert(opened?.view?.browserOpen === true, `opening the Browser persists browserOpen (got ${JSON.stringify(opened?.view?.browserOpen)})`);

@@ -157,7 +157,7 @@ interface ViewState {
   orthographic: boolean                      // focused/single-pane projection
   displayMode: DisplayMode                   // global — one value for the whole document
   zebra?: { count: number; axis: "x"|"y"|"z" } // additive; omitted at the default (8, "y")
-  browserOpen?: boolean                      // additive; written only when the Browser section is expanded
+  browserOpen?: boolean                      // additive; written only when the Browser section is shown
   clip: ClipPlaneState | null                // global — null = clipping off
   layout?: PaneLayoutId                      // split-view layout; absent/"1x1" = single pane (Phase 2)
   panes?: PaneViewState[]                    // one per pane of `layout`, row-major; absent = single pane

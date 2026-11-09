@@ -5905,15 +5905,10 @@ body.ribbon-compact #ribbon .ribbon-more-item .ribbon-label {
 #browser-panel[hidden] {
   display: none;
 }
-/* Not a `.side-section`: the Browser starts collapsed (the sidebar column is
- * already full) and its open state is its own `ViewState.browserOpen` flag,
- * not an entry in `collapsedPanels`, whose absence means "all expanded". */
-#browser-panel.collapsed > :not(.panel-header) {
-  display: none;
-}
-#browser-panel.collapsed {
-  flex: 0 0 auto;
-}
+/* Not a `.side-section`: the Browser is hidden until View ▾ ▸ Browser turns it
+ * on (the sidebar column is already full, so even a collapsed header costs
+ * layout other cases depend on). Its state is its own `ViewState.browserOpen`
+ * flag, not an entry in `collapsedPanels`, whose absence means "all expanded". */
 #browser-body {
   flex: 1 1 auto;
   overflow-y: auto;

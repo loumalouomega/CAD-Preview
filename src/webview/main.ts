@@ -802,14 +802,12 @@ function buildBrowserGroups(): BrowserGroup[] {
   });
 }
 
-/** Expands/collapses the Browser section (display only; the caller saves). */
+/** Shows/hides the Browser section (display only; the caller saves). */
 function setBrowserOpen(open: boolean): void {
   const el = document.getElementById("browser-panel");
   if (!el) return;
-  el.classList.toggle("collapsed", !open);
-  const chevron = el.querySelector(".panel-chevron");
-  chevron?.setAttribute("aria-expanded", String(open));
-  chevron?.setAttribute("title", open ? "Collapse section" : "Expand section");
+  el.hidden = !open;
+  document.getElementById("browser-toggle")?.setAttribute("aria-checked", String(open));
 }
 
 function refreshBrowser(): void {
@@ -5749,8 +5747,8 @@ try {
   if (browserEl) {
     browserPanel = new BrowserPanel(browserEl, browserToggle, browserActivate);
     refreshBrowser();
-    browserEl.querySelector(".panel-chevron")?.addEventListener("click", () => {
-      setBrowserOpen(browserEl.classList.contains("collapsed"));
+    document.getElementById("browser-toggle")?.addEventListener("click", () => {
+      setBrowserOpen(browserEl.hidden);
       scheduleViewSave();
     });
   }
@@ -6152,7 +6150,7 @@ function scheduleViewSave(): void {
       if (ribbonState.editsGridOpen) view.editsGridOpen = true;
     }
     if (editsPanel.isDocked()) view.formsDocked = true;
-    if (document.getElementById("browser-panel")?.classList.contains("collapsed") === false) view.browserOpen = true;
+    if (document.getElementById("browser-panel")?.hidden === false) view.browserOpen = true;
     // The webview is the single writer of the bookmark list (save/rename/
     // replace/delete below mutate `viewBookmarks` in place); every view save
     // carries the current list, omitted when empty like every other additive

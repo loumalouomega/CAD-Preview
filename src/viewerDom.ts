@@ -76,9 +76,8 @@ export function viewerBodyHtml(): string {
   </div>
   <div id="layout">
     <div id="side">
-      <div id="browser-panel" class="browser-section collapsed">
+      <div id="browser-panel" class="browser-section" hidden>
         <div id="browser-header" class="panel-header">
-          <button class="panel-chevron" type="button" aria-expanded="false" title="Expand section">${glyph("chevronDown")}</button>
           <span class="panel-icon" aria-hidden="true">${glyph("folder")}</span>
           <span id="browser-title" class="panel-title">Browser</span>
           <input id="browser-filter" type="search" placeholder="Filter…" title="Filter the Browser by name" hidden>
@@ -495,6 +494,7 @@ export function viewerBodyHtml(): string {
     <div class="tb-menu-wrap">
       <button id="view-menu" class="tb-menu" title="View options" aria-haspopup="true" aria-expanded="false">${glyph("eye")} View ${glyph("chevronDown")}</button>
       <div id="view-dropdown" class="tb-dropdown hidden" role="menu">
+        <button id="browser-toggle" role="menuitemcheckbox" aria-checked="false" title="Show the Browser in the sidebar: one tree over bodies, features, Parts, layers, named views and construction planes">${glyph("folder")} Browser</button>
         <button id="grid" role="menuitemcheckbox" aria-checked="false" title="Toggle the grid and axis helpers">${icon("grid")} Grid</button>
         <button id="edges" role="menuitemcheckbox" aria-checked="true" title="Toggle edge visibility">${icon("edges")} Edges</button>
         <button id="hide-smooth-edges" role="menuitemcheckbox" aria-checked="false" title="Hide tangent patch-seam edges (e.g. between adjacent NURBS patches of one curved surface), keeping genuine feature edges">${icon("edges")} Hide smooth edges</button>

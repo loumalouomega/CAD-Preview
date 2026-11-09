@@ -385,7 +385,7 @@ export interface ViewState {
    */
   formsDocked?: boolean;
   /**
-   * The sidebar Browser section is expanded. It starts collapsed, so this is
+   * The sidebar Browser section is shown (View ▾ ▸ Browser). It starts hidden, so this is
    * written only when `true`; a display preference — no MCP surface.
    */
   browserOpen?: boolean;

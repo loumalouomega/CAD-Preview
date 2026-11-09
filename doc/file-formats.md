@@ -557,7 +557,7 @@ The persisted **camera orientation, display mode, ortho/perspective toggle, and 
 
 `collapsedPanels` is a third such optional top-level sibling: the sidebar sections currently collapsed to just their header, by panel id. Valid ids come only from `COLLAPSIBLE_PANELS` (`src/webview/collapsiblePanels.ts`), and a hand-edited or newer-build list is filtered against it on read, so an unknown id is dropped rather than reaching some other element. Absent or empty (the default) means every section is expanded, so an older sidecar restores exactly as before and an untouched one stays byte-stable — again purely additive, no version bump.
 
-`browserOpen` is another optional top-level sibling: `true` when the sidebar Browser section is expanded. It starts collapsed, so only `true` is ever written (additive, no version bump, no MCP surface); it is deliberately not part of `collapsedPanels`, whose absence means "every section expanded".
+`browserOpen` is another optional top-level sibling: `true` when the sidebar Browser section is shown (View ▾ ▸ Browser). It starts hidden, so only `true` is ever written (additive, no version bump, no MCP surface); it is deliberately not part of `collapsedPanels`, whose absence means "every section expanded".
 
 `zebra` is another optional top-level sibling: the Zebra display mode's stripe settings, `{ "count": 2..40, "axis": "x"|"y"|"z" }`. Read through `parseZebra` (count rounded and clamped, anything malformed means "unpersisted"); the default (8 stripes, `"y"`) writes nothing, so an untouched sidecar stays byte-stable — additive, no version bump, no MCP surface.
 
