@@ -59,7 +59,7 @@ export function resolveSnapshotDisplay(
       out.displayMode = displayMode;
       if (displayMode === "wireframe") out.wireframe = true;
     } else {
-      warnings.push(`displayMode ${JSON.stringify(displayMode)} is not one of shaded/wireframe/xray/hiddenLines/flat — rendering shaded instead.`);
+      warnings.push(`displayMode ${JSON.stringify(displayMode)} is not one of shaded/wireframe/xray/hiddenLines/flat/zebra — rendering shaded instead.`);
     }
   }
 

@@ -7763,6 +7763,264 @@ test("mass properties: Show centre of mass in view draws a marker at the centroi
   assert(left < drawn / 4, `unticking removes it (before ${drawn}, after ${left})`);
 });
 
+test("zebra: the mode draws reflection stripes that follow the count and axis controls, persists only non-defaults, and restores shaded", async (page) => {
+  await post(page, fixture("tutorial-bracket-done-geometry"));
+  await post(page, { type: "viewState", view: null });
+  await sleep(900);
+  const grab = async () => {
+    await setPanelHidden(page, true);
+    const shot = (await shotWithoutToast(page, () => page.locator("#app").screenshot())).toString("base64");
+    await setPanelHidden(page, false);
+    return shot;
+  };
+  // Pixels that differ, and the number of near-black / bright model pixels
+  // (stripes are a two-level pattern: lit colour vs the 0.12-darkened colour).
+  const stats = (a, b) => page.evaluate(async ([x, y]) => {
+    const px = async (b64) => {
+      const bmp = await createImageBitmap(await (await fetch(`data:image/png;base64,${b64}`)).blob());
+      const c = document.createElement("canvas");
+      c.width = bmp.width; c.height = bmp.height;
+      c.getContext("2d").drawImage(bmp, 0, 0);
+      return c.getContext("2d").getImageData(0, 0, c.width, c.height).data;
+    };
+    const [A, B] = [await px(x), await px(y)];
+    let diff = 0, dark = 0, light = 0;
+    for (let i = 0; i < A.length; i += 4) {
+      if (Math.abs(A[i] - B[i]) + Math.abs(A[i + 1] - B[i + 1]) + Math.abs(A[i + 2] - B[i + 2]) > 30) diff++;
+      const l = (B[i] + B[i + 1] + B[i + 2]) / 3;
+      if (l < 25) dark++; else if (l > 110) light++;
+    }
+    return { diff, dark, light };
+  }, [a, b]);
+  const shaded = await grab();
+  assert(await page.evaluate(() => document.getElementById("vc-zebra-group").hidden), "the stripe controls are hidden outside zebra mode");
+  await page.click('.display-mode-btn[data-mode="zebra"]');
+  await sleep(400);
+  assert(await page.evaluate(() => { const g = document.getElementById("vc-zebra-group"); return g.hidden; }) === false, "zebra mode reveals the stripe controls");
+  const zebra = await grab();
+  const s1 = await stats(shaded, zebra);
+  assert(s1.diff > 5000, `zebra mode repaints the model (differing pixels ${s1.diff})`);
+  assert(s1.light > 5000 && s1.dark > 5000, `the image is a two-level stripe pattern (light ${s1.light}, dark ${s1.dark})`);
+  // Count control: a different stripe count must change the pattern.
+  await page.evaluate(() => { const r = document.getElementById("vc-zebra-count"); r.value = "20"; r.dispatchEvent(new Event("input", { bubbles: true })); });
+  await sleep(300);
+  const dense = await grab();
+  assert((await stats(zebra, dense)).diff > 3000, "changing the stripe count changes the stripes");
+  // Axis control.
+  await page.evaluate(() => { const r = document.getElementById("vc-zebra-axis"); r.value = "x"; r.dispatchEvent(new Event("input", { bubbles: true })); });
+  await sleep(300);
+  const alongX = await grab();
+  assert((await stats(dense, alongX)).diff > 3000, "changing the stripe axis changes the stripes");
+  // Persistence: non-default settings ride viewChanged; defaults leave the field out.
+  await sleep(900);
+  const views = await sentOf(page, "viewChanged");
+  const last = views[views.length - 1].view;
+  assert(last.displayMode === "zebra" && last.zebra && last.zebra.count === 20 && last.zebra.axis === "x", `viewChanged carries the zebra settings (${JSON.stringify(last.zebra)})`);
+  await page.evaluate(() => {
+    const r = document.getElementById("vc-zebra-count"); r.value = "8"; r.dispatchEvent(new Event("input", { bubbles: true }));
+    const a = document.getElementById("vc-zebra-axis"); a.value = "y"; a.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  await sleep(900);
+  const views2 = await sentOf(page, "viewChanged");
+  assert(views2[views2.length - 1].view.zebra === undefined, "default settings are omitted from the saved view");
+  // Back to shaded restores the original image and hides the controls again.
+  await page.click('.display-mode-btn[data-mode="shaded"]');
+  await sleep(400);
+  const back = await grab();
+  assert((await stats(shaded, back)).diff < 200, "returning to Shaded restores the original pixels");
+  assert(await page.evaluate(() => document.getElementById("vc-zebra-group").hidden), "the stripe controls hide again");
+});
+
+test("zebra: stripes run unbroken across a tangent seam and jump across a crease", async (page) => {
+  const R = 10, N = 12, deg = Math.PI / 180;
+  const b64 = (arr) => Buffer.from(arr.buffer, arr.byteOffset, arr.byteLength).toString("base64");
+  // A strip along Z whose cross-section is the polyline `pts` (x, y), one
+  // face per consecutive run; winding gives the outward normal (sin φ, -cos φ).
+  const strip = (pts) => {
+    const pos = [], idx = [];
+    pts.forEach(([x, y], i) => { pos.push(x, y, 0, x, y, 20); });
+    for (let i = 0; i < pts.length - 1; i++) {
+      const a = 2 * i, b = a + 1, c = a + 2, d = a + 3;
+      idx.push(a, c, b, b, c, d);
+    }
+    return { positions: b64(new Float32Array(pos)), indices: b64(new Uint32Array(idx)) };
+  };
+  const arcPts = (a0, a1) => Array.from({ length: N + 1 }, (_, i) => {
+    const phi = a0 + ((a1 - a0) * i) / N;
+    return [R * Math.sin(phi), -R * Math.cos(phi)];
+  });
+  const linePts = (phi, from, to) => [[from * Math.cos(phi), from * Math.sin(phi)], [to * Math.cos(phi), to * Math.sin(phi)]];
+  const load = async (faces, count) => {
+    await post(page, { type: "geometry", meshes: faces.map((f, k) => ({ ...strip(f), groupId: "solid-0", faceId: `face-${k}` })), edges: [], points: [] });
+    await post(page, { type: "viewState", view: { viewDirection: [0, -1, 0], cameraUp: [0, 0, 1], orthographic: true, displayMode: "zebra", clip: null, zebra: { count, axis: "x" } } });
+    await sleep(700);
+    await setPanelHidden(page, true);
+    const shot = (await shotWithoutToast(page, () => page.locator("#app").screenshot())).toString("base64");
+    await setPanelHidden(page, false);
+    return shot;
+  };
+  // One luminance row through the model middle: model span + values.
+  const row = (b64png) => page.evaluate(async (b64) => {
+    const bmp = await createImageBitmap(await (await fetch(`data:image/png;base64,${b64}`)).blob());
+    const c = document.createElement("canvas");
+    c.width = bmp.width; c.height = bmp.height;
+    const g = c.getContext("2d");
+    g.drawImage(bmp, 0, 0);
+    const y = Math.round(bmp.height * 0.45);
+    const d = g.getImageData(0, y, bmp.width, 1).data;
+    const lum = []; for (let i = 0; i < bmp.width; i++) lum.push((d[i * 4] + d[i * 4 + 1] + d[i * 4 + 2]) / 3);
+    return lum;
+  }, b64png);
+  const span = (lum) => {
+    const bg = lum[40]; // empty scene background, left of the model
+    const on = lum.map((v, i) => [v, i]).filter(([v, i]) => i > 60 && Math.abs(v - bg) > 6).map(([, i]) => i);
+    return [on[0], on[on.length - 1]];
+  };
+  // Smooth: two faces of ONE cylinder arc split at φ = 0, where the stripe
+  // function is neutral, so the seam sits inside a stripe. Equal widths put the
+  // seam on the model's centre column.
+  const stepAtSeam = (lum) => {
+    const [l, r] = span(lum);
+    const c = Math.round((l + r) / 2);
+    return { c, left: lum[c - 4], right: lum[c + 4], w: r - l };
+  };
+  const smooth = stepAtSeam(await row(await load([arcPts(-40 * deg, 0), arcPts(0, 40 * deg)], 6)));
+  assert(smooth.w > 150, `the smooth strip renders (width ${smooth.w}px)`);
+  assert(Math.abs(smooth.left - smooth.right) <= 3, `stripes continue across the tangent seam (left ${smooth.left}, right ${smooth.right})`);
+  // Crease: two planar faces (normals -10° and +50°) meeting at x = 0, equal
+  // projected widths. Same seam column, but the reflection jumps there.
+  const w = 10;
+  const crease = stepAtSeam(await row(await load([linePts(-10 * deg, -w / Math.cos(10 * deg), 0), linePts(50 * deg, 0, w / Math.cos(50 * deg))], 5)));
+  assert(crease.w > 150, `the creased strip renders (width ${crease.w}px)`);
+  assert(Math.abs(crease.left - crease.right) >= 15, `stripes break across the sharp crease (left ${crease.left}, right ${crease.right})`);
+});
+
+// ── Browser (unified view over the existing models) ────────────────────────
+
+const openBrowser = (page) => page.evaluate(() => { if (document.getElementById("browser-panel").hidden) document.getElementById("browser-toggle").click(); });
+const browserGroups = (page) => page.evaluate(() => [...document.querySelectorAll("#browser-body .browser-group")].map((g) => g.dataset.group));
+const browserRowIds = (page) => page.evaluate(() => [...document.querySelectorAll("#browser-body .browser-row")].map((r) => r.dataset.id));
+
+test("browser: the section starts hidden and takes no layout until View ▸ Browser turns it on", async (page) => {
+  await populate(page);
+  assert(await page.evaluate(() => document.getElementById("browser-panel").offsetParent === null), "hidden by default (not rendered)");
+  assert(await page.evaluate(() => document.getElementById("browser-toggle").getAttribute("aria-checked")) === "false", "the menu item is unchecked");
+  await openBrowser(page);
+  assert(await page.evaluate(() => document.getElementById("browser-panel").offsetParent !== null), "the menu item shows it");
+  assert(await page.evaluate(() => document.getElementById("browser-toggle").getAttribute("aria-checked")) === "true", "and checks the item");
+});
+
+test("browser: eight groups render from the existing models, and Expand/Collapse All and the filter work", async (page) => {
+  await populate(page);
+  await openBrowser(page);
+  assert(await page.evaluate(() => document.getElementById("browser-panel").hidden) === false, "the View menu item opens the Browser");
+  await sleep(900);
+  const opened = (await sentOf(page, "viewChanged")).at(-1);
+  assert(opened?.view?.browserOpen === true, `opening the Browser persists browserOpen (got ${JSON.stringify(opened?.view?.browserOpen)})`);
+  await post(page, {
+    type: "layers",
+    nextId: 2,
+    layers: [
+      { id: "layer-0", name: "Default", color: "#b8b8b8", visible: true, locked: false, volumes: [], surfaces: [], lines: [], points: [] },
+      { id: "layer-1", name: "Dims", color: "#ff0000", visible: false, locked: false, volumes: [], surfaces: ["face-1"], lines: [], points: [] },
+    ],
+  });
+  await sleep(300);
+  assert((await browserRowIds(page)).every((id) => id.startsWith("body:")), "only Bodies is open by default");
+  await page.click("#browser-expand-all");
+  assert(eq(await browserGroups(page), ["document", "views", "origin", "bodies", "sketches", "features", "parts", "layers"]), "all eight groups render");
+  const ids = await browserRowIds(page);
+  assert(ids.includes("body:solid-0"), `Bodies lists the tree's solid (got ${JSON.stringify(ids)})`);
+  assert(ids.includes("layer:layer-1") && ids.includes("origin:grid"), "Layers and the Origin grid row render");
+  const dimsEye = await page.evaluate(() => document.querySelector('[data-id="layer:layer-1"] .tree-eye')?.classList.contains("hidden-off"));
+  assert(dimsEye === true, "a hidden layer shows a closed eye");
+  // Collapse All hides every group's rows; Expand All restores them.
+  await page.click("#browser-collapse-all");
+  assert((await browserRowIds(page)).length === 0, "Collapse All hides every row");
+  await page.click("#browser-expand-all");
+  assert((await browserRowIds(page)).length === ids.length, "Expand All restores them");
+  // Filter keeps only matching rows (and expands groups so matches show).
+  await page.click("#browser-search");
+  await page.fill("#browser-filter", "dims");
+  await sleep(150);
+  assert(eq(await browserRowIds(page), ["layer:layer-1"]), `the filter keeps only the matching row (got ${JSON.stringify(await browserRowIds(page))})`);
+  assert(await page.evaluate(() => document.getElementById("browser-filter").offsetParent !== null), "the filter field is rendered visible");
+});
+
+test("browser: hiding a body from the Browser hides it in the viewport and the Components tree reflects it", async (page) => {
+  await populate(page);
+  await openBrowser(page);
+  const treeLeafHidden = () => page.evaluate(() => {
+    const eyes = [...document.querySelectorAll("#tree-body .tree-eye")];
+    const leaf = eyes.find((e) => /component/i.test(e.getAttribute("title") ?? ""));
+    return leaf ? leaf.classList.contains("hidden-off") : null;
+  });
+  assert((await treeLeafHidden()) === false, "the Components leaf starts visible");
+  await page.click('[data-id="body:solid-0"] .tree-eye');
+  await sleep(250);
+  assert((await treeLeafHidden()) === true, "the Components tree's leaf eye closes");
+  const picked = await pickCentreIntoNewPart(page);
+  assert(picked !== null && picked.length === 0, `the body is gone from the viewport (got ${JSON.stringify(picked)})`);
+  assert(await page.evaluate(() => document.querySelector('[data-id="body:solid-0"] .tree-eye').classList.contains("hidden-off")), "the Browser row shows the closed eye too");
+  // And the other direction: the Components eye drives the Browser row.
+  await page.evaluate(() => [...document.querySelectorAll("#tree-body .tree-eye")].find((e) => /component/i.test(e.getAttribute("title") ?? ""))?.click());
+  await sleep(250);
+  assert(await page.evaluate(() => !document.querySelector('[data-id="body:solid-0"] .tree-eye').classList.contains("hidden-off")), "showing it from the tree reopens the Browser eye");
+});
+
+test("browser: a layer eye posts layersChanged like the Layers panel, and a feature eye suppresses the op", async (page) => {
+  await populate(page);
+  await openBrowser(page);
+  await post(page, {
+    type: "layers",
+    nextId: 1,
+    layers: [{ id: "layer-0", name: "Default", color: "#b8b8b8", visible: true, locked: false, volumes: [], surfaces: [], lines: [], points: [] }],
+  });
+  await sleep(250);
+  await page.click("#browser-expand-all");
+  await page.evaluate(() => (window.__sent.length = 0));
+  await page.click('[data-id="layer:layer-0"] .tree-eye');
+  await sleep(250);
+  const sent = await sentOf(page, "layersChanged");
+  assert(sent.length === 1 && sent[0].layers[0].visible === false, `the Browser eye hides the layer through the model (got ${JSON.stringify(sent.map((m) => m.layers[0]?.visible))})`);
+  assert((await browserRowIds(page)).includes("op:0"), "the fixture's history rows appear under Features");
+  await page.evaluate(() => (window.__sent.length = 0));
+  await page.click('[data-id="op:0"] .tree-eye');
+  await sleep(300);
+  const edits = await sentOf(page, "editsChanged");
+  assert(edits.length >= 1 && edits.at(-1).ops[0].suppressed === true, "the feature eye suppresses the op through EditsModel");
+});
+
+test("browser: restoring a named view from the Browser lands on the same camera as View ▾", async (page) => {
+  await populate(page);
+  await openBrowser(page);
+  const bm = (name, d) => ({ name, viewDirection: d, cameraUp: [0, 1, 0], orthographic: false, displayMode: "shaded", clip: null });
+  await postBookmarks(page, [bm("A", [0, 0, 1]), bm("B", [1, 0, 0])]);
+  await page.evaluate(() => document.getElementById("browser-expand-all").click());
+  const lastView = () => page.evaluate(() => (window.__sent ?? []).filter((m) => m.type === "viewChanged").at(-1)?.view ?? null);
+  await page.evaluate(() => (window.__sent.length = 0));
+  await page.click("#view-menu");
+  await page.click("#bookmark-list .bookmark-row .bookmark-name");
+  await sleep(800);
+  const viaMenu = await lastView();
+  await page.keyboard.press("Escape");
+  // Move away, then restore the same bookmark through the Browser.
+  await page.evaluate(() => (window.__sent.length = 0));
+  await page.click("#view-menu");
+  await page.locator("#bookmark-list .bookmark-row .bookmark-name").nth(1).click();
+  await sleep(800);
+  await page.keyboard.press("Escape");
+  await page.evaluate(() => (window.__sent.length = 0));
+  // A scripted click: with the FE Mesh panel open the 900px sidebar is already
+  // squeezed to zero height above it, so Playwright's visibility wait would hang.
+  await page.evaluate(() => document.querySelector('[data-id="view:0"] .tree-row').click());
+  await sleep(800);
+  const viaBrowser = await lastView();
+  assert(viaMenu !== null && viaBrowser !== null, "both restores persist a view");
+  const near = (a, b) => a.every((c, i) => Math.abs(c - b[i]) < 1e-6);
+  assert(near(viaMenu.viewDirection, viaBrowser.viewDirection) && near(viaMenu.cameraUp, viaBrowser.cameraUp), `same camera (menu ${JSON.stringify(viaMenu.viewDirection)}, browser ${JSON.stringify(viaBrowser.viewDirection)})`);
+});
+
 // ── Pin + tolerance fields (measurement annotations) ──────────────────────
 //
 // The tolerance maths is unit-tested (`toleranceBand.test.ts`) and the
@@ -9683,7 +9941,7 @@ test("dock: the collapse control sits at the end of the bar, after the overflow 
     return { toggleLeft: toggle.left, moreRight: more.right, modesShowIcon: modes.some(Boolean), modeCount: modes.length };
   });
   assert(m.toggleLeft >= m.moreRight - 1, `the collapse control follows ⋯ (toggle left ${m.toggleLeft.toFixed(0)}, ⋯ right ${m.moreRight.toFixed(0)})`);
-  assert(m.modeCount === 6 && !m.modesShowIcon, "the display modes are text-only segments");
+  assert(m.modeCount === 7 && !m.modesShowIcon, "the display modes are text-only segments");
   await page.click("#vc-toggle");
   await sleep(80);
   const collapsedRendered = await page.evaluate(() => document.getElementById("vc-toggle").offsetParent !== null);

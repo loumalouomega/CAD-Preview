@@ -12,7 +12,7 @@ import type { BoundaryLayerAchieved } from "./boundaryLayerMeasurement";
 import type { DisplayUnit } from "./lengthUnits";
 import type { KernelState } from "./kernelActivity";
 import type { EntityFacts, ExactMeasureKind, ExactMeasureResult, InterferenceResult, InterferencePairResult } from "./entityFacts";
-import type { DisplayMode } from "./webview/displayMode";
+import type { DisplayMode, ZebraSettings } from "./webview/displayMode";
 import type { ClipPlaneState } from "./webview/clipping";
 import type { PaneLayoutId } from "./webview/viewerPanes";
 import type { StandardPart } from "./stepPartsService";
@@ -337,6 +337,12 @@ export interface ViewState {
    */
   collapsedPanels?: string[];
   /**
+   * Zebra-stripe settings (stripe count + world axis). Additive, written only
+   * when they differ from `ZEBRA_DEFAULT`, so an untouched sidecar stays
+   * byte-stable; a display preference like `displayMode`, no MCP surface.
+   */
+  zebra?: ZebraSettings;
+  /**
    * Sidebar width in px, persisted like {@link ViewState.collapsedPanels}'s
    * precedent. One decimal-integer range: clamp through
    * `webview/sidebarResizer.ts`'s `clampSidebarWidth` (`176..420`) on read;
@@ -378,6 +384,11 @@ export interface ViewState {
    * in the panel. A display preference — no MCP surface.
    */
   formsDocked?: boolean;
+  /**
+   * The sidebar Browser section is shown (View ▾ ▸ Browser). It starts hidden, so this is
+   * written only when `true`; a display preference — no MCP surface.
+   */
+  browserOpen?: boolean;
 }
 
 /** One saved meshing preset, as the FE Mesh panel lists it. A preset's own

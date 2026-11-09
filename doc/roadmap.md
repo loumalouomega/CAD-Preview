@@ -73,7 +73,7 @@ Existing implementation references were checked against the repository where not
 
 **Closed 2026-11-06 (History timeline depth; Feature form ergonomics).** Extension, not a planning review: nothing was re-ranked and no other open ID changed. 2.37 shipped its remainder: history **folders** (a display-only `folder` tag on each op, so it rides every existing sidecar path; grouped, collapsible rows in the Edits list; `set_edit_op_state` takes `folder`/`toIndex`) and **drag reorder** (`planOpMove`, shared by the row drag, Alt+↑/↓ and the new `move_edit_op` tool). The reorder check is stricter than the roadmap's "no reference crossing the move": entity ids are positional, so it also refuses two shape-changing ops crossing each other, a stored selector query naming an op in the span, and anything touching the saved prefix. 2.41 shipped its remainder: the operation form can be **docked** over the viewport (`ViewState.formsDocked`, the one node is moved, not copied). Both left this list.
 
-**Extended 2026-11-01 (SolidCraft review).** Extension, not a planning review: nothing was re-ranked and no existing ID moved. The [SolidCraft review](#solidcraft-review) compared this extension's interface against a full parametric modeller's, and added fourteen items to Ready product work and four probes. The Ready product work items are [the parameters table](#parameters-table) (2.31), configurations (2.33, since shipped and removed), command search and keyboard-first commands (2.34, since shipped and removed), a ribbon command strip (2.35, since shipped and removed), [a two-tone icon set](#two-tone-icon-set) (2.36), history timeline depth (2.37, since shipped and removed), [a unified Browser tree](#unified-browser-tree) (2.38), navigation upgrades (2.39, since shipped and removed), [zebra stripes and a centre-of-mass marker](#zebra-stripes-and-centre-of-mass-marker) (2.40), feature form ergonomics (2.41, since shipped and removed), named materials in the Parts panel (2.42, since shipped and removed), an issue draft from a failure (2.43, since shipped and removed) and a welcome walkthrough with samples (2.44, since shipped and removed). The probes are [curvature, minimum radius and isocurve overlays](#curvature-and-isocurve-overlays) (3.18), [sheet-metal flat patterns of an imported part](#sheet-metal-flat-pattern) (3.19), [frame members along wireframe edges](#frame-members-along-edges) (3.20) and [on-canvas parameter handles](#on-canvas-parameter-handles) (5.5). Section 2 resumes at 2.31: 2.29 and 2.30 belonged to items that have shipped and left the list, and 2.30 is still cited for stepping through entities under the cursor, so neither number is reused. A new area tag, *Interface*, covers items whose main product is the webview's interaction design. One new Rejected-scope entry was added: a photoreal render workspace. The constraint-sketcher rejection was re-read against SolidCraft and stands.
+**Extended 2026-11-01 (SolidCraft review).** Extension, not a planning review: nothing was re-ranked and no existing ID moved. The [SolidCraft review](#solidcraft-review) compared this extension's interface against a full parametric modeller's, and added fourteen items to Ready product work and four probes. The Ready product work items are [the parameters table](#parameters-table) (2.31), configurations (2.33, since shipped and removed), command search and keyboard-first commands (2.34, since shipped and removed), a ribbon command strip (2.35, since shipped and removed), [a two-tone icon set](#two-tone-icon-set) (2.36), history timeline depth (2.37, since shipped and removed), [a unified Browser tree](#unified-browser-tree) (2.38), navigation upgrades (2.39, since shipped and removed), zebra stripes and a centre-of-mass marker (2.40, since shipped and removed), feature form ergonomics (2.41, since shipped and removed), named materials in the Parts panel (2.42, since shipped and removed), an issue draft from a failure (2.43, since shipped and removed) and a welcome walkthrough with samples (2.44, since shipped and removed). The probes are [curvature, minimum radius and isocurve overlays](#curvature-and-isocurve-overlays) (3.18), [sheet-metal flat patterns of an imported part](#sheet-metal-flat-pattern) (3.19), [frame members along wireframe edges](#frame-members-along-edges) (3.20) and [on-canvas parameter handles](#on-canvas-parameter-handles) (5.5). Section 2 resumes at 2.31: 2.29 and 2.30 belonged to items that have shipped and left the list, and 2.30 is still cited for stepping through entities under the cursor, so neither number is reused. A new area tag, *Interface*, covers items whose main product is the webview's interaction design. One new Rejected-scope entry was added: a photoreal render workspace. The constraint-sketcher rejection was re-read against SolidCraft and stands.
 
 Everything previously shipped is tracked in `CHANGELOG.md`, and `CLAUDE.md` holds the invariants, traps and verified kernel facts that a future change could break (not per-feature history, which lives in git) — this page is for what's **not** built yet, plus the Non-goals that record why a direction was rejected so it isn't re-proposed.
 
@@ -315,7 +315,7 @@ One project, read from its documentation and a screenshot. Nothing was built or 
 | Timeline: suppress, rename, feature folders, drag reorder with dependency checks, delete that lists dependents, hover highlights of modified faces | SolidCraft | Shipped (History timeline depth, 2.37, removed): suppress, rename, folders, drag reorder, delete with dependents, hover highlight. Already shipped before it: the jump rollback (click a history row), per-row delete, and click-to-highlight of produced faces |
 | Browser tree (Document Settings, Named Views, Origin, Bodies, Sketches, Features; eye per row; Expand/Collapse All) | SolidCraft | [Unified Browser tree](#unified-browser-tree) (2.38). Already shipped in pieces: the Components tree, the Parts and Layers panels, and view bookmarks |
 | Clickable X/Y/Z axis tips, 26 snapped standard and diagonal views, Normal to Selection, navigation presets (Touchpad, Fusion, OpenSCAD) | SolidCraft | Navigation upgrades (2.39, shipped and removed; an OpenSCAD preset is declined because its mapping equals Default) |
-| Zebra analysis; centre of mass shown in the view | SolidCraft | [Zebra stripes and a centre-of-mass marker](#zebra-stripes-and-centre-of-mass-marker) (2.40) |
+| Zebra analysis; centre of mass shown in the view | SolidCraft | Shipped (Zebra display mode and the centre-of-mass marker, 2.40, removed) |
 | Curvature map and comb, isocurves, minimum radius, continuity | SolidCraft | [Curvature, minimum radius and isocurve overlays](#curvature-and-isocurve-overlays) (3.18, probe); continuity is out of that probe's scope |
 | Feature dialogs docked on the right; collapsible header that keeps its values; OK/Cancel outside the scroll area | SolidCraft | Shipped (Feature form ergonomics, 2.41, removed): sticky Apply footer, collapsible header, optional docked placement. Already shipped before it: the live preview (an intent-coloured overlay, debounced) |
 | Named appearances and material assignment | SolidCraft | Shipped (Named materials in the Parts panel, 2.42, removed); textures and PBR looks are not proposed |
@@ -402,49 +402,16 @@ These are outcome groupings, not release numbers. Independent small items can sh
 - **What is left (S):** the cross-repository check — open the exported `.mdpa` in VSCode-MDPA-Preview and confirm both SubModelParts populate. It needs that extension and is not exercised from this repository.
 - **Done when:** that check passes, and KKSS's tutorial links to the page.
 
-#### 2.26 Unit-aware document variables {#unit-aware-document-variables}
+#### 2.38 Browser tree follow-ups {#unified-browser-tree}
 
-*Area: Geometry, Parity. Effort: S–M.*
+*Area: Interface. Effort: S.*
 
-- **Evidence today:** document variables (`src/editVariables.ts`, evaluated by `src/paramExpr.ts`) are plain numbers in the document's own length unit; `set_variables` and `get_state` expose them headless. A value pasted from a drawing in inches, or an angle written in radians, is silently taken as millimetres or degrees. ElmerStudio's `core/units.py` (read at `b1be253`) shows a cheap, well-bounded design: `10[mm]`, `2[in]`, `5[deg]` bind a unit to the operand just before it, every value is reduced to SI, a deduced dimension (`Dim`, seven base exponents) is checked against what the field expects, and a mismatch **warns but is still applied** ("the SI value is used as it is") — it never rejects, so no existing document can stop loading.
-- **Done so far (2026-11-01):** the bracketed-unit suffix shipped in `paramExpr.ts` — `mm cm m in ft` convert to millimetres and `deg rad` to degrees (`EXPR_UNITS`, lengths from `lengthUnits.ts`), the suffix must touch the number, an unknown unit is a specific error, plain numbers and stored sidecars are unchanged. `W = 2[in]` resolves to 50.8 and drives an op field.
-- **What is left (S):** a dimension check per op field (length, angle, dimensionless count) reported as an Edits-panel warning and as a `warnings` entry on `apply_edit_ops`/`set_variables`, never as a refusal (a mismatch is applied as written); `get_state` returns each variable's `expr`, resolved value and deduced unit. This needs a field→dimension table over the op kinds and a unit carried through evaluation instead of folded into the number.
-- **Why now:** KKSS's geometry-parameter sweep drives these variables through `set_variables`; a unit-checked parameter table is what makes a swept row's value unambiguous in its provenance.
-- **Out of scope:** units on mesh sizes (they already follow the document unit), temperature offsets (`degC`), and any unit in the sidecar's stored numbers.
-- **Done when:** `W = 5[deg]` on a length field warns and still applies, and MCP and the Edits panel report the same warning (the 50.8 conversion and the unchanged-sidecar round trip are covered).
-
-#### 2.38 Unified Browser tree {#unified-browser-tree}
-
-*Area: Interface. Effort: M.*
-
-- **Today:** the information is shipped but scattered. There is the Components tree (with a filter and per-row eyes), the Parts and Layers panels, construction planes in the dock popover, sketch geometry only in the viewport, and view bookmarks in View ▾.
-- **Proposal:** one **Browser** section at the top of the sidebar, with groups:
-  - **Document:** units, tessellation quality, source format and save state.
-  - **Named Views.**
-  - **Origin:** the world axes and planes, plus the construction planes.
-  - **Bodies:** `solid-N`, with Part colour.
-  - **Sketches:** faces and wires from profile ops, with guide geometry dimmed.
-  - **Features:** the history, the same rows as the Edits panel.
-  - **Parts** and **Layers.**
-
-  Each group and row has a visibility eye. There are Expand All and Collapse All, and a filter.
-- **Rule:** the Browser is a *view* over the existing models (`PartsModel`, layers, planes, bookmarks, `EditsModel`, the component tree). It stores no new state and adds no sidecar. A row action calls the same function as the panel it mirrors.
-- **Layout:** visibility composes through `applyVisibilityState()`, the one place where Part hide and isolate and layer visibility already meet. Tree group rows expand to descendant leaves (`treeGroups.ts`).
-- **Done when:** a `test:webview` case hides a body from the Browser and the Components tree reflects it; restoring a view from the Browser and from View ▾ yields the same camera.
-
-#### 2.40 Zebra stripes and a centre-of-mass marker {#zebra-stripes-and-centre-of-mass-marker}
-
-*Area: Interface, Parity. Effort: S.*
-
-- **Shipped (2026-11-05):** the centre-of-mass marker (Mass Properties ▸ Show centre of mass in view; `Viewer.showCentreOfMassMarker`, pixel-diff case in `test:webview`).
-- **Today:** there is no surface-continuity overlay.
-- **Remaining increment (S):**
-  - **Zebra:** a display overlay that colours faces by `step(fract(k · reflect(view, normal) · axis))`, a stripe environment mapped through the shading normal. It works on the shared tessellation, so on B-rep and mesh sources alike. Stripe count and direction are dock controls.
-    - It is a material swap that composes with Part colours. It never writes `mat.color` (`CLAUDE.md`'s theme rule).
-    - It stays live during a drag through `requestRender()`.
-    - Stripe continuity across an edge is a fact about the *tessellation's* normals, and the overlay says so. It is sampled, not certified, like the deviation map.
-- **Parity:** zebra is webview-only, and the closest headless view is `render_snapshot`. The display mode is added to the snapshot `display` enum only if the shader runs in the snapshot harness, and is recorded as webview-only otherwise.
-- **Done when:** a `test:webview` pixel probe shows continuous stripes across a tangent fillet edge and broken stripes across a sharp box edge on the same model.
+- **Shipped:** the Browser section (Document, Named Views, Origin, Bodies, Sketches, Features, Parts, Layers; per-row and per-group eyes; Expand/Collapse All; filter) as a view over the existing models, with its `test:webview` cases (hide a body from the Browser and the Components tree reflects it; restore a named view from the Browser and from View ▾ and reach the same camera).
+- **What is left (S):**
+  - **Document tessellation row:** tessellation quality is a host setting that never reaches the webview; it needs one new field on `viewerDefaults` or `documentInfo`.
+  - **Origin visibility:** the viewer has one grid-and-axes flag, so the world axes and planes cannot be hidden individually; a construction plane has no eye.
+  - **Sketch rows:** only the synthetic `Sketches` group is shown, as one row; the produced face and wire ids are not mapped to the op that made them, and guide geometry is not dimmed in the tree.
+- **Done when:** each of those rows exists and is pinned by a `test:webview` case.
 
 ### Probe-gated — establish feasibility before estimating
 

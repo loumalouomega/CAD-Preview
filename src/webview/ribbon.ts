@@ -151,6 +151,7 @@ const VIEW_GROUPS: RibbonGroup[] = [
       click("mode-hiddenLines", "Hidden", "Hidden lines: occluded edges shown faintly", '.display-mode-btn[data-mode="hiddenLines"]', tb("hiddenLines"), true),
       click("mode-flat", "Flat", "Flat: unlit constant-colour faces", '.display-mode-btn[data-mode="flat"]', tb("flat"), true),
       click("mode-geometry", "Geometry", "Geometry: points, edges, faces and solids as distinct primitives", '.display-mode-btn[data-mode="geometry"]', tb("edges"), true),
+      click("mode-zebra", "Zebra", "Zebra: reflection stripes to judge surface continuity", '.display-mode-btn[data-mode="zebra"]', tb("shaded"), true),
     ],
   },
   {

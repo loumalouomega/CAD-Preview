@@ -156,6 +156,8 @@ interface ViewState {
   cameraUp: [number, number, number]        // focused/single-pane up
   orthographic: boolean                      // focused/single-pane projection
   displayMode: DisplayMode                   // global — one value for the whole document
+  zebra?: { count: number; axis: "x"|"y"|"z" } // additive; omitted at the default (8, "y")
+  browserOpen?: boolean                      // additive; written only when the Browser section is shown
   clip: ClipPlaneState | null                // global — null = clipping off
   layout?: PaneLayoutId                      // split-view layout; absent/"1x1" = single pane (Phase 2)
   panes?: PaneViewState[]                    // one per pane of `layout`, row-major; absent = single pane
@@ -1008,7 +1010,7 @@ Stale responses (a result arriving after a newer keystroke, a form switch, or a 
 
 ### `renderViewRequest`
 
-Posted by `src/renderService.ts` to its **disposable headless page** (never a live interactive session) once per view of a `render_snapshot` / `screenshot_shape` packet; answered by `renderViewResult { requestId, data }` (a base64 PNG with `label` burned in) or `renderViewError { requestId, message }` (webview → host). It is deliberately a separate pair from `screenshotRequest`: it carries camera, visibility and display fields the interactive Screenshot has no use for. `displayMode` (`shaded` / `wireframe` / `xray` / `hiddenLines` / `flat`) is applied through the same `applyDisplayMode` the Display group uses, after the legacy `wireframe` flag, so it wins when both are present. `clip` is the persisted `ClipPlaneState` (`{axis, offsetFrac, normal?}`, `offsetFrac` in [-1, 1] along the plane normal) applied through the clip controls' own `applyState`, solid cap included; it is sticky for the page, so every later request in the same packet keeps the section. The kept half is the one the normal points into, so a view that looks along `-normal` shows the cut face.
+Posted by `src/renderService.ts` to its **disposable headless page** (never a live interactive session) once per view of a `render_snapshot` / `screenshot_shape` packet; answered by `renderViewResult { requestId, data }` (a base64 PNG with `label` burned in) or `renderViewError { requestId, message }` (webview → host). It is deliberately a separate pair from `screenshotRequest`: it carries camera, visibility and display fields the interactive Screenshot has no use for. `displayMode` (`shaded` / `wireframe` / `xray` / `hiddenLines` / `flat` / `zebra`) is applied through the same `applyDisplayMode` the Display group uses, after the legacy `wireframe` flag, so it wins when both are present. `clip` is the persisted `ClipPlaneState` (`{axis, offsetFrac, normal?}`, `offsetFrac` in [-1, 1] along the plane normal) applied through the clip controls' own `applyState`, solid cap included; it is sticky for the page, so every later request in the same packet keeps the section. The kept half is the one the normal points into, so a view that looks along `-normal` shows the cut face.
 
 ```json
 { "type": "renderViewRequest", "requestId": "rv-0", "direction": [0, 0, -1], "up": [0, 1, 0], "label": "SECTION", "displayMode": "xray", "clip": { "axis": "z", "offsetFrac": 0 } }

@@ -3893,6 +3893,7 @@ button.edit-report:hover { text-decoration: underline; }
    class rules (0,1,0). Keep these with `#plane-entry[hidden]` above. */
 #plane-mid[hidden],
 #vc-colorfield-group[hidden],
+#vc-zebra-group[hidden],
 #vc-colorfield-legend[hidden] {
   display: none;
 }
@@ -5890,4 +5891,57 @@ body.ribbon-compact #ribbon .ribbon-more-item .ribbon-label {
 #edits-grid-toggle[aria-pressed="true"] {
   color: var(--vscode-foreground, #ccc);
   background: var(--vscode-toolbar-hoverBackground, rgba(90, 93, 94, 0.31));
+}
+
+/* ── Browser (unified tree over Parts, Layers, planes, views, history) ───── */
+#browser-panel {
+  display: flex;
+  flex-direction: column;
+  flex: 0 1 auto;
+  min-height: 0;
+  max-height: 24%;
+  border-bottom: 1px solid var(--vscode-sideBar-border, #3c3c3c);
+}
+#browser-panel[hidden] {
+  display: none;
+}
+/* Not a `.side-section`: the Browser is hidden until View ▾ ▸ Browser turns it
+ * on (the sidebar column is already full, so even a collapsed header costs
+ * layout other cases depend on). Its state is its own `ViewState.browserOpen`
+ * flag, not an entry in `collapsedPanels`, whose absence means "all expanded". */
+#browser-body {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+#browser-filter {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+#browser-filter[hidden] {
+  display: none;
+}
+.browser-group-row {
+  font-weight: 600;
+}
+.browser-group-title {
+  flex: 1 1 auto;
+}
+.browser-swatch {
+  flex: 0 0 auto;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  border: 1px solid var(--vscode-foreground, #ccc);
+}
+.browser-muted .tree-label {
+  opacity: 0.55;
+}
+.browser-eye-mixed {
+  opacity: 0.6;
+}
+.browser-empty {
+  padding: 2px 24px;
+  opacity: 0.55;
+  font-size: var(--ui-fs-sm);
 }

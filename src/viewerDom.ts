@@ -76,6 +76,17 @@ export function viewerBodyHtml(): string {
   </div>
   <div id="layout">
     <div id="side">
+      <div id="browser-panel" class="browser-section" hidden>
+        <div id="browser-header" class="panel-header">
+          <span class="panel-icon" aria-hidden="true">${glyph("folder")}</span>
+          <span id="browser-title" class="panel-title">Browser</span>
+          <input id="browser-filter" type="search" placeholder="Filter…" title="Filter the Browser by name" hidden>
+          <button id="browser-search" class="panel-icon-btn" type="button" aria-expanded="false" title="Filter the Browser by name">${glyph("search")}</button>
+          <button id="browser-expand-all" class="panel-icon-btn" type="button" title="Expand all groups">${glyph("chevronDown")}</button>
+          <button id="browser-collapse-all" class="panel-icon-btn" type="button" title="Collapse all groups">${glyph("chevronRight")}</button>
+        </div>
+        <div id="browser-body"></div>
+      </div>
       <div id="tree-panel" class="side-section">
         <div id="tree-header" class="panel-header">
           <button class="panel-chevron" type="button" aria-expanded="true" title="Collapse section">${glyph("chevronDown")}</button>
@@ -483,6 +494,7 @@ export function viewerBodyHtml(): string {
     <div class="tb-menu-wrap">
       <button id="view-menu" class="tb-menu" title="View options" aria-haspopup="true" aria-expanded="false">${glyph("eye")} View ${glyph("chevronDown")}</button>
       <div id="view-dropdown" class="tb-dropdown hidden" role="menu">
+        <button id="browser-toggle" role="menuitemcheckbox" aria-checked="false" title="Show the Browser in the sidebar: one tree over bodies, features, Parts, layers, named views and construction planes">${glyph("folder")} Browser</button>
         <button id="grid" role="menuitemcheckbox" aria-checked="false" title="Toggle the grid and axis helpers">${icon("grid")} Grid</button>
         <button id="edges" role="menuitemcheckbox" aria-checked="true" title="Toggle edge visibility">${icon("edges")} Edges</button>
         <button id="hide-smooth-edges" role="menuitemcheckbox" aria-checked="false" title="Hide tangent patch-seam edges (e.g. between adjacent NURBS patches of one curved surface), keeping genuine feature edges">${icon("edges")} Hide smooth edges</button>
@@ -616,6 +628,7 @@ export function viewerBodyHtml(): string {
         <button class="display-mode-btn" data-mode="hiddenLines" title="Hidden Lines — occluded edges shown faintly through solids">${icon("hiddenLines")} Hidden</button>
         <button class="display-mode-btn" data-mode="flat" title="Flat — unlit constant-colour faces, no shading gradient">${icon("flat")} Flat</button>
         <button class="display-mode-btn" data-mode="geometry" title="Geometry — the B-rep structure: points, edges, faces and solids (bounding shells) as distinct primitives">${icon("edges")} Geom</button>
+        <button class="display-mode-btn" data-mode="zebra" title="Zebra — reflection stripes to judge surface continuity (sampled from the tessellation's normals, not certified)">${icon("shaded")} Zebra</button>
       </div>
       <span class="vc-div" aria-hidden="true"></span>
       <div class="vc-inline-group">
@@ -644,6 +657,18 @@ export function viewerBodyHtml(): string {
              single-open, outside-click dismissal that does not leak to the canvas,
              Escape-returns-focus and arrow navigation for free. -->
         <div id="vc-more-dropdown" class="tb-dropdown hidden" role="menu">
+          <div class="vc-group" id="vc-zebra-group" hidden>
+            <span class="vc-label">Zebra stripes</span>
+            <div class="vc-row">
+              <input type="range" id="vc-zebra-count" class="meshing-slider" min="2" max="40" step="1" value="8" title="Stripe count" aria-label="Zebra stripe count">
+              <select id="vc-zebra-axis" title="Stripe direction (world axis the reflection is projected on)" aria-label="Zebra stripe direction">
+                <option value="x">X</option>
+                <option value="y" selected>Y</option>
+                <option value="z">Z</option>
+              </select>
+            </div>
+            <span class="vc-hint">Sampled from tessellation normals, not certified.</span>
+          </div>
           <div class="vc-group" id="vc-colorfield-group" hidden>
             <span class="vc-label">Colour by field</span>
             <div class="vc-row">

@@ -18,7 +18,7 @@ import {
 import type { MeasurementPick } from "./measurementState";
 import { drawLabel } from "./labelOverlay";
 import { compositeCanvas } from "./canvasComposite";
-import { type DisplayMode } from "./displayMode";
+import { type DisplayMode, type ZebraSettings, ZEBRA_DEFAULT } from "./displayMode";
 import { GEOMETRY_FACE_OPACITY, GEOMETRY_POINT_SCALE, solidColor, solidIndexOf } from "./geometryStyle";
 import {
   computePaneRects,
@@ -793,6 +793,8 @@ export class Viewer {
       const flat = mesh.userData.flatMaterial as THREE.Material | undefined;
       if (std && std !== mat) std.dispose();
       if (flat && flat !== mat) flat.dispose();
+      const zebra = mesh.userData.zebraMaterial as THREE.Material | undefined;
+      if (zebra && zebra !== mat) zebra.dispose();
     });
     this.model = null;
   }
@@ -2454,10 +2456,40 @@ export class Viewer {
    */
   private applyDisplayMode(): void {
     const flat = this.displayMode === "flat";
+    const zebra = this.displayMode === "zebra";
     this.model?.traverse((obj) => {
       if (!(obj instanceof THREE.Mesh) || obj.userData.entityType !== "surface") return;
       if (!obj.userData.standardMaterial) obj.userData.standardMaterial = obj.material;
       const std = obj.userData.standardMaterial as THREE.MeshStandardMaterial;
+      if (zebra) {
+        // A clone of the standard material with a stripe term injected after
+        // lighting: the colour stays in `color`/`userData.baseColor` (Part
+        // colours untouched, never re-themed), emissive selection still works.
+        if (!obj.userData.zebraMaterial) {
+          const zm = std.clone();
+          copyNativeColor(std, zm);
+          zm.onBeforeCompile = (shader) => {
+            shader.uniforms.uZebraCount = this.zebraUniforms.count;
+            shader.uniforms.uZebraAxis = this.zebraUniforms.axis;
+            shader.fragmentShader = shader.fragmentShader
+              .replace("#include <common>", "#include <common>\nuniform float uZebraCount;\nuniform vec3 uZebraAxis;")
+              .replace(
+                "#include <dithering_fragment>",
+                `#include <dithering_fragment>
+{
+  vec3 zv = isOrthographic ? vec3(0.0, 0.0, -1.0) : normalize(-vViewPosition);
+  vec3 zr = inverseTransformDirection(reflect(zv, normalize(normal)), viewMatrix);
+  float zs = step(0.5, fract(dot(zr, uZebraAxis) * uZebraCount * 0.5 + 0.25));
+  gl_FragColor.rgb = mix(gl_FragColor.rgb * 0.12, gl_FragColor.rgb, zs);
+}`,
+              );
+          };
+          zm.customProgramCacheKey = () => "cad-zebra";
+          obj.userData.zebraMaterial = zm;
+        }
+        obj.material = obj.userData.zebraMaterial as THREE.MeshStandardMaterial;
+        return;
+      }
       if (!flat) {
         obj.material = std;
         return;
@@ -2484,6 +2516,25 @@ export class Viewer {
     if (this.displayMode === "geometry") this.buildGeometryOverlay();
     else this.clearGeometryOverlay();
     this.applyGeometryPoints();
+  }
+
+  /** Shared uniforms of every zebra material; mutate, never replace. */
+  private readonly zebraUniforms = {
+    count: { value: ZEBRA_DEFAULT.count },
+    axis: { value: new THREE.Vector3(0, 1, 0) },
+  };
+  private zebra: ZebraSettings = { ...ZEBRA_DEFAULT };
+
+  getZebra(): ZebraSettings {
+    return { ...this.zebra };
+  }
+
+  /** Stripe count/direction. Live: only uniforms change, so a drag stays smooth. */
+  setZebra(z: ZebraSettings): void {
+    this.zebra = { ...z };
+    this.zebraUniforms.count.value = z.count;
+    this.zebraUniforms.axis.value.set(z.axis === "x" ? 1 : 0, z.axis === "y" ? 1 : 0, z.axis === "z" ? 1 : 0);
+    this.requestRender();
   }
 
   /** Geometry mode draws point markers larger and through solids; every other

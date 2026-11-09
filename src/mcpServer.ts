@@ -733,9 +733,9 @@ server.registerTool(
 
 /** Whole-model display mode for the snapshot tools — every mode the viewer's Display group has. */
 const snapshotDisplayMode = z
-  .enum(["shaded", "wireframe", "xray", "hiddenLines", "flat"])
+  .enum(["shaded", "wireframe", "xray", "hiddenLines", "flat", "zebra"])
   .optional()
-  .describe("Whole-model display mode, applied to every returned image: shaded (default) | wireframe | xray | hiddenLines | flat — the same five the viewer's Display group offers.");
+  .describe("Whole-model display mode, applied to every returned image: shaded (default) | wireframe | xray | hiddenLines | flat | zebra (reflection stripes, default 8 along Y) — the viewer's Display group minus the webview-only geometry mode.");
 
 /** Section plane for the snapshot tools — the viewer's own clip plane, solid cap included. */
 const snapshotClip = z

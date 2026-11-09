@@ -391,3 +391,35 @@ describe("view-state: ribbon strip state", () => {
     expect(parseViewStateJson(text)).toEqual(validView);
   });
 });
+
+describe("view-state: zebra stripe settings", () => {
+  it("round-trips a non-default setting as a top-level sibling of `view`", () => {
+    const text = serializeViewStateJson("bull.stp", { ...validView, displayMode: "zebra", zebra: { count: 20, axis: "x" } });
+    const file = JSON.parse(text);
+    expect(file.zebra).toEqual({ count: 20, axis: "x" });
+    expect(file.view.zebra).toBeUndefined();
+    expect(parseViewStateJson(text)?.zebra).toEqual({ count: 20, axis: "x" });
+    expect(parseViewStateJson(text)?.displayMode).toBe("zebra");
+  });
+  it("omits the default so an untouched sidecar stays byte-stable, and drops garbage", () => {
+    expect(serializeViewStateJson("bull.stp", validView)).toBe(serializeViewStateJson("bull.stp", { ...validView }));
+    expect(JSON.parse(serializeViewStateJson("bull.stp", validView)).zebra).toBeUndefined();
+    const bad = JSON.stringify({ version: VIEW_STATE_SIDECAR_VERSION, source: "a.stp", view: validView, zebra: { count: "many", axis: "q" } });
+    expect(parseViewStateJson(bad)?.zebra).toBeUndefined();
+    const dflt = JSON.stringify({ version: VIEW_STATE_SIDECAR_VERSION, source: "a.stp", view: validView, zebra: { count: 8, axis: "y" } });
+    expect(parseViewStateJson(dflt)?.zebra).toBeUndefined();
+  });
+});
+
+describe("view-state: Browser section open flag", () => {
+  it("round-trips true as a top-level sibling and omits the collapsed default", () => {
+    const text = serializeViewStateJson("a.stp", { ...validView, browserOpen: true });
+    const file = JSON.parse(text);
+    expect(file.browserOpen).toBe(true);
+    expect(file.view.browserOpen).toBeUndefined();
+    expect(parseViewStateJson(text)?.browserOpen).toBe(true);
+    expect(JSON.parse(serializeViewStateJson("a.stp", validView)).browserOpen).toBeUndefined();
+    const bad = JSON.stringify({ version: VIEW_STATE_SIDECAR_VERSION, source: "a.stp", view: validView, browserOpen: "yes" });
+    expect(parseViewStateJson(bad)?.browserOpen).toBeUndefined();
+  });
+});

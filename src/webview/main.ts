@@ -2,7 +2,9 @@ import * as THREE from "three";
 import { isKernelFailureMessage } from "../issueDraft";
 import { Viewer } from "./viewer";
 import { refreshPalette } from "./palette";
-import { allCatalogEntries, buildEntityReferenceIndex, QUERYABLE_PANEL_FORMS } from "./opCatalog";
+import { allCatalogEntries, buildEntityReferenceIndex, describeOp, QUERYABLE_PANEL_FORMS } from "./opCatalog";
+import { BrowserPanel } from "./browserPanel";
+import { buildBrowser, parseRowId, splitSketches, type BrowserGroup } from "./browserTree";
 import { hoverContent, inspectorContent, summaryLine } from "./entityExplain";
 import { formatEntityReferences, producingBucketFor } from "./entityReference";
 import { UI_GLYPHS } from "../uiGlyphs";
@@ -114,7 +116,7 @@ import { MeasurementState, type MeasureTool, type MeasurementPick } from "./meas
 import { pointDistance, polylineLength, angleBetweenVectors, circleRadiusFromArcPoints, type Vec3 } from "./measurement";
 import { convertLength, convertLengthBasedProperties, convertVolume, displayUnitFromUnitName, type DisplayUnit, type LengthBasedProperties } from "./units";
 import type { EntityFacts, ExactMeasureKind } from "../entityFacts";
-import { isDisplayMode, type DisplayMode } from "./displayMode";
+import { isDisplayMode, parseZebra, ZEBRA_DEFAULT, type DisplayMode, type ZebraSettings } from "./displayMode";
 import { setupCollapsiblePanels, setupAdvancedGroupCount, type CollapsiblePanelsHandle } from "./collapsiblePanels";
 import {
   formatEntityCounts,
@@ -203,6 +205,7 @@ const treePanel = new TreePanel(
     const leaves = treePanel.leafIdsFor(id);
     viewer.setGroupsVisible(leaves.length > 0 ? leaves : [id], !visibilityState.isTreeGroupHidden(id));
     treePanel.refreshVisibility();
+    refreshBrowser();
   },
   visibilityState
 );
@@ -418,6 +421,7 @@ const annotationsModel = new AnnotationsModel(() => {
 const planesModel = new PlanesModel(() => {
   post({ type: "planesChanged", planes: planesModel.list() });
   renderPlanesList();
+  refreshBrowser();
 });
 
 /** Set by `setupClippingControls`, which owns the clip state this reads and writes. */
@@ -668,6 +672,7 @@ function variableUsage(): Map<string, VariableUsage> {
 
 /** Re-renders the Edits + Variables panels from the models (no host post). */
 function renderEditsUi(): void {
+  refreshBrowser(); // Features rows follow the op list, including the silent sidecar hydration
   // The one choke point every op-list change funnels through — sidecar
   // hydration, a user edit, an undo/redo/jump, and an external reconciliation.
   // Rebuilding the hover tooltip's reverse index here (rather than per hover
@@ -749,6 +754,129 @@ function syncEdits(): void {
   // the first problem without blocking the rest of the replay.
   if (issues.length > 0) setStatus(issues[0], true);
   if (pristineMesh) rebuildMeshModel();
+}
+
+// ── Browser (unified view over tree leaves, Parts, Layers, planes, views, history) ──
+// A VIEW only: it stores nothing, rebuilds from the existing models on every
+// change hook below, and each row action calls the same function the mirrored
+// panel calls (see `browserToggle`/`browserActivate`).
+let browserPanel: BrowserPanel | null = null;
+let lastBrowserGroups: BrowserGroup[] = [];
+let lastTreeRoot: TreeNode | null = null;
+let browserDocName = "";
+let browserUnsavedEdits = 0;
+
+function treeLeafNodes(nodes: TreeNode[], out: TreeNode[] = []): TreeNode[] {
+  for (const n of nodes) {
+    if (n.children && n.children.length > 0) treeLeafNodes(n.children, out);
+    else out.push(n);
+  }
+  return out;
+}
+
+function buildBrowserGroups(): BrowserGroup[] {
+  const parts = partsModel.list();
+  const leaves = treeLeafNodes(lastTreeRoot?.children ?? []);
+  const { bodies, sketches } = splitSketches(leaves);
+  const colorOf = (solidId: string): string | undefined => parts.find((p) => p.volumes.includes(solidId))?.color;
+  const ops = editsModel.list();
+  const savePoint = editsModel.savePoint;
+  return buildBrowser({
+    document: { name: browserDocName, format: currentFormat, unit: currentDisplayUnit, unsavedEdits: browserUnsavedEdits },
+    bookmarkNames: viewBookmarks.map((b) => b.name),
+    planes: planesModel.list().map((p) => ({ id: p.id, name: p.name })),
+    gridVisible: viewer.isGridVisible(),
+    bodies: bodies.map((b) => ({
+      id: b.id,
+      label: b.label,
+      faceCount: b.faceCount,
+      hidden: visibilityState.isTreeGroupHidden(b.id),
+      color: colorOf(b.id),
+    })),
+    sketches: sketches
+      ? { id: sketches.id, hidden: visibilityState.isTreeGroupHidden(sketches.id), faceCount: sketches.faceCount, guide: false }
+      : null,
+    ops: ops.map((o, i) => ({ label: o.label ?? describeOp(o), suppressed: o.suppressed === true, baked: i < savePoint, guide: (o as { guide?: boolean }).guide === true, folder: o.folder })),
+    parts: parts.map((p, i) => ({ name: p.name, color: p.color, hidden: visibilityState.isPartHidden(i) })),
+    layers: layersModel.list().map((l) => ({ id: l.id, name: l.name, color: l.color, visible: l.visible })),
+  });
+}
+
+/** Shows/hides the Browser section (display only; the caller saves). */
+function setBrowserOpen(open: boolean): void {
+  const el = document.getElementById("browser-panel");
+  if (!el) return;
+  el.hidden = !open;
+  document.getElementById("browser-toggle")?.setAttribute("aria-checked", String(open));
+}
+
+function refreshBrowser(): void {
+  if (!browserPanel) return;
+  lastBrowserGroups = buildBrowserGroups();
+  browserPanel.render(lastBrowserGroups);
+}
+
+/** Toggles one row's visibility through the mirrored panel's own call. */
+function browserToggleRow(rowId: string): void {
+  const r = parseRowId(rowId);
+  if (!r) return;
+  switch (r.kind) {
+    case "body":
+    case "sketch": {
+      visibilityState.toggleTreeGroupHidden(r.key);
+      viewer.setGroupsVisible([r.key], !visibilityState.isTreeGroupHidden(r.key));
+      treePanel.refreshVisibility();
+      break;
+    }
+    case "part": {
+      visibilityState.toggleHiddenPart(Number(r.key));
+      applyVisibilityState();
+      partsPanel.render(partsModel.list());
+      break;
+    }
+    case "layer": {
+      const layer = layersModel.find(r.key);
+      if (layer) layersModel.setVisible(r.key, !layer.visible);
+      break;
+    }
+    case "op": {
+      const i = Number(r.key);
+      const op = editsModel.list()[i];
+      if (op && i >= editsModel.savePoint) editsModel.setState(i, { suppressed: op.suppressed !== true });
+      break;
+    }
+    case "origin":
+      viewer.toggleGrid();
+      break;
+  }
+}
+
+function browserToggle(rowId: string): void {
+  const g = parseRowId(rowId);
+  if (g?.kind === "group") {
+    // A group eye drives every row to one state: all visible unless they all already are.
+    const group = lastBrowserGroups.find((x) => x.id === g.key);
+    if (!group) return;
+    const target = group.eye === "on" ? "off" : "on";
+    for (const row of group.rows) if (row.eye !== null && row.eye !== target) browserToggleRow(row.id);
+  } else {
+    browserToggleRow(rowId);
+  }
+  refreshBrowser();
+}
+
+function browserActivate(rowId: string): void {
+  const r = parseRowId(rowId);
+  if (!r) return;
+  if (r.kind === "view") {
+    const bm = viewBookmarks[Number(r.key)];
+    if (bm) applyBookmark(bm);
+  } else if (r.kind === "plane") {
+    const plane = planesModel.find(r.key);
+    if (plane && planesClipHandle) planesClipHandle.applyDerivedPlane(new THREE.Vector3(...plane.normal), new THREE.Vector3(...plane.point), plane.name);
+  } else if (r.kind === "body" || r.kind === "sketch") {
+    viewer.highlightGroups([r.key]);
+  }
 }
 
 const variablesPanel = new VariablesPanel(document.getElementById("variables-section")!, {
@@ -1817,6 +1945,7 @@ let lastRawMassProperties:
  * appearance control's "affects what's rendered from now on" precedent. */
 function setDisplayUnit(unit: DisplayUnit): void {
   currentDisplayUnit = unit;
+  refreshBrowser();
   const sel = document.getElementById("vc-unit") as HTMLSelectElement | null;
   if (sel) sel.value = unit;
   if (lastRawMassProperties)
@@ -2617,6 +2746,7 @@ function applyVisibilityState(): void {
       return leaves.length > 0 ? leaves : [groupId];
     });
   if (hiddenTreeLeaves.length > 0) viewer.setGroupsVisible(hiddenTreeLeaves, false);
+  refreshBrowser();
 }
 
 /** Draws either the previewed part's/layer's entities or the working selection. */
@@ -3970,6 +4100,8 @@ function setStatus(text: string, isError = false): void {
 
 function showTree(root: TreeNode, upgrade = false): void {
   treePanel.render(root, upgrade);
+  lastTreeRoot = root;
+  refreshBrowser();
   if (upgrade) {
     // The second tree of a STEP load swaps the flat list for the assembly
     // hierarchy in place — keep an active filter applied to the new rows.
@@ -5057,6 +5189,8 @@ interface AppearanceControlsHandle {
    * control. */
   reflectOrtho(): void;
   applyDisplayMode(mode: DisplayMode): void;
+  /** Restores persisted zebra settings onto the controls and the viewer. */
+  reflectZebra(z: ZebraSettings): void;
 }
 
 /**
@@ -5139,7 +5273,26 @@ function setupAppearanceControls(): AppearanceControlsHandle {
     for (const b of modeBtns) b.classList.toggle("active", b.dataset.mode === mode);
     const legend = document.getElementById("geometry-legend");
     if (legend) legend.hidden = mode !== "geometry";
+    const zebraGroup = document.getElementById("vc-zebra-group");
+    if (zebraGroup) zebraGroup.hidden = mode !== "zebra";
   };
+  const zebraCount = document.getElementById("vc-zebra-count") as HTMLInputElement | null;
+  const zebraAxis = document.getElementById("vc-zebra-axis") as HTMLSelectElement | null;
+  const zebraFromInputs = (): void => {
+    const z = parseZebra({ count: Number(zebraCount?.value), axis: zebraAxis?.value });
+    if (z) viewer.setZebra(z);
+  };
+  const reflectZebra = (z: ZebraSettings): void => {
+    if (zebraCount) zebraCount.value = String(z.count);
+    if (zebraAxis) zebraAxis.value = z.axis;
+    viewer.setZebra(z);
+  };
+  for (const el of [zebraCount, zebraAxis]) {
+    el?.addEventListener("input", () => {
+      zebraFromInputs();
+      scheduleViewSave();
+    });
+  }
   for (const btn of modeBtns) {
     btn.addEventListener("click", () => {
       const mode = btn.dataset.mode ?? "";
@@ -5149,7 +5302,7 @@ function setupAppearanceControls(): AppearanceControlsHandle {
     });
   }
 
-  return { applyOrtho, reflectOrtho, applyDisplayMode };
+  return { applyOrtho, reflectOrtho, applyDisplayMode, reflectZebra };
 }
 
 /** `null` clip state means clipping is off (mirrors `ViewState.clip`). */
@@ -5590,6 +5743,15 @@ try {
   // Collapsing a section moves no camera, so — exactly like the split-view
   // layout picker — the toggle has to ask for the save itself rather than
   // relying on `viewer.onViewChanged`.
+  const browserEl = document.getElementById("browser-panel");
+  if (browserEl) {
+    browserPanel = new BrowserPanel(browserEl, browserToggle, browserActivate);
+    refreshBrowser();
+    document.getElementById("browser-toggle")?.addEventListener("click", () => {
+      setBrowserOpen(browserEl.hasAttribute("hidden"));
+      scheduleViewSave();
+    });
+  }
   collapsiblePanels = setupCollapsiblePanels(scheduleViewSave);
   setupAdvancedGroupCount();
   // The ribbon command strip. A user-driven tab / compact / grid-toggle change
@@ -5725,6 +5887,7 @@ function applyViewState(state: ViewState): void {
     if (state.orthographic !== viewer.isOrthographic()) appearanceControls?.applyOrtho(state.orthographic);
     viewer.frameFromDirection(new THREE.Vector3(...state.viewDirection));
   }
+  appearanceControls?.reflectZebra(state.zebra ?? ZEBRA_DEFAULT);
   appearanceControls?.applyDisplayMode(state.displayMode);
   clippingControls?.applyState(state.clip);
   // Restore, not echo: `setCollapsed` deliberately never fires the toggle's
@@ -5743,6 +5906,7 @@ function applyViewState(state: ViewState): void {
   });
   // Docked form placement — silent restore (`setDocked` never fires the change callback).
   editsPanel.setDocked(state.formsDocked === true);
+  setBrowserOpen(state.browserOpen === true);
   // Restore, not echo: `setWidth` deliberately never fires the resizer's
   // `onChange`, so reopening a document can't rewrite the sidecar it just
   // read (the same contract `setCollapsed` keeps above). Clamping HERE too:
@@ -5843,6 +6007,7 @@ function applyBookmark(bm: ViewBookmark): void {
 /** Re-renders the View ▾ menu's bookmark rows from `viewBookmarks`. Silent —
  * never posts anything (the `setCollapsed` silent-restore contract). */
 function renderBookmarkList(): void {
+  refreshBrowser();
   const list = document.getElementById("bookmark-list");
   if (!list) return;
   list.textContent = "";
@@ -5972,6 +6137,8 @@ function scheduleViewSave(): void {
     }
     const collapsed = collapsiblePanels?.getCollapsed() ?? [];
     if (collapsed.length > 0) view.collapsedPanels = collapsed;
+    const zebra = viewer.getZebra();
+    if (zebra.count !== ZEBRA_DEFAULT.count || zebra.axis !== ZEBRA_DEFAULT.axis) view.zebra = zebra;
     const sidebarWidth = sidebarResizer?.getWidth() ?? SIDEBAR_DEFAULT_PX;
     if (sidebarWidth !== SIDEBAR_DEFAULT_PX) view.sidebarWidth = sidebarWidth;
     // Ribbon state, each omitted at its default so an untouched sidecar stays byte-stable.
@@ -5983,6 +6150,7 @@ function scheduleViewSave(): void {
       if (ribbonState.editsGridOpen) view.editsGridOpen = true;
     }
     if (editsPanel.isDocked()) view.formsDocked = true;
+    if (document.getElementById("browser-panel")?.hidden === false) view.browserOpen = true;
     // The webview is the single writer of the bookmark list (save/rename/
     // replace/delete below mutate `viewBookmarks` in place); every view save
     // carries the current list, omitted when empty like every other additive
@@ -6425,6 +6593,9 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
       // and must never reach innerHTML. A missing element (a stripped-down
       // harness) is a no-op rather than a throw, like every other setup here.
       currentFormat = msg.format;
+      browserDocName = msg.name;
+      browserUnsavedEdits = msg.unsavedEdits;
+      refreshBrowser();
       setScadEligible();
       const chip = document.getElementById("doc-chip");
       const name = document.getElementById("doc-chip-name");
