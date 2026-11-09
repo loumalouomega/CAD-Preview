@@ -12,7 +12,7 @@ import type { BoundaryLayerAchieved } from "./boundaryLayerMeasurement";
 import type { DisplayUnit } from "./lengthUnits";
 import type { KernelState } from "./kernelActivity";
 import type { EntityFacts, ExactMeasureKind, ExactMeasureResult, InterferenceResult, InterferencePairResult } from "./entityFacts";
-import type { DisplayMode } from "./webview/displayMode";
+import type { DisplayMode, ZebraSettings } from "./webview/displayMode";
 import type { ClipPlaneState } from "./webview/clipping";
 import type { PaneLayoutId } from "./webview/viewerPanes";
 import type { StandardPart } from "./stepPartsService";
@@ -336,6 +336,12 @@ export interface ViewState {
    * there is deliberately no MCP surface for it.
    */
   collapsedPanels?: string[];
+  /**
+   * Zebra-stripe settings (stripe count + world axis). Additive, written only
+   * when they differ from `ZEBRA_DEFAULT`, so an untouched sidecar stays
+   * byte-stable; a display preference like `displayMode`, no MCP surface.
+   */
+  zebra?: ZebraSettings;
   /**
    * Sidebar width in px, persisted like {@link ViewState.collapsedPanels}'s
    * precedent. One decimal-integer range: clamp through

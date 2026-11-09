@@ -616,6 +616,7 @@ export function viewerBodyHtml(): string {
         <button class="display-mode-btn" data-mode="hiddenLines" title="Hidden Lines — occluded edges shown faintly through solids">${icon("hiddenLines")} Hidden</button>
         <button class="display-mode-btn" data-mode="flat" title="Flat — unlit constant-colour faces, no shading gradient">${icon("flat")} Flat</button>
         <button class="display-mode-btn" data-mode="geometry" title="Geometry — the B-rep structure: points, edges, faces and solids (bounding shells) as distinct primitives">${icon("edges")} Geom</button>
+        <button class="display-mode-btn" data-mode="zebra" title="Zebra — reflection stripes to judge surface continuity (sampled from the tessellation's normals, not certified)">${icon("shaded")} Zebra</button>
       </div>
       <span class="vc-div" aria-hidden="true"></span>
       <div class="vc-inline-group">
@@ -644,6 +645,18 @@ export function viewerBodyHtml(): string {
              single-open, outside-click dismissal that does not leak to the canvas,
              Escape-returns-focus and arrow navigation for free. -->
         <div id="vc-more-dropdown" class="tb-dropdown hidden" role="menu">
+          <div class="vc-group" id="vc-zebra-group" hidden>
+            <span class="vc-label">Zebra stripes</span>
+            <div class="vc-row">
+              <input type="range" id="vc-zebra-count" class="meshing-slider" min="2" max="40" step="1" value="8" title="Stripe count" aria-label="Zebra stripe count">
+              <select id="vc-zebra-axis" title="Stripe direction (world axis the reflection is projected on)" aria-label="Zebra stripe direction">
+                <option value="x">X</option>
+                <option value="y" selected>Y</option>
+                <option value="z">Z</option>
+              </select>
+            </div>
+            <span class="vc-hint">Sampled from tessellation normals, not certified.</span>
+          </div>
           <div class="vc-group" id="vc-colorfield-group" hidden>
             <span class="vc-label">Colour by field</span>
             <div class="vc-row">

@@ -3,7 +3,7 @@ import type { PaneViewState, ViewBookmark, ViewState } from "./protocol";
 // `import * as THREE from "three"`, so turning this into a value import (e.g.
 // to share `CLIP_AXES`) would pull three.js into the extension-host bundle.
 import type { ClipAxis } from "./webview/clipping";
-import { DISPLAY_MODES } from "./webview/displayMode";
+import { DISPLAY_MODES, parseZebra, ZEBRA_DEFAULT } from "./webview/displayMode";
 import { PANE_LAYOUTS, paneCount, type PaneLayoutId } from "./webview/viewerPanes";
 // Value import, and safe: `collapsiblePanels.ts` is pure data + pure functions
 // with no DOM access at module scope and no three.js import, the same reason
@@ -24,6 +24,7 @@ interface SidecarFile {
   layout?: unknown;
   panes?: unknown;
   collapsedPanels?: unknown;
+  zebra?: unknown;
   sidebarWidth?: unknown;
   bookmarks?: unknown;
   ribbonTab?: unknown;
@@ -97,6 +98,10 @@ export function parseViewStateJson(text: string): ViewState | null {
   // written-by-a-newer-build list down to ids this build actually knows.
   const collapsedPanels = sanitizeCollapsedPanels(file?.collapsedPanels);
   if (collapsedPanels.length > 0) base.collapsedPanels = collapsedPanels;
+
+  // Zebra stripe settings — same additive sibling, same fold-before-1x1 rule.
+  const zebra = parseZebra(file?.zebra);
+  if (zebra && (zebra.count !== ZEBRA_DEFAULT.count || zebra.axis !== ZEBRA_DEFAULT.axis)) base.zebra = zebra;
 
   // Sidebar width — same additive sibling, same fold-before-the-1x1-early-
   // return requirement. `clampSidebarWidth` returns null for a non-number, so
@@ -231,8 +236,8 @@ export function sanitizeBookmarks(raw: unknown): ViewBookmark[] {
 
 /** Serializes view state to the sidecar JSON text (pretty-printed, trailing newline). */
 export function serializeViewStateJson(sourceName: string, view: ViewState): string {
-  const { layout, panes, collapsedPanels, sidebarWidth, bookmarks, ribbonTab, ribbonCompact, ribbonHidden, editsGridOpen, formsDocked, ...viewCore } = view;
-  const file: SidecarFile & { view: Omit<ViewState, "layout" | "panes" | "collapsedPanels" | "sidebarWidth" | "bookmarks" | "ribbonTab" | "ribbonCompact" | "ribbonHidden" | "editsGridOpen" | "formsDocked"> } = {
+  const { layout, panes, collapsedPanels, zebra, sidebarWidth, bookmarks, ribbonTab, ribbonCompact, ribbonHidden, editsGridOpen, formsDocked, ...viewCore } = view;
+  const file: SidecarFile & { view: Omit<ViewState, "layout" | "panes" | "collapsedPanels" | "zebra" | "sidebarWidth" | "bookmarks" | "ribbonTab" | "ribbonCompact" | "ribbonHidden" | "editsGridOpen" | "formsDocked"> } = {
     version: VIEW_STATE_SIDECAR_VERSION,
     source: sourceName,
     view: viewCore,
@@ -249,6 +254,7 @@ export function serializeViewStateJson(sourceName: string, view: ViewState): str
   // Omitted at the 220 default (and only there): a user who dragged back to
   // exactly the pre-resizer width, or never resized, writes a sidecar
   // byte-identical to the untouched one.
+  if (zebra) (file as SidecarFile).zebra = zebra;
   if (sidebarWidth !== undefined && sidebarWidth !== SIDEBAR_DEFAULT_PX) {
     (file as SidecarFile).sidebarWidth = sidebarWidth;
   }

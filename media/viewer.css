@@ -3893,6 +3893,7 @@ button.edit-report:hover { text-decoration: underline; }
    class rules (0,1,0). Keep these with `#plane-entry[hidden]` above. */
 #plane-mid[hidden],
 #vc-colorfield-group[hidden],
+#vc-zebra-group[hidden],
 #vc-colorfield-legend[hidden] {
   display: none;
 }

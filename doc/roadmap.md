@@ -402,17 +402,6 @@ These are outcome groupings, not release numbers. Independent small items can sh
 - **What is left (S):** the cross-repository check — open the exported `.mdpa` in VSCode-MDPA-Preview and confirm both SubModelParts populate. It needs that extension and is not exercised from this repository.
 - **Done when:** that check passes, and KKSS's tutorial links to the page.
 
-#### 2.26 Unit-aware document variables {#unit-aware-document-variables}
-
-*Area: Geometry, Parity. Effort: S–M.*
-
-- **Evidence today:** document variables (`src/editVariables.ts`, evaluated by `src/paramExpr.ts`) are plain numbers in the document's own length unit; `set_variables` and `get_state` expose them headless. A value pasted from a drawing in inches, or an angle written in radians, is silently taken as millimetres or degrees. ElmerStudio's `core/units.py` (read at `b1be253`) shows a cheap, well-bounded design: `10[mm]`, `2[in]`, `5[deg]` bind a unit to the operand just before it, every value is reduced to SI, a deduced dimension (`Dim`, seven base exponents) is checked against what the field expects, and a mismatch **warns but is still applied** ("the SI value is used as it is") — it never rejects, so no existing document can stop loading.
-- **Done so far (2026-11-01):** the bracketed-unit suffix shipped in `paramExpr.ts` — `mm cm m in ft` convert to millimetres and `deg rad` to degrees (`EXPR_UNITS`, lengths from `lengthUnits.ts`), the suffix must touch the number, an unknown unit is a specific error, plain numbers and stored sidecars are unchanged. `W = 2[in]` resolves to 50.8 and drives an op field.
-- **What is left (S):** a dimension check per op field (length, angle, dimensionless count) reported as an Edits-panel warning and as a `warnings` entry on `apply_edit_ops`/`set_variables`, never as a refusal (a mismatch is applied as written); `get_state` returns each variable's `expr`, resolved value and deduced unit. This needs a field→dimension table over the op kinds and a unit carried through evaluation instead of folded into the number.
-- **Why now:** KKSS's geometry-parameter sweep drives these variables through `set_variables`; a unit-checked parameter table is what makes a swept row's value unambiguous in its provenance.
-- **Out of scope:** units on mesh sizes (they already follow the document unit), temperature offsets (`degC`), and any unit in the sidecar's stored numbers.
-- **Done when:** `W = 5[deg]` on a length field warns and still applies, and MCP and the Edits panel report the same warning (the 50.8 conversion and the unchanged-sidecar round trip are covered).
-
 #### 2.38 Unified Browser tree {#unified-browser-tree}
 
 *Area: Interface. Effort: M.*
@@ -432,19 +421,13 @@ These are outcome groupings, not release numbers. Independent small items can sh
 - **Layout:** visibility composes through `applyVisibilityState()`, the one place where Part hide and isolate and layer visibility already meet. Tree group rows expand to descendant leaves (`treeGroups.ts`).
 - **Done when:** a `test:webview` case hides a body from the Browser and the Components tree reflects it; restoring a view from the Browser and from View ▾ yields the same camera.
 
-#### 2.40 Zebra stripes and a centre-of-mass marker {#zebra-stripes-and-centre-of-mass-marker}
+#### 2.40 Zebra continuity probe {#zebra-stripes-and-centre-of-mass-marker}
 
 *Area: Interface, Parity. Effort: S.*
 
-- **Shipped (2026-11-05):** the centre-of-mass marker (Mass Properties ▸ Show centre of mass in view; `Viewer.showCentreOfMassMarker`, pixel-diff case in `test:webview`).
-- **Today:** there is no surface-continuity overlay.
-- **Remaining increment (S):**
-  - **Zebra:** a display overlay that colours faces by `step(fract(k · reflect(view, normal) · axis))`, a stripe environment mapped through the shading normal. It works on the shared tessellation, so on B-rep and mesh sources alike. Stripe count and direction are dock controls.
-    - It is a material swap that composes with Part colours. It never writes `mat.color` (`CLAUDE.md`'s theme rule).
-    - It stays live during a drag through `requestRender()`.
-    - Stripe continuity across an edge is a fact about the *tessellation's* normals, and the overlay says so. It is sampled, not certified, like the deviation map.
-- **Parity:** zebra is webview-only, and the closest headless view is `render_snapshot`. The display mode is added to the snapshot `display` enum only if the shader runs in the snapshot harness, and is recorded as webview-only otherwise.
-- **Done when:** a `test:webview` pixel probe shows continuous stripes across a tangent fillet edge and broken stripes across a sharp box edge on the same model.
+- **Shipped:** the centre-of-mass marker (2026-11-05) and the **Zebra** display mode (`DisplayMode "zebra"`, stripe count and X/Y/Z direction in the ⋯ More menu, additive `zebra` view-state field, `displayMode: "zebra"` on the snapshot tools). The `test:webview` case pins that the mode repaints the model as a two-level stripe pattern, that the count and axis controls change it, that only non-default settings persist and that Shaded restores the original pixels.
+- **What is left (S):** the roadmap's discriminating pixel probe — a stripe scan across a tangent fillet edge versus a sharp box edge on the same model, asserting continuity across the first and a jump across the second. The bracket fixture shows the behaviour by eye; locating the two edge crossings robustly in screen space is the unsolved part.
+- **Done when:** that `test:webview` probe passes and is bug-injected (flat normals must turn it red).
 
 ### Probe-gated — establish feasibility before estimating
 

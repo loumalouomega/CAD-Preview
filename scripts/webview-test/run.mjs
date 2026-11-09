@@ -7763,6 +7763,74 @@ test("mass properties: Show centre of mass in view draws a marker at the centroi
   assert(left < drawn / 4, `unticking removes it (before ${drawn}, after ${left})`);
 });
 
+test("zebra: the mode draws reflection stripes that follow the count and axis controls, persists only non-defaults, and restores shaded", async (page) => {
+  await post(page, fixture("tutorial-bracket-done-geometry"));
+  await post(page, { type: "viewState", view: null });
+  await sleep(900);
+  const grab = async () => {
+    await setPanelHidden(page, true);
+    const shot = (await shotWithoutToast(page, () => page.locator("#app").screenshot())).toString("base64");
+    await setPanelHidden(page, false);
+    return shot;
+  };
+  // Pixels that differ, and the number of near-black / bright model pixels
+  // (stripes are a two-level pattern: lit colour vs the 0.12-darkened colour).
+  const stats = (a, b) => page.evaluate(async ([x, y]) => {
+    const px = async (b64) => {
+      const bmp = await createImageBitmap(await (await fetch(`data:image/png;base64,${b64}`)).blob());
+      const c = document.createElement("canvas");
+      c.width = bmp.width; c.height = bmp.height;
+      c.getContext("2d").drawImage(bmp, 0, 0);
+      return c.getContext("2d").getImageData(0, 0, c.width, c.height).data;
+    };
+    const [A, B] = [await px(x), await px(y)];
+    let diff = 0, dark = 0, light = 0;
+    for (let i = 0; i < A.length; i += 4) {
+      if (Math.abs(A[i] - B[i]) + Math.abs(A[i + 1] - B[i + 1]) + Math.abs(A[i + 2] - B[i + 2]) > 30) diff++;
+      const l = (B[i] + B[i + 1] + B[i + 2]) / 3;
+      if (l < 25) dark++; else if (l > 110) light++;
+    }
+    return { diff, dark, light };
+  }, [a, b]);
+  const shaded = await grab();
+  assert(await page.evaluate(() => document.getElementById("vc-zebra-group").hidden), "the stripe controls are hidden outside zebra mode");
+  await page.click('.display-mode-btn[data-mode="zebra"]');
+  await sleep(400);
+  assert(await page.evaluate(() => { const g = document.getElementById("vc-zebra-group"); return g.hidden; }) === false, "zebra mode reveals the stripe controls");
+  const zebra = await grab();
+  const s1 = await stats(shaded, zebra);
+  assert(s1.diff > 5000, `zebra mode repaints the model (differing pixels ${s1.diff})`);
+  assert(s1.light > 5000 && s1.dark > 5000, `the image is a two-level stripe pattern (light ${s1.light}, dark ${s1.dark})`);
+  // Count control: a different stripe count must change the pattern.
+  await page.evaluate(() => { const r = document.getElementById("vc-zebra-count"); r.value = "20"; r.dispatchEvent(new Event("input", { bubbles: true })); });
+  await sleep(300);
+  const dense = await grab();
+  assert((await stats(zebra, dense)).diff > 3000, "changing the stripe count changes the stripes");
+  // Axis control.
+  await page.evaluate(() => { const r = document.getElementById("vc-zebra-axis"); r.value = "x"; r.dispatchEvent(new Event("input", { bubbles: true })); });
+  await sleep(300);
+  const alongX = await grab();
+  assert((await stats(dense, alongX)).diff > 3000, "changing the stripe axis changes the stripes");
+  // Persistence: non-default settings ride viewChanged; defaults leave the field out.
+  await sleep(900);
+  const views = await sentOf(page, "viewChanged");
+  const last = views[views.length - 1].view;
+  assert(last.displayMode === "zebra" && last.zebra && last.zebra.count === 20 && last.zebra.axis === "x", `viewChanged carries the zebra settings (${JSON.stringify(last.zebra)})`);
+  await page.evaluate(() => {
+    const r = document.getElementById("vc-zebra-count"); r.value = "8"; r.dispatchEvent(new Event("input", { bubbles: true }));
+    const a = document.getElementById("vc-zebra-axis"); a.value = "y"; a.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  await sleep(900);
+  const views2 = await sentOf(page, "viewChanged");
+  assert(views2[views2.length - 1].view.zebra === undefined, "default settings are omitted from the saved view");
+  // Back to shaded restores the original image and hides the controls again.
+  await page.click('.display-mode-btn[data-mode="shaded"]');
+  await sleep(400);
+  const back = await grab();
+  assert((await stats(shaded, back)).diff < 200, "returning to Shaded restores the original pixels");
+  assert(await page.evaluate(() => document.getElementById("vc-zebra-group").hidden), "the stripe controls hide again");
+});
+
 // ── Pin + tolerance fields (measurement annotations) ──────────────────────
 //
 // The tolerance maths is unit-tested (`toleranceBand.test.ts`) and the

@@ -6,6 +6,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/); thi
 
 ## [Unreleased]
 
+### Added
+
+- **Zebra display mode.** A seventh Display mode draws reflection stripes to judge surface continuity (unbroken across a tangent fillet, broken across a sharp edge). It works on B-rep and mesh sources, composes with Part colours, and has a stripe-count slider and X/Y/Z direction selector in the ⋯ More menu; non-default settings persist as an additive `zebra` field of the `.view.json` sidecar. `render_snapshot`/`screenshot_shape` accept `displayMode: "zebra"` at the default settings. The stripes are computed from the tessellation's normals, so they are a sampled estimate, not a certification.
+
 ### Changed
 
 - **meshio++ upgraded to 19.0.0.** Upstream flips `modelTolerances` and `virtualFaces` to default **on** for `meshCadSurface`; `mesh_cad_surface` and the `meshcad` engine follow the new defaults (an explicit `false` still opts out; `block.stp` at size 1 stays 252 triangles). The `octreemesh` tet result now carries the 19.0 volume-fix counters as `octreeMesh.volumeFix` and the panel status line mentions repairs and overlaps.

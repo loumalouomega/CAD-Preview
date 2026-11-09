@@ -114,7 +114,7 @@ import { MeasurementState, type MeasureTool, type MeasurementPick } from "./meas
 import { pointDistance, polylineLength, angleBetweenVectors, circleRadiusFromArcPoints, type Vec3 } from "./measurement";
 import { convertLength, convertLengthBasedProperties, convertVolume, displayUnitFromUnitName, type DisplayUnit, type LengthBasedProperties } from "./units";
 import type { EntityFacts, ExactMeasureKind } from "../entityFacts";
-import { isDisplayMode, type DisplayMode } from "./displayMode";
+import { isDisplayMode, parseZebra, ZEBRA_DEFAULT, type DisplayMode, type ZebraSettings } from "./displayMode";
 import { setupCollapsiblePanels, setupAdvancedGroupCount, type CollapsiblePanelsHandle } from "./collapsiblePanels";
 import {
   formatEntityCounts,
@@ -5057,6 +5057,8 @@ interface AppearanceControlsHandle {
    * control. */
   reflectOrtho(): void;
   applyDisplayMode(mode: DisplayMode): void;
+  /** Restores persisted zebra settings onto the controls and the viewer. */
+  reflectZebra(z: ZebraSettings): void;
 }
 
 /**
@@ -5139,7 +5141,26 @@ function setupAppearanceControls(): AppearanceControlsHandle {
     for (const b of modeBtns) b.classList.toggle("active", b.dataset.mode === mode);
     const legend = document.getElementById("geometry-legend");
     if (legend) legend.hidden = mode !== "geometry";
+    const zebraGroup = document.getElementById("vc-zebra-group");
+    if (zebraGroup) zebraGroup.hidden = mode !== "zebra";
   };
+  const zebraCount = document.getElementById("vc-zebra-count") as HTMLInputElement | null;
+  const zebraAxis = document.getElementById("vc-zebra-axis") as HTMLSelectElement | null;
+  const zebraFromInputs = (): void => {
+    const z = parseZebra({ count: Number(zebraCount?.value), axis: zebraAxis?.value });
+    if (z) viewer.setZebra(z);
+  };
+  const reflectZebra = (z: ZebraSettings): void => {
+    if (zebraCount) zebraCount.value = String(z.count);
+    if (zebraAxis) zebraAxis.value = z.axis;
+    viewer.setZebra(z);
+  };
+  for (const el of [zebraCount, zebraAxis]) {
+    el?.addEventListener("input", () => {
+      zebraFromInputs();
+      scheduleViewSave();
+    });
+  }
   for (const btn of modeBtns) {
     btn.addEventListener("click", () => {
       const mode = btn.dataset.mode ?? "";
@@ -5149,7 +5170,7 @@ function setupAppearanceControls(): AppearanceControlsHandle {
     });
   }
 
-  return { applyOrtho, reflectOrtho, applyDisplayMode };
+  return { applyOrtho, reflectOrtho, applyDisplayMode, reflectZebra };
 }
 
 /** `null` clip state means clipping is off (mirrors `ViewState.clip`). */
@@ -5725,6 +5746,7 @@ function applyViewState(state: ViewState): void {
     if (state.orthographic !== viewer.isOrthographic()) appearanceControls?.applyOrtho(state.orthographic);
     viewer.frameFromDirection(new THREE.Vector3(...state.viewDirection));
   }
+  appearanceControls?.reflectZebra(state.zebra ?? ZEBRA_DEFAULT);
   appearanceControls?.applyDisplayMode(state.displayMode);
   clippingControls?.applyState(state.clip);
   // Restore, not echo: `setCollapsed` deliberately never fires the toggle's
@@ -5972,6 +5994,8 @@ function scheduleViewSave(): void {
     }
     const collapsed = collapsiblePanels?.getCollapsed() ?? [];
     if (collapsed.length > 0) view.collapsedPanels = collapsed;
+    const zebra = viewer.getZebra();
+    if (zebra.count !== ZEBRA_DEFAULT.count || zebra.axis !== ZEBRA_DEFAULT.axis) view.zebra = zebra;
     const sidebarWidth = sidebarResizer?.getWidth() ?? SIDEBAR_DEFAULT_PX;
     if (sidebarWidth !== SIDEBAR_DEFAULT_PX) view.sidebarWidth = sidebarWidth;
     // Ribbon state, each omitted at its default so an untouched sidecar stays byte-stable.
