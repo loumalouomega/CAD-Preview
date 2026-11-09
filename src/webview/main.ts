@@ -2,7 +2,9 @@ import * as THREE from "three";
 import { isKernelFailureMessage } from "../issueDraft";
 import { Viewer } from "./viewer";
 import { refreshPalette } from "./palette";
-import { allCatalogEntries, buildEntityReferenceIndex, QUERYABLE_PANEL_FORMS } from "./opCatalog";
+import { allCatalogEntries, buildEntityReferenceIndex, describeOp, QUERYABLE_PANEL_FORMS } from "./opCatalog";
+import { BrowserPanel } from "./browserPanel";
+import { buildBrowser, parseRowId, splitSketches, type BrowserGroup } from "./browserTree";
 import { hoverContent, inspectorContent, summaryLine } from "./entityExplain";
 import { formatEntityReferences, producingBucketFor } from "./entityReference";
 import { UI_GLYPHS } from "../uiGlyphs";
@@ -203,6 +205,7 @@ const treePanel = new TreePanel(
     const leaves = treePanel.leafIdsFor(id);
     viewer.setGroupsVisible(leaves.length > 0 ? leaves : [id], !visibilityState.isTreeGroupHidden(id));
     treePanel.refreshVisibility();
+    refreshBrowser();
   },
   visibilityState
 );
@@ -418,6 +421,7 @@ const annotationsModel = new AnnotationsModel(() => {
 const planesModel = new PlanesModel(() => {
   post({ type: "planesChanged", planes: planesModel.list() });
   renderPlanesList();
+  refreshBrowser();
 });
 
 /** Set by `setupClippingControls`, which owns the clip state this reads and writes. */
@@ -745,10 +749,126 @@ function syncEdits(): void {
   const configState = configurationsModel.state;
   post({ type: "editsChanged", ops, variables: variablesModel.list(), configurations: configState.configurations, activeConfiguration: configState.activeConfiguration });
   renderEditsUi();
+  refreshBrowser();
   // Ops whose expressions can't resolve keep their last-good values — surface
   // the first problem without blocking the rest of the replay.
   if (issues.length > 0) setStatus(issues[0], true);
   if (pristineMesh) rebuildMeshModel();
+}
+
+// ── Browser (unified view over tree leaves, Parts, Layers, planes, views, history) ──
+// A VIEW only: it stores nothing, rebuilds from the existing models on every
+// change hook below, and each row action calls the same function the mirrored
+// panel calls (see `browserToggle`/`browserActivate`).
+let browserPanel: BrowserPanel | null = null;
+let lastBrowserGroups: BrowserGroup[] = [];
+let lastTreeRoot: TreeNode | null = null;
+let browserDocName = "";
+let browserUnsavedEdits = 0;
+
+function treeLeafNodes(nodes: TreeNode[], out: TreeNode[] = []): TreeNode[] {
+  for (const n of nodes) {
+    if (n.children && n.children.length > 0) treeLeafNodes(n.children, out);
+    else out.push(n);
+  }
+  return out;
+}
+
+function buildBrowserGroups(): BrowserGroup[] {
+  const parts = partsModel.list();
+  const leaves = treeLeafNodes(lastTreeRoot?.children ?? []);
+  const { bodies, sketches } = splitSketches(leaves);
+  const colorOf = (solidId: string): string | undefined => parts.find((p) => p.volumes.includes(solidId))?.color;
+  const ops = editsModel.list();
+  const savePoint = editsModel.savePoint;
+  return buildBrowser({
+    document: { name: browserDocName, format: currentFormat, unit: currentDisplayUnit, unsavedEdits: browserUnsavedEdits },
+    bookmarkNames: viewBookmarks.map((b) => b.name),
+    planes: planesModel.list().map((p) => ({ id: p.id, name: p.name })),
+    gridVisible: viewer.isGridVisible(),
+    bodies: bodies.map((b) => ({
+      id: b.id,
+      label: b.label,
+      faceCount: b.faceCount,
+      hidden: visibilityState.isTreeGroupHidden(b.id),
+      color: colorOf(b.id),
+    })),
+    sketches: sketches
+      ? { id: sketches.id, hidden: visibilityState.isTreeGroupHidden(sketches.id), faceCount: sketches.faceCount, guide: false }
+      : null,
+    ops: ops.map((o, i) => ({ label: o.label ?? describeOp(o), suppressed: o.suppressed === true, baked: i < savePoint, guide: (o as { guide?: boolean }).guide === true, folder: o.folder })),
+    parts: parts.map((p, i) => ({ name: p.name, color: p.color, hidden: visibilityState.isPartHidden(i) })),
+    layers: layersModel.list().map((l) => ({ id: l.id, name: l.name, color: l.color, visible: l.visible })),
+  });
+}
+
+function refreshBrowser(): void {
+  if (!browserPanel) return;
+  lastBrowserGroups = buildBrowserGroups();
+  browserPanel.render(lastBrowserGroups);
+}
+
+/** Toggles one row's visibility through the mirrored panel's own call. */
+function browserToggleRow(rowId: string): void {
+  const r = parseRowId(rowId);
+  if (!r) return;
+  switch (r.kind) {
+    case "body":
+    case "sketch": {
+      visibilityState.toggleTreeGroupHidden(r.key);
+      viewer.setGroupsVisible([r.key], !visibilityState.isTreeGroupHidden(r.key));
+      treePanel.refreshVisibility();
+      break;
+    }
+    case "part": {
+      visibilityState.toggleHiddenPart(Number(r.key));
+      applyVisibilityState();
+      partsPanel.render(partsModel.list());
+      break;
+    }
+    case "layer": {
+      const layer = layersModel.find(r.key);
+      if (layer) layersModel.setVisible(r.key, !layer.visible);
+      break;
+    }
+    case "op": {
+      const i = Number(r.key);
+      const op = editsModel.list()[i];
+      if (op && i >= editsModel.savePoint) editsModel.setState(i, { suppressed: op.suppressed !== true });
+      break;
+    }
+    case "origin":
+      viewer.toggleGrid();
+      break;
+  }
+}
+
+function browserToggle(rowId: string): void {
+  const g = parseRowId(rowId);
+  if (g?.kind === "group") {
+    // A group eye drives every row to one state: all visible unless they all already are.
+    const group = lastBrowserGroups.find((x) => x.id === g.key);
+    if (!group) return;
+    const target = group.eye === "on" ? "off" : "on";
+    for (const row of group.rows) if (row.eye !== null && row.eye !== target) browserToggleRow(row.id);
+  } else {
+    browserToggleRow(rowId);
+  }
+  refreshBrowser();
+}
+
+function browserActivate(rowId: string): void {
+  const r = parseRowId(rowId);
+  if (!r) return;
+  if (r.kind === "view") {
+    const bm = viewBookmarks[Number(r.key)];
+    if (bm) applyBookmark(bm);
+  } else if (r.kind === "plane") {
+    const plane = planesModel.find(r.key);
+    if (plane && planesClipHandle) planesClipHandle.applyDerivedPlane(new THREE.Vector3(...plane.normal), new THREE.Vector3(...plane.point), plane.name);
+  } else if (r.kind === "body" || r.kind === "sketch") {
+    viewer.highlightGroups([r.key]);
+  }
 }
 
 const variablesPanel = new VariablesPanel(document.getElementById("variables-section")!, {
@@ -1817,6 +1937,7 @@ let lastRawMassProperties:
  * appearance control's "affects what's rendered from now on" precedent. */
 function setDisplayUnit(unit: DisplayUnit): void {
   currentDisplayUnit = unit;
+  refreshBrowser();
   const sel = document.getElementById("vc-unit") as HTMLSelectElement | null;
   if (sel) sel.value = unit;
   if (lastRawMassProperties)
@@ -2617,6 +2738,7 @@ function applyVisibilityState(): void {
       return leaves.length > 0 ? leaves : [groupId];
     });
   if (hiddenTreeLeaves.length > 0) viewer.setGroupsVisible(hiddenTreeLeaves, false);
+  refreshBrowser();
 }
 
 /** Draws either the previewed part's/layer's entities or the working selection. */
@@ -3970,6 +4092,8 @@ function setStatus(text: string, isError = false): void {
 
 function showTree(root: TreeNode, upgrade = false): void {
   treePanel.render(root, upgrade);
+  lastTreeRoot = root;
+  refreshBrowser();
   if (upgrade) {
     // The second tree of a STEP load swaps the flat list for the assembly
     // hierarchy in place — keep an active filter applied to the new rows.
@@ -5611,6 +5735,12 @@ try {
   // Collapsing a section moves no camera, so — exactly like the split-view
   // layout picker — the toggle has to ask for the save itself rather than
   // relying on `viewer.onViewChanged`.
+  const browserEl = document.getElementById("browser-panel");
+  if (browserEl) {
+    browserPanel = new BrowserPanel(browserEl, browserToggle, browserActivate);
+    browserEl.classList.add("visible");
+    refreshBrowser();
+  }
   collapsiblePanels = setupCollapsiblePanels(scheduleViewSave);
   setupAdvancedGroupCount();
   // The ribbon command strip. A user-driven tab / compact / grid-toggle change
@@ -5865,6 +5995,7 @@ function applyBookmark(bm: ViewBookmark): void {
 /** Re-renders the View ▾ menu's bookmark rows from `viewBookmarks`. Silent —
  * never posts anything (the `setCollapsed` silent-restore contract). */
 function renderBookmarkList(): void {
+  refreshBrowser();
   const list = document.getElementById("bookmark-list");
   if (!list) return;
   list.textContent = "";
@@ -6449,6 +6580,9 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
       // and must never reach innerHTML. A missing element (a stripped-down
       // harness) is a no-op rather than a throw, like every other setup here.
       currentFormat = msg.format;
+      browserDocName = msg.name;
+      browserUnsavedEdits = msg.unsavedEdits;
+      refreshBrowser();
       setScadEligible();
       const chip = document.getElementById("doc-chip");
       const name = document.getElementById("doc-chip-name");

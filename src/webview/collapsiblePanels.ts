@@ -22,7 +22,7 @@
  */
 
 /**
- * The twelve collapsible sidebar sections, in `#side` source order.
+ * The collapsible sidebar sections, in `#side` source order.
  *
  * `advanced-group` is a GROUP rather than a leaf section: it wraps the seven
  * entries after it (the read-only analysis sections plus the two library
@@ -31,6 +31,7 @@
  * independently collapsible inside it.
  */
 export const COLLAPSIBLE_PANELS: readonly { readonly panel: string; readonly header: string }[] = [
+  { panel: "browser-panel", header: "browser-header" },
   { panel: "tree-panel", header: "tree-header" },
   { panel: "parts-panel", header: "parts-header" },
   { panel: "layers-panel", header: "layers-header" },

@@ -181,7 +181,7 @@ Returns `true` if the root has more than one child (or any grandchild). The tree
 Collapses any sidebar section down to just its header, so the interface can be reduced to the panels actually in use. State persists per document in `<model>.view.json` (`ViewState.collapsedPanels`).
 
 ```typescript
-const COLLAPSIBLE_PANELS: readonly { panel: string; header: string }[]   // the twelve sections, in #side order
+const COLLAPSIBLE_PANELS: readonly { panel: string; header: string }[]   // the collapsible sections, in #side order (Browser first)
 const ADVANCED_CHILDREN: readonly string[]                               // the seven the Advanced group wraps
 
 function sanitizeCollapsedPanels(ids: unknown): string[]
@@ -1117,6 +1117,14 @@ Browser-side `btoa` counterpart to the `atob`-based decode in `geometryBuilder.t
 **Browser-only dependencies:** `GLTFExporter`'s binary path uses `FileReader`/`Blob`, and `PLYExporter.parse()` uses `requestAnimationFrame` — neither exists in plain Node, so they only run for real inside the webview. `meshExporters.test.ts` polyfills `requestAnimationFrame` to unit-test the PLY path and skips the glTF binary path entirely (covered by the manual F5 verification instead).
 
 ---
+
+## `src/webview/browserTree.ts`
+
+Pure model of the sidebar Browser (no DOM, no Three.js; unit-tested). `buildBrowser(inputs: BrowserInputs): BrowserGroup[]` turns the existing models' state — document facts, bookmark names, construction planes, tree leaves (split by `splitSketches`, which peels off the synthetic `Sketches` leaf), the edit history, Parts, Layers and the grid flag — into the eight groups (`BROWSER_GROUPS`) of `BrowserRow`s. A row carries a typed id (`body:solid-0`, `view:2`, `op:3`, `part:1`, `layer:layer-1`, `plane:plane-1`, `origin:grid`, `sketch:solid-5`) that `parseRowId` splits, an `eye` of `"on" | "off" | null`, an optional colour swatch and a muted flag; a group's `eye` is aggregated (`"mixed"` when rows differ). `filterBrowser` is a case-insensitive substring filter over titles, labels and details; `DEFAULT_COLLAPSED`, `collapseAll` and `expandAll` own the Expand/Collapse bookkeeping. The Browser holds no state: it is a function of its inputs.
+
+## `src/webview/browserPanel.ts`
+
+`class BrowserPanel` — the DOM half, constructed over `#browser-panel` with `onEye(rowId)` and `onActivate(rowId)` callbacks. It keeps only display state (the collapsed group set, the filter text, the last groups) and re-renders through `render(groups)`. `main.ts` builds the groups in `buildBrowserGroups()`, refreshes on every model change hook (`refreshBrowser()`), and routes actions in `browserToggle`/`browserActivate` to the same functions the mirrored panels call: the Components eye's `visibilityState` + `viewer.setGroupsVisible` sequence for bodies and sketches, `visibilityState.toggleHiddenPart` + `applyVisibilityState` for Parts, `layersModel.setVisible`, `editsModel.setState({suppressed})` for features, `applyBookmark` for named views and `planesClipHandle.applyDerivedPlane` for planes.
 
 ## `src/webview/treePanel.ts`
 

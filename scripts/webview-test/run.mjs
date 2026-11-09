@@ -7895,6 +7895,114 @@ test("zebra: stripes run unbroken across a tangent seam and jump across a crease
   assert(Math.abs(crease.left - crease.right) >= 15, `stripes break across the sharp crease (left ${crease.left}, right ${crease.right})`);
 });
 
+// ── Browser (unified view over the existing models) ────────────────────────
+
+const browserGroups = (page) => page.evaluate(() => [...document.querySelectorAll("#browser-body .browser-group")].map((g) => g.dataset.group));
+const browserRowIds = (page) => page.evaluate(() => [...document.querySelectorAll("#browser-body .browser-row")].map((r) => r.dataset.id));
+
+test("browser: eight groups render from the existing models, and Expand/Collapse All and the filter work", async (page) => {
+  await populate(page);
+  await post(page, {
+    type: "layers",
+    nextId: 2,
+    layers: [
+      { id: "layer-0", name: "Default", color: "#b8b8b8", visible: true, locked: false, volumes: [], surfaces: [], lines: [], points: [] },
+      { id: "layer-1", name: "Dims", color: "#ff0000", visible: false, locked: false, volumes: [], surfaces: ["face-1"], lines: [], points: [] },
+    ],
+  });
+  await sleep(300);
+  assert((await browserRowIds(page)).every((id) => id.startsWith("body:")), "only Bodies is open by default");
+  await page.click("#browser-expand-all");
+  assert(eq(await browserGroups(page), ["document", "views", "origin", "bodies", "sketches", "features", "parts", "layers"]), "all eight groups render");
+  const ids = await browserRowIds(page);
+  assert(ids.includes("body:solid-0"), `Bodies lists the tree's solid (got ${JSON.stringify(ids)})`);
+  assert(ids.includes("layer:layer-1") && ids.includes("origin:grid"), "Layers and the Origin grid row render");
+  const dimsEye = await page.evaluate(() => document.querySelector('[data-id="layer:layer-1"] .tree-eye')?.classList.contains("hidden-off"));
+  assert(dimsEye === true, "a hidden layer shows a closed eye");
+  // Collapse All hides every group's rows; Expand All restores them.
+  await page.click("#browser-collapse-all");
+  assert((await browserRowIds(page)).length === 0, "Collapse All hides every row");
+  await page.click("#browser-expand-all");
+  assert((await browserRowIds(page)).length === ids.length, "Expand All restores them");
+  // Filter keeps only matching rows (and expands groups so matches show).
+  await page.click("#browser-search");
+  await page.fill("#browser-filter", "dims");
+  await sleep(150);
+  assert(eq(await browserRowIds(page), ["layer:layer-1"]), `the filter keeps only the matching row (got ${JSON.stringify(await browserRowIds(page))})`);
+  assert(await page.evaluate(() => document.getElementById("browser-filter").offsetParent !== null), "the filter field is rendered visible");
+});
+
+test("browser: hiding a body from the Browser hides it in the viewport and the Components tree reflects it", async (page) => {
+  await populate(page);
+  const treeLeafHidden = () => page.evaluate(() => {
+    const eyes = [...document.querySelectorAll("#tree-body .tree-eye")];
+    const leaf = eyes.find((e) => /component/i.test(e.getAttribute("title") ?? ""));
+    return leaf ? leaf.classList.contains("hidden-off") : null;
+  });
+  assert((await treeLeafHidden()) === false, "the Components leaf starts visible");
+  await page.click('[data-id="body:solid-0"] .tree-eye');
+  await sleep(250);
+  assert((await treeLeafHidden()) === true, "the Components tree's leaf eye closes");
+  const picked = await pickCentreIntoNewPart(page);
+  assert(picked !== null && picked.length === 0, `the body is gone from the viewport (got ${JSON.stringify(picked)})`);
+  assert(await page.evaluate(() => document.querySelector('[data-id="body:solid-0"] .tree-eye').classList.contains("hidden-off")), "the Browser row shows the closed eye too");
+  // And the other direction: the Components eye drives the Browser row.
+  await page.evaluate(() => [...document.querySelectorAll("#tree-body .tree-eye")].find((e) => /component/i.test(e.getAttribute("title") ?? ""))?.click());
+  await sleep(250);
+  assert(await page.evaluate(() => !document.querySelector('[data-id="body:solid-0"] .tree-eye').classList.contains("hidden-off")), "showing it from the tree reopens the Browser eye");
+});
+
+test("browser: a layer eye posts layersChanged like the Layers panel, and a feature eye suppresses the op", async (page) => {
+  await populate(page);
+  await post(page, {
+    type: "layers",
+    nextId: 1,
+    layers: [{ id: "layer-0", name: "Default", color: "#b8b8b8", visible: true, locked: false, volumes: [], surfaces: [], lines: [], points: [] }],
+  });
+  await sleep(250);
+  await page.click("#browser-expand-all");
+  await page.evaluate(() => (window.__sent.length = 0));
+  await page.click('[data-id="layer:layer-0"] .tree-eye');
+  await sleep(250);
+  const sent = await sentOf(page, "layersChanged");
+  assert(sent.length === 1 && sent[0].layers[0].visible === false, `the Browser eye hides the layer through the model (got ${JSON.stringify(sent.map((m) => m.layers[0]?.visible))})`);
+  assert((await browserRowIds(page)).includes("op:0"), "the fixture's history rows appear under Features");
+  await page.evaluate(() => (window.__sent.length = 0));
+  await page.click('[data-id="op:0"] .tree-eye');
+  await sleep(300);
+  const edits = await sentOf(page, "editsChanged");
+  assert(edits.length >= 1 && edits.at(-1).ops[0].suppressed === true, "the feature eye suppresses the op through EditsModel");
+});
+
+test("browser: restoring a named view from the Browser lands on the same camera as View ▾", async (page) => {
+  await populate(page);
+  const bm = (name, d) => ({ name, viewDirection: d, cameraUp: [0, 1, 0], orthographic: false, displayMode: "shaded", clip: null });
+  await postBookmarks(page, [bm("A", [0, 0, 1]), bm("B", [1, 0, 0])]);
+  await page.evaluate(() => document.getElementById("browser-expand-all").click());
+  const lastView = () => page.evaluate(() => (window.__sent ?? []).filter((m) => m.type === "viewChanged").at(-1)?.view ?? null);
+  await page.evaluate(() => (window.__sent.length = 0));
+  await page.click("#view-menu");
+  await page.click("#bookmark-list .bookmark-row .bookmark-name");
+  await sleep(800);
+  const viaMenu = await lastView();
+  await page.keyboard.press("Escape");
+  // Move away, then restore the same bookmark through the Browser.
+  await page.evaluate(() => (window.__sent.length = 0));
+  await page.click("#view-menu");
+  await page.locator("#bookmark-list .bookmark-row .bookmark-name").nth(1).click();
+  await sleep(800);
+  await page.keyboard.press("Escape");
+  await page.evaluate(() => (window.__sent.length = 0));
+  // A scripted click: with the FE Mesh panel open the 900px sidebar is already
+  // squeezed to zero height above it, so Playwright's visibility wait would hang.
+  await page.evaluate(() => document.querySelector('[data-id="view:0"] .tree-row').click());
+  await sleep(800);
+  const viaBrowser = await lastView();
+  assert(viaMenu !== null && viaBrowser !== null, "both restores persist a view");
+  const near = (a, b) => a.every((c, i) => Math.abs(c - b[i]) < 1e-6);
+  assert(near(viaMenu.viewDirection, viaBrowser.viewDirection) && near(viaMenu.cameraUp, viaBrowser.cameraUp), `same camera (menu ${JSON.stringify(viaMenu.viewDirection)}, browser ${JSON.stringify(viaBrowser.viewDirection)})`);
+});
+
 // ── Pin + tolerance fields (measurement annotations) ──────────────────────
 //
 // The tolerance maths is unit-tested (`toleranceBand.test.ts`) and the

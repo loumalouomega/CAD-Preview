@@ -402,24 +402,16 @@ These are outcome groupings, not release numbers. Independent small items can sh
 - **What is left (S):** the cross-repository check — open the exported `.mdpa` in VSCode-MDPA-Preview and confirm both SubModelParts populate. It needs that extension and is not exercised from this repository.
 - **Done when:** that check passes, and KKSS's tutorial links to the page.
 
-#### 2.38 Unified Browser tree {#unified-browser-tree}
+#### 2.38 Browser tree follow-ups {#unified-browser-tree}
 
-*Area: Interface. Effort: M.*
+*Area: Interface. Effort: S.*
 
-- **Today:** the information is shipped but scattered. There is the Components tree (with a filter and per-row eyes), the Parts and Layers panels, construction planes in the dock popover, sketch geometry only in the viewport, and view bookmarks in View ▾.
-- **Proposal:** one **Browser** section at the top of the sidebar, with groups:
-  - **Document:** units, tessellation quality, source format and save state.
-  - **Named Views.**
-  - **Origin:** the world axes and planes, plus the construction planes.
-  - **Bodies:** `solid-N`, with Part colour.
-  - **Sketches:** faces and wires from profile ops, with guide geometry dimmed.
-  - **Features:** the history, the same rows as the Edits panel.
-  - **Parts** and **Layers.**
-
-  Each group and row has a visibility eye. There are Expand All and Collapse All, and a filter.
-- **Rule:** the Browser is a *view* over the existing models (`PartsModel`, layers, planes, bookmarks, `EditsModel`, the component tree). It stores no new state and adds no sidecar. A row action calls the same function as the panel it mirrors.
-- **Layout:** visibility composes through `applyVisibilityState()`, the one place where Part hide and isolate and layer visibility already meet. Tree group rows expand to descendant leaves (`treeGroups.ts`).
-- **Done when:** a `test:webview` case hides a body from the Browser and the Components tree reflects it; restoring a view from the Browser and from View ▾ yields the same camera.
+- **Shipped:** the Browser section (Document, Named Views, Origin, Bodies, Sketches, Features, Parts, Layers; per-row and per-group eyes; Expand/Collapse All; filter) as a view over the existing models, with its `test:webview` cases (hide a body from the Browser and the Components tree reflects it; restore a named view from the Browser and from View ▾ and reach the same camera).
+- **What is left (S):**
+  - **Document tessellation row:** tessellation quality is a host setting that never reaches the webview; it needs one new field on `viewerDefaults` or `documentInfo`.
+  - **Origin visibility:** the viewer has one grid-and-axes flag, so the world axes and planes cannot be hidden individually; a construction plane has no eye.
+  - **Sketch rows:** only the synthetic `Sketches` group is shown, as one row; the produced face and wire ids are not mapped to the op that made them, and guide geometry is not dimmed in the tree.
+- **Done when:** each of those rows exists and is pinned by a `test:webview` case.
 
 ### Probe-gated — establish feasibility before estimating
 

@@ -135,7 +135,7 @@ Opening a STEP/IGES/BREP/CSG/SCAD file for the first time (or reopening one afte
 
 ### The Advanced Group
 
-Every section header reads chevron · icon · title, so a collapsed sidebar is still scannable by icon. The sidebar's top level holds only the sections that **edit** the document — Components, Parts, Layers, Edits, Customizer (`.scad` sources only), FE Mesh. Everything that only *reports* on it, or pulls from a library, lives under a single collapsible **Advanced** group at the bottom:
+Every section header reads chevron · icon · title, so a collapsed sidebar is still scannable by icon. The sidebar's top level holds only the sections that **edit** the document — Browser, Components, Parts, Layers, Edits, Customizer (`.scad` sources only), FE Mesh. Everything that only *reports* on it, or pulls from a library, lives under a single collapsible **Advanced** group at the bottom:
 
 | Advanced ▸ | Sections |
 | --- | --- |
@@ -467,6 +467,22 @@ With `cadPreview.singleKeyCommands` on, these unmodified keys work when focus is
 A key opens the operation's form; it never applies anything. **Shift+R** reopens the form of the last command: the last applied operation's values are filled back in (numbers and vectors; the operands are re-selected where the model still has them), or, if you only opened a form without applying, that form. It never applies either. The keys never take the view snaps (`1`–`6`, `i`), are ignored with Ctrl, Cmd or Alt held and on key auto-repeat, and are off by default; the search lists them dimmed while the setting is off. Each letter is declared once, beside its catalog entry (`src/webview/opCatalog.ts`), and `opCatalog.test.ts` refuses a duplicate or a collision with a view snap.
 
 ### Component Tree Panel
+
+#### The Browser
+
+The **Browser** section at the top of the sidebar is one tree over everything the document already has, so you do not need to open five panels to find something. It stores nothing of its own: it is rebuilt from the same models the other panels use, and each row's action does exactly what the matching panel does.
+
+| Group | Rows | Row action / eye |
+| --- | --- | --- |
+| **Document** | file name and format, display unit, saved / unsaved-edit count | read-only |
+| **Named Views** | the saved view bookmarks | click to restore (same as **View ▾**) |
+| **Origin** | **Axes and grid**, then each saved construction plane | eye toggles axes + grid; click a plane to cut with it |
+| **Bodies** | each solid, with its Part colour and face count | eye hides/shows it (same as the Components eye); click highlights it |
+| **Sketches** | the free sketch faces and wires, when there are any | eye hides/shows the group |
+| **Features** | the edit history, baked rows marked | eye suppresses/unsuppresses the op (not available inside the saved prefix) |
+| **Parts**, **Layers** | each Part / layer with its colour | eye hides/shows it (same as the panel) |
+
+A group's own eye drives all of its rows to one state. **Expand all** / **Collapse all** and the search field in the header work across the whole tree; filtering expands the groups so matches are visible. Only **Bodies** opens by default, to leave the sidebar room. Which groups are expanded is not saved. Not shown yet: tessellation quality in the Document group, per-axis or per-plane visibility, and individual sketch rows.
 
 For multi-solid STEP/IGES assemblies or glTF scenes with multiple meshes, the component tree panel shows the model hierarchy. Click any row to highlight that solid/mesh in the 3D view (all others are dimmed). Click the same row again or click an empty area to deselect.
 

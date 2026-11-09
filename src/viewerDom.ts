@@ -76,6 +76,18 @@ export function viewerBodyHtml(): string {
   </div>
   <div id="layout">
     <div id="side">
+      <div id="browser-panel" class="side-section">
+        <div id="browser-header" class="panel-header">
+          <button class="panel-chevron" type="button" aria-expanded="true" title="Collapse section">${glyph("chevronDown")}</button>
+          <span class="panel-icon" aria-hidden="true">${glyph("folder")}</span>
+          <span id="browser-title" class="panel-title">Browser</span>
+          <input id="browser-filter" type="search" placeholder="Filter…" title="Filter the Browser by name" hidden>
+          <button id="browser-search" class="panel-icon-btn" type="button" aria-expanded="false" title="Filter the Browser by name">${glyph("search")}</button>
+          <button id="browser-expand-all" class="panel-icon-btn" type="button" title="Expand all groups">${glyph("chevronDown")}</button>
+          <button id="browser-collapse-all" class="panel-icon-btn" type="button" title="Collapse all groups">${glyph("chevronRight")}</button>
+        </div>
+        <div id="browser-body"></div>
+      </div>
       <div id="tree-panel" class="side-section">
         <div id="tree-header" class="panel-header">
           <button class="panel-chevron" type="button" aria-expanded="true" title="Collapse section">${glyph("chevronDown")}</button>
