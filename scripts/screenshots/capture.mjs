@@ -247,6 +247,25 @@ const SHOTS = [
   },
   { file: "components-tree.png", setup: populate, target: { sel: "#tree-panel" } },
   {
+    // The Browser is off by default (View ▾ ▸ Browser); open it and expand
+    // every group so the shot shows what the tree is a view over.
+    file: "browser-panel.png",
+    setup: async (page) => {
+      await populate(page);
+      await page.evaluate(() => {
+        document.getElementById("browser-toggle").click();
+        document.getElementById("browser-expand-all").click();
+        // Screenshot only: the shipped panel is height-capped and scrolls.
+        const el = document.getElementById("browser-panel");
+        el.style.maxHeight = "none";
+        el.style.flex = "none";
+        document.getElementById("browser-body").style.overflow = "visible";
+      });
+      await sleep(300);
+    },
+    target: { sel: "#browser-panel" },
+  },
+  {
     // The Standard Parts panel talks to the real step.parts network API in
     // production — there's no WASM fixture for it, so this fakes one
     // realistic `standardPartsSearchResult` round trip (matching the

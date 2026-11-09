@@ -672,6 +672,7 @@ function variableUsage(): Map<string, VariableUsage> {
 
 /** Re-renders the Edits + Variables panels from the models (no host post). */
 function renderEditsUi(): void {
+  refreshBrowser(); // Features rows follow the op list, including the silent sidecar hydration
   // The one choke point every op-list change funnels through — sidecar
   // hydration, a user edit, an undo/redo/jump, and an external reconciliation.
   // Rebuilding the hover tooltip's reverse index here (rather than per hover
@@ -749,7 +750,6 @@ function syncEdits(): void {
   const configState = configurationsModel.state;
   post({ type: "editsChanged", ops, variables: variablesModel.list(), configurations: configState.configurations, activeConfiguration: configState.activeConfiguration });
   renderEditsUi();
-  refreshBrowser();
   // Ops whose expressions can't resolve keep their last-good values — surface
   // the first problem without blocking the rest of the replay.
   if (issues.length > 0) setStatus(issues[0], true);
@@ -5748,7 +5748,7 @@ try {
     browserPanel = new BrowserPanel(browserEl, browserToggle, browserActivate);
     refreshBrowser();
     document.getElementById("browser-toggle")?.addEventListener("click", () => {
-      setBrowserOpen(browserEl.hidden);
+      setBrowserOpen(browserEl.hasAttribute("hidden"));
       scheduleViewSave();
     });
   }
