@@ -2477,7 +2477,8 @@ export class Viewer {
                 "#include <dithering_fragment>",
                 `#include <dithering_fragment>
 {
-  vec3 zr = inverseTransformDirection(reflect(normalize(-vViewPosition), normalize(normal)), viewMatrix);
+  vec3 zv = isOrthographic ? vec3(0.0, 0.0, -1.0) : normalize(-vViewPosition);
+  vec3 zr = inverseTransformDirection(reflect(zv, normalize(normal)), viewMatrix);
   float zs = step(0.5, fract(dot(zr, uZebraAxis) * uZebraCount * 0.5 + 0.25));
   gl_FragColor.rgb = mix(gl_FragColor.rgb * 0.12, gl_FragColor.rgb, zs);
 }`,

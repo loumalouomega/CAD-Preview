@@ -7831,6 +7831,70 @@ test("zebra: the mode draws reflection stripes that follow the count and axis co
   assert(await page.evaluate(() => document.getElementById("vc-zebra-group").hidden), "the stripe controls hide again");
 });
 
+test("zebra: stripes run unbroken across a tangent seam and jump across a crease", async (page) => {
+  const R = 10, N = 12, deg = Math.PI / 180;
+  const b64 = (arr) => Buffer.from(arr.buffer, arr.byteOffset, arr.byteLength).toString("base64");
+  // A strip along Z whose cross-section is the polyline `pts` (x, y), one
+  // face per consecutive run; winding gives the outward normal (sin φ, -cos φ).
+  const strip = (pts) => {
+    const pos = [], idx = [];
+    pts.forEach(([x, y], i) => { pos.push(x, y, 0, x, y, 20); });
+    for (let i = 0; i < pts.length - 1; i++) {
+      const a = 2 * i, b = a + 1, c = a + 2, d = a + 3;
+      idx.push(a, c, b, b, c, d);
+    }
+    return { positions: b64(new Float32Array(pos)), indices: b64(new Uint32Array(idx)) };
+  };
+  const arcPts = (a0, a1) => Array.from({ length: N + 1 }, (_, i) => {
+    const phi = a0 + ((a1 - a0) * i) / N;
+    return [R * Math.sin(phi), -R * Math.cos(phi)];
+  });
+  const linePts = (phi, from, to) => [[from * Math.cos(phi), from * Math.sin(phi)], [to * Math.cos(phi), to * Math.sin(phi)]];
+  const load = async (faces, count) => {
+    await post(page, { type: "geometry", meshes: faces.map((f, k) => ({ ...strip(f), groupId: "solid-0", faceId: `face-${k}` })), edges: [], points: [] });
+    await post(page, { type: "viewState", view: { viewDirection: [0, -1, 0], cameraUp: [0, 0, 1], orthographic: true, displayMode: "zebra", clip: null, zebra: { count, axis: "x" } } });
+    await sleep(700);
+    await setPanelHidden(page, true);
+    const shot = (await shotWithoutToast(page, () => page.locator("#app").screenshot())).toString("base64");
+    await setPanelHidden(page, false);
+    return shot;
+  };
+  // One luminance row through the model middle: model span + values.
+  const row = (b64png) => page.evaluate(async (b64) => {
+    const bmp = await createImageBitmap(await (await fetch(`data:image/png;base64,${b64}`)).blob());
+    const c = document.createElement("canvas");
+    c.width = bmp.width; c.height = bmp.height;
+    const g = c.getContext("2d");
+    g.drawImage(bmp, 0, 0);
+    const y = Math.round(bmp.height * 0.45);
+    const d = g.getImageData(0, y, bmp.width, 1).data;
+    const lum = []; for (let i = 0; i < bmp.width; i++) lum.push((d[i * 4] + d[i * 4 + 1] + d[i * 4 + 2]) / 3);
+    return lum;
+  }, b64png);
+  const span = (lum) => {
+    const bg = lum[40]; // empty scene background, left of the model
+    const on = lum.map((v, i) => [v, i]).filter(([v, i]) => i > 60 && Math.abs(v - bg) > 6).map(([, i]) => i);
+    return [on[0], on[on.length - 1]];
+  };
+  // Smooth: two faces of ONE cylinder arc split at φ = 0, where the stripe
+  // function is neutral, so the seam sits inside a stripe. Equal widths put the
+  // seam on the model's centre column.
+  const stepAtSeam = (lum) => {
+    const [l, r] = span(lum);
+    const c = Math.round((l + r) / 2);
+    return { c, left: lum[c - 4], right: lum[c + 4], w: r - l };
+  };
+  const smooth = stepAtSeam(await row(await load([arcPts(-40 * deg, 0), arcPts(0, 40 * deg)], 6)));
+  assert(smooth.w > 150, `the smooth strip renders (width ${smooth.w}px)`);
+  assert(Math.abs(smooth.left - smooth.right) <= 3, `stripes continue across the tangent seam (left ${smooth.left}, right ${smooth.right})`);
+  // Crease: two planar faces (normals -10° and +50°) meeting at x = 0, equal
+  // projected widths. Same seam column, but the reflection jumps there.
+  const w = 10;
+  const crease = stepAtSeam(await row(await load([linePts(-10 * deg, -w / Math.cos(10 * deg), 0), linePts(50 * deg, 0, w / Math.cos(50 * deg))], 5)));
+  assert(crease.w > 150, `the creased strip renders (width ${crease.w}px)`);
+  assert(Math.abs(crease.left - crease.right) >= 15, `stripes break across the sharp crease (left ${crease.left}, right ${crease.right})`);
+});
+
 // ── Pin + tolerance fields (measurement annotations) ──────────────────────
 //
 // The tolerance maths is unit-tested (`toleranceBand.test.ts`) and the

@@ -8,7 +8,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/); thi
 
 ### Added
 
-- **Zebra display mode.** A seventh Display mode draws reflection stripes to judge surface continuity (unbroken across a tangent fillet, broken across a sharp edge). It works on B-rep and mesh sources, composes with Part colours, and has a stripe-count slider and X/Y/Z direction selector in the ⋯ More menu; non-default settings persist as an additive `zebra` field of the `.view.json` sidecar. `render_snapshot`/`screenshot_shape` accept `displayMode: "zebra"` at the default settings. The stripes are computed from the tessellation's normals, so they are a sampled estimate, not a certification.
+- **Zebra display mode.** A seventh Display mode draws reflection stripes to judge surface continuity (unbroken across a tangent fillet, broken across a sharp edge). It works on B-rep and mesh sources, composes with Part colours, and has a stripe-count slider and X/Y/Z direction selector in the ⋯ More menu; non-default settings persist as an additive `zebra` field of the `.view.json` sidecar. `render_snapshot`/`screenshot_shape` accept `displayMode: "zebra"` at the default settings. The stripes are computed from the tessellation's normals, so they are a sampled estimate, not a certification. In orthographic projection the stripes use the constant view direction rather than a per-fragment one, so a flat face is one uniform stripe state. A `test:webview` probe pins continuity: stripes run unbroken across the seam of two tangent faces and break across a sharp crease.
 
 ### Changed
 
