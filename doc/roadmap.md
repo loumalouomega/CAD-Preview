@@ -59,7 +59,7 @@ Existing implementation references were checked against the repository where not
 
 **Closed 2026-11-01 (1.7; 2.26 first increment; 2.30 stepping).** Extension, not a planning review: nothing was re-ranked. 1.7 (sidecar fields that arrived after the file was written) shipped as `LEGACY_MESH_DEFAULTS` (`conformal` → `false` for a sidecar that lacks it), with a panel/`generate_mesh` note and a drift-guard test; it left this list. No other sidecar was found with a behaviour-changing later-added field. 2.26 (unit-aware document variables) shipped in full: bracketed units plus advisory per-field dimension warnings on `apply_edit_ops`, `set_variables` and the Edits panel, and a deduced `unit` per variable in `get_state`.
 
-**Extended 2026-10-31 (ElmerStudio review and Non-goal recovery).** Extension, not a planning review: nothing was re-ranked and no existing ID moved. The [ElmerStudio review](#elmerstudio-review) added [unit-aware document variables](#unit-aware-document-variables) (2.26), rule-defined Part membership (2.27, since shipped and removed), the parametric-curve profile (since shipped and removed), transport-agnostic 3D-mouse input (since shipped and removed) and [Part rename and delete events for embedders](#part-rename-and-delete-events) (5.4); a second pass over its picking code the same day added stepping through entities under the cursor (2.30, since shipped and removed), and a third pass over its model-format history added sidecar fields that arrived after the file was written (since shipped and removed). Four Non-goals were re-read against today's kernels (meshio++ 17.23.0 with `fitCad`, `checkConformity` and prism layers, Manifold, the OpenSCAD WASM) and re-opened as probes that route around the dead API rather than revive it: [sampled B-rep self-intersection](#sampled-brep-self-intersection) (3.14), [B-rep repair by refit](#brep-repair-by-refit) (3.15), [3D text through OpenSCAD](#text-through-openscad) (3.16) and [OpenSCAD library staging](#openscad-library-staging) (3.17); section 4 is recreated for [a volume behind the prism-layer shell](#volume-behind-prism-layers) (4.11) and [physics-calibrated size presets](#physics-calibrated-size-presets) (4.12). Each original Non-goal entry stays and points at its probe. Stale facts fixed in passing: the gmsh-wasm version in the kernel review, the meshio++ and `view.*` "never called" rows, two links to a closed validity-report item, and a hex-dominant link that pointed at the wrong Non-goal group.
+**Extended 2026-10-31 (ElmerStudio review and Non-goal recovery).** Extension, not a planning review: nothing was re-ranked and no existing ID moved. The [ElmerStudio review](#elmerstudio-review) added unit-aware document variables (2.26), rule-defined Part membership (2.27, since shipped and removed), the parametric-curve profile (since shipped and removed), transport-agnostic 3D-mouse input (since shipped and removed) and [Part rename and delete events for embedders](#part-rename-and-delete-events) (5.4); a second pass over its picking code the same day added stepping through entities under the cursor (2.30, since shipped and removed), and a third pass over its model-format history added sidecar fields that arrived after the file was written (since shipped and removed). Four Non-goals were re-read against today's kernels (meshio++ 17.23.0 with `fitCad`, `checkConformity` and prism layers, Manifold, the OpenSCAD WASM) and re-opened as probes that route around the dead API rather than revive it: [sampled B-rep self-intersection](#sampled-brep-self-intersection) (3.14), [B-rep repair by refit](#brep-repair-by-refit) (3.15), [3D text through OpenSCAD](#text-through-openscad) (3.16) and [OpenSCAD library staging](#openscad-library-staging) (3.17); section 4 is recreated for [a volume behind the prism-layer shell](#volume-behind-prism-layers) (4.11) and [physics-calibrated size presets](#physics-calibrated-size-presets) (4.12). Each original Non-goal entry stays and points at its probe. Stale facts fixed in passing: the gmsh-wasm version in the kernel review, the meshio++ and `view.*` "never called" rows, two links to a closed validity-report item, and a hex-dominant link that pointed at the wrong Non-goal group.
 
 **Closed 2026-11-03 (Parameters table).** Extension, not a planning review: nothing was re-ranked. 2.31 shipped (comment/favourite/reorder/filter/Unit selector, CSV/JSON import and export, apply-on-leave toggle, Model parameters with Promote to variable; `set_variables`/`get_state` carry `comment` and `favourite`) and left this list; the 2.32 and 2.34 numbers are unchanged. 2.32 (variable Used-by list and expression autocomplete) shipped next and left this list too.
 
@@ -73,7 +73,9 @@ Existing implementation references were checked against the repository where not
 
 **Closed 2026-11-06 (History timeline depth; Feature form ergonomics).** Extension, not a planning review: nothing was re-ranked and no other open ID changed. 2.37 shipped its remainder: history **folders** (a display-only `folder` tag on each op, so it rides every existing sidecar path; grouped, collapsible rows in the Edits list; `set_edit_op_state` takes `folder`/`toIndex`) and **drag reorder** (`planOpMove`, shared by the row drag, Alt+↑/↓ and the new `move_edit_op` tool). The reorder check is stricter than the roadmap's "no reference crossing the move": entity ids are positional, so it also refuses two shape-changing ops crossing each other, a stored selector query naming an op in the span, and anything touching the saved prefix. 2.41 shipped its remainder: the operation form can be **docked** over the viewport (`ViewState.formsDocked`, the one node is moved, not copied). Both left this list.
 
-**Extended 2026-11-01 (SolidCraft review).** Extension, not a planning review: nothing was re-ranked and no existing ID moved. The [SolidCraft review](#solidcraft-review) compared this extension's interface against a full parametric modeller's, and added fourteen items to Ready product work and four probes. The Ready product work items are [the parameters table](#parameters-table) (2.31), configurations (2.33, since shipped and removed), command search and keyboard-first commands (2.34, since shipped and removed), a ribbon command strip (2.35, since shipped and removed), [a two-tone icon set](#two-tone-icon-set) (2.36), history timeline depth (2.37, since shipped and removed), [a unified Browser tree](#unified-browser-tree) (2.38), navigation upgrades (2.39, since shipped and removed), zebra stripes and a centre-of-mass marker (2.40, since shipped and removed), feature form ergonomics (2.41, since shipped and removed), named materials in the Parts panel (2.42, since shipped and removed), an issue draft from a failure (2.43, since shipped and removed) and a welcome walkthrough with samples (2.44, since shipped and removed). The probes are [curvature, minimum radius and isocurve overlays](#curvature-and-isocurve-overlays) (3.18), [sheet-metal flat patterns of an imported part](#sheet-metal-flat-pattern) (3.19), [frame members along wireframe edges](#frame-members-along-edges) (3.20) and [on-canvas parameter handles](#on-canvas-parameter-handles) (5.5). Section 2 resumes at 2.31: 2.29 and 2.30 belonged to items that have shipped and left the list, and 2.30 is still cited for stepping through entities under the cursor, so neither number is reused. A new area tag, *Interface*, covers items whose main product is the webview's interaction design. One new Rejected-scope entry was added: a photoreal render workspace. The constraint-sketcher rejection was re-read against SolidCraft and stands.
+**Extended 2026-11-01 (SolidCraft review).** Extension, not a planning review: nothing was re-ranked and no existing ID moved. The [SolidCraft review](#solidcraft-review) compared this extension's interface against a full parametric modeller's, and added fourteen items to Ready product work and four probes. The Ready product work items are the parameters table (2.31), configurations (2.33, since shipped and removed), command search and keyboard-first commands (2.34, since shipped and removed), a ribbon command strip (2.35, since shipped and removed), a two-tone icon set (2.36), history timeline depth (2.37, since shipped and removed), [a unified Browser tree](#unified-browser-tree) (2.38), navigation upgrades (2.39, since shipped and removed), zebra stripes and a centre-of-mass marker (2.40, since shipped and removed), feature form ergonomics (2.41, since shipped and removed), named materials in the Parts panel (2.42, since shipped and removed), an issue draft from a failure (2.43, since shipped and removed) and a welcome walkthrough with samples (2.44, since shipped and removed). The probes are [curvature, minimum radius and isocurve overlays](#curvature-and-isocurve-overlays) (3.18), [sheet-metal flat patterns of an imported part](#sheet-metal-flat-pattern) (3.19), [frame members along wireframe edges](#frame-members-along-edges) (3.20) and [on-canvas parameter handles](#on-canvas-parameter-handles) (5.5). Section 2 resumes at 2.31: 2.29 and 2.30 belonged to items that have shipped and left the list, and 2.30 is still cited for stepping through entities under the cursor, so neither number is reused. A new area tag, *Interface*, covers items whose main product is the webview's interaction design. One new Rejected-scope entry was added: a photoreal render workspace. The constraint-sketcher rejection was re-read against SolidCraft and stands.
+
+**Extended 2026-11-10 (coverage and cross-extension review, Non-goal recovery).** Extension, not a planning review: nothing was re-ranked and no existing ID moved. The [coverage and cross-extension review](#coverage-and-cross-extension-review) read this repository at 3.41.0 beside VSCode-MDPA-Preview 5.38.0 and KKSS 2.36.0 and added two upkeep items ([stylesheet consolidation](#stylesheet-consolidation) 1.8, [reduced motion and keyboard paths](#reduced-motion-and-keyboard-audit) 1.9), nine Ready product work items (2.45–2.53), eight geometry probes (3.21–3.28), six meshing probes (4.13–4.18), six platform probes (5.6–5.11) and one strategic item ([constrained 2D sketches](#constrained-sketches), 6.4). Four Non-goals were re-read at the maintainer's request and re-opened by a route that was not available or not considered when they were written: interactive sketching with constraints (6.4), the gmsh-wasm checklist (4.18, a new build of the package this project's maintainer also maintains), the kernel-blocked facts (3.28, through the OpenCASCADE that meshio++'s full artifact links) and a narrow slice of the render workspace (5.11). Each Non-goal entry now says so. The same change removed three in-page links whose targets had shipped and left the file, and corrected the unresolved count in 1.1.
 
 Everything previously shipped is tracked in `CHANGELOG.md`, and `CLAUDE.md` holds the invariants, traps and verified kernel facts that a future change could break (not per-feature history, which lives in git) — this page is for what's **not** built yet, plus the Non-goals that record why a direction was rejected so it isn't re-proposed.
 
@@ -336,6 +338,24 @@ One project, read from its documentation and a screenshot. Nothing was built or 
 | Render workspace (lights, environments, PBR materials, image export) | SolidCraft | [Rejected](#rejected-scope): photoreal rendering |
 | URDF export, send to slicer | SolidCraft | [Rejected](#rejected-scope), unchanged |
 
+### Coverage and cross-extension review — 2026-11-10 {#coverage-and-cross-extension-review}
+
+Read this repository at 3.41.0 (`9afec8b`) together with VSCode-MDPA-Preview 5.38.0 and KKSS 2.36.0, asking what a geometry-preparation tool for simulation normally offers that is absent here, which shipped features stop at a limit recorded in a code comment or guide, and where the two extensions and the app present the same thing differently. A source and documentation review; no kernel probe was run for it, which is why most additions are probe-gated.
+
+| Evidence | Opportunity and owner |
+| --- | --- |
+| `Part` (`src/protocol.ts`) carries a name, colour, entity ids, mesh controls and a density; `mdpaWriter.ts` writes one `Properties 0` because "this codebase has no material/property data"; the handoff manifest (`handoffManifest.ts`) carries Parts, units and hashes | CAD: [simulation intent on Parts](#simulation-intent-on-parts) (2.46). Mesh: its *problemtype forms pre-filled from the handoff manifest*. KKSS: the study store carries it. |
+| `gmshSizingFields.ts` uses the Constant, Distance, Threshold, BoundaryLayer, PostView and Min fields only | CAD: [refinement regions](#refinement-regions) (2.45), [size field from a previous solution](#size-field-from-solution) (4.15). |
+| No mid-surface, no automatic small-feature finder (the `defeature` op takes listed faces), no fluid-volume extraction, no contact-pair finder, no section properties, no symmetry cut | CAD: 3.21–3.26. Mesh consumes the pairs in its *structural contact authoring*. |
+| Comments in `occtOperations.ts` and `editOps.ts` name five queued follow-ups (planar-only up-to-face, loft guides across three or more sections, straight-only `filletProfile`, single-edge `splitFace`, `drill` without up-to-face) | CAD: [queued kernel follow-ups](#queued-kernel-follow-ups) (3.27). |
+| The Edits panel has Undo and Redo buttons (`editsPanel.ts` `onUndo`) and no keyboard binding; an embedder cannot list commands, route Undo, see the selection or know the focused panel | CAD: 2.47–2.49. Mesh: the same contracts. KKSS: its Edit menu, command palette and help key. |
+| One cut plane (`ClipPlaneState` in `webview/clipping.ts`); construction planes but no named coordinate system; the Jacobian check covers ten-node tetrahedra only (`gmshService.ts`) | CAD: 2.50–2.52. |
+| `media/viewer.css` has duplicated redesign sections (status bar, `.panel-chevron`, `.panel-icon`), per-panel field classes, three hard-coded tints and no `prefers-reduced-motion` rule; `scripts/ui-drift-check.mjs` informs and never fails | CAD: 1.8, 1.9, [one shared design layer](#shared-design-layer) (5.6). |
+| No `webglcontextlost` handler, no instancing or level of detail (`doc/getting-started.md`: large assemblies are slow, no streaming), no committed visual baselines, no touch handling | CAD: 5.7–5.10. |
+| Four Non-goals state a revival condition that now holds or can be tested | CAD: 3.28, 4.18, 5.11, 6.4. |
+
+**Limits found during review:** the geometry probes name OCCT classes whose binding state in `opencascade.js` 1.1.1 was not re-checked here; each probe's first step is that check, and green in the manifest is still not sufficient. Solver-side meaning (which condition a role maps to, which element a section property feeds) stays with VSCode-MDPA-Preview: nothing here authors a boundary condition, a load or a solver setting.
+
 ### What the GPL-3.0 relicense unlocks {#relicense-unlocks}
 
 CAD-Preview moved from `GPL-2.0-or-later` to `GPL-3.0-or-later` on 2026-09-24. Besides the OpenSCAD port it was made for, this admits Apache-2.0 dependencies: under GPLv2 they were incompatible, and under GPLv3 they are compatible. One of them serves an open item directly (the other, `draco3d`, shipped with compressed glTF):
@@ -358,6 +378,8 @@ It does **not** admit AGPL code, so TetGen stays rejected. Every new bundled dep
 | Geometry probes | Decide which never-called OCCT capabilities become ops | B-rep repair probed and **failed** (no `ShapeFix_*` fixer clears a real finding; see Kernel-blocked) and left the list; the face-region split passed its probe, shipped as the `splitFace` op, and left the list; variable-radius fillets passed theirs and shipped as `FilletOp.radius2` (see `CLAUDE.md`'s Fillet/chamfer call shapes). Next (2026-10-31): the four route-around probes 3.14–3.17, each re-opening a Non-goal | Each probe filed with measured results and a decision |
 | Agent ergonomics | An agent can tell a retryable failure from a model error, and two writers cannot silently clobber each other | Done: OpenSCAD diagnostics (document-derived OpenSCAD text now reaches an agent only inside untrusted-text markers), coded MCP errors (a failure carries a code and `retryable`; an undeclared parameter is warned about) and the MCP revision guard (a stale `expectedRevision` is refused with `stale-revision`). Mark agent-made edits has shipped too. Next: the Upkeep items (1.1, 1.2; sidecar later-added fields, formerly 1.7, shipped) and the remaining Ready product work | An agent's change is visible and refusable |
 | Interface depth | The webview reads like a CAD application: parameters, commands and history are discoverable without opening the right panel first | From the [SolidCraft review](#solidcraft-review): the parameters table, variable "Used by" lists with autocomplete, command search and the ribbon and two-tone op icons (all shipped, so this theme has no open items left); the screenshots were regenerated for each | Each item's `test:webview` case is bug-injected and the screenshots are regenerated and inspected |
+| Simulation hand-off | A decision made on the geometry reaches the case without being made twice | From the [coverage and cross-extension review](#coverage-and-cross-extension-review): simulation intent on Parts (2.46), refinement regions (2.45), named coordinate systems (2.50), then the probes that prepare an idealised model (3.21 mid-surface, 3.23 flow volume, 3.24 interface pairs) | A three-Part model exports to a case that preflights clean in VSCode-MDPA-Preview after one accepted suggestion |
+| One product, three surfaces | The two extensions and KKSS share tokens, commands, Undo and help | Stylesheet consolidation (1.8), the embedder contracts (2.47, 2.48), then the shared design layer (5.6) | A token change lands in all three with one pull request each, and KKSS lists and runs this viewer's commands |
 | Strategic | Remove the kernel ceiling | The self-built OCCT WASM probe (6.1) | The existing test suites pass unchanged against the new build |
 
 These are outcome groupings, not release numbers. Independent small items can ship between waves; a failed probe must not block unrelated work.
@@ -374,7 +396,7 @@ These are outcome groupings, not release numbers. Independent small items can sh
 - **Mesh-target export join: closed.** Two `test:integration` cases (STL and glTF Binary through the real webview) were seen green in CI on PR #90; the baseline dropped 56 → 55.
 - **First host-side increment: done.** The ten host-side entries with the highest data-loss or write-path risk went into `test:integration` on 2026-10-19 (`0b3f86f`), and the baseline dropped 71 → 61. The second increment followed on 2026-10-21: **six entries the harnesses already proved were closed on their first green CI run** — five of them were marked `test-written` (a covering test existed and had never been seen green; the first green run closed them) and one (`svg-silhouette-export`) had a covering case all along — and **eight new cases** took the next eight host-side entries, seven in `test:integration` and one in `test:webview`. The baseline is now **47**.
 - **What the second increment cost and bought.** The harness gained a `showInputBox` stub (`test/integration/suite/modalStubs.ts`): the provider has six text prompts — the macro name, the meshing-preset name, the drawing-sheet template name, the "save primitives as macro" name, and the STL-tessellation size/fraction pair — and none of them was reachable before. The webview harness gained a way to measure a *sub-millimetre* preview change (the entity-point snap's largest correction is 1% of the model diagonal, which at the default framing is a pixel or two against ~150 000 drawn ones). Every new assertion was bug-injected before it was trusted: a no-op sidecar write, a skipped library write, a dropped clearance validation, a removed bundled-starter refusal and a snap that never applies each turned the suite red.
-- **Still open (47 unresolved entries):**
+- **Still open (54 unresolved entries; the count was re-read 2026-11-10 from `scripts/verification-gaps/baseline.json`, which says `{"open": 54}`, so the "47" in the paragraphs above is the figure at the end of the second increment, before later features added entries):**
   - **The host halves** of nearly every panel — quick-picks, save dialogs, `provider.ts` handlers — are what `test:webview` structurally cannot reach. They belong in `test:integration`, using the modal stubs and Test seams already there. What remains is the *feel* of a panel and the parts of a flow the stubs still cannot reach.
   - **The remainder is mostly look-and-feel.** What is left in the registry is dominated by claims no harness can assert — how a panel reads in the light and high-contrast themes, how a toast feels, how a render looks after a recovery. Those are the F5 checklist, and each one says so in its own text.
 - **Next increment (M):** take the next host-side entries — the ones whose claim is still a behaviour rather than a look — into `test:integration`, one case per entry, then lower the baseline by exactly as many as were closed. The rule the second increment followed is the one to keep: **rewrite an entry's claim to the part a harness can decide, then close it by a test that decides exactly that part, and leave the residual in the note.** An entry closed by rewording is the failure this gate exists to prevent.
@@ -389,6 +411,23 @@ These are outcome groupings, not release numbers. Independent small items can sh
 - **What is left:** the decks follow the Nastran reference's card layout but were **not emitted by a Nastran tool** (none is available to this project). Still unexercised: `CBAR`/`CROD`, higher-order `CHEXA`/`CPENTA`, and anything a real tool writes that a hand-authored deck does not.
 - **First useful increment (S):** commit one real tool-emitted deck (a user-contributed or openly licensed one, with its provenance recorded) and add it to the probe, the smoke volume pins and the corpus. If meshio++ reads it with the right extent and volume, this item closes with no product code; if not, the gap is a genuine reader limitation and moves to the probe-gated section, scoped to the card coverage meshio++ actually has.
 - **Done when:** a deck emitted by a real Nastran-family tool loads, meshes and matches an independently known volume. Do not infer solver cards or follow `INCLUDE` files.
+
+#### 1.8 Stylesheet consolidation and a gating drift check {#stylesheet-consolidation}
+
+*Area: Interface, Platform. Effort: M.*
+
+- **Evidence:** `media/viewer.css` (about 5,900 lines) carries the 3.0.0 redesign as overrides appended after the original rules, so the status bar, `.panel-chevron` and `.panel-icon` are each styled in two places and the later one wins by position; form fields are styled per panel (`.meshing-field`, `.surface-field`, `.tb-field`, `.compose-field`) where VSCode-MDPA-Preview and KKSS have one field recipe; three tints are literal colours (`.edits-form-tint-add`, `-cut`, `-ref`); section comments still cite retired tier names. `npm run ui:drift` compares the token set with the sibling extension's and only prints.
+- **First useful increment (S):** merge each duplicated section into one rule set with no visual change, proven by the existing `test:webview` framing checks plus a before-and-after screenshot diff of the pipeline's captures; replace the three tints with theme variables.
+- **Next increment (M):** one `.ui-field` recipe replacing the per-panel field classes; a style test like the sibling's `styleTokens.test.ts` (no literal font size or radius, no transition, colour only from theme variables); `ui:drift` fails CI on a token that differs without an entry in an allow-list that states why.
+- **Done when:** no selector is defined twice for the same purpose, the style test and the drift check run in `npm test`, and the screenshots are regenerated and inspected. Feeds [one shared design layer](#shared-design-layer), which replaces the copies with a single source.
+
+#### 1.9 Reduced motion and keyboard paths {#reduced-motion-and-keyboard-audit}
+
+*Area: Interface. Effort: S.*
+
+- **Evidence:** the stylesheet has seven high-contrast blocks and no `prefers-reduced-motion` rule; `viewerDom.ts` has accessible names throughout, but no test walks a whole task by keyboard, and the docked form, the ribbon overflow and the Browser tree arrived after the last pass.
+- **First useful increment (S):** a reduced-motion block covering every animation and the camera transitions (a snap to a view becomes instantaneous); a `test:webview` case that completes open, select a face, apply a fillet, undo and export using the keyboard only, with focus visible at each step.
+- **Done when:** that case passes in the dark, light and both high-contrast themes, every interactive element has an accessible name (asserted, not sampled), and the guide lists the keyboard path. KKSS runs its own axe pass over the embedded page; this item is the extension-side half.
 
 ### 2. Ready product work {#tier-1-—-ready-product-work}
 
@@ -412,6 +451,90 @@ These are outcome groupings, not release numbers. Independent small items can sh
   - **Origin visibility:** the viewer has one grid-and-axes flag, so the world axes and planes cannot be hidden individually; a construction plane has no eye.
   - **Sketch rows:** only the synthetic `Sketches` group is shown, as one row; the produced face and wire ids are not mapped to the op that made them, and guide geometry is not dimmed in the tree.
 - **Done when:** each of those rows exists and is pinned by a `test:webview` case.
+
+#### 2.45 Refinement regions: box, sphere and cylinder size fields {#refinement-regions}
+
+*Area: Meshing. Effort: M.*
+
+- **Workflow:** refine the mesh in a wake, around a notch or along a weld line that is not a face of the model. Today local size is tied to a Part (`meshSize`, `meshGrading`) or to sampled points (`sizeField`), so refining a region of space means inventing geometry for it.
+- **Evidence:** `gmshSizingFields.ts` composes Constant, Distance, Threshold, BoundaryLayer and PostView fields under one Min field; Gmsh's Box, Ball and Cylinder fields take the same inside and outside sizes plus a transition thickness and need no geometry. Nothing about the pipeline changes: one more field kind joins the Min.
+- **First useful increment (M):** a `refinementRegions` list in the mesh options sidecar (kind, placement in model units, size inside, transition thickness, optional name), validated like the other options; one Gmsh field per region; translucent gizmos in the viewport placed with the transform gizmo's own drag handles; the size estimate (`estimate_mesh_budget`) counts them; the engines that cannot honour a region (octree, fTetWild, meshcad) say so in the panel and in the tool reply instead of ignoring it.
+- **Parity:** `set_mesh_options` and `generate_mesh` take the list; the handoff manifest records it with the other options; presets may carry regions.
+- **Done when:** on `block.stp` a sphere region of half the global size yields a measured mean edge length inside it within 20 % of the request and unchanged outside the transition; a region wholly outside the model is reported and has no effect; a sidecar written before this item reads unchanged.
+
+#### 2.46 Simulation intent on Parts {#simulation-intent-on-parts}
+
+*Area: Ecosystem, Parity. Effort: M. Cross-repository: the consuming half is VSCode-MDPA-Preview's "problemtype forms pre-filled from the handoff manifest"; KKSS's study store carries the fields and marks a study stale when they change.*
+
+- **Workflow:** a user names a Part `Inlet`, picks steel for another, and then has to say both again in the case builder, because only the name crosses. The decision was made where the geometry is; it should travel with it.
+- **Evidence:** `Part` has `density` (used for mass and the bill of materials) and no other physical meaning; the named-materials picker fills that one number from an eleven-entry list (`materialDensity.ts`); `mdpaWriter.ts` writes every element with property id 0 under a single `Properties 0` block; the handoff manifest lists Parts with their groups and nothing about what they are for.
+- **Scope, and what stays out:** this repository records *intent* as data and never interprets it. Three optional fields on a Part: `material` (a name, plus the property values that were shown when it was picked, so the receiving side can detect a mismatch), `role` (one of a short closed list: inlet, outlet, wall, symmetry, fixed, loaded, interface, contact-primary, contact-secondary, far-field, free), and `axes` (the name of a [local coordinate system](#named-local-coordinate-systems)). No boundary value, no load magnitude, no solver setting: those belong to the case builder.
+- **First useful increment (S):** the three fields in the Parts sidecar and panel (a Role dropdown beside the material picker), `set_part` and `get_state`, and the handoff manifest under its v1 tolerance rule (unknown fields ignored by older readers).
+- **Second increment (M):** the material list grows from densities to the property set the sibling's catalogue carries (elastic constants, conductivity, specific heat, expansion, viscosity), read from one shared data file so the two extensions cannot disagree, and the MDPA writer emits one `Properties` block per distinct material with the elements of each Part assigned to it, keeping `Properties 0` for Parts without one.
+- **Done when:** a three-Part export (two materials, one role each) produces a manifest with those fields and an MDPA with two property ids; the sibling extension offers the matching assignments from it (its acceptance, checked there); a sidecar without the fields exports byte-identically to today.
+
+#### 2.47 Undo and redo from the keyboard and from an embedder {#undo-redo-keyboard-and-embedder}
+
+*Area: Interface, Platform. Effort: S.*
+
+- **Evidence:** undo and redo exist as Edits-panel buttons (`editsPanel.ts`, `onUndo`) and as model operations; no key is bound, so Ctrl+Z in the viewport does nothing, and an embedding app has no message to send. KKSS's menu has no Undo for a CAD tab for this reason.
+- **First useful increment (S):** Ctrl+Z and Ctrl+Shift+Z / Ctrl+Y in the viewport and panels (never inside a text field, which keeps its own undo), a host-to-webview `undo` / `redo` message pair, and a `historyState` event carrying whether each is possible and the label of the op it would affect. In VS Code the custom editor's own undo stack and this one must not both fire: decide which owns the keys there (the provider raises content-change, not edit, events today) and record the decision in `doc/protocol.md`.
+- **Parity:** headless callers already have `remove_edit_op` and `set_edit_op_state`; no new tool.
+- **Done when:** a `test:webview` case applies two ops, presses Ctrl+Z twice and Ctrl+Y once and reads the expected history; a test host drives the same through the messages; undo still cannot cross the save point and the refusal names it.
+
+#### 2.48 Command catalogue, selection and focused-panel events for embedders {#embedder-command-and-selection-contracts}
+
+*Area: Platform, Ecosystem. Effort: M. Cross-repository: VSCode-MDPA-Preview adds the same three contracts; KKSS consumes both for one command palette, assistant context and its help key.*
+
+- **Evidence:** `commandSearch.ts` already holds every searchable command (`SearchItem`: ops, actions, panels) for Ctrl+K, but only the webview can read it; selection never leaves the webview except inside a request; KKSS records that its help key cannot tell which panel is in use.
+- **First useful increment (M):** three additive, documented messages. `commandCatalogue` (on request): id, title, category, shortcut and current availability with a reason for each command, plus `runCommand {id}`. `selectionChanged` (debounced): entity kinds and counts, the Parts they belong to and a bounded id sample. `panelFocused`: a stable panel id from a list published in `doc/webview-api.md`. A fourth pair follows the same pattern for an embedder that shows this viewer beside another one: `cameraChanged` (position, target, up and projection in model units, debounced) and `setCamera`, the messages linked cameras already exchange between documents, made available to the host.
+- **Parity:** none of this is a model capability, so no MCP tool; the catalogue ids are the names the MCP documentation uses where a command and a tool do the same thing.
+- **Done when:** a test host lists every command Ctrl+K finds and runs one by id; selecting three faces of one Part emits one event naming that Part; opening the FE Mesh panel emits its id; an embedder that sends and listens for nothing sees today's behaviour.
+
+#### 2.49 Keyboard shortcut map and cheat sheet {#keyboard-shortcut-map}
+
+*Area: Interface. Effort: S.*
+
+- **Evidence:** shortcuts are fixed: six contributed keybindings, the view snaps, and the single-letter commands behind `cadPreview.singleKeyCommands` (`singleKeyTable()` in `commandSearch.ts`). There is no in-product list, and the letters cannot be changed, which matters on non-US layouts and when an embedder already uses a key.
+- **First useful increment (S):** a **Keyboard shortcuts** sheet (opened by `?` and from the command search) generated from `singleKeyTable()` and the action table, so it cannot drift; an optional `cadPreview.keymap` setting mapping command ids to keys, validated (unknown id, duplicate key) with the problem shown in the sheet.
+- **Done when:** the sheet lists every bound command, a remapped key works and the old one does not, and a conflict is reported rather than silently resolved. The sibling extension's view snaps (`1`–`6`, `i`) are adopted here in the same change if both maintainers agree the letters, since its design document already names them as a candidate.
+
+#### 2.50 Named local coordinate systems {#named-local-coordinate-systems}
+
+*Area: Geometry, Ecosystem. Effort: S–M.*
+
+- **Workflow:** a load along a bracket's own axis, a cylindrical boundary condition about a shaft, material axes of an orthotropic layup, results read in a rotated frame. All need an origin and three axes with a name, and the model has only construction planes.
+- **Evidence:** `planeFrame.ts` already derives an origin and an orthonormal frame from a plane; `planesSidecar.ts` persists named planes; nothing exports them.
+- **First useful increment (S):** a coordinate system is a named plane plus a type (Cartesian, cylindrical, spherical) and a choice of which plane axis is the system's first axis; created from a plane, from three picked points, or from a cylindrical face's axis; drawn as a triad; listed in the Browser tree.
+- **Parity:** `set_plane` gains the type; `get_state` lists systems; measurements can report in a named system; the handoff manifest carries each system's origin and axes in export units, and a Part's `axes` field ([simulation intent](#simulation-intent-on-parts)) refers to one by name.
+- **Done when:** a system built on a cylinder's axis reports a point's radius and angle correctly in `measure`; the manifest of an export scaled to metres carries the origin in metres; the sibling extension reads the axes for a cylindrical result transform (its acceptance).
+
+#### 2.51 Several section planes and a section box {#section-planes-and-box}
+
+*Area: Interface. Effort: M.*
+
+- **Evidence:** `ClipPlaneState` (`webview/clipping.ts`) holds one plane with a stencil cap. Looking inside a corner of an assembly needs two or three, and isolating a region needs six.
+- **First useful increment (M):** up to three simultaneous planes, each on an axis preset or a named construction plane, each with its own cap; a section box (six planes from one box gizmo); the cap coloured per Part so adjacent bodies are told apart; measurements snap to cap edges. The state rides the view sidecar and named views.
+- **Parity:** `render_snapshot` accepts the same clip state, so an agent's picture can show an interior.
+- **Done when:** three orthogonal planes show a capped corner on `as1_pe.stp` with each body's cap in its Part colour; a named view restores the planes; one plane behaves exactly as today.
+
+#### 2.52 Quality gate for every element kind, reported per Part {#quality-gate-per-part}
+
+*Area: Meshing. Effort: S–M.*
+
+- **Evidence:** the Jacobian validity check covers ten-node tetrahedra only (`gmshService.ts`); the quality gate and its histogram describe the whole mesh, so a bad region is found by eye; VSCode-MDPA-Preview computes four different metrics for the same mesh.
+- **First useful increment (S):** the validity check for every curved kind the mesher can emit (six-node triangles, eight- and nine-node quadrilaterals, twenty- and twenty-seven-node hexahedra, wedges and pyramids), evaluated at the integration points; the gate's metrics and histogram broken down by Part, with a "show worst elements" action that isolates them.
+- **Next increment (M):** share the metric definitions (scaled Jacobian, skewness, warpage, radius ratio) with the sibling extension as one copied module with a drift test, so both report the same number for the same mesh.
+- **Parity:** `check_mesh_quality` returns the per-Part table.
+- **Done when:** a mesh with one deliberately inverted curved hexahedron fails the gate naming its Part and element; the same exported MDPA reports the same worst scaled Jacobian in both extensions.
+
+#### 2.53 SVG `<use>` and `<text>`, and DXF arcs {#svg-use-and-dxf-arcs}
+
+*Area: Formats. Effort: S.*
+
+- **Evidence:** `svgImport.ts` reports `<use>` and `<text>` as unsupported, so a drawing exported with symbols loses every instance; `dxfSilhouette.ts` writes tessellated silhouettes as polylines with no arc detection, so a drawing of a hole is a 64-gon in the receiving CAD.
+- **First useful increment (S):** resolve `<use>` (including nested references and its own transform) before path extraction, with a depth limit and a cycle check; `<text>` stays unsupported and the message points at "convert text to paths" and at [3D text through OpenSCAD](#text-through-openscad). On export, fit circular arcs to runs of silhouette segments within a stated tolerance and write them as DXF arcs or bulged polylines; a run that does not fit stays a polyline.
+- **Done when:** an SVG with one symbol used six times imports six profiles; the drawing of a plate with four holes exports four circles whose radii match the model within the tolerance, checked by re-reading the DXF.
 
 ### Probe-gated — establish feasibility before estimating
 
@@ -451,6 +574,14 @@ Probes are grouped by area. Each group has its own order table. The order is the
 | 3.18 | Curvature, minimum radius and isocurve overlays | — | The curvature accessors have never been called; analytic fixtures decide it |
 | 3.19 | Sheet-metal flat pattern of an imported part | — | Reuses `wrap`'s develop step; the bend detection is the unknown |
 | 3.20 | Frame members along wireframe edges | — | Sweeps and booleans are verified; corner trims are the unknown |
+| 3.21 | Mid-surface extraction | — | Shell models are the commonest idealisation this tool cannot prepare |
+| 3.22 | Small-feature detection feeding `defeature` | — | The op exists; finding its input is the missing half |
+| 3.23 | Flow-volume extraction | — | Booleans exist; the unknown is robustness on real imported solids |
+| 3.24 | Contact and interface pair detection | — | Reuses the clash machinery; cross-repo, the sibling consumes the pairs |
+| 3.25 | Section properties for profiles and frame members | 3.20 for the member half | Facts only; the profile half is independent |
+| 3.26 | Symmetry detection and cut | — | Detection is the unknown; the cut is a shipped op |
+| 3.27 | Queued kernel follow-ups | — | Five limits recorded in code comments, each a separate binding question |
+| 3.28 | Kernel-blocked facts through meshio++'s OpenCASCADE | a meshio++ release | Re-opens Kernel-blocked entries without waiting for the self-built OCCT |
 
 None of these depends on another's result.
 
@@ -632,12 +763,141 @@ None of these depends on another's result.
 - **If admitted (M, provisional):** a `frameMembers` macro or op (`edgeIds`, profile name, orientation angle, corner style), a small profile table (square/rectangular tube, angle, channel) shipped like `mesh-presets/`, and a cut list in the BOM (length per member).
 - **Out of scope:** weld beads, end caps and gussets as authoring features. Standard-profile sourcing beyond the bundled table goes through step.parts.
 
+##### 3.21 Mid-surface extraction {#mid-surface-extraction}
+
+*Area: Geometry.*
+
+- **Hypothesis:** for a thin-walled solid whose walls are pairs of offset faces, a sheet body lying midway between each pair, trimmed and sewn at the junctions, can be built with bound OCCT calls, and the wall thickness measured for each sheet can travel to the solver as a shell property.
+- **Evidence today:**
+  - `measure_mesh_thickness` and the wall-thickness facts already find face pairs by ray casting on a tessellation.
+  - `shell` and offset operations are bound and shipped; `addSurfaceFromLines` and the sewing ladder exist.
+  - Nothing turns a solid into sheets: a plate, bracket or sheet-metal part must be meshed with solids, which needs several elements through the thickness or gives a wrong bending stiffness.
+- **Probe (S):**
+  1. On a flat plate, an L-bracket and a box-section tube, pair opposite faces by the existing thickness sampling and check the pairing is unambiguous.
+  2. Build each mid-face by offsetting one face of the pair by half the measured thickness (`BRepOffsetAPI_MakeOffsetShape` or a face offset; confirm which is bound and returns a face), then extend and trim at T- and L-junctions.
+  3. Sew, and compare the sheet's area with the mean of the two faces' areas.
+- **Decision gate:** *pass* — the plate and the L-bracket give a connected sheet within 1 % area; ships for planar and cylindrical walls. *Partial* — sheets are correct but junctions are not joined; ships with the gaps reported and a manual extend. *Fail* — recorded with the failing call.
+- **If admitted (M):** a `midSurface` op producing sheet bodies with a per-face thickness, a Part per distinct thickness, the thickness in the handoff manifest, and a 2-D mesh of the result. The sibling extension reads the thickness into shell Properties (cross-repository).
+- **Out of scope:** variable-thickness walls, and solids that are not thin (the op refuses with the measured ratio).
+
+##### 3.22 Small-feature detection feeding `defeature` {#small-feature-detection}
+
+*Area: Geometry, Meshing.*
+
+- **Hypothesis:** the faces that force a mesh far finer than the user asked for (small holes, narrow fillets and chamfers, slivers, short edges) can be found from facts the kernel already reports, ranked by how much they would cost in elements, and handed to the shipped `defeature` op as its face list.
+- **Evidence today:**
+  - `defeature` removes a list of faces the user picks one by one.
+  - `recognize_primitives` classifies cylindrical, conical and toroidal faces with radii; `generate_hole_table` finds holes; `estimate_mesh_budget` prices a size.
+  - `BOPAlgo_RemoveFeatures` is red in this build, so the removal itself stays with `defeature`'s current route.
+- **Probe (S):**
+  1. On `bull.stp` and `daratech.stp`, list candidate features: holes below a diameter, fillets below a radius, faces below an area, edges below a length, each threshold defaulting to a fraction of the requested mesh size.
+  2. For each, estimate the element saving with the budget estimator.
+  3. Apply `defeature` to the top candidates and record how many succeed.
+- **Decision gate:** *pass* — at least two thirds of the proposed holes and fillets are removed cleanly on both models; ships as a **Find small features** panel with checkboxes. *Partial* — detection is reliable, removal is not; ships as a report that highlights and prices the features. *Fail* — recorded.
+- **If admitted (S–M):** the panel, a `find_small_features` tool returning the ranked list, and an option on `generate_prep_report`.
+- **Out of scope:** automatic removal without review.
+
+##### 3.23 Flow-volume extraction {#flow-volume-extraction}
+
+*Area: Geometry.*
+
+- **Hypothesis:** the fluid region of a flow problem can be derived from the solid model with shipped booleans: for internal flow, the cavity enclosed by a solid once its openings are capped; for external flow, a box, cylinder or half-space enclosure minus the body, with the enclosure's faces named.
+- **Evidence today:**
+  - Boolean subtract, `addBox` and `addCylinder`, `addSurfaceFilling` (to cap an opening from its edge loop) and `addVolumeFromSurfaces` all ship.
+  - `analyze_passages` already measures internal passages on a tessellation, which locates the openings.
+  - The sibling extension's wind-tunnel wizard builds an enclosure around a *mesh*; nothing does it for a B-rep, where the result would mesh conformally with boundary layers on the body.
+- **Probe (S):**
+  1. External: on `bull.stp`, subtract the body from a box sized by upstream, downstream and lateral multiples of its bounding box; check one solid results and the body's faces are identifiable in it.
+  2. Internal: on a pipe tee and a manifold, cap each opening with a filled face, build the solid from the inner faces plus caps, and compare its volume with the bounding solid minus the wall.
+- **Decision gate:** *pass* — both succeed and the faces can be grouped automatically into inlet-candidate caps, walls and far field; ships. *Partial* — external only. *Fail* — recorded with the failing shape.
+- **If admitted (M):** an **Extract flow volume** command producing a new body with Parts pre-created for the caps, the walls and the enclosure faces, their roles set through [simulation intent](#simulation-intent-on-parts).
+- **Out of scope:** leak repair on models whose cavity is not closed (the report names the open edges and stops).
+
+##### 3.24 Contact and interface pair detection {#contact-and-interface-pair-detection}
+
+*Area: Geometry, Ecosystem. Cross-repository: VSCode-MDPA-Preview's structural contact authoring consumes the pairs.*
+
+- **Hypothesis:** the face pairs of an assembly that touch, or lie within a tolerance of each other, can be listed from the clearance machinery already shipped, classified as coincident (candidates for tying or for a conformal shared face) or near (candidates for contact), and exported as paired Parts.
+- **Evidence today:**
+  - `check_interference_all` screens body pairs and computes clearance with a budget for large assemblies.
+  - The `conformal` mesh option fragments touching bodies so they share nodes, which is right for bonded parts and wrong for parts that may separate.
+  - Nothing reports *which faces* face each other, so a contact definition is assembled by picking.
+- **Probe (S):**
+  1. On `as1_pe.stp`, for each body pair within the tolerance, find the face pairs by distance and opposing normals (`BRepExtrema_DistShapeShape` per candidate pair, after a bounding-box screen).
+  2. Record the count, the time under the existing budget, and how many pairs a person would accept.
+- **Decision gate:** *pass* — the listed pairs match the visible interfaces with no more than a tenth spurious; ships. *Fail* — recorded.
+- **If admitted (S–M):** an **Interfaces** table in the Clash panel (pair, gap, area, suggested kind), "create Parts" for a pair with the contact roles set, a `find_interfaces` tool, and a per-pair choice between a shared conformal face and separate matching faces at mesh time.
+- **Out of scope:** contact formulation, friction and search settings (the case builder's).
+
+##### 3.25 Section properties for profiles and frame members {#section-properties}
+
+*Area: Geometry.*
+
+- **Hypothesis:** area, centroid, second moments about the principal axes, the principal angle and a torsion estimate of a planar face can be computed from bound OCCT surface properties, and are exactly the numbers a beam element needs.
+- **Evidence today:**
+  - `get_mass_properties` reports volume properties; `GProp_GProps` over a face is the same family.
+  - [Frame members along wireframe edges](#frame-members-along-edges) proposes solids swept along edges; a solver wants the edge and the section's numbers instead.
+- **Probe (S):** compute the properties for a rectangle, a circle and an I-profile, compare with closed forms, and confirm surface inertia is reachable (`BRepGProp.SurfaceProperties` and `MatrixOfInertia`).
+- **Decision gate:** *pass* — within 0.1 % of the closed forms; ships. *Fail* — recorded.
+- **If admitted (S):** a **Section properties** row in Mass Properties for a selected planar face or profile, the same in `get_mass_properties`, and, with frame members, a 1-D export of member centrelines with a section table in the handoff manifest.
+- **Out of scope:** warping constants and shear-centre calculation beyond thin-walled estimates, which are labelled as estimates.
+
+##### 3.26 Symmetry detection and cut {#symmetry-detection-and-cut}
+
+*Area: Geometry.*
+
+- **Hypothesis:** mirror planes of a part can be proposed by testing the principal planes through its centre of mass (reflect, then compare volume of the common solid), and a confirmed plane cuts the model to a half or quarter with the cut faces named.
+- **Evidence today:** `splitByPlane`, mass properties with principal axes, and boolean intersect all ship; halving a model today is manual, and the cut faces must be found and named by hand.
+- **Probe (S):** on a symmetric bracket and on `bull.stp` (not symmetric), reflect about each principal plane, intersect with the original and compare volumes; record false positives and the time.
+- **Decision gate:** *pass* — the symmetric part is detected and the asymmetric one is not, within a stated volume tolerance; ships. *Fail* — recorded; the manual cut remains.
+- **If admitted (S):** **Find symmetry** in Analysis, **Cut to symmetric half** creating a Part named for the plane with the symmetry role, and the fraction of the full model recorded in the handoff manifest so integrated results can be scaled back.
+- **Out of scope:** cyclic symmetry, which needs periodic meshing of the sector faces (the periodic pairs already ship and are the route for a later item).
+
+##### 3.27 Queued kernel follow-ups {#queued-kernel-follow-ups}
+
+*Area: Geometry.*
+
+- **Hypothesis:** five limits recorded as follow-ups in code comments are each one binding question away from shipping.
+- **Evidence today:**
+  - Up-to-face extrusion accepts planar terminating faces only (`occtOperations.ts`, "curved faces are a queued follow-up").
+  - Loft guides across three or more sections are deferred (`occtOperations.ts`).
+  - `filletProfile` rounds corners between straight segments only.
+  - `splitFace` takes one edge, not a wire or several edges.
+  - `drill` has no up-to-face form (`editOps.ts`, "stays a follow-up").
+- **Probe (S, one script per limit under `scripts/probe/examples/`):** for each, the smallest call that would lift it (a prism limited by a curved face through `BRepFeat_MakePrism` or a boolean with a half-space built from the face; a multi-section guide through the pipe-shell route already ruled out for takeoff, so confirm it fails here too before spending more; arc-to-line and arc-to-arc profile fillets through the 2-D fillet API; a wire fed to the face splitter).
+- **Decision gate:** per limit, *pass* ships that limit's extension in the existing op with no new op kind; *fail* replaces the comment with a dated note naming the failing call.
+- **If admitted (S each):** the op's validation, form and schema accept the wider input; `doc/op-coverage-allowlist.txt` and the op tables are unchanged because no kind is added.
+- **Out of scope:** anything listed under Kernel-blocked.
+
+##### 3.28 Kernel-blocked facts through meshio++'s OpenCASCADE {#facts-through-meshio-occ}
+
+*Area: Geometry, Platform. Re-opens Kernel-blocked entries by a route that does not wait for the [self-built OCCT WASM](#self-built-occt-wasm).*
+
+- **Hypothesis:** meshio++'s full artifact statically links a current OpenCASCADE for its STEP and IGES reads and for `fitCad`. A handful of narrow, purpose-built functions in that binding (not a general OCCT API) could return facts and shapes that `opencascade.js` 1.1.1 cannot: face self-intersection, shape healing, IGES and STEP names and colours, hidden-line edges.
+- **Evidence today:**
+  - Each of those is a Kernel-blocked entry whose probe failed on an unbound type or a red class, not on OCCT itself.
+  - This extension already calls meshio++'s OpenCASCADE-backed functions (`fit_mesh_to_cad`, `mesh_cad_surface`, `project_to_cad`) and stages the full artifact.
+  - meshio++ is maintained alongside this project, so a request for a specific function is practical.
+- **Probe (S, mostly upstream):**
+  1. Rank the blocked facts by user value: names and colours on IGES and STEP import first, then self-intersection for `check_brep_health`, then healing for dirty STEP that fails to mesh.
+  2. Ask meshio++ for one function for the first (file bytes in, a tree of names, colours and layer names out) and measure it on the fixtures whose names are lost today.
+  3. Check the cost: the full artifact is large and loaded lazily; a names-only read must not load it for every open.
+- **Decision gate:** *pass* — names and colours arrive for IGES and for STEP entities where the current reader loses them; ships as a second pass that upgrades the tree, the way the deferred assembly tree does. *Fail* — recorded; the entry keeps pointing at the self-built kernel.
+- **If admitted (S–M per fact):** the upgrade pass, then the self-intersection fact, then a heal-and-reimport route offered when meshing fails.
+- **Out of scope:** exposing OpenCASCADE generally through meshio++, and moving modelling operations to it (two kernels editing one shape is the failure to avoid).
+
 #### 4. Meshing probes {#meshing-probes}
 
 | ID | Item | Needs | Why here |
 | --- | --- | --- | --- |
 | 4.11 | A volume behind the prism-layer shell | — | Re-opens 3D boundary layers (the gmsh-wasm checklist's first row) by a route that needs no new Gmsh build |
 | 4.12 | Physics-calibrated size presets | mesh problemtype handoff | Decides whether a physics-derived size is worth a preset; cross-repo |
+| 4.13 | Swept hexahedral meshes | — | A hexahedral route that avoids the rejected type-140 export |
+| 4.14 | Embedded points and curves | — | Sensors and load points need mesh nodes where the user says |
+| 4.15 | Size field from a previous solution | mesh adapt recipe | Closes the adapt loop on the geometry side; cross-repo |
+| 4.16 | Looking inside a volume mesh | — | Rendering cost is the unknown |
+| 4.17 | Triangles for display-only formats | meshio++ readers | Six formats can be viewed and nothing else |
+| 4.18 | A newer gmsh-wasm build against the five gates | a gmsh-wasm release | Re-opens the gmsh-wasm checklist; the build is maintained alongside this project |
 
 Section 4 was emptied and removed when its last probe closed; it is recreated here for the two items below, keeping the highest ID used (4.10) behind them.
 
@@ -675,6 +935,89 @@ Section 4 was emptied and removed when its last probe closed; it is recreated he
 - **If admitted (M):** a "Size from physics…" preset source in the FE Mesh panel reading a `recommendedSize` the embedder (KKSS) hands in, the ladder as starter presets, `growthRate` on the Gmsh engine, and graded (non-uniform) `meshStructured` divisions.
 - **Out of scope:** any automatic re-meshing loop; adaptation stays explicit (Adapt to field).
 
+##### 4.13 Swept hexahedral meshes {#swept-hexahedral-meshes}
+
+*Area: Meshing.*
+
+- **Hypothesis:** a solid that is an extrusion or revolution of a face (a plate, a pipe, a shaft, a bracket of constant thickness) can be meshed with hexahedra or wedges by meshing the source face and sweeping it in layers, using element kinds the MDPA writer already handles, without the hex-dominant recombination whose connector cells were rejected.
+- **Evidence today:**
+  - `Part.meshStructured` gives transfinite meshes where the topology is a mapped block; most swept parts are not.
+  - The MDPA writer handles hexahedra, wedges and their quadratic forms (the octree engines emit them).
+  - Gmsh can extrude a surface mesh in layers, but its `geo` extrusion builds new geometry; whether a sweep can be constrained to an existing OCC volume is the unknown.
+- **Probe (S):**
+  1. Detect sweepable solids: two congruent end faces joined by faces ruled along one direction or about one axis (from the face classification already available).
+  2. On `block.stp` and a drilled plate, mesh the source face with quadrilaterals, sweep in N layers by building the layered volume in the `geo` kernel from the meshed face, and compare the result's volume and boundary with the OCC solid.
+  3. Confirm Part membership survives through boundary correlation, as it does for other engines.
+- **Decision gate:** *pass* — volume within 1e-6, faces correlated, a valid MDPA of hexahedra and wedges; ships as a per-Part option. *Fail* — recorded; structured and octree meshes remain the hexahedral routes.
+- **If admitted (M):** `Part.meshSwept {layers, grading}` with the detection result shown ("sweepable along z, 12.0 mm"), refusal with the reason for a solid that is not, and a smoke case with an exact element count.
+- **Out of scope:** multi-sweep decomposition of general solids.
+
+##### 4.14 Embedded points and curves {#embedded-points-and-curves}
+
+*Area: Meshing.*
+
+- **Hypothesis:** a point or curve of the model that is not a boundary of the meshed entity can be forced into the mesh (a node exactly at a sensor or load location, element edges along a weld line or a reinforcement) through Gmsh's embedding, and exported as a Part of nodes or line elements.
+- **Evidence today:**
+  - `addPoint`, `addLine` and curve ops create such geometry, and Parts can hold points and lines.
+  - The sibling extension synthesises point-load conditions on nodes (`emitLoadConditions.ts`), so it needs a node where the load is.
+  - Whether `mesh.embed` behaves with OCC entities after the conformal fragment step is unverified.
+- **Probe (S):** embed a point and a straight edge in a face and in a volume of `block.stp`; check a node exists at the point within tolerance, edges follow the curve, and the Part's physical group is written.
+- **Decision gate:** *pass* — both dimensions work with and without `conformal`; ships. *Partial* — surfaces only. *Fail* — recorded.
+- **If admitted (S):** an **Embed in mesh** flag on a Part made of points or lines, validation that the entities lie on or in the target, and MDPA output as a SubModelPart of nodes or line conditions.
+- **Out of scope:** embedded surfaces in volumes (interfaces are the [pair detection](#contact-and-interface-pair-detection) item's business).
+
+##### 4.15 Size field from a previous solution {#size-field-from-solution}
+
+*Area: Meshing, Ecosystem. Cross-repository: VSCode-MDPA-Preview's adaptive remeshing recipe writes the size map; KKSS's adaptive-refinement study drives the loop.*
+
+- **Hypothesis:** a target-size map computed from a solved result (an error indicator or a Hessian metric) can drive a fresh mesh of the *geometry*, not only an adaptation of the old mesh, so curved boundaries stay on the CAD surface through every refinement cycle.
+- **Evidence today:**
+  - `sizeField` takes sampled points with sizes and the PostView field is already composed into the size computation.
+  - MMG **Adapt to field** adapts an existing mesh, whose boundary is the previous mesh's facets.
+  - The [physics-calibrated size presets](#physics-calibrated-size-presets) item brings sizes from the case; this brings them from its result.
+- **Probe (S):** take a nodal size field on a coarse mesh of `block.stp` with a sphere of small sizes, feed it as a PostView background field, mesh the geometry, and measure the achieved sizes against the request inside and outside the sphere.
+- **Decision gate:** *pass* — achieved mean edge length within 25 % of the request in both regions; ships. *Fail* — recorded; mesh adaptation stays the only loop.
+- **If admitted (S–M):** `generate_mesh` and the panel accept a size-map file (a mesh with one nodal field, read through meshio++), bounded by the global minimum and maximum; the manifest records the map's hash so the embedder can tell which solution a mesh was adapted to.
+- **Out of scope:** anisotropic maps (the tensor metric was probed for remeshing and not found worth shipping).
+
+##### 4.16 Looking inside a volume mesh {#interior-mesh-inspection}
+
+*Area: Meshing, Interface.*
+
+- **Hypothesis:** after Generate, the cut plane can show the *elements* it crosses (whole cells, the "crinkle" cut) coloured by quality, cheaply enough to drag, so a bad interior region is found before export.
+- **Evidence today:** the FE Mesh preview draws the boundary; the quality histogram counts bad elements without locating them; the cut plane clips triangles, not cells.
+- **Probe (S):** for a one-million-tetrahedron mesh, build the set of cells crossed by a plane and their boundary faces in a worker; measure the time per plane move and the memory.
+- **Decision gate:** *pass* — under 150 ms per move; ships as a toggle on the cut plane. *Partial* — on release only, not while dragging. *Fail* — recorded.
+- **If admitted (M):** the crinkle cut, colour by a quality metric, and "isolate elements below a threshold" as a scatter of whole cells; shares the per-Part breakdown of the [quality gate](#quality-gate-per-part).
+- **Out of scope:** editing elements.
+
+##### 4.17 Triangles for display-only formats {#triangles-for-display-only-formats}
+
+*Area: Formats, Parity.*
+
+- **Hypothesis:** the six formats that open through three.js loaders only (3MF, Collada, AMF, USD, VRML, FBX) can also be reduced to triangles on the host, either by a meshio++ reader where one exists or by serialising the already-loaded scene from the webview, so measurement, mesh health, meshing and drawings stop refusing them.
+- **Evidence today:**
+  - `DISPLAY_ONLY_MESH_FORMATS` exists precisely to refuse those operations by name.
+  - The viewer already serialises an edited STL back to the host for other mesh sources.
+- **Probe (S):** list which of the six meshio++ reads at the current pin; for the rest, serialise the loaded scene (world transforms applied, units from the file) to STL bytes and run `check_mesh_health` on it.
+- **Decision gate:** *pass* per format — the host result matches the displayed triangle count and bounding box; that format leaves the display-only list. *Fail* — it stays, with the reason recorded.
+- **If admitted (S):** the route per format, and the headless tools read the same bytes (through meshio++ where it reads the format; otherwise the tool keeps answering `supported: false`, since no webview exists headless).
+- **Out of scope:** materials, textures and animation.
+
+##### 4.18 A newer gmsh-wasm build against the five gates {#newer-gmsh-wasm-build}
+
+*Area: Meshing, Platform. Re-opens [what a new gmsh-wasm build must supply](#gmsh-wasm-upstream).*
+
+- **Hypothesis:** the five blocked or rejected Gmsh behaviours were all measured on one Gmsh commit (`29726e7`, in both 0.3.0 and 0.4.0). `@loumalouomega/gmsh-wasm` is maintained alongside this project, so a build from a current Gmsh commit is a decision, not a dependency on someone else, and at least the build-side candidates (a stubbed `Relocate3D`, a missing boundary-layer path) may clear.
+- **Evidence today:** the checklist's own first instruction, reproduce each item on a native Gmsh of the same commit, has not been recorded as done; without it nobody knows which rows are Gmsh's behaviour and which are the build's.
+- **Probe (S for the triage, M for the build):**
+  1. Run the five scripts' scenarios on a native Gmsh at `29726e7` and at the current release; file a three-column result (native old, native new, WASM) per row.
+  2. For rows where native-new passes, build gmsh-wasm from that commit with the regression list in the checklist intact (single-thread enforcement, injectable print, the CJS entry, the build-info features).
+  3. Re-run `gmsh-section4.ts`, `gmsh-boundary-layer.ts` and `gmsh-relocate3d.ts` on the new build.
+- **Decision gate:** per row, *pass* moves it out of Non-goals into Ready product work with its gate's numbers; *fail on native too* turns the row into an upstream Gmsh issue link and it stays.
+- **If admitted:** 3-D boundary layers on OCC solids (superseding the need for [a volume behind the prism-layer shell](#volume-behind-prism-layers) if it passes), a `Relocate3D` optimise mode, hex-dominant export if type 140 becomes describable.
+- **Out of scope:** forking Gmsh.
+
 #### 5. Platform probes {#platform-probes}
 
 | ID | Item | Needs | Why here |
@@ -684,6 +1027,12 @@ Section 4 was emptied and removed when its last probe closed; it is recreated he
 | 5.3 | Inline 3D preview as an MCP App resource | two MCP-App hosts | Host support is the unknown |
 | 5.4 | Part rename and delete events for embedders | — | Cross-repo; KKSS owns the report |
 | 5.5 | On-canvas parameter handles | — | Preview latency is the only unknown |
+| 5.6 | One design layer shared with VSCode-MDPA-Preview and KKSS | 1.8 | Three copies of the tokens exist; the mechanism is the decision |
+| 5.7 | WebGL context-loss recovery | — | Reproduction is the hard part |
+| 5.8 | Large-assembly rendering | — | Draw-call and memory budgets are the unknown |
+| 5.9 | Visual-regression scenes | CI software rendering | Determinism under software GL is the unknown |
+| 5.10 | Touch and pen input | a touch device | Cannot be judged without hardware |
+| 5.11 | Presentation captures | — | A narrow, consumer-backed slice of a rejected workspace |
 
 
 ##### 5.1 Per-document kernel isolation {#per-document-kernel-isolation}
@@ -802,6 +1151,78 @@ Section 4 was emptied and removed when its last probe closed; it is recreated he
 - **If admitted (M):** a handle per supported op form, bound to that form's field, so the field shows the value, the expression is preserved, and a field bound to a variable edits the variable with a confirmation. Snap to the grid step. Escape cancels.
 - **Out of scope:** handles that create geometry, which would be sketching (see [Rejected scope](#rejected-scope)), and handles on ops below the save point.
 
+##### 5.6 One design layer shared with VSCode-MDPA-Preview and KKSS {#shared-design-layer}
+
+*Area: Interface, Platform, Ecosystem. Cross-repository: the sibling's roadmap carries the same item; KKSS consumes the result in `kkss-ui.css`.*
+
+- **Hypothesis:** the metric tokens (`--ui-*`), the control recipes that exist in all three products under different class names, the line-glyph set (`uiGlyphs.ts`) and the style rules can live in one source that each product consumes, so a change is made once and a local divergence fails a test.
+- **Evidence today:**
+  - `media/viewer.css` defines the tokens; the sibling has `webview/design-system.css` and a design document whose hoisting proposal was never executed; KKSS re-exports this repository's `uiGlyphs.ts` and keeps its own token copy.
+  - `scripts/ui-drift-check.mjs` already fetches and compares, informationally.
+  - Three icon systems exist here (two TikZ-generated sets and the hand-drawn glyphs) and the two-tone treatment covers seventeen op icons.
+- **Probe (S):** try both mechanisms on the tokens alone. (a) Generated copies: one canonical file, a script that writes each product's copy, and a test in each repository that fails when its copy differs. (b) A small versioned package consumed at build time. Measure what each costs on a token change that all three must pick up, including KKSS's submodule bump.
+- **Decision gate:** choose the mechanism that makes a three-repository token change one pull request per repository with no manual copying; record why.
+- **If admitted (M):** tokens, then recipes (button, icon button, field, segmented picker, section header, badge, toast, spinner), then glyphs; the remaining one-tone op and toolbar icons redrawn two-tone so the sets match; the glossary differences settled with the sibling (`Cut Plane` and `Clip`, `REAR` and `BACK`) and applied in both.
+- **Out of scope:** the scene palette (`--cad-*`), which is this viewer's own, and any change to what a control does.
+
+##### 5.7 WebGL context-loss recovery {#webgl-context-loss-recovery}
+
+*Area: Platform.*
+
+- **Hypothesis:** when the browser drops the WebGL context (a driver reset, a laptop switching GPUs, memory pressure with several large documents open) the viewer can restore the scene from data it still holds, without a reload and without losing the session's unsaved state.
+- **Evidence today:** no `webglcontextlost` or `webglcontextrestored` handler exists in `src/webview` or `media`; the result of a loss is a blank viewport until the document is reopened. KKSS recovers a crashed view by reloading it, which a lost context does not trigger.
+- **Probe (S):** force a loss with the `WEBGL_lose_context` extension in `test:webview`; confirm three.js restores its own resources; list what does not come back (the stencil cap, the picking targets, overlay canvases, the software-render path).
+- **Decision gate:** *pass* — the scene, selection, cut plane and display mode are back after restore; ships with the test. *Partial* — a clear overlay with a Restore button that rebuilds from the last geometry message. *Fail* — recorded with the resource that cannot be rebuilt.
+- **If admitted (S):** the handlers, a `contextLost` host message so an embedder can log it, and the test.
+- **Out of scope:** recovering from a crashed renderer process, which the host owns.
+
+##### 5.8 Large-assembly rendering {#large-assembly-rendering}
+
+*Area: Platform.*
+
+- **Hypothesis:** an assembly with thousands of bodies, many of them repeated instances, can stay interactive by drawing repeated components as instances, drawing small and distant bodies at reduced detail while the camera moves, and uploading geometry progressively.
+- **Evidence today:**
+  - `doc/getting-started.md` states that large assemblies are slow and nothing is streamed.
+  - The XCAF structure is read, so which bodies are instances of one prototype is known, but each is tessellated and uploaded separately.
+  - One kernel worker serves every document ([per-document kernel isolation](#per-document-kernel-isolation) addresses the kernel side, not the renderer).
+- **Probe (S):** on the largest assembly in `examples/` and a synthetic 5,000-instance one, record draw calls, frame time while orbiting, upload time and memory; then prototype instancing for repeated prototypes and a bounding-box proxy during camera motion, and measure again.
+- **Decision gate:** *pass* — the synthetic assembly orbits above 30 frames per second on integrated graphics with picking still exact; ships. *Partial* — instancing only. *Fail* — recorded with the measured ceiling, which goes in the guide.
+- **If admitted (M):** instanced drawing with per-instance colour and visibility, motion-time proxies, progressive upload with the first frame shown early, and the measured limits in the guide.
+- **Out of scope:** out-of-core geometry.
+
+##### 5.9 Visual-regression scenes {#visual-regression-scenes}
+
+*Area: Platform.*
+
+- **Hypothesis:** a small set of committed reference renders, compared with a tolerance under software rendering, would catch the class of change the framing invariants cannot: a display mode that renders wrong, a cap that disappears, a theme whose contrast collapsed.
+- **Evidence today:** `test:webview` asserts framing and state, not pixels; the sibling extension has `scripts/render-parity` with thirty-four scenes; the screenshot pipeline produces images nobody diffs.
+- **Probe (S):** render five scenes (shaded, zebra, cut with cap, exploded, FE mesh preview) twice in CI's software renderer and once locally; measure the pixel difference between runs and across machines.
+- **Decision gate:** *pass* — run-to-run difference below a tolerance that still catches a deliberately broken cap; ships as `npm run test:render`. *Fail* — recorded; pixels stay a manual check.
+- **If admitted (S–M):** about twenty scenes covering each display mode and each theme, the comparison script, and an update command that requires a stated reason.
+- **Out of scope:** comparing against the sibling extension's renders.
+
+##### 5.10 Touch and pen input {#touch-and-pen-input}
+
+*Area: Interface.*
+
+- **Hypothesis:** orbit, pan, zoom and pick work on a touch screen and with a pen through pointer events, without a separate navigation mode: one finger orbits, two pan and pinch, a tap picks, a long press opens the context actions.
+- **Evidence today:** navigation presets exist for mouse and touchpad (`cadPreview.navigationPreset`); nothing reads `pointerType`; KKSS's streamed-desktop deployment is reachable from tablets, where today's viewer cannot be orbited.
+- **Probe (S):** with pointer-event simulation in `test:webview` and one real device, record what the current handlers do with touch input and what the smallest mapping change is.
+- **Decision gate:** *pass* — the four gestures work on the device with the mouse paths unchanged; ships. *Fail* — recorded with the conflicting handler.
+- **If admitted (S–M):** the gesture mapping, larger hit targets when the last pointer was touch, and a guide section.
+- **Out of scope:** a touch-first layout.
+
+##### 5.11 Presentation captures {#presentation-captures}
+
+*Area: Interface. A narrow slice of the rejected render workspace, with consumers: documentation, KKSS's reports and an agent's replies.*
+
+- **Hypothesis:** three things users want from a "render" can be had without a material model or a lighting editor: a turntable recording, a recording of the exploded view opening and of a configuration sweep, and one optional soft-shading mode (ambient occlusion with a ground shadow) for stills.
+- **Evidence today:** screenshots and `render_snapshot` exist; the explode preview and configurations exist but only as still states; the sibling extension records WebM, GIF and PNG sequences from its own viewer.
+- **Probe (S):** record a 120-frame turntable through the canvas at the viewport size and measure the time and file size; prototype screen-space ambient occlusion in the three.js pipeline and check it against the stencil cap, the selection outline and the two-tone display modes.
+- **Decision gate:** *pass* for recording if a turntable encodes in under ten seconds; *pass* for soft shading only if it composes with every display mode without artefacts, otherwise it is dropped and the entry under Rejected scope stays as written.
+- **If admitted (S–M):** **Record** in the View menu (turntable, explode, configuration sweep; WebM, GIF, PNG sequence, matching the sibling's formats), `render_snapshot` taking a `frames` count for a turntable, and the shading mode if it passed.
+- **Out of scope:** materials, environments, lights and path tracing, which stay rejected.
+
 ### 6. Strategic — multi-phase bets {#strategic-—-multi-phase-bets}
 
 *Admission: an L-sized, multi-phase effort that gates other items or reopens Non-goals. Each starts with its own probe, and nothing below it is estimated until that probe reports.*
@@ -857,6 +1278,24 @@ Section 4 was emptied and removed when its last probe closed; it is recreated he
 - **If admitted (L, provisional):** joints and poses in the chosen sidecar, a `pose` parameter on the analysis tools, a sweep option reporting the first colliding pose, and a pose picker in the viewer.
 - **Out of scope:** URDF/SDF export; animation authoring or video export; joint couplings and solvers.
 
+#### 6.4 Constrained 2D sketches {#constrained-sketches}
+
+*Area: Geometry, Interface. Re-opens "Interactive sketching with geometric constraints" from Rejected scope, at the maintainer's request (2026-11-10), under a framing that keeps what the rejection protected.*
+
+- **Why it was rejected, and what changed:** the entry's objections were that a sketcher makes this a modelling application, that no constraint solver existed in the stack, and that click-to-place drawing would trade away the expression-driven forms. The first is a scope decision the maintainer has now reversed for KKSS's sake: a pre-processor whose users must leave it to draw a profile is missing its first step. The second is no longer true in principle: FreeCAD's planar constraint solver and SolveSpace's are both available as libraries under licences compatible with `GPL-3.0-or-later`, and WebAssembly builds of the first have been published. The third is a constraint on the design, not an obstacle: constraints are added **over** the existing profile and curve ops, whose numeric fields and expressions stay the source of truth.
+- **Framing that must hold:** a sketch is a named group of the existing 2-D ops on one construction plane plus a list of constraints between their points and segments (coincident, horizontal, vertical, parallel, perpendicular, tangent, equal, distance, angle, radius). Solving writes numbers back into the ops' own fields; a field that holds an expression is treated as fixed, and a constraint that would change it is reported as a conflict. The replay kernel never sees a constraint: it replays the same ops as today, so a document with constraints opens identically in a build without the solver.
+- **Probe (M):**
+  1. Licence and packaging: confirm a solver's licence, its WebAssembly build's provenance and size, and that it runs in the kernel worker beside the other six kernels.
+  2. Solve a rectangle with two dimensions, a slot (tangent arcs) and an over-constrained case; record solve time, the degrees-of-freedom report and how a conflict is named.
+  3. Round trip: solve, write the fields, replay, and confirm the geometry equals the solved sketch.
+  4. Interaction cost: prototype dragging one point with the solver in the loop and measure the latency against the budget the [on-canvas parameter handles](#on-canvas-parameter-handles) probe sets.
+- **Decision gate:** *pass* — the three cases solve under 50 ms, conflicts are named, and the round trip is exact; phase 1 is admitted. *Partial* — solving works but dragging is too slow; constraints ship as a table without direct manipulation. *Fail* — recorded; the entry returns to Rejected scope with the measurements.
+- **If admitted:**
+  - **Phase 1 (M):** the constraint list in the edits sidecar (additive), a Constraints table in the sketch's form, a degrees-of-freedom readout, colouring of fully-, under- and over-constrained geometry, and tool parity (`apply_edit_ops` carries the constraints; a `solve_sketch` tool reports the solution and conflicts).
+  - **Phase 2 (L):** click-to-place entity creation on the plane with inferred constraints, dragging, trim and extend, and a dimension tool that writes a variable.
+  - **Phase 3:** the reference-image underlay, which the Rejected scope entry tied to the existence of a sketch workflow.
+- **Out of scope:** 3-D sketches and constraints between sketches and model edges beyond projected reference geometry.
+
 ## Definition of done
 
 - **Behaviour:** complete the stated workflow, including cancellation, stale replies, empty input and reopen where relevant. A successful API return or non-empty file is not enough.
@@ -883,7 +1322,7 @@ Three groups, three different revival rules. Each says what would change our min
 
 *Revivable only by a new OCCT WASM build, or by a genuinely new idea that routes around the kernel — as the hidden-line item below actually did. Every entry records its probe so it isn't re-run.*
 
-**Every entry here is re-opened by the [Self-built OCCT WASM](#self-built-occt-wasm) item if it passes.** These are binding gaps in `opencascade.js` 1.1.1 (OCCT `V7_4_0`), not limits of OCCT itself, and that item's probe re-checks each one against a newer build.
+**Every entry here is re-opened by the [Self-built OCCT WASM](#self-built-occt-wasm) item if it passes, and, since 2026-11-10, the facts among them (names and colours, self-intersection, healing) by [kernel-blocked facts through meshio++'s OpenCASCADE](#facts-through-meshio-occ) (3.28), which needs no new OCCT build.** These are binding gaps in `opencascade.js` 1.1.1 (OCCT `V7_4_0`), not limits of OCCT itself, and that item's probe re-checks each one against a newer build.
 
 - **Whole families red in the current manifest.** Nothing in them is reachable today, so no feature is proposed on top of them:
   - `BOPAlgo_*`: including `CellsBuilder`, `MakePeriodic`, `ArgumentAnalyzer` and `RemoveFeatures`.
@@ -911,6 +1350,8 @@ Three groups, three different revival rules. Each says what would change our min
 - **Loft start/end (takeoff) conditions.** `BRepOffsetAPI_ThruSections` exposes no condition API — of its bound knobs only `SetSmoothing` moves geometry (`SetContinuity`/`SetParType`/`SetMaxDegree`/`SetCriteriumWeight` are accepted but byte-identical everywhere tried, so only smoothing is exposed) — and the pipe-shell conditions have no reachable consumer: `BRepOffsetAPI_MakePipeShell`'s `SetMode_4(wire)` returns `false` even for the spine itself, and `BRepFill_FaceAndOrder_2`/`EdgeFaceAndOrder_2` exist as signatures with no sweep to attach them to. Out of scope is only the *constraint*; steering a loft along a rail already ships via the resampled-intermediate `guides` fallback, which is a different feature, not a silent substitution. The [takeoff approximation probe](#loft-takeoff-by-resampled-intermediates) above explores a separate route, not a revival of this dead API.
 
 ### What a new gmsh-wasm build must supply {#gmsh-wasm-upstream}
+
+**Re-opened 2026-11-10 as [a newer gmsh-wasm build against the five gates](#newer-gmsh-wasm-build) (4.18).** The table below is that item's gate list. What changed is not the measurements but the reading of them: both published builds wrap the same Gmsh commit, the native reproduction this section asks for first has not been recorded, and the package is maintained alongside this project, so producing the build is work that can be scheduled.
 
 *Maintainer checklist for `@loumalouomega/gmsh-wasm` (0.4.0, Gmsh `5.0.0-git-29726e7`, OCC 7.8.1 — the same Gmsh commit as 0.3.0). Every item is a blocked or rejected entry elsewhere in this file whose "revive only" condition is a change to the Gmsh WASM build, collected so the work can be done in one pass. Nothing here can be fixed from this repository: the probes below only show whether a new build clears the gate.*
 
@@ -955,11 +1396,11 @@ Three groups, three different revival rules. Each says what would change our min
 
 - **Compound meshing across sliver faces (`model.mesh.setCompound`).** Probed live (gmsh-wasm 0.3.0, `bull.stp` at the smoke-test size, three full runs, bit-identical): compounding the four smooth-linked face groups ([4, 3, 2, 2] faces from 9 smooth edges; all 36 faces bbox-correlated; Part physical group intact; valid `.msh`) repeatably *lowered* minimum quality (minSICN 0.0269 → 0.0104; mean 0.7289 → 0.7157; sub-0.2 count 31 → 30; elements 1700 → 1650) instead of raising it. The binding works — accepted without a throw — but the quality promise is backwards, so there is no "Merge smooth patches" option to offer. **Revive only** with a real fixture where compounding measurably raises minimum quality with Parts intact, on the same harness.
 
-- **Interactive sketching with geometric constraints** — rejected, not deferred. It is the single clearest "this is a modeling application now" feature, and CAD-Preview is a preview/inspect/prepare tool. More concretely: the numeric profile and curve forms are **not** a degraded mouse — they accept parametric variable expressions (`L*2`, `R*cos(i*360/N)`) that a click-to-place tool cannot express, so replacing them with drawing would trade away a distinguishing capability for a familiar one. The argument has only got stronger: no constraint solver exists anywhere in the codebase (the sole `constraint` hit is `mate`'s doc comment), while the expression-driven sketch vocabulary has kept growing to sixteen creation ops. Worth noting that SketchForge, a dedicated sketch application, still has no constraint solver either — building this would mean shipping the weak two-thirds of the feature.
+- **Interactive sketching with geometric constraints** — **re-opened 2026-11-10 as [constrained 2D sketches](#constrained-sketches) (6.4)**, at the maintainer's request and under a framing that keeps the expression-driven forms as the source of truth; the text below is the original rejection, kept because that item's probe may send it back here. Originally: rejected, not deferred. It is the single clearest "this is a modeling application now" feature, and CAD-Preview is a preview/inspect/prepare tool. More concretely: the numeric profile and curve forms are **not** a degraded mouse — they accept parametric variable expressions (`L*2`, `R*cos(i*360/N)`) that a click-to-place tool cannot express, so replacing them with drawing would trade away a distinguishing capability for a familiar one. The argument has only got stronger: no constraint solver exists anywhere in the codebase (the sole `constraint` hit is `mate`'s doc comment), while the expression-driven sketch vocabulary has kept growing to sixteen creation ops. Worth noting that SketchForge, a dedicated sketch application, still has no constraint solver either — building this would mean shipping the weak two-thirds of the feature.
 
   **What survived the reframing:** authoring a profile *on a named construction plane* rather than in world coordinates (shipped as "Author profiles on a named construction plane" — see `CLAUDE.md`). That is a coordinate-frame convenience over machinery that already exists, and it does not put a solver anywhere.
 
-- **Reference-image tracing underlay** — rejected for the current preparation workflow. It would introduce image placement, calibration and tracing interactions without a sketch-authoring workflow to consume them. Tracing in a vector editor and importing through `svgImport.ts`/`dxfImport.ts` already yields editable geometry. Revisit only for a concrete calibrated inspection use case that does not require a constraint-based sketcher. This is a scope decision, not a CSP or “no image assets” invariant: data images are already allowed, and standard-parts thumbnails serve a different workflow.
+- **Reference-image tracing underlay** — rejected for the current preparation workflow; **conditionally re-opened 2026-11-10** as phase 3 of [constrained 2D sketches](#constrained-sketches), since the stated objection was the absence of a sketch workflow to consume it. It would introduce image placement, calibration and tracing interactions without a sketch-authoring workflow to consume them. Tracing in a vector editor and importing through `svgImport.ts`/`dxfImport.ts` already yields editable geometry. Revisit only for a concrete calibrated inspection use case that does not require a constraint-based sketcher. This is a scope decision, not a CSP or “no image assets” invariant: data images are already allowed, and standard-parts thumbnails serve a different workflow.
 
 - **Parametric part generators as kernel primitives (involute gears, thread forms, springs)** — rejected as *kernel geometry*. Standard parts are something this tool should mostly *source*, not author: `search_standard_parts`/`download_standard_part` fetch real, verified geometry from step.parts as ordinary STEP files the existing pipeline opens, and the interactive sidebar does the same. Authoring an involute tooth-flank generator in `occtOperations.ts` is modeling-application scope.
 
@@ -979,7 +1420,7 @@ Three groups, three different revival rules. Each says what would change our min
 
 - **Reimplementing the OpenSCAD language** — rejected, recorded from the [agent-CAD comparison](#agent-cad-comparison). ReOpenSCAD rewrote the lexer, parser, evaluator and CSG kernel from scratch to avoid OpenSCAD's code entirely. The cost is fidelity: no `import()`, `surface()` or `roof()`, no user library paths (so no BOSL2), one built-in stroke font, and a sampled fallback mesher with its own "will not match OpenSCAD" warning. This extension evaluates `.scad` through the real OpenSCAD engine — the bundled WASM port first, the installed `openscad` binary as the fallback — so the install is optional and the engine is not reimplemented. **Revive only** if both the WASM path and the binary path are ruled out.
 
-- **A photoreal render workspace (lights, environments, PBR materials, image export)** — rejected, recorded from the [SolidCraft review](#solidcraft-review). SolidCraft ships one as its own workspace. Here the viewer's job is to show geometry truthfully for inspection: Part colours, the theme palette and the display modes. `render_snapshot` already gives an agent images. A renderer would add a second material model that meshing, export and the BOM never read. What survived is the Named materials picker in the Parts panel (shipped), which has a consumer in mass. **Revive only** for a concrete downstream consumer of rendered images that `render_snapshot`'s display modes cannot serve.
+- **A photoreal render workspace (lights, environments, PBR materials, image export)** — rejected; **a narrow slice re-opened 2026-11-10** as [presentation captures](#presentation-captures) (5.11): recordings and one optional shading mode, with no material model. The workspace itself stays rejected, recorded from the [SolidCraft review](#solidcraft-review). SolidCraft ships one as its own workspace. Here the viewer's job is to show geometry truthfully for inspection: Part colours, the theme palette and the display modes. `render_snapshot` already gives an agent images. A renderer would add a second material model that meshing, export and the BOM never read. What survived is the Named materials picker in the Parts panel (shipped), which has a consumer in mass. **Revive only** for a concrete downstream consumer of rendered images that `render_snapshot`'s display modes cannot serve.
 
 - **Hosted, shared workspaces and an HTTP MCP transport** — rejected. ReOpenSCAD serves its MCP over HTTP, with the workspace URL itself granting edit access. This extension's MCP server is a local stdio process that reads and writes files the user already owns; a network listener would be a new attack surface with nothing local to gain. What survives: registering the server with VS Code (shipped — the MCP server-definition provider and the **Connect an agent…** snippets) and copyable client snippets. **Revive only** for a concrete embedding request that cannot spawn a process (for example, a KKSS deployment that runs the server remotely), with authentication designed in from the start. **Status 2026-10-31:** the embedding case this entry anticipated (a KKSS deployment that cannot spawn the server locally) is served on the KKSS side — its bearer-token, Host-checked HTTP meta server re-exposes these tools over loopback — so nothing is owed here and the rejection stands.
 
@@ -987,6 +1428,6 @@ Three groups, three different revival rules. Each says what would change our min
 
 - **An in-viewer OpenSCAD editor with live re-evaluation** — rejected. ReOpenSCAD's workbench is a text area with syntax highlighting and live preview; here, VS Code is the editor and the viewer opens beside it. What survives: the Customizer panel (shipped), include tracking (shipped) so a saved edit reloads promptly, and structured diagnostics (shipped). **Revive only** if the side-by-side workflow turns out to be unworkable in practice.
 
-- **Gmsh `occ.healShapes` as a pre-mesh repair for imported B-reps.** Probed live (gmsh-wasm 0.3.0, 2026-10-17): on `block.stp` it is harmless but changes the mesh (1 282 → 1 247 tets, same volume 60, 6 faces before and after); on `daratech.stp` — the model that fails 3D meshing with `PLC Error: A segment and a facet intersect` — `removeAllDuplicates` + `healShapes` **deletes the volume** (1 volume → 0, 175 faces unchanged), so "meshing succeeds" is an empty mesh (0 tets). fTetWild remains the answer for dirty input. **Revive only** with a newer Gmsh build where a healed `daratech.stp` meshes to its true volume. Re-checked 2026-10-19 on gmsh-wasm 0.4.0 (same Gmsh commit): `daratech.stp` still goes 1 volume → 0.
+- **Gmsh `occ.healShapes` as a pre-mesh repair for imported B-reps.** *Routes around it, added 2026-11-10:* healing through meshio++'s OpenCASCADE (3.28) and row 3 of the checklist through [a newer build](#newer-gmsh-wasm-build) (4.18). The entry as probed: Probed live (gmsh-wasm 0.3.0, 2026-10-17): on `block.stp` it is harmless but changes the mesh (1 282 → 1 247 tets, same volume 60, 6 faces before and after); on `daratech.stp` — the model that fails 3D meshing with `PLC Error: A segment and a facet intersect` — `removeAllDuplicates` + `healShapes` **deletes the volume** (1 volume → 0, 175 faces unchanged), so "meshing succeeds" is an empty mesh (0 tets). fTetWild remains the answer for dirty input. **Revive only** with a newer Gmsh build where a healed `daratech.stp` meshes to its true volume. Re-checked 2026-10-19 on gmsh-wasm 0.4.0 (same Gmsh commit): `daratech.stp` still goes 1 volume → 0.
 
-- **Hex-dominant (gmsh type 140) Kratos MDPA export.** Probed live (gmsh-wasm 0.3.0, 2026-10-17, `block.stp`, `Algorithm3D` 9 + `Recombine3DAll`, size 1): the mesh holds tet4 (26.22 volume), hex8 (33.31, all consistently oriented) and 4-node type-140 cells. The 140 cells' faces all mate with tet/140 faces and each hex quad is covered by exactly two of their triangles, so they look like tetrahedra — but no reading of them closes the volume to the model's 60: as tets with signed volume they sum to +1.20 (60.73 total), by absolute value 3.85 (63.4 total), and their orientations are mixed (2.52 positive, 1.33 negative). A conformal export (140 as tets, hexes cut into 12 tets about a centroid, quads split along the neighbours' diagonal) was built and measured at volume 63.48 with 384 faces shared by three or more cells, so it was reverted. `getElementProperties(140)` still throws, so the node layout cannot be confirmed. The explicit refusal in `collectCells` stays. **Revive only** with documented type-140 geometry (a newer Gmsh, or the element's node layout from upstream) that closes the volume. Re-checked 2026-10-19 on gmsh-wasm 0.4.0 (same Gmsh commit): `getElementProperties(140)` still throws.
+- **Hex-dominant (gmsh type 140) Kratos MDPA export.** *Routes around it, added 2026-11-10:* [swept hexahedral meshes](#swept-hexahedral-meshes) (4.13) for sweepable solids, and row 2 of the gmsh-wasm checklist through [a newer build](#newer-gmsh-wasm-build) (4.18). The entry as probed: Probed live (gmsh-wasm 0.3.0, 2026-10-17, `block.stp`, `Algorithm3D` 9 + `Recombine3DAll`, size 1): the mesh holds tet4 (26.22 volume), hex8 (33.31, all consistently oriented) and 4-node type-140 cells. The 140 cells' faces all mate with tet/140 faces and each hex quad is covered by exactly two of their triangles, so they look like tetrahedra — but no reading of them closes the volume to the model's 60: as tets with signed volume they sum to +1.20 (60.73 total), by absolute value 3.85 (63.4 total), and their orientations are mixed (2.52 positive, 1.33 negative). A conformal export (140 as tets, hexes cut into 12 tets about a centroid, quads split along the neighbours' diagonal) was built and measured at volume 63.48 with 384 faces shared by three or more cells, so it was reverted. `getElementProperties(140)` still throws, so the node layout cannot be confirmed. The explicit refusal in `collectCells` stays. **Revive only** with documented type-140 geometry (a newer Gmsh, or the element's node layout from upstream) that closes the volume. Re-checked 2026-10-19 on gmsh-wasm 0.4.0 (same Gmsh commit): `getElementProperties(140)` still throws.
