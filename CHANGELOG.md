@@ -6,18 +6,17 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/); thi
 
 ## [Unreleased]
 
+## [3.41.0] - 2026-11-10
+
 ### Added
 
 - **Browser.** A new first sidebar section is one tree over what the document already has — Document, Named Views, Origin (axes/grid and construction planes), Bodies, Sketches, Features (the edit history), Parts and Layers — with an eye per row and per group, Expand/Collapse All and a filter. It is a view over the existing models: it adds no sidecar and no state, and each row action calls the same function as the panel it mirrors (hide a body = the Components eye, restore a view = View ▾, feature eye = suppress). The section is off by default and is turned on from View ▾ ▸ Browser (its state is saved as the additive `browserOpen` view-state field) and only Bodies is open inside it. Not yet shown: tessellation quality, per-axis/plane visibility and individual sketch rows.
 - **Zebra display mode.** A seventh Display mode draws reflection stripes to judge surface continuity (unbroken across a tangent fillet, broken across a sharp edge). It works on B-rep and mesh sources, composes with Part colours, and has a stripe-count slider and X/Y/Z direction selector in the ⋯ More menu; non-default settings persist as an additive `zebra` field of the `.view.json` sidecar. `render_snapshot`/`screenshot_shape` accept `displayMode: "zebra"` at the default settings. The stripes are computed from the tessellation's normals, so they are a sampled estimate, not a certification. In orthographic projection the stripes use the constant view direction rather than a per-fragment one, so a flat face is one uniform stripe state. A `test:webview` probe pins continuity: stripes run unbroken across the seam of two tangent faces and break across a sharp crease.
+- **`check_tetrahedra` MCP tool** (meshio++ `checkTetrahedra`): inverted, degenerate and overlapping tetrahedra and the signed-volume extremes of a meshio++-readable mesh, facts only (`zeroVolumeFactor` optional).
 
 ### Changed
 
 - **meshio++ upgraded to 19.0.0.** Upstream flips `modelTolerances` and `virtualFaces` to default **on** for `meshCadSurface`; `mesh_cad_surface` and the `meshcad` engine follow the new defaults (an explicit `false` still opts out; `block.stp` at size 1 stays 252 triangles). The `octreemesh` tet result now carries the 19.0 volume-fix counters as `octreeMesh.volumeFix` and the panel status line mentions repairs and overlaps.
-
-### Added
-
-- **`check_tetrahedra` MCP tool** (meshio++ `checkTetrahedra`): inverted, degenerate and overlapping tetrahedra and the signed-volume extremes of a meshio++-readable mesh, facts only (`zeroVolumeFactor` optional).
 
 ## [3.40.0] - 2026-11-06
 
@@ -1173,7 +1172,8 @@ This release republishes v1.9.0's full changelog (below) unchanged; v1.9.0 itsel
 
 - Initial release: read-only 3D preview for CAD and mesh files (STEP, IGES, BREP, STL, OBJ, PLY, glTF) inside a VS Code custom editor, using OpenCascade.js (OCCT WASM) in the extension host for B-rep formats and Three.js in the webview for rendering.
 
-[Unreleased]: https://github.com/loumalouomega/CAD-Preview/compare/v3.40.0...HEAD
+[Unreleased]: https://github.com/loumalouomega/CAD-Preview/compare/v3.41.0...HEAD
+[3.41.0]: https://github.com/loumalouomega/CAD-Preview/compare/v3.40.0...v3.41.0
 [3.40.0]: https://github.com/loumalouomega/CAD-Preview/compare/v3.39.0...v3.40.0
 [3.39.0]: https://github.com/loumalouomega/CAD-Preview/compare/v3.38.1...v3.39.0
 [3.38.1]: https://github.com/loumalouomega/CAD-Preview/compare/v3.38.0...v3.38.1
