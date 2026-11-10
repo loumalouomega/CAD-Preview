@@ -29,6 +29,7 @@ import {
 } from "./commandSearch";
 import { REPEAT_LAST_KEY, allCatalogEntries, type PanelOpId } from "./opCatalog";
 import { OP_ICONS } from "./opIcons";
+import { ShortcutSheet } from "./shortcutSheet";
 
 export interface PaletteHost {
   /** Opens the op's form (prefilled from `body` when given) without applying; false when it cannot open now. */
@@ -36,6 +37,9 @@ export interface PaletteHost {
   /** False for a B-rep-only op on a mesh source. */
   isOpAvailable(id: PanelOpId): boolean;
   setStatus(text: string, isError?: boolean): void;
+  /** Ctrl+Z / Ctrl+Y — the Edits panel's own undo and redo (the save-point refusal included). */
+  undo(): void;
+  redo(): void;
 }
 
 interface Entry {
@@ -72,7 +76,25 @@ export class CommandPalette {
   private selected = 0;
   private returnFocus: HTMLElement | null = null;
 
-  constructor(private readonly host: PaletteHost) {}
+  private readonly sheet: ShortcutSheet;
+
+  constructor(private readonly host: PaletteHost) {
+    this.sheet = new ShortcutSheet({
+      actionLabel: (id) => {
+        const el = document.getElementById(id);
+        const text = (el?.getAttribute("title") ?? el?.textContent ?? "").replace(/\s+/g, " ").trim();
+        return text || undefined;
+      },
+      singleKeysOn: () => this.singleKeys,
+    });
+  }
+
+  /** Opens the Keyboard shortcuts sheet (`?`, or the search entry). */
+  openShortcuts(): void {
+    this.close();
+    closeAllDropdowns();
+    this.sheet.open();
+  }
 
   /** `cadPreview.singleKeyCommands`, delivered with the viewer defaults. */
   setSingleKeys(on: boolean): void {
@@ -91,7 +113,7 @@ export class CommandPalette {
   /** Wires the global keys. Capture phase, so it sees the key before any field handler stops it. */
   install(): void {
     window.addEventListener("keydown", (e) => {
-      if (this.isOpen()) return;
+      if (this.isOpen() || this.sheet.isOpen()) return;
       const cmd = resolveKey({ key: e.key, ctrlKey: e.ctrlKey, metaKey: e.metaKey, altKey: e.altKey, shiftKey: e.shiftKey, repeat: e.repeat, defaultPrevented: e.defaultPrevented, target: e.target as HTMLElement | null }, this.singleKeys, this.table);
       if (cmd && this.runKey(cmd)) {
         e.preventDefault();
@@ -122,6 +144,15 @@ export class CommandPalette {
       }
       case "repeat":
         this.repeat();
+        return true;
+      case "undo":
+        this.host.undo();
+        return true;
+      case "redo":
+        this.host.redo();
+        return true;
+      case "help":
+        this.openShortcuts();
         return true;
     }
   }
@@ -346,6 +377,15 @@ export class CommandPalette {
         shortcut: REPEAT_LAST_KEY,
       },
       run: () => this.repeat(),
+    }, {
+      item: { id: "undo", kind: "action", label: "Undo", group: "Edit", keywords: ["revert", "back"], shortcut: "Ctrl+Z" },
+      run: () => this.host.undo(),
+    }, {
+      item: { id: "redo", kind: "action", label: "Redo", group: "Edit", keywords: ["forward"], shortcut: "Ctrl+Y" },
+      run: () => this.host.redo(),
+    }, {
+      item: { id: "keyboard-shortcuts", kind: "action", label: "Keyboard shortcuts", group: "Help", keywords: ["keys", "cheat sheet", "hotkeys", "help"], shortcut: "?" },
+      run: () => this.openShortcuts(),
     }];
     const seen = new Set<string>();
     const buttons = document.querySelectorAll<HTMLButtonElement>("#toolbar > button, #toolbar .tb-dropdown button, #file-dropdown button, #vc-more-dropdown button");

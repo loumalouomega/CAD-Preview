@@ -407,6 +407,9 @@ export interface MeshPresetSummary {
 
 /** Messages sent from the extension host to the webview. */
 export type HostToWebview =
+  /** Undo / redo the last op on the webview's edit stack (same path as Ctrl+Z / Ctrl+Y and the Edits panel buttons). Refused, with the usual status message, at or inside the save point. */
+  | { type: "undo" }
+  | { type: "redo" }
   | {
       type: "geometry";
       meshes: EncodedMesh[];
@@ -970,6 +973,8 @@ export interface MeshElementGroup {
 /** Messages sent from the webview to the extension host. */
 export type WebviewToHost =
   | { type: "ready" }
+  /** Whether undo / redo are possible and the label of the op each would affect; sent whenever any of the four changes (never on every render). `undoLabel`/`redoLabel` are absent when the matching flag is false. */
+  | { type: "historyState"; canUndo: boolean; canRedo: boolean; undoLabel?: string; redoLabel?: string }
   | { type: "log"; message: string }
   | { type: "partsChanged"; parts: Part[] }
   | { type: "layersChanged"; layers: Layer[]; nextId: number }

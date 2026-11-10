@@ -702,6 +702,25 @@ function renderEditsUi(): void {
   // Empty (not "0") when there are no ops, so the badge collapses away.
   const editsCount = document.getElementById("edits-count");
   if (editsCount) editsCount.textContent = ops.length > 0 ? String(ops.length) : "";
+  postHistoryState();
+}
+
+let lastHistoryStateJson = "";
+/** Tells the host whether undo / redo are possible and what they would affect (only when it changed). */
+function postHistoryState(): void {
+  const list = editsModel.list();
+  const redo = editsModel.redoList();
+  const msg = {
+    type: "historyState" as const,
+    canUndo: editsModel.canUndo,
+    canRedo: editsModel.canRedo,
+    ...(editsModel.canUndo && list.length > 0 ? { undoLabel: list[list.length - 1].label ?? describeOp(list[list.length - 1]) } : {}),
+    ...(editsModel.canRedo && redo.length > 0 ? { redoLabel: redo[0].label ?? describeOp(redo[0]) } : {}),
+  };
+  const json = JSON.stringify(msg);
+  if (json === lastHistoryStateJson) return;
+  lastHistoryStateJson = json;
+  post(msg);
 }
 
 /** The most recent replay's per-op outcomes (see `editOps.ts`'s
@@ -1317,15 +1336,21 @@ viewer.setGizmoHandlers(
   }
 );
 
+/** Undo / redo from the panel buttons, Ctrl+Z / Ctrl+Y and the host's `undo` / `redo` messages. */
+function performUndo(): void {
+  if (!editsModel.undo() && editsModel.size > 0) setStatus(SAVE_POINT_REFUSAL, true);
+}
+function performRedo(): void {
+  editsModel.redo();
+}
+
 const editsPanel = new EditsPanel(document.getElementById("edits-panel")!, {
   onFormDockChange: () => scheduleViewSave(),
   // Tier 0 Phase 2 — mutations at or inside the save point are refused by the
   // model (the ops live in the file itself); surface the guidance here. The
   // empty-stack no-ops stay silent, exactly as before.
-  onUndo: () => {
-    if (!editsModel.undo() && editsModel.size > 0) setStatus(SAVE_POINT_REFUSAL, true);
-  },
-  onRedo: () => editsModel.redo(),
+  onUndo: () => performUndo(),
+  onRedo: () => performRedo(),
   onClear: () => {
     if (!editsModel.clear() && editsModel.size > 0) setStatus(SAVE_POINT_REFUSAL, true);
   },
@@ -3145,6 +3170,8 @@ const commandPalette = new CommandPalette({
   openOp: (id, body) => openEditForm(id, body ?? null, true),
   isOpAvailable,
   setStatus: (text, isError) => setStatus(text, isError ?? false),
+  undo: () => performUndo(),
+  redo: () => performRedo(),
 });
 commandPalette.install();
 editsModel.onPush = (op) => {
@@ -6569,6 +6596,14 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
       } else {
         applyInitialViewIfNeeded();
       }
+      break;
+
+    case "undo":
+      performUndo();
+      break;
+
+    case "redo":
+      performRedo();
       break;
 
     case "viewerDefaults":

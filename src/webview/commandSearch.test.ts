@@ -8,6 +8,7 @@ import {
   panelIdForOp,
   rankItems,
   resolveKey,
+  shortcutSections,
   singleKeyTable,
   type SearchItem,
 } from "./commandSearch";
@@ -128,6 +129,28 @@ describe("resolveKey", () => {
     expect(resolveKey(key("3"), true, table)).toBeNull();
     expect(resolveKey(key("e"), true, table)).toEqual({ type: "op", id: "extrude" });
   });
+  it("maps Ctrl/Cmd+Z to undo and Ctrl/Cmd+Shift+Z / Ctrl+Y to redo, whatever the setting", () => {
+    expect(resolveKey(key("z", { ctrlKey: true }), false)).toEqual({ type: "undo" });
+    expect(resolveKey(key("Z", { metaKey: true }), false)).toEqual({ type: "undo" });
+    expect(resolveKey(key("z", { ctrlKey: true, shiftKey: true }), false)).toEqual({ type: "redo" });
+    expect(resolveKey(key("y", { ctrlKey: true }), false)).toEqual({ type: "redo" });
+    // Control: a bare z, Alt+Ctrl+Z and Ctrl+Shift+Y are not history keys.
+    expect(resolveKey(key("z"), true)).toBeNull();
+    expect(resolveKey(key("z", { ctrlKey: true, altKey: true }), false)).toBeNull();
+    expect(resolveKey(key("y", { ctrlKey: true, shiftKey: true }), false)).toBeNull();
+  });
+  it("leaves Ctrl+Z to a text field's own undo", () => {
+    for (const tagName of ["INPUT", "TEXTAREA", "SELECT"]) {
+      expect(resolveKey(key("z", { ctrlKey: true, target: { tagName } }), false)).toBeNull();
+      expect(resolveKey(key("y", { ctrlKey: true, target: { tagName } }), false)).toBeNull();
+    }
+    expect(resolveKey(key("z", { ctrlKey: true, target: { tagName: "DIV", isContentEditable: true } }), false)).toBeNull();
+  });
+  it("opens the shortcuts sheet on '?' outside a field only", () => {
+    expect(resolveKey(key("?", { shiftKey: true }), false)).toEqual({ type: "help" });
+    expect(resolveKey(key("?", { shiftKey: true, target: { tagName: "INPUT" } }), false)).toBeNull();
+    expect(resolveKey(key("?", { shiftKey: true, ctrlKey: true }), false)).toBeNull();
+  });
   it("binds every declared key to exactly one command", () => {
     expect(singleKeyTable().size).toBe(allCatalogEntries().filter((e) => e.key).length + 1);
   });
@@ -157,5 +180,24 @@ describe("LastCommandTracker and panelIdForOp", () => {
     t.applied(op);
     op.radius = 99;
     expect(t.get()?.body?.radius).toBe(1);
+  });
+});
+
+describe("shortcutSections", () => {
+  it("lists every bound single key, so the sheet cannot drift from the key handler", () => {
+    const rows = shortcutSections().flatMap((s) => s.rows.map((r) => r.keys));
+    for (const k of singleKeyTable().keys()) expect(rows).toContain(k.toUpperCase());
+    for (const chord of ["Ctrl+K", "?", "Ctrl+Z", "Shift+R", "1 – 6", "I"]) expect(rows).toContain(chord);
+  });
+  it("marks only bare-letter rows as needing the setting", () => {
+    const all = shortcutSections().flatMap((s) => s.rows);
+    expect(all.find((r) => r.keys === "Ctrl+K")!.needsSetting).toBeUndefined();
+    expect(all.find((r) => r.keys === "E")!.needsSetting).toBe(true);
+  });
+  it("names an action row through the supplied labeller and falls back to its id", () => {
+    const named = shortcutSections(undefined, (id) => (id === "measure-toggle" ? "Measure" : undefined)).flatMap((s) => s.rows);
+    expect(named.find((r) => r.keys === "Q")!.label).toBe("Measure");
+    const bare = shortcutSections().flatMap((s) => s.rows);
+    expect(bare.find((r) => r.keys === "Q")!.label).toBe("measure-toggle");
   });
 });

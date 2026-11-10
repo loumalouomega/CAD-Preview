@@ -15,7 +15,7 @@
 import type { EditOp } from "../editOps";
 import { COMMAND_TABLE } from "../opCommands";
 import { isTextEntryTarget, viewForKey } from "../viewShortcuts";
-import { ACTION_KEYS, OP_CATALOG, allCatalogEntries, type PanelOpId } from "./opCatalog";
+import { ACTION_KEYS, OP_CATALOG, REPEAT_LAST_KEY, allCatalogEntries, type PanelOpId } from "./opCatalog";
 
 // ── Search items ────────────────────────────────────────────────────────────
 
@@ -166,7 +166,10 @@ export type KeyCommand =
   | { type: "search" }
   | { type: "op"; id: PanelOpId }
   | { type: "action"; elementId: string }
-  | { type: "repeat" };
+  | { type: "repeat" }
+  | { type: "undo" }
+  | { type: "redo" }
+  | { type: "help" };
 
 /** lower-case key -> command, built once from the catalog and {@link ACTION_KEYS}. */
 export function singleKeyTable(): Map<string, KeyCommand> {
@@ -193,6 +196,8 @@ const isRepeatChord = (e: KeyEventLike): boolean => e.shiftKey === true && e.key
  *
  *  - Ctrl/Cmd+K opens the search from anywhere, including a field.
  *  - `/` opens it only when focus is not in a field.
+ *  - `?` opens the keyboard-shortcuts sheet (same rule as `/`).
+ *  - Ctrl/Cmd+Z undoes, Ctrl/Cmd+Shift+Z and Ctrl/Cmd+Y redo (never in a field).
  *  - With `singleKeys` on, an unmodified catalog letter runs its command and
  *    Shift+R repeats the last one — never while typing, never with
  *    Ctrl/Cmd/Alt, never on auto-repeat, and never for the view snaps
@@ -202,9 +207,18 @@ export function resolveKey(e: KeyEventLike, singleKeys: boolean, table: Readonly
   if (e.defaultPrevented) return null;
   const k = e.key;
   if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && k.toLowerCase() === "k") return { type: "search" };
+  // Undo / redo (roadmap "Undo and redo from the keyboard"). Never inside a
+  // text field, which keeps its own undo; not gated on the single-key setting
+  // because they are chords, not bare letters.
+  if ((e.ctrlKey || e.metaKey) && !e.altKey && !isTextEntryTarget(e.target ?? null)) {
+    const lk = k.toLowerCase();
+    if (lk === "z") return e.shiftKey ? { type: "redo" } : { type: "undo" };
+    if (lk === "y" && !e.shiftKey) return { type: "redo" };
+  }
   if (e.ctrlKey || e.metaKey || e.altKey) return null;
   if (isTextEntryTarget(e.target ?? null)) return null;
   if (k === "/" && !e.shiftKey) return { type: "search" };
+  if (k === "?") return { type: "help" };
   if (!singleKeys || e.repeat) return null;
   if (isRepeatChord(e)) return { type: "repeat" };
   if (e.shiftKey) return null;
@@ -265,4 +279,61 @@ export class LastCommandTracker {
   touch(id: string): void {
     this.recents = [id, ...this.recents.filter((x) => x !== id)].slice(0, 6);
   }
+}
+
+
+// ── Shortcut sheet ──────────────────────────────────────────────────────────
+
+export interface ShortcutRow {
+  keys: string;
+  label: string;
+  /** True for a bare-letter command that only fires with `cadPreview.singleKeyCommands`. */
+  needsSetting?: boolean;
+}
+
+export interface ShortcutSection {
+  title: string;
+  rows: ShortcutRow[];
+}
+
+/** View-snap key labels, in the order `viewShortcuts.ts` documents them. */
+const VIEW_SNAP_ROWS: ShortcutRow[] = [
+  { keys: "1 – 6", label: "Snap to front, back, right, left, top, bottom" },
+  { keys: "I", label: "Snap to isometric" },
+];
+
+/**
+ * The keyboard-shortcuts sheet, generated from the same tables the key
+ * handler reads ({@link singleKeyTable}, {@link ACTION_KEYS}, the catalog) so
+ * it cannot drift from what actually fires. `actionLabel` names an action's
+ * element id (the DOM supplies its title); ids it cannot name fall back to the id.
+ */
+export function shortcutSections(
+  table: ReadonlyMap<string, KeyCommand> = singleKeyTable(),
+  actionLabel: (elementId: string) => string | undefined = () => undefined,
+): ShortcutSection[] {
+  const labelOf = new Map(allCatalogEntries().map((e) => [e.id as string, e.label]));
+  const ops: ShortcutRow[] = [];
+  const actions: ShortcutRow[] = [];
+  for (const [key, cmd] of table) {
+    if (cmd.type === "op") ops.push({ keys: key.toUpperCase(), label: labelOf.get(cmd.id) ?? cmd.id, needsSetting: true });
+    else if (cmd.type === "action") actions.push({ keys: key.toUpperCase(), label: actionLabel(cmd.elementId) ?? cmd.elementId, needsSetting: true });
+  }
+  const byKeys = (a: ShortcutRow, b: ShortcutRow): number => a.keys.localeCompare(b.keys);
+  return [
+    {
+      title: "Anywhere",
+      rows: [
+        { keys: "Ctrl+K", label: "Search commands" },
+        { keys: "/", label: "Search commands (outside a field)" },
+        { keys: "?", label: "Keyboard shortcuts" },
+        { keys: "Ctrl+Z", label: "Undo the last edit" },
+        { keys: "Ctrl+Shift+Z / Ctrl+Y", label: "Redo" },
+        { keys: REPEAT_LAST_KEY, label: "Repeat the last command (reopens its form)", needsSetting: true },
+      ],
+    },
+    { title: "View", rows: VIEW_SNAP_ROWS },
+    { title: "Tools", rows: actions.sort(byKeys) },
+    { title: "Operations", rows: ops.sort(byKeys) },
+  ].filter((sec) => sec.rows.length > 0);
 }

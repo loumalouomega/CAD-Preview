@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { segmentsToPolylines, silhouetteDxf, polylinesDxf } from "./dxfSilhouette";
+import { parseDxfRawEntities } from "./dxfImport";
 import { parseDxf } from "./dxfImport";
 
 describe("segmentsToPolylines", () => {
@@ -201,5 +202,66 @@ describe("layered DXF export", () => {
     // The writer's own output parses back through the repo's reader with no warnings.
     const back = parseDxf(r.dxf);
     expect(back.warnings).toEqual([]);
+  });
+});
+
+describe("DXF arc fitting", () => {
+  /** A 100 x 60 plate with four r=5 holes tessellated as 64-gons, as edge pairs. */
+  function plate(): { positions: Float32Array; edges: Array<[number, number]> } {
+    const pts: number[] = [];
+    const edges: Array<[number, number]> = [];
+    const ring = (n: number, pt: (i: number) => [number, number]) => {
+      const base = pts.length / 3;
+      for (let i = 0; i < n; i++) pts.push(...pt(i), 0);
+      for (let i = 0; i < n; i++) edges.push([base + i, base + ((i + 1) % n)]);
+    };
+    ring(4, (i) => [[0, 0], [100, 0], [100, 60], [0, 60]][i] as [number, number]);
+    for (const [cx, cy] of [[15, 15], [85, 15], [15, 45], [85, 45]]) {
+      ring(64, (i) => [cx + 5 * Math.cos((2 * Math.PI * i) / 64), cy + 5 * Math.sin((2 * Math.PI * i) / 64)]);
+    }
+    return { positions: new Float32Array(pts), edges };
+  }
+
+  it("a plate with four tessellated holes writes four CIRCLEs with the model radius", () => {
+    const { positions, edges } = plate();
+    const r = silhouetteDxf(positions, edges, { direction: [0, 0, 1] });
+    expect(r.circleCount).toBe(4);
+    const circles = parseDxfRawEntities(r.dxf).filter((e) => e.type === "CIRCLE");
+    expect(circles).toHaveLength(4);
+    for (const c of circles) {
+      const radius = Number(c.pairs.find((p) => p[0] === 40)?.[1]);
+      expect(Math.abs(radius - 5)).toBeLessThan(0.05);
+    }
+    // The rectangle stays a plain 4-vertex polyline.
+    expect(r.dxf.match(/LWPOLYLINE/g)).toHaveLength(1);
+    // Control: arcTolerance 0 keeps the N-gons.
+    const off = silhouetteDxf(positions, edges, { direction: [0, 0, 1] }, { arcTolerance: 0 });
+    expect(off.circleCount).toBeUndefined();
+    expect(off.dxf).not.toContain("CIRCLE");
+  });
+
+  it("a tessellated quarter arc becomes one bulged segment of the right sign", () => {
+    // Quarter circle r=10 from (10,0) to (0,10), plus straight tails.
+    const pts: Array<[number, number]> = [[30, 0], [10, 0]];
+    for (let i = 1; i <= 16; i++) pts.push([10 * Math.cos((Math.PI / 2) * (i / 16)), 10 * Math.sin((Math.PI / 2) * (i / 16))]);
+    pts.push([0, 30]);
+    const positions = new Float32Array(pts.flatMap(([x, y]) => [x, y, 0]));
+    const edges: Array<[number, number]> = pts.slice(1).map((_, i) => [i, i + 1]);
+    const r = silhouetteDxf(positions, edges, { direction: [0, 0, 1] });
+    expect(r.arcCount).toBe(1);
+    const poly = parseDxfRawEntities(r.dxf).find((e) => e.type === "LWPOLYLINE")!;
+    const bulge = Number(poly.pairs.find((p) => p[0] === 42)?.[1]);
+    expect(Math.abs(Math.abs(bulge) - Math.tan(Math.PI / 8))).toBeLessThan(1e-3);
+    // The model arc sweeps CCW in the Y-up model, and the written DXF is Y-up too,
+    // so the written bulge is positive (the writer's two Y flips cancel).
+    expect(bulge).toBeGreaterThan(0);
+  });
+
+  it("straight and gently bent runs are never turned into arcs", () => {
+    const positions = new Float32Array([0, 0, 0, 10, 0, 0, 20, 0.01, 0, 30, 0, 0, 40, 0.01, 0, 50, 0, 0]);
+    const edges: Array<[number, number]> = [[0, 1], [1, 2], [2, 3], [3, 4], [4, 5]];
+    const r = silhouetteDxf(positions, edges, { direction: [0, 0, 1] });
+    expect(r.arcCount).toBeUndefined();
+    expect(r.circleCount).toBeUndefined();
   });
 });

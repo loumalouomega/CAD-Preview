@@ -452,7 +452,9 @@ export class Viewer {
     );
     ortho.position.set(5, 5, 5);
     const controls = new OrbitControls(persp, this.renderer.domElement);
-    controls.enableDamping = true;
+    // Damping is the only camera motion; honour prefers-reduced-motion (roadmap
+    // "Reduced motion and keyboard paths") so a drag stops where the pointer stops.
+    controls.enableDamping = !(typeof window !== "undefined" && window.matchMedia?.("(prefers-reduced-motion: reduce)").matches);
     // Panes created after `onViewChanged` was first called must subscribe the
     // already-registered callbacks too, or their camera movements would never
     // autosave — see `onViewChanged`'s doc comment.
