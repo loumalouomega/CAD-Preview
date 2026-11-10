@@ -3668,8 +3668,10 @@ const lastHistory = (page) => page.evaluate(() => (window.__sent ?? []).findLast
 test("undo/redo keys: Ctrl+Z twice and Ctrl+Y once leave one op; historyState reports flags and labels; a field keeps its own undo; the host messages do the same", async (page) => {
   await populate(page);
   await blurAll(page);
-  const base = await opCountFromHost(page);
+  // The fixture may arrive with ops of its own and posts no editsChanged until the first edit, so
+  // the baseline is read after the first command (minus that one op).
   await typeCommand(page, 'addBox {"center":[0,0,0],"size":[3,4,5]}');
+  const base = (await opCountFromHost(page)) - 1;
   await typeCommand(page, 'addSphere {"center":[10,0,0],"radius":2}');
   await blurAll(page);
   assert((await opCountFromHost(page)) === base + 2, "two ops applied");
@@ -3680,7 +3682,7 @@ test("undo/redo keys: Ctrl+Z twice and Ctrl+Y once leave one op; historyState re
   await sleep(150);
   assert((await opCountFromHost(page)) === base, `Ctrl+Z twice removes both ops (got ${await opCountFromHost(page) - base} left)`);
   h = await lastHistory(page);
-  assert(h.canRedo === true && typeof h.redoLabel === "string" && h.canUndo === false && h.undoLabel === undefined, `historyState flips to redo-only (got ${JSON.stringify(h)})`);
+  assert(h.canRedo === true && typeof h.redoLabel === "string" && h.redoLabel.length > 0, `historyState reports redo possible with the undone op's label (got ${JSON.stringify(h)})`);
   await page.keyboard.press("Control+Y");
   await sleep(150);
   assert((await opCountFromHost(page)) === base + 1, "Ctrl+Y re-applies exactly one op");
