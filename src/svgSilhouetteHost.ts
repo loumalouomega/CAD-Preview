@@ -137,6 +137,9 @@ export interface SvgSilhouetteResult {
   /** DXF-specific chain/singleton counts when format === "dxf". */
   chainCount?: number;
   lineCount?: number;
+  /** Fitted circular arcs / full circles written to the DXF (absent when none). */
+  arcCount?: number;
+  circleCount?: number;
   /** Annotations whose dimension glyphs were rendered (absent when none were supplied). */
   dimensionCount?: number;
 }
@@ -369,6 +372,8 @@ export async function exportSvgSilhouette(
           segmentCount: r.segmentCount, hiddenSegmentCount: groups.reduce((n, g) => n + g.hidden.length, 0),
           triangleCount, warnings,
           chainCount: r.chainCount, lineCount: r.lineCount,
+          ...(r.arcCount !== undefined ? { arcCount: r.arcCount } : {}),
+          ...(r.circleCount !== undefined ? { circleCount: r.circleCount } : {}),
           ...(r.dimensionCount !== undefined ? { dimensionCount: r.dimensionCount } : {}),
         };
       }
@@ -411,6 +416,8 @@ export async function exportSvgSilhouette(
           svg: r.dxf, dxf: r.dxf, segmentCount: r.segmentCount, hiddenSegmentCount: r.hiddenSegmentCount,
           featureEdgeCount: drawing.featureEdgeCount, triangleCount, warnings,
           chainCount: r.chainCount, lineCount: r.lineCount,
+          ...(r.arcCount !== undefined ? { arcCount: r.arcCount } : {}),
+          ...(r.circleCount !== undefined ? { circleCount: r.circleCount } : {}),
           ...(r.dimensionCount !== undefined ? { dimensionCount: r.dimensionCount } : {}),
         };
       }
@@ -429,7 +436,7 @@ export async function exportSvgSilhouette(
     // same converted space the projection runs in).
     const dimensionScaleHint = options.annotations?.length ? diagonalOf(positions) : undefined;
     if (options.format === "dxf") {
-      const { dxf, segmentCount, chainCount, lineCount, dimensionCount } = silhouetteDxf(
+      const { dxf, segmentCount, chainCount, lineCount, dimensionCount, arcCount, circleCount } = silhouetteDxf(
         positions,
         edges,
         { direction: options.direction, up: options.up },
@@ -441,7 +448,7 @@ export async function exportSvgSilhouette(
       );
       if (triangleCount === 0) warnings.push("The source produced no triangles — the drawing is empty.");
       else if (segmentCount === 0 && !dimensionCount) warnings.push("No silhouette edges were found for this view direction — the drawing is empty.");
-      return { svg: dxf, dxf, segmentCount, triangleCount, warnings, chainCount, lineCount, ...(dimensionCount !== undefined ? { dimensionCount } : {}) };
+      return { svg: dxf, dxf, segmentCount, triangleCount, warnings, chainCount, lineCount, ...(arcCount !== undefined ? { arcCount } : {}), ...(circleCount !== undefined ? { circleCount } : {}), ...(dimensionCount !== undefined ? { dimensionCount } : {}) };
     }
     const { svg, segmentCount, dimensionCount } = silhouetteSvg(positions, edges, { direction: options.direction, up: options.up }, {
       strokeWidth: options.strokeWidth,

@@ -24,12 +24,14 @@
  * groups) import at the right position and scale, not the raw-untransformed
  * coordinates an earlier version of this module produced. `<defs>`/
  * `<clipPath>`/`<mask>`/`<symbol>`/`<marker>`/`<pattern>` subtrees are
- * skipped entirely (their content is template geometry, not drawn shapes);
- * `<use>` and `<text>` are recognized and produce a collected `warnings`
- * entry rather than silently importing nothing or mis-tracing — a `<use>`'s
- * referenced content is never dereferenced, and `<text>`'s own glyph
- * outlines aren't in the file at all (the warning says to convert text to
- * outlines/paths first, e.g. Inkscape's Path ▸ Object to Path). Any other
+ * skipped entirely (their content is template geometry, not drawn shapes)
+ * — but a `<use>` DOES resolve its `href`/`xlink:href` target (including
+ * one inside `defs`/`symbol`), applying the `<use>`'s own `transform` and
+ * `x`/`y`, with a depth limit and a cycle check (a missing target, a cycle
+ * or an over-deep chain is a collected warning). `<text>` is recognized and
+ * produces a `warnings` entry — its glyph outlines aren't in the file at
+ * all (the warning says to convert text to outlines/paths first, e.g.
+ * Inkscape's Path ▸ Object to Path, or build 3D text through OpenSCAD). Any other
  * unrecognized element (a raster `<image>`, `<foreignObject>`, …)
  * contributes no geometry and no warning — it's simply not a shape.
  * Bezier/arc curves (and rounded-rect corners) are flattened into straight
@@ -402,6 +404,9 @@ function attrNum(attrs: string, name: string, fallback: number): number {
 
 /** Elements whose entire subtree is template/reference geometry, never drawn
  * directly — skipped wholesale rather than mis-traced. */
+/** Deepest `<use>` chain followed before giving up. */
+const MAX_USE_DEPTH = 16;
+
 const SKIP_SUBTREE_TAGS = new Set(["defs", "clippath", "mask", "symbol", "marker", "pattern"]);
 
 function rectSubpaths(attrs: string): SvgSubpath[] {
@@ -515,92 +520,144 @@ export function parseSvgDocument(svgText: string): SvgParseResult {
     }
   };
 
-  const transformStack: Mat[] = [IDENTITY_MAT];
-  const skipStack: string[] = [];
-
   const tagRe = /<(\/)?([A-Za-z_][\w:-]*)([^>]*)>/g;
-  let m: RegExpExecArray | null;
-  while ((m = tagRe.exec(cleaned)) !== null) {
-    const closing = m[1] === "/";
-    const rawName = m[2];
-    const name = rawName.includes(":") ? (rawName.split(":").pop() as string) : rawName;
-    const lower = name.toLowerCase();
-    const rawInner = m[3] ?? "";
-    const selfClosing = !closing && /\/\s*$/.test(rawInner);
-    const attrs = selfClosing ? rawInner.replace(/\/\s*$/, "") : rawInner;
 
-    if (skipStack.length > 0) {
-      if (!selfClosing) {
-        if (closing) {
-          if (skipStack[skipStack.length - 1] === lower) skipStack.pop();
-        } else if (lower === skipStack[skipStack.length - 1]) {
-          skipStack.push(lower); // same tag nested inside its own skipped subtree
+  // Pre-pass: every element carrying an `id`, as its full outer source, so a
+  // `<use>` can re-walk what it references (including inside defs/symbol).
+  const idSources = new Map<string, string>();
+  {
+    const open: { id: string | undefined; start: number }[] = [];
+    const re = new RegExp(tagRe.source, "g");
+    let t: RegExpExecArray | null;
+    while ((t = re.exec(cleaned)) !== null) {
+      const inner = t[3] ?? "";
+      const selfClosing = !t[1] && /\/\s*$/.test(inner);
+      if (t[1]) {
+        const o = open.pop();
+        if (o?.id !== undefined && !idSources.has(o.id)) idSources.set(o.id, cleaned.slice(o.start, t.index + t[0].length));
+      } else {
+        const id = attrValue(inner, "id");
+        if (selfClosing) {
+          if (id !== undefined && !idSources.has(id)) idSources.set(id, t[0]);
+        } else {
+          open.push({ id, start: t.index });
         }
       }
-      continue;
     }
-
-    if (closing) {
-      if (transformStack.length > 1) transformStack.pop();
-      continue;
-    }
-
-    if (SKIP_SUBTREE_TAGS.has(lower)) {
-      if (!selfClosing) skipStack.push(lower);
-      continue;
-    }
-
-    if (lower === "use") {
-      warnOnce("<use> elements are not supported — their referenced content is not traced.");
-      if (!selfClosing) skipStack.push(lower);
-      continue;
-    }
-
-    if (lower === "text") {
-      warnOnce("<text> elements are not supported — convert text to outlines/paths first (e.g. Inkscape's Path ▸ Object to Path).");
-      if (!selfClosing) skipStack.push(lower);
-      continue;
-    }
-
-    const ownAttr = attrValue(attrs, "transform");
-    const cumulative = ownAttr
-      ? matMultiply(transformStack[transformStack.length - 1], parseTransformAttr(ownAttr))
-      : transformStack[transformStack.length - 1];
-
-    let local: SvgSubpath[] = [];
-    switch (lower) {
-      case "path": {
-        const d = attrValue(attrs, "d");
-        if (d) local = parsePathData(d);
-        break;
-      }
-      case "rect":
-        local = rectSubpaths(attrs);
-        break;
-      case "circle":
-        local = circleSubpaths(attrs);
-        break;
-      case "ellipse":
-        local = ellipseSubpaths(attrs);
-        break;
-      case "line":
-        local = lineSubpaths(attrs);
-        break;
-      case "polyline":
-        local = polylineSubpaths(attrs, false);
-        break;
-      case "polygon":
-        local = polylineSubpaths(attrs, true);
-        break;
-      default:
-        break;
-    }
-    for (const sub of local) {
-      subpaths.push({ points: sub.points.map((p) => matApply(cumulative, p)), closed: sub.closed });
-    }
-
-    if (!selfClosing) transformStack.push(cumulative);
   }
+
+  const walk = (src: string, base: Mat, depth: number, chain: readonly string[], unwrapRoot: boolean): void => {
+    const transformStack: Mat[] = [base];
+    const skipStack: string[] = [];
+    let first = true;
+    const re = new RegExp(tagRe.source, "g");
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(src)) !== null) {
+      const closing = m[1] === "/";
+      const rawName = m[2];
+      const name = rawName.includes(":") ? (rawName.split(":").pop() as string) : rawName;
+      const lower = name.toLowerCase();
+      const rawInner = m[3] ?? "";
+      const selfClosing = !closing && /\/\s*$/.test(rawInner);
+      const attrs = selfClosing ? rawInner.replace(/\/\s*$/, "") : rawInner;
+      const isRoot = first;
+      first = false;
+
+      if (skipStack.length > 0) {
+        if (!selfClosing) {
+          if (closing) {
+            if (skipStack[skipStack.length - 1] === lower) skipStack.pop();
+          } else if (lower === skipStack[skipStack.length - 1]) {
+            skipStack.push(lower); // same tag nested inside its own skipped subtree
+          }
+        }
+        continue;
+      }
+
+      if (closing) {
+        if (transformStack.length > 1) transformStack.pop();
+        continue;
+      }
+
+      // A <symbol> reached through <use> is walked as a plain group.
+      const unwrap = unwrapRoot && isRoot && lower === "symbol";
+      if (!unwrap && SKIP_SUBTREE_TAGS.has(lower)) {
+        if (!selfClosing) skipStack.push(lower);
+        continue;
+      }
+
+      if (lower === "use") {
+        const href = attrValue(attrs, "href") ?? attrValue(attrs, "xlink:href");
+        const id = href && href.startsWith("#") ? href.slice(1) : undefined;
+        const ref = id !== undefined ? idSources.get(id) : undefined;
+        if (id === undefined || ref === undefined) {
+          warnOnce("<use> references an element that does not exist in this file — skipped.");
+        } else if (chain.includes(id)) {
+          warnOnce(`<use> reference cycle through "${id}" — skipped.`);
+        } else if (depth >= MAX_USE_DEPTH) {
+          warnOnce(`<use> nesting deeper than ${MAX_USE_DEPTH} levels — skipped.`);
+        } else {
+          const own = attrValue(attrs, "transform");
+          const outer = own
+            ? matMultiply(transformStack[transformStack.length - 1], parseTransformAttr(own))
+            : transformStack[transformStack.length - 1];
+          const placed = matMultiply(outer, [1, 0, 0, 1, attrNum(attrs, "x", 0), attrNum(attrs, "y", 0)]);
+          walk(ref, placed, depth + 1, [...chain, id], true);
+        }
+        if (!selfClosing) skipStack.push(lower);
+        continue;
+      }
+
+      if (lower === "text") {
+        warnOnce(
+          "<text> elements are not supported — convert text to outlines/paths first (e.g. Inkscape's Path ▸ Object to Path), or build 3D text through OpenSCAD.",
+        );
+        if (!selfClosing) skipStack.push(lower);
+        continue;
+      }
+
+      const ownAttr = attrValue(attrs, "transform");
+      const cumulative = ownAttr
+        ? matMultiply(transformStack[transformStack.length - 1], parseTransformAttr(ownAttr))
+        : transformStack[transformStack.length - 1];
+
+      let local: SvgSubpath[] = [];
+      switch (lower) {
+        case "path": {
+          const d = attrValue(attrs, "d");
+          if (d) local = parsePathData(d);
+          break;
+        }
+        case "rect":
+          local = rectSubpaths(attrs);
+          break;
+        case "circle":
+          local = circleSubpaths(attrs);
+          break;
+        case "ellipse":
+          local = ellipseSubpaths(attrs);
+          break;
+        case "line":
+          local = lineSubpaths(attrs);
+          break;
+        case "polyline":
+          local = polylineSubpaths(attrs, false);
+          break;
+        case "polygon":
+          local = polylineSubpaths(attrs, true);
+          break;
+        default:
+          break;
+      }
+      for (const sub of local) {
+        subpaths.push({ points: sub.points.map((p) => matApply(cumulative, p)), closed: sub.closed });
+      }
+
+      if (!selfClosing) transformStack.push(cumulative);
+    }
+  };
+
+  walk(cleaned, IDENTITY_MAT, 0, [], false);
 
   return { subpaths, warnings };
 }

@@ -67,7 +67,8 @@ The webview runs in a Chromium browser context. These modules are bundled into `
 | `src/webview/opIcons.ts` | Generated per-op SVG icons (`icons/build-op-icons.mjs`) |
 | `src/webview/editsPanel.ts` | Edits panel DOM — GEOMETRY (2D/3D) / EDIT tabs, op grids, param forms, op list |
 | `src/webview/commandSearch.ts` | Command search, pure half: `fuzzyScore`/`rankItems`, `opSearchItems`, `resolveKey` (the key table), `LastCommandTracker` |
-| `src/webview/commandPalette.ts` | Command search overlay (Ctrl+K, `/`) and the opt-in single-key commands |
+| `src/webview/commandPalette.ts` | Command search overlay (Ctrl+K, `/`), the opt-in single-key commands, and the always-on Ctrl+Z / Ctrl+Y / `?` keys |
+| `src/webview/shortcutSheet.ts` | The Keyboard shortcuts sheet (`?`): DOM only, rows from `shortcutSections()` in `commandSearch.ts` |
 | `src/webview/ribbonTabs.ts` | Ribbon tab ids, labels, default and `sanitizeRibbonTab` (tiny and pure so the host-side `viewStateSidecar.ts` can import it) |
 | `src/webview/ribbon.ts` | Ribbon command strip, pure half: the tab/group/item tables (the Model tab is generated from `opCatalog.ts`), `planOverflow`, `RibbonState` (unit-tested) |
 | `src/webview/ribbonStrip.ts` | Ribbon command strip, DOM half: builds `#ribbon`, mirrors target state, fits the overflow ▸ menu |

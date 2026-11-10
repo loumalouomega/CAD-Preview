@@ -14,12 +14,13 @@
  * selectable outline) and easy to edit (each `LINE` is an independent
  * segment).
  *
- * Bulge detection is not yet wired for tessellated silhouettes (they are pure
- * straight segments), so all produced polylines currently have zero bulge and
- * are plain polylines — the helper and serialization already carry bulge
- * correctly, so a future arc-aware source can reuse them with no format change.
+ * Circular runs are fitted by `dxfArcFit.ts`: a tessellated arc becomes one
+ * bulged LWPOLYLINE segment and a closed loop that is one circle becomes a
+ * `CIRCLE` (tolerance: `DxfOptions.arcTolerance`, default 0.5 % of the fitted
+ * radius, `0` to disable). Straight runs are never turned into arcs.
  */
 
+import { fitArcsInChains, countArcs } from "./dxfArcFit";
 import { segmentsToPolylines, viewBasis, dimensionDrawings, type Vec3, type ViewSpec, type DimensionSource, type DimensionDrawing } from "./svgSilhouette";
 import type { SheetLayout } from "./drawingSheet";
 
@@ -41,6 +42,12 @@ export interface DxfOptions {
    */
   annotations?: ReadonlyArray<DimensionSource>;
   dimensionScaleHint?: number;
+  /**
+   * Circular-arc fitting of tessellated runs: an absolute tolerance in drawing
+   * units, `0` to disable (write every run as straight segments), or omitted
+   * for the default of 0.5 % of each fitted radius. See `dxfArcFit.ts`.
+   */
+  arcTolerance?: number;
 }
 
 /** The annotation subset the export path consumes. */
@@ -56,6 +63,10 @@ export interface DxfResult {
   lineCount: number;
   /** Annotations whose dimension glyphs were rendered (absent when none were supplied). */
   dimensionCount?: number;
+  /** Bulged arc segments written inside LWPOLYLINEs (absent when none). */
+  arcCount?: number;
+  /** Closed runs written as one CIRCLE (absent when none). */
+  circleCount?: number;
 }
 
 function dot(a: Vec3, b: Vec3): number {
@@ -180,7 +191,7 @@ function serializeDxf(
   return { dxf: w.finish(), ...(dimensionCount !== undefined ? { dimensionCount } : {}) };
 }
 
-type Chain = { points: Array<[number, number]>; closed: boolean; bulges?: number[] };
+type Chain = { points: Array<[number, number]>; closed: boolean; bulges?: number[]; circle?: { cx: number; cy: number; r: number } };
 type Seg = [[number, number], [number, number]];
 
 /**
@@ -262,6 +273,14 @@ class DxfEntityWriter {
 
   chains(layer: string, chains: ReadonlyArray<Chain>): void {
     for (const ch of chains) {
+      if (ch.circle) {
+        this.push(0, "CIRCLE");
+        this.push(8, layer);
+        this.xy(ch.circle.cx, ch.circle.cy);
+        this.push(30, "0");
+        this.push(40, fmt(ch.circle.r));
+        continue;
+      }
       if (ch.points.length < 2) continue;
       this.push(0, "LWPOLYLINE");
       this.push(8, layer);
@@ -328,14 +347,25 @@ class DxfEntityWriter {
   }
 }
 
-function splitChains(segments: ReadonlyArray<Seg>): { polyChains: Chain[]; singleLines: Seg[] } {
+/**
+ * The one chain-then-split step every entry point shares: exact-endpoint
+ * chaining, singletons to LINE, everything else to LWPOLYLINE with circular
+ * runs fitted to bulges / CIRCLE (`arcTolerance === 0` skips the fit).
+ */
+function splitChains(segments: ReadonlyArray<Seg>, arcTolerance?: number): { polyChains: Chain[]; singleLines: Seg[] } {
   const polyChains: Chain[] = [];
   const singleLines: Seg[] = [];
   for (const ch of segmentsToPolylines(segments as Seg[])) {
     if (!ch.closed && ch.points.length === 2) singleLines.push([ch.points[0], ch.points[1]]);
     else polyChains.push(ch);
   }
-  return { polyChains, singleLines };
+  return { polyChains: arcTolerance === 0 ? polyChains : fitArcsInChains(polyChains, arcTolerance), singleLines };
+}
+
+function arcFacts(...groups: ReadonlyArray<Chain>[]): { arcCount?: number; circleCount?: number } {
+  const all = groups.flat();
+  const { arcCount, circleCount } = countArcs(all);
+  return { ...(arcCount > 0 ? { arcCount } : {}), ...(circleCount > 0 ? { circleCount } : {}) };
 }
 
 /**
@@ -455,28 +485,9 @@ export function polylinesDxf(polylines: Float32Array[], view: ViewSpec, options:
     const { dxf, dimensionCount } = serializeDxf([], [], options, dims);
     return { dxf, segmentCount: 0, chainCount: 0, lineCount: 0, ...(dimensionCount !== undefined ? { dimensionCount } : {}) };
   }
-  const chains = segmentsToPolylines(segs);
-  // Per finalized plan "Both: LINE + LWPOLYLINE" — chains of length >=2 become
-  // LWPOLYLINE, singletons remain LINE. Since segmentsToPolylines already
-  // produces chains (each chain is at least one segment => >=2 points), we
-  // treat chains with exactly 2 points that were originally a single segment
-  // and could not chain further as LINE candidates? But distinguishing is not
-  // needed: a single segment as an LWPOLYLINE with 2 vertices is valid and
-  // equivalent to a LINE, yet the plan explicitly wants singletons as LINEs
-  // when they could not chain. segmentsToPolylines merges singletons that are
-  // isolated anyway as chains of length 1 segment (2 points). To honor "LINE for
-  // unmatched", we emit chains with exactly one segment (2 points, open) as LINEs.
-  const polyChains: Array<{ points: Array<[number, number]>; closed: boolean }> = [];
-  const singleLines: Array<[[number, number], [number, number]]> = [];
-  for (const ch of chains) {
-    if (!ch.closed && ch.points.length === 2) {
-      singleLines.push([ch.points[0], ch.points[1]]);
-    } else {
-      polyChains.push(ch);
-    }
-  }
+  const { polyChains, singleLines } = splitChains(segs, options.arcTolerance);
   const { dxf, dimensionCount } = serializeDxf(polyChains, singleLines, options, dims);
-  return { dxf, segmentCount: segs.length, chainCount: polyChains.length, lineCount: singleLines.length, ...(dimensionCount !== undefined ? { dimensionCount } : {}) };
+  return { dxf, segmentCount: segs.length, chainCount: polyChains.length, lineCount: singleLines.length, ...arcFacts(polyChains), ...(dimensionCount !== undefined ? { dimensionCount } : {}) };
 }
 
 /**
@@ -498,16 +509,7 @@ export function technicalDrawingDxf(
   options: DxfOptions = {}
 ): DxfResult & { hiddenSegmentCount: number } {
   const dims = computeDimensions(options.annotations, view, options.dimensionScaleHint);
-  const split = (segs: Array<[[number, number], [number, number]]>) => {
-    const chains = segmentsToPolylines(segs);
-    const polyChains: Array<{ points: Array<[number, number]>; closed: boolean }> = [];
-    const singleLines: Array<[[number, number], [number, number]]> = [];
-    for (const ch of chains) {
-      if (!ch.closed && ch.points.length === 2) singleLines.push([ch.points[0], ch.points[1]]);
-      else polyChains.push(ch);
-    }
-    return { polyChains, singleLines };
-  };
+  const split = (segs: Array<[[number, number], [number, number]]>) => splitChains(segs, options.arcTolerance);
   const vis = split(visible);
   const hid = split(hidden);
   const { dxf, dimensionCount } = serializeDxf(vis.polyChains, vis.singleLines, options, dims, {
@@ -520,6 +522,7 @@ export function technicalDrawingDxf(
     hiddenSegmentCount: hidden.length,
     chainCount: vis.polyChains.length,
     lineCount: vis.singleLines.length,
+    ...arcFacts(vis.polyChains, hid.polyChains),
     ...(dimensionCount !== undefined ? { dimensionCount } : {}),
   };
 }
@@ -545,15 +548,9 @@ export function silhouetteDxf(
     const { dxf, dimensionCount } = serializeDxf([], [], options, dims);
     return { dxf, segmentCount: 0, chainCount: 0, lineCount: 0, ...(dimensionCount !== undefined ? { dimensionCount } : {}) };
   }
-  const chains = segmentsToPolylines(segs);
-  const polyChains: Array<{ points: Array<[number, number]>; closed: boolean }> = [];
-  const singleLines: Array<[[number, number], [number, number]]> = [];
-  for (const ch of chains) {
-    if (!ch.closed && ch.points.length === 2) singleLines.push([ch.points[0], ch.points[1]]);
-    else polyChains.push(ch);
-  }
+  const { polyChains, singleLines } = splitChains(segs, options.arcTolerance);
   const { dxf, dimensionCount } = serializeDxf(polyChains, singleLines, options, dims);
-  return { dxf, segmentCount: segs.length, chainCount: polyChains.length, lineCount: singleLines.length, ...(dimensionCount !== undefined ? { dimensionCount } : {}) };
+  return { dxf, segmentCount: segs.length, chainCount: polyChains.length, lineCount: singleLines.length, ...arcFacts(polyChains), ...(dimensionCount !== undefined ? { dimensionCount } : {}) };
 }
 
 /** Re-exported for backward compatibility — it moved to `svgSilhouette.ts` so
@@ -580,8 +577,8 @@ export function layeredDxf(
 ): DxfResult {
   const dims = computeDimensions(options.annotations, view, options.dimensionScaleHint);
   const layerGroups = groups.map((g) => {
-    const { polyChains, singleLines } = splitChains(g.segments as Seg[]);
-    const h = splitChains((g.hiddenSegments ?? []) as Seg[]);
+    const { polyChains, singleLines } = splitChains(g.segments as Seg[], options.arcTolerance);
+    const h = splitChains((g.hiddenSegments ?? []) as Seg[], options.arcTolerance);
     return { name: g.name, color: g.color, chains: polyChains, singleLines, hiddenChains: h.polyChains, hiddenLines: h.singleLines };
   });
   const { dxf, dimensionCount } = serializeDxf([], [], options, dims, undefined, layerGroups);
@@ -590,6 +587,7 @@ export function layeredDxf(
     segmentCount: groups.reduce((n, g) => n + g.segments.length, 0),
     chainCount: layerGroups.reduce((n, g) => n + g.chains.length, 0),
     lineCount: layerGroups.reduce((n, g) => n + g.singleLines.length, 0),
+    ...arcFacts(...layerGroups.flatMap((g) => [g.chains, g.hiddenChains])),
     ...(dimensionCount !== undefined ? { dimensionCount } : {}),
   };
 }

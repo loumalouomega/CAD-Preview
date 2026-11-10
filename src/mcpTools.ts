@@ -8115,7 +8115,7 @@ export async function exportSvgSilhouetteTool(
     /** Layer names/ids to restrict the drawing to (one output group per layer). Absent = every layer. B-rep sources only. */
     layers?: string[];
   }
-): Promise<{ written: string; bytes: number; view: string; segmentCount: number; triangleCount: number; unit: DisplayUnit; warnings: string[]; format: string; chainCount?: number; lineCount?: number; dimensionCount?: number; layers?: Array<{ id: string; name: string }> }> {
+): Promise<{ written: string; bytes: number; view: string; segmentCount: number; triangleCount: number; unit: DisplayUnit; warnings: string[]; format: string; chainCount?: number; lineCount?: number; arcCount?: number; circleCount?: number; dimensionCount?: number; layers?: Array<{ id: string; name: string }> }> {
   const modelPath = params.path;
   const route = requireDrawableRoute(modelPath);
 
@@ -8204,7 +8204,14 @@ export async function exportSvgSilhouetteTool(
       ...result.warnings,
     ],
     format,
-    ...(format === "dxf" ? { chainCount: result.chainCount, lineCount: result.lineCount } : {}),
+    ...(format === "dxf"
+      ? {
+          chainCount: result.chainCount,
+          lineCount: result.lineCount,
+          ...(result.arcCount !== undefined ? { arcCount: result.arcCount } : {}),
+          ...(result.circleCount !== undefined ? { circleCount: result.circleCount } : {}),
+        }
+      : {}),
     ...(result.dimensionCount !== undefined ? { dimensionCount: result.dimensionCount } : {}),
     ...(layerFilter ? { layers: layerFilter.map((s) => ({ id: s.id, name: s.name })) } : {}),
   };

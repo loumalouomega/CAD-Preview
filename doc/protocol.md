@@ -431,6 +431,8 @@ interface MeshioOpSpec {              // src/meshioOps.ts — one panel Run = on
 type HostToWebview =
   | { type: 'geometry'; meshes: EncodedMesh[]; edges: EncodedEdge[]; points: EncodedPoint[]; opOutcomes?: OpOutcome[]; guideIds?: string[]; opBuckets?: OpBucket[]; autoFit?: boolean }
   | { type: 'tree';     root: TreeNode; sourceUnit?: string; upgrade?: boolean }
+  | { type: 'undo' }
+  | { type: 'redo' }
   | { type: 'planes'; planes: ConstructionPlane[] }
   | { type: 'documentInfo'; name: string; path: string; format: string; dirty: boolean; unsavedEdits: number }
   | { type: 'kernelStatus'; state: KernelState }
@@ -796,6 +798,12 @@ Sent in reply to `meshingGenerate`/`meshingExport` when GMSH throws or the docum
 { "type": "meshingError", "requestId": "mesh-request-1", "message": "No mesh geometry available: missing STL data." }
 ```
 
+### `undo` / `redo`
+
+Undo or redo the last op on the webview's edit stack — exactly what Ctrl+Z, Ctrl+Shift+Z / Ctrl+Y and the Edits panel buttons do, for an embedding host that has its own Undo menu. Both carry no payload. An undo at or inside the save point is refused with the usual status message (the ops live in the saved file); an empty stack is a silent no-op. The webview answers with [`historyState`](#historystate) when the result changes the flags or labels.
+
+**Who owns the undo keys.** The webview owns the undo stack. The custom editor provider raises content-*change* events (not `CustomDocumentEditEvent`s), so VS Code's own Edit ▸ Undo/Redo has no stack for this editor and never fires alongside the webview's keys — there is nothing to arbitrate. Ctrl+Z / Ctrl+Shift+Z / Ctrl+Y act in the viewport and panels but never inside a text field, which keeps its own undo.
+
 ### `viewerDefaults`
 
 Sent once, alongside `parts`/`meshingOptions` in the `ready` handshake, reading `workspace.getConfiguration("cadPreview")` (`src/viewerDefaults.ts`'s `normalizeViewerDefaults` is the tolerance gate — same clamp-per-field style as `validateMeshOptions`). Arrives in no deterministic order relative to `geometry`/`loadUrl` (B-rep tessellation is async), so the webview's handler must tolerate either order — `background`/`showGridAndAxes` apply immediately (scene-level), `upAxis` is stored and applied at the next `Viewer.setModel()` call, and `meshSizePreset` feeds the same bbox-derived seed `syncMeshSizeSeed()` already computes. `navigationPreset` (`"default"`, `"fusion"` or `"touchpad"`; anything else falls back to `"default"`) maps the mouse buttons on every pane's `OrbitControls` through the one table in `src/navigationPresets. `touchpad` also gives the table a `wheel: "pan"` field: `Viewer.onTouchpadWheel` (capture, non-passive, before OrbitControls) pans the pane under the pointer by `wheelPanOffset` for a plain wheel event and leaves a Ctrl-wheel pinch to OrbitControls' zoom.ts`. `singleKeyCommands` mirrors `cadPreview.singleKeyCommands` (default `false`; anything but a real boolean falls back to it) and gates the webview's single-letter command keys and Shift+R; Ctrl+K / `/` command search is always on. `ribbon` mirrors `cadPreview.ribbon` (default `true`) and sets the ribbon's *initial* hidden state; a `ribbonHidden` boolean restored from the sidecar (written only when it differs from this default) wins, in either arrival order. These are cross-document **defaults only** — a persisted per-document `.mesh.json` value or the toolbar Grid toggle always wins once set.
@@ -1117,6 +1125,7 @@ type WebviewToHost =
   | { type: 'loadPreprocessRequest' }
   | { type: 'scadApplyOverrides'; overrides: Record<string, unknown> }
   | { type: 'editsChanged'; ops: EditOp[]; variables: ParamVariable[]; configurations?: Configuration[]; activeConfiguration?: string | null }
+  | { type: 'historyState'; canUndo: boolean; canRedo: boolean; undoLabel?: string; redoLabel?: string }
   | { type: 'exportVariables'; format: 'csv' | 'json'; text: string }
   | { type: 'viewChanged'; view: ViewState }
   | { type: 'setCamerasLinked'; enabled: boolean }
@@ -1239,6 +1248,14 @@ OpenSCAD Customizer (roadmap "OpenSCAD Customizer panel in the viewer"), `.scad`
 { "type": "scadParams", "params": [{ "name": "width", "kind": "number", "default": 40, "group": "Dimensions", "hidden": false, "line": 3, "min": 10, "max": 100 }] }
 { "type": "scadOverrides", "overrides": { "width": 60 } }
 { "type": "scadApplyOverrides", "overrides": { "width": 60 } }
+```
+
+### `historyState`
+
+Whether undo and redo are possible and which op each would affect, so an embedder can enable and label its own Undo / Redo. `undoLabel` is the last applied op's label (or description) and is absent when `canUndo` is false; `redoLabel` is the next op a redo would re-apply and is absent when `canRedo` is false. `canUndo` is false when every applied op is inside the save point. Sent after the Edits UI renders, and only when one of the four values changed.
+
+```json
+{ "type": "historyState", "canUndo": true, "canRedo": false, "undoLabel": "Fillet 2 edges" }
 ```
 
 ### `editsChanged`

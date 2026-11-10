@@ -6196,6 +6196,16 @@ try {
       await call("export_drawing_sheet", { path: holeSheetModel, outputPath: holeDxfOut, format: "dxf", holeCallouts: true });
       const holeDxf = fs.readFileSync(holeDxfOut, "utf8");
       assert(holeDxf.includes("\nCENTER\n") && holeDxf.includes("4x %%c1 THRU"), "DXF puts the marks and callout on the CENTER layer");
+      // The four bores are fitted back to true circles (not 4 N-gons) in a plain
+      // silhouette/technical DXF; arcTolerance-free default, radius 0.5 within 1 %.
+      const arcDxfOut = path.join(dir, "sheet-holes-arcs.dxf");
+      const arcRes = await call("export_technical_drawing", { path: holeSheetModel, outputPath: arcDxfOut, view: "FRONT", format: "dxf" });
+      const arcDxf = fs.readFileSync(arcDxfOut, "utf8");
+      const circleRadii = [...arcDxf.matchAll(/\nCIRCLE\n[\s\S]*?\n40\n([^\n]+)\n/g)].map((m) => Number(m[1]));
+      assert(
+        (arcRes.circleCount ?? 0) >= 4 && circleRadii.length >= 4 && circleRadii.every((r) => Math.abs(r - 0.5) < 0.005),
+        `hole bores are written as CIRCLE entities of radius 0.5 (got circleCount ${arcRes.circleCount}, radii ${circleRadii.join(",")})`
+      );
     }
 
     // A4 picks a standard ISO 5455 scale and reports the real sheet size.

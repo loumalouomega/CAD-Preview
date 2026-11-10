@@ -280,11 +280,48 @@ describe("parseSvgDocument — skipped subtrees and warnings", () => {
     expect(subpaths[0].points.map(round)).toEqual([[1, 0], [2, 0]]);
   });
 
-  it("<use> is recognized and warned about, not silently ignored or dereferenced", () => {
-    const svg = `<svg><use href="#thing" x="5" y="5"/></svg>`;
+  it("<use> resolves the referenced element with its own x/y/transform", () => {
+    const svg = `<svg><defs><path id="p" d="M0 0 L1 0"/></defs><use href="#p" x="5" y="2"/></svg>`;
     const { subpaths, warnings } = parseSvgDocument(svg);
+    expect(warnings).toEqual([]);
+    expect(subpaths).toHaveLength(1);
+    expect(subpaths[0].points.map(round)).toEqual([[5, 2], [6, 2]]);
+  });
+
+  it("one symbol used six times imports six profiles (xlink:href and use transform too)", () => {
+    const uses = [0, 1, 2, 3, 4].map((i) => `<use xlink:href="#sq" x="${i * 10}" y="0"/>`).join("");
+    const svg = `<svg><defs><symbol id="sq"><rect x="0" y="0" width="4" height="4"/></symbol></defs>${uses}<use href="#sq" transform="translate(0,20)"/></svg>`;
+    const { subpaths, warnings } = parseSvgDocument(svg);
+    expect(warnings).toEqual([]);
+    expect(subpaths).toHaveLength(6);
+    expect(subpaths[4].points.map(round)[0]).toEqual([40, 0]);
+    expect(subpaths[5].points.map(round)[0]).toEqual([0, 20]);
+  });
+
+  it("nested <use> composes transforms", () => {
+    const svg = `<svg><defs><g id="a" transform="translate(1,0)"><path d="M0 0 L1 0"/></g><g id="b"><use href="#a" x="10"/></g></defs><use href="#b" transform="translate(0,5)"/></svg>`;
+    const { subpaths } = parseSvgDocument(svg);
+    expect(subpaths).toHaveLength(1);
+    expect(subpaths[0].points.map(round)).toEqual([[11, 5], [12, 5]]);
+  });
+
+  it("a <use> cycle is refused with a warning, never loops", () => {
+    const svg = `<svg><g id="a"><use href="#b"/></g><g id="b"><use href="#a"/></g></svg>`;
+    const { warnings } = parseSvgDocument(svg);
+    expect(warnings.some((w) => w.includes("cycle"))).toBe(true);
+  });
+
+  it("a missing <use> target warns once", () => {
+    const { subpaths, warnings } = parseSvgDocument(`<svg><use href="#nope"/><use href="#nope2"/></svg>`);
     expect(subpaths).toHaveLength(0);
-    expect(warnings.some((w) => w.includes("<use>"))).toBe(true);
+    expect(warnings).toHaveLength(1);
+  });
+
+  it("an over-deep <use> chain stops at the depth limit with a warning", () => {
+    let defs = `<path id="u0" d="M0 0 L1 0"/>`;
+    for (let i = 1; i <= 20; i++) defs += `<g id="u${i}"><use href="#u${i - 1}"/></g>`;
+    const { warnings } = parseSvgDocument(`<svg><defs>${defs}</defs><use href="#u20"/></svg>`);
+    expect(warnings.some((w) => w.includes("deeper"))).toBe(true);
   });
 
   it("<text> is recognized and warned about, and its subtree (e.g. <tspan>) is skipped", () => {
@@ -294,10 +331,9 @@ describe("parseSvgDocument — skipped subtrees and warnings", () => {
     expect(warnings.some((w) => w.includes("<text>") && w.includes("outlines"))).toBe(true);
   });
 
-  it("a repeated <use>/<text> warns only once each, not once per occurrence", () => {
-    const svg = `<svg><use href="#a"/><use href="#b"/><text>a</text><text>b</text></svg>`;
-    const { warnings } = parseSvgDocument(svg);
-    expect(warnings).toHaveLength(2);
+  it("a repeated <text> warns only once, not once per occurrence", () => {
+    const { warnings } = parseSvgDocument(`<svg><text>a</text><text>b</text></svg>`);
+    expect(warnings).toHaveLength(1);
   });
 
   it("comments are stripped and never confused for tags", () => {

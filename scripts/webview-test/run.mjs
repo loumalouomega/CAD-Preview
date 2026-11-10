@@ -3662,6 +3662,82 @@ test("command search: Ctrl+K, 'fil' finds Fillet, Enter opens its form, Shift+R 
   assert((await sentCount(page, "editsChanged")) === before, "…and applies nothing");
 });
 
+const opCountFromHost = (page) => page.evaluate(() => (window.__sent ?? []).findLast((x) => x.type === "editsChanged")?.ops.length ?? 0);
+const lastHistory = (page) => page.evaluate(() => (window.__sent ?? []).findLast((x) => x.type === "historyState") ?? null);
+
+test("undo/redo keys: Ctrl+Z twice and Ctrl+Y once leave one op; historyState reports flags and labels; a field keeps its own undo; the host messages do the same", async (page) => {
+  await populate(page);
+  await blurAll(page);
+  const base = await opCountFromHost(page);
+  await typeCommand(page, 'addBox {"center":[0,0,0],"size":[3,4,5]}');
+  await typeCommand(page, 'addSphere {"center":[10,0,0],"radius":2}');
+  await blurAll(page);
+  assert((await opCountFromHost(page)) === base + 2, "two ops applied");
+  let h = await lastHistory(page);
+  assert(h && h.canUndo === true && h.canRedo === false && typeof h.undoLabel === "string" && h.undoLabel.length > 0, `historyState reports undo possible with a label (got ${JSON.stringify(h)})`);
+  await page.keyboard.press("Control+Z");
+  await page.keyboard.press("Control+Z");
+  await sleep(150);
+  assert((await opCountFromHost(page)) === base, `Ctrl+Z twice removes both ops (got ${await opCountFromHost(page) - base} left)`);
+  h = await lastHistory(page);
+  assert(h.canRedo === true && typeof h.redoLabel === "string" && h.canUndo === false && h.undoLabel === undefined, `historyState flips to redo-only (got ${JSON.stringify(h)})`);
+  await page.keyboard.press("Control+Y");
+  await sleep(150);
+  assert((await opCountFromHost(page)) === base + 1, "Ctrl+Y re-applies exactly one op");
+  await page.keyboard.press("Control+Shift+Z");
+  await sleep(150);
+  assert((await opCountFromHost(page)) === base + 2, "Ctrl+Shift+Z re-applies the next one");
+
+  // Control: inside a text field the chord is the field's own, not ours.
+  await page.focus("#cmdbar-input");
+  await page.keyboard.press("Control+Z");
+  await sleep(150);
+  assert((await opCountFromHost(page)) === base + 2, "Ctrl+Z inside a text field does not undo an op");
+
+  // The embedder messages drive the same path.
+  await blurAll(page);
+  await post(page, { type: "undo" });
+  await sleep(150);
+  assert((await opCountFromHost(page)) === base + 1, "the host 'undo' message undoes one op");
+  await post(page, { type: "redo" });
+  await sleep(150);
+  assert((await opCountFromHost(page)) === base + 2, "the host 'redo' message redoes it");
+});
+
+test("keyboard shortcuts sheet: '?' opens it (setting off too), lists every bound key, Escape closes and restores focus; not in a field", async (page) => {
+  await populate(page);
+  await setSingleKeys(page, false);
+  await blurAll(page);
+  const visible = () => page.evaluate(() => { const el = document.getElementById("shortcut-sheet"); return !!el && el.getClientRects().length > 0; });
+  assert(!(await visible()), "the sheet starts closed");
+  await page.keyboard.press("Shift+?");
+  assert(await visible(), "'?' opens the sheet");
+  const rows = await page.evaluate(() => [...document.querySelectorAll("#shortcut-body .shortcut-row")].map((r) => ({ key: r.querySelector(".shortcut-key").textContent, off: r.querySelector(".shortcut-key").classList.contains("off") })));
+  for (const k of ["Ctrl+K", "?", "Ctrl+Z", "Shift+R", "E", "F", "Q"]) assert(rows.some((r) => r.key === k), `the sheet lists ${k} (got ${rows.map((r) => r.key).join(" ")})`);
+  assert(rows.find((r) => r.key === "E").off && !rows.find((r) => r.key === "Ctrl+K").off, "bare letters read as inactive while the setting is off; chords do not");
+  // A key meant for the viewer does not leak through the open sheet.
+  const before = await sentCount(page, "editsChanged");
+  await page.keyboard.press("Control+Z");
+  assert((await sentCount(page, "editsChanged")) === before, "the open sheet owns the keyboard");
+  await page.keyboard.press("Escape");
+  assert(!(await visible()), "Escape closes the sheet");
+  // Control: in a text field '?' types a question mark and opens nothing.
+  await page.focus("#cmdbar-input");
+  await page.keyboard.press("Shift+?");
+  assert(!(await visible()), "'?' inside a field does not open the sheet");
+  assert((await page.inputValue("#cmdbar-input")) === "?", "…and types normally");
+  await page.fill("#cmdbar-input", "");
+  // The command search finds it too.
+  await blurAll(page);
+  await page.keyboard.press("Control+K");
+  await page.keyboard.type("keyboard short");
+  const found = await paletteRows(page);
+  assert(found[0]?.id === "keyboard-shortcuts", `command search finds the sheet (got ${JSON.stringify(found.slice(0, 2).map((r) => r.id))})`);
+  await page.keyboard.press("Enter");
+  assert(await visible() && !(await paletteVisible(page)), "Enter on that row opens the sheet and closes the search");
+  await page.keyboard.press("Escape");
+});
+
 test("command search: Shift+R refills the last applied op's values", async (page) => {
   await populate(page);
   await setSingleKeys(page, true);

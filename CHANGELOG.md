@@ -6,6 +6,17 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/); thi
 
 ## [Unreleased]
 
+### Added
+
+- **Undo and redo from the keyboard.** Ctrl+Z, Ctrl+Shift+Z and Ctrl+Y work in the viewport and panels (never inside a text field), and the host can send `undo` / `redo` messages; the webview answers with a `historyState` event (flags plus the label of the op each would affect). Undo still cannot cross the save point. The ownership decision is recorded in `doc/protocol.md`.
+- **Keyboard shortcuts sheet.** `?` (or "Keyboard shortcuts" in the command search) lists every bound key, generated from the key table so it cannot drift.
+- **DXF arcs.** Silhouette, technical-drawing and sheet DXF exports fit tessellated circular runs back to bulged `LWPOLYLINE` arcs and full `CIRCLE`s (0.5 % of the fitted radius by default), so a hole is no longer an N-gon in the receiving CAD; `export_svg_silhouette` / `export_technical_drawing` report `arcCount` / `circleCount`.
+- **SVG `<use>`.** `Import SVG…` / `import_svg` resolve `<use>` (`href` and `xlink:href`, nested references, its own `transform` and `x`/`y`, a depth limit and a cycle check), so a symbol used six times imports six profiles.
+
+### Changed
+
+- The progress sweep, the ribbon chevron's turn and camera drag damping honour `prefers-reduced-motion`.
+
 ## [3.41.0] - 2026-11-10
 
 ### Added
