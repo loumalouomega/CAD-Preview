@@ -4087,7 +4087,10 @@ try {
     structMdpa.includes("Begin Elements Element3D8N") && /Begin SubModelPart Block/.test(structMdpa),
     "structured MDPA carries Element3D8N cells with a populated Block SubModelPart"
   );
-  // Refinement regions (roadmap "Refinement regions"): geometry-free Ball / Box / Cylinder size fields
+  // Periodic meshing (roadmap "Periodic meshing"): the 3x4x5 box's x=0 / x=3 faces become
+  // Parts and `options.periodic` makes their face meshes node-for-node translates.
+  await call("set_part", { path: structStep, name: "Block", meshStructured: null });
+  // Refinement regions (roadmap "Refinement regions"): geometry-free Ball / Box / Cylinder size fields (after meshStructured is cleared: transfinite divisions override any size field)
   // joined into the Min background. Pins on block.stp (3x4x5, centred): a sphere refines, a region wholly
   // outside the model is reported and changes nothing, and a non-Gmsh engine refuses the list by name.
   {
@@ -4118,9 +4121,6 @@ try {
     });
     assert(octreeRefused.isError === true && /refinementRegions/.test(octreeRefused.content?.[0]?.text ?? ""), "engine octree refuses refinementRegions by name");
   }
-  // Periodic meshing (roadmap "Periodic meshing"): the 3x4x5 box's x=0 / x=3 faces become
-  // Parts and `options.periodic` makes their face meshes node-for-node translates.
-  await call("set_part", { path: structStep, name: "Block", meshStructured: null });
   let xMinFace = null, xMaxFace = null;
   for (let i = 0; i < 6; i++) {
     const f = await call("inspect", { path: structStep, entityId: `face-${i}` });
