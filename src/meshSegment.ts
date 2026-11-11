@@ -50,6 +50,14 @@ export interface SegmentMeshOptions {
    * Deterministic (fixed seed). Adds a `refinement` block to the report.
    */
   refine?: boolean;
+  /**
+   * meshio++ 20: which vertices a fit uses — `auto` (default, sigma-trims the outliers a scan carries),
+   * `all`, `3sigma`, `2sigma` or `1sigma` — and the criterion the planes, spheres and cylinders are
+   * refitted under (`least_squares` default, `minimum_zone`, `min_circumscribed`, `max_inscribed`).
+   * Forwarded only when set, so a default call is byte-identical to 19.
+   */
+  usedPoints?: "auto" | "all" | "3sigma" | "2sigma" | "1sigma";
+  criterion?: "least_squares" | "minimum_zone" | "min_circumscribed" | "max_inscribed";
 }
 
 /** What `refinePatches` did, in meshio++'s own words. */
@@ -124,6 +132,12 @@ export async function segmentMeshSurface(
   if (options.method !== undefined && options.method !== "angle" && options.method !== "primitive") {
     throw new Error(`method must be "angle" or "primitive" (got ${String(options.method)})`);
   }
+  if (options.usedPoints !== undefined && !["auto", "all", "3sigma", "2sigma", "1sigma"].includes(options.usedPoints)) {
+    throw new Error(`usedPoints must be auto, all, 3sigma, 2sigma or 1sigma (got ${String(options.usedPoints)})`);
+  }
+  if (options.criterion !== undefined && !["least_squares", "minimum_zone", "min_circumscribed", "max_inscribed"].includes(options.criterion)) {
+    throw new Error(`criterion must be least_squares, minimum_zone, min_circumscribed or max_inscribed (got ${String(options.criterion)})`);
+  }
   if (options.primitiveTolerance !== undefined && !(Number.isFinite(options.primitiveTolerance) && options.primitiveTolerance > 0)) {
     throw new Error(`primitiveTolerance must be a positive number (got ${options.primitiveTolerance})`);
   }
@@ -161,15 +175,12 @@ export async function segmentMeshSurface(
         stop: r.stop,
       };
     }
-    const fit = m.fitPrimitives(
-      patched,
-      "segment:patch",
-      options.tolerance ?? 0.01,
-      !options.absoluteTolerance,
-      options.minInlierFraction ?? 0.9,
-      types,
-      20
-    );
+    const fitExtra: Record<string, unknown> = {};
+    if (options.usedPoints !== undefined) fitExtra.usedPoints = options.usedPoints;
+    if (options.criterion !== undefined) fitExtra.criterion = options.criterion;
+    const fitArgs: unknown[] = [patched, "segment:patch", options.tolerance ?? 0.01, !options.absoluteTolerance, options.minInlierFraction ?? 0.9, types, 20];
+    if (Object.keys(fitExtra).length > 0) fitArgs.push(fitExtra);
+    const fit = (m.fitPrimitives as (...a: unknown[]) => any)(...fitArgs);
     const fd = fit.mesh.field_data ?? {};
     const cellPatch = toNumbers(fit.mesh.cell_data?.["segment:patch"]?.[0]);
     const counts = new Map<number, number>();

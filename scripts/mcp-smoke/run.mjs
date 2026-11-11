@@ -375,8 +375,8 @@ try {
   assert(capsText.length > 100, "resources/read cad-preview://capabilities returns JSON text");
 
   const tools = (await request("tools/list", {})).tools.map((t) => t.name);
-  assert(tools.length === 97, `tools/list exposes 97 tools (got ${tools.length}: ${tools.join(", ")})`);
-  for (const t of ["check_draft", "check_printability", "list_workspace_models", "check_interference_all", "generate_bom", "generate_hole_table", "render_ops_prefix", "check_tolerance", "inspect_meshio_fields", "pin_annotation", "import_svg", "save_mesh_preset", "list_mesh_presets", "apply_mesh_preset", "compare_mesh_refinement", "export_tessellated_stl", "estimate_mesh_budget", "analyze_passages", "measure_mesh_deviation", "save_sheet_template", "list_sheet_templates", "batch_export", "check_handoff_manifest", "generate_prep_report", "job_status", "job_cancel", "check_brep_health", "list_scad_parameters", "convert_scad", "list_layers", "set_layer", "assign_layer", "segment_mesh_surface", "fit_mesh_to_cad", "mesh_cad_surface", "check_mesh_conformity", "find_mesh_intersections", "measure_mesh_thickness", "select_mesh_region", "analyze_surface_geometry", "mesh_adjacency", "register_meshes", "project_to_cad", "grow_prism_layers", "iga_sample", "iga_refine", "iga_evaluate", "check_mesh_quality", "set_configuration"]) {
+  assert(tools.length === 113, `tools/list exposes 113 tools (got ${tools.length}: ${tools.join(", ")})`);
+  for (const t of ["check_draft", "check_printability", "list_workspace_models", "check_interference_all", "generate_bom", "generate_hole_table", "render_ops_prefix", "check_tolerance", "inspect_meshio_fields", "pin_annotation", "import_svg", "save_mesh_preset", "list_mesh_presets", "apply_mesh_preset", "compare_mesh_refinement", "export_tessellated_stl", "estimate_mesh_budget", "analyze_passages", "measure_mesh_deviation", "save_sheet_template", "list_sheet_templates", "batch_export", "check_handoff_manifest", "generate_prep_report", "job_status", "job_cancel", "check_brep_health", "list_scad_parameters", "convert_scad", "list_layers", "set_layer", "assign_layer", "segment_mesh_surface", "fit_mesh_to_cad", "mesh_cad_surface", "check_mesh_conformity", "find_mesh_intersections", "measure_mesh_thickness", "select_mesh_region", "analyze_surface_geometry", "mesh_adjacency", "register_meshes", "measure_mesh", "analyze_deviation", "register_landmarks", "find_symmetry_plane", "auto_align_scan", "mesh_sections", "mesh_silhouette", "fit_mesh_curves", "clip_mesh", "offset_mesh_surface", "flip_mesh_normals", "remove_mesh_islands", "constrain_primitives", "write_step_elements", "profile_to_solid", "fit_cad_iterate", "project_to_cad", "grow_prism_layers", "iga_sample", "iga_refine", "iga_evaluate", "check_mesh_quality", "set_configuration"]) {
     assert(tools.includes(t), `tools/list exposes ${t}`);
   }
 
@@ -7907,6 +7907,116 @@ try {
   assert(m181MovedBox.length > 0 && Math.max(...m181MovedBox) <= 5.05 && Math.min(...m181MovedBox) >= -5.05, `the written, registered copy sits inside the target cube's x range (got ${Math.min(...m181MovedBox)}..${Math.max(...m181MovedBox)})`);
   const m181RegSelf = await request("tools/call", { name: "register_meshes", arguments: { path: m181Shift, targetPath: sa18Cube, outputPath: sa18Cube } });
   assert(m181RegSelf.isError === true, "register_meshes refuses to write over its target");
+
+  // ---- meshio++ 20.0 scan / metrology / surface editing (probe meshio-2000.ts / meshio-2000b.ts) ------------------------
+  // register_meshes `initial: "auto"` tries the 24 principal-frame candidates and reports them.
+  const m200Auto = await call("register_meshes", { path: m181Shift, targetPath: sa18Cube, initial: "auto", maxIterations: 50 });
+  assert(
+    m200Auto.supported === true && Array.isArray(m200Auto.candidateRms) && m200Auto.candidateRms.length === 24 && Number.isInteger(m200Auto.chosenCandidate) && m200Auto.rms < 0.05,
+    `register_meshes initial:auto reports the 24 candidate RMS values and still registers the shifted cube (got ${JSON.stringify({ ...m200Auto, matrix: undefined })})`
+  );
+  // measure_mesh: top/bottom planes of the 10 mm cube are exactly 10 apart; a wrong nominal is a failing dimension (control).
+  const m200Spec = (nominal) => ({
+    elements: [{ name: "top", fit: "plane", seeds: [[0, 0, 5]] }, { name: "bot", fit: "plane", seeds: [[0, 0, -5]] }, { name: "side", fit: "plane", seeds: [[5, 0, 0]] }],
+    dimensions: [{ name: "height", type: "distance", between: ["top", "bot"], nominal, tolerance: 0.1 }, { name: "ang", type: "angle", between: ["top", "side"], nominal: 90, tolerance: 0.5 }],
+  });
+  const m200Meas = await call("measure_mesh", { path: sa18Cube, spec: m200Spec(10), alignDatums: { primary: "bot", secondary: "side" }, primitives: ["top"] });
+  const m200Height = m200Meas.report?.dimensions?.find((d) => d.name === "height");
+  assert(
+    m200Meas.supported === true && m200Meas.numFail === 0 && Math.abs(m200Height.value - 10) < 1e-6 && m200Height.pass === true &&
+      m200Meas.datum.matrix.length === 16 && m200Meas.primitives[0].type === 1 && m200Meas.primitives[0].params.length === 10,
+    `measure_mesh reads the cube height as 10 (pass), aligns on datums and returns the top plane as a type-1 primitive (got ${JSON.stringify(m200Meas).slice(0, 600)})`
+  );
+  const m200MeasBad = await call("measure_mesh", { path: sa18Cube, spec: JSON.stringify(m200Spec(12)) });
+  assert(m200MeasBad.numFail === 1 && m200MeasBad.report.dimensions[0].pass === false, `control: a nominal of 12 fails the height dimension (got numFail ${m200MeasBad.numFail})`);
+  assert((await call("measure_mesh", { path: octreeBlock, spec: m200Spec(10) })).supported === false, "measure_mesh declines a B-rep source");
+  // analyze_deviation: the cube shifted 0.5 in x against the cube; ICP registration removes it; a z=0 plane gives +-5.
+  const m200Dev = await call("analyze_deviation", { path: m181Shift, referencePath: sa18Cube, bins: 4 });
+  assert(
+    m200Dev.supported === true && Math.abs(m200Dev.max - 0.5) < 1e-6 && m200Dev.histogram.counts.length === 4 && m200Dev.histogram.edges.length === 5 && m200Dev.registered === false,
+    `analyze_deviation reads the 0.5 x-shift as a +0.5 maximum with a 4-bin histogram (got ${JSON.stringify({ ...m200Dev, histogram: undefined })})`
+  );
+  const m200DevReg = await call("analyze_deviation", { path: m181Shift, referencePath: sa18Cube, register: true, tolerance: 0.01 });
+  assert(m200DevReg.registered === true && Math.abs(m200DevReg.max) < 1e-3 && m200DevReg.shareWithin === 1, `register:true removes the shift (max ${m200DevReg.max}, shareWithin ${m200DevReg.shareWithin})`);
+  const m200DevPlane = await call("analyze_deviation", { path: sa18Cube, primitive: { type: "plane", params: [0, 0, 0, 0, 0, 1, 0, 0, 0, 0] } });
+  assert(Math.abs(m200DevPlane.max - 5) < 1e-9 && Math.abs(m200DevPlane.min + 5) < 1e-9, `a z=0 plane reads the cube vertices at +-5 (got ${m200DevPlane.min}..${m200DevPlane.max})`);
+  const m200DevVtu = path.join(dir, "m2000-deviation.vtu");
+  const m200DevOut = await call("analyze_deviation", { path: m181Shift, referencePath: sa18Cube, regionTolerance: 0.1, exaggerate: { scale: 2 }, colorize: { cmap: "viridis" }, outputPath: m200DevVtu });
+  assert(m200DevOut.written === m200DevVtu && m200DevOut.regions && Number.isInteger(m200DevOut.regions.numExcess), "analyze_deviation writes the exaggerated, coloured mesh and lists regions");
+  const m200DevNames = (await call("inspect_meshio_fields", { path: m200DevVtu })).arrays.map((x) => x.name);
+  assert(["deviation:distance", "red", "green", "blue"].every((n) => m200DevNames.includes(n)), `the written .vtu carries deviation:distance and red/green/blue (got ${m200DevNames.join(", ")})`);
+  const m200DevNoOut = await request("tools/call", { name: "analyze_deviation", arguments: { path: m181Shift, referencePath: sa18Cube, colorize: {} } });
+  assert(m200DevNoOut.isError === true, "analyze_deviation colorize without outputPath is refused");
+  const m200DevBoth = await request("tools/call", { name: "analyze_deviation", arguments: { path: m181Shift, referencePath: sa18Cube, primitive: { type: "plane", params: [0, 0, 0, 0, 0, 1, 0, 0, 0, 0] } } });
+  assert(m200DevBoth.isError === true, "analyze_deviation refuses both a reference and a primitive");
+  // register_landmarks: a pure +1 x translation, zero residual.
+  const m200Lm = await call("register_landmarks", { source: [0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1], target: [1, 0, 0, 2, 0, 0, 1, 1, 0, 1, 0, 1] });
+  assert(m200Lm.supported === true && Math.abs(m200Lm.matrix[3] - 1) < 1e-9 && m200Lm.rms < 1e-9 && m200Lm.matrix.length === 16, `register_landmarks solves a +1 x translation exactly (got ${JSON.stringify(m200Lm)})`);
+  assert((await request("tools/call", { name: "register_landmarks", arguments: { source: [0, 0, 0, 1, 0, 0], target: [0, 0, 0, 1, 0, 0] } })).isError === true, "register_landmarks refuses fewer than three landmarks");
+  // find_symmetry_plane / auto_align_scan on the cube.
+  const m200Sym = await call("find_symmetry_plane", { path: sa18Cube });
+  assert(m200Sym.supported === true && m200Sym.plane.share === 1 && m200Sym.plane.normal.filter((x) => Math.abs(Math.abs(x) - 1) < 1e-6).length === 1, `find_symmetry_plane finds an axis-aligned plane of the cube (got ${JSON.stringify(m200Sym.plane)})`);
+  const m200AlignOut = path.join(dir, "m2000-aligned.stl");
+  const m200Align = await call("auto_align_scan", { path: sa18Cube, outputPath: m200AlignOut });
+  assert(m200Align.supported === true && m200Align.pose.poseMode === "face" && m200Align.matrix.length === 16 && m200Align.written === m200AlignOut && fs.existsSync(m200AlignOut), `auto_align_scan lays the cube on a face and writes it (got ${JSON.stringify(m200Align.pose)})`);
+  // sections / silhouette / curves on the cube.
+  const m200Sec = await call("mesh_sections", { path: sa18Cube, direction: [0, 0, 1], offsets: [-2, 0, 2] });
+  assert(m200Sec.supported === true && m200Sec.facts.numChains === 3 && m200Sec.facts.numOffsets === 3, `mesh_sections gives one chain per plane (got ${JSON.stringify(m200Sec.facts)})`);
+  const m200Sil = await call("mesh_silhouette", { path: sa18Cube, normal: [0, 0, 1] });
+  assert(Math.abs(m200Sil.facts.area - 100) < 1e-6 && Math.abs(m200Sil.facts.perimeter - 40) < 1e-6 && m200Sil.facts.numLoops === 1 && m200Sil.facts.numHoles === 0, `mesh_silhouette outlines the cube as a 100 mm2 square (got ${JSON.stringify(m200Sil.facts)})`);
+  const m200Curves = await call("fit_mesh_curves", { path: sa18Cube, direction: [0, 0, 1], offsets: [0] });
+  assert(m200Curves.facts.numLines === 4 && m200Curves.facts.numArcs === 0 && m200Curves.pieces.length === 4, `fit_mesh_curves reads the cube section as four lines (got ${JSON.stringify(m200Curves.facts).slice(0, 300)})`);
+  // clip_mesh: the cube cut at mid height and capped is watertight with volume 500.
+  const m200ClipOut = path.join(dir, "m2000-clipped.stl");
+  const m200Clip = await call("clip_mesh", { path: sa18Cube, origin: [0, 0, 0], normal: [0, 0, 1], outputPath: m200ClipOut });
+  const m200ClipMass = await call("get_mass_properties", { path: m200ClipOut });
+  assert(m200Clip.facts.numLoops === 1 && m200Clip.facts.numOpenChains === 0 && Math.abs(Math.abs(m200ClipMass.volume) - 500) < 1e-6, `clip_mesh + cap leaves a closed half-cube of volume 500 (got ${m200ClipMass.volume}; ${JSON.stringify(m200Clip.facts)})`);
+  // offset_mesh_surface: +1 grows the cube to 12 mm (1728); thicken 1 inward is a 1 mm shell (1000 - 512 = 488); flip reverses every triangle.
+  const m200OffOut = path.join(dir, "m2000-offset.stl");
+  const m200Off = await call("offset_mesh_surface", { path: sa18Cube, mode: "offset", distance: 1, outputPath: m200OffOut });
+  const m200OffMass = await call("get_mass_properties", { path: m200OffOut });
+  assert(m200Off.facts.numFolded === 0 && Math.abs(Math.abs(m200OffMass.volume) - 1728) < 1e-6, `offset +1 grows the cube to volume 1728 (got ${m200OffMass.volume})`);
+  const m200ThickOut = path.join(dir, "m2000-thick.stl");
+  await call("offset_mesh_surface", { path: sa18Cube, mode: "thicken", distance: 1, outputPath: m200ThickOut });
+  const m200ThickMass = await call("get_mass_properties", { path: m200ThickOut });
+  assert(Math.abs(Math.abs(m200ThickMass.volume) - 488) < 1e-6, `thicken 1 inward is a shell of volume 488 (got ${m200ThickMass.volume})`);
+  assert((await request("tools/call", { name: "offset_mesh_surface", arguments: { path: sa18Cube, mode: "thicken", distance: -1, outputPath: m200ThickOut } })).isError === true, "offset_mesh_surface refuses a non-positive thickness");
+  const m200Flip = await call("flip_mesh_normals", { path: sa18Cube, outputPath: path.join(dir, "m2000-flipped.stl") });
+  assert(m200Flip.facts.numFlipped === 12, `flip_mesh_normals reverses all 12 triangles (got ${JSON.stringify(m200Flip.facts)})`);
+  assert((await request("tools/call", { name: "flip_mesh_normals", arguments: { path: sa18Cube, outputPath: sa18Cube } })).isError === true, "flip_mesh_normals refuses to overwrite its source");
+  // remove_mesh_islands: the cube plus a far-away single triangle.
+  const m200IslandStl = path.join(dir, "m2000-island.stl");
+  fs.writeFileSync(m200IslandStl, fs.readFileSync(sa18Cube, "utf8").replace(/endsolid.*\s*$/, "") + "facet normal 0 0 1\n outer loop\n  vertex 100 100 100\n  vertex 101 100 100\n  vertex 100 101 100\n endloop\nendfacet\nendsolid x\n");
+  const m200Dry = await call("remove_mesh_islands", { path: m200IslandStl, minCells: 3, relative: false, dryRun: true });
+  const m200IslandOut = path.join(dir, "m2000-island-clean.stl");
+  const m200Rm = await call("remove_mesh_islands", { path: m200IslandStl, minCells: 3, relative: false, outputPath: m200IslandOut });
+  assert(
+    m200Dry.facts.numComponents === 2 && m200Dry.facts.numRemoved === 1 && m200Dry.facts.dryRun === true && m200Rm.facts.numCellsRemoved === 1 && fs.existsSync(m200IslandOut),
+    `remove_mesh_islands finds the stray triangle (dry run, then removal) (got ${JSON.stringify([m200Dry.facts, m200Rm.facts])})`
+  );
+  // scan -> CAD: constraints, exact STEP elements, a solid from a section, the round-based fit.
+  const m200Con = await call("constrain_primitives", { path: sa18Cube });
+  assert(m200Con.supported === true && m200Con.facts.numPatches === 6 && Array.isArray(m200Con.listed), `constrain_primitives segments and fits the cube's 6 planes (got ${JSON.stringify(m200Con.facts)})`);
+  const m200StepEl = path.join(dir, "m2000-elements.step");
+  const m200El = await call("write_step_elements", { path: sa18Cube, outputPath: m200StepEl });
+  assert(m200El.facts.numPlanes === 6 && /ISO-10303-21/.test(fs.readFileSync(m200StepEl, "latin1")), `write_step_elements writes the 6 planes as a STEP file (got ${JSON.stringify(m200El.facts)})`);
+  assert((await request("tools/call", { name: "write_step_elements", arguments: { path: sa18Cube, outputPath: path.join(dir, "m2000-elements.vtu") } })).isError === true, "write_step_elements refuses a non-STEP output path");
+  const m200SolidStep = path.join(dir, "m2000-profile.step");
+  const m200Solid = await call("profile_to_solid", { path: sa18Cube, direction: [0, 0, 1], offset: 0, features: "extrude:10", outputPath: m200SolidStep });
+  assert(m200Solid.facts.valid === true && Math.abs(m200Solid.facts.volume - 1000) < 1e-6 && m200Solid.facts.numFaces === 6 && /ISO-10303-21/.test(fs.readFileSync(m200SolidStep, "latin1")), `profile_to_solid rebuilds the cube: valid, volume 1000, 6 faces (got ${JSON.stringify(m200Solid.facts)})`);
+  const m200SolidMass = await call("get_mass_properties", { path: m200SolidStep });
+  assert(Math.abs(m200SolidMass.volume - 1000) < 1e-3, `the written profile STEP reloads as a B-rep of volume 1000 (got ${m200SolidMass.volume})`);
+  const m200Fit = await call("fit_cad_iterate", { path: sa18Cube, maxRounds: 2, faceSupport: true });
+  assert(m200Fit.facts.targetMet === true && m200Fit.facts.rounds.length >= 1 && m200Fit.facts.support.numMeasured === 6 && m200Fit.listed.length === 6, `fit_cad_iterate reaches its target on the cube with all 6 faces measured (got ${JSON.stringify(m200Fit.facts).slice(0, 500)})`);
+  // measure_mesh_thickness options (the cube's wall is 10 thick by the default ray)
+  const m200Thick = await call("measure_mesh_thickness", { path: sa18Cube, maxDistance: 20, method: "ray" });
+  assert(m200Thick.thickness.method === "ray" && Math.abs(m200Thick.thickness.min - 10) < 1e-6 && Math.abs(m200Thick.thickness.p95 - 10) < 1e-6, `measure_mesh_thickness reports method ray and p95 10 on the cube (got ${JSON.stringify(m200Thick.thickness)})`);
+  // transform_mesh: the new Mesh Ops operations run through the same executor.
+  const m200Ops = await call("transform_mesh", {
+    path: m181Vtk, outputPath: path.join(dir, "m2000-ops.vtu"),
+    ops: [{ op: "flipNormals" }, { op: "offsetSurface", distance: 0.5 }, { op: "clip", origin: [0, 0, 0.5], normal: [0, 0, 1] }, { op: "thicken", distance: 0.1 }],
+  });
+  assert(m200Ops.steps.length === 4 && m200Ops.steps.every((st) => st.applied === true), `transform_mesh runs flipNormals, offsetSurface, clip and thicken (got ${JSON.stringify(m200Ops.steps)})`);
 
   const ocmHexMsh = path.join(dir, "octreemesh-block-hex.msh");
   await call("export_mesh", { path: octreeBlock, format: "msh", outputPath: ocmHexMsh, options: { ...ocmOpts, octreeMeshOutput: "hex" } });

@@ -27,6 +27,24 @@ import { z } from "zod";
 import type { SnapshotClipInput } from "./snapshotOptions";
 import { errorToolResult, mergeFieldsIntoResult, mergeWarningsIntoResult, splitUnknownKeys, unknownKeyWarnings } from "./mcpErrors";
 import { CONFIGURATION_PARAM_TOOLS } from "./configurations";
+import {
+  measureMeshTool,
+  analyzeDeviationTool,
+  registerLandmarksTool,
+  findSymmetryPlaneTool,
+  autoAlignScanTool,
+  meshSectionsTool,
+  meshSilhouetteTool,
+  fitMeshCurvesTool,
+  clipMeshTool,
+  offsetMeshSurfaceTool,
+  flipMeshNormalsTool,
+  removeMeshIslandsTool,
+  constrainPrimitivesTool,
+  writeStepElementsTool,
+  profileToSolidTool,
+  fitCadIterateTool,
+} from "./mcpScanTools";
 import { REVISION_GUARDED_TOOLS, assertRevision, currentRevision, lockKey, withSidecarLock } from "./mcpRevision";
 import { AsyncLocalStorage } from "async_hooks";
 import { createKernelClient, JobCancelledError, type JobOptions, type ScopedPipeline } from "./kernelClient";
@@ -899,7 +917,7 @@ server.registerTool(
   "transform_mesh",
   {
     description:
-      "Run a declarative list of meshio++ mesh operations over a meshio-readable source and write the result to a new file. ONE tool for the whole family rather than one per operation (the same shape run_parametric_script uses): pass `ops` as an ordered array of {op, ...params} and get a per-step report back saying which steps actually did something. Operations: clean (weld/drop degenerate+duplicate cells), decimate (quadric edge-collapse; `ratio` = fraction of faces to KEEP, surface meshes only), smooth (`method` taubin|laplacian, `iterations`), subdivide, refine (`levels`), agglomerate (`targetGroupSize`), convertCells (`mode` linearize|simplexify|elevate — simplexify splits quads/hexes into triangles/tets), tetToPoly (meshio++ 18: tets → their polyhedral median dual, one polyhedron per vertex; write to vtu/ensight/cgns/med/openfoam -- MDPA and the other writers refuse polyhedra by name), polyToTet (polyhedra → tets, a polyhedron that already is a tet stays one), optimizeVolume (tet meshes: raise the worst dihedral angle; `iterations`, `objective` worst|energy, `maxRingSize`; boundary blocks are dropped), adapt (MMG remesh to a constant `hsiz` within `hausd`, source units; surface or tet meshes), discretizeLevelset (MMG: insert the `isovalue` interface of the point-data array `levelSet`). meshio++ 18.1 adds: untangle (tet/hex: move nodes until no cell is inverted; `iterations` = sweeps, `fixBoundary`), prepareMetric (intersect, normalise, clamp and grade 6-component point-data metric fields named in `arrays` into `output`; upper-triangular order xx,xy,xz,yy,yz,zz; set `hmin`/`hmax`/`gradation`/`targetVertices`), morph (displace the boundary by the 3-component point-data array `array`, relax the interior; `steps`, `stiffening`, `allowInverted`), convexHull (of the points, `dimension` 2|3|0), delaunay2d (of the x-y plane), convertCoordinates (`system` cylindrical|spherical about `axis`/`origin`, rewriting the vector/tensor point-data `arrays`; `inverse` goes back), estimateNormals (`neighbours`, `orientation` consistent|viewpoint|none; writes point data `normals`), reconstructSurface (surface through an oriented point cloud; `k`, `cellSize`, `maxDistance`, 0 = automatic), geodesicDistance (heat method from `sources` point ids or `sourceRegion` -> point data geodesic:distance, triangle surfaces), parameterize (UV atlas -> point data uv; `padding`, `maxDepth`, `maxStretch`), laplacianEigenmodes (`numModes` -> point data laplacian:modes). A step that cannot run is reported with applied:false and its reason, and the pipeline continues. The CAD source is never modified. B-rep and mesh-parser (stl/obj/ply/gltf) sources return supported:false — a B-rep has exact geometry and should be edited with apply_edit_ops instead.",
+      "Run a declarative list of meshio++ mesh operations over a meshio-readable source and write the result to a new file. ONE tool for the whole family rather than one per operation (the same shape run_parametric_script uses): pass `ops` as an ordered array of {op, ...params} and get a per-step report back saying which steps actually did something. Operations: clean (weld/drop degenerate+duplicate cells), decimate (quadric edge-collapse; `ratio` = fraction of faces to KEEP, surface meshes only), smooth (`method` taubin|laplacian, `iterations`), subdivide, refine (`levels`), agglomerate (`targetGroupSize`), convertCells (`mode` linearize|simplexify|elevate — simplexify splits quads/hexes into triangles/tets), tetToPoly (meshio++ 18: tets → their polyhedral median dual, one polyhedron per vertex; write to vtu/ensight/cgns/med/openfoam -- MDPA and the other writers refuse polyhedra by name), polyToTet (polyhedra → tets, a polyhedron that already is a tet stays one), optimizeVolume (tet meshes: raise the worst dihedral angle; `iterations`, `objective` worst|energy, `maxRingSize`; boundary blocks are dropped), adapt (MMG remesh to a constant `hsiz` within `hausd`, source units; surface or tet meshes), discretizeLevelset (MMG: insert the `isovalue` interface of the point-data array `levelSet`). meshio++ 18.1 adds: untangle (tet/hex: move nodes until no cell is inverted; `iterations` = sweeps, `fixBoundary`), prepareMetric (intersect, normalise, clamp and grade 6-component point-data metric fields named in `arrays` into `output`; upper-triangular order xx,xy,xz,yy,yz,zz; set `hmin`/`hmax`/`gradation`/`targetVertices`), morph (displace the boundary by the 3-component point-data array `array`, relax the interior; `steps`, `stiffening`, `allowInverted`), convexHull (of the points, `dimension` 2|3|0), delaunay2d (of the x-y plane), convertCoordinates (`system` cylindrical|spherical about `axis`/`origin`, rewriting the vector/tensor point-data `arrays`; `inverse` goes back), estimateNormals (`neighbours`, `orientation` consistent|viewpoint|none; writes point data `normals`), reconstructSurface (surface through an oriented point cloud; `k`, `cellSize`, `maxDistance`, 0 = automatic), geodesicDistance (heat method from `sources` point ids or `sourceRegion` -> point data geodesic:distance, triangle surfaces), parameterize (UV atlas -> point data uv; `padding`, `maxDepth`, `maxStretch`), laplacianEigenmodes (`numModes` -> point data laplacian:modes). meshio++ 20 adds: flipNormals (reverse the winding; optional `region`), removeIslands (drop components below `minCells`/`minDiagonal`/`minArea`; `connectivity` edge|point, `dryRun` only marks), offsetSurface (move a surface along its normals by `distance`), thicken (closed shell `distance` thick on `side` inward|outward|both), hollow (inner reversed wall), clip (cut by the plane `origin`+`normal`, `keepBelow`, `cap`), autoAlign (pose on the largest flat face or cylinder axis), silhouette (outline along `normal`; `clearance`, `extrude`), thickness (wall thickness by `probe` ray|sphere|cone, `coneAngle`, `twoSided`, `maxDistance` -> cell data thickness:distance), colorize (bake the point/cell array `field` through the colormap `cmap` into red/green/blue data), exaggerate (displace the points along their normals by `scale` x the array `field`). A step that cannot run is reported with applied:false and its reason, and the pipeline continues. The CAD source is never modified. B-rep and mesh-parser (stl/obj/ply/gltf) sources return supported:false — a B-rep has exact geometry and should be edited with apply_edit_ops instead.",
     inputSchema: {
       path: modelPath,
       ops: z
@@ -956,16 +974,21 @@ server.registerTool(
   "measure_mesh_thickness",
   {
     description:
-      "Wall thickness (inward) or clearance (outward) per triangle, by a ray from each triangle's centroid along its normal (meshio++ 18 thickness). Facts only: direction used, numHit/numMissed, numBelow (hits closer than threshold), min/max/mean distance (null when nothing was hit), the triangle of the least distance and its point. Exact rays over the mesh -- complements check_printability's sampled wall check. Mesh-format sources only (pending edits baked); a B-rep source returns supported:false.",
+      "Wall thickness (inward) or clearance (outward) per triangle, by a ray from each triangle's centroid along its normal (meshio++ 18 thickness). Facts only: direction used, numHit/numMissed, numBelow (hits closer than threshold), min/max/mean distance (null when nothing was hit), the triangle of the least distance and its point. Exact rays over the mesh -- complements check_printability's sampled wall check. meshio++ 20 adds `method` (ray default | sphere = the largest ball inscribed at each facet | cone = `coneRays` rays within `coneAngle` degrees, robust on rough scans), `twoSided` (rays both ways, either face counting) and `maxNormalDeviation` (skip facets more edge-on than this); the result gains `method` and the 2nd/95th percentiles p2/p95 of the hits. Mesh-format sources only (pending edits baked); a B-rep source returns supported:false.",
     inputSchema: {
       path: modelPath,
       otherPath: z.string().optional().describe("Measure toward a second mesh-format file instead of the mesh itself"),
       direction: z.enum(["auto", "inward", "outward"]).optional().describe("inward = thickness, outward = clearance, auto (default) picks by the surface's own orientation"),
       maxDistance: z.number().optional().describe("The longest ray (default: the bounding-box diagonal)"),
       threshold: z.number().optional().describe("Count the hits closer than this (numBelow); default none"),
+      method: z.enum(["ray", "sphere", "cone"]).optional().describe("Probe (default ray)"),
+      coneAngle: z.number().min(0).optional().describe("cone: half-angle in degrees"),
+      coneRays: z.number().int().min(1).optional().describe("cone: rays per facet"),
+      twoSided: z.boolean().optional().describe("Cast both ways, either face of a triangle counting"),
+      maxNormalDeviation: z.number().min(0).optional().describe("Skip facets more edge-on to the ray than this many degrees"),
     },
   },
-  wrap((args: { path: string; otherPath?: string; direction?: "auto" | "inward" | "outward"; maxDistance?: number; threshold?: number }) => measureMeshThicknessTool(ctx, args))
+  wrap((args: Parameters<typeof measureMeshThicknessTool>[1]) => measureMeshThicknessTool(ctx, args))
 );
 
 server.registerTool(
@@ -1036,11 +1059,327 @@ server.registerTool(
       maxIterations: z.number().int().min(1).max(10000).optional().describe("Iteration limit"),
       tolerance: z.number().min(0).optional().describe("Stop when the RMS improves by less than this"),
       maxDistance: z.number().min(0).optional().describe("Ignore point pairs farther apart than this (source units)"),
-      initial: z.array(z.number()).length(16).optional().describe("Starting pose, a row-major 4x4 matrix"),
+      initial: z.union([z.array(z.number()).length(16), z.literal("auto")]).optional().describe("Starting pose: a row-major 4x4 matrix, or \"auto\" (meshio++ 20) to try the 24 principal-frame candidates and start from the best -- reports candidateRms and chosenCandidate"),
+      sourceRegion: z.string().optional().describe("meshio++ 20: restrict the matched pairs to this named cell region of the source"),
+      targetRegion: z.string().optional().describe("meshio++ 20: restrict the matched pairs to this named cell region of the target"),
+      adaptiveTrim: z.number().min(0).optional().describe("meshio++ 20: drop pairs beyond this multiple of the median pair distance (0 keeps all) -- numRejected reports how many"),
       outputPath: z.string().optional().describe("Also write the transformed source here"),
     },
   },
   wrap((args: Parameters<typeof registerMeshesTool>[1]) => registerMeshesTool(ctx, args))
+);
+
+// ---------------------------------------------------------------------------
+// meshio++ 20: scan / metrology / surface editing. Every tool reads a mesh-format
+// source as its triangle surface (pending edits baked), reports meshio++'s own
+// numbers (facts, not verdicts) and never modifies the source; a B-rep source
+// returns supported:false (export it to STL first). Output files are NEW files.
+
+const scanOut = (what: string) => z.string().optional().describe(`Write ${what} here (the extension selects the format: .vtu/.ply/.msh keep data, .stl keeps geometry only)`);
+const vec3Schema = z.array(z.number()).length(3);
+
+server.registerTool(
+  "measure_mesh",
+  {
+    description:
+      "Metrology on a scan (meshio++ 20 measure): fit ELEMENTS, then check DIMENSIONS and GD&T TOLERANCES against them. `spec` is {elements, dimensions, tolerances}: an element is {name, fit: plane|sphere|cylinder|cone|auto, and a region|seeds ([[x,y,z],...] -- the facets nearest each seed are grown)|patch (a segment:patch label)}, or {name, construct: ...} from other elements, or {name, point: [x,y,z]}; a dimension is {name, type: distance|angle, between: [elementA, elementB], nominal?, tolerance?}; a tolerance is a GD&T callout (flatness, position, parallelism, perpendicularity, concentricity, ... with a `datum` where it needs one). The report (meshio++'s own JSON) lists each element's kind, point/direction/radius, form error and point count, each dimension's value, deviation and pass flag, each tolerance's measured value and pass flag, plus numFail -- facts the agent judges, not a certificate. `alignDatums` ({primary, secondary, origin?}) then lays the part in its 3-2-1 datum frame and returns the 4x4 matrix; `primitives` returns the named measured elements as fitted primitives (type 1 plane / 2 sphere / 3 cylinder / 4 cone + ten parameters), the reference analyze_deviation takes. A malformed spec or an element that cannot be built fails with meshio++'s own message (an empty spec measures nothing and is not an error). With `outputPath` the measured (and aligned) mesh is written with its element table. Mesh-format sources only.",
+    inputSchema: {
+      path: modelPath,
+      spec: z.union([z.string(), z.record(z.string(), z.unknown())]).describe("The measure spec: an object, or its JSON text"),
+      alignDatums: z.object({ primary: z.string(), secondary: z.string(), origin: z.string().optional() }).optional().describe("3-2-1 datum alignment: primary element sets Z, secondary X, origin (a point-like element or a third plane) the origin"),
+      primitives: z.array(z.string()).optional().describe("Measured elements to return as a fitted primitive (type + params)"),
+      outputPath: scanOut("the measured mesh"),
+    },
+  },
+  wrap((args: Parameters<typeof measureMeshTool>[1]) => measureMeshTool(ctx, args))
+);
+
+server.registerTool(
+  "analyze_deviation",
+  {
+    description:
+      "Signed deviation of every point of a scan `path` from a reference surface `referencePath` or a fitted `primitive` (meshio++ 20 deviation; positive = outside the reference). Facts: numMeasured of numPoints, min/max/mean/rms/sigma, the 1/5/50/95/99 percentiles, a `bins`-bin histogram (edges + counts over `range`, default +-max|d|), the share within +-`tolerance` (null without one), the suggestedRange for a colour scale, and numWithoutNormal. A far-side rule skips reference facets turned more than `maxNormalAngle` degrees (default 90; 180 turns it off); `referenceRegion` measures against one named cell region of the reference; `register: true` first registers the scan to the reference (ICP) and reports the matrix and registrationRms. `primitive` is {type: plane|sphere|cylinder|cone|torus, params: the ten fit:patch_params numbers} (measure_mesh `primitives` returns one). `regionTolerance` additionally groups the cells beyond +-tolerance into EXCESS and MISSING-material regions (area, extreme and mean deviation, signed volume estimate = sum d*area, centroid, bounds; largest |volume| first, capped at 500 listed with the true counts). `exaggerate` ({scale, clamp, smoothFraction}) displaces the points along their normals by the deviation and `colorize` ({cmap, vmin, vmax, symmetric, steps}) bakes it into red/green/blue data -- both produce a mesh, so they need `outputPath` (use .vtu or .ply: .stl drops data). Sampled at the scan's vertices, so a worst point inside a facet is under-reported. Mesh-format sources only.",
+    inputSchema: {
+      path: modelPath,
+      referencePath: z.string().optional().describe("The reference surface (mesh-format file); exactly one of this and primitive"),
+      primitive: z.object({ type: z.enum(["plane", "sphere", "cylinder", "cone", "torus"]), params: z.array(z.number()).length(10) }).optional().describe("A fitted primitive as the reference"),
+      tolerance: z.number().min(0).optional().describe("Report the share within +-tolerance (default none)"),
+      bins: z.number().int().min(1).max(1000).optional().describe("Histogram bins (default 20)"),
+      range: z.tuple([z.number(), z.number()]).optional().describe("[lo, hi] of the histogram (default +-max|d|)"),
+      maxNormalAngle: z.number().min(0).optional().describe("Far-side rule angle in degrees (default 90; 180 = off)"),
+      referenceRegion: z.string().optional().describe("Measure against only this named cell region of the reference"),
+      register: z.boolean().optional().describe("Register the scan to the reference first (ICP)"),
+      regionTolerance: z.number().positive().optional().describe("Also report the connected excess / missing-material regions beyond +-this"),
+      regionMinArea: z.number().min(0).optional().describe("Drop regions smaller than this area"),
+      exaggerate: z.object({ scale: z.number().optional(), clamp: z.number().min(0).optional(), smoothFraction: z.number().min(0).optional() }).optional().describe("Displace the points along their normals by the deviation x scale (needs outputPath)"),
+      colorize: z.object({ cmap: z.string().optional(), vmin: z.number().optional(), vmax: z.number().optional(), symmetric: z.boolean().optional(), steps: z.number().int().min(0).optional() }).optional().describe("Bake the deviation into red/green/blue data (needs outputPath)"),
+      outputPath: scanOut("the scan with `deviation:distance` (and regions / colours / displacement)"),
+    },
+  },
+  wrap((args: Parameters<typeof analyzeDeviationTool>[1]) => analyzeDeviationTool(ctx, args))
+);
+
+server.registerTool(
+  "register_landmarks",
+  {
+    description:
+      "Landmark registration (meshio++ 20 registerLandmarks): the weighted Horn solve that lays picked `source` points (flat x,y,z list, at least 3 points, not collinear) onto their `target` points. Returns the row-major 4x4 `matrix`, the per-landmark `residuals` and the `rms` -- facts; a bad pick shows as a large residual. With `path` (a mesh-format file) and `outputPath` the mesh is also written with the transform applied. Complements register_meshes (ICP needs a starting pose; landmarks give one).",
+    inputSchema: {
+      source: z.array(z.number()).min(9).describe("Flat x,y,z of the points picked on the movable object"),
+      target: z.array(z.number()).min(9).describe("Flat x,y,z of the matching points on the fixed object (same count and order)"),
+      weights: z.array(z.number()).optional().describe("One non-negative weight per landmark"),
+      path: z.string().optional().describe("A mesh to move (only with outputPath)"),
+      outputPath: scanOut("the moved mesh"),
+    },
+  },
+  wrap((args: Parameters<typeof registerLandmarksTool>[1]) => registerLandmarksTool(ctx, args))
+);
+
+server.registerTool(
+  "find_symmetry_plane",
+  {
+    description:
+      "The plane a mesh is most nearly mirror-symmetric about (meshio++ 20 findSymmetryPlane): the principal-axis candidates are refined by minimising the mirrored point-to-surface distance. Returns the plane `origin`/`normal`, the `rms` mirror error, the `share` of points within `tolerance`, the RMS of each candidate and the chosen one -- facts: a mesh with no symmetry fails with upstream's message when no plane reaches `minShare`. `seedOrigin`/`seedNormal` start the search at a plane you suspect. Read-only.",
+    inputSchema: {
+      path: modelPath,
+      seedOrigin: vec3Schema.optional().describe("A starting plane's point"),
+      seedNormal: vec3Schema.optional().describe("A starting plane's normal"),
+      tolerance: z.number().min(0).optional().describe("A point is symmetric within this distance (default derived from the bounding box)"),
+      minShare: z.number().min(0).max(1).optional().describe("Fail unless this share of the points is symmetric"),
+      maxSamples: z.number().int().min(1).optional().describe("Points sampled"),
+      maxIterations: z.number().int().min(1).optional().describe("Refinement iterations"),
+    },
+  },
+  wrap((args: Parameters<typeof findSymmetryPlaneTool>[1]) => findSymmetryPlaneTool(ctx, args))
+);
+
+server.registerTool(
+  "auto_align_scan",
+  {
+    description:
+      "Pose a scan from itself alone (meshio++ 20 autoAlign): the part is laid on its largest flat face (mode face) or, for a turned part, stood on the end of its cylinder axis (mode axis). Returns the applied row-major 4x4 `matrix`, the chosen `poseMode`, the primary/secondary directions and the face/axis shares -- facts; a part with no dominant flat face or axis gets a weak share the agent should read. `region` restricts the facets considered; `rotateVectorData` also rotates vector point data. With `outputPath` the aligned mesh is written.",
+    inputSchema: {
+      path: modelPath,
+      angleTolerance: z.number().min(0).optional().describe("How close (degrees) a facet normal must be to count as flat"),
+      subdivisions: z.number().int().min(0).optional().describe("Direction-sphere subdivisions of the search"),
+      region: z.string().optional().describe("Consider only this named cell region"),
+      rotateVectorData: z.boolean().optional().describe("Also rotate vector point/cell data"),
+      outputPath: scanOut("the aligned mesh"),
+    },
+  },
+  wrap((args: Parameters<typeof autoAlignScanTool>[1]) => autoAlignScanTool(ctx, args))
+);
+
+server.registerTool(
+  "mesh_sections",
+  {
+    description:
+      "Chained sections of a surface at the parallel planes n.x = offsets[k] (meshio++ 20 sections; n = the unit `direction`): one line mesh with cell data section:offset, section:chain and section:closed. Returns numLines and numChains over numOffsets planes; the polylines themselves go to `outputPath` (.vtu/.ply/.msh). A volume mesh is refused by the kernel (use its skin). `minLength` drops chains shorter than that. See fit_mesh_curves for lines/arcs/circles from the same sections.",
+    inputSchema: {
+      path: modelPath,
+      direction: vec3Schema.describe("Plane normal (need not be unit)"),
+      offsets: z.array(z.number()).min(1).max(1000).describe("Plane offsets along the direction (source units)"),
+      minLength: z.number().min(0).optional().describe("Drop chains shorter than this"),
+      outputPath: scanOut("the section polylines"),
+    },
+  },
+  wrap((args: Parameters<typeof meshSectionsTool>[1]) => meshSectionsTool(ctx, args))
+);
+
+server.registerTool(
+  "mesh_silhouette",
+  {
+    description:
+      "The outline of a surface (or a volume mesh's skin) seen along `normal` (default z), holes included (meshio++ 20 silhouette). Returns numLoops/numOuter/numHoles, the projected area and perimeter, and the height range along the view axis -- facts. `clearance` offsets the outline (> 0 grows it; `roundAngle`/`arcSegments` round convex corners), `extrude` writes the closed prism surface over it instead of the outline lines, `region` restricts the facets. Write the geometry with `outputPath`.",
+    inputSchema: {
+      path: modelPath,
+      normal: vec3Schema.optional().describe("View direction (default z)"),
+      clearance: z.number().optional().describe("Offset of the outline, source units (> 0 grows it)"),
+      roundAngle: z.number().positive().optional().describe("Corner rounding angle, degrees"),
+      arcSegments: z.number().int().min(1).optional().describe("Segments of a rounded corner"),
+      extrude: z.boolean().optional().describe("Write the prism surface over the outline"),
+      region: z.string().optional().describe("Consider only this named cell region"),
+      mergeTolerance: z.number().min(0).optional().describe("Weld distance of the projected points"),
+      outputPath: scanOut("the outline (or prism)"),
+    },
+  },
+  wrap((args: Parameters<typeof meshSilhouetteTool>[1]) => meshSilhouetteTool(ctx, args))
+);
+
+server.registerTool(
+  "fit_mesh_curves",
+  {
+    description:
+      "Lines, arcs and circles from chained sections of a scan (meshio++ 20 fitCurves over `sections`): the surface is cut at the planes n.x = offsets[k], each chain is fitted with the fewest pieces within `tolerance`, and the pieces are returned in their section frame's 2-D coordinates (start, end, centre, radius, sweep, residual, point count, chain, frame; capped at 500, numPieces is complete) with the 4x4 frames (columns e1, e2, normal, origin) and numLines/numArcs/numCircles/maxResidual -- facts: a residual near the tolerance flags a piece that only barely fits. The sketch mesh (cell data sketch:piece) goes to `outputPath`; profile_to_solid builds a solid from it. `snapAngle` snaps near-axis lines.",
+    inputSchema: {
+      path: modelPath,
+      direction: vec3Schema.describe("Section plane normal"),
+      offsets: z.array(z.number()).min(1).max(1000).describe("Plane offsets along the direction"),
+      minLength: z.number().min(0).optional().describe("Drop chains shorter than this"),
+      tolerance: z.number().positive().optional().describe("Fit tolerance, source units (default derived from the size)"),
+      snapAngle: z.number().min(0).optional().describe("Snap a line within this many degrees of an axis"),
+      normal: vec3Schema.optional().describe("The sketch normal"),
+      minArcPoints: z.number().int().min(3).optional().describe("Fewest points of an arc"),
+      minArcSweep: z.number().min(0).optional().describe("Smallest arc sweep, degrees"),
+      outputPath: scanOut("the fitted sketch"),
+    },
+  },
+  wrap((args: Parameters<typeof fitMeshCurvesTool>[1]) => fitMeshCurvesTool(ctx, args))
+);
+
+server.registerTool(
+  "clip_mesh",
+  {
+    description:
+      "Cut a surface by the plane through `origin` normal to `normal`, keep the side below it (or above, `keepBelow: false`) and cap the cut's closed loops (meshio++ 20 clip; `cap: false` leaves it open). Returns numKept/numSplit cells, numCapTriangles, numLoops and numOpenChains -- an open chain stays uncapped and the part is NOT closed (the caps are facts to check, e.g. with check_mesh_health). Cap triangles carry cell data clip:cap. Writes the clipped mesh to `outputPath`.",
+    inputSchema: {
+      path: modelPath,
+      origin: vec3Schema.describe("A point on the cutting plane"),
+      normal: vec3Schema.describe("Plane normal; 'below' is the side it points away from"),
+      keepBelow: z.boolean().optional().describe("Keep the side the normal points away from (default true)"),
+      cap: z.boolean().optional().describe("Cap the cut (default true)"),
+      outputPath: scanOut("the clipped mesh"),
+    },
+  },
+  wrap((args: Parameters<typeof clipMeshTool>[1]) => clipMeshTool(ctx, args))
+);
+
+server.registerTool(
+  "offset_mesh_surface",
+  {
+    description:
+      "Offset a triangle/quad surface along its normals (meshio++ 20). mode offset: every face's plane moves by the signed `distance` (positive outward); thicken: a CLOSED shell `distance` thick on `side` (inward default | outward | both) -- the two offsets, the lower reversed, the rim joined by quads; hollow: a closed surface gets an inner, reversed wall `distance` inside it. Returns numClamped (points that could not move the full distance), numFolded, numNotVisible, numRimQuads and the largest point move -- facts: a large offset on a small feature folds, and the report is how you find out. Cell data and regions are NOT carried onto a thickened/hollowed shell (upstream says so in warnings). `smoothIterations` smooths the offset directions. Writes a NEW mesh to `outputPath` (required).",
+    inputSchema: {
+      path: modelPath,
+      mode: z.enum(["offset", "thicken", "hollow"]),
+      distance: z.number().describe("offset: signed distance; thicken: wall thickness (> 0); hollow: wall (> 0). Source units"),
+      side: z.enum(["inward", "outward", "both"]).optional().describe("thicken only: which side of the wall the shell grows on"),
+      smoothIterations: z.number().int().min(0).optional().describe("Smoothing passes of the offset directions"),
+      outputPath: z.string().describe("Where to write the result (extension selects the format)"),
+    },
+  },
+  wrap((args: Parameters<typeof offsetMeshSurfaceTool>[1]) => offsetMeshSurfaceTool(ctx, args))
+);
+
+server.registerTool(
+  "flip_mesh_normals",
+  {
+    description:
+      "Reverse the winding of every cell (or of a named cell `region`) with no point moved (meshio++ 20 flipNormals; Side entries move with their cells). Returns numFlipped. Use it on an inside-out scan that check_mesh_health reports as negative volume. Writes a NEW mesh to `outputPath` (required); the source is never modified.",
+    inputSchema: {
+      path: modelPath,
+      region: z.string().optional().describe("Flip only this named cell region"),
+      outputPath: z.string().describe("Where to write the result (extension selects the format)"),
+    },
+  },
+  wrap((args: Parameters<typeof flipMeshNormalsTool>[1]) => flipMeshNormalsTool(ctx, args))
+);
+
+server.registerTool(
+  "remove_mesh_islands",
+  {
+    description:
+      "Remove a scan's crumbs (meshio++ 20 removeIslands): the connected components (by shared edges, or `connectivity: point`) whose diagonal, area or cell count is below a threshold -- relative to the whole mesh unless `relative: false`. Returns numComponents, numRemoved, numCellsRemoved, numPointsRemoved. `dryRun: true` removes nothing and instead marks the doomed cells in cell data islands:removed (written only if you give outputPath) -- preview first, a threshold set too high eats real features. At least one threshold is needed for anything to be removed. Writes a NEW mesh to `outputPath` (required unless dryRun).",
+    inputSchema: {
+      path: modelPath,
+      connectivity: z.enum(["edge", "point"]).optional().describe("Components join across shared edges (default) or points"),
+      minDiagonal: z.number().min(0).optional().describe("Remove components whose bounding-box diagonal is below this"),
+      minArea: z.number().min(0).optional().describe("Remove components whose area is below this"),
+      minCells: z.number().int().min(0).optional().describe("Remove components with fewer cells than this"),
+      relative: z.boolean().optional().describe("Thresholds are fractions of the whole mesh (default true)"),
+      dryRun: z.boolean().optional().describe("Only mark, do not remove"),
+      outputPath: z.string().optional().describe("Where to write the result (extension selects the format)"),
+    },
+  },
+  wrap((args: Parameters<typeof removeMeshIslandsTool>[1]) => removeMeshIslandsTool(ctx, args))
+);
+
+const segmentFitShape = {
+  featureAngle: z.number().min(0).max(180).optional().describe("Dihedral angle (degrees) above which an edge bounds a patch (default 30)"),
+  tolerance: z.number().positive().optional().describe("Fit tolerance relative to the patch size (default 0.01)"),
+  minInlierFraction: z.number().min(0).max(1).optional().describe("Share of a patch's vertices that must lie within tolerance (default 0.9)"),
+  types: z.array(z.enum(["plane", "sphere", "cylinder", "cone", "torus"])).optional().describe("Primitive kinds a patch may be fitted with"),
+  usedPoints: z.enum(["auto", "all", "3sigma", "2sigma", "1sigma"]).optional().describe("Which vertices a fit uses (default auto: sigma-trimmed)"),
+  criterion: z.enum(["least_squares", "minimum_zone", "min_circumscribed", "max_inscribed"]).optional().describe("Reference fit criterion for planes, spheres and cylinders"),
+};
+
+server.registerTool(
+  "constrain_primitives",
+  {
+    description:
+      "Fit the related primitives of a segmented scan TOGETHER under control (meshio++ 20 constrainPrimitives, after segment + fitPrimitives with the same options as segment_mesh_surface): near-parallel planes are made exactly parallel, near-coaxial cylinders exactly coaxial, near-equal radii equal, near-perpendicular pairs perpendicular, within `angleTolerance`/`distanceTolerance`/`faceTolerance`. Returns numConstrained patches in numGroups groups and the relations found (patch pair, relation, angleDeg, distance, forced; capped at 500, numRelations is complete) plus `unmet` forced relations -- facts. `force`/`forbid` are [patchA, patchB, 'coaxial'|'parallel'|'perpendicular'|'equal_radius'] lists. A scan with no accepted patch fails; a part with nothing near-related reports 0 constrained, which is an answer. The constrained mesh goes to `outputPath`.",
+    inputSchema: {
+      path: modelPath,
+      ...segmentFitShape,
+      faceTolerance: z.number().min(0).optional().describe("Largest distance a face may move to satisfy a relation"),
+      angleTolerance: z.number().min(0).optional().describe("Angle (degrees) within which a relation is recognised"),
+      distanceTolerance: z.number().min(0).optional().describe("Distance within which axes / planes count as coincident"),
+      minFraction: z.number().min(0).max(1).optional().describe("Fewest inliers a patch needs to take part"),
+      force: z.array(z.tuple([z.number().int(), z.number().int(), z.enum(["coaxial", "parallel", "perpendicular", "equal_radius"])])).optional(),
+      forbid: z.array(z.tuple([z.number().int(), z.number().int(), z.enum(["coaxial", "parallel", "perpendicular", "equal_radius"])])).optional(),
+      outputPath: scanOut("the constrained mesh with its fit table"),
+    },
+  },
+  wrap((args: Parameters<typeof constrainPrimitivesTool>[1]) => constrainPrimitivesTool(ctx, args))
+);
+
+server.registerTool(
+  "write_step_elements",
+  {
+    description:
+      "Write the fitted primitives of a scan to a STEP file as EXACT geometry (meshio++ 20 writeStepElements after segment + fitPrimitives, options as segment_mesh_surface): bounded planes, balls, lidded cylinders, frusta and tori -- one entity per accepted patch, NOT a sewn solid (fit_mesh_to_cad builds the solid; this is the 'give me the measured elements as CAD references' route, e.g. as datums). Returns counts per kind and numSkipped (patches with no primitive); `patches` restricts to listed patch ids (segment_mesh_surface lists them). Writes a NEW AP214 STEP file to `outputPath` (.step/.stp, required); the source is never modified. Needs the full meshio++ artifact.",
+    inputSchema: {
+      path: modelPath,
+      ...segmentFitShape,
+      patches: z.array(z.number().int().min(0)).optional().describe("Write only these patch ids"),
+      segments: z.number().int().min(3).optional().describe("Segments used to bound a curved element"),
+      outputPath: z.string().describe("Where to write the STEP file (.step or .stp)"),
+    },
+  },
+  wrap((args: Parameters<typeof writeStepElementsTool>[1]) => writeStepElementsTool(ctx, args))
+);
+
+server.registerTool(
+  "profile_to_solid",
+  {
+    description:
+      "Build a solid from a scan's cross-section (meshio++ 20 sections -> fitCurves -> profileSolid): the surface is cut at the plane n.x = `offset` (n = `direction`), the section is fitted with lines/arcs/circles, and `features` turns that sketch into a solid in text form, e.g. 'extrude:10' or 'extrude:10;fillet:0.5' (OpenCASCADE in the full artifact; the lean artifact throws naming it). Returns volume, area, numFaces and valid (OpenCASCADE's own check) -- facts, so a self-intersecting or open profile shows as valid:false rather than a fabricated solid. outputPath ending .step/.stp writes the solid as AP214 STEP; any mesh extension writes its triangulation. A 10 mm cube cut at mid height and 'extrude:10' returns volume 1000.",
+    inputSchema: {
+      path: modelPath,
+      direction: vec3Schema.describe("Section plane normal"),
+      offset: z.number().describe("Plane offset along the direction (source units)"),
+      features: z.string().min(1).describe("Feature string, e.g. 'extrude:10;fillet:0.5'"),
+      tolerance: z.number().positive().optional().describe("Curve fit tolerance (default derived from the size)"),
+      provider: z.string().optional().describe("CAD provider (default: OpenCASCADE)"),
+      deflection: z.number().positive().optional().describe("Triangulation deflection of the mesh output"),
+      outputPath: z.string().describe("Where to write the solid (.step/.stp, or a mesh extension)"),
+    },
+  },
+  wrap((args: Parameters<typeof profileToSolidTool>[1]) => profileToSolidTool(ctx, args))
+);
+
+server.registerTool(
+  "fit_cad_iterate",
+  {
+    description:
+      "Segment, fit and build a CAD solid from a scan IN ROUNDS towards a target (meshio++ 20 fitCadIterate): each round fits primitives, builds the solid, measures how much of the scan it explains and where, then refines the worst faces and tries again until `targetWithin` (share of scan points within tolerance, default 0.9) / `targetExplained` is met or `maxRounds`. Returns the per-round table (shareWithin, explained, hausdorffMax, numFaces, numPatches), bestRound, targetMet, stopReason and how many faces are measured vs inferred -- facts: targetMet:false is an honest answer, the best round is still returned. `partClass` (any|analytic|cast|freeform) steers the fit, `backend` auto|occt|native (native returns no OpenCASCADE validation). `faceSupport: true` adds each face's support by the scan (measured / partial / inferred shares, capped at 500 listed) so you can see which faces the scan really backs and which were extrapolated. The skin must be closed and consistently wound. Slow: budget seconds. outputPath ending .step/.stp writes the solid as AP214 STEP; a mesh extension writes its triangulation with fit_cad:* cell data. Needs the full artifact.",
+    inputSchema: {
+      path: modelPath,
+      partClass: z.enum(["any", "analytic", "cast", "freeform"]).optional(),
+      targetWithin: z.number().min(0).max(1).optional().describe("Stop when this share of scan points lies within tolerance (default 0.9)"),
+      targetExplained: z.number().min(0).max(1).optional().describe("Stop when this share of the scan is explained"),
+      segmentTolerance: z.number().positive().optional().describe("Segmentation tolerance, relative to the bounding-box diagonal"),
+      fitTolerance: z.number().positive().optional().describe("Fit tolerance, relative to the patch size"),
+      maxRounds: z.number().int().min(1).max(20).optional().describe("Most rounds (default upstream's)"),
+      worstFaces: z.number().int().min(1).optional().describe("Faces refined per round"),
+      refineFactor: z.number().positive().optional().describe("How much finer a refined face's tolerance becomes"),
+      backend: z.enum(["auto", "occt", "native"]).optional(),
+      faceSupport: z.boolean().optional().describe("Also report each face's support by the scan"),
+      supportTolerance: z.number().min(0).optional().describe("Distance within which a scan point supports a face"),
+      outputPath: scanOut("the solid (.step/.stp for STEP, otherwise its triangulation)"),
+    },
+  },
+  wrap((args: Parameters<typeof fitCadIterateTool>[1]) => fitCadIterateTool(ctx, args))
 );
 
 server.registerTool(
@@ -1159,6 +1498,8 @@ server.registerTool(
       method: z.enum(["angle", "primitive"]).optional().describe("Patch boundaries: angle (default, dihedral edges) or primitive (where the surface the facets lie on changes -- a fillet comes apart from its tangent planes; meshio++ 17.9)"),
       primitiveTolerance: z.number().optional().describe("method primitive only: the segmentation's fit tolerance relative to the bbox diagonal (default 0.01)"),
       refine: z.boolean().optional().describe("Refine the patches by variational shape approximation before fitting (meshio++ refinePatches): boundaries move, freeform patches are split by seeded RANSAC, neighbours one primitive explains are merged. Adds a `refinement` block (explained-area share before/after, splits, merges, Hausdorff)"),
+      usedPoints: z.enum(["auto", "all", "3sigma", "2sigma", "1sigma"]).optional().describe("meshio++ 20: which vertices of a patch a fit uses -- auto (default, sigma-trims scan outliers), all, or a 3/2/1-sigma trim"),
+      criterion: z.enum(["least_squares", "minimum_zone", "min_circumscribed", "max_inscribed"]).optional().describe("meshio++ 20: the reference plane/sphere/cylinder fits are refitted under (default least_squares); the others are the metrology criteria"),
     },
   },
   wrap((args: Parameters<typeof segmentMeshSurfaceTool>[1]) => segmentMeshSurfaceTool(ctx, args))

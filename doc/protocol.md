@@ -410,6 +410,8 @@ interface MeshioOpSpec {              // src/meshioOps.ts — one panel Run = on
   op: 'clean' | 'decimate' | 'smooth' | 'subdivide' | 'refine' | 'agglomerate' | 'convertCells' | 'tetToPoly' | 'polyToTet' | 'optimizeVolume' | 'adapt' | 'discretizeLevelset'
          | 'untangle' | 'prepareMetric' | 'morph' | 'convexHull' | 'delaunay2d' | 'convertCoordinates'
          | 'estimateNormals' | 'reconstructSurface' | 'geodesicDistance' | 'parameterize' | 'laplacianEigenmodes'
+         | 'flipNormals' | 'removeIslands' | 'offsetSurface' | 'thicken' | 'hollow' | 'clip' | 'autoAlign' | 'silhouette'
+         | 'thickness' | 'colorize' | 'exaggerate'
   ratio?: number; iterations?: number; levels?: number; method?: string; mode?: string; targetGroupSize?: number
   // meshio++ 18.1 (all optional; `validateMeshioOpSpec` drops malformed values and refuses a prepareMetric without `arrays`,
   // a morph without `array` and a geodesicDistance with neither `sources` nor `sourceRegion`)
@@ -418,6 +420,12 @@ interface MeshioOpSpec {              // src/meshioOps.ts — one panel Run = on
   system?: 'cylindrical' | 'spherical'; axis?: number[]; origin?: number[]; inverse?: boolean
   neighbours?: number; orientation?: 'consistent' | 'viewpoint' | 'none'; k?: number; cellSize?: number; maxDistance?: number
   sources?: number[]; sourceRegion?: string; padding?: number; maxDepth?: number; maxStretch?: number; numModes?: number
+  // meshio++ 20 (`validateMeshioOpSpec` refuses an offsetSurface/thicken/hollow without `distance`, a clip without `origin` + `normal`, a colorize without `field`)
+  distance?: number; side?: 'inward' | 'outward' | 'both'; smoothIterations?: number; normal?: number[]; keepBelow?: boolean; cap?: boolean
+  region?: string; connectivity?: 'edge' | 'point'; minDiagonal?: number; minArea?: number; minCells?: number; relative?: boolean; dryRun?: boolean
+  clearance?: number; roundAngle?: number; extrude?: boolean; angleTolerance?: number
+  probe?: 'ray' | 'sphere' | 'cone'; coneAngle?: number; twoSided?: boolean; direction?: 'auto' | 'inward' | 'outward'
+  field?: string; cmap?: string; scale?: number; clamp?: number
 }
 ```
 
