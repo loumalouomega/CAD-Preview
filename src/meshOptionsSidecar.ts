@@ -95,6 +95,12 @@ export function generateGeoScript(sourceName: string, options: MeshOptions): str
           "// which has no equivalent in this script's Merge-based reproduction. Running this script reproduces the uniform mesh only, not the refinement.",
         ]
       : []),
+    ...((options.refinementRegions?.length ?? 0) > 0
+      ? [
+          `// refinementRegions: ${options.refinementRegions!.length} box/sphere/cylinder size region(s) — applied through Gmsh Box/Ball/Cylinder background fields,`,
+          "// which have no equivalent in this script's Merge-based reproduction. Running this script reproduces the uniform mesh only, not the refinement.",
+        ]
+      : []),
     `Mesh.MeshSizeMin = ${options.sizeMin};`,
     `Mesh.MeshSizeMax = ${options.sizeMax};`,
     `Mesh.Algorithm = ${options.algorithm2D};`,

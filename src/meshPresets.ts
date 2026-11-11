@@ -211,6 +211,7 @@ const GMSH_ONLY_FIELDS: readonly (keyof MeshOptions)[] = [
   "stlAngle",
   "conformal",
   "periodic",
+  "refinementRegions",
 ];
 
 /** Octree-only fields — ignored by the other two engines. */

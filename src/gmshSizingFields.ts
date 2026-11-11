@@ -1,4 +1,4 @@
-import type { MeshBoundaryLayer, MeshGrading, SizeFieldSample } from "./meshOptions";
+import type { MeshBoundaryLayer, MeshGrading, RefinementRegion, SizeFieldSample } from "./meshOptions";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type GmshApi = any;
@@ -179,6 +179,45 @@ export function addPostViewField(gmsh: GmshApi, samples: readonly SizeFieldSampl
     gmsh.model.mesh.field.setNumber(fieldTag, "ViewIndex", gmsh.view.getIndex(viewTag));
   }
   return { viewTag, fieldTag };
+}
+
+/**
+ * One refinement region (roadmap "Refinement regions"): a geometry-free Gmsh
+ * `Ball` / `Box` / `Cylinder` field with `VIn` = the requested size. Option names
+ * verified live on gmsh-wasm 0.4.0 (`scripts/probe/examples/gmsh-refinement-regions.ts`):
+ * `Ball` takes `XCenter`/`YCenter`/`ZCenter` + `Radius`, `Box` takes
+ * `XMin`…`ZMax`, `Cylinder` takes the centre plus `XAxis`/`YAxis`/`ZAxis` (a
+ * HALF-length axis vector) + `Radius`; `Ball`/`Box` accept `Thickness` (the
+ * transition back to `VOut`), `Cylinder` rejects it ("Unknown option"). `VOut`
+ * is left at Gmsh's own unbounded default so the region only ever lowers the
+ * size inside the shared `Min`. Returns the new field's tag.
+ */
+export function addRegionField(gmsh: GmshApi, region: RefinementRegion): number {
+  const F = gmsh.model.mesh.field;
+  const tag = F.add(region.kind === "sphere" ? "Ball" : region.kind === "box" ? "Box" : "Cylinder") as number;
+  F.setNumber(tag, "VIn", region.sizeIn);
+  if (region.kind === "box") {
+    F.setNumber(tag, "XMin", region.min[0]);
+    F.setNumber(tag, "XMax", region.max[0]);
+    F.setNumber(tag, "YMin", region.min[1]);
+    F.setNumber(tag, "YMax", region.max[1]);
+    F.setNumber(tag, "ZMin", region.min[2]);
+    F.setNumber(tag, "ZMax", region.max[2]);
+    F.setNumber(tag, "Thickness", region.thickness);
+    return tag;
+  }
+  F.setNumber(tag, "XCenter", region.center[0]);
+  F.setNumber(tag, "YCenter", region.center[1]);
+  F.setNumber(tag, "ZCenter", region.center[2]);
+  F.setNumber(tag, "Radius", region.radius);
+  if (region.kind === "sphere") {
+    F.setNumber(tag, "Thickness", region.thickness);
+  } else {
+    F.setNumber(tag, "XAxis", region.axis[0]);
+    F.setNumber(tag, "YAxis", region.axis[1]);
+    F.setNumber(tag, "ZAxis", region.axis[2]);
+  }
+  return tag;
 }
 
 /**

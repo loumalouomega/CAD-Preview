@@ -402,12 +402,15 @@ async function loadGeometryAndApplyOptions(
         throw new Error(`Conformal fragment failed (${reason}) — no mesh was produced. Retry with conformal: false to mesh the unfragmented solids.`);
       }
     }
-    const applied = await applyPartsToGmshModel(extensionPath, gmsh, input.stepBytes, parts, warnings, options.periodic, options.dimension, options.sizeField ?? []);
+    const applied = await applyPartsToGmshModel(extensionPath, gmsh, input.stepBytes, parts, warnings, options.periodic, options.dimension, options.sizeField ?? [], options.refinementRegions ?? []);
     groupMaps = applied.maps;
     viewTag = applied.viewTag;
   } else {
     if ((options.sizeField?.length ?? 0) > 0) {
       warnings.push("sizeField was ignored — view-driven sizing applies to B-rep sources only (this is a mesh source with no entity correlation).");
+    }
+    if ((options.refinementRegions?.length ?? 0) > 0) {
+      warnings.push("refinementRegions was ignored — refinement regions apply to B-rep sources only (this is a mesh source with no entity correlation).");
     }
     gmsh.merge(tmpPath);
     gmsh.model.mesh.classifySurfaces((options.stlAngle ?? 40) * (Math.PI / 180));
@@ -562,6 +565,7 @@ export function octreeUnsupportedOptions(options: MeshOptions, parts: readonly P
   if (options.elementShape !== DEFAULT_MESH_OPTIONS.elementShape) refuse.push(`elementShape "${options.elementShape}" (${family} ${mix})`);
   if ((options.periodic?.length ?? 0) > 0) refuse.push(`periodic (${family} has no face correlation)`);
   if ((options.sizeField?.length ?? 0) > 0) refuse.push(`sizeField (${family} refines by ${sizing} only)`);
+  if ((options.refinementRegions?.length ?? 0) > 0) refuse.push(`refinementRegions (${family} refines by ${sizing} only)`);
   if (options.optimize !== DEFAULT_MESH_OPTIONS.optimize && options.optimize !== "none") ignored.push(`optimize "${options.optimize}"`);
   if (parts.length > 0) {
     ignored.push(`${parts.length} Part(s) — names, sizes, grading, structured divisions, boundary layers and physical groups are not preserved`);
@@ -585,6 +589,7 @@ export function meshcadUnsupportedOptions(options: MeshOptions, parts: readonly 
   if (options.prismLayers && options.elementOrder !== 1) refuse.push("prismLayers with elementOrder 2 (layers grow over linear triangles)");
   if ((options.periodic?.length ?? 0) > 0) refuse.push("periodic (mesh-cad has no face correlation)");
   if ((options.sizeField?.length ?? 0) > 0) refuse.push("sizeField (mesh-cad sizes by Max size, curvature deviation and cells-across-gaps)");
+  if ((options.refinementRegions?.length ?? 0) > 0) refuse.push("refinementRegions (mesh-cad sizes by Max size, curvature deviation and cells-across-gaps)");
   if (options.sizeMin !== DEFAULT_MESH_OPTIONS.sizeMin) ignored.push(`sizeMin ${options.sizeMin}`);
   if (options.optimize !== DEFAULT_MESH_OPTIONS.optimize && options.optimize !== "none") ignored.push(`optimize "${options.optimize}"`);
   if (parts.length > 0) {
@@ -795,6 +800,9 @@ async function populateMeshedModel(
 
   if ((options.sizeField?.length ?? 0) > 0) {
     warnings.push('sizeField was ignored — engine "ftetwild" never runs Gmsh\'s field pipeline (mesh-format 3D only); switch to engine "gmsh" for view-driven sizing.');
+  }
+  if ((options.refinementRegions?.length ?? 0) > 0) {
+    warnings.push('refinementRegions was ignored — engine "ftetwild" never runs Gmsh\'s field pipeline (mesh-format 3D only); switch to engine "gmsh" for refinement regions.');
   }
 
   // engine === "ftetwild" — effectiveEngine only returns this for input.kind

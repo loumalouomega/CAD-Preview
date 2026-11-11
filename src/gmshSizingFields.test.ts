@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { addBoundaryLayerField, addConstantField, addDistanceThresholdField, addPostViewField, setBackgroundMin } from "./gmshSizingFields";
+import { addBoundaryLayerField, addConstantField, addDistanceThresholdField, addPostViewField, addRegionField, setBackgroundMin } from "./gmshSizingFields";
 
 /** A recording fake `mesh.field.*`/`getBoundary` surface — records every
  * call so a test can assert the exact sequence of option names/values
@@ -257,5 +257,42 @@ describe("addBoundaryLayerField", () => {
     const { gmsh, fields } = fakeGmsh({ boundaryOf: () => [1, 9, 0, 2] });
     const tag = addBoundaryLayerField(gmsh, [1], layer)!;
     expect(fields.get(tag)!.lists.FanPointsList).toEqual([2]);
+  });
+});
+
+describe("addRegionField", () => {
+  it("builds a Ball with centre, radius, VIn and Thickness", () => {
+    const { gmsh, fields } = fakeGmsh();
+    const tag = addRegionField(gmsh, { kind: "sphere", center: [1, 2, 3], radius: 4, sizeIn: 0.5, thickness: 2 });
+    expect(fields.get(tag)).toEqual({
+      type: "Ball",
+      numbers: { VIn: 0.5, XCenter: 1, YCenter: 2, ZCenter: 3, Radius: 4, Thickness: 2 },
+      lists: {},
+    });
+  });
+
+  it("builds a Box from its corners", () => {
+    const { gmsh, fields } = fakeGmsh();
+    const tag = addRegionField(gmsh, { kind: "box", min: [0, 1, 2], max: [3, 4, 5], sizeIn: 1, thickness: 0 });
+    expect(fields.get(tag)).toEqual({
+      type: "Box",
+      numbers: { VIn: 1, XMin: 0, XMax: 3, YMin: 1, YMax: 4, ZMin: 2, ZMax: 5, Thickness: 0 },
+      lists: {},
+    });
+  });
+
+  it("builds a Cylinder with the half-length axis and never sets Thickness (Gmsh rejects it)", () => {
+    const { gmsh, fields } = fakeGmsh();
+    const tag = addRegionField(gmsh, { kind: "cylinder", center: [1, 2, 3], axis: [0, 0, 5], radius: 2, sizeIn: 0.3 });
+    const f = fields.get(tag)!;
+    expect(f.type).toBe("Cylinder");
+    expect(f.numbers).toEqual({ VIn: 0.3, XCenter: 1, YCenter: 2, ZCenter: 3, Radius: 2, XAxis: 0, YAxis: 0, ZAxis: 5 });
+    expect("Thickness" in f.numbers).toBe(false);
+  });
+
+  it("leaves VOut at Gmsh's unbounded default so a region only ever lowers the Min", () => {
+    const { gmsh, fields } = fakeGmsh();
+    const tag = addRegionField(gmsh, { kind: "sphere", center: [0, 0, 0], radius: 1, sizeIn: 1, thickness: 0 });
+    expect("VOut" in fields.get(tag)!.numbers).toBe(false);
   });
 });

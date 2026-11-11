@@ -455,15 +455,13 @@ These are outcome groupings, not release numbers. Independent small items can sh
   - **Sketch rows:** only the synthetic `Sketches` group is shown, as one row; the produced face and wire ids are not mapped to the op that made them, and guide geometry is not dimmed in the tree.
 - **Done when:** each of those rows exists and is pinned by a `test:webview` case.
 
-#### 2.45 Refinement regions: box, sphere and cylinder size fields {#refinement-regions}
+#### 2.45 Refinement region handles in the viewport {#refinement-regions}
 
-*Area: Meshing. Effort: M.*
+*Area: Meshing, Interface. Effort: S–M.*
 
-- **Workflow:** refine the mesh in a wake, around a notch or along a weld line that is not a face of the model. Today local size is tied to a Part (`meshSize`, `meshGrading`) or to sampled points (`sizeField`), so refining a region of space means inventing geometry for it.
-- **Evidence:** `gmshSizingFields.ts` composes Constant, Distance, Threshold, BoundaryLayer and PostView fields under one Min field; Gmsh's Box, Ball and Cylinder fields take the same inside and outside sizes plus a transition thickness and need no geometry. Nothing about the pipeline changes: one more field kind joins the Min.
-- **First useful increment (M):** a `refinementRegions` list in the mesh options sidecar (kind, placement in model units, size inside, transition thickness, optional name), validated like the other options; one Gmsh field per region; translucent gizmos in the viewport placed with the transform gizmo's own drag handles; the size estimate (`estimate_mesh_budget`) counts them; the engines that cannot honour a region (octree, fTetWild, meshcad) say so in the panel and in the tool reply instead of ignoring it.
-- **Parity:** `set_mesh_options` and `generate_mesh` take the list; the handoff manifest records it with the other options; presets may carry regions.
-- **Done when:** on `block.stp` a sphere region of half the global size yields a measured mean edge length inside it within 20 % of the request and unchanged outside the transition; a region wholly outside the model is reported and has no effect; a sidecar written before this item reads unchanged.
+- **Done so far:** `MeshOptions.refinementRegions` (box, sphere, cylinder) is shipped: validated like the other options, one Gmsh `Ball`/`Box`/`Cylinder` field each joined into the shared `Min`, a text field in the FE Mesh panel, `set_mesh_options`/`generate_mesh`/`estimate_mesh_budget` parity, engine refusals by name, and the handoff manifest records the list. See [Refinement regions](/gmsh-integration#refinement-regions). The achieved edge is about 1.4× the requested size.
+- **What is left:** translucent gizmos in the viewport placed with the transform gizmo's own drag handles, so a region is dragged and resized rather than typed; mesh presets that carry regions are not classified separately yet.
+- **Done when:** dragging a sphere gizmo changes the region's centre in the stored options and a regenerate honours it; a region outside the model is drawn dimmed.
 
 #### 2.46 Simulation intent on Parts {#simulation-intent-on-parts}
 

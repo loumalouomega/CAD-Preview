@@ -420,6 +420,13 @@ export interface MeshOptions {
    * Optional: absent means no view (byte-stable sidecar when unused).
    */
   sizeField?: SizeFieldSample[];
+  /**
+   * Geometry-free box / sphere / cylinder size regions (roadmap "Refinement
+   * regions"), joined into the shared `Min` background field. B-rep sources
+   * and the Gmsh engine only; the octree, meshcad and fTetWild engines and mesh
+   * sources refuse or warn by name. Optional: absent means none (byte-stable).
+   */
+  refinementRegions?: RefinementRegion[];
   /** Prism (wedge) layers over the `meshcad` surface — optional, omitted when off so a sidecar stays byte-stable. Only the `meshcad` engine honours it. */
   prismLayers?: MeshPrismLayers;
   /**
@@ -487,6 +494,106 @@ export function validateSizeField(raw: unknown): SizeFieldSample[] | undefined {
     out.push({ point: [p[0], p[1], p[2]], size: s });
   }
   return out.length > 0 ? out : undefined;
+}
+
+type Vec3 = [number, number, number];
+
+/**
+ * Refinement regions (roadmap "Refinement regions"): a geometry-free box,
+ * sphere or cylinder in model space inside which the mesh is requested at
+ * `sizeIn`, joined into the shared `Min` background field. Lengths are in the
+ * model's own unit (scaled by {@link scaleMeshOptionsForUnit} like every other
+ * mesh length). Measured on gmsh-wasm 0.4.0 (`scripts/probe/examples/gmsh-refinement-regions.ts`):
+ * the achieved mean tetrahedron edge is about 1.4× `sizeIn` (Gmsh's size
+ * convention, the same as a Part's `meshSize`), and a region only a couple of
+ * element sizes across barely refines. `thickness` is the distance over which
+ * the size grows back to the global one; Gmsh's `Cylinder` field has no
+ * transition, so a cylinder carries none.
+ */
+export type RefinementRegion =
+  | { kind: "sphere"; center: Vec3; radius: number; sizeIn: number; thickness: number; name?: string }
+  | { kind: "box"; min: Vec3; max: Vec3; sizeIn: number; thickness: number; name?: string }
+  | { kind: "cylinder"; center: Vec3; axis: Vec3; radius: number; sizeIn: number; name?: string };
+
+export const REFINEMENT_REGION_KINDS: readonly RefinementRegion["kind"][] = ["sphere", "box", "cylinder"];
+
+/** Most regions kept per generate — each is a Gmsh field evaluated per sample point. */
+export const MAX_REFINEMENT_REGIONS = 64;
+
+const vec3Of = (v: unknown): Vec3 | null => (Array.isArray(v) && v.length === 3 && v.every(isFiniteNumber) ? [v[0], v[1], v[2]] : null);
+
+/** Tolerant parse: a malformed region is dropped, never the whole list; an empty
+ * result is `undefined` (absent, byte-stable sidecar). */
+export function validateRefinementRegions(raw: unknown): RefinementRegion[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const out: RefinementRegion[] = [];
+  for (const e of raw) {
+    if (out.length >= MAX_REFINEMENT_REGIONS) break;
+    if (!e || typeof e !== "object" || Array.isArray(e)) continue;
+    const r = e as Record<string, unknown>;
+    if (!isFiniteNumber(r.sizeIn) || r.sizeIn <= 0) continue;
+    const thickness = isFiniteNumber(r.thickness) && r.thickness >= 0 ? r.thickness : 0;
+    const name = typeof r.name === "string" && r.name.trim() !== "" ? r.name.trim().slice(0, 64) : undefined;
+    const named = name !== undefined ? { name } : {};
+    if (r.kind === "sphere") {
+      const center = vec3Of(r.center);
+      if (!center || !isFiniteNumber(r.radius) || r.radius <= 0) continue;
+      out.push({ kind: "sphere", center, radius: r.radius, sizeIn: r.sizeIn, thickness, ...named });
+    } else if (r.kind === "box") {
+      const min = vec3Of(r.min);
+      const max = vec3Of(r.max);
+      if (!min || !max) continue;
+      // Corners may arrive in either order; a flat (zero-extent) box is not a region.
+      const lo: Vec3 = [Math.min(min[0], max[0]), Math.min(min[1], max[1]), Math.min(min[2], max[2])];
+      const hi: Vec3 = [Math.max(min[0], max[0]), Math.max(min[1], max[1]), Math.max(min[2], max[2])];
+      if (hi[0] <= lo[0] || hi[1] <= lo[1] || hi[2] <= lo[2]) continue;
+      out.push({ kind: "box", min: lo, max: hi, sizeIn: r.sizeIn, thickness, ...named });
+    } else if (r.kind === "cylinder") {
+      const center = vec3Of(r.center);
+      const axis = vec3Of(r.axis);
+      if (!center || !axis || (axis[0] === 0 && axis[1] === 0 && axis[2] === 0)) continue;
+      if (!isFiniteNumber(r.radius) || r.radius <= 0) continue;
+      out.push({ kind: "cylinder", center, axis, radius: r.radius, sizeIn: r.sizeIn, ...named });
+    }
+  }
+  return out.length > 0 ? out : undefined;
+}
+
+/** Multiplies every length of a region by `factor` (unit conversion). */
+export function scaleRefinementRegion(r: RefinementRegion, factor: number): RefinementRegion {
+  const s = (v: Vec3): Vec3 => [v[0] * factor, v[1] * factor, v[2] * factor];
+  switch (r.kind) {
+    case "sphere":
+      return { ...r, center: s(r.center), radius: r.radius * factor, sizeIn: r.sizeIn * factor, thickness: r.thickness * factor };
+    case "box":
+      return { ...r, min: s(r.min), max: s(r.max), sizeIn: r.sizeIn * factor, thickness: r.thickness * factor };
+    case "cylinder":
+      return { ...r, center: s(r.center), axis: s(r.axis), radius: r.radius * factor, sizeIn: r.sizeIn * factor };
+  }
+}
+
+/** True when a region lies wholly outside the axis-aligned box `[min, max]`
+ * (the model's bounding box, the same unit as the region). A cylinder is
+ * bounded by its end discs' enclosing box, which is conservative: it never
+ * reports a region that touches the model as outside. */
+export function regionOutsideBounds(r: RefinementRegion, min: Vec3, max: Vec3): boolean {
+  let lo: Vec3;
+  let hi: Vec3;
+  if (r.kind === "box") {
+    lo = r.min;
+    hi = r.max;
+  } else if (r.kind === "sphere") {
+    lo = [r.center[0] - r.radius, r.center[1] - r.radius, r.center[2] - r.radius];
+    hi = [r.center[0] + r.radius, r.center[1] + r.radius, r.center[2] + r.radius];
+  } else {
+    // Enclosing box of the capped cylinder: |axis| ends, radius in every direction.
+    const e = [r.axis[0], r.axis[1], r.axis[2]].map((a) => Math.abs(a) + r.radius);
+    lo = [r.center[0] - e[0], r.center[1] - e[1], r.center[2] - e[2]];
+    hi = [r.center[0] + e[0], r.center[1] + e[1], r.center[2] + e[2]];
+  }
+  const t = r.kind === "cylinder" ? 0 : r.thickness;
+  for (let i = 0; i < 3; i++) if (hi[i] + t < min[i] || lo[i] - t > max[i]) return true;
+  return false;
 }
 
 /** Tolerant parse: bad entries are dropped, never the whole list. */
@@ -891,6 +998,8 @@ export function validateMeshOptions(raw: unknown): MeshOptions | null {
   if (periodic.length > 0) out.periodic = periodic;
   const sizeField = validateSizeField(o.sizeField);
   if (sizeField !== undefined) out.sizeField = sizeField;
+  const refinementRegions = validateRefinementRegions(o.refinementRegions);
+  if (refinementRegions !== undefined) out.refinementRegions = refinementRegions;
   const prismLayers = validateMeshPrismLayers(o.prismLayers);
   if (prismLayers !== undefined) out.prismLayers = prismLayers;
   if (o.octreeMeshHexGrading === "graded") out.octreeMeshHexGrading = "graded";
@@ -959,6 +1068,7 @@ export function scaleMeshOptionsForUnit(options: MeshOptions, factor: number): M
           })),
         }
       : {}),
+    ...(options.refinementRegions ? { refinementRegions: options.refinementRegions.map((r) => scaleRefinementRegion(r, factor)) } : {}),
   };
 }
 

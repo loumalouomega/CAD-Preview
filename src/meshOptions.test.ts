@@ -11,6 +11,9 @@ import {
   validateMeshStructured,
   validateMeshBoundaryLayer,
   validateSizeField,
+  validateRefinementRegions,
+  regionOutsideBounds,
+  MAX_REFINEMENT_REGIONS,
   MAX_SIZE_FIELD_SAMPLES,
   boundaryLayerPlan,
   boundaryLayerAlgorithmProblem,
@@ -708,5 +711,84 @@ describe("mdpaRanks / mdpaPartitionMethod", () => {
     expect(validateMeshOptions({ mdpaPartitionMethod: "sfc" })?.mdpaPartitionMethod).toBe("sfc");
     expect("mdpaPartitionMethod" in (validateMeshOptions({ mdpaPartitionMethod: "auto" }) ?? {})).toBe(false);
     expect("mdpaPartitionMethod" in (validateMeshOptions({ mdpaPartitionMethod: "metis" }) ?? {})).toBe(false);
+  });
+});
+
+describe("refinementRegions", () => {
+  const sphere = { kind: "sphere", center: [1, 2, 3], radius: 2, sizeIn: 0.5, thickness: 1, name: " wake " };
+
+  it("keeps valid regions of all three kinds and trims the name", () => {
+    const v = validateRefinementRegions([
+      sphere,
+      { kind: "box", min: [3, 0, 0], max: [1, 2, 2], sizeIn: 1, thickness: 0 },
+      { kind: "cylinder", center: [0, 0, 0], axis: [2, 0, 0], radius: 1, sizeIn: 0.4, thickness: 5 },
+    ])!;
+    expect(v).toHaveLength(3);
+    expect(v[0]).toEqual({ kind: "sphere", center: [1, 2, 3], radius: 2, sizeIn: 0.5, thickness: 1, name: "wake" });
+    // corners normalised to min/max
+    expect(v[1]).toEqual({ kind: "box", min: [1, 0, 0], max: [3, 2, 2], sizeIn: 1, thickness: 0 });
+    // a cylinder carries no thickness (Gmsh's Cylinder field has none)
+    expect("thickness" in v[2]).toBe(false);
+  });
+
+  it("drops bad entries one by one, never the list", () => {
+    const v = validateRefinementRegions([
+      { kind: "sphere", center: [0, 0, 0], radius: 0, sizeIn: 1 },
+      { kind: "sphere", center: [0, 0, 0], radius: 1, sizeIn: -1 },
+      { kind: "box", min: [0, 0, 0], max: [0, 1, 1], sizeIn: 1 },
+      { kind: "cylinder", center: [0, 0, 0], axis: [0, 0, 0], radius: 1, sizeIn: 1 },
+      { kind: "torus", sizeIn: 1 },
+      null,
+      sphere,
+    ])!;
+    expect(v).toHaveLength(1);
+    expect(v[0].kind).toBe("sphere");
+  });
+
+  it("is absent (byte-stable sidecar) when none survive", () => {
+    expect("refinementRegions" in validateMeshOptions({})!).toBe(false);
+    expect("refinementRegions" in validateMeshOptions({ refinementRegions: [] })!).toBe(false);
+    expect("refinementRegions" in validateMeshOptions({ refinementRegions: [{ kind: "x" }] })!).toBe(false);
+  });
+
+  it("caps the list", () => {
+    const many = Array.from({ length: MAX_REFINEMENT_REGIONS + 3 }, () => sphere);
+    expect(validateRefinementRegions(many)!.length).toBe(MAX_REFINEMENT_REGIONS);
+  });
+
+  it("scales every length with the unit factor and leaves the original alone", () => {
+    const v = validateMeshOptions({
+      refinementRegions: [
+        sphere,
+        { kind: "box", min: [0, 0, 0], max: [25.4, 25.4, 25.4], sizeIn: 2.54, thickness: 5.08 },
+        { kind: "cylinder", center: [25.4, 0, 0], axis: [0, 25.4, 0], radius: 12.7, sizeIn: 2.54 },
+      ],
+    })!;
+    const k = 1 / 25.4;
+    const sc = scaleMeshOptionsForUnit(v, k).refinementRegions!;
+    expect(sc[1]).toMatchObject({ kind: "box" });
+    const box = sc[1] as { max: number[]; sizeIn: number; thickness: number };
+    expect(box.max[0]).toBeCloseTo(1, 12);
+    expect(box.sizeIn).toBeCloseTo(0.1, 12);
+    expect(box.thickness).toBeCloseTo(0.2, 12);
+    const cyl = sc[2] as { center: number[]; axis: number[]; radius: number };
+    expect(cyl.center[0]).toBeCloseTo(1, 12);
+    expect(cyl.axis[1]).toBeCloseTo(1, 12);
+    expect(cyl.radius).toBeCloseTo(0.5, 12);
+    expect((v.refinementRegions![1] as { max: number[] }).max[0]).toBe(25.4);
+  });
+
+  it("regionOutsideBounds is conservative: touching or overlapping is inside", () => {
+    const lo: [number, number, number] = [-1.5, -2, -2.5];
+    const hi: [number, number, number] = [1.5, 2, 2.5];
+    const mk = (r: unknown) => validateRefinementRegions([r])![0];
+    expect(regionOutsideBounds(mk({ kind: "sphere", center: [0, 0, 0], radius: 1, sizeIn: 1 }), lo, hi)).toBe(false);
+    expect(regionOutsideBounds(mk({ kind: "sphere", center: [100, 0, 0], radius: 1, sizeIn: 1 }), lo, hi)).toBe(true);
+    // outside, but its transition reaches the model
+    expect(regionOutsideBounds(mk({ kind: "sphere", center: [3, 0, 0], radius: 1, sizeIn: 1, thickness: 1 }), lo, hi)).toBe(false);
+    expect(regionOutsideBounds(mk({ kind: "sphere", center: [3, 0, 0], radius: 1, sizeIn: 1, thickness: 0 }), lo, hi)).toBe(true);
+    expect(regionOutsideBounds(mk({ kind: "box", min: [1, 0, 0], max: [4, 1, 1], sizeIn: 1 }), lo, hi)).toBe(false);
+    expect(regionOutsideBounds(mk({ kind: "cylinder", center: [10, 0, 0], axis: [1, 0, 0], radius: 1, sizeIn: 1 }), lo, hi)).toBe(true);
+    expect(regionOutsideBounds(mk({ kind: "cylinder", center: [3, 0, 0], axis: [2, 0, 0], radius: 1, sizeIn: 1 }), lo, hi)).toBe(false);
   });
 });

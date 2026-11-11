@@ -4087,6 +4087,37 @@ try {
     structMdpa.includes("Begin Elements Element3D8N") && /Begin SubModelPart Block/.test(structMdpa),
     "structured MDPA carries Element3D8N cells with a populated Block SubModelPart"
   );
+  // Refinement regions (roadmap "Refinement regions"): geometry-free Ball / Box / Cylinder size fields
+  // joined into the Min background. Pins on block.stp (3x4x5, centred): a sphere refines, a region wholly
+  // outside the model is reported and changes nothing, and a non-Gmsh engine refuses the list by name.
+  {
+    const regionBase = { sizeMin: 0, sizeMax: 2, dimension: 3 };
+    const regionControl = await call("generate_mesh", { path: structStep, options: regionBase });
+    const sphereRegion = { kind: "sphere", center: [0, 0, 0], radius: 1.4, sizeIn: 0.4, thickness: 1 };
+    const refined = await call("generate_mesh", { path: structStep, options: { ...regionBase, refinementRegions: [sphereRegion] } });
+    assert(
+      refined.elementCount > regionControl.elementCount * 1.5,
+      `a sphere refinement region adds elements (${regionControl.elementCount} -> ${refined.elementCount})`
+    );
+    for (const kind of [
+      { kind: "box", min: [-1.2, -1.2, -1.2], max: [1.2, 1.2, 1.2], sizeIn: 0.4, thickness: 1 },
+      { kind: "cylinder", center: [0, 0, 0], axis: [1.5, 0, 0], radius: 1.4, sizeIn: 0.4 },
+    ]) {
+      const r = await call("generate_mesh", { path: structStep, options: { ...regionBase, refinementRegions: [kind] } });
+      assert(r.elementCount > regionControl.elementCount * 1.5, `a ${kind.kind} refinement region adds elements (${regionControl.elementCount} -> ${r.elementCount})`);
+    }
+    const outside = await call("generate_mesh", {
+      path: structStep,
+      options: { ...regionBase, refinementRegions: [{ kind: "sphere", center: [100, 0, 0], radius: 1, sizeIn: 0.2, thickness: 0 }] },
+    });
+    assert(outside.elementCount === regionControl.elementCount, `a region wholly outside the model changes nothing (${regionControl.elementCount} vs ${outside.elementCount})`);
+    assert((outside.warnings ?? []).some((w) => /wholly outside the model/.test(w)), `and is reported (got ${JSON.stringify(outside.warnings)})`);
+    const octreeRefused = await request("tools/call", {
+      name: "generate_mesh",
+      arguments: { path: structStep, options: { ...regionBase, engine: "octree", refinementRegions: [sphereRegion] } },
+    });
+    assert(octreeRefused.isError === true && /refinementRegions/.test(octreeRefused.content?.[0]?.text ?? ""), "engine octree refuses refinementRegions by name");
+  }
   // Periodic meshing (roadmap "Periodic meshing"): the 3x4x5 box's x=0 / x=3 faces become
   // Parts and `options.periodic` makes their face meshes node-for-node translates.
   await call("set_part", { path: structStep, name: "Block", meshStructured: null });
@@ -7583,6 +7614,7 @@ try {
     ["elementOrder 2", { engine: "octree", elementOrder: 2 }, /elementOrder/],
     ["a periodic pair", { engine: "octree", periodic: [{ slave: "a", master: "b", translation: [1, 0, 0] }] }, /periodic/],
     ["a sizeField", { engine: "octree", sizeField: [{ point: [0, 0, 0], size: 1 }] }, /sizeField/],
+    ["refinementRegions", { engine: "octree", refinementRegions: [{ kind: "sphere", center: [0, 0, 0], radius: 1, sizeIn: 1, thickness: 0 }] }, /refinementRegions/],
   ]) {
     const refused = await request("tools/call", { name: "generate_mesh", arguments: { path: octreeBlock, options } });
     assert(

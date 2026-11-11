@@ -309,12 +309,15 @@ interface MeshOptions {
   optimize: boolean
   stlAngle: number       // classifySurfaces angle, degrees
   budgetElements?: number // advisory element budget — warns, never blocks; omitted when unset
+  refinementRegions?: RefinementRegion[] // box/sphere/cylinder size regions (Gmsh engine, B-rep); omitted when none
   mdpaRanks?: number      // partitioned Kratos MDPA export: MPI ranks (2–64); omitted for one file
   mdpaPartitionMethod?: 'kahip' | 'sfc' // omitted = auto (KaHIP when linked)
 }
 ```
 
 The flat options bag for GMSH FE-mesh generation (see [GMSH Integration](./gmsh-integration.md)). `validateMeshOptions` (`src/meshOptions.ts`) is the single tolerance gate — an individually invalid field falls back to `DEFAULT_MESH_OPTIONS` for that field alone, so a hand-edited or partially-corrupt `<model>.mesh.json` sidecar degrades gracefully rather than blocking meshing. Sent host → webview in `meshingOptions` (hydration) and webview → host in `meshingChanged`/`meshingGenerate`/`meshingExport`. `meshingExport` also carries an optional `manifest: true` when the FE Mesh panel's **Handoff manifest** box is ticked — the host then writes `<output>.handoff.json` beside the saved mesh and posts a `status` summarizing the Part coverage.
+
+`RefinementRegion` (`src/meshOptions.ts`) is `{kind:'sphere', center, radius, sizeIn, thickness, name?}`, `{kind:'box', min, max, sizeIn, thickness, name?}` or `{kind:'cylinder', center, axis, radius, sizeIn, name?}` (vectors are `[x,y,z]` in mm; a cylinder's `axis` is the half-length vector and it has no `thickness`). The field is additive and omitted when empty, so older sidecars are unchanged; see [Refinement regions](./gmsh-integration.md#refinement-regions).
 
 ### `ViewerDefaults` and `MassProperties`
 

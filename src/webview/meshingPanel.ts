@@ -6,6 +6,7 @@ import { TOOLBAR_ICONS } from "../toolbarIcons";
 import { MESH_EXPORT_FORMATS, type MeshExportFormatId } from "../meshExportFormats";
 import { DISPLAY_UNITS, UNIT_LABELS, type DisplayUnit } from "../lengthUnits";
 import type { Part, MeshPresetSummary } from "../protocol";
+import { formatRefinementRegions, parseRefinementRegionText } from "../refinementRegionText";
 import { estimateMeshBudget, budgetWarning, formatBytes, formatCountRange } from "../meshBudget";
 import { MESHIO_OP_IDS, MESHIO_OP_LABELS, type MeshioOpId, type MeshioOpSpec } from "../meshioOps";
 import { validateMmgOptions, type MmgOptions } from "../mmgOptions";
@@ -213,6 +214,8 @@ export class MeshingPanel {
   private readonly budgetInput: HTMLInputElement;
   private readonly mdpaRanksInput: HTMLInputElement;
   private readonly mdpaMethodSelect: HTMLSelectElement;
+  private readonly regionsInput: HTMLTextAreaElement;
+  private readonly regionsNote: HTMLElement;
   private deviationBtn: HTMLButtonElement | null = null;
   private deviationTolInput: HTMLInputElement | null = null;
   /** Displayed model's volume (null = not a closed volume) / area, for the budget estimate. */
@@ -696,6 +699,38 @@ export class MeshingPanel {
       cb.onOptionsChange({ mdpaPartitionMethod: method === "auto" ? undefined : method });
     });
     this.exportFormatSelect.addEventListener("change", () => this.syncMdpaFields());
+
+    // Refinement regions: one box/sphere/cylinder per line (see refinementRegionText.ts).
+    const regionsRow = document.createElement("label");
+    regionsRow.className = "meshing-field meshing-field-block";
+    const regionsLabel = document.createElement("span");
+    regionsLabel.className = "meshing-label";
+    regionsLabel.textContent = "Refinement regions";
+    regionsRow.appendChild(regionsLabel);
+    this.regionsInput = document.createElement("textarea");
+    this.regionsInput.id = "meshing-regions";
+    this.regionsInput.className = "meshing-num meshing-regions";
+    this.regionsInput.rows = 3;
+    this.regionsInput.spellcheck = false;
+    this.regionsInput.placeholder = "sphere cx cy cz radius size [thickness]\nbox x0 y0 z0 x1 y1 z1 size [thickness]\ncylinder cx cy cz ax ay az radius size";
+    this.regionsInput.title =
+      "Local size regions in mm, one per line, with an optional trailing '# name'. Inside a region the mesh is requested at 'size', growing back to the global size over 'thickness' " +
+      "(sphere and box; a cylinder has no transition and its axis is the half-length vector from the centre). Achieved edges run about 1.4x the requested size. " +
+      "Gmsh engine and B-rep sources only.";
+    regionsRow.appendChild(this.regionsInput);
+    form.appendChild(regionsRow);
+    this.regionsNote = document.createElement("div");
+    this.regionsNote.id = "meshing-regions-note";
+    this.regionsNote.className = "meshing-note";
+    this.regionsNote.hidden = true;
+    form.appendChild(this.regionsNote);
+    this.regionsInput.addEventListener("change", () => {
+      const { regions, problems } = parseRefinementRegionText(this.regionsInput.value);
+      this.showRegionsNote(problems.length > 0 ? problems.join(" ") : "", true);
+      if (problems.length > 0) return; // keep the text so it can be fixed; nothing is persisted until it parses cleanly
+      this.regionsInput.value = formatRefinementRegions(regions);
+      cb.onOptionsChange({ refinementRegions: regions.length > 0 ? regions : undefined });
+    });
 
     this.deviationTolInput = this.numberField(form, "Deviation tolerance (mm)", 0);
     this.deviationTolInput.id = "meshing-deviation-tol";
@@ -1342,6 +1377,8 @@ export class MeshingPanel {
     this.budgetInput.value = options.budgetElements ? String(options.budgetElements) : "";
     this.mdpaRanksInput.value = options.mdpaRanks ? String(options.mdpaRanks) : "";
     this.mdpaMethodSelect.value = options.mdpaPartitionMethod ?? "auto";
+    this.regionsNoteIsParseError = false;
+    this.regionsInput.value = formatRefinementRegions(options.refinementRegions);
     this.syncMdpaFields();
     this.ftetwildEpsRelInput.value = String(options.ftetwildEpsRel);
     this.ftetwildManifoldSurfaceCheckbox.checked = options.ftetwildManifoldSurface;
@@ -1370,6 +1407,17 @@ export class MeshingPanel {
     const octreeMesh = options.engine === "octreemesh";
     const meshcad = options.engine === "meshcad";
     const notGmsh = ftetwild || octree || octreeMesh || meshcad;
+    this.regionsInput.disabled = notGmsh;
+    if (!this.regionsNoteIsParseError) {
+      const n = options.refinementRegions?.length ?? 0;
+      this.showRegionsNote(
+        n > 0 && notGmsh
+          ? `Refinement regions are not used by the ${ftetwild ? "fTetWild" : meshcad ? "mesh-CAD" : "octree"} engine${ftetwild ? " (ignored with a warning)" : " (generate refuses them)"}; switch to the Gmsh engine.`
+          : n > 0 && this.sourceKind === "mesh"
+            ? "Refinement regions apply to B-rep sources only; this mesh source ignores them."
+            : ""
+      );
+    }
     this.sizeMinInput.disabled = notGmsh;
     this.sizeMaxInput.disabled = octree || octreeMesh;
     this.algorithm2DSelect.disabled = notGmsh;
@@ -2475,6 +2523,13 @@ export class MeshingPanel {
     row.appendChild(input);
     parent.appendChild(row);
     return input;
+  }
+
+  private regionsNoteIsParseError = false;
+  private showRegionsNote(text: string, parseError = false): void {
+    this.regionsNote.textContent = text;
+    this.regionsNote.hidden = text === "";
+    this.regionsNoteIsParseError = parseError && text !== "";
   }
 
   /** The rank controls only matter for the two Kratos MDPA export targets; grey them elsewhere. */

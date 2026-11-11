@@ -6727,6 +6727,49 @@ test("MDPA ranks: the rank controls follow the export format and a typed count i
   assert(st.ranksDisabled === true && st.methodDisabled === true, `a non-MDPA format greys both controls (got ${JSON.stringify(st)})`);
 });
 
+test("refinement regions: typed lines post parsed regions, a bad line posts nothing and says why, and other engines grey the field with a note", async (page) => {
+  await populate(page);
+  const change = (value) =>
+    page.evaluate((v) => {
+      const el = document.getElementById("meshing-regions");
+      el.value = v;
+      el.dispatchEvent(new Event("change", { bubbles: true }));
+    }, value);
+  const lastOptions = () => page.evaluate(() => (window.__sent ?? []).filter((m) => m.type === "meshingChanged").at(-1)?.options ?? null);
+  const note = () =>
+    page.evaluate(() => {
+      const n = document.getElementById("meshing-regions-note");
+      return n && n.getClientRects().length > 0 ? n.textContent ?? "" : "";
+    });
+  const base = fixture("meshingOptions").options;
+
+  await page.evaluate(() => (window.__sent.length = 0));
+  await change("sphere 0 0 0 1.5 0.4 1 # wake\nbox -1 -1 -1 1 1 1 0.5");
+  let o = await lastOptions();
+  assert(o?.refinementRegions?.length === 2, `two lines post two regions (got ${JSON.stringify(o?.refinementRegions)})`);
+  assert(o.refinementRegions[0].kind === "sphere" && o.refinementRegions[0].name === "wake" && o.refinementRegions[0].thickness === 1, "the sphere keeps its radius, size, thickness and name");
+  assert(o.refinementRegions[1].kind === "box" && o.refinementRegions[1].thickness === 0, "the box thickness defaults to 0");
+
+  await page.evaluate(() => (window.__sent.length = 0));
+  await change("sphere 0 0 0 -3 0.4");
+  assert((await page.evaluate(() => (window.__sent ?? []).filter((m) => m.type === "meshingChanged").length)) === 0, "a malformed line posts no change");
+  assert(/Line 1/.test(await note()), `the problem is shown with its line number (got ${JSON.stringify(await note())})`);
+  assert(await page.evaluate(() => document.getElementById("meshing-regions").value === "sphere 0 0 0 -3 0.4"), "the typed text is kept so it can be fixed");
+
+  await change("");
+  assert(!(await lastOptions())?.refinementRegions, "clearing the field posts no regions (the key stays absent)");
+
+  await post(page, { type: "meshingOptions", options: { ...base, engine: "octree", refinementRegions: [{ kind: "sphere", center: [0, 0, 0], radius: 1, sizeIn: 0.5, thickness: 0 }] } });
+  await sleep(200);
+  assert(await page.evaluate(() => document.getElementById("meshing-regions").disabled), "the octree engine greys the field");
+  assert(/octree/.test(await note()), `and says why (got ${JSON.stringify(await note())})`);
+  await post(page, { type: "meshingOptions", options: { ...base, engine: "gmsh", refinementRegions: [{ kind: "sphere", center: [0, 0, 0], radius: 1, sizeIn: 0.5, thickness: 0 }] } });
+  await sleep(200);
+  assert(!(await page.evaluate(() => document.getElementById("meshing-regions").disabled)), "the Gmsh engine re-enables it");
+  assert((await note()) === "", "and clears the note");
+  assert(await page.evaluate(() => /^sphere 0 0 0\s+1\s+0\.5$/.test(document.getElementById("meshing-regions").value)), "the stored region is shown as text");
+});
+
 test("bookmarks: hydrating two bookmarks renders two rows with their names", async (page) => {
   await populate(page);
   await postBookmarks(page, [
