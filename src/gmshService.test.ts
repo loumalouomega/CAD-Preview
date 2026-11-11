@@ -348,10 +348,11 @@ describe("meshcadUnsupportedOptions", () => {
         elementShape: "subdivided",
         periodic: [{ slave: "a", master: "b", translation: [1, 0, 0] }],
         sizeField: [{ point: [0, 0, 0], size: 1 }],
+        refinementRegions: [{ kind: "sphere", center: [0, 0, 0], radius: 1, sizeIn: 0.5, thickness: 0 }],
       },
       []
     );
-    expect(refuse.map((r) => r.split(" ")[0])).toEqual(["elementShape", "periodic", "sizeField"]);
+    expect(refuse.map((r) => r.split(" ")[0])).toEqual(["elementShape", "periodic", "sizeField", "refinementRegions"]);
   });
 
   it("only warns about sizeMin, an optimizer pass that did something and Parts", () => {
@@ -378,10 +379,11 @@ describe("octreeUnsupportedOptions", () => {
         elementShape: "subdivided",
         periodic: [{ slave: "a", master: "b", translation: [1, 0, 0] }],
         sizeField: [{ point: [0, 0, 0], size: 1 }],
+        refinementRegions: [{ kind: "sphere", center: [0, 0, 0], radius: 1, sizeIn: 0.5, thickness: 0 }],
       },
       []
     );
-    expect(refuse.map((r) => r.split(" ")[0])).toEqual(["elementOrder", "elementShape", "periodic", "sizeField"]);
+    expect(refuse.map((r) => r.split(" ")[0])).toEqual(["elementOrder", "elementShape", "periodic", "sizeField", "refinementRegions"]);
   });
 
   it("applies the same gate to engine octreemesh and names its own sizing knobs", () => {

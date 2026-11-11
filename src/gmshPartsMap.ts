@@ -1,11 +1,11 @@
 import type { Vec3 } from "./editOps";
 import type { Part } from "./protocol";
-import { boundaryLayerPlan, type PeriodicPair, type SizeFieldSample } from "./meshOptions";
+import { boundaryLayerPlan, regionOutsideBounds, type PeriodicPair, type RefinementRegion, type SizeFieldSample } from "./meshOptions";
 import { getOcct, readShape, wrapOcctFault } from "./occtService";
 import { resetGmsh } from "./gmshService";
 import { collectFaces, collectSolids, collectVertices, bboxCenter } from "./occtOperations";
 import { enumerateEdges } from "./edgeEnumeration";
-import { addBoundaryLayerField, addConstantField, addDistanceThresholdField, addPostViewField, setBackgroundMin } from "./gmshSizingFields";
+import { addBoundaryLayerField, addConstantField, addDistanceThresholdField, addPostViewField, addRegionField, setBackgroundMin } from "./gmshSizingFields";
 import { addFreeEntitiesToGmshModel, type FreeEntitySpec } from "./gmshEmbed";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -78,9 +78,10 @@ export async function applyPartsToGmshModel(
   warnings?: string[],
   periodic: PeriodicPair[] = [],
   dimension: 1 | 2 | 3 = 3,
-  sizeField: readonly SizeFieldSample[] = []
+  sizeField: readonly SizeFieldSample[] = [],
+  refinementRegions: readonly RefinementRegion[] = []
 ): Promise<{ maps: PartGroupMaps | null; viewTag: number | null }> {
-  if (parts.length === 0 && sizeField.length === 0) {
+  if (parts.length === 0 && sizeField.length === 0 && refinementRegions.length === 0) {
     if (periodic.length > 0) warnings?.push("Periodic pairs ignored: they are declared between Parts and the model has none.");
     return { maps: null, viewTag: null };
   }
@@ -269,6 +270,20 @@ export async function applyPartsToGmshModel(
         viewTag = created.viewTag;
         sizeFieldTags.push(created.fieldTag);
       }
+    }
+
+    if (refinementRegions.length > 0) {
+      // The Gmsh model is in the same unit as the (already unit-scaled) regions.
+      const bb = gmsh.model.getBoundingBox(-1, -1) as Record<string, number>;
+      const lo: [number, number, number] = [bb.xmin, bb.ymin, bb.zmin];
+      const hi: [number, number, number] = [bb.xmax, bb.ymax, bb.zmax];
+      refinementRegions.forEach((region, i) => {
+        if (regionOutsideBounds(region, lo, hi)) {
+          warnings?.push(`Refinement region ${region.name ? `"${region.name}"` : `#${i + 1}`} (${region.kind}) lies wholly outside the model and has no effect.`);
+          return;
+        }
+        sizeFieldTags.push(addRegionField(gmsh, region));
+      });
     }
 
     setBackgroundMin(gmsh, sizeFieldTags);

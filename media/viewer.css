@@ -2116,6 +2116,26 @@ body:not(:has(#side.visible)) #status {
   justify-content: space-between;
 }
 
+/* Refinement regions: a multi-line field, label on top of the first line. */
+.meshing-field-block {
+  align-items: flex-start;
+}
+.meshing-regions {
+  resize: vertical;
+  min-height: 3.2em;
+  font-family: var(--vscode-editor-font-family, monospace);
+  white-space: pre;
+  overflow: auto;
+}
+.meshing-note {
+  padding: 2px 4px;
+  font-size: var(--ui-fs-label);
+  color: var(--vscode-editorWarning-foreground, #cca700);
+}
+.meshing-note[hidden] {
+  display: none;
+}
+
 .meshing-reset {
   margin-top: 6px;
   font: inherit;
