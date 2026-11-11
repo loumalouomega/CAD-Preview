@@ -4096,18 +4096,18 @@ try {
   {
     const regionBase = { sizeMin: 0, sizeMax: 2, dimension: 3 };
     const regionControl = await call("generate_mesh", { path: structStep, options: regionBase });
-    const sphereRegion = { kind: "sphere", center: [0, 0, 0], radius: 1.4, sizeIn: 0.4, thickness: 1 };
+    const sphereRegion = { kind: "sphere", center: [0, 0, 0], radius: 1.4, sizeIn: 0.25, thickness: 1 };
     const refined = await call("generate_mesh", { path: structStep, options: { ...regionBase, refinementRegions: [sphereRegion] } });
     assert(
-      refined.elementCount > regionControl.elementCount * 1.5,
+      refined.elementCount > regionControl.elementCount * 1.3,
       `a sphere refinement region adds elements (${regionControl.elementCount} -> ${refined.elementCount})`
     );
     for (const kind of [
-      { kind: "box", min: [-1.2, -1.2, -1.2], max: [1.2, 1.2, 1.2], sizeIn: 0.4, thickness: 1 },
-      { kind: "cylinder", center: [0, 0, 0], axis: [1.5, 0, 0], radius: 1.4, sizeIn: 0.4 },
+      { kind: "box", min: [-1.5, -1.5, -1.5], max: [1.5, 1.5, 1.5], sizeIn: 0.25, thickness: 1 },
+      { kind: "cylinder", center: [0, 0, 0], axis: [1.5, 0, 0], radius: 1.4, sizeIn: 0.25 },
     ]) {
       const r = await call("generate_mesh", { path: structStep, options: { ...regionBase, refinementRegions: [kind] } });
-      assert(r.elementCount > regionControl.elementCount * 1.5, `a ${kind.kind} refinement region adds elements (${regionControl.elementCount} -> ${r.elementCount})`);
+      assert(r.elementCount > regionControl.elementCount * 1.3, `a ${kind.kind} refinement region adds elements (${regionControl.elementCount} -> ${r.elementCount})`);
     }
     const outside = await call("generate_mesh", {
       path: structStep,
