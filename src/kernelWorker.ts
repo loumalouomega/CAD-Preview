@@ -57,6 +57,7 @@ import { coarsenStlBoundary } from "./mmgCoarsen";
 import { checkBrepHealth } from "./brepHealth";
 import { recognizePrimitives } from "./primitiveReport";
 import { fitMeshRegion } from "./meshRegionFit";
+import { measureScan, deviationScan, alignScan, surfaceSections, surfaceEdit, scanToCad } from "./meshioScan";
 import { segmentMeshSurface } from "./meshSegment";
 import { fitMeshToCad } from "./meshFitCad";
 import { meshCadSurfaceModel } from "./meshCadSurface";
@@ -184,6 +185,12 @@ const handlers: Record<keyof DocumentPipeline, Handler> = {
   analyzeSurfaceGeometry: analyzeSurfaceGeometry as Handler,
   meshAdjacency: meshAdjacency as Handler,
   registerMeshes: registerMeshes as Handler,
+  measureScan: measureScan as Handler,
+  deviationScan: deviationScan as Handler,
+  alignScan: alignScan as Handler,
+  surfaceSections: surfaceSections as Handler,
+  surfaceEdit: surfaceEdit as Handler,
+  scanToCad: scanToCad as Handler,
   readMeshioDataInfo: readMeshioDataInfo as Handler,
   readMeshioProvenance: readMeshioProvenance as Handler,
   coarsenStlBoundary: coarsenStlBoundary as Handler,

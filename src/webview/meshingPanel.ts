@@ -24,6 +24,9 @@ import {
 const MESHIO_18_1_OPS: ReadonlySet<MeshioOpId> = new Set<MeshioOpId>([
   "untangle", "prepareMetric", "morph", "convexHull", "delaunay2d", "convertCoordinates",
   "estimateNormals", "reconstructSurface", "geodesicDistance", "parameterize", "laplacianEigenmodes",
+  // meshio++ 20 scan / surface editing
+  "flipNormals", "removeIslands", "offsetSurface", "thicken", "hollow", "clip", "autoAlign", "silhouette",
+  "thickness", "colorize", "exaggerate",
 ]);
 
 /** Which `meshOpsExtra` rows each operation shows. */
@@ -36,6 +39,17 @@ const OPS_EXTRA_FIELDS: Partial<Record<MeshioOpId, string[]>> = {
   reconstructSurface: ["k", "cellSize", "maxDistance"],
   geodesicDistance: ["sources"],
   laplacianEigenmodes: ["numModes"],
+  flipNormals: ["region"],
+  removeIslands: ["minCells", "minDiagonal", "dryRun"],
+  offsetSurface: ["distance", "smoothIterations"],
+  thicken: ["distance", "side", "smoothIterations"],
+  hollow: ["distance", "smoothIterations"],
+  clip: ["origin", "normal", "keepBelow"],
+  autoAlign: ["region"],
+  silhouette: ["normal", "clearance", "extrude"],
+  thickness: ["probe", "coneAngle", "rayMax"],
+  colorize: ["field", "cmap"],
+  exaggerate: ["field", "scale"],
 };
 
 export interface ModelExtents {
@@ -1095,6 +1109,40 @@ export class MeshingPanel {
     extra.axis.title = "Components: the symmetry axis, three comma-separated numbers";
     extra.orientation = this.select(opsForm, "Orientation", [["consistent", "consistent (spanning tree)"], ["none", "none"]]);
     extra.dimension = this.select(opsForm, "Hull in", [["0", "decide from the points"], ["3", "3-D"], ["2", "2-D (x, y)"]]);
+    // meshio++ 20 rows
+    extra.region = this.textField(opsForm, "Region", "");
+    extra.region.title = "Restrict to this named cell region (empty = the whole mesh)";
+    extra.minCells = this.numberField(opsForm, "Min cells", 0);
+    extra.minCells.title = "Islands: remove components with fewer cells than this (0 = off)";
+    extra.minCells.step = "1";
+    extra.minDiagonal = this.numberField(opsForm, "Min diagonal", 0);
+    extra.minDiagonal.title = "Islands: remove components whose bounding-box diagonal is below this fraction of the whole mesh's (0 = off)";
+    extra.dryRun = this.select(opsForm, "Islands", [["remove", "remove them"], ["mark", "only mark (cell data islands:removed)"]]);
+    extra.distance = this.numberField(opsForm, "Distance", 1);
+    extra.distance.title = "Offset: signed distance along the normals (positive outward); Thicken / Hollow: the wall thickness (positive). Source units";
+    extra.smoothIterations = this.numberField(opsForm, "Smoothing", 0);
+    extra.smoothIterations.title = "Smoothing passes of the offset directions (0 = none)";
+    extra.smoothIterations.step = "1";
+    extra.side = this.select(opsForm, "Grow", [["inward", "inward"], ["outward", "outward"], ["both", "both sides"]]);
+    extra.origin = this.textField(opsForm, "Plane point", "0,0,0");
+    extra.origin.title = "Clip: a point on the cutting plane, three comma-separated numbers";
+    extra.normal = this.textField(opsForm, "Normal", "0,0,1");
+    extra.normal.title = "Clip: the plane normal; Silhouette: the view direction. Three comma-separated numbers, not all zero";
+    extra.keepBelow = this.select(opsForm, "Keep", [["true", "the side the normal points away from"], ["false", "the side it points to"]]);
+    extra.clearance = this.numberField(opsForm, "Clearance", 0);
+    extra.clearance.title = "Silhouette: offset the outline by this (positive grows it)";
+    extra.extrude = this.select(opsForm, "Result", [["false", "outline lines"], ["true", "closed prism surface"]]);
+    extra.probe = this.select(opsForm, "Probe", [["ray", "ray (along the normal)"], ["sphere", "inscribed sphere"], ["cone", "cone of rays"]]);
+    extra.coneAngle = this.numberField(opsForm, "Cone angle", 0);
+    extra.coneAngle.title = "Thickness cone probe: half-angle in degrees (0 = default)";
+    extra.rayMax = this.numberField(opsForm, "Longest ray", 0);
+    extra.rayMax.title = "Thickness: the longest ray in source units (0 = automatic)";
+    extra.field = this.textField(opsForm, "Field", "deviation:distance");
+    extra.field.title = "Colorize / Exaggerate: the point or cell data array to read";
+    extra.cmap = this.textField(opsForm, "Colormap", "viridis");
+    extra.cmap.title = "Colorize: a colormap name (viridis, plasma, coolwarm, ...)";
+    extra.scale = this.numberField(opsForm, "Scale", 10);
+    extra.scale.title = "Exaggerate: displacement per unit of deviation";
     const opsRunRow = document.createElement("div");
     opsRunRow.className = "meshing-field";
     this.meshOpsRun = document.createElement("button");
@@ -1713,6 +1761,73 @@ export class MeshingPanel {
       case "laplacianEigenmodes": {
         const modes = positive("numModes");
         if (modes !== undefined) spec.numModes = Math.floor(modes);
+        break;
+      }
+      case "flipNormals":
+      case "autoAlign": {
+        const region = text("region");
+        if (region) spec.region = region;
+        break;
+      }
+      case "removeIslands": {
+        const cells = positive("minCells");
+        if (cells !== undefined) spec.minCells = Math.floor(cells);
+        const diag = positive("minDiagonal");
+        if (diag !== undefined) spec.minDiagonal = diag;
+        if (cells === undefined && diag === undefined) return "Set Min cells or Min diagonal: with neither threshold nothing is an island.";
+        spec.dryRun = text("dryRun") === "mark";
+        break;
+      }
+      case "offsetSurface":
+      case "thicken":
+      case "hollow": {
+        const d = Number(text("distance"));
+        if (!Number.isFinite(d) || (op !== "offsetSurface" && !(d > 0))) return op === "offsetSurface" ? "Enter a distance (a number)." : "Enter a positive wall thickness.";
+        spec.distance = d;
+        if (op === "thicken") spec.side = text("side") as "inward" | "outward" | "both";
+        const smooth = positive("smoothIterations");
+        if (smooth !== undefined) spec.smoothIterations = Math.floor(smooth);
+        break;
+      }
+      case "clip": {
+        const origin = numbers("origin", 3);
+        const normal = numbers("normal", 3);
+        if (!origin) return "The plane point needs three numbers (for example 0,0,0).";
+        if (!normal || normal.every((x) => x === 0)) return "The normal needs three numbers, not all zero (for example 0,0,1).";
+        spec.origin = origin;
+        spec.normal = normal;
+        spec.keepBelow = text("keepBelow") !== "false";
+        break;
+      }
+      case "silhouette": {
+        const normal = numbers("normal", 3);
+        if (!normal || normal.every((x) => x === 0)) return "The view direction needs three numbers, not all zero (for example 0,0,1).";
+        spec.normal = normal;
+        const c = Number(text("clearance"));
+        if (Number.isFinite(c) && c !== 0) spec.clearance = c;
+        spec.extrude = text("extrude") === "true";
+        break;
+      }
+      case "thickness": {
+        spec.probe = text("probe") as "ray" | "sphere" | "cone";
+        const angle = positive("coneAngle");
+        if (angle !== undefined) spec.coneAngle = angle;
+        const longest = positive("rayMax");
+        if (longest !== undefined) spec.maxDistance = longest;
+        break;
+      }
+      case "colorize":
+      case "exaggerate": {
+        const field = text("field");
+        if (!field) return "Enter the name of the point or cell data array to read.";
+        spec.field = field;
+        if (op === "colorize") {
+          const cmap = text("cmap");
+          if (cmap) spec.cmap = cmap;
+        } else {
+          const scale = Number(text("scale"));
+          if (Number.isFinite(scale)) spec.scale = scale;
+        }
         break;
       }
       default:

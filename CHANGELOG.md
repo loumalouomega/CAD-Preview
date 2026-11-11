@@ -8,6 +8,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/); thi
 
 ### Added
 
+- **Scan and metrology tools (meshio++ 20.0.0).** Sixteen new MCP tools, all facts-only and read from a mesh-format source's triangle surface: `measure_mesh` (elements, dimensions and GD&T tolerances, datum alignment), `analyze_deviation` (signed deviation, histogram, excess/missing-material regions, exaggeration and colour output), `register_landmarks`, `find_symmetry_plane`, `auto_align_scan`, `mesh_sections`, `mesh_silhouette`, `fit_mesh_curves`, `clip_mesh`, `offset_mesh_surface` (offset / thicken / hollow), `flip_mesh_normals`, `remove_mesh_islands` (with a dry run), `constrain_primitives`, `write_step_elements`, `profile_to_solid` and `fit_cad_iterate` (with per-face scan support). Eleven of the operations are also Mesh Ops / `transform_mesh` steps (flipNormals, removeIslands, offsetSurface, thicken, hollow, clip, autoAlign, silhouette, thickness, colorize, exaggerate).
+- **New options on existing tools.** `measure_mesh_thickness` takes `method` (`ray`, `sphere`, `cone`), `coneAngle`, `coneRays`, `twoSided`, `maxNormalDeviation` and reports `p2`/`p95`; `segment_mesh_surface` takes `usedPoints` and `criterion`; `register_meshes` takes `initial: "auto"`, `sourceRegion`, `targetRegion` and `adaptiveTrim` and reports `numRejected` and the candidate RMS values.
 - **Undo and redo from the keyboard.** Ctrl+Z, Ctrl+Shift+Z and Ctrl+Y work in the viewport and panels (never inside a text field), and the host can send `undo` / `redo` messages; the webview answers with a `historyState` event (flags plus the label of the op each would affect). Undo still cannot cross the save point. The ownership decision is recorded in `doc/protocol.md`.
 - **Keyboard shortcuts sheet.** `?` (or "Keyboard shortcuts" in the command search) lists every bound key, generated from the key table so it cannot drift.
 - **DXF arcs.** Silhouette, technical-drawing and sheet DXF exports fit tessellated circular runs back to bulged `LWPOLYLINE` arcs and full `CIRCLE`s (0.5 % of the fitted radius by default), so a hole is no longer an N-gon in the receiving CAD; `export_svg_silhouette` / `export_technical_drawing` report `arcCount` / `circleCount`.
@@ -15,6 +17,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/); thi
 
 ### Changed
 
+- **meshio++ upgraded to 20.0.0** (additive typings; the FULL artifact grows from 36 to 42 MB, the lean one from 18.1 to 18.9 MB).
 - The progress sweep, the ribbon chevron's turn and camera drag damping honour `prefers-reduced-motion`.
 
 ## [3.41.0] - 2026-11-10

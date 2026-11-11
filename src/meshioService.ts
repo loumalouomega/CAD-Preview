@@ -76,6 +76,7 @@ import { parsePly } from "./plyParser";
 import { parseGltf, type GltfExternalBuffers } from "./gltfParser";
 import { weldTriangleSoup, weldedMeshToStlBytes } from "./meshComponents";
 import type { MeshParseFormat } from "./fileRouter";
+import { SCAN_OP_IDS, applyScanOp } from "./meshioScanOps";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type MeshioApi = any;
@@ -836,9 +837,18 @@ export async function runMeshioOps(
             if (!r.converged) warnings.push(`laplacianEigenmodes: not converged (max residual ${Number(r.maxResidual).toExponential(2)}).`);
             break;
           }
-          default:
+          default: {
+            // meshio++ 20 scan / surface-editing ops live in meshioScanOps.ts (pure over the module).
+            const scan = SCAN_OP_IDS.has(String(spec.op)) ? applyScanOp(m, mesh, spec) : null;
+            if (scan) {
+              mesh = scan.mesh;
+              steps.push({ op: spec.op, applied: true, detail: scan.detail });
+              for (const w of scan.warnings) warnings.push(`${spec.op}: ${w}`);
+              break;
+            }
             steps.push({ op: String(spec.op), applied: false, detail: "unknown operation — skipped" });
             warnings.push(`Unknown operation "${String(spec.op)}" was skipped.`);
+          }
         }
       } catch (err) {
         // A step that cannot run is reported and skipped, never silent.
@@ -1975,6 +1985,15 @@ export type SurfaceAnalysisSpec =
       direction?: "auto" | "inward" | "outward";
       maxDistance?: number;
       threshold?: number;
+      /** meshio++ 20: the probe — `ray` (default), `sphere` (largest inscribed ball) or `cone`. */
+      method?: "ray" | "sphere" | "cone";
+      /** `cone`: half-angle in degrees and ray count. */
+      coneAngle?: number;
+      coneRays?: number;
+      /** Rays both ways, either face of a triangle counting. */
+      twoSided?: boolean;
+      /** Skip triangles more edge-on to the ray than this many degrees. */
+      maxNormalDeviation?: number;
       /** Measure toward a second surface instead of the mesh itself. */
       useOther?: boolean;
     }
@@ -2010,6 +2029,10 @@ export interface SurfaceAnalysisResult {
     minCell: number;
     minPoint: number[];
     maxDistance: number;
+    /** meshio++ 20: the method used and the 2nd / 95th percentiles of the hits (null with no hit). */
+    method: string;
+    p2: number | null;
+    p95: number | null;
   };
   /** `intersections`. */
   intersections?: {
@@ -2074,6 +2097,11 @@ export async function analyzeSurfaceMesh(
       if (spec.direction !== undefined) o.direction = spec.direction;
       if (spec.maxDistance !== undefined) o.maxDistance = spec.maxDistance;
       if (spec.threshold !== undefined) o.threshold = spec.threshold;
+      if (spec.method !== undefined) o.method = spec.method;
+      if (spec.coneAngle !== undefined) o.coneAngle = spec.coneAngle;
+      if (spec.coneRays !== undefined) o.coneRays = spec.coneRays;
+      if (spec.twoSided !== undefined) o.twoSided = spec.twoSided;
+      if (spec.maxNormalDeviation !== undefined) o.maxNormalDeviation = spec.maxNormalDeviation;
       if (spec.useOther && other) o.other = other;
       const r = m.thickness(mesh, o) as unknown as Record<string, unknown>;
       return {
@@ -2092,6 +2120,9 @@ export async function analyzeSurfaceMesh(
           minCell: num(r.minCell),
           minPoint: Array.from((r.minPoint as ArrayLike<number>) ?? []).map(Number),
           maxDistance: num(r.maxDistance),
+          method: typeof r.method === "string" ? r.method : "ray",
+          p2: num(r.numHit) > 0 ? finite(r.p2) : null,
+          p95: num(r.numHit) > 0 ? finite(r.p95) : null,
         },
         warnings: Array.isArray(r.warnings) ? (r.warnings as unknown[]).map(String) : [],
       };
@@ -2319,8 +2350,13 @@ export interface RegisterMeshesOptions {
   maxIterations?: number;
   tolerance?: number;
   maxDistance?: number;
-  /** Row-major 4x4 starting pose (16 numbers). */
-  initial?: number[];
+  /** Row-major 4x4 starting pose (16 numbers), or `"auto"` (meshio++ 20): the best of the 24 principal-frame candidates. */
+  initial?: number[] | "auto";
+  /** meshio++ 20: named cell regions restricting the matched pairs. */
+  sourceRegion?: string;
+  targetRegion?: string;
+  /** meshio++ 20: drop pairs beyond this multiple of the median pair distance (0 keeps all). */
+  adaptiveTrim?: number;
 }
 
 export interface RegisterMeshesResult {
@@ -2331,6 +2367,10 @@ export interface RegisterMeshesResult {
   iterations: number;
   numPairs: number;
   converged: boolean;
+  /** meshio++ 20: pairs dropped by `adaptiveTrim`; with `initial: "auto"` the RMS of each of the 24 candidates and the chosen one. */
+  numRejected?: number;
+  candidateRms?: number[];
+  chosenCandidate?: number;
   /** The source with the transform applied, only when an output extension was given. */
   bytes?: Uint8Array;
   warnings: string[];
@@ -2357,10 +2397,16 @@ export async function registerMeshes(
     const matrix = Array.from(r.matrix as ArrayLike<number>).map(Number);
     const warnings: string[] = [];
     if (r.converged !== true) warnings.push("ICP did not converge within the iteration limit; the pose is the best found, not a fit.");
+    for (const w of Array.isArray(r.warnings) ? (r.warnings as unknown[]) : []) warnings.push(String(w));
     const result: RegisterMeshesResult = {
       matrix, initialRms: Number(r.initialRms), rms: Number(r.rms), iterations: Number(r.iterations),
       numPairs: Number(r.numPairs), converged: r.converged === true, warnings,
     };
+    if (r.numRejected !== undefined) result.numRejected = Number(r.numRejected);
+    if (options.initial === "auto" && r.candidateRms) {
+      result.candidateRms = Array.from(r.candidateRms as ArrayLike<number>, Number);
+      result.chosenCandidate = Number(r.chosenCandidate);
+    }
     if (outPath) {
       const dim = source.dim as number;
       const p = source.points as ArrayLike<number>;

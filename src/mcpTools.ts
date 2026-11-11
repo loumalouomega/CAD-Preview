@@ -204,6 +204,7 @@ import { validateMergeFacets } from "./meshFacetMerge";
 import type { recognizePrimitives, PrimitiveReport } from "./primitiveReport";
 import type { fitMeshRegion } from "./meshRegionFit";
 import type { segmentMeshSurface, SegmentMeshOptions } from "./meshSegment";
+import type { measureScan, deviationScan, alignScan, surfaceSections, surfaceEdit, scanToCad } from "./meshioScan";
 import type { fitMeshToCad, FitMeshToCadOptions } from "./meshFitCad";
 import type { meshCadSurfaceModel, MeshCadSurfaceOptions } from "./meshCadSurface";
 import type { projectMeshToCad, ProjectCadOptions } from "./meshProjectCad";
@@ -381,6 +382,12 @@ export interface Pipeline {
   analyzeSurfaceGeometry: typeof analyzeSurfaceGeometry;
   meshAdjacency: typeof meshAdjacency;
   registerMeshes: typeof registerMeshes;
+  measureScan: typeof measureScan;
+  deviationScan: typeof deviationScan;
+  alignScan: typeof alignScan;
+  surfaceSections: typeof surfaceSections;
+  surfaceEdit: typeof surfaceEdit;
+  scanToCad: typeof scanToCad;
   readMeshioDataInfo: typeof readMeshioDataInfo;
   readMeshioProvenance: typeof readMeshioProvenance;
   coarsenStlBoundary: typeof coarsenStlBoundary;
@@ -2791,7 +2798,7 @@ type SurfaceToolResult = { supported: boolean; warnings: string[] } & Partial<Su
  * (pending edits baked, like meshing and export). B-rep sources have no
  * triangle skin on the headless pipeline, so they report `supported:false`.
  */
-async function resolveSurfaceStl(
+export async function resolveSurfaceStl(
   ctx: ToolContext,
   modelPath: string,
   tool: string,
@@ -2845,7 +2852,7 @@ async function runSurfaceAnalysis(
   return { supported: true, ...result, warnings: [...warnings, ...result.warnings.map((w) => envelope(w, "meshio warning"))] };
 }
 
-function requireNonNegative(name: string, v: number | undefined): void {
+export function requireNonNegative(name: string, v: number | undefined): void {
   if (v !== undefined && !(Number.isFinite(v) && v >= 0)) throw new Error(`${name} must be a non-negative number (got ${String(v)}).`);
 }
 
@@ -2871,14 +2878,29 @@ export async function findMeshIntersectionsTool(
  */
 export async function measureMeshThicknessTool(
   ctx: ToolContext,
-  params: { path: string; otherPath?: string; direction?: "auto" | "inward" | "outward"; maxDistance?: number; threshold?: number }
+  params: {
+    path: string; otherPath?: string; direction?: "auto" | "inward" | "outward"; maxDistance?: number; threshold?: number;
+    method?: "ray" | "sphere" | "cone"; coneAngle?: number; coneRays?: number; twoSided?: boolean; maxNormalDeviation?: number;
+  }
 ): Promise<SurfaceToolResult> {
   requireNonNegative("maxDistance", params.maxDistance);
   requireNonNegative("threshold", params.threshold);
+  requireNonNegative("coneAngle", params.coneAngle);
+  requireNonNegative("maxNormalDeviation", params.maxNormalDeviation);
+  if (params.method !== undefined && !["ray", "sphere", "cone"].includes(params.method)) {
+    throw new Error(`method must be ray, sphere or cone (got ${String(params.method)}).`);
+  }
+  if (params.coneRays !== undefined && !(Number.isInteger(params.coneRays) && params.coneRays >= 1)) {
+    throw new Error(`coneRays must be a positive integer (got ${String(params.coneRays)}).`);
+  }
   if (params.direction !== undefined && !["auto", "inward", "outward"].includes(params.direction)) {
     throw new Error(`direction must be auto, inward or outward (got ${String(params.direction)}).`);
   }
   const spec: SurfaceAnalysisSpec = { kind: "thickness", direction: params.direction, maxDistance: params.maxDistance, threshold: params.threshold };
+  // meshio++ 20 options are forwarded only when set, so a default call stays byte-identical.
+  for (const key of ["method", "coneAngle", "coneRays", "twoSided", "maxNormalDeviation"] as const) {
+    if (params[key] !== undefined) (spec as Record<string, unknown>)[key] = params[key];
+  }
   return runSurfaceAnalysis(ctx, "measure_mesh_thickness", params.path, params.otherPath, spec);
 }
 
@@ -3042,13 +3064,14 @@ export async function meshAdjacencyTool(
  */
 export async function registerMeshesTool(
   ctx: ToolContext,
-  params: { path: string; targetPath: string; method?: RegisterMeshesOptions["method"]; maxIterations?: number; tolerance?: number; maxDistance?: number; initial?: number[]; outputPath?: string }
+  params: { path: string; targetPath: string; method?: RegisterMeshesOptions["method"]; maxIterations?: number; tolerance?: number; maxDistance?: number; initial?: number[] | "auto"; sourceRegion?: string; targetRegion?: string; adaptiveTrim?: number; outputPath?: string }
 ): Promise<{ supported: boolean; warnings: string[]; written?: string } & Partial<Omit<RegisterMeshesResult, "bytes" | "warnings">>> {
   if (params.method !== undefined && params.method !== "point_to_point" && params.method !== "point_to_plane") throw new Error("method must be point_to_point or point_to_plane.");
   if (params.maxIterations !== undefined && !(Number.isInteger(params.maxIterations) && params.maxIterations >= 1 && params.maxIterations <= 10000)) throw new Error("maxIterations must be an integer between 1 and 10000.");
   requireNonNegative("tolerance", params.tolerance);
   requireNonNegative("maxDistance", params.maxDistance);
-  if (params.initial !== undefined && !(params.initial.length === 16 && params.initial.every(Number.isFinite))) throw new Error("initial must be 16 finite numbers (a row-major 4x4 matrix).");
+  if (params.initial !== undefined && params.initial !== "auto" && !(Array.isArray(params.initial) && params.initial.length === 16 && params.initial.every(Number.isFinite))) throw new Error('initial must be "auto" or 16 finite numbers (a row-major 4x4 matrix).');
+  requireNonNegative("adaptiveTrim", params.adaptiveTrim);
   let outputPath: string | undefined;
   if (params.outputPath !== undefined) {
     outputPath = path.resolve(params.outputPath);
@@ -3060,10 +3083,10 @@ export async function registerMeshesTool(
   if ("unsupported" in source) return { supported: false, warnings: [source.unsupported] };
   const target = await resolveSurfaceStl(ctx, params.targetPath, "register_meshes", warnings);
   if ("unsupported" in target) return { supported: false, warnings: [`targetPath: ${target.unsupported}`] };
-  const { method, maxIterations, tolerance, maxDistance, initial } = params;
+  const { method, maxIterations, tolerance, maxDistance, initial, sourceRegion, targetRegion, adaptiveTrim } = params;
   const outExtension = outputPath ? path.basename(outputPath).split(".").slice(1).join(".") || undefined : undefined;
   if (outputPath && !outExtension) throw new Error("outputPath needs a file extension (it selects the output format).");
-  const result = await ctx.pipeline.registerMeshes(source.stl, target.stl, { method, maxIterations, tolerance, maxDistance, initial }, outExtension);
+  const result = await ctx.pipeline.registerMeshes(source.stl, target.stl, { method, maxIterations, tolerance, maxDistance, initial, sourceRegion, targetRegion, adaptiveTrim }, outExtension);
   const { bytes, warnings: kernelWarnings, ...facts } = result;
   if (bytes && outputPath) await fs.writeFile(outputPath, bytes);
   return { supported: true, ...facts, ...(bytes && outputPath ? { written: outputPath } : {}), warnings: [...warnings, ...kernelWarnings.map((w) => envelope(w, "meshio warning"))] };

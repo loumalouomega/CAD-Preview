@@ -36,6 +36,18 @@ export const MESHIO_OP_IDS = [
   "geodesicDistance",
   "parameterize",
   "laplacianEigenmodes",
+  // meshio++ 20 (scan / surface editing)
+  "flipNormals",
+  "removeIslands",
+  "offsetSurface",
+  "thicken",
+  "hollow",
+  "clip",
+  "autoAlign",
+  "silhouette",
+  "thickness",
+  "colorize",
+  "exaggerate",
 ] as const;
 
 export type MeshioOpId = (typeof MESHIO_OP_IDS)[number];
@@ -95,6 +107,41 @@ export interface MeshioOpSpec {
   maxStretch?: number;
   /** `laplacianEigenmodes`: how many lowest modes. */
   numModes?: number;
+  /** meshio++ 20. `offsetSurface`/`thicken`: signed distance / wall thickness (source units); `hollow`: `distance` is the wall. */
+  distance?: number;
+  /** `thicken`: which side of the wall the shell grows on. */
+  side?: "inward" | "outward" | "both";
+  /** `offsetSurface`/`thicken`/`hollow`: smoothing passes of the offset direction. */
+  smoothIterations?: number;
+  /** `clip`: the plane is `origin` + `normal`; `keepBelow` false keeps the other side, `cap` false leaves it open. */
+  normal?: number[];
+  keepBelow?: boolean;
+  cap?: boolean;
+  /** `flipNormals`/`removeIslands`/`silhouette`/`autoAlign`: restrict to this named cell region. */
+  region?: string;
+  /** `removeIslands`: `edge`|`point` connectivity, the thresholds (relative to the whole mesh unless `relative` is false) and `dryRun`. */
+  connectivity?: "edge" | "point";
+  minDiagonal?: number;
+  minArea?: number;
+  minCells?: number;
+  relative?: boolean;
+  dryRun?: boolean;
+  /** `silhouette`: outline offset (> 0 grows it), arc rounding and `extrude` for the prism surface. */
+  clearance?: number;
+  roundAngle?: number;
+  extrude?: boolean;
+  /** `autoAlign`: how close (degrees) a facet normal must be to count as flat. */
+  angleTolerance?: number;
+  /** `thickness`: the probe, cone half-angle and two-sided casting. `maxDistance` and `direction` are shared. */
+  probe?: "ray" | "sphere" | "cone";
+  coneAngle?: number;
+  twoSided?: boolean;
+  direction?: "auto" | "inward" | "outward";
+  /** `colorize`/`exaggerate`: the point/cell data to read (`field`), the colormap and a scale. */
+  field?: string;
+  cmap?: string;
+  scale?: number;
+  clamp?: number;
 }
 
 /** Short human-readable label per operation, for the panel `<select>`. */
@@ -122,11 +169,23 @@ export const MESHIO_OP_LABELS: Record<MeshioOpId, string> = {
   geodesicDistance: "Geodesic distance from source points",
   parameterize: "UV parameterization (atlas)",
   laplacianEigenmodes: "Laplace-Beltrami eigenmodes",
+  flipNormals: "Flip normals (reverse the winding)",
+  removeIslands: "Remove islands (scan crumbs)",
+  offsetSurface: "Offset the surface along its normals",
+  thicken: "Thicken a surface into a closed shell",
+  hollow: "Hollow a closed surface (inner wall)",
+  clip: "Clip by a plane (and cap the cut)",
+  autoAlign: "Auto-align on the largest flat face / axis",
+  silhouette: "Silhouette outline along a direction",
+  thickness: "Wall thickness (ray / sphere / cone)",
+  colorize: "Colorize a field (red, green, blue data)",
+  exaggerate: "Exaggerate a deviation field",
 };
 
 /** Ops whose result is a derived mesh or a data array rather than an edit of the source's cells. */
 export const MESHIO_DATA_OPS: readonly MeshioOpId[] = [
   "prepareMetric", "convertCoordinates", "estimateNormals", "geodesicDistance", "parameterize", "laplacianEigenmodes",
+  "thickness", "colorize",
 ];
 
 /**
@@ -249,7 +308,51 @@ export function validateMeshioOpSpec(raw: unknown): MeshioOpSpec | null {
   if (maxStretch !== undefined) spec.maxStretch = maxStretch;
   const numModes = positive(r.numModes);
   if (numModes !== undefined) spec.numModes = Math.floor(numModes);
+  // meshio++ 20 parameters (same rule: a bad value is dropped, the kernel reports what it cannot honour).
+  const distance = num(r.distance);
+  if (distance !== undefined) spec.distance = distance;
+  if (r.side === "inward" || r.side === "outward" || r.side === "both") spec.side = r.side;
+  const smoothIterations = nonNegative(r.smoothIterations);
+  if (smoothIterations !== undefined) spec.smoothIterations = Math.floor(smoothIterations);
+  const normal = vec3(r.normal);
+  if (normal && normal.some((x) => x !== 0)) spec.normal = normal;
+  if (typeof r.keepBelow === "boolean") spec.keepBelow = r.keepBelow;
+  if (typeof r.cap === "boolean") spec.cap = r.cap;
+  const region = name(r.region);
+  if (region) spec.region = region;
+  if (r.connectivity === "edge" || r.connectivity === "point") spec.connectivity = r.connectivity;
+  const minDiagonal = nonNegative(r.minDiagonal);
+  if (minDiagonal !== undefined) spec.minDiagonal = minDiagonal;
+  const minArea = nonNegative(r.minArea);
+  if (minArea !== undefined) spec.minArea = minArea;
+  const minCells = nonNegative(r.minCells);
+  if (minCells !== undefined) spec.minCells = Math.floor(minCells);
+  if (typeof r.relative === "boolean") spec.relative = r.relative;
+  if (typeof r.dryRun === "boolean") spec.dryRun = r.dryRun;
+  const clearance = num(r.clearance);
+  if (clearance !== undefined) spec.clearance = clearance;
+  const roundAngle = positive(r.roundAngle);
+  if (roundAngle !== undefined) spec.roundAngle = roundAngle;
+  if (typeof r.extrude === "boolean") spec.extrude = r.extrude;
+  const angleTolerance = nonNegative(r.angleTolerance);
+  if (angleTolerance !== undefined) spec.angleTolerance = angleTolerance;
+  if (r.probe === "ray" || r.probe === "sphere" || r.probe === "cone") spec.probe = r.probe;
+  const coneAngle = positive(r.coneAngle);
+  if (coneAngle !== undefined) spec.coneAngle = coneAngle;
+  if (typeof r.twoSided === "boolean") spec.twoSided = r.twoSided;
+  if (r.direction === "auto" || r.direction === "inward" || r.direction === "outward") spec.direction = r.direction;
+  const field = name(r.field);
+  if (field) spec.field = field;
+  const cmap = name(r.cmap);
+  if (cmap) spec.cmap = cmap;
+  const scale = num(r.scale);
+  if (scale !== undefined) spec.scale = scale;
+  const clamp = nonNegative(r.clamp);
+  if (clamp !== undefined) spec.clamp = clamp;
   // Ops that cannot run without one specific argument are refused up front, like discretizeLevelset.
+  if ((op === "offsetSurface" || op === "thicken" || op === "hollow") && spec.distance === undefined) return null;
+  if (op === "clip" && (spec.normal === undefined || spec.origin === undefined)) return null;
+  if (op === "colorize" && spec.field === undefined) return null;
   if (op === "prepareMetric" && spec.arrays === undefined) return null;
   if (op === "morph" && spec.array === undefined) return null;
   if (op === "geodesicDistance" && spec.sources === undefined && spec.sourceRegion === undefined) return null;

@@ -2,9 +2,9 @@ import { describe, expect, it } from "vitest";
 import { MESHIO_OP_IDS, MESHIO_OP_LABELS, validateMeshioOpSpec } from "./meshioOps";
 
 describe("meshioOps", () => {
-  it("covers the twenty-three transform_mesh operations", () => {
+  it("covers the thirty-four transform_mesh operations", () => {
     expect([...MESHIO_OP_IDS].sort()).toEqual(
-      ["adapt", "agglomerate", "clean", "convertCells", "convertCoordinates", "convexHull", "decimate", "delaunay2d", "discretizeLevelset", "estimateNormals", "geodesicDistance", "laplacianEigenmodes", "morph", "optimizeVolume", "parameterize", "polyToTet", "prepareMetric", "reconstructSurface", "refine", "smooth", "subdivide", "tetToPoly", "untangle"].sort()
+      ["adapt", "agglomerate", "clean", "convertCells", "convertCoordinates", "convexHull", "decimate", "delaunay2d", "discretizeLevelset", "estimateNormals", "geodesicDistance", "laplacianEigenmodes", "morph", "optimizeVolume", "parameterize", "polyToTet", "prepareMetric", "reconstructSurface", "refine", "smooth", "subdivide", "tetToPoly", "untangle", "flipNormals", "removeIslands", "offsetSurface", "thicken", "hollow", "clip", "autoAlign", "silhouette", "thickness", "colorize", "exaggerate"].sort()
     );
     for (const id of MESHIO_OP_IDS) expect(MESHIO_OP_LABELS[id].length).toBeGreaterThan(0);
   });
@@ -79,5 +79,22 @@ describe("meshioOps", () => {
     expect(validateMeshioOpSpec({ op: "parameterize", padding: 0.01, maxDepth: 3, maxStretch: 0 })).toEqual({ op: "parameterize", padding: 0.01, maxDepth: 3 });
     expect(validateMeshioOpSpec({ op: "laplacianEigenmodes", numModes: 8 })).toEqual({ op: "laplacianEigenmodes", numModes: 8 });
     expect(validateMeshioOpSpec({ op: "delaunay2d" })).toEqual({ op: "delaunay2d" });
+  });
+
+  it("validates the 20.0 op parameters", () => {
+    expect(validateMeshioOpSpec({ op: "offsetSurface" })).toBeNull();
+    expect(validateMeshioOpSpec({ op: "offsetSurface", distance: -1.5, smoothIterations: 2.9 })).toEqual({ op: "offsetSurface", distance: -1.5, smoothIterations: 2 });
+    expect(validateMeshioOpSpec({ op: "thicken", distance: 1, side: "both" })).toEqual({ op: "thicken", distance: 1, side: "both" });
+    expect(validateMeshioOpSpec({ op: "thicken", distance: 1, side: "up" })).toEqual({ op: "thicken", distance: 1 });
+    // a clip needs both halves of its plane; a zero normal is no normal
+    expect(validateMeshioOpSpec({ op: "clip", origin: [0, 0, 5] })).toBeNull();
+    expect(validateMeshioOpSpec({ op: "clip", origin: [0, 0, 5], normal: [0, 0, 0] })).toBeNull();
+    expect(validateMeshioOpSpec({ op: "clip", origin: [0, 0, 5], normal: [0, 0, 1], keepBelow: false, cap: true })).toEqual({ op: "clip", origin: [0, 0, 5], normal: [0, 0, 1], keepBelow: false, cap: true });
+    expect(validateMeshioOpSpec({ op: "colorize" })).toBeNull();
+    expect(validateMeshioOpSpec({ op: "colorize", field: "deviation:distance", cmap: "viridis" })).toEqual({ op: "colorize", field: "deviation:distance", cmap: "viridis" });
+    expect(validateMeshioOpSpec({ op: "removeIslands", connectivity: "point", minCells: 3.7, dryRun: true })).toEqual({ op: "removeIslands", connectivity: "point", minCells: 3, dryRun: true });
+    expect(validateMeshioOpSpec({ op: "thickness", probe: "cone", coneAngle: 20, twoSided: true, maxDistance: 5 })).toEqual({ op: "thickness", probe: "cone", coneAngle: 20, twoSided: true, maxDistance: 5 });
+    expect(validateMeshioOpSpec({ op: "thickness", probe: "laser" })).toEqual({ op: "thickness" });
+    expect(validateMeshioOpSpec({ op: "flipNormals", region: "top" })).toEqual({ op: "flipNormals", region: "top" });
   });
 });
