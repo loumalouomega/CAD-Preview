@@ -6739,7 +6739,7 @@ test("refinement regions: typed lines post parsed regions, a bad line posts noth
   const note = () =>
     page.evaluate(() => {
       const n = document.getElementById("meshing-regions-note");
-      return n && n.getClientRects().length > 0 ? n.textContent ?? "" : "";
+      return n && !n.hidden && getComputedStyle(n).display !== "none" ? n.textContent ?? "" : "";
     });
   const base = fixture("meshingOptions").options;
 
