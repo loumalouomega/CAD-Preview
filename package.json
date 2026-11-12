@@ -581,7 +581,7 @@
     "opencascade.js": "^1.1.1",
     "three": "^0.187.0",
     "three-bvh-csg": "^0.0.18",
-    "three-mesh-bvh": "^0.9.17",
+    "three-mesh-bvh": "^0.9.18",
     "zod": "^4.6.7"
   },
   "devDependencies": {
