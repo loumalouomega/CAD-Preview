@@ -6,6 +6,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/); thi
 
 ## [Unreleased]
 
+## [3.42.0] - 2026-11-12
+
 ### Added
 
 - **Refinement regions.** `MeshOptions.refinementRegions` adds geometry-free box, sphere and cylinder size regions to the Gmsh background field (one `Ball`/`Box`/`Cylinder` field each, joined into the shared `Min`), set through `set_mesh_options` / `generate_mesh` or the new *Refinement regions* field in the FE Mesh panel. A region outside the model is reported and ignored; the octree, mesh-CAD and fTetWild engines and mesh sources refuse or warn by name; `estimate_mesh_budget` counts regions as local sizing. A sidecar without the field is unchanged. The achieved edge is about 1.4× the requested size (see `doc/gmsh-integration.md#refinement-regions`). Viewport drag handles are not built yet.
@@ -1187,7 +1189,8 @@ This release republishes v1.9.0's full changelog (below) unchanged; v1.9.0 itsel
 
 - Initial release: read-only 3D preview for CAD and mesh files (STEP, IGES, BREP, STL, OBJ, PLY, glTF) inside a VS Code custom editor, using OpenCascade.js (OCCT WASM) in the extension host for B-rep formats and Three.js in the webview for rendering.
 
-[Unreleased]: https://github.com/loumalouomega/CAD-Preview/compare/v3.41.0...HEAD
+[Unreleased]: https://github.com/loumalouomega/CAD-Preview/compare/v3.42.0...HEAD
+[3.42.0]: https://github.com/loumalouomega/CAD-Preview/compare/v3.41.0...v3.42.0
 [3.41.0]: https://github.com/loumalouomega/CAD-Preview/compare/v3.40.0...v3.41.0
 [3.40.0]: https://github.com/loumalouomega/CAD-Preview/compare/v3.39.0...v3.40.0
 [3.39.0]: https://github.com/loumalouomega/CAD-Preview/compare/v3.38.1...v3.39.0
