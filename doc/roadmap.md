@@ -297,6 +297,15 @@ One project, read at source level (no Elmer run):
 | Remeshing a deformed domain while keeping every boundary's number, and moving chains re-spaced to the first mesh's grading (`core/remesh.py`) — third pass | ElmerStudio | Already shipped in the form that matters here: `remesh_mesh` keeps named regions and Parts; grading-preserving re-spacing has no consumer without a moving-boundary solver |
 | Verifying a backend by solving the same model through two of them (`tests/test_nastran.py: test_same_model_as_elmer`) — third pass | ElmerStudio | Covered by `mcp:smoke`'s exact per-engine pins on `block.stp` (enclosed volume for the octree and octreemesh engines, triangle count and area for meshcad); no item |
 | Sketching with geometric constraints | (not offered by ElmerStudio either — it uses numeric primitives) | [Rejected](#rejected-scope), unchanged |
+| Entity numbers drawn in the Graphics window while a selection is being made (the plane sketch and the "geometry so far" shown with entity labels) — fourth pass, 2026-11-13 | ElmerStudio | [Entity id labels in the viewport](#entity-id-labels) (2.53) |
+| *Paste Selection*: a typed or pasted list of entity numbers becomes the selection — fourth pass | ElmerStudio | [Select by a typed or pasted id list](#select-by-id-list) (2.54) |
+| Settings, result-variable and material reference pages generated from the schema registry, CI failing on drift (`tools/gen_docs_reference.py`) — fourth pass | ElmerStudio | [Generated operation and tool reference](#generated-op-and-tool-reference) (2.55) |
+| The desktop's own acceptance checks run at 100–200 % display scaling, also on the packaged build (`tests/test_desktop_scaling.py`, `ui/acceptance.py`) — fourth pass | ElmerStudio | [Device-pixel-ratio acceptance for the viewer](#device-pixel-ratio-acceptance) (1.10) |
+| A labelled contact sheet of the icon set that fails on a missing name, an icon blank at 16 px or an unparsable SVG (`tools/icon_sheet.py`) — fourth pass | ElmerStudio | [Icon contact sheet and validation](#icon-contact-sheet) (1.11) |
+| COMSOL's *curvature factor* and *resolution of narrow regions* as named mesh controls (README, the wrench and busbar tutorials) — fourth pass | ElmerStudio | A phase of [Physics-calibrated size presets](#physics-calibrated-size-presets) (4.12) |
+| The modified flag follows the undo history; a failed Save As changes nothing (`tests/test_gui_state.py`) — fourth pass | ElmerStudio | Already shipped: a document is dirty exactly while its unbaked op tail is non-empty, and saves run inside the journal transaction |
+
+The fourth pass (2026-11-13) read the same commit again, since ElmerStudio's HEAD had not moved: the test and tool files no earlier pass cited. Not carried over: refusing two interfaces that write one solver variable, output-time ranges and the "overridden" marker (case authoring, in VSCode-MDPA-Preview's roadmap), and the convergence acceptance policy (KKSS's).
 
 ### SolidCraft review — 2026-11-01 {#solidcraft-review}
 
@@ -432,6 +441,22 @@ These are outcome groupings, not release numbers. Independent small items can sh
 - **What is left (S):** a `test:webview` case that completes open, select a face, apply a fillet, undo (Ctrl+Z now exists) and export using the keyboard only, with focus visible at each step.
 - **Done when:** that case passes in the dark, light and both high-contrast themes, every interactive element has an accessible name (asserted, not sampled), and the guide lists the keyboard path. KKSS runs its own axe pass over the embedded page; this item is the extension-side half.
 
+#### 1.10 Device-pixel-ratio acceptance for the viewer {#device-pixel-ratio-acceptance}
+
+*Area: Interface, Platform. Effort: S. Added 2026-11-13 from the [ElmerStudio review](#elmerstudio-review).*
+
+- **Evidence:** `test:webview` and the screenshot harness run at one device pixel ratio each (1 and 2). Nothing exercises 1.25, 1.5 or 1.75, which are what a Windows laptop and a scaled Linux desktop use, and the code that depends on the ratio is exactly the code a user notices: picking and box selection (CSS pixels against the renderer's buffer), the label overlay and annotation leaders, the orientation cube's scissor rectangle, the clip-cap stencil and the fixed `clip` rectangles of several screenshots. The sibling extension fixed a pick offset of this kind once.
+- **What to do (S):** run the framing-invariant and picking cases of `scripts/webview-test/run.mjs` at 1, 1.25, 1.5 and 2, asserting that a click on a known face centre selects that face, that a pinned dimension's label sits on its anchor within a pixel, and that the cube and the gizmo draw inside their viewports; add the ratio to the run's report.
+- **Done when:** the cases pass at all four ratios with one injected fault (an unscaled pick coordinate) shown to fail at 1.5; anything left unverified has an entry in `scripts/verification-gaps/registry.json`.
+
+#### 1.11 Icon contact sheet and validation {#icon-contact-sheet}
+
+*Area: Interface. Effort: S. Added 2026-11-13 from the [ElmerStudio review](#elmerstudio-review); the same check is queued in VSCode-MDPA-Preview and KKSS.*
+
+- **Evidence:** two generated icon sets (`src/toolbarIcons.ts`, `src/webview/opIcons.ts`) and the hand-authored `src/uiGlyphs.ts` are checked for structure (`svgIconPostProcess.test.ts`), never for what they look like at 1em. The two-tone op icons map gray fills to opacity, so an icon can be valid SVG and nearly invisible on one theme.
+- **What to do (S):** `icons/icon-sheet.mjs` renders every icon at 14, 16 and 24 px on the dark, light and both high-contrast backgrounds into one labelled sheet (generated like the screenshots, never hand-captured), and exits non-zero when an id named by `opCatalog.ts`, the toolbar or the ribbon has no icon, when an icon rasterises blank or below a lit-pixel threshold at 14 px on any theme, or when two icons render identically. An icon touching the outer pixel ring is a warning.
+- **Done when:** the check runs in CI without LaTeX, blanking one path is shown to fail it, and the sheet is linked from `icons/README.md`.
+
 ### 2. Ready product work {#tier-1-—-ready-product-work}
 
 *Admission: no kernel unknown remains. Either a probe passed and its call shapes are in `CLAUDE.md`, or the work only reuses shipped machinery. The estimate is firm.*
@@ -519,6 +544,32 @@ These are outcome groupings, not release numbers. Independent small items can sh
 - **Next increment (M):** share the metric definitions (scaled Jacobian, skewness, warpage, radius ratio) with the sibling extension as one copied module with a drift test, so both report the same number for the same mesh.
 - **Parity:** `check_mesh_quality` returns the per-Part table.
 - **Done when:** a mesh with one deliberately inverted curved hexahedron fails the gate naming its Part and element; the same exported MDPA reports the same worst scaled Jacobian in both extensions.
+
+#### 2.53 Entity id labels in the viewport {#entity-id-labels}
+
+*Area: Interface, Selection. Effort: S–M. Added 2026-11-13 from the [ElmerStudio review](#elmerstudio-review).*
+
+- **Evidence:** ids are how an agent, a Part rule, an op operand and Copy reference name an entity (`face-12`, `edge-40`), and the only way to learn one in the viewer is to select the entity and read the inspector card. ElmerStudio draws the numbers in the Graphics window while a selection is being made; VSCode-MDPA-Preview labels nodes and has element labels queued. `labelOverlay.ts` already draws text over the canvas.
+- **First useful increment (S):** a **Labels** toggle in the Select menu for the active selection mode (solids, faces, edges or points): the id at each visible entity's centre, decluttered on a screen grid and capped with a stated count, occluded entities left out by a depth test, re-projected on demand like the annotation overlay. Hovering a label highlights its entity; clicking it selects.
+- **Next increment (S–M):** labels for the entities an op form is asking for only (the pick target's kind), a "mentioned by this op" filter from the history row, and the labels baked into `render_snapshot` behind an option so an agent can ask for a picture it can read ids from.
+- **Parity:** the snapshot option; the labels themselves are view state (`ViewState`, additive, omitted when off).
+- **Done when:** on `bull.stp` every labelled face id selects that face when clicked, a renumbering op relabels on the next rebuild, and a `test:webview` case shows a hidden face has no label.
+
+#### 2.54 Select by a typed or pasted id list {#select-by-id-list}
+
+*Area: Selection. Effort: S. Added 2026-11-13 from the [ElmerStudio review](#elmerstudio-review).*
+
+- **Evidence:** Copy reference puts ids on the clipboard, an agent reports ids in chat, the hole table and the clash report list ids, and none of them can be turned back into a selection except by hand. ElmerStudio's *Paste Selection* does exactly that.
+- **What to do (S):** a field in the Select menu (and the command search: "select face-3 face-7..12") that accepts ids and ranges of one or several kinds, selects what exists, and reports what does not instead of ignoring it. A pasted Copy-reference block is accepted as it is, including its stored query, which is re-resolved through `resolve_selector` when the positional id no longer matches. The parser is a pure module with its own tests; nothing is persisted.
+- **Done when:** pasting the reference copied from one face re-selects it after an unrelated op renumbered the faces, an unknown id is named in the status line, and a locked layer's entities are refused with the existing lock message.
+
+#### 2.55 Generated operation and tool reference {#generated-op-and-tool-reference}
+
+*Area: Documentation, Agent. Effort: S–M. Added 2026-11-13 from the [ElmerStudio review](#elmerstudio-review).*
+
+- **Evidence:** `OP_PARAM_DOCS` (`src/opCommands.ts`) documents every edit op's parameters and `opCommands.test.ts` fails when one is missing, and the MCP tool schemas describe every tool; the pages in `doc/` that present them are written by hand. `docOpCoverage.ts` only checks that each op kind is *named* somewhere, so a renamed parameter or a changed default leaves the page wrong and the gate green. ElmerStudio regenerates its reference from the schema registry and fails CI when the committed pages differ.
+- **What to do (S–M):** a generator that writes marked islands into `doc/edit-ops-reference.md` (per op: parameters, types, defaults, which engines run it, whether it is topology-changing, the catalogue button and key) and into `doc/mcp-server.md` (per tool: parameters, the capability matrix row, whether it writes), from `OP_PARAM_DOCS`, `opCatalog.ts`, `BREP_ONLY_OPS`/`TOPOLOGY_CHANGING_OPS` and the registered schemas; a test in `npm test` that fails when a committed island differs from a fresh generation. Prose and worked examples stay outside the islands and keep their `parametric` fence gate.
+- **Done when:** adding a parameter to an op fails the test until the page is regenerated, the `tools/list` count in `mcp:smoke` and the generated table agree, and `docs:build` has no dead anchor.
 
 ### Probe-gated — establish feasibility before estimating
 
@@ -909,6 +960,7 @@ Section 4 was emptied and removed when its last probe closed; it is recreated he
 - **Hypothesis:** a small set of named size presets derived from the physics the mesh is for — a wavelength rule (h ≤ λ/5 at the highest frequency), a wall rule (first size and growth for a target y⁺), and a model-relative ladder (extremely fine … extremely coarse) — gives better first meshes than one `size`, and can be handed in from the case rather than typed.
 - **Evidence today:**
   - ElmerStudio's physics-controlled mesh (`core/meshing.py: SIZE_PRESETS`, nine levels as fractions of the largest side; flow halves sizes; acoustics uses c_min/(5·f_max)) and its maximum growth rate (`grow_from`, h(d) = h + (g−1)·d) are the model.
+  - ElmerStudio also reproduces two of COMSOL's named controls, a *curvature factor* (element size as a fraction of the local radius) and a *resolution of narrow regions* (a minimum number of elements across a thin gap). Here `Mesh.MeshSizeFromCurvature` is forced to 0 on every run (`loadGeometryAndApplyOptions`) and nothing counts elements across a gap, although the passage facts already measure gap widths. Both belong in the ladder as named, optional controls, and are part of this probe (added 2026-11-13).
   - Here, `estimate_mesh_budget`, `Part.meshGrading` (a distance band), `meshcadGrading` (meshcad engine only) and saved mesh presets exist; nothing derives a size from physics, and the Gmsh engine has no growth-rate limit.
   - VSCode-MDPA-Preview already estimates time steps from the mesh and the case; the reverse direction (a size from the case) belongs to its problemtypes, and its roadmap tracks that half.
 - **Probe (S):**
