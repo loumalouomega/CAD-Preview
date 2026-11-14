@@ -131,6 +131,10 @@ export function generateGeoScript(sourceName: string, options: MeshOptions): str
         ? "// engine: octreemesh — this document was volume-meshed by meshio++'s octreeMesh (graded\n" +
           "// tetrahedra or hexahedra fitted to the tessellated skin), not Gmsh's mesher, so\n" +
           "// there is no Gmsh directive that reproduces it; \"Mesh " + options.dimension + ";\" is deliberately omitted."
+      : options.engine === "meshiopp"
+        ? "// engine: meshiopp — this document was volume-meshed by meshio++'s full chain (an exact\n" +
+          "// B-rep surface or mesh skin, octree tetrahedra, then adaptVolume grading), not Gmsh's\n" +
+          "// mesher, so there is no Gmsh directive that reproduces it; \"Mesh " + options.dimension + ";\" is deliberately omitted."
       : options.engine === "octree"
         ? "// engine: octree — this document was volume-meshed by meshio++'s octree (a\n" +
           "// hex-dominant grid fitted to the tessellated skin), not Gmsh's mesher, so\n" +

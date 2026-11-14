@@ -16,7 +16,7 @@ import { sha256Hex } from "./hash";
 import type { BoundaryLayerAchieved } from "./boundaryLayerMeasurement";
 import type { HandoffFacts } from "./gmshService";
 import type { KernelVersions } from "./kernelVersions";
-import type { MeshOptions, OctreeStats, OctreeMeshStats, MeshCadStats } from "./meshOptions";
+import type { MeshOptions, OctreeStats, OctreeMeshStats, MeshCadStats, MeshioppStats } from "./meshOptions";
 import type { Part } from "./protocol";
 
 export const HANDOFF_MANIFEST_VERSION = 1;
@@ -62,6 +62,8 @@ export interface HandoffManifest {
   octreeMesh?: OctreeMeshStats;
   /** Mesh-CAD surface facts — present only for an `engineUsed: "meshcad"` export (no Parts or physical groups). */
   meshcad?: MeshCadStats;
+  /** meshio++ volume-chain facts — present only for an `engineUsed: "meshiopp"` export (no Parts or physical groups). */
+  meshiopp?: MeshioppStats;
   parts: ManifestPart[];
   coverage: {
     emptyParts: string[];
@@ -134,6 +136,11 @@ export function buildHandoffManifest(input: ManifestInput): HandoffManifest {
   if (facts.meshcad) {
     notes.push("Mesh-CAD surface — a single unnamed region: Parts, physical groups and SubModelParts are not preserved.");
   }
+  if (facts.meshiopp) {
+    notes.push(
+      `meshio++ volume chain — a single unnamed region: Parts, physical groups and SubModelParts are not preserved. ${facts.meshiopp.numTetrahedraBefore} octree tetrahedra adapted to ${facts.meshiopp.numTetrahedraAfter} (target ${facts.meshiopp.targetSize}, coarse ${facts.meshiopp.coarseSize} mm, boundary moved at most ${facts.meshiopp.maxBoundaryDeviation}).`
+    );
+  }
   if (input.scaleFactor !== 1) {
     notes.push(`Geometry and mesh sizes were scaled by ${input.scaleFactor} (mm → ${input.unit}) at export; meshOptions are recorded in native mm.`);
   }
@@ -158,6 +165,7 @@ export function buildHandoffManifest(input: ManifestInput): HandoffManifest {
     ...(facts.octree ? { octree: facts.octree } : {}),
     ...(facts.octreeMesh ? { octreeMesh: facts.octreeMesh } : {}),
     ...(facts.meshcad ? { meshcad: facts.meshcad } : {}),
+    ...(facts.meshiopp ? { meshiopp: facts.meshiopp } : {}),
     parts,
     coverage: {
       emptyParts: parts.filter((p) => p.status === "empty").map((p) => p.name),

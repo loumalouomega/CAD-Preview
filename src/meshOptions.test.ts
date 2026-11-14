@@ -4,6 +4,7 @@ import {
   octreeSummary,
   octreeMeshSummary,
   meshcadSummary,
+  meshioppSummary,
   OCTREE_MAX_LEVEL_LIMIT,
   MAX_MDPA_RANKS,
   OCTREE_MESH_LEVELS_LIMIT,
@@ -148,9 +149,11 @@ describe("validateMeshOptions", () => {
     expect(validateMeshOptions({ optimize: 1 })?.optimize).toBe(DEFAULT_MESH_OPTIONS.optimize);
   });
 
-  it("defaults engine unless it is exactly 'gmsh', 'ftetwild', 'octree', 'octreemesh' or 'meshcad'", () => {
+  it("defaults engine unless it is exactly 'gmsh', 'ftetwild', 'octree', 'octreemesh', 'meshcad' or 'meshiopp'", () => {
     expect(validateMeshOptions({ engine: "octree" })?.engine).toBe("octree");
     expect(validateMeshOptions({ engine: "octreemesh" })?.engine).toBe("octreemesh");
+    expect(validateMeshOptions({ engine: "meshiopp" })?.engine).toBe("meshiopp");
+    expect(validateMeshOptions({ engine: "meshioppAdapt" })?.engine).toBe("gmsh");
     expect(validateMeshOptions({ engine: "octreeMesh" })?.engine).toBe("gmsh");
     expect(validateMeshOptions({ engine: "ftetwild" })?.engine).toBe("ftetwild");
     expect(validateMeshOptions({ engine: "gmsh" })?.engine).toBe("gmsh");
@@ -488,6 +491,27 @@ describe("DEFAULT_MESH_OPTIONS", () => {
     expect(meshcadSummary({ ...stats, numOpenEdges: 4, numFacesBelowBound: 2, numFailed: 1 })).toBe(
       "Mesh-CAD surface: 252 tri · min angle 23.8° · 4 open edges · 2 face(s) below the angle bound · 1 face(s) failed · Parts not preserved"
     );
+  });
+
+  it("summarises a meshiopp generate in one line, naming surface closure and adaptation", () => {
+    const surface = {
+      source: "brep" as const, targetSize: 2, numTriangles: 64, numPoints: 34, numFaces: 6, numFailed: 0,
+      numOpenEdges: 0, numNonManifoldEdges: 0, numMisorientedEdges: 0, minAngleDeg: 23.79, maxAngleDeg: 105, warnings: [],
+    };
+    const stats = {
+      targetSize: 2, coarseSize: 8, levels: 2, surface,
+      numTetrahedraBefore: 231, numTetrahedraAfter: 98, numPointsBefore: 89, numPointsAfter: 42,
+      minDihedralBefore: 17.22, minDihedralAfter: 36.47, maxDihedralAfter: 123.78,
+      meanQualityBefore: 42.04, meanQualityAfter: 47.84, maxBoundaryDeviation: 8.9e-16, hausdorff: 0.007071,
+      numCollapsed: 49, numSplit: 2, numSwapped: 22, numSmoothed: 104, numRejected: 265, iterations: 5, warnings: [],
+    };
+    expect(meshioppSummary(stats)).toBe(
+      "Meshio++: 64 tri surface closed · tets 231 → 98 · dihedral 17.2° → 36.5° · boundary moved ≤ 8.90e-16 (bound 0.00707) · 5 iteration(s) · Parts not preserved"
+    );
+    const meshSource = { ...stats, surface: { source: "mesh" as const, targetSize: 2, numTriangles: 12, numPoints: 8, numOpenEdges: 0, numNonManifoldEdges: 0, numMisorientedEdges: 0, warnings: [] } };
+    expect(meshioppSummary(meshSource)).toContain("12 tri skin closed");
+    const open = { ...stats, surface: { ...surface, numOpenEdges: 3 } };
+    expect(meshioppSummary(open)).toContain("3 open edges");
   });
 
   it("defaults the fTetWild flags unless real booleans", () => {

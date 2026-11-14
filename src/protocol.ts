@@ -3,7 +3,7 @@ import type { QualityGateResult } from "./meshQualityGate";
 import type { EditOp } from "./editOps";
 import type { ParamVariable } from "./editVariables";
 import type { Configuration } from "./configurations";
-import type { MeshOptions, MeshGrading, MeshStructured, MeshBoundaryLayer, MeshEngine, OctreeStats, OctreeMeshStats, MeshCadStats } from "./meshOptions";
+import type { MeshOptions, MeshGrading, MeshStructured, MeshBoundaryLayer, MeshEngine, OctreeStats, OctreeMeshStats, MeshCadStats, MeshioppStats } from "./meshOptions";
 import type { MeshExportFormatId } from "./meshExportFormats";
 import type { ViewerDefaults } from "./viewerDefaults";
 import type { MassProperties } from "./massProperties";
@@ -640,6 +640,10 @@ export type HostToWebview =
       /** Mesh-CAD surface facts (resolved size, closure counts, angle bounds,
        * refinement/bound facts) when the meshcad engine ran; absent otherwise. */
       meshcad?: MeshCadStats;
+      /** meshio++ volume-chain facts (surface closure, before/after tet and
+       * quality counts, boundary deviation) when the meshiopp engine ran;
+       * absent otherwise. */
+      meshiopp?: MeshioppStats;
       /** Slave→master segments of the hanging-node constraints (base64
        * `Uint32Array` index pairs into `positions`) — present only for the octree
        * engine's `"hanging"` transition. The true counts are in `octree.constraints`. */

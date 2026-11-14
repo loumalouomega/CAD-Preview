@@ -161,6 +161,10 @@ export function estimateMeshBudget(input: MeshBudgetInput): MeshBudget {
     downgrade("uncertain");
     assumptions.push("Octree-mesh sizes by octreeMeshMaxSize and octreeMeshLevels, not by the target size — this estimate does not model it.");
   }
+  if ((input.engine ?? "gmsh") === "meshiopp") {
+    downgrade("uncertain");
+    assumptions.push("meshio++ meshes its target size but grades the interior up to sizeMax × 2^octreeMeshLevels, and adaptation can add or remove tetrahedra — this uniform estimate does not model it.");
+  }
   if (input.localSizing) {
     downgrade("uncertain");
     assumptions.push("Part sizing/grading refines locally — the uniform estimate is a lower bound.");

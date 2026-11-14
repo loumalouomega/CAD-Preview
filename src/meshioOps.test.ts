@@ -2,9 +2,9 @@ import { describe, expect, it } from "vitest";
 import { MESHIO_OP_IDS, MESHIO_OP_LABELS, validateMeshioOpSpec } from "./meshioOps";
 
 describe("meshioOps", () => {
-  it("covers the thirty-four transform_mesh operations", () => {
+  it("covers the thirty-five transform_mesh operations", () => {
     expect([...MESHIO_OP_IDS].sort()).toEqual(
-      ["adapt", "agglomerate", "clean", "convertCells", "convertCoordinates", "convexHull", "decimate", "delaunay2d", "discretizeLevelset", "estimateNormals", "geodesicDistance", "laplacianEigenmodes", "morph", "optimizeVolume", "parameterize", "polyToTet", "prepareMetric", "reconstructSurface", "refine", "smooth", "subdivide", "tetToPoly", "untangle", "flipNormals", "removeIslands", "offsetSurface", "thicken", "hollow", "clip", "autoAlign", "silhouette", "thickness", "colorize", "exaggerate"].sort()
+      ["adapt", "adaptVolume", "agglomerate", "clean", "convertCells", "convertCoordinates", "convexHull", "decimate", "delaunay2d", "discretizeLevelset", "estimateNormals", "geodesicDistance", "laplacianEigenmodes", "morph", "optimizeVolume", "parameterize", "polyToTet", "prepareMetric", "reconstructSurface", "refine", "smooth", "subdivide", "tetToPoly", "untangle", "flipNormals", "removeIslands", "offsetSurface", "thicken", "hollow", "clip", "autoAlign", "silhouette", "thickness", "colorize", "exaggerate"].sort()
     );
     for (const id of MESHIO_OP_IDS) expect(MESHIO_OP_LABELS[id].length).toBeGreaterThan(0);
   });
@@ -96,5 +96,27 @@ describe("meshioOps", () => {
     expect(validateMeshioOpSpec({ op: "thickness", probe: "cone", coneAngle: 20, twoSided: true, maxDistance: 5 })).toEqual({ op: "thickness", probe: "cone", coneAngle: 20, twoSided: true, maxDistance: 5 });
     expect(validateMeshioOpSpec({ op: "thickness", probe: "laser" })).toEqual({ op: "thickness" });
     expect(validateMeshioOpSpec({ op: "flipNormals", region: "top" })).toEqual({ op: "flipNormals", region: "top" });
+  });
+
+  it("validates the 20.1 adaptVolume parameters", () => {
+    expect(validateMeshioOpSpec({ op: "adaptVolume" })).toEqual({ op: "adaptVolume" });
+    expect(validateMeshioOpSpec({
+      op: "adaptVolume", hmin: 0.1, hmax: 2, hausd: 0.05, hausdRelative: true, boundarySizing: "geometry",
+      qualityMetric: "amips", qualityMin: 0.2, maxIterations: 30.9, targetMinDihedral: 15,
+      sizeArray: "size", curvatureSizing: true, featureAngle: 45, cornerAngle: 60, maxNormalDeviation: 20,
+      preserveBoundary: false, preserveFeatures: true, collapse: false, split: true, swap: true, smooth: true,
+    })).toEqual({
+      op: "adaptVolume", hmin: 0.1, hmax: 2, hausd: 0.05, hausdRelative: true, boundarySizing: "geometry",
+      qualityMetric: "amips", qualityMin: 0.2, maxIterations: 30, targetMinDihedral: 15,
+      sizeArray: "size", curvatureSizing: true, featureAngle: 45, cornerAngle: 60, maxNormalDeviation: 20,
+      preserveBoundary: false, preserveFeatures: true, collapse: false, split: true, swap: true, smooth: true,
+    });
+    // A zero Hausdorff bound is no bound: refused, like adapt.
+    expect(validateMeshioOpSpec({ op: "adaptVolume", hausd: 0 })).toBeNull();
+    // Size bounds, angles and enum strings are dropped when malformed, never fatal.
+    expect(validateMeshioOpSpec({
+      op: "adaptVolume", hmin: 0, hmax: -2, qualityMetric: "max_dihedral", boundarySizing: "auto",
+      hausdRelative: "yes", targetMinDihedral: 95, featureAngle: 200, cornerAngle: -1, maxNormalDeviation: 91,
+    })).toEqual({ op: "adaptVolume" });
   });
 });

@@ -34,7 +34,7 @@ import * as path from "path";
 // the "cjs" output, which Node resolves at actual runtime (honoring the
 // package's "require" export condition), sidestepping both problems above.
 import initialize from "@loumalouomega/gmsh-wasm";
-import { boundaryLayerAlgorithmProblem, gmshShapeOptions, SIZE_MAX_SENTINEL, DEFAULT_MESH_OPTIONS, type MeshOptions, type MeshEngine, type OctreeStats, type OctreeMeshStats, type MeshCadStats } from "./meshOptions";
+import { boundaryLayerAlgorithmProblem, gmshShapeOptions, SIZE_MAX_SENTINEL, DEFAULT_MESH_OPTIONS, type MeshOptions, type MeshEngine, type OctreeStats, type OctreeMeshStats, type MeshCadStats, type MeshioppStats } from "./meshOptions";
 import { measureBoundaryLayerRows, type BoundaryLayerAchieved, type BoundaryLayerWall } from "./boundaryLayerMeasurement";
 import { summarizeQuality, type QualitySummary } from "./meshQuality";
 import type { Part, MeshElementGroup } from "./protocol";
@@ -59,6 +59,7 @@ import { tetrahedralize, tetsToMsh41 } from "./ftetwildService";
 import { octreeMesh, brepSkinStlBytes } from "./octreeService";
 import { octreeMeshVolume } from "./octreeMeshService";
 import { meshcadSurfaceMesh } from "./meshcadService";
+import { meshioppVolume } from "./meshioppService";
 import type { MeshParseFormat } from "./fileRouter";
 import type { GltfExternalBuffers } from "./gltfParser";
 import {
@@ -290,6 +291,8 @@ export interface MeshResult {
   octreeMesh?: OctreeMeshStats;
   /** Mesh-CAD surface facts — only set when `engineUsed === "meshcad"`. */
   meshcad?: MeshCadStats;
+  /** meshio++ volume-chain facts — only set when `engineUsed === "meshiopp"`. */
+  meshiopp?: MeshioppStats;
 }
 
 /** A highlight overlay of the worst-quality elements, closing the
@@ -523,6 +526,19 @@ function effectiveEngine(input: MeshGenerationInput, options: MeshOptions): { en
     }
     return { engine: "octreemesh", warnings: [] };
   }
+  if (options.engine === "meshiopp") {
+    // The B-rep route meshes exact faces; the mesh route uses the source skin.
+    // Both feed the octree, so any 3D source is valid.
+    if (options.dimension !== 3) {
+      return {
+        engine: "gmsh",
+        warnings: [
+          `Engine "meshiopp" was requested but dimension is ${options.dimension} — the meshio++ volume chain only produces 3D tetrahedral meshes, so Gmsh was used instead.`,
+        ],
+      };
+    }
+    return { engine: "meshiopp", warnings: [] };
+  }
   if (options.engine !== "ftetwild") return { engine: "gmsh", warnings: [] };
   if (input.kind === "brep") {
     return {
@@ -592,6 +608,35 @@ export function meshcadUnsupportedOptions(options: MeshOptions, parts: readonly 
   if ((options.refinementRegions?.length ?? 0) > 0) refuse.push("refinementRegions (mesh-cad sizes by Max size, curvature deviation and cells-across-gaps)");
   if (options.sizeMin !== DEFAULT_MESH_OPTIONS.sizeMin) ignored.push(`sizeMin ${options.sizeMin}`);
   if (options.optimize !== DEFAULT_MESH_OPTIONS.optimize && options.optimize !== "none") ignored.push(`optimize "${options.optimize}"`);
+  if (parts.length > 0) {
+    ignored.push(`${parts.length} Part(s) — names, sizes, grading, structured divisions, boundary layers and physical groups are not preserved`);
+  }
+  return { refuse, ignored };
+}
+
+/**
+ * What `engine: "meshiopp"` cannot honor — same contract as
+ * {@link octreeUnsupportedOptions}. Refused: requests that would hand back a
+ * mesh that quietly differs from what was asked for (quadratic or recombined
+ * output, periodic faces, view-driven sizing/refinement). Ignored with a
+ * warning: settings that only lose their effect (Gmsh's optimizer, `sizeMin`,
+ * the other octree engine's sizing knobs and Part settings). `sizeMax` and
+ * `octreeMeshLevels` ARE meaningful: they are the adapt chain's finest and
+ * coarsest sizes.
+ */
+export function meshioppUnsupportedOptions(options: MeshOptions, parts: readonly Part[]): { refuse: string[]; ignored: string[] } {
+  const refuse: string[] = [];
+  const ignored: string[] = [];
+  if (options.elementOrder !== DEFAULT_MESH_OPTIONS.elementOrder) refuse.push(`elementOrder ${options.elementOrder} (meshiopp adapts linear tetrahedra only)`);
+  if (options.elementShape !== DEFAULT_MESH_OPTIONS.elementShape) refuse.push(`elementShape "${options.elementShape}" (meshiopp always emits tetrahedra)`);
+  if ((options.periodic?.length ?? 0) > 0) refuse.push("periodic (meshiopp has no face correlation)");
+  if ((options.sizeField?.length ?? 0) > 0) refuse.push("sizeField (meshiopp sizes by sizeMax + octreeMeshLevels only)");
+  if ((options.refinementRegions?.length ?? 0) > 0) refuse.push("refinementRegions (meshiopp sizes by sizeMax + octreeMeshLevels only)");
+  if (options.sizeMin !== DEFAULT_MESH_OPTIONS.sizeMin) ignored.push(`sizeMin ${options.sizeMin}`);
+  if (options.optimize !== DEFAULT_MESH_OPTIONS.optimize && options.optimize !== "none") ignored.push(`optimize "${options.optimize}"`);
+  if (options.octreeMeshMaxSize !== DEFAULT_MESH_OPTIONS.octreeMeshMaxSize) ignored.push(`octreeMeshMaxSize ${options.octreeMeshMaxSize} (sizeMax is the target)`);
+  if (options.octreeMeshOutput !== DEFAULT_MESH_OPTIONS.octreeMeshOutput) ignored.push(`octreeMeshOutput "${options.octreeMeshOutput}" (meshiopp emits tetrahedra)`);
+  if (options.octreeMeshHexGrading === "graded") ignored.push('octreeMeshHexGrading "graded" (meshiopp emits tetrahedra)');
   if (parts.length > 0) {
     ignored.push(`${parts.length} Part(s) — names, sizes, grading, structured divisions, boundary layers and physical groups are not preserved`);
   }
@@ -671,10 +716,40 @@ async function populateMeshedModel(
   input: MeshGenerationInput,
   options: MeshOptions,
   parts: Part[]
-): Promise<{ tmpPath: string | null; groupMaps: PartGroupMaps | null; engineUsed: MeshEngine; warnings: string[]; conformalApplied: boolean; octree?: OctreeStats; octreeMpc?: OctreeMpc; octreeMesh?: OctreeMeshStats; meshcad?: MeshCadStats }> {
+): Promise<{ tmpPath: string | null; groupMaps: PartGroupMaps | null; engineUsed: MeshEngine; warnings: string[]; conformalApplied: boolean; octree?: OctreeStats; octreeMpc?: OctreeMpc; octreeMesh?: OctreeMeshStats; meshcad?: MeshCadStats; meshiopp?: MeshioppStats }> {
   const { engine, warnings } = effectiveEngine(input, options);
   if (options.prismLayers && engine !== "meshcad") {
     warnings.push(`Ignored: prismLayers only apply under engine "meshcad" with a B-rep source (this run used "${engine}").`);
+  }
+
+  if (engine === "meshiopp") {
+    const unsupported = meshioppUnsupportedOptions(options, parts);
+    if (unsupported.refuse.length > 0) {
+      throw new Error(
+        `engine "meshiopp" cannot honor: ${unsupported.refuse.join("; ")}. Remove them or switch the engine to "gmsh".`
+      );
+    }
+    for (const note of unsupported.ignored) warnings.push(`Ignored under engine "meshiopp": ${note}.`);
+    const { mshText, stats } = await meshioppVolume(
+      input.kind === "brep" ? { kind: "brep", stepBytes: input.stepBytes } : { kind: "mesh", stlBytes: input.stlBytes },
+      {
+        sizeMax: options.sizeMax,
+        levels: options.octreeMeshLevels,
+        minAngle: options.meshcadMinAngle,
+        smoothIterations: options.meshcadSmoothIterations,
+        curvatureDeviation: options.meshcadCurvatureDeviation,
+        cellsAcrossGaps: options.meshcadCellsAcrossGaps,
+        grading: options.meshcadGrading,
+      }
+    );
+    gmsh.clear();
+    gmsh.model.add(`model-${++_modelCounter}`);
+    const tmpPath = "/i.msh";
+    gmsh.FS.writeFile(tmpPath, mshText);
+    gmsh.merge(tmpPath);
+    gmsh.option.setNumber("Mesh.SaveAll", 1);
+    for (const w of stats.warnings) warnings.push(/^meshio\+\+:/i.test(w) ? w : `Meshio++: ${w}`);
+    return { tmpPath, groupMaps: null, engineUsed: "meshiopp", warnings, conformalApplied: false, meshiopp: stats };
   }
 
   if (engine === "meshcad") {
@@ -986,6 +1061,7 @@ export async function generateMesh(
       ...(loaded.octree ? { octree: loaded.octree } : {}),
       ...(loaded.octreeMesh ? { octreeMesh: loaded.octreeMesh } : {}),
       ...(loaded.meshcad ? { meshcad: loaded.meshcad } : {}),
+      ...(loaded.meshiopp ? { meshiopp: loaded.meshiopp } : {}),
     };
   } finally {
     if (tmpPath) {
@@ -1114,6 +1190,11 @@ export async function exportGeoUnrolled(
   if (engine === "octree") {
     throw new Error(
       '.geo_unrolled export is not available under engine "octree" — it represents Gmsh\'s own geometry import, and the octree never runs one. Export a mesh format (e.g. .msh) instead, or switch the engine to "gmsh".'
+    );
+  }
+  if (engine === "meshiopp") {
+    throw new Error(
+      '.geo_unrolled export is not available under engine "meshiopp" — it represents Gmsh\'s own geometry import, and the meshio++ volume chain never runs one. Export a mesh format (e.g. .msh) instead, or switch the engine to "gmsh".'
     );
   }
 
@@ -1352,6 +1433,8 @@ export interface HandoffFacts {
   octreeMesh?: OctreeMeshStats;
   /** Mesh-CAD surface facts — only set when `engineUsed === "meshcad"`. */
   meshcad?: MeshCadStats;
+  /** meshio++ volume-chain facts — only set when `engineUsed === "meshiopp"`. */
+  meshiopp?: MeshioppStats;
 }
 
 /**
@@ -1434,6 +1517,7 @@ export async function computeHandoffFacts(
       ...(loaded.octree ? { octree: loaded.octree } : {}),
       ...(loaded.octreeMesh ? { octreeMesh: loaded.octreeMesh } : {}),
       ...(loaded.meshcad ? { meshcad: loaded.meshcad } : {}),
+      ...(loaded.meshiopp ? { meshiopp: loaded.meshiopp } : {}),
     };
   } finally {
     if (tmpPath) {

@@ -563,6 +563,45 @@ const SHOTS = [
     target: { sel: "#meshing-panel" },
   },
   {
+    file: "fe-mesh-meshiopp.png",
+    setup: async (page) => {
+      await populate(page);
+      // Pick the meshio++ volume chain through the real select, then answer the
+      // Generate request with the fixture plus the engine's own facts (the
+      // block.stp probe pins) so the status line documents the readout.
+      await page.evaluate(() => {
+        for (const el of document.querySelectorAll("#meshing-panel select")) {
+          if ([...el.options].some((o) => o.value === "meshiopp")) {
+            el.value = "meshiopp";
+            el.dispatchEvent(new Event("change", { bubbles: true }));
+            return;
+          }
+        }
+        throw new Error("engine select not found");
+      });
+      const sentBefore = await page.evaluate(() => window.__sent?.length ?? 0);
+      await page.evaluate(() => document.getElementById("meshing-generate")?.click());
+      await page.waitForFunction((n) => window.__sent?.slice(n).some((m) => m.type === "meshingGenerate"), sentBefore, { timeout: 5000 });
+      const requestId = await page.evaluate((n) => window.__sent.slice(n).findLast((m) => m.type === "meshingGenerate").requestId, sentBefore);
+      const surface = { source: "brep", targetSize: 2, numTriangles: 64, numPoints: 34, numFaces: 6, numFailed: 0, numOpenEdges: 0, numNonManifoldEdges: 0, numMisorientedEdges: 0, minAngleDeg: 23.79, maxAngleDeg: 105, warnings: [] };
+      await post(page, {
+        ...fixture("meshingResult"),
+        requestId,
+        meshiopp: {
+          targetSize: 2, coarseSize: 8, levels: 2, surface,
+          numTetrahedraBefore: 231, numTetrahedraAfter: 98, numPointsBefore: 89, numPointsAfter: 42,
+          minDihedralBefore: 17.22, minDihedralAfter: 36.47, maxDihedralAfter: 123.78,
+          meanQualityBefore: 42.04, meanQualityAfter: 47.84, maxBoundaryDeviation: 8.9e-16, hausdorff: 0.007071,
+          numCollapsed: 49, numSplit: 2, numSwapped: 22, numSmoothed: 104, numRejected: 265, iterations: 5, warnings: [],
+        },
+      });
+      await post(page, { type: "meshingJobSettled", requestId });
+      await page.click("#edits-header > .panel-chevron");
+      await sleep(250);
+    },
+    target: { sel: "#meshing-panel" },
+  },
+  {
     file: "fe-mesh-advanced.png",
     setup: async (page) => {
       await populate(page);
