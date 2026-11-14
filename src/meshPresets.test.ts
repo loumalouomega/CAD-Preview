@@ -71,6 +71,11 @@ describe("parseMeshPresetsJson", () => {
     expect(parseMeshPresetsJson(text).hex.engine).toBe("octree");
   });
 
+  it("keeps a pinned meshiopp engine instead of falling back to gmsh", () => {
+    const text = JSON.stringify({ version: 1, presets: { vol: { name: "vol", engine: "meshiopp", options: {} } } });
+    expect(parseMeshPresetsJson(text).vol.engine).toBe("meshiopp");
+  });
+
   it("prefers the entry's own name field over its object key", () => {
     const text = JSON.stringify({
       version: 1,
@@ -163,6 +168,22 @@ describe("inapplicablePresetFields", () => {
     const withHanging = { ...DEFAULT_MESH_OPTIONS, octreeTransition: "hanging" as const, mpcVariables: ["TEMPERATURE"] };
     expect(inapplicablePresetFields({ ...gmshPreset, options: withHanging })).toEqual(["octreeTransition", "mpcVariables"]);
     expect(inapplicablePresetFields({ ...gmshPreset, engine: "octree", options: withHanging })).toEqual([]);
+  });
+
+  it("keeps meshiopp's own sizing controls live and lists only foreign fields", () => {
+    const meshiopp: MeshPreset = {
+      ...gmshPreset,
+      name: "volume",
+      engine: "meshiopp",
+      options: { ...DEFAULT_MESH_OPTIONS, sizeMax: 1.5, octreeMeshLevels: 3, meshcadGrading: 1.6 },
+    };
+    // sizeMax, octreeMeshLevels and the meshcad sizing controls are all used by meshiopp.
+    expect(inapplicablePresetFields(meshiopp)).toEqual([]);
+    const foreign: MeshPreset = {
+      ...meshiopp,
+      options: { ...DEFAULT_MESH_OPTIONS, ftetwildCoarsen: true, octreeMaxLevel: 5, prismLayers: { numLayers: 2, firstHeight: 0.1, growth: 1.2 } },
+    };
+    expect(inapplicablePresetFields(foreign).sort()).toEqual(["ftetwildCoarsen", "octreeMaxLevel", "prismLayers"]);
   });
 
   it("is silent when every engine-foreign field is at its default", () => {

@@ -1,5 +1,5 @@
 import { getMeshio, wrapMeshioFault } from "./meshioService";
-import { buildMeshCadCall, readCadInfo, summarizeMeshCad, type RawMeshCadResult } from "./meshCadSurface";
+import { buildMeshCadCall, readCadInfo, summarizeMeshCad, type MeshCadSurfaceReport, type RawMeshCadResult } from "./meshCadSurface";
 import { SIZE_MAX_SENTINEL, type MeshCadStats, type MeshPrismLayers } from "./meshOptions";
 import { buildPrismCall, summarizePrismLayers, wedgesToMsh41 } from "./prismLayers";
 
@@ -123,14 +123,25 @@ function bboxDiagonal(points: ArrayLike<number>): number {
 
 /**
  * Runs meshio++'s `meshCadSurface` over the STEP bytes of a B-rep (edits
- * already applied by the caller) and returns the MSH 4.1 text plus the facts
- * the report carries. Throws a plain error for a file with no B-rep side
- * channel, an unresolvable size, a tool-level refusal or an empty result (none
- * of those reset the kernel); a WASM abort resets the meshio++ singleton via
- * `wrapMeshioFault`. A face that cannot be meshed is NOT an error: it is
- * counted in `stats.numFailed` and warned about, and the surface is open there.
+ * already applied) and returns the in-memory surface plus the facts the report
+ * carries. This is the shared surface stage of `meshcadSurfaceMesh` (which
+ * serializes it) and the `meshiopp` engine (which feeds it straight to the
+ * octree, with no STL round-trip). The MEMFS path is unlinked before return.
  */
-export async function meshcadSurfaceMesh(stepBytes: Uint8Array, params: MeshCadEngineParams): Promise<MeshCadEngineResult> {
+export interface MeshCadSurfaceData {
+  points: ArrayLike<number>;
+  blocks: SurfaceBlock[];
+  report: MeshCadSurfaceReport;
+  targetSize: number;
+  order: 1 | 2 | 3;
+  warnings: string[];
+  /** The raw embind mesh the surface came in — `boundaryLayer` reads its
+   * `dim` and side channels, so the prism post-pass keeps exactly the input
+   * it had before this stage was extracted. */
+  mesh: RawMeshCadResult["mesh"];
+}
+
+export async function meshcadSurfaceData(stepBytes: Uint8Array, params: MeshCadEngineParams): Promise<MeshCadSurfaceData> {
   const m = await getMeshio();
   const path = "/mce.stp"; // ≤10-char MEMFS path, like every staged meshio++ file
   m.FS.writeFile(path, stepBytes);
@@ -164,42 +175,7 @@ export async function meshcadSurfaceMesh(stepBytes: Uint8Array, params: MeshCadE
         `mesh-cad produced no triangles (${report.numFailed} of ${report.numFaces} faces failed${report.faces[0] ? `: ${report.faces[0].status} — ${report.faces[0].reason}` : ""}); try a smaller Max size.`
       );
     }
-    let prism: ReturnType<typeof summarizePrismLayers> | undefined;
-    let mshText: string;
-    if (params.prismLayers) {
-      if (order !== 1) throw new Error("mesh-cad: prism layers grow over linear triangles — set elementOrder 1.");
-      const { call: layerCall, firstHeight, numLayers, growth } = buildPrismCall(params.prismLayers);
-      const layered = (m as unknown as { boundaryLayer(mesh: unknown, o: unknown): Record<string, unknown> & { mesh: { points: ArrayLike<number>; cells: SurfaceBlock[] } } }).boundaryLayer(r.mesh, layerCall);
-      prism = summarizePrismLayers(layered, { firstHeight, numLayers, growth });
-      if (prism.numCells === 0) throw new Error(`mesh-cad: prism layers produced no cells${prism.warnings[0] ? ` (${prism.warnings[0]})` : ""} — the surface must be a closed triangle skin.`);
-      mshText = wedgesToMsh41(layered.mesh.points, layered.mesh.cells);
-    } else {
-      mshText = surfaceToMsh41(r.mesh.points, blocks);
-    }
-    return {
-      mshText,
-      stats: {
-        targetSize,
-        order,
-        numFaces: report.numFaces,
-        numFailed: report.numFailed,
-        numTriangles: report.numTriangles,
-        numPoints: report.numPoints,
-        numOpenEdges: report.numOpenEdges,
-        numNonManifoldEdges: report.numNonManifoldEdges,
-        numMisorientedEdges: report.numMisorientedEdges,
-        minAngleDeg: report.minAngleDeg,
-        maxAngleDeg: report.maxAngleDeg,
-        minEdge: report.minEdge,
-        maxEdge: report.maxEdge,
-        numRefinementPoints: report.numRefinementPoints,
-        numFacesBelowBound: report.numFacesBelowBound,
-        numSmoothed: report.numSmoothed,
-        numCurvedStraightened: report.numCurvedStraightened,
-        ...(prism ? { prismLayers: prism } : {}),
-        warnings: prism ? [...report.warnings, ...prism.warnings] : report.warnings,
-      },
-    };
+    return { points: r.mesh.points, blocks, report, targetSize, order, warnings: report.warnings, mesh: r.mesh };
   } catch (err) {
     throw wrapMeshioFault(err);
   } finally {
@@ -209,4 +185,79 @@ export async function meshcadSurfaceMesh(stepBytes: Uint8Array, params: MeshCadE
       /* ignore */
     }
   }
+}
+
+/**
+ * Runs meshio++'s `meshCadSurface` over the STEP bytes of a B-rep (edits
+ * already applied by the caller) and returns the MSH 4.1 text plus the facts
+ * the report carries. Throws a plain error for a file with no B-rep side
+ * channel, an unresolvable size, a tool-level refusal or an empty result (none
+ * of those reset the kernel); a WASM abort resets the meshio++ singleton via
+ * `wrapMeshioFault`. A face that cannot be meshed is NOT an error: it is
+ * counted in `stats.numFailed` and warned about, and the surface is open there.
+ */
+export async function meshcadSurfaceMesh(stepBytes: Uint8Array, params: MeshCadEngineParams): Promise<MeshCadEngineResult> {
+  const { points, blocks, report, targetSize, order, mesh } = await meshcadSurfaceData(stepBytes, params);
+  if (params.prismLayers) {
+    const m = await getMeshio();
+    try {
+      if (order !== 1) throw new Error("mesh-cad: prism layers grow over linear triangles — set elementOrder 1.");
+      const { call: layerCall, firstHeight, numLayers, growth } = buildPrismCall(params.prismLayers);
+      const layered = (m as unknown as { boundaryLayer(mesh: unknown, o: unknown): Record<string, unknown> & { mesh: { points: ArrayLike<number>; cells: SurfaceBlock[] } } }).boundaryLayer(
+        mesh,
+        layerCall
+      );
+      const prism = summarizePrismLayers(layered, { firstHeight, numLayers, growth });
+      if (prism.numCells === 0) throw new Error(`mesh-cad: prism layers produced no cells${prism.warnings[0] ? ` (${prism.warnings[0]})` : ""} — the surface must be a closed triangle skin.`);
+      return {
+        mshText: wedgesToMsh41(layered.mesh.points, layered.mesh.cells),
+        stats: {
+          targetSize,
+          order,
+          numFaces: report.numFaces,
+          numFailed: report.numFailed,
+          numTriangles: report.numTriangles,
+          numPoints: report.numPoints,
+          numOpenEdges: report.numOpenEdges,
+          numNonManifoldEdges: report.numNonManifoldEdges,
+          numMisorientedEdges: report.numMisorientedEdges,
+          minAngleDeg: report.minAngleDeg,
+          maxAngleDeg: report.maxAngleDeg,
+          minEdge: report.minEdge,
+          maxEdge: report.maxEdge,
+          numRefinementPoints: report.numRefinementPoints,
+          numFacesBelowBound: report.numFacesBelowBound,
+          numSmoothed: report.numSmoothed,
+          numCurvedStraightened: report.numCurvedStraightened,
+          prismLayers: prism,
+          warnings: [...report.warnings, ...prism.warnings],
+        },
+      };
+    } catch (err) {
+      throw wrapMeshioFault(err);
+    }
+  }
+  return {
+    mshText: surfaceToMsh41(points, blocks),
+    stats: {
+      targetSize,
+      order,
+      numFaces: report.numFaces,
+      numFailed: report.numFailed,
+      numTriangles: report.numTriangles,
+      numPoints: report.numPoints,
+      numOpenEdges: report.numOpenEdges,
+      numNonManifoldEdges: report.numNonManifoldEdges,
+      numMisorientedEdges: report.numMisorientedEdges,
+      minAngleDeg: report.minAngleDeg,
+      maxAngleDeg: report.maxAngleDeg,
+      minEdge: report.minEdge,
+      maxEdge: report.maxEdge,
+      numRefinementPoints: report.numRefinementPoints,
+      numFacesBelowBound: report.numFacesBelowBound,
+      numSmoothed: report.numSmoothed,
+      numCurvedStraightened: report.numCurvedStraightened,
+      warnings: report.warnings,
+    },
+  };
 }

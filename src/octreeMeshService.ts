@@ -32,6 +32,10 @@ export interface OctreeMeshParams {
   maxSize: number;
   /** Refinement levels below `maxSize` (smallest leaf = maxSize / 2^levels). */
   levels: number;
+  /** Override the resolved smallest leaf edge. The `meshiopp` engine passes its
+   * target here so the octree's finest size is the target while `maxSize` is
+   * the coarsest size adaptation may grow to. */
+  minSize?: number;
 }
 
 /** Leaf-count and output-cell ceilings handed to meshio++ so an over-fine
@@ -82,10 +86,46 @@ export async function octreeMeshVolume(stlBytes: Uint8Array, params: OctreeMeshP
   m.FS.writeFile(path, stlBytes);
   try {
     const skin = m.readMesh(path, "stl");
-    const diagonal = bboxDiagonal(skin.points as ArrayLike<number>);
+    return await octreeMeshVolumeFromSkin(skin as unknown as OctreeSkin, params);
+  } catch (err) {
+    throw wrapMeshioFault(err);
+  } finally {
+    try {
+      m.FS.unlink(path);
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
+/** A triangle skin in meshio++'s own vocabulary — what `octreeMesh` consumes. */
+export interface OctreeSkin {
+  points: ArrayLike<number>;
+  cells: ReadonlyArray<{ type: string; data: ArrayLike<number | bigint> }>;
+  [k: string]: unknown;
+}
+
+export interface OctreeMeshRawResult {
+  mesh: OctreeSkin;
+  stats: OctreeMeshStats;
+}
+
+/**
+ * The skin-in core of {@link octreeMeshVolume}, shared with the `meshiopp`
+ * engine so an in-memory surface (a `meshCadSurface` result, or a source mesh
+ * already read) never round-trips through STL bytes or host OCCT. Sizes are
+ * resolved from the skin's own bounding box exactly as the STL route does,
+ * unless `params.minSize` overrides the smallest leaf.
+ */
+export async function octreeMeshRawFromSkin(skin: OctreeSkin, params: OctreeMeshParams): Promise<OctreeMeshRawResult> {
+  const m = await getMeshio();
+  try {
+    const diagonal = bboxDiagonal(skin.points);
     if (!(diagonal > 0)) throw new Error("octree-mesh: the skin is empty or degenerate.");
-    const { maxSize, minSize } = octreeMeshSizes(diagonal, params.maxSize, params.levels);
-    const r = m.octreeMesh(skin, {
+    const sizes = octreeMeshSizes(diagonal, params.maxSize, params.levels);
+    const maxSize = sizes.maxSize;
+    const minSize = params.minSize !== undefined && params.minSize > 0 ? Math.min(params.minSize, maxSize) : sizes.minSize;
+    const r = m.octreeMesh(skin as never, {
       output: params.output,
       maxSize,
       minSize,
@@ -101,7 +141,7 @@ export async function octreeMeshVolume(stlBytes: Uint8Array, params: OctreeMeshP
       );
     }
     return {
-      mshText: octreeToMsh41(r.mesh.points as ArrayLike<number>, blocks),
+      mesh: r.mesh as unknown as OctreeSkin,
       stats: {
         output: params.output,
         maxSize,
@@ -137,11 +177,13 @@ export async function octreeMeshVolume(stlBytes: Uint8Array, params: OctreeMeshP
     };
   } catch (err) {
     throw wrapMeshioFault(err);
-  } finally {
-    try {
-      m.FS.unlink(path);
-    } catch {
-      /* ignore */
-    }
   }
+}
+
+/** Serializes {@link octreeMeshRawFromSkin}'s result, preserving the STL route's contract. */
+export async function octreeMeshVolumeFromSkin(skin: OctreeSkin, params: OctreeMeshParams): Promise<OctreeMeshResult> {
+  const { mesh, stats } = await octreeMeshRawFromSkin(skin, params);
+  const wanted = CELL_TYPE[params.output];
+  const blocks = (mesh.cells as OctreeBlock[]).filter((b) => b.type === wanted);
+  return { mshText: octreeToMsh41(mesh.points, blocks), stats };
 }

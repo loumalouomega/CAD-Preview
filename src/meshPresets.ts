@@ -156,7 +156,7 @@ function validatePresetEntry(key: string, value: unknown): MeshPreset | null {
     typeof raw.unit === "string" && (DISPLAY_UNITS as readonly string[]).includes(raw.unit)
       ? (raw.unit as DisplayUnit)
       : "mm";
-  const engine: MeshEngine = raw.engine === "ftetwild" || raw.engine === "octree" || raw.engine === "octreemesh" || raw.engine === "meshcad" ? raw.engine : "gmsh";
+  const engine: MeshEngine = raw.engine === "ftetwild" || raw.engine === "octree" || raw.engine === "octreemesh" || raw.engine === "meshcad" || raw.engine === "meshiopp" ? raw.engine : "gmsh";
 
   const entry: MeshPreset = { name, unit, engine, options };
   if (typeof raw.description === "string") entry.description = raw.description;
@@ -248,6 +248,19 @@ const FTETWILD_ONLY_FIELDS: readonly (keyof MeshOptions)[] = [
   "ftetwildDisableFiltering",
 ];
 
+/** Fields `engine: "meshiopp"` ignores: the Gmsh set it does not refuse, the
+ * fTetWild-only knobs, the hex-dominant octree's own level/transition fields,
+ * the octree-mesh's output/size knobs (its `octreeMeshLevels` IS used) and the
+ * prism-layer shell. The `meshcad*` sizing fields and `prismLayers`: meshiopp
+ * reuses the meshcad sizing controls, so those stay live. */
+const MESHIOpp_IGNORED_FIELDS: readonly (keyof MeshOptions)[] = [
+  ...OCTREE_IGNORED_GMSH_FIELDS,
+  ...FTETWILD_ONLY_FIELDS,
+  ...OCTREE_ONLY_FIELDS,
+  ...OCTREE_MESH_ONLY_FIELDS.filter((f) => f !== "octreeMeshLevels"),
+  "prismLayers",
+];
+
 /**
  * Names the stored fields the preset's own engine ignores — but only ones
  * that actually differ from the default (a default-valued field is inert
@@ -266,7 +279,9 @@ export function inapplicablePresetFields(preset: MeshPreset): (keyof MeshOptions
             ? [...OCTREE_IGNORED_GMSH_FIELDS, ...FTETWILD_ONLY_FIELDS, ...OCTREE_ONLY_FIELDS, ...MESHCAD_ONLY_FIELDS]
             : preset.engine === "meshcad"
               ? [...OCTREE_IGNORED_GMSH_FIELDS, ...FTETWILD_ONLY_FIELDS, ...OCTREE_ONLY_FIELDS, ...OCTREE_MESH_ONLY_FIELDS]
-              : [];
+              : preset.engine === "meshiopp"
+                ? [...MESHIOpp_IGNORED_FIELDS]
+                : [];
   return ignored.filter(
     (f) => JSON.stringify(preset.options[f]) !== JSON.stringify(DEFAULT_MESH_OPTIONS[f])
   );
@@ -298,7 +313,7 @@ export function effectivePresetOptions(preset: MeshPreset): EffectivePresetOptio
   }
   const options: MeshOptions = { ...validated, sizeMin, sizeMax, engine: preset.engine };
   for (const field of inapplicablePresetFields(preset)) {
-    const other = preset.engine === "ftetwild" ? "fTetWild" : preset.engine === "octree" ? "the octree" : preset.engine === "octreemesh" ? "the octree-mesh engine" : preset.engine === "meshcad" ? "the mesh-CAD engine" : "Gmsh";
+    const other = preset.engine === "ftetwild" ? "fTetWild" : preset.engine === "octree" ? "the octree" : preset.engine === "octreemesh" ? "the octree-mesh engine" : preset.engine === "meshcad" ? "the mesh-CAD engine" : preset.engine === "meshiopp" ? "the meshio++ volume chain" : "Gmsh";
     warnings.push(`"${field}" is ${JSON.stringify(preset.options[field])} in the preset but is ignored by ${other} — it has no effect under this preset's engine.`);
   }
   return { options, warnings };

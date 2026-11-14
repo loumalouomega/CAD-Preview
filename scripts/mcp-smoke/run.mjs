@@ -7770,6 +7770,66 @@ try {
     `generate_mesh(engine:"octreemesh") on block.stp reports its facts and the probe's 6512 tets (got ${JSON.stringify({ e: ocmTet.engineUsed, n: ocmTet.elementCount, o: ocmTet.octreeMesh })})`
   );
   assert(ocmTet.octree === null, "...and no octree facts (they belong to the other engine)");
+  // engine:"meshiopp" (meshio++ 20.1 full chain): exact B-rep surface ->
+  // octree tets -> adaptVolume. sizeMax is the FINEST size, octreeMeshLevels
+  // grades the interior up to sizeMax x 2^levels. No Parts.
+  const mppOpts = { engine: "meshiopp", sizeMax: 2, octreeMeshLevels: 2 };
+  const mpp = await call("generate_mesh", { path: octreeBlock, options: mppOpts });
+  assert(
+    mpp.engineUsed === "meshiopp" && mpp.meshiopp && mpp.meshiopp.surface.source === "brep" &&
+      mpp.meshiopp.surface.numOpenEdges === 0 && mpp.meshiopp.surface.numFailed === 0 &&
+      mpp.meshiopp.targetSize === 2 && mpp.meshiopp.coarseSize === 8 && mpp.meshiopp.levels === 2 &&
+      mpp.meshiopp.numTetrahedraAfter === 98 && mpp.elementCount === 98 && mpp.meshiopp.iterations > 0 &&
+      mpp.meshiopp.maxBoundaryDeviation <= mpp.meshiopp.hausdorff,
+    `generate_mesh(engine:"meshiopp") on block.stp runs the surface -> octree -> adaptVolume chain and reports the probe's 98 tets (got ${JSON.stringify({ e: mpp.engineUsed, n: mpp.elementCount, s: mpp.meshiopp })})`
+  );
+  assert(mpp.octree === null && mpp.octreeMesh === null && mpp.meshcad === null, "...and no other engine's facts");
+  const mppMsh = path.join(dir, "meshiopp-block.msh");
+  await call("export_mesh", { path: octreeBlock, format: "msh", outputPath: mppMsh, options: mppOpts });
+  const mppVol = mshCellVolumes(fs.readFileSync(mppMsh, "utf8"));
+  assert(
+    Math.abs(mppVol.volume - 60) < 1e-6 && mppVol.nonPositive === 0 && mppVol.tet === 98,
+    `the meshiopp .msh encloses exactly 60 with every tet positively oriented (got ${JSON.stringify(mppVol)})`
+  );
+  {
+    // adaptVolume is a Mesh Op too (transform_mesh), not just the engine's last
+    // stage: the exported tet mesh is a valid input, and the report carries the
+    // before/after counts and the boundary deviation.
+    const mppAdapt = await call("transform_mesh", {
+      path: mppMsh,
+      outputPath: path.join(dir, "meshiopp-adapted.vtu"),
+      ops: [{ op: "adaptVolume", hmin: 1, hmax: 6, maxIterations: 3 }],
+    });
+    assert(
+      mppAdapt.supported === true && mppAdapt.steps.length === 1 && mppAdapt.steps[0].applied === true &&
+        /tets \d+ → \d+, points \d+ → \d+/.test(mppAdapt.steps[0].detail) &&
+        /boundary moved ≤ .* \(hausd .*\)/.test(mppAdapt.steps[0].detail),
+      `transform_mesh adaptVolume runs on the meshiopp .msh and reports its counts and boundary bound (got ${JSON.stringify(mppAdapt.steps?.[0])})`
+    );
+  }
+  const mppCube = await call("generate_mesh", { path: cleanCubeStl, options: mppOpts });
+  assert(
+    mppCube.engineUsed === "meshiopp" && mppCube.meshiopp.surface.source === "mesh" && mppCube.meshiopp.surface.numOpenEdges === 0 &&
+      mppCube.meshiopp.numTetrahedraAfter === 1776 && mppCube.elementCount === 1776 && mppCube.meshiopp.surface.numTriangles === 12,
+    `...and over cube.stl (a mesh source) uses the source skin and the probe's 1776 tets (got ${JSON.stringify({ e: mppCube.engineUsed, n: mppCube.elementCount, s: mppCube.meshiopp })})`
+  );
+  {
+    // Closure gate: one facet removed from the cube is an open shell, refused
+    // by name BEFORE any volume work (not an open fill).
+    const cubeText = fs.readFileSync(cleanCubeStl, "utf8");
+    const facetAt = cubeText.indexOf("facet normal");
+    const facetEnd = cubeText.indexOf("endfacet", facetAt);
+    assert(facetAt > 0 && facetEnd > facetAt, "meshiopp closure-gate control: found an ASCII facet to drop");
+    const openCube = path.join(dir, "meshiopp-open-cube.stl");
+    fs.writeFileSync(openCube, cubeText.slice(0, facetAt) + cubeText.slice(facetEnd + "endfacet".length));
+    const gate = await callTolerant("generate_mesh", { path: openCube, options: mppOpts });
+    assert(
+      /closed, consistently wound surface/.test(gate.error ?? "") && /3 open \/ 0 non-manifold \/ 0 misoriented/.test(gate.error ?? ""),
+      `...an open skin is refused by name with its open-edge count (got ${JSON.stringify(gate)})`
+    );
+  }
+  const mppOrder2 = await callTolerant("generate_mesh", { path: octreeBlock, options: { ...mppOpts, elementOrder: 2 } });
+  assert(/engine "meshiopp" cannot honor: elementOrder 2/.test(mppOrder2.error ?? ""), `...elementOrder 2 is refused by name (got ${JSON.stringify(mppOrder2)})`);
   const ocmMsh = path.join(dir, "octreemesh-block.msh");
   await call("export_mesh", { path: octreeBlock, format: "msh", outputPath: ocmMsh, options: ocmOpts });
   const ocmVol = mshCellVolumes(fs.readFileSync(ocmMsh, "utf8"));

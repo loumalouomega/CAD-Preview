@@ -6,6 +6,7 @@ import {
   MAX_WORST_ELEMENTS,
   octreeUnsupportedOptions,
   meshcadUnsupportedOptions,
+  meshioppUnsupportedOptions,
 } from "./gmshService";
 import { DEFAULT_MESH_OPTIONS } from "./meshOptions";
 import type { PartGroupInfo, PartGroupMaps } from "./gmshPartsMap";
@@ -363,6 +364,37 @@ describe("meshcadUnsupportedOptions", () => {
     expect(ignored[0]).toContain("sizeMin 0.5");
     expect(ignored[1]).toContain("netgen");
     expect(ignored[2]).toMatch(/1 Part\(s\).*not preserved/);
+  });
+});
+
+describe("meshioppUnsupportedOptions", () => {
+  it("is silent for defaults and no Parts", () => {
+    expect(meshioppUnsupportedOptions(DEFAULT_MESH_OPTIONS, [])).toEqual({ refuse: [], ignored: [] });
+  });
+
+  it("keeps sizeMax and octreeMeshLevels live and refuses what it can never honor", () => {
+    expect(meshioppUnsupportedOptions({ ...DEFAULT_MESH_OPTIONS, sizeMax: 2, octreeMeshLevels: 3, meshcadGrading: 1.4 }, []).refuse).toEqual([]);
+    const { refuse } = meshioppUnsupportedOptions(
+      {
+        ...DEFAULT_MESH_OPTIONS,
+        elementOrder: 2,
+        elementShape: "subdivided",
+        periodic: [{ slave: "a", master: "b", translation: [1, 0, 0] }],
+        sizeField: [{ point: [0, 0, 0], size: 1 }],
+        refinementRegions: [{ kind: "sphere", center: [0, 0, 0], radius: 1, sizeIn: 0.5, thickness: 0 }],
+      },
+      []
+    );
+    expect(refuse.map((r) => r.split(" ")[0])).toEqual(["elementOrder", "elementShape", "periodic", "sizeField", "refinementRegions"]);
+  });
+
+  it("warns about the settings it merely ignores, including the hex-mesh knobs and Parts", () => {
+    const { refuse, ignored } = meshioppUnsupportedOptions(
+      { ...DEFAULT_MESH_OPTIONS, sizeMin: 0.5, optimize: "netgen", octreeMeshMaxSize: 3, octreeMeshOutput: "hex", octreeMeshHexGrading: "graded" },
+      [{ name: "wall" } as never]
+    );
+    expect(refuse).toEqual([]);
+    expect(ignored.map((i) => i.split(" ")[0])).toEqual(["sizeMin", "optimize", "octreeMeshMaxSize", "octreeMeshOutput", "octreeMeshHexGrading", "1"]);
   });
 });
 

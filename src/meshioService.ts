@@ -717,6 +717,40 @@ export async function runMeshioOps(
             });
             break;
           }
+          case "adaptVolume": {
+            // meshio++ 20.1 adaptVolume is tet-only and refuses a mesh that also
+            // carries boundary blocks, so they are dropped first — the same rule
+            // as optimizeVolume. The boundary is rebuilt from the tets.
+            const cells = mesh.cells as Array<{ type: string }>;
+            const tets = cells.filter((b) => b.type === "tetra");
+            if (tets.length === 0) throw new Error("adaptVolume needs a linear tetrahedral mesh (no tetra block found)");
+            const dropped = cells.length - tets.length;
+            const o: Record<string, unknown> = {};
+            for (const key of [
+              "hmin", "hmax", "hausd", "hausdRelative", "sizeArray", "curvatureSizing", "featureAngle", "cornerAngle",
+              "maxNormalDeviation", "preserveBoundary", "preserveFeatures", "qualityMetric", "qualityMin", "maxIterations",
+              "targetMinDihedral", "collapse", "split", "swap", "smooth", "boundarySizing",
+            ] as const) {
+              if (spec[key] !== undefined) o[key] = spec[key];
+            }
+            if (spec.gradation !== undefined) o.hgrad = spec.gradation;
+            const r = m.adaptVolume({ ...mesh, cells: tets }, o);
+            mesh = r.mesh;
+            const rejected =
+              r.numRejectedByLink + r.numRejectedByInversion + r.numRejectedByQuality + r.numRejectedByLength +
+              r.numRejectedByClass + r.numRejectedByHausdorff + r.numRejectedByNormal;
+            steps.push({
+              op: spec.op, applied: true,
+              detail: `tets ${r.numTetsBefore} → ${r.numTetsAfter}, points ${r.numPointsBefore} → ${r.numPointsAfter}, ` +
+                `min dihedral ${Number(r.minDihedralBefore).toFixed(2)}° → ${Number(r.minDihedralAfter).toFixed(2)}°, ` +
+                `mean quality ${Number(r.meanQualityBefore).toFixed(3)} → ${Number(r.meanQualityAfter).toFixed(3)}, ` +
+                `boundary moved ≤ ${Number(r.maxBoundaryDeviation).toPrecision(4)} (hausd ${Number(r.hausd).toPrecision(4)}), ` +
+                `${rejected} rejected edit(s), ${r.iterations} iteration(s)` +
+                `${dropped > 0 ? `; dropped ${dropped} non-tet block(s)` : ""}`,
+            });
+            for (const w of r.warnings) warnings.push(`adaptVolume: ${w}`);
+            break;
+          }
           case "adapt": {
             const o: Record<string, number> = {};
             if (spec.hsiz !== undefined) o.hsiz = spec.hsiz;

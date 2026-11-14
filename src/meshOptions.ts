@@ -48,9 +48,13 @@ export type MeshElementShape = "simplex" | "subdivided" | "hexDominant";
  * tetrahedra) built from the tessellated skin of EITHER source kind. It has
  * no face correlation, so Parts and physical groups are not preserved, and
  * Gmsh-only options are refused by name — see `gmshService.ts`'s
- * `octreeUnsupportedOptions`.
+ * `octreeUnsupportedOptions`. `"meshiopp"` is the full meshio++ volume chain:
+ * an exact B-rep surface (or a mesh-format skin), octree tets, then
+ * `adaptVolume` grading and quality improvement under a boundary bound. It is
+ * B-rep-only for the exact-surface route but accepts any 3D mesh source; only
+ * `dimension !== 3` falls back to `"gmsh"`. Parts are never preserved.
  */
-export type MeshEngine = "gmsh" | "ftetwild" | "octree" | "octreemesh" | "meshcad";
+export type MeshEngine = "gmsh" | "ftetwild" | "octree" | "octreemesh" | "meshcad" | "meshiopp";
 
 /** Facts an `engine: "meshcad"` generate reports — the subset of meshio++'s
  * `meshCadSurface` report that says how good the surface is. Parts are never
@@ -266,6 +270,81 @@ export interface OctreeMeshVolumeFix {
   numUntangled: number;
 }
 
+/** Facts an `engine: "meshiopp"` generate reports. The surface is meshed first
+ * (B-rep exact faces through `meshCadSurface`, or a mesh-format source's own
+ * skin), an octree turns it into tets, and `adaptVolume` remeshes those to a
+ * graded size field. Parts are never preserved. */
+export interface MeshioppStats {
+  /** Resolved target (finest) edge length in mm — `sizeMax`, or bbox diagonal / 20 when unset. */
+  targetSize: number;
+  /** Coarsest interior size after adaptation: `targetSize × 2^octreeMeshLevels`. */
+  coarseSize: number;
+  /** The resolved `octreeMeshLevels` used for {@link coarseSize}. */
+  levels: number;
+  /** What the surface stage produced, and whether it closed. */
+  surface: MeshioppSurfaceStats;
+  /** Tets the octree produced before adaptation. */
+  numTetrahedraBefore: number;
+  numTetrahedraAfter: number;
+  numPointsBefore: number;
+  numPointsAfter: number;
+  minDihedralBefore: number;
+  minDihedralAfter: number;
+  maxDihedralAfter: number;
+  meanQualityBefore: number;
+  meanQualityAfter: number;
+  /** Symmetric Hausdorff distance between the adapted boundary and the octree's own. */
+  maxBoundaryDeviation: number;
+  /** The bound `adaptVolume` resolved for that deviation (mm). */
+  hausdorff: number;
+  numCollapsed: number;
+  numSplit: number;
+  numSwapped: number;
+  numSmoothed: number;
+  /** Every edit class's refusal count, summed. */
+  numRejected: number;
+  iterations: number;
+  /** meshio++'s own warnings plus this engine's, verbatim. */
+  warnings: string[];
+}
+
+/** The surface stage's facts. For a B-rep source every field is present; a
+ * mesh-format source carries no B-rep face report, so `numFaces`/`numFailed`
+ * and the angle bounds are absent. */
+export interface MeshioppSurfaceStats {
+  source: "brep" | "mesh";
+  /** Resolved target edge length (mm). */
+  targetSize: number;
+  numTriangles: number;
+  numPoints: number;
+  numFaces?: number;
+  numFailed?: number;
+  /** 0/0/0 = a watertight, consistently wound surface. B-rep only. */
+  numOpenEdges?: number;
+  numNonManifoldEdges?: number;
+  numMisorientedEdges?: number;
+  minAngleDeg?: number;
+  maxAngleDeg?: number;
+  warnings: string[];
+}
+
+/** One-line readout of a meshiopp generate for the panel status line. */
+export function meshioppSummary(stats: MeshioppStats): string {
+  const surface = stats.surface.source === "brep" ? `${stats.surface.numTriangles} tri surface` : `${stats.surface.numTriangles} tri skin`;
+  const closed =
+    stats.surface.numOpenEdges === undefined
+      ? ""
+      : stats.surface.numOpenEdges + (stats.surface.numNonManifoldEdges ?? 0) + (stats.surface.numMisorientedEdges ?? 0) === 0
+        ? " closed"
+        : ` · ${stats.surface.numOpenEdges} open edges`;
+  return (
+    `Meshio++: ${surface}${closed} · tets ${stats.numTetrahedraBefore} → ${stats.numTetrahedraAfter}` +
+    ` · dihedral ${stats.minDihedralBefore.toFixed(1)}° → ${stats.minDihedralAfter.toFixed(1)}°` +
+    ` · boundary moved ≤ ${stats.maxBoundaryDeviation.toPrecision(3)} (bound ${stats.hausdorff.toPrecision(3)})` +
+    ` · ${stats.iterations} iteration(s) · Parts not preserved`
+  );
+}
+
 /** One-line readout of an octreemesh generate for the panel status line. */
 export function octreeMeshSummary(stats: OctreeMeshStats): string {
   const cells = stats.output === "tet" ? `${stats.numTetrahedra} tet` : `${stats.numHexahedra} hex`;
@@ -372,25 +451,30 @@ export interface MeshOptions {
    * meaningful when `engine === "octreemesh"`. */
   octreeMeshMaxSize: number;
   /** Octree-mesh: refinement levels below `maxSize` (smallest leaf edge =
-   * maxSize / 2^levels), 1..{@link OCTREE_MESH_LEVELS_LIMIT}. Only meaningful
-   * when `engine === "octreemesh"`. */
+   * maxSize / 2^levels), 1..{@link OCTREE_MESH_LEVELS_LIMIT}. Under `"meshiopp"`
+   * it is the grading control: adaptation grows the interior size up to
+   * sizeMax × 2^levels. Only meaningful when `engine === "octreemesh"` or
+   * `"meshiopp"`. */
   octreeMeshLevels: number;
   /** Mesh-CAD: refine until every triangle's smallest angle is at least this
    * (degrees, 0 ≤ x < 60); `0` keeps the unrefined mesh. Only meaningful when
-   * `engine === "meshcad"`. */
+   * `engine === "meshcad"` or `"meshiopp"` (its surface stage). */
   meshcadMinAngle: number;
   /** Mesh-CAD: passes of guarded smoothing (integer ≥ 0). Only meaningful when
-   * `engine === "meshcad"`. */
+   * `engine === "meshcad"` or `"meshiopp"`. */
   meshcadSmoothIterations: number;
   /** Mesh-CAD: size each region so a chord sits at most this far (mm) from the
-   * surface; `0` is off. Only meaningful when `engine === "meshcad"`. */
+   * surface; `0` is off. Only meaningful when `engine === "meshcad"` or
+   * `"meshiopp"`. */
   meshcadCurvatureDeviation: number;
   /** Mesh-CAD: size each region so at least this many elements span its local
-   * feature size; `0` is off. Only meaningful when `engine === "meshcad"`. */
+   * feature size; `0` is off. Only meaningful when `engine === "meshcad"` or
+   * `"meshiopp"`. */
   meshcadCellsAcrossGaps: number;
   /** Mesh-CAD: largest size growth, `|grad h| ≤ grading − 1`; `0` is upstream's
    * 1.5. Acts only with curvature deviation or cells-across-gaps. Only
-   * meaningful when `engine === "meshcad"`. */
+   * meaningful when `engine === "meshcad"`; under `"meshiopp"` a value above 1
+   * is also adaptation's `hgrad`. */
   meshcadGrading: number;
   /**
    * Conformal multi-body meshing: call
@@ -916,7 +1000,7 @@ export function validateMeshOptions(raw: unknown): MeshOptions | null {
   const stlAngle =
     isFiniteNumber(o.stlAngle) && o.stlAngle > 0 && o.stlAngle < 180 ? o.stlAngle : DEFAULT_MESH_OPTIONS.stlAngle;
 
-  const engine: MeshOptions["engine"] = o.engine === "gmsh" || o.engine === "ftetwild" || o.engine === "octree" || o.engine === "octreemesh" || o.engine === "meshcad" ? o.engine : DEFAULT_MESH_OPTIONS.engine;
+  const engine: MeshOptions["engine"] = o.engine === "gmsh" || o.engine === "ftetwild" || o.engine === "octree" || o.engine === "octreemesh" || o.engine === "meshcad" || o.engine === "meshiopp" ? o.engine : DEFAULT_MESH_OPTIONS.engine;
 
   const ftetwildEpsRel =
     isFiniteNumber(o.ftetwildEpsRel) && o.ftetwildEpsRel > 0

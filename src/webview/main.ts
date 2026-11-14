@@ -7302,6 +7302,7 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
         octree: msg.octree,
         octreeMesh: msg.octreeMesh,
         meshcad: msg.meshcad,
+        meshiopp: msg.meshiopp,
       });
       break;
 

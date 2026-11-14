@@ -1,4 +1,4 @@
-import { SIZE_MAX_SENTINEL, DEFAULT_PRISM_LAYERS, PRISM_LAYERS_LIMIT, validateMeshPrismLayers, DEFAULT_MESH_OPTIONS, boundaryLayerPlan, validateMeshBoundaryLayer, validateMeshGrading, validateMeshStructured, octreeSummary, octreeMeshSummary, meshcadSummary, validateMpcVariables, OCTREE_MAX_LEVEL_LIMIT, OCTREE_MESH_LEVELS_LIMIT, MAX_MDPA_RANKS, type MdpaPartitionMethod, MESHCAD_SMOOTH_LIMIT, type OctreeStats, type OctreeMeshStats, type MeshCadStats, type MeshOptions, type MeshGrading, type MeshStructured, type MeshBoundaryLayer } from "../meshOptions";
+import { SIZE_MAX_SENTINEL, DEFAULT_PRISM_LAYERS, PRISM_LAYERS_LIMIT, validateMeshPrismLayers, DEFAULT_MESH_OPTIONS, boundaryLayerPlan, validateMeshBoundaryLayer, validateMeshGrading, validateMeshStructured, octreeSummary, octreeMeshSummary, meshcadSummary, meshioppSummary, validateMpcVariables, OCTREE_MAX_LEVEL_LIMIT, OCTREE_MESH_LEVELS_LIMIT, MAX_MDPA_RANKS, type MdpaPartitionMethod, MESHCAD_SMOOTH_LIMIT, type OctreeStats, type OctreeMeshStats, type MeshCadStats, type MeshioppStats, type MeshOptions, type MeshGrading, type MeshStructured, type MeshBoundaryLayer } from "../meshOptions";
 import type { QualitySummary } from "../meshQuality";
 import type { BoundaryLayerAchieved } from "../boundaryLayerMeasurement";
 import { describeGateCheck, type QualityGateResult } from "../meshQualityGate";
@@ -77,6 +77,8 @@ export interface MeshingStats {
   octreeMesh?: OctreeMeshStats;
   /** Mesh-CAD surface facts — shown only when the meshcad engine ran. */
   meshcad?: MeshCadStats;
+  /** meshio++ volume-chain facts — shown only when the meshiopp engine ran. */
+  meshiopp?: MeshioppStats;
 }
 
 /** Failure readout: a human-readable error message from the host. */
@@ -447,6 +449,7 @@ export class MeshingPanel {
       ["octree", "Octree (hex-dominant)"],
       ["octreemesh", "Octree-mesh (graded tets / hex)"],
       ["meshcad", "Mesh-CAD (B-rep surface)"],
+      ["meshiopp", "meshio++ (volume + adapt)"],
     ]);
     this.engineSelect.title =
       "Gmsh is fast but needs a watertight/manifold/well-oriented boundary. " +
@@ -458,7 +461,9 @@ export class MeshingPanel {
       "Octree-mesh fits conforming graded tetrahedra (or all hexahedra) to the same skin, sized by a largest leaf edge " +
       "and a number of refinement levels — Parts and physical groups are not preserved either. " +
       "Mesh-CAD triangulates a B-rep's exact faces without a CAD kernel (set Dimension to 2; edges are shared, so the surface is watertight) — " +
-      "sized by Size max plus the angle/curvature controls; Parts are not preserved.";
+      "sized by Size max plus the angle/curvature controls; Parts are not preserved. " +
+      "meshio++ is the full volume chain: exact B-rep faces (or a mesh source's own skin), octree tets, then graded adaptation — " +
+      "Size max is the finest size and Octree-mesh levels set how much the interior may coarsen; Parts are not preserved.";
     this.engineSelect.addEventListener("change", () => {
       cb.onOptionsChange({ engine: this.engineSelect.value as MeshOptions["engine"] });
     });
@@ -1216,6 +1221,15 @@ export class MeshingPanel {
         }
         spec.hsiz = hsiz;
         spec.hausd = hausd;
+      } else if (op === "adaptVolume") {
+        const hausd = Number(this.meshOpsHausd.value);
+        if (!(hausd > 0)) {
+          this.renderMeshOpsStatus("The Hausdorff bound must be positive.", true);
+          return;
+        }
+        spec.hausd = hausd;
+        const iterations = Number(this.meshOpsIterations.value);
+        if (iterations > 0) spec.maxIterations = Math.max(1, Math.floor(iterations));
       } else if (op === "discretizeLevelset") {
         const name = this.meshOpsLevelSet.value.trim();
         if (!name) {
@@ -1406,13 +1420,14 @@ export class MeshingPanel {
     const octree = options.engine === "octree";
     const octreeMesh = options.engine === "octreemesh";
     const meshcad = options.engine === "meshcad";
-    const notGmsh = ftetwild || octree || octreeMesh || meshcad;
+    const meshiopp = options.engine === "meshiopp";
+    const notGmsh = ftetwild || octree || octreeMesh || meshcad || meshiopp;
     this.regionsInput.disabled = notGmsh;
     if (!this.regionsNoteIsParseError) {
       const n = options.refinementRegions?.length ?? 0;
       this.showRegionsNote(
         n > 0 && notGmsh
-          ? `Refinement regions are not used by the ${ftetwild ? "fTetWild" : meshcad ? "mesh-CAD" : "octree"} engine${ftetwild ? " (ignored with a warning)" : " (generate refuses them)"}; switch to the Gmsh engine.`
+          ? `Refinement regions are not used by the ${ftetwild ? "fTetWild" : meshcad ? "mesh-CAD" : meshiopp ? "meshio++" : "octree"} engine${ftetwild ? " (ignored with a warning)" : " (generate refuses them)"}; switch to the Gmsh engine.`
           : n > 0 && this.sourceKind === "mesh"
             ? "Refinement regions apply to B-rep sources only; this mesh source ignores them."
             : ""
@@ -1440,12 +1455,12 @@ export class MeshingPanel {
     this.octreeMeshOutputSelect.disabled = !octreeMesh;
     this.octreeMeshHexGradingSelect.disabled = !octreeMesh || options.octreeMeshOutput !== "hex";
     this.octreeMeshMaxSizeInput.disabled = !octreeMesh;
-    this.octreeMeshLevelsInput.disabled = !octreeMesh;
-    this.meshcadMinAngleInput.disabled = !meshcad;
-    this.meshcadSmoothInput.disabled = !meshcad;
-    this.meshcadCurvatureInput.disabled = !meshcad;
-    this.meshcadGapsInput.disabled = !meshcad;
-    this.meshcadGradingInput.disabled = !meshcad;
+    this.octreeMeshLevelsInput.disabled = !octreeMesh && !meshiopp;
+    this.meshcadMinAngleInput.disabled = !meshcad && !meshiopp;
+    this.meshcadSmoothInput.disabled = !meshcad && !meshiopp;
+    this.meshcadCurvatureInput.disabled = !meshcad && !meshiopp;
+    this.meshcadGapsInput.disabled = !meshcad && !meshiopp;
+    this.meshcadGradingInput.disabled = !meshcad && !meshiopp;
     this.prismEnabledCheckbox.disabled = !meshcad;
     const prismOn = meshcad && options.prismLayers !== undefined;
     this.prismHeightInput.disabled = !prismOn;
@@ -1473,7 +1488,8 @@ export class MeshingPanel {
       const octreeNote = status.octree ? ` · ${octreeSummary(status.octree)}` : "";
       const octreeMeshNote = status.octreeMesh ? ` · ${octreeMeshSummary(status.octreeMesh)}` : "";
       const meshcadNote = status.meshcad ? ` · ${meshcadSummary(status.meshcad)}` : "";
-      this.statusEl.textContent = `Nodes: ${status.nodeCount} · Elements: ${status.elementCount}${elapsed}${octreeNote}${octreeMeshNote}${meshcadNote}`;
+      const meshioppNote = status.meshiopp ? ` · ${meshioppSummary(status.meshiopp)}` : "";
+      this.statusEl.textContent = `Nodes: ${status.nodeCount} · Elements: ${status.elementCount}${elapsed}${octreeNote}${octreeMeshNote}${meshcadNote}${meshioppNote}`;
       this.renderQuality(status.quality, status.worstElements);
       this.renderLayerAchieved(status.boundaryLayers);
     }
@@ -1685,7 +1701,7 @@ export class MeshingPanel {
     // Conformal fragmentation only runs on the B-rep OCC-import path; a mesh
     // source ignores the option, so grey it out exactly like the fTetWild
     // row above greys Gmsh-only fields (render() applies the same rule).
-    this.conformalCheckbox.disabled = kind === "mesh" || this.lastOptions?.engine === "ftetwild" || this.lastOptions?.engine === "octree" || this.lastOptions?.engine === "octreemesh" || this.lastOptions?.engine === "meshcad";
+    this.conformalCheckbox.disabled = kind === "mesh" || this.lastOptions?.engine === "ftetwild" || this.lastOptions?.engine === "octree" || this.lastOptions?.engine === "octreemesh" || this.lastOptions?.engine === "meshcad" || this.lastOptions?.engine === "meshiopp";
   }
 
   /**
@@ -1892,13 +1908,13 @@ export class MeshingPanel {
     };
     show(this.meshOpsRatio, op === "decimate");
     show(this.meshOpsMethod, op === "smooth");
-    show(this.meshOpsIterations, op === "smooth" || op === "optimizeVolume" || op === "untangle");
+    show(this.meshOpsIterations, op === "smooth" || op === "optimizeVolume" || op === "untangle" || op === "adaptVolume");
     show(this.meshOpsLevels, op === "refine");
     show(this.meshOpsTargetGroupSize, op === "agglomerate");
     show(this.meshOpsMode, op === "convertCells");
     show(this.meshOpsObjective, op === "optimizeVolume");
     show(this.meshOpsHsiz, op === "adapt");
-    show(this.meshOpsHausd, op === "adapt");
+    show(this.meshOpsHausd, op === "adapt" || op === "adaptVolume");
     show(this.meshOpsLevelSet, op === "discretizeLevelset");
     show(this.meshOpsIsovalue, op === "discretizeLevelset");
     for (const [key, el] of Object.entries(this.meshOpsExtra)) show(el, (OPS_EXTRA_FIELDS[op] ?? []).includes(key));

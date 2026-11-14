@@ -2741,6 +2741,7 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
               octree: result.octree,
               octreeMesh: result.octreeMesh,
               meshcad: result.meshcad,
+              meshiopp: result.meshiopp,
               constraintLinks: result.constraintLinks ? encodeBuffer(result.constraintLinks) : undefined,
             });
           });

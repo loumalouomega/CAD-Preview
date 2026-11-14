@@ -22,6 +22,7 @@ export const MESHIO_OP_IDS = [
   "tetToPoly",
   "polyToTet",
   "optimizeVolume",
+  "adaptVolume",
   "adapt",
   "discretizeLevelset",
   // meshio++ 18.1
@@ -67,6 +68,27 @@ export interface MeshioOpSpec {
   /** `adapt`: constant target edge size; `hausd` Hausdorff bound (both source units). */
   hsiz?: number;
   hausd?: number;
+  /** `adaptVolume` (meshio++ 20.1): graded size bounds (`hmin`/`hmax` are shared with `prepareMetric`), `hausd` and whether it is relative, and how the boundary is sized. */
+  hausdRelative?: boolean;
+  boundarySizing?: "input" | "geometry";
+  /** `adaptVolume`: quality floor and iteration cap. `hmin`/`hmax` above are its size bounds. */
+  qualityMetric?: "min_dihedral" | "mean_ratio" | "amips";
+  qualityMin?: number;
+  maxIterations?: number;
+  targetMinDihedral?: number;
+  /** `adaptVolume`: optional point-data size field and curvature/feature sizing. */
+  sizeArray?: string;
+  curvatureSizing?: boolean;
+  featureAngle?: number;
+  cornerAngle?: number;
+  maxNormalDeviation?: number;
+  /** `adaptVolume`: hold this boundary/these features; enable or disable each edit class. */
+  preserveBoundary?: boolean;
+  preserveFeatures?: boolean;
+  collapse?: boolean;
+  split?: boolean;
+  swap?: boolean;
+  smooth?: boolean;
   /** `discretizeLevelset`: the point-data array and its isovalue. */
   levelSet?: string;
   isovalue?: number;
@@ -156,6 +178,7 @@ export const MESHIO_OP_LABELS: Record<MeshioOpId, string> = {
   tetToPoly: "Tets → polyhedral dual (one cell per vertex)",
   polyToTet: "Polyhedra → tets",
   optimizeVolume: "Optimize tets (raise the worst dihedral angle)",
+  adaptVolume: "Adapt tets (graded remesh with a boundary bound)",
   adapt: "MMG adapt (remesh to a target size)",
   discretizeLevelset: "MMG level set (insert an isovalue interface)",
   untangle: "Untangle (fix inverted tets/hexes)",
@@ -308,6 +331,31 @@ export function validateMeshioOpSpec(raw: unknown): MeshioOpSpec | null {
   if (maxStretch !== undefined) spec.maxStretch = maxStretch;
   const numModes = positive(r.numModes);
   if (numModes !== undefined) spec.numModes = Math.floor(numModes);
+  // meshio++ 20.1 adaptVolume. hmin/hmax/hausd arrive through the shared numeric fields above
+  // (positive when present); everything else is a shape gate, the kernel reports what it cannot honour.
+  if (typeof r.hausdRelative === "boolean") spec.hausdRelative = r.hausdRelative;
+  if (r.boundarySizing === "input" || r.boundarySizing === "geometry") spec.boundarySizing = r.boundarySizing;
+  if (r.qualityMetric === "min_dihedral" || r.qualityMetric === "mean_ratio" || r.qualityMetric === "amips") {
+    spec.qualityMetric = r.qualityMetric;
+  }
+  const qualityMin = num(r.qualityMin);
+  if (qualityMin !== undefined) spec.qualityMin = qualityMin;
+  const maxIterations = positive(r.maxIterations);
+  if (maxIterations !== undefined) spec.maxIterations = Math.floor(maxIterations);
+  const targetMinDihedral = num(r.targetMinDihedral);
+  if (targetMinDihedral !== undefined && targetMinDihedral >= 0 && targetMinDihedral < 90) spec.targetMinDihedral = targetMinDihedral;
+  const sizeArray = name(r.sizeArray);
+  if (sizeArray) spec.sizeArray = sizeArray;
+  if (typeof r.curvatureSizing === "boolean") spec.curvatureSizing = r.curvatureSizing;
+  const featureAngle = num(r.featureAngle);
+  if (featureAngle !== undefined && featureAngle >= 0 && featureAngle <= 180) spec.featureAngle = featureAngle;
+  const cornerAngle = num(r.cornerAngle);
+  if (cornerAngle !== undefined && cornerAngle >= 0 && cornerAngle <= 180) spec.cornerAngle = cornerAngle;
+  const maxNormalDeviation = num(r.maxNormalDeviation);
+  if (maxNormalDeviation !== undefined && maxNormalDeviation >= 0 && maxNormalDeviation <= 90) spec.maxNormalDeviation = maxNormalDeviation;
+  for (const key of ["preserveBoundary", "preserveFeatures", "collapse", "split", "swap", "smooth"] as const) {
+    if (typeof r[key] === "boolean") spec[key] = r[key];
+  }
   // meshio++ 20 parameters (same rule: a bad value is dropped, the kernel reports what it cannot honour).
   const distance = num(r.distance);
   if (distance !== undefined) spec.distance = distance;
