@@ -6,6 +6,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/); thi
 
 ## [Unreleased]
 
+## [3.43.0] - 2026-11-15
+
 ### Added
 
 - **Full meshio++ volume engine (`engine: "meshiopp"`).** A B-rep's exact faces (through `meshCadSurface`, no CAD kernel) or a mesh source's own skin go into `octreeMesh` and come out of `adaptVolume` as graded tetrahedra: `sizeMax` is the finest (target) size, `octreeMeshLevels` the coarsest interior size (`sizeMax × 2^levels`), and the meshcad sizing controls drive the surface stage. A failed face or any open/non-manifold/misoriented surface edge is refused by name before any volume work (a mesh-format skin is checked by exact-coordinate welding and edge incidence), so an open shell is never filled. Parts are not preserved; `elementOrder: 2`, a non-simplex shape, `periodic`, `sizeField` and `refinementRegions` are refused by name. `generate_mesh`/`export_mesh`/`transform_mesh` reach it with no new MCP tool (113 unchanged), refinement sweeps are allowed and `.geo_unrolled` is refused. Measured (`probe examples/meshiopp-engine.ts`): `block.stp` at size 2 / levels 2 gives 98 tets enclosing exactly 60, `cube.stl` 1 776 tets enclosing 1000. See `doc/gmsh-integration.md#meshiopp-engine`.
@@ -14,6 +16,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/); thi
 ### Changed
 
 - **`@meshioplusplus/wasm` upgraded from 20.0.0 to 20.1.0.** The typings diff is exactly the new `adaptVolume`; 20.1.1 exists as a GitHub tag only, with no npm artifact. The octree-mesh engine is unchanged (a new optional `minSize` keeps its resolved sizing byte-identical), and the probe run reports no other API or format change.
+- **Dependency updates.** `three-mesh-bvh` 0.9.17 → 0.9.18 and `playwright` 1.64.1 → 1.65.0. `@types/vscode` stays at 1.144.0 to match `engines.vscode`.
 
 ## [3.42.0] - 2026-11-12
 
@@ -1198,7 +1201,8 @@ This release republishes v1.9.0's full changelog (below) unchanged; v1.9.0 itsel
 
 - Initial release: read-only 3D preview for CAD and mesh files (STEP, IGES, BREP, STL, OBJ, PLY, glTF) inside a VS Code custom editor, using OpenCascade.js (OCCT WASM) in the extension host for B-rep formats and Three.js in the webview for rendering.
 
-[Unreleased]: https://github.com/loumalouomega/CAD-Preview/compare/v3.42.0...HEAD
+[Unreleased]: https://github.com/loumalouomega/CAD-Preview/compare/v3.43.0...HEAD
+[3.43.0]: https://github.com/loumalouomega/CAD-Preview/compare/v3.42.0...v3.43.0
 [3.42.0]: https://github.com/loumalouomega/CAD-Preview/compare/v3.41.0...v3.42.0
 [3.41.0]: https://github.com/loumalouomega/CAD-Preview/compare/v3.40.0...v3.41.0
 [3.40.0]: https://github.com/loumalouomega/CAD-Preview/compare/v3.39.0...v3.40.0
