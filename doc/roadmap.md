@@ -392,6 +392,7 @@ It does **not** admit AGPL code, so TetGen stays rejected. Every new bundled dep
 | Simulation hand-off | A decision made on the geometry reaches the case without being made twice | From the [coverage and cross-extension review](#coverage-and-cross-extension-review): simulation intent on Parts (2.46), refinement regions (2.45), named coordinate systems (2.50), then the probes that prepare an idealised model (3.21 mid-surface, 3.23 flow volume, 3.24 interface pairs) | A three-Part model exports to a case that preflights clean in VSCode-MDPA-Preview after one accepted suggestion |
 | One product, three surfaces | The two extensions and KKSS share tokens, commands, Undo and help | Stylesheet consolidation (1.8), the embedder contracts (2.48; Undo and redo from the keyboard and from an embedder has shipped), then the shared design layer (5.6) | A token change lands in all three with one pull request each, and KKSS lists and runs this viewer's commands |
 | Strategic | Remove the kernel ceiling | The self-built OCCT WASM probe (6.1) | The existing test suites pass unchanged against the new build |
+| Long-term platform | Shared, faster pure compute without leaving the extension host | The Rust core crates probe (6.5), after the mesh side's MDPA probe reports | One crate serves both extensions' STL/OBJ/PLY readers with byte-identical output |
 
 These are outcome groupings, not release numbers. Independent small items can ship between waves; a failed probe must not block unrelated work.
 
@@ -1331,6 +1332,29 @@ Section 4 was emptied and removed when its last probe closed; it is recreated he
   - **Phase 2 (L):** click-to-place entity creation on the plane with inferred constraints, dragging, trim and extend, and a dimension tool that writes a variable.
   - **Phase 3:** the reference-image underlay, which the Rejected scope entry tied to the existence of a sketch workflow.
 - **Out of scope:** 3-D sketches and constraints between sketches and model edges beyond projected reference geometry.
+
+#### 6.5 Rust core crates compiled to WASM {#rust-core-crates}
+
+*Area: Platform. Added 2026-11-19 from KKSS's Rust port review. That review found a full Rust rewrite not viable: a VS Code extension host and its webviews run only JavaScript, and three.js and the picking pipeline have no Rust equivalent at their maturity. It found a Rust compute core loaded as WebAssembly viable.*
+
+- **Hypothesis:** pure, `vscode`-free modules can move into Rust crates and be compiled to WebAssembly with `wasm-bindgen`. They would load in the existing kernel worker and in KKSS's compute worker, so the extension stays an extension and gains no native module. The gain is shared code, not raw speed, because CAD's heavy work is already OCCT, Gmsh and meshio++.
+- **Evidence today:**
+  - **The parsers are written twice.** `stlParser.ts`, `objParser.ts` and `plyParser.ts` here have siblings in VSCode-MDPA-Preview's `src/parser/`. Each pair has its own tests and its own edge cases.
+  - **The crate boundary is already drawn.** The candidate modules are pure and vscode-free, and their tests use fixtures: the three parsers and their `*SolidSignatures.ts`, `deterministicMesh.ts`, and the expression evaluator in `editVariables.ts`.
+  - **The staging contract exists.** `runtimePackage.ts` resolves a staged tree beside the bundle or two levels up, which is how MMG, meshio++ and fTetWild already reach both workers.
+- **Probe (M):**
+  1. Build one crate holding the STL, OBJ and PLY readers. Run this file's parser tests and VSCode-MDPA-Preview's against it, and require byte-identical output on every fixture.
+  2. Load it through `runtimePackage.ts` in the kernel worker and the webview. Record the `.wasm` size and the CI cost of a pinned toolchain.
+  3. Time a 1M-triangle STL against the TS parser.
+- **Decision gate:**
+  - **Pass:** identical output on both extensions' fixtures and an acceptable build cost. Adopt the shared crate, and keep the TS parsers as the test oracle for one release.
+  - **Partial:** identical but slower or larger. Keep TypeScript, and record the numbers.
+  - **Fail:** recorded under Rejected scope.
+- **If admitted (L):** the shared parsers first. `deterministicMesh.ts` and the expression evaluator are each a separate probe.
+- **Out of scope:**
+  - Rewriting `provider.ts`, the webview or any OCCT call path.
+  - A native Node addon (`napi-rs`). KKSS ships exactly one native module, and a second would change every release target.
+  - Changing any parser's output.
 
 ## Definition of done
 
