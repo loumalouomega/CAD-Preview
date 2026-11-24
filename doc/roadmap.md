@@ -77,7 +77,7 @@ Existing implementation references were checked against the repository where not
 
 **Extended 2026-11-10 (coverage and cross-extension review, Non-goal recovery).** Extension, not a planning review: nothing was re-ranked and no existing ID moved. The [coverage and cross-extension review](#coverage-and-cross-extension-review) read this repository at 3.41.0 beside VSCode-MDPA-Preview 5.38.0 and KKSS 2.36.0 and added two upkeep items ([stylesheet consolidation](#stylesheet-consolidation) 1.8, [reduced motion and keyboard paths](#reduced-motion-and-keyboard-audit) 1.9), nine Ready product work items (2.45–2.53; 2.47 and 2.53 have since shipped and left the file, 2.49 and 1.9 are down to their remainders), eight geometry probes (3.21–3.28), six meshing probes (4.13–4.18), six platform probes (5.6–5.11) and one strategic item ([constrained 2D sketches](#constrained-sketches), 6.4). Four Non-goals were re-read at the maintainer's request and re-opened by a route that was not available or not considered when they were written: interactive sketching with constraints (6.4), the gmsh-wasm checklist (4.18, a new build of the package this project's maintainer also maintains), the kernel-blocked facts (3.28, through the OpenCASCADE that meshio++'s full artifact links) and a narrow slice of the render workspace (5.11). Each Non-goal entry now says so. The same change removed three in-page links whose targets had shipped and left the file, and corrected the unresolved count in 1.1.
 
-**Extended 2026-11-24 (PrePoMax and SimWB review).** Extension, not a planning review: nothing was re-ranked and no existing ID moved. The [PrePoMax and SimWB review](#prepomax-simwb-review) read two other open pre/post-processors and added two Ready product work items ([growing a face selection and picking similar faces](#grow-and-similar-face-selection) 2.56, [axis and centre from a round feature](#axis-from-round-feature) 2.57), one geometry probe ([splitting a solid by an extended face or extruded edges](#split-by-extended-face) 3.29) and two meshing probes ([consistent edge counts across structured Parts](#structured-edge-counts) 4.19, [quad-dominant shell meshes for mid-surfaces](#quad-dominant-shell-meshes) 4.20). Most of what both projects offer on the geometry side was already queued here; those findings are rows in the review that point at the existing item.
+**Extended 2026-11-24 (PrePoMax and SimWB review).** Extension, not a planning review: nothing was re-ranked and no existing ID moved. The [PrePoMax and SimWB review](#prepomax-simwb-review) read two other open pre/post-processors and added two Ready product work items ([growing a face selection and picking similar faces](#grow-and-similar-face-selection) 2.56, [axis and centre from a round feature](#axis-from-round-feature) 2.57), one geometry probe ([splitting a solid by an extended face or extruded edges](#split-by-extended-face) 3.29) and two meshing probes ([consistent edge counts across structured Parts](#structured-edge-counts) 4.19, [quad-dominant shell meshes for mid-surfaces](#quad-dominant-shell-meshes) 4.20). Most of what both projects offer on the geometry side was already queued here; those findings are rows in the review that point at the existing item. A second pass the same day added [a cell estimate per refinement region and Fit around Part](#region-cell-estimates) (2.58), [role glyphs on Parts](#role-glyphs-on-parts) (2.59), a meshing probe ([retrying a failed mesh by refining around self-intersections](#mesh-retry-local-refinement) 4.21) and a platform probe ([a memory ceiling for the kernel worker](#kernel-memory-ceiling) 5.12).
 
 Everything previously shipped is tracked in `CHANGELOG.md`, and `CLAUDE.md` holds the invariants, traps and verified kernel facts that a future change could break (not per-feature history, which lives in git) — this page is for what's **not** built yet, plus the Non-goals that record why a direction was rejected so it isn't re-proposed.
 
@@ -390,6 +390,19 @@ Read [PrePoMax](https://github.com/PrePoMax/PrePoMax) (a C# pre- and post-proces
 
 **Limits found during review:** the OCCT classes the split probe names were not re-checked against `opencascade.js` 1.1.1, so the probe's first step is that check. PrePoMax's edge-count balancing depends on lp_solve, whose licence (LGPL-2.1) is compatible but would be a new bundled dependency; the probe asks first whether a small integer program needs a solver at all. QuadWild is GPL and native, so it is a comparison point, not a dependency.
 
+**Second pass — 2026-11-24.** A deeper read of SimWB's meshing and viewport code and PrePoMax's geometry tools:
+
+| Evidence | Opportunity and owner |
+| --- | --- |
+| SimWB draws each refinement region with its own cell estimate (warning colour above 3 M), a move/turn gizmo, face arrows to resize and **Fit around part** (`regions.py`, `qt/regionxform.py`) | CAD: [cell estimate per refinement region and Fit around Part](#region-cell-estimates) (2.58), beside the handles in [refinement region handles in the viewport](#refinement-regions) (2.45). |
+| SimWB draws conditions on the model (load arrows, support blocks, gravity, free stream) and shows face id, kind, part, area and condition on hover (`docs/USER_MANUAL.md`, interaction sections) | CAD: [role glyphs on Parts](#role-glyphs-on-parts) (2.59), once [simulation intent on Parts](#simulation-intent-on-parts) (2.46) gives a Part a role. VSCode-MDPA-Preview draws the solver conditions themselves. |
+| SimWB's mesher finds a "crossing surfaces" failure, refines a small ball around the crossing and retries (`gmsh_worker.py`) | CAD: [retry a failed mesh by refining around self-intersections](#mesh-retry-local-refinement) (4.21). |
+| SimWB caps the mesher's memory with a Job Object or `RLIMIT_AS` at a share of free memory, so a runaway mesh dies alone (`memlimit.py`) | CAD: [memory ceiling for the kernel worker](#kernel-memory-ceiling) (5.12). |
+| PrePoMax places coordinate systems and reference points from geometry (circle through three points, centre of gravity, bounding-box centre; `CaeMesh/CoordinateSystem.cs`) | Already queued: [named local coordinate systems](#named-local-coordinate-systems) (2.50); these placements are its construction options. |
+| PrePoMax's geometry repair panel and analyse dialog (sew, fix shape, remove small faces and edges, short edges, sharp vertices; `Forms/04_GeometryFeature/ViewGeometryRepair.cs`, `Forms/03_AnalyzeGeometry`) | Already queued: [small-feature detection feeding `defeature`](#small-feature-detection) (3.22) and [B-rep repair by refit](#brep-repair-by-refit) (3.15); `check_brep_health` ships the facts. |
+| PrePoMax converts shell to solid and back and thickens shell meshes (`CConvertShellToSolid`, `CThickenShellMesh`) | Not added: `thin` features and the mesh extension's `thicken` derive kind cover the mesh case, and `MakeOffsetShape` on a solid is Kernel-blocked. |
+| SimWB's wall-layer calculator (first and total thickness, y+ from the flow model, a translucent shell preview) | Already shipped as VSCode-MDPA-Preview's size advice and the measured boundary-layer rows; [physics-calibrated size presets](#physics-calibrated-size-presets) (4.12) is the open half. |
+
 ### What the GPL-3.0 relicense unlocks {#relicense-unlocks}
 
 CAD-Preview moved from `GPL-2.0-or-later` to `GPL-3.0-or-later` on 2026-09-24. Besides the OpenSCAD port it was made for, this admits Apache-2.0 dependencies: under GPLv2 they were incompatible, and under GPLv3 they are compatible. One of them serves an open item directly (the other, `draco3d`, shipped with compressed glTF):
@@ -617,6 +630,28 @@ These are outcome groupings, not release numbers. Independent small items can sh
 - **First useful increment (S):** an **Axis from selection** action in the inspector card that shows the axis point, direction and radius, and offers three uses: create a construction plane through or normal to it, use it as the rotate op's axis (filling the form), and **Align this axis to X/Y/Z** (a `rotate` op through the axis point, so it is recorded and undoable like any other).
 - **Parity:** `measure` and `get_entity_facts` already return the analytic numbers; the align step is an ordinary `rotate` op, so no new tool is needed.
 - **Done when:** on a STEP file whose bore is tilted 7°, aligning its axis to Z leaves the bore's axis within 1e-6 of Z, and on an STL cylinder the fitted axis reports its residual.
+
+#### 2.58 Cell estimate per refinement region, and Fit around Part {#region-cell-estimates}
+
+*Area: Meshing, Interface. Effort: S–M. Added 2026-11-24 from the second pass of the [PrePoMax and SimWB review](#prepomax-simwb-review).*
+
+- **Workflow:** a user adds a fine region around a wake or a fillet and only learns after a long generate that it alone tripled the mesh.
+- **Evidence:** `estimate_mesh_budget` and the panel's estimate report one total for the whole model; `MeshOptions.refinementRegions` are typed as numbers. SimWB shows a cell estimate on every region and turns it to a warning colour above a threshold, and offers **Fit around part**.
+- **Scope, and what stays out:** box, sphere and cylinder regions; the per-region figure is the region's volume at its own size minus what the background would already give there, reusing the budget's own ideal-element arithmetic and labelled as an estimate. Out: regions drawn as gizmos, which [refinement region handles in the viewport](#refinement-regions) (2.45) owns.
+- **First useful increment (S):** each region row in the FE Mesh panel shows its estimated added cells and its share of the total, coloured above a stated threshold; **Fit around Part** fills a region's centre and extent from a chosen Part's bounding box plus a margin (box, or a cylinder along the Part's longest axis).
+- **Parity:** `estimate_mesh_budget` returns the per-region breakdown; Fit around Part is a webview convenience that writes ordinary region numbers.
+- **Done when:** on `block.stp` with one sphere region the per-region estimate and the measured cell increase agree within the budget's stated factor, and fitting a region around a Part encloses every vertex of that Part.
+
+#### 2.59 Role glyphs on Parts {#role-glyphs-on-parts}
+
+*Area: Interface. Effort: S. Needs [simulation intent on Parts](#simulation-intent-on-parts) (2.46). Added 2026-11-24 from the second pass of the [PrePoMax and SimWB review](#prepomax-simwb-review).*
+
+- **Workflow:** after assigning roles a user wants to see at a glance which faces are fixed, loaded, inlets or walls, without opening each Part.
+- **Evidence:** Parts show only a colour; SimWB draws load arrows, support blocks, a gravity arrow and the free stream on the model, and its hover card names face, Part, area and condition.
+- **Scope, and what stays out:** glyphs for the roles 2.46 defines (support hatching, inward or outward arrows for loads and inlets, symmetry planes, a gravity arrow when the Part set carries one), drawn as a scene overlay that is never pickable, scaled to the model and hidden with the Part. Out: solver-specific condition values, which belong to VSCode-MDPA-Preview's case forms.
+- **First useful increment (S):** a **Role glyphs** toggle in the View menu and a hover card line "Part · role · area"; glyph density decluttered on a screen grid like the label overlay.
+- **Parity:** `render_snapshot` gains a `roleGlyphs` option so an agent can check an assignment from a picture.
+- **Done when:** on a bracket with a fixed face and a loaded face both glyph kinds draw on the right faces, hiding the Part hides its glyphs, and a `test:webview` case shows the overlay is not pickable.
 
 ### Probe-gated — establish feasibility before estimating
 
@@ -1000,6 +1035,7 @@ None of these depends on another's result.
 | 4.18 | A newer gmsh-wasm build against the five gates | a gmsh-wasm release | Re-opens the gmsh-wasm checklist; the build is maintained alongside this project |
 | 4.19 | Consistent edge counts across structured Parts | — | Neighbouring structured Parts fail to conform without it; small integer programs |
 | 4.20 | Quad-dominant shell meshes for mid-surfaces | 3.21 | Decides whether Gmsh recombination is good enough for thin-walled models |
+| 4.21 | Retry a failed mesh by refining around self-intersections | — | Turns a dead-end Gmsh error into a reported, local fix |
 
 Section 4 was emptied and removed when its last probe closed; it is recreated here for the two items below, keeping the highest ID used (4.10) behind them.
 
@@ -1151,6 +1187,23 @@ Section 4 was emptied and removed when its last probe closed; it is recreated he
 - **If admitted (S):** the preset, its numbers reported through the [quality gate](#quality-gate-per-part), and the MDPA export of quadrilateral shell conditions or elements as the sibling's structural problemtype expects them.
 - **Out of scope:** bundling a native quad mesher.
 
+##### 4.21 Retry a failed mesh by refining around self-intersections {#mesh-retry-local-refinement}
+
+*Area: Meshing. Added 2026-11-24 from the second pass of the [PrePoMax and SimWB review](#prepomax-simwb-review).*
+
+- **Hypothesis:** many 3-D generate failures ("PLC Error", "crossing surfaces", "invalid boundary mesh") come from a few facets that intersect after surface meshing, and refining a small ball around the reported crossing and retrying once clears most of them without the user changing anything.
+- **Evidence today:**
+  - `daratech.stp` reliably throws a Gmsh PLC error, and `piston.stp`/`turbine.stp` do at the unbounded automatic size (`CLAUDE.md`, Testing).
+  - Gmsh prints the intersecting facets' coordinates on that failure; nothing reads them today.
+  - SimWB parses the crossing, adds a local size and retries (`gmsh_worker.py`).
+- **Probe (S):**
+  1. Capture the failure text on the three fixtures and parse the crossing points.
+  2. Add a `Ball` field at each point (radius a few surface sizes, size half the local size) joined into the shared `Min`, and retry once.
+  3. Record which fixtures recover and how many cells the fix added.
+- **Decision gate:** *pass* — at least two of the three recover; ships as an automatic retry that reports what it added. *Partial* — one recovers: ships as an offered **Retry with local refinement** button. *Fail* — recorded with the failure texts.
+- **If admitted (S):** the retry, a status line naming the points and the added regions, the handoff facts recording that a retry happened, and the same in `generate_mesh`'s warnings.
+- **Out of scope:** repairing the B-rep itself ([B-rep repair by refit](#brep-repair-by-refit)).
+
 #### 5. Platform probes {#platform-probes}
 
 | ID | Item | Needs | Why here |
@@ -1166,6 +1219,7 @@ Section 4 was emptied and removed when its last probe closed; it is recreated he
 | 5.9 | Visual-regression scenes | CI software rendering | Determinism under software GL is the unknown |
 | 5.10 | Touch and pen input | a touch device | Cannot be judged without hardware |
 | 5.11 | Presentation captures | — | A narrow, consumer-backed slice of a rejected workspace |
+| 5.12 | Memory ceiling for the kernel worker | — | One runaway mesh should not take the editor host down |
 
 
 ##### 5.1 Per-document kernel isolation {#per-document-kernel-isolation}
@@ -1355,6 +1409,23 @@ Section 4 was emptied and removed when its last probe closed; it is recreated he
 - **Decision gate:** *pass* for recording if a turntable encodes in under ten seconds; *pass* for soft shading only if it composes with every display mode without artefacts, otherwise it is dropped and the entry under Rejected scope stays as written.
 - **If admitted (S–M):** **Record** in the View menu (turntable, explode, configuration sweep; WebM, GIF, PNG sequence, matching the sibling's formats), `render_snapshot` taking a `frames` count for a turntable, and the shading mode if it passed.
 - **Out of scope:** materials, environments, lights and path tracing, which stay rejected.
+
+##### 5.12 Memory ceiling for the kernel worker {#kernel-memory-ceiling}
+
+*Area: Platform. Added 2026-11-24 from the second pass of the [PrePoMax and SimWB review](#prepomax-simwb-review).*
+
+- **Hypothesis:** the forked kernel child can be given an address-space or job-memory ceiling (a share of free memory, configurable), so a mesh that grows without bound kills only the worker, which the existing reset path already survives, instead of swapping the machine.
+- **Evidence today:**
+  - The worker is a separate process with a watchdog for time but not for memory; MMG has its own 1.5 GiB RSS ceiling, Gmsh and fTetWild none.
+  - A kill already loses only the child's cache and the next call cold-parses (`CLAUDE.md`, kernel worker).
+  - SimWB caps its mesher with a Windows Job Object or `RLIMIT_AS` (`memlimit.py`).
+- **Probe (S):**
+  1. On Linux, start the child under a `prlimit`-style address-space limit and drive `block.stp` to an absurd size; confirm a clean abort and a `kernel-crashed` error with a memory message.
+  2. Check that WebAssembly's reserved address space does not trip the limit at normal sizes (wasm reserves large virtual ranges, so an address-space limit may need to be an RSS sampler instead).
+  3. On Windows, check whether Node can place the child in a Job Object without a native module; on macOS record what is possible.
+- **Decision gate:** *pass* — a limit that never fires on the smoke suite and always fires on the runaway case, on Linux at least; ships behind `cadPreview.kernelMemoryLimitPercent`. *Partial* — only an RSS sampler that kills the child: ships with that wording. *Fail* — recorded.
+- **If admitted (S):** the setting, a distinct `kernel-memory` error code in `mcpErrors.ts`, and the message telling the user to coarsen the mesh.
+- **Out of scope:** a second native module for job objects (the same rule as the rest of the build).
 
 ### 6. Strategic — multi-phase bets {#strategic-—-multi-phase-bets}
 
