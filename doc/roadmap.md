@@ -77,6 +77,8 @@ Existing implementation references were checked against the repository where not
 
 **Extended 2026-11-10 (coverage and cross-extension review, Non-goal recovery).** Extension, not a planning review: nothing was re-ranked and no existing ID moved. The [coverage and cross-extension review](#coverage-and-cross-extension-review) read this repository at 3.41.0 beside VSCode-MDPA-Preview 5.38.0 and KKSS 2.36.0 and added two upkeep items ([stylesheet consolidation](#stylesheet-consolidation) 1.8, [reduced motion and keyboard paths](#reduced-motion-and-keyboard-audit) 1.9), nine Ready product work items (2.45–2.53; 2.47 and 2.53 have since shipped and left the file, 2.49 and 1.9 are down to their remainders), eight geometry probes (3.21–3.28), six meshing probes (4.13–4.18), six platform probes (5.6–5.11) and one strategic item ([constrained 2D sketches](#constrained-sketches), 6.4). Four Non-goals were re-read at the maintainer's request and re-opened by a route that was not available or not considered when they were written: interactive sketching with constraints (6.4), the gmsh-wasm checklist (4.18, a new build of the package this project's maintainer also maintains), the kernel-blocked facts (3.28, through the OpenCASCADE that meshio++'s full artifact links) and a narrow slice of the render workspace (5.11). Each Non-goal entry now says so. The same change removed three in-page links whose targets had shipped and left the file, and corrected the unresolved count in 1.1.
 
+**Extended 2026-11-24 (PrePoMax and SimWB review).** Extension, not a planning review: nothing was re-ranked and no existing ID moved. The [PrePoMax and SimWB review](#prepomax-simwb-review) read two other open pre/post-processors and added two Ready product work items ([growing a face selection and picking similar faces](#grow-and-similar-face-selection) 2.56, [axis and centre from a round feature](#axis-from-round-feature) 2.57), one geometry probe ([splitting a solid by an extended face or extruded edges](#split-by-extended-face) 3.29) and two meshing probes ([consistent edge counts across structured Parts](#structured-edge-counts) 4.19, [quad-dominant shell meshes for mid-surfaces](#quad-dominant-shell-meshes) 4.20). Most of what both projects offer on the geometry side was already queued here; those findings are rows in the review that point at the existing item.
+
 Everything previously shipped is tracked in `CHANGELOG.md`, and `CLAUDE.md` holds the invariants, traps and verified kernel facts that a future change could break (not per-feature history, which lives in git) — this page is for what's **not** built yet, plus the Non-goals that record why a direction was rejected so it isn't re-proposed.
 
 ## How this file works
@@ -367,6 +369,27 @@ Read this repository at 3.41.0 (`9afec8b`) together with VSCode-MDPA-Preview 5.3
 
 **Limits found during review:** the geometry probes name OCCT classes whose binding state in `opencascade.js` 1.1.1 was not re-checked here; each probe's first step is that check, and green in the manifest is still not sufficient. Solver-side meaning (which condition a role maps to, which element a section property feeds) stays with VSCode-MDPA-Preview: nothing here authors a boundary condition, a load or a solver setting.
 
+### PrePoMax and SimWB review — 2026-11-24 {#prepomax-simwb-review}
+
+Read [PrePoMax](https://github.com/PrePoMax/PrePoMax) (a C# pre- and post-processor for CalculiX) and the Open Mechanical Simulation Workbench (SimWB, a Python study workbench on Gmsh, built-in FEM solvers and OpenFOAM) at the revisions checked out beside KKSS, asking which geometry-preparation and meshing features a simulation user meets there that this extension lacks. A source and documentation review; neither project was built or run, and no kernel probe was run for it, which is why the meshing additions are probe-gated. Solver-side findings went to VSCode-MDPA-Preview's roadmap and cross-mode ones to KKSS's.
+
+| Evidence | Opportunity and owner |
+| --- | --- |
+| PrePoMax selects by *surface angle* and *edge angle* (`CaeGlobals/Selection`: grow from a picked face across neighbours until the dihedral angle exceeds a limit); SimWB's Ctrl+click adds "all similar faces" (same surface type, parallel normal, similar area; `qt/picking.py`). Here `selectionGroups.ts` offers same-normal, planar and area groups and `selectFilters.ts` has no adjacency growth | CAD: [grow a face selection and pick similar faces](#grow-and-similar-face-selection) (2.56). |
+| SimWB's "Centre on a cylinder or circular edge" fits the axis nearest the click and offers to turn a tilted model upright (`axisfit.py`, `orient.py`, `qt/alignguide.py`) | CAD: [axis and centre from a round feature](#axis-from-round-feature) (2.57). |
+| PrePoMax splits solids and shells by a plane through three points, a point and normal, a line, extruded edges or an extended face (`CaeMesh/Features`, `Forms/04_GeometryFeature`); `splitByPlane` and `splitFace` here cover a plane and edges lying on a face | CAD: [split a solid by an extended face or extruded edges](#split-by-extended-face) (3.29). |
+| PrePoMax balances edge counts across transfinite and swept parts by integer programming (`CaeMesh/Meshing/IntervalAssignment`, `Transfinite/TransfiniteEdgeCountBalancer.cs`, lp_solve); `Part.meshStructured` here meshes each Part on its own | CAD: [consistent edge counts across structured Parts](#structured-edge-counts) (4.19), beside [swept hexahedral meshes](#swept-hexahedral-meshes) (4.13). |
+| PrePoMax meshes shells quad-dominant through QuadWild with a Gmsh fallback (`CaeMesh/Meshing/QuadWild`); this extension has Gmsh recombination but nothing measures it on thin parts | CAD: [quad-dominant shell meshes for mid-surfaces](#quad-dominant-shell-meshes) (4.20), after [mid-surface extraction](#mid-surface-extraction) (3.21). |
+| PrePoMax's *Search contact pairs* finds touching surfaces, groups them and turns them into ties or contacts in bulk (`CaeMesh/ContactSearch`, `Forms/46_SearchContactPairs`) | Already queued: [contact and interface pair detection](#contact-and-interface-pair-detection) (3.24); its grouping and bulk tie-or-contact step are evidence for that item's panel. Mesh owns the conditions. |
+| SimWB's symmetry planes solve a half or quarter model and expand reactions back (`symmetry.py`) | Already queued: [symmetry detection and cut](#symmetry-detection-and-cut) (3.26). Mesh owns result expansion. |
+| PrePoMax section views with several cutting planes at once (`Forms/02_View`) | Already queued: [several section planes and a section box](#section-planes-and-box) (2.51). |
+| SimWB warns about tiny logo or text faces and suggests a defeature size; PrePoMax defeatures and fuses faces (`Commands/0030_Geometry`) | Already queued: [small-feature detection feeding `defeature`](#small-feature-detection) (3.22); fusing faces ships as `unifySameDomain`. |
+| SimWB builds an air box, C-shape or cylinder around the model sized in spans (`domain.py`) | Already queued: [flow-volume extraction](#flow-volume-extraction) (3.23); VSCode-MDPA-Preview's wind tunnel covers the mesh case. |
+| PrePoMax keeps face and edge names across a remesh or re-import (`CaeMesh/GeometryMetadata`) | Already queued: [Part rename and delete events for embedders](#part-rename-and-delete-events) (5.4); KKSS owns the region-reference half. |
+| SimWB's mesh check reports cells across the thinnest part and narrowest gap | Shipped: the Passages panel (`passageAnalysis.ts`) estimates cells across each channel before meshing. |
+
+**Limits found during review:** the OCCT classes the split probe names were not re-checked against `opencascade.js` 1.1.1, so the probe's first step is that check. PrePoMax's edge-count balancing depends on lp_solve, whose licence (LGPL-2.1) is compatible but would be a new bundled dependency; the probe asks first whether a small integer program needs a solver at all. QuadWild is GPL and native, so it is a comparison point, not a dependency.
+
 ### What the GPL-3.0 relicense unlocks {#relicense-unlocks}
 
 CAD-Preview moved from `GPL-2.0-or-later` to `GPL-3.0-or-later` on 2026-09-24. Besides the OpenSCAD port it was made for, this admits Apache-2.0 dependencies: under GPLv2 they were incompatible, and under GPLv3 they are compatible. One of them serves an open item directly (the other, `draco3d`, shipped with compressed glTF):
@@ -572,6 +595,29 @@ These are outcome groupings, not release numbers. Independent small items can sh
 - **What to do (S–M):** a generator that writes marked islands into `doc/edit-ops-reference.md` (per op: parameters, types, defaults, which engines run it, whether it is topology-changing, the catalogue button and key) and into `doc/mcp-server.md` (per tool: parameters, the capability matrix row, whether it writes), from `OP_PARAM_DOCS`, `opCatalog.ts`, `BREP_ONLY_OPS`/`TOPOLOGY_CHANGING_OPS` and the registered schemas; a test in `npm test` that fails when a committed island differs from a fresh generation. Prose and worked examples stay outside the islands and keep their `parametric` fence gate.
 - **Done when:** adding a parameter to an op fails the test until the page is regenerated, the `tools/list` count in `mcp:smoke` and the generated table agree, and `docs:build` has no dead anchor.
 
+#### 2.56 Grow a face selection across tangent faces, and pick similar faces {#grow-and-similar-face-selection}
+
+*Area: Selection, Interface. Effort: S–M. Added 2026-11-24 from the [PrePoMax and SimWB review](#prepomax-simwb-review).*
+
+- **Workflow:** a user picks one face of a fillet chain, a cylinder split into halves or a wall made of many faces, and wants the whole smooth surface; or picks one hole wall and wants every hole of the same radius.
+- **Evidence:** `selectionGroups.ts` offers same-normal, planar and area groups for the clicked face, and `selectFilters.ts` filters by normal, size and position; nothing walks face adjacency, and no group compares surface type or radius. PrePoMax's *surface angle* selection and SimWB's Ctrl+click "similar faces" both answer this.
+- **Scope, and what stays out:** B-rep faces and mesh facets (`meshFacets.ts` already holds facet adjacency); the dihedral angle is measured from face normals along the shared edge (B-rep, through the pcurve normal call already used for edge facts) or between facet normals (mesh). Out: a tolerance on curvature continuity, which needs the overlays in [curvature, minimum radius and isocurve overlays](#curvature-and-isocurve-overlays).
+- **First useful increment (S):** a **Grow to angle** group in the context menu ("Smooth surface ≤ 20°"), the angle editable and remembered per session, and **Same type and radius** (cylinders, cones, spheres and tori by their analytic parameters within a tolerance; planes by normal and offset) beside the existing groups. Both report the count and add to the active selection like every other group.
+- **Next increment (S):** the same two as selector leaves (`selectorPredicate.ts`), so a rule-defined Part can say "the smooth surface containing this face" and survive a rebuild.
+- **Parity:** `select_entities` gains `growFrom` + `maxAngleDeg` and `similarTo`; facts only, never a selection that silently includes a face beyond the angle.
+- **Done when:** on `bull.stp` growing from one fillet face selects exactly the chain a manual pick gives, an angle of 0° selects only the seed, and on a plate with holes of two radii "same type and radius" selects one set and not the other.
+
+#### 2.57 Axis and centre from a round feature {#axis-from-round-feature}
+
+*Area: Geometry, Interface. Effort: S. Added 2026-11-24 from the [PrePoMax and SimWB review](#prepomax-simwb-review).*
+
+- **Workflow:** an imported part arrives tilted, or a rotation needs an axis through a bore, and the user only knows "that hole".
+- **Evidence:** analytic face facts already return a cylinder's axis and radius, and `fit_mesh_region` fits a cylinder to a mesh region; neither is offered as an axis to act on. SimWB's "Centre on a cylinder or circular edge" fits the axis nearest the click and offers to turn the model upright.
+- **Scope, and what stays out:** cylindrical, conical and toroidal faces and circular edges of a B-rep (exact), and a picked mesh region (fitted, labelled as fitted with its residual). Out: fitting an axis to an arbitrary freeform face.
+- **First useful increment (S):** an **Axis from selection** action in the inspector card that shows the axis point, direction and radius, and offers three uses: create a construction plane through or normal to it, use it as the rotate op's axis (filling the form), and **Align this axis to X/Y/Z** (a `rotate` op through the axis point, so it is recorded and undoable like any other).
+- **Parity:** `measure` and `get_entity_facts` already return the analytic numbers; the align step is an ordinary `rotate` op, so no new tool is needed.
+- **Done when:** on a STEP file whose bore is tilted 7°, aligning its axis to Z leaves the bore's axis within 1e-6 of Z, and on an STL cylinder the fitted axis reports its residual.
+
 ### Probe-gated — establish feasibility before estimating
 
 *Admission: a specific hypothesis with a discriminating experiment. Each probe below is a small, self-contained piece of work with a firm **S** estimate of its own; the phases under "If admitted" are what ships if the probe passes, tagged provisionally. A method that accepts arguments but changes nothing is a failed probe.*
@@ -618,6 +664,7 @@ Probes are grouped by area. Each group has its own order table. The order is the
 | 3.26 | Symmetry detection and cut | — | Detection is the unknown; the cut is a shipped op |
 | 3.27 | Queued kernel follow-ups | — | Five limits recorded in code comments, each a separate binding question |
 | 3.28 | Kernel-blocked facts through meshio++'s OpenCASCADE | a meshio++ release | Re-opens Kernel-blocked entries without waiting for the self-built OCCT |
+| 3.29 | Split a solid by an extended face or extruded edges | — | Two splitter tools beyond the plane; the untrimmed-face build is the unknown |
 
 None of these depends on another's result.
 
@@ -922,6 +969,23 @@ None of these depends on another's result.
 - **If admitted (S–M per fact):** the upgrade pass, then the self-intersection fact, then a heal-and-reimport route offered when meshing fails.
 - **Out of scope:** exposing OpenCASCADE generally through meshio++, and moving modelling operations to it (two kernels editing one shape is the failure to avoid).
 
+##### 3.29 Split a solid by an extended face or by extruded edges {#split-by-extended-face}
+
+*Area: Geometry. Added 2026-11-24 from the [PrePoMax and SimWB review](#prepomax-simwb-review).*
+
+- **Hypothesis:** a solid can be cut by the infinite (or enlarged) surface of one of its own faces, or by a prism swept from picked edges along a direction, with the same splitter call `splitByPlane` uses, which gives partitioning for structured meshing and for applying a load to part of a face.
+- **Evidence today:**
+  - `BRepAlgoAPI_Splitter_1()` with a plane-face tool cuts a solid in two (Kernel facts in `CLAUDE.md`), and `splitFace` splits one face by edges lying on it.
+  - PrePoMax offers both splits (`CaeMesh/Features`).
+  - Whether an untrimmed face can be built from a picked face's surface handle (`BRep_Tool` surface + a large parameter box through `BRepBuilderAPI_MakeFace`) is unverified in this build.
+- **Probe (S):**
+  1. On `block.stp`, extend one side face and split the solid with it; check two solids whose volumes sum to the original.
+  2. On a drilled plate, extend the hole's cylindrical face and split; check the split solid's faces.
+  3. Extrude two picked edges along a direction into a face and split with it.
+- **Decision gate:** *pass* — all three split with volumes conserved to 1e-6 and the original handle returned on a no-op, as `splitFace` does; ships as two new modes of `splitByPlane`. *Partial* — planar faces only. *Fail* — recorded with the failing call.
+- **If admitted (S):** `splitByPlane` gains `extendFace` and `extrudeEdges` sources, the form gains the two pick modes, and buckets record the `splitRegion` role like `splitFace`.
+- **Out of scope:** splitting by a free-standing surface the user models separately (that is a boolean with a sheet, already reachable).
+
 #### 4. Meshing probes {#meshing-probes}
 
 | ID | Item | Needs | Why here |
@@ -934,6 +998,8 @@ None of these depends on another's result.
 | 4.16 | Looking inside a volume mesh | — | Rendering cost is the unknown |
 | 4.17 | Triangles for display-only formats | meshio++ readers | Six formats can be viewed and nothing else |
 | 4.18 | A newer gmsh-wasm build against the five gates | a gmsh-wasm release | Re-opens the gmsh-wasm checklist; the build is maintained alongside this project |
+| 4.19 | Consistent edge counts across structured Parts | — | Neighbouring structured Parts fail to conform without it; small integer programs |
+| 4.20 | Quad-dominant shell meshes for mid-surfaces | 3.21 | Decides whether Gmsh recombination is good enough for thin-walled models |
 
 Section 4 was emptied and removed when its last probe closed; it is recreated here for the two items below, keeping the highest ID used (4.10) behind them.
 
@@ -1054,6 +1120,36 @@ Section 4 was emptied and removed when its last probe closed; it is recreated he
 - **Decision gate:** per row, *pass* moves it out of Non-goals into Ready product work with its gate's numbers; *fail on native too* turns the row into an upstream Gmsh issue link and it stays.
 - **If admitted:** 3-D boundary layers on OCC solids (superseding the need for [a volume behind the prism-layer shell](#volume-behind-prism-layers) if it passes), a `Relocate3D` optimise mode, hex-dominant export if type 140 becomes describable.
 - **Out of scope:** forking Gmsh.
+
+##### 4.19 Consistent edge counts across structured Parts {#structured-edge-counts}
+
+*Area: Meshing. Added 2026-11-24 from the [PrePoMax and SimWB review](#prepomax-simwb-review).*
+
+- **Hypothesis:** when several Parts ask for structured (transfinite) or swept meshes and share edges, the node count on each shared edge can be chosen by solving a small integer program over the edge loops (opposite edges of a mapped face equal, each count near the size the Part asks for), instead of letting each Part pick its own and failing to conform.
+- **Evidence today:**
+  - `Part.meshStructured` sets transfinite curves Part by Part; two structured Parts sharing a face can ask for different counts on it, and the result either fails or silently falls back.
+  - PrePoMax's interval assignment solves exactly this (`CaeMesh/Meshing/IntervalAssignment`, `Transfinite/TransfiniteEdgeCountBalancer.cs`) with lp_solve.
+  - The size of the program for a typical part (tens of edges) is unknown; a greedy or small exact method may need no solver.
+- **Probe (S):**
+  1. Build the constraint set (mapped-face opposite-edge equalities, sweep-layer equalities, positive integers) for two adjacent structured blocks and for a swept plate with a structured flange.
+  2. Solve it with a small exact method written here and with lp_solve for comparison; record time and the result.
+  3. Report an infeasible set by naming the edges that cannot agree.
+- **Decision gate:** *pass* — conforming structured meshes on both fixtures and a named infeasibility for a deliberately contradictory one, with no new dependency; ships. *Partial* — needs lp_solve (LGPL-2.1, compatible): the bundling decision goes to the maintainer. *Fail* — recorded.
+- **If admitted (S–M):** a **Balance edge counts** step that runs before a structured generate, reports the chosen counts per edge and the edges it had to change, and refuses with the named edges when the set is infeasible.
+- **Out of scope:** unstructured meshes, which conform by construction.
+
+##### 4.20 Quad-dominant shell meshes for mid-surfaces {#quad-dominant-shell-meshes}
+
+*Area: Meshing. Added 2026-11-24 from the [PrePoMax and SimWB review](#prepomax-simwb-review).*
+
+- **Hypothesis:** for a thin-walled part reduced to its [mid-surface](#mid-surface-extraction), Gmsh's recombination (Blossom on Frontal-Delaunay for Quads, then `RecombineAll`) gives a quad-dominant shell mesh good enough for shell elements, so no separate quad mesher is needed.
+- **Evidence today:**
+  - Recombination and the quad algorithms ship (`MeshOptions`), but nothing measures their quality on thin parts.
+  - PrePoMax uses QuadWild with a Gmsh fallback for shells (`CaeMesh/Meshing/QuadWild`); QuadWild is native and GPL, so it is a comparison point, not a dependency.
+- **Probe (S):** on two mid-surfaces (a bracket and a ribbed plate), mesh with each recombination route at three sizes and record the quad fraction, the minimum and mean scaled Jacobian, and the triangles left over. Compare with published QuadWild figures for similar shapes where they exist.
+- **Decision gate:** *pass* — quad fraction above 95 % and no inverted quads; ships as a **Shell (quad-dominant)** preset. *Partial* — good on planar regions only: the preset says so. *Fail* — recorded; triangular shells remain the route.
+- **If admitted (S):** the preset, its numbers reported through the [quality gate](#quality-gate-per-part), and the MDPA export of quadrilateral shell conditions or elements as the sibling's structural problemtype expects them.
+- **Out of scope:** bundling a native quad mesher.
 
 #### 5. Platform probes {#platform-probes}
 
