@@ -44,15 +44,31 @@ export interface BrowserBody {
   color?: string;
 }
 
+export interface BrowserOriginState {
+  grid: boolean;
+  axes: { x: boolean; y: boolean; z: boolean };
+  planes: { xy: boolean; xz: boolean; yz: boolean };
+}
+
+export interface BrowserSketchOp {
+  op: number;
+  label: string;
+  faceCount: number;
+  edgeCount: number;
+  hidden: boolean;
+  guide: boolean;
+}
+
 export interface BrowserInputs {
-  document: { name: string; format: string | null; unit: string; unsavedEdits: number };
+  document: { name: string; format: string | null; unit: string; unsavedEdits: number; tessellation?: string };
   bookmarkNames: string[];
-  planes: { id: string; name: string }[];
-  /** World grid + axes shown (the one origin visibility the viewer has). */
-  gridVisible: boolean;
+  planes: { id: string; name: string; visible: boolean }[];
+  origin: BrowserOriginState;
   /** Tree leaves WITHOUT the synthetic "Sketches" group. */
   bodies: BrowserBody[];
-  /** The synthetic "Sketches" leaf, when the model has one. */
+  /** Individual sketch/2D op rows mapped from final free faces and edges. */
+  sketchOps?: BrowserSketchOp[];
+  /** Fallback synthetic "Sketches" leaf when unmapped free faces remain. */
   sketches: { id: string; hidden: boolean; faceCount?: number; guide: boolean } | null;
   ops: { label: string; suppressed: boolean; baked: boolean; guide: boolean; folder?: string }[];
   parts: { name: string; color: string; hidden: boolean }[];
@@ -88,10 +104,31 @@ export function splitSketches<T extends { label: string }>(leaves: T[]): { bodie
 }
 
 export function buildBrowser(inp: BrowserInputs): BrowserGroup[] {
+  const sketchOpRows = (inp.sketchOps ?? []).map((s) =>
+    row({
+      id: `sketch:op:${s.op}`,
+      label: s.guide ? `${s.label} (guide)` : s.label,
+      detail: s.faceCount > 0 ? `${s.faceCount} f` : s.edgeCount > 0 ? `${s.edgeCount} e` : undefined,
+      eye: s.hidden ? "off" : "on",
+      muted: s.guide,
+    })
+  );
+  const fallbackSketchRows = inp.sketches
+    ? [
+        row({
+          id: `sketch:${inp.sketches.id}`,
+          label: inp.sketches.guide ? "Sketches (guide)" : "Sketches",
+          detail: inp.sketches.faceCount !== undefined ? `${inp.sketches.faceCount} f` : undefined,
+          eye: inp.sketches.hidden ? "off" : "on",
+          muted: inp.sketches.guide,
+        }),
+      ]
+    : [];
   const groups: Record<BrowserGroupId, BrowserRow[]> = {
     document: [
       row({ id: "doc:name", label: inp.document.name || "Untitled", detail: inp.document.format ?? undefined, eye: null }),
       row({ id: "doc:unit", label: "Display unit", detail: inp.document.unit, eye: null }),
+      row({ id: "doc:tessellation", label: "Tessellation", detail: inp.document.tessellation ?? "standard", eye: null }),
       row({
         id: "doc:save",
         label: inp.document.unsavedEdits > 0 ? "Unsaved edits" : "Saved",
@@ -101,8 +138,14 @@ export function buildBrowser(inp: BrowserInputs): BrowserGroup[] {
     ],
     views: inp.bookmarkNames.map((name, i) => row({ id: `view:${i}`, label: name, eye: null })),
     origin: [
-      row({ id: "origin:grid", label: "Axes and grid", eye: inp.gridVisible ? "on" : "off" }),
-      ...inp.planes.map((p) => row({ id: `plane:${p.id}`, label: p.name, eye: null })),
+      row({ id: "origin:grid", label: "Grid", eye: inp.origin.grid ? "on" : "off" }),
+      row({ id: "origin:axis-x", label: "X axis", eye: inp.origin.axes.x ? "on" : "off" }),
+      row({ id: "origin:axis-y", label: "Y axis", eye: inp.origin.axes.y ? "on" : "off" }),
+      row({ id: "origin:axis-z", label: "Z axis", eye: inp.origin.axes.z ? "on" : "off" }),
+      row({ id: "origin:plane-xy", label: "XY plane", eye: inp.origin.planes.xy ? "on" : "off" }),
+      row({ id: "origin:plane-xz", label: "XZ plane", eye: inp.origin.planes.xz ? "on" : "off" }),
+      row({ id: "origin:plane-yz", label: "YZ plane", eye: inp.origin.planes.yz ? "on" : "off" }),
+      ...inp.planes.map((p) => row({ id: `plane:${p.id}`, label: p.name, eye: p.visible ? "on" : "off" })),
     ],
     bodies: inp.bodies.map((b) =>
       row({
@@ -113,17 +156,7 @@ export function buildBrowser(inp: BrowserInputs): BrowserGroup[] {
         eye: b.hidden ? "off" : "on",
       })
     ),
-    sketches: inp.sketches
-      ? [
-          row({
-            id: `sketch:${inp.sketches.id}`,
-            label: inp.sketches.guide ? "Sketches (guide)" : "Sketches",
-            detail: inp.sketches.faceCount !== undefined ? `${inp.sketches.faceCount} f` : undefined,
-            eye: inp.sketches.hidden ? "off" : "on",
-            muted: inp.sketches.guide,
-          }),
-        ]
-      : [],
+    sketches: [...sketchOpRows, ...fallbackSketchRows],
     features: inp.ops.map((o, i) =>
       row({
         id: `op:${i}`,

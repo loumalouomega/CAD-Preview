@@ -5,12 +5,12 @@ import * as path from "path";
 // bypasses Node 18's built-in fetch(), which fails to parse filesystem paths.
 import openCascadeFactory from "opencascade.js/dist/opencascade.wasm.js";
 import { tessellateByGroup, extractEdges, extractVertices, type SolidGroup, type EdgeLine, type PointEntity } from "./meshExtract";
-import { applyEditsBRep, scaleShapeForExport, collectSolids, bboxCenter, collectGuideIds, type GuideCollector, type PointRefResolution } from "./occtOperations";
+import { applyEditsBRep, scaleShapeForExport, collectSolids, bboxCenter, collectGuideIds, collectSketchOpEntities, type GuideCollector, type PointRefResolution, type SketchHandleEntry } from "./occtOperations";
 import type { OpBucket } from "./opBuckets";
 import { volumePropertiesAdaptive } from "./brepGProp";
 import { readXcafAssembly, correlateAssemblyTree, type XcafAssemblyInfo } from "./xcafTree";
 import { buildXcafDocumentForExport, writeXcafStep, readXcafFallbackShape } from "./xcafWrite";
-import type { TreeNode, Part } from "./protocol";
+import type { TreeNode, Part, SketchOpEntities } from "./protocol";
 import type { CadFormat } from "./fileRouter";
 import type { EditOp, OpOutcome } from "./editOps";
 import { type DisplayUnit, unitScaleFactor, igesUnitName } from "./lengthUnits";
@@ -167,6 +167,8 @@ export interface BRepResult {
    * synthesis" Phase 1, closed) — which `face-N` ids each topology-changing
    * op produced, keyed by op index and role. Empty when no such ops. */
   opBuckets: import("./opBuckets").OpBucket[];
+  /** Per-op mapping of final free `face-N` and `edge-N` ids for sketch/2D ops. */
+  sketchEntities?: SketchOpEntities[];
   /** Per-field freeze warnings from stored operand-query resolution
    * (roadmap "Selector synthesis", op-operand persistence) — empty unless
    * the op list carries `targetQueries` and something froze. Absent for mesh
@@ -255,6 +257,8 @@ export interface BRepCacheEntry {
   guideCollector: GuideCollector;
   guideIds: string[];
   opBuckets: OpBucket[];
+  sketchCollector: SketchHandleEntry[];
+  sketchEntities: SketchOpEntities[];
   /** Point-reference resolutions of the replayed ops (carried like `opBuckets` so an incremental append keeps the prefix's). */
   pointRefs: PointRefResolution[];
   /** `.csg` parse/build warnings for the BASE shape (see
@@ -418,6 +422,7 @@ export async function loadBRepCached(
     let opOutcomes: OpOutcome[];
     let opBuckets: OpBucket[];
     let guideCollector: GuideCollector;
+    let sketchCollector: SketchHandleEntry[];
     let pointRefs: PointRefResolution[];
     let queryWarnings: string[] | undefined;
     let foldOps = ops;
@@ -427,8 +432,9 @@ export async function loadBRepCached(
       const suffixOutcomes: OpOutcome[] = [];
       const suffixBuckets: OpBucket[] = [];
       const suffixGuides: GuideCollector = { faces: [], edges: [], vertices: [] };
+      const suffixSketches: SketchHandleEntry[] = [];
       const suffixRefs: PointRefResolution[] = [];
-      shape = applyEditsBRep(oc, previous.shape, suffix, opsCleanup, suffixOutcomes, suffixGuides, suffixBuckets, suffixRefs);
+      shape = applyEditsBRep(oc, previous.shape, suffix, opsCleanup, suffixOutcomes, suffixGuides, suffixBuckets, suffixRefs, suffixSketches);
       pointRefs = [...previous.pointRefs, ...suffixRefs.map((r) => ({ ...r, opIndex: r.opIndex + previous.ops.length }))];
       opOutcomes = [...previous.opOutcomes, ...suffixOutcomes];
       // Prefix buckets carry forward unchanged (the reused prefix ops are not
@@ -436,6 +442,10 @@ export async function loadBRepCached(
       // identical in the append case), suffix buckets are freshly recorded.
       opBuckets = [...previous.opBuckets, ...suffixBuckets];
       guideCollector = { faces: [...previous.guideCollector.faces, ...suffixGuides.faces], edges: [...previous.guideCollector.edges, ...suffixGuides.edges], vertices: [...previous.guideCollector.vertices, ...suffixGuides.vertices] };
+      sketchCollector = [
+        ...previous.sketchCollector,
+        ...suffixSketches.map((e) => ({ ...e, op: e.op + previous.ops.length })),
+      ];
     } else {
       if (baseReusable && previous) {
         for (let i = previous.opsCleanup.length - 1; i >= 0; i--) {
@@ -446,6 +456,7 @@ export async function loadBRepCached(
       opOutcomes = [];
       opBuckets = [];
       guideCollector = { faces: [], edges: [], vertices: [] };
+      sketchCollector = [];
       pointRefs = [];
       // Stored operand queries resolve sequentially against the original
       // base BEFORE the real fold (which re-folds the resolved list for
@@ -456,7 +467,7 @@ export async function loadBRepCached(
         foldOps = resolution.ops;
         if (resolution.warnings.length > 0) queryWarnings = resolution.warnings;
       }
-      shape = applyEditsBRep(oc, baseShape, foldOps, opsCleanup, opOutcomes, guideCollector, opBuckets, pointRefs);
+      shape = applyEditsBRep(oc, baseShape, foldOps, opsCleanup, opOutcomes, guideCollector, opBuckets, pointRefs, sketchCollector);
     }
 
     const groups = tessellateByGroup(oc, shape, quality);
@@ -466,12 +477,13 @@ export async function loadBRepCached(
     const solidSigs = assemblyTreeCache === undefined ? solidSignatures(oc, shape) : undefined;
     const guideTmp: Array<{ delete(): void }> = [];
     const guideIds = collectGuideIds(oc, shape, guideCollector, guideTmp);
+    const sketchEntities = collectSketchOpEntities(oc, shape, sketchCollector, guideTmp);
     for (let i = guideTmp.length - 1; i >= 0; i--) try { guideTmp[i].delete(); } catch { /* ignore */ }
     // The cache stores the FOLDED list (resolved ops for query documents) —
     // the append check above compares against it, so a query document's next
     // call (whose sidecar ops still carry queries) correctly misses.
-    const cache: BRepCacheEntry = { ocInstance: oc, bytes, format, baseShape, baseCleanup, assemblyTreeCache, treeGroups: summarizeGroups(groups), solidSigs, ops: foldOps, shape, opsCleanup, opOutcomes, opBuckets, guideCollector, guideIds, pointRefs, warnings: baseWarnings, csgColors: baseCsgColors };
-    const result: BRepResult = { groups, edges, points, tree, opOutcomes, opBuckets, guideIds, queryWarnings };
+    const cache: BRepCacheEntry = { ocInstance: oc, bytes, format, baseShape, baseCleanup, assemblyTreeCache, treeGroups: summarizeGroups(groups), solidSigs, ops: foldOps, shape, opsCleanup, opOutcomes, opBuckets, guideCollector, guideIds, sketchCollector, sketchEntities, pointRefs, warnings: baseWarnings, csgColors: baseCsgColors };
+    const result: BRepResult = { groups, edges, points, tree, opOutcomes, opBuckets, guideIds, sketchEntities, queryWarnings };
     if (pointRefs.length > 0) result.pointRefs = pointRefs;
     if (baseWarnings.length > 0) result.warnings = [...baseWarnings];
     if (baseCsgColors.length > 0) result.csgColors = baseCsgColors.map((g) => ({ color: g.color, solidIds: [...g.solidIds] }));
@@ -509,6 +521,7 @@ export async function loadBRep(
     const opOutcomes: OpOutcome[] = [];
     const opBuckets: OpBucket[] = [];
     const guideCollector: GuideCollector = { faces: [], edges: [], vertices: [] };
+    const sketchCollector: SketchHandleEntry[] = [];
     const pointRefs: PointRefResolution[] = [];
     // Stored operand queries resolve sequentially against the original base
     // BEFORE the real fold (see loadBRepCached's longer comment).
@@ -519,15 +532,16 @@ export async function loadBRep(
       foldOps = resolution.ops;
       if (resolution.warnings.length > 0) queryWarnings = resolution.warnings;
     }
-    const shape = applyEditsBRep(oc, baseShape, foldOps, cleanup, opOutcomes, guideCollector, opBuckets, pointRefs);
+    const shape = applyEditsBRep(oc, baseShape, foldOps, cleanup, opOutcomes, guideCollector, opBuckets, pointRefs, sketchCollector);
     const groups = tessellateByGroup(oc, shape, quality);
     const edges = extractEdges(oc, shape);
     const points = extractVertices(oc, shape);
     const tree = buildTree(oc, format, groups, shape, assemblyTreeCache);
     const guideTmp: Array<{ delete(): void }> = [];
     const guideIds = collectGuideIds(oc, shape, guideCollector, guideTmp);
+    const sketchEntities = collectSketchOpEntities(oc, shape, sketchCollector, guideTmp);
     for (let i = guideTmp.length - 1; i >= 0; i--) try { guideTmp[i].delete(); } catch { /* ignore */ }
-    const result: BRepResult = { groups, edges, points, tree, opOutcomes, opBuckets, guideIds, queryWarnings };
+    const result: BRepResult = { groups, edges, points, tree, opOutcomes, opBuckets, guideIds, sketchEntities, queryWarnings };
     if (pointRefs.length > 0) result.pointRefs = pointRefs;
     if (baseWarnings.length > 0) result.warnings = [...baseWarnings];
     if (baseCsgColors.length > 0) result.csgColors = baseCsgColors;

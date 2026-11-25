@@ -54,3 +54,25 @@ describe("VisibilityState — tree groups", () => {
     expect(v.isTreeGroupHidden("solid-0")).toBe(false);
   });
 });
+
+describe("VisibilityState — planes and sketch ops", () => {
+  it("toggles hidden state per construction plane id", () => {
+    const v = new VisibilityState();
+    expect(v.isPlaneHidden("plane-0")).toBe(false);
+    v.togglePlaneHidden("plane-0");
+    expect(v.isPlaneHidden("plane-0")).toBe(true);
+    v.togglePlaneHidden("plane-0");
+    expect(v.isPlaneHidden("plane-0")).toBe(false);
+  });
+
+  it("toggles and prunes hidden sketch op indices", () => {
+    const v = new VisibilityState();
+    v.toggleSketchOpHidden(1);
+    v.toggleSketchOpHidden(3);
+    expect(v.isSketchOpHidden(1)).toBe(true);
+    expect(v.isSketchOpHidden(3)).toBe(true);
+    v.pruneSketchOps(2);
+    expect(v.isSketchOpHidden(1)).toBe(true);
+    expect(v.isSketchOpHidden(3)).toBe(false);
+  });
+});

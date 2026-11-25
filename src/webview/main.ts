@@ -81,6 +81,8 @@ import { computeMeshMassProperties } from "./meshMassProperties";
 import { targetSizeForPreset } from "./meshSizeHeuristics";
 import { SIZE_MAX_SENTINEL } from "../meshOptions";
 import type { MeshSizePreset } from "../viewerDefaults";
+import { DEFAULT_TESSELLATION_QUALITY, normalizeTessellationQuality, type TessellationQuality } from "../tessellationQuality";
+import type { SketchOpEntities } from "../protocol";
 import { applyEditsMesh } from "./meshEdits";
 import { initManifoldBrowser } from "./manifoldBrowser";
 import { SelectionSet, type SelectedEntity } from "./selection";
@@ -418,8 +420,20 @@ const annotationsModel = new AnnotationsModel(() => {
 // A plane stores RESOLVED vectors, never a live face reference, so nothing
 // here participates in entity rebinding: a plane is not renumbered by replay
 // the way `face-N` is, which is the whole point of naming one.
+function syncConstructionPlanesInViewer(): void {
+  viewer.setConstructionPlanes(
+    planesModel.list().map((p) => ({
+      id: p.id,
+      point: p.point,
+      normal: p.normal,
+      visible: !visibilityState.isPlaneHidden(p.id),
+    }))
+  );
+}
+
 const planesModel = new PlanesModel(() => {
   post({ type: "planesChanged", planes: planesModel.list() });
+  syncConstructionPlanesInViewer();
   renderPlanesList();
   refreshBrowser();
 });
@@ -784,6 +798,9 @@ let lastBrowserGroups: BrowserGroup[] = [];
 let lastTreeRoot: TreeNode | null = null;
 let browserDocName = "";
 let browserUnsavedEdits = 0;
+let browserTessellation: TessellationQuality = DEFAULT_TESSELLATION_QUALITY;
+let lastSketchEntities: SketchOpEntities[] = [];
+const lastGroupFaceIds = new Map<string, string[]>();
 
 function treeLeafNodes(nodes: TreeNode[], out: TreeNode[] = []): TreeNode[] {
   for (const n of nodes) {
@@ -800,11 +817,44 @@ function buildBrowserGroups(): BrowserGroup[] {
   const colorOf = (solidId: string): string | undefined => parts.find((p) => p.volumes.includes(solidId))?.color;
   const ops = editsModel.list();
   const savePoint = editsModel.savePoint;
+  const sketchOps = lastSketchEntities
+    .filter((s) => s.op >= 0 && s.op < ops.length)
+    .map((s) => {
+      const op = ops[s.op];
+      const isGuide =
+        (op as { guide?: boolean }).guide === true ||
+        (s.faceIds.length > 0 && s.faceIds.every((id) => guideEntityIds.has(id))) ||
+        (s.faceIds.length === 0 && s.edgeIds.length > 0 && s.edgeIds.every((id) => guideEntityIds.has(id)));
+      return {
+        op: s.op,
+        label: op.label ?? describeOp(op),
+        faceCount: s.faceIds.length,
+        edgeCount: s.edgeIds.length,
+        hidden: visibilityState.isSketchOpHidden(s.op),
+        guide: isGuide,
+      };
+    });
+  const mappedFaceIds = new Set(lastSketchEntities.flatMap((s) => s.faceIds));
+  const sketchGroupFaces = sketches ? lastGroupFaceIds.get(sketches.id) ?? [] : [];
+  const showFallbackSketches =
+    sketches !== null &&
+    (sketchOps.length === 0 || sketchGroupFaces.length === 0 || sketchGroupFaces.some((id) => !mappedFaceIds.has(id)));
+  const fallbackGuide = sketchGroupFaces.length > 0 && sketchGroupFaces.every((id) => guideEntityIds.has(id));
   return buildBrowser({
-    document: { name: browserDocName, format: currentFormat, unit: currentDisplayUnit, unsavedEdits: browserUnsavedEdits },
+    document: {
+      name: browserDocName,
+      format: currentFormat,
+      unit: currentDisplayUnit,
+      unsavedEdits: browserUnsavedEdits,
+      tessellation: browserTessellation,
+    },
     bookmarkNames: viewBookmarks.map((b) => b.name),
-    planes: planesModel.list().map((p) => ({ id: p.id, name: p.name })),
-    gridVisible: viewer.isGridVisible(),
+    planes: planesModel.list().map((p) => ({ id: p.id, name: p.name, visible: !visibilityState.isPlaneHidden(p.id) })),
+    origin: {
+      grid: viewer.isGridVisible(),
+      axes: { x: viewer.isAxisVisible("x"), y: viewer.isAxisVisible("y"), z: viewer.isAxisVisible("z") },
+      planes: { xy: viewer.isOriginPlaneVisible("xy"), xz: viewer.isOriginPlaneVisible("xz"), yz: viewer.isOriginPlaneVisible("yz") },
+    },
     bodies: bodies.map((b) => ({
       id: b.id,
       label: b.label,
@@ -812,8 +862,9 @@ function buildBrowserGroups(): BrowserGroup[] {
       hidden: visibilityState.isTreeGroupHidden(b.id),
       color: colorOf(b.id),
     })),
-    sketches: sketches
-      ? { id: sketches.id, hidden: visibilityState.isTreeGroupHidden(sketches.id), faceCount: sketches.faceCount, guide: false }
+    sketchOps,
+    sketches: showFallbackSketches && sketches
+      ? { id: sketches.id, hidden: visibilityState.isTreeGroupHidden(sketches.id), faceCount: sketches.faceCount, guide: fallbackGuide }
       : null,
     ops: ops.map((o, i) => ({ label: o.label ?? describeOp(o), suppressed: o.suppressed === true, baked: i < savePoint, guide: (o as { guide?: boolean }).guide === true, folder: o.folder })),
     parts: parts.map((p, i) => ({ name: p.name, color: p.color, hidden: visibilityState.isPartHidden(i) })),
@@ -840,11 +891,24 @@ function browserToggleRow(rowId: string): void {
   const r = parseRowId(rowId);
   if (!r) return;
   switch (r.kind) {
-    case "body":
-    case "sketch": {
+    case "body": {
       visibilityState.toggleTreeGroupHidden(r.key);
       viewer.setGroupsVisible([r.key], !visibilityState.isTreeGroupHidden(r.key));
       treePanel.refreshVisibility();
+      break;
+    }
+    case "sketch": {
+      if (r.key.startsWith("op:")) {
+        const opIndex = Number(r.key.slice(3));
+        if (Number.isInteger(opIndex)) {
+          visibilityState.toggleSketchOpHidden(opIndex);
+          applyVisibilityState();
+        }
+      } else {
+        visibilityState.toggleTreeGroupHidden(r.key);
+        viewer.setGroupsVisible([r.key], !visibilityState.isTreeGroupHidden(r.key));
+        treePanel.refreshVisibility();
+      }
       break;
     }
     case "part": {
@@ -864,9 +928,24 @@ function browserToggleRow(rowId: string): void {
       if (op && i >= editsModel.savePoint) editsModel.setState(i, { suppressed: op.suppressed !== true });
       break;
     }
-    case "origin":
-      viewer.toggleGrid();
+    case "plane": {
+      visibilityState.togglePlaneHidden(r.key);
+      viewer.setConstructionPlaneVisible(r.key, !visibilityState.isPlaneHidden(r.key));
       break;
+    }
+    case "origin": {
+      if (r.key === "grid") {
+        viewer.setGridVisible(!viewer.isGridVisible());
+        document.getElementById("grid")?.setAttribute("aria-checked", String(viewer.isGridVisible()));
+      } else if (r.key === "axis-x" || r.key === "axis-y" || r.key === "axis-z") {
+        const axis = r.key.slice(5) as "x" | "y" | "z";
+        viewer.setAxisVisible(axis, !viewer.isAxisVisible(axis));
+      } else if (r.key === "plane-xy" || r.key === "plane-xz" || r.key === "plane-yz") {
+        const plane = r.key.slice(6) as "xy" | "xz" | "yz";
+        viewer.setOriginPlaneVisible(plane, !viewer.isOriginPlaneVisible(plane));
+      }
+      break;
+    }
   }
 }
 
@@ -893,8 +972,20 @@ function browserActivate(rowId: string): void {
   } else if (r.kind === "plane") {
     const plane = planesModel.find(r.key);
     if (plane && planesClipHandle) planesClipHandle.applyDerivedPlane(new THREE.Vector3(...plane.normal), new THREE.Vector3(...plane.point), plane.name);
-  } else if (r.kind === "body" || r.kind === "sketch") {
+  } else if (r.kind === "body") {
     viewer.highlightGroups([r.key]);
+  } else if (r.kind === "sketch") {
+    if (r.key.startsWith("op:")) {
+      const entry = lastSketchEntities.find((s) => s.op === Number(r.key.slice(3)));
+      if (entry) {
+        selection.clear();
+        for (const faceId of entry.faceIds) selection.add({ entityType: "surface", entityId: faceId });
+        for (const edgeId of entry.edgeIds) selection.add({ entityType: "line", entityId: edgeId });
+        renderHighlight();
+      }
+    } else {
+      viewer.highlightGroups([r.key]);
+    }
   }
 }
 
@@ -2746,6 +2837,12 @@ function setupThemeReactivity(): void {
 function applyVisibilityState(): void {
   const parts = partsModel.list();
   const hidden = visibilityState.hiddenPartIndices().flatMap((i) => partsModel.entitiesOf(i));
+  const hiddenSketchEntities: SelectedEntity[] = [];
+  for (const s of lastSketchEntities) {
+    if (!visibilityState.isSketchOpHidden(s.op)) continue;
+    for (const faceId of s.faceIds) hiddenSketchEntities.push({ entityType: "surface", entityId: faceId });
+    for (const edgeId of s.edgeIds) hiddenSketchEntities.push({ entityType: "line", entityId: edgeId });
+  }
   // Persisted layer visibility joins the session-only Part hide set: a
   // hidden layer's members hide whatever else claims them. Under an active
   // isolate the hidden set is filtered out of the isolated entities instead
@@ -2758,7 +2855,7 @@ function applyVisibilityState(): void {
   const isolated = visibilityState.isolatedPartIndex();
   const isolatedEntities = isolated !== null && isolated < parts.length ? partsModel.entitiesOf(isolated) : null;
   viewer.applyPartVisibility(
-    [...hidden, ...hiddenLayerEntities],
+    [...hidden, ...hiddenLayerEntities, ...hiddenSketchEntities],
     isolatedEntities ? isolatedEntities.filter((e) => !hiddenKeys.has(`${e.entityType}:${e.entityId}`)) : isolatedEntities
   );
   // Assembly group rows store their group id but hide descendant leaves: expand
@@ -5044,6 +5141,7 @@ function setupViewMenu(): void {
   const grid = document.getElementById("grid");
   grid?.addEventListener("click", () => {
     grid.setAttribute("aria-checked", String(viewer.toggleGrid()));
+    refreshBrowser();
   });
   grid?.setAttribute("aria-checked", String(viewer.isGridVisible()));
 
@@ -6298,6 +6396,13 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
         lastOpOutcomes = msg.opOutcomes ?? null; // fresh replay outcomes for the Edits history markers
         reportCommandBarOutcome();
         lastOpBuckets = msg.opBuckets ?? null; // fresh produced-face classification for the Edits history chips
+        lastSketchEntities = msg.sketchEntities ?? [];
+        lastGroupFaceIds.clear();
+        for (const m of msg.meshes) {
+          let list = lastGroupFaceIds.get(m.groupId);
+          if (!list) { list = []; lastGroupFaceIds.set(m.groupId, list); }
+          list.push(m.faceId);
+        }
         editsPanel.setQueryBuckets(msg.opBuckets ?? []); // and for the pin-as-query row's bucket picker
         pendingOpQueries = []; // every id was renumbered — staged queries name the old shape
         selectorSynthesizeRequest = null;
@@ -6389,7 +6494,9 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
     case "planes":
       // Silent hydration, same contract as "parts"/"annotations".
       planesModel.load(msg.planes);
+      syncConstructionPlanesInViewer();
       renderPlanesList();
+      refreshBrowser();
       if (editsModel.list().some((o) => (o as unknown as Record<string, unknown>).planeId)) {
         renderEditsUi();
         if (pristineMesh) rebuildMeshModel();
@@ -6433,6 +6540,7 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
       variablesModel.load(msg.variables);
       configurationsModel.load(msg.configurations, msg.activeConfiguration);
       editsModel.load(msg.ops, msg.bakedThrough ?? 0);
+      visibilityState.pruneSketchOps(msg.ops.length);
       externalEditsFrom = msg.externalFrom ?? null;
       externalFlashPending = externalEditsFrom !== null;
       renderEditsUi();
@@ -6442,6 +6550,8 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
       break;
 
     case "loadUrl":
+      lastSketchEntities = [];
+      lastGroupFaceIds.clear();
       await initManifoldBrowser(); // booleans/holes replay synchronously; see loadMeshBytes
       printabilityPanelEligible = COMPARABLE_MESH_FORMATS.has(msg.format);
       setPrintabilityEligible(printabilityPanelEligible);
@@ -6460,6 +6570,8 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
       break;
 
     case "loadMeshBytes":
+      lastSketchEntities = [];
+      lastGroupFaceIds.clear();
       // Boolean/hole replays are synchronous, so manifold must be ready before the first one.
       await initManifoldBrowser();
       // A meshio-converted STL boundary is not itself a real .stl/.obj/.ply
@@ -6610,10 +6722,13 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
       // Cross-document settings — only ever initial state; per-document sidecar
       // values and runtime toggles (the toolbar Grid button) always win once set.
       meshSizePreset = msg.meshSizePreset;
+      browserTessellation = normalizeTessellationQuality(msg.tessellationQuality);
       commandPalette.setSingleKeys(msg.singleKeyCommands);
       ribbonDefaultHidden = msg.ribbon === false;
       if (!ribbonHiddenExplicit) ribbon?.setState({ hidden: ribbonDefaultHidden });
       viewer.applyDefaults(msg);
+      document.getElementById("grid")?.setAttribute("aria-checked", String(viewer.isGridVisible()));
+      refreshBrowser();
       syncMeshSizeSeed();
       {
         const bg = document.getElementById("vc-background") as HTMLInputElement | null;
