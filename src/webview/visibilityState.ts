@@ -9,6 +9,8 @@ export class VisibilityState {
   private hiddenParts = new Set<number>();
   private isolatedPart: number | null = null;
   private hiddenTreeGroups = new Set<string>();
+  private hiddenPlanes = new Set<string>();
+  private hiddenSketchOps = new Set<number>();
 
   toggleHiddenPart(index: number): void {
     if (this.hiddenParts.has(index)) this.hiddenParts.delete(index);
@@ -58,5 +60,27 @@ export class VisibilityState {
 
   hiddenTreeGroupIds(): string[] {
     return [...this.hiddenTreeGroups];
+  }
+
+  togglePlaneHidden(planeId: string): void {
+    if (this.hiddenPlanes.has(planeId)) this.hiddenPlanes.delete(planeId);
+    else this.hiddenPlanes.add(planeId);
+  }
+
+  isPlaneHidden(planeId: string): boolean {
+    return this.hiddenPlanes.has(planeId);
+  }
+
+  toggleSketchOpHidden(opIndex: number): void {
+    if (this.hiddenSketchOps.has(opIndex)) this.hiddenSketchOps.delete(opIndex);
+    else this.hiddenSketchOps.add(opIndex);
+  }
+
+  isSketchOpHidden(opIndex: number): boolean {
+    return this.hiddenSketchOps.has(opIndex);
+  }
+
+  pruneSketchOps(opCount: number): void {
+    this.hiddenSketchOps = new Set([...this.hiddenSketchOps].filter((i) => i < opCount));
   }
 }

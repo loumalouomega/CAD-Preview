@@ -405,6 +405,16 @@ export interface MeshPresetSummary {
   readOnly?: boolean;
 }
 
+/** Final free face/edge ids produced by one sketch/2D op in the replayed model. */
+export interface SketchOpEntities {
+  /** 0-based index of the op in the full history. */
+  op: number;
+  /** Final `face-N` ids produced by this op that remain free (not owned by a solid). */
+  faceIds: string[];
+  /** Final `edge-N` ids produced by this op that remain free (not owned by a solid). */
+  edgeIds: string[];
+}
+
 /** Messages sent from the extension host to the webview. */
 export type HostToWebview =
   /** Undo / redo the last op on the webview's edit stack (same path as Ctrl+Z / Ctrl+Y and the Edits panel buttons). Refused, with the usual status message, at or inside the save point. */
@@ -432,6 +442,9 @@ export type HostToWebview =
        * index. Ids are valid against the model state at their own op's
        * step — later ops may renumber them. See `src/opBuckets.ts`. */
       opBuckets?: import("./opBuckets").OpBucket[];
+      /** Per-op mapping of final free `face-N` and `edge-N` ids to the
+       * sketch/2D op that produced them, for individual Browser sketch rows. */
+      sketchEntities?: SketchOpEntities[];
       /**
        * When `false`, the viewer must always re-frame the new model, even if
        * its bounds would otherwise be considered contained by the last framing

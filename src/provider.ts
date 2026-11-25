@@ -4067,7 +4067,7 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
       if (generation !== genHolder.current) return; // superseded or cancelled — see doc comment above
       post({ type: "status", text: "Rendering…" });
       progress?.report({ message: "Rendering…" });
-      const { groups, edges, points, tree, opOutcomes, opBuckets, guideIds, queryWarnings, warnings } = result;
+      const { groups, edges, points, tree, opOutcomes, opBuckets, guideIds, sketchEntities, queryWarnings, warnings } = result;
       // A frozen operand query replays on its cached ids — the user must know
       // the query was not honored rather than staring at unchanged geometry.
       // `.csg` parse/build warnings ride the same channel (a skipped hull()
@@ -4086,12 +4086,16 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
         : opOutcomes;
       this.lastOpOutcomes.set(uri.toString(), rebasedOutcomes);
       const rebasedBuckets = bakedThrough > 0 ? opBuckets.map((b) => ({ ...b, op: b.op + bakedThrough })) : opBuckets;
+      const rebasedSketches = bakedThrough > 0 && sketchEntities
+        ? sketchEntities.map((s) => ({ ...s, op: s.op + bakedThrough }))
+        : sketchEntities;
       post({
         type: "geometry",
         autoFit,
         opOutcomes: rebasedOutcomes,
         guideIds,
         opBuckets: rebasedBuckets,
+        ...(rebasedSketches && rebasedSketches.length > 0 ? { sketchEntities: rebasedSketches } : {}),
         meshes: groups.flatMap((g) =>
           g.faces.map((f) => ({
             positions: encodeBuffer(f.buffers.positions),
@@ -4461,6 +4465,7 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
       singleKeyCommands: cfg.get("singleKeyCommands"),
       navigationPreset: cfg.get("navigationPreset"),
       ribbon: cfg.get("ribbon"),
+      tessellationQuality: cfg.get("tessellationQuality"),
     });
     post({ type: "viewerDefaults", ...defaults });
   }

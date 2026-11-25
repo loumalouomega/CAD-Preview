@@ -12,7 +12,7 @@ describe("normalizeViewerDefaults", () => {
   });
 
   it("accepts a well-formed object unchanged", () => {
-    const opts = { background: "#000000", meshSizePreset: "fine" as const, showGridAndAxes: false, upAxis: "z" as const, singleKeyCommands: true, navigationPreset: "fusion" as const, ribbon: false };
+    const opts = { background: "#000000", meshSizePreset: "fine" as const, showGridAndAxes: false, upAxis: "z" as const, singleKeyCommands: true, navigationPreset: "fusion" as const, ribbon: false, tessellationQuality: "fine" as const };
     expect(normalizeViewerDefaults(opts)).toEqual(opts);
   });
 
@@ -50,6 +50,14 @@ describe("normalizeViewerDefaults", () => {
     expect(normalizeViewerDefaults({ singleKeyCommands: true }).singleKeyCommands).toBe(true);
     expect(normalizeViewerDefaults({ singleKeyCommands: "true" }).singleKeyCommands).toBe(false);
     expect(normalizeViewerDefaults({ singleKeyCommands: 1 }).singleKeyCommands).toBe(false);
+  });
+
+  it("defaults tessellationQuality unless draft/standard/fine", () => {
+    expect(normalizeViewerDefaults({ tessellationQuality: "draft" }).tessellationQuality).toBe("draft");
+    expect(normalizeViewerDefaults({ tessellationQuality: "fine" }).tessellationQuality).toBe("fine");
+    expect(normalizeViewerDefaults({ tessellationQuality: "ultra" }).tessellationQuality).toBe(
+      DEFAULT_VIEWER_DEFAULTS.tessellationQuality
+    );
   });
 
   it("DEFAULT_VIEWER_DEFAULTS is itself valid", () => {

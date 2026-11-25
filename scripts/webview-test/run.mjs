@@ -8142,6 +8142,174 @@ test("browser: restoring a named view from the Browser lands on the same camera 
   assert(near(viaMenu.viewDirection, viaBrowser.viewDirection) && near(viaMenu.cameraUp, viaBrowser.cameraUp), `same camera (menu ${JSON.stringify(viaMenu.viewDirection)}, browser ${JSON.stringify(viaBrowser.viewDirection)})`);
 });
 
+test("browser: Document shows tessellationQuality from viewerDefaults", async (page) => {
+  await populate(page);
+  await post(page, {
+    type: "viewerDefaults",
+    background: "#1e1e1e",
+    meshSizePreset: "medium",
+    showGridAndAxes: true,
+    upAxis: "y",
+    singleKeyCommands: false,
+    navigationPreset: "default",
+    ribbon: true,
+    tessellationQuality: "fine",
+  });
+  await openBrowser(page);
+  await page.click("#browser-expand-all");
+  const row = await page.evaluate(() => {
+    const el = document.querySelector('[data-id="doc:tessellation"]');
+    if (!el) return null;
+    return {
+      label: el.querySelector(".tree-label")?.textContent ?? null,
+      detail: el.querySelector(".tree-badge")?.textContent ?? null,
+    };
+  });
+  assert(row?.label === "Tessellation" && row?.detail === "fine", `Document shows tessellationQuality from viewerDefaults (got ${JSON.stringify(row)})`);
+});
+
+test("browser: Origin splits grid, X/Y/Z axes, origin planes and construction planes with individual eyes", async (page) => {
+  await populate(page);
+  await post(page, {
+    type: "planes",
+    planes: [{ id: "plane-0", name: "Mid", point: [0, 0, 0], normal: [0, 0, 1] }],
+  });
+  await openBrowser(page);
+  await page.click("#browser-expand-all");
+  const ids = await browserRowIds(page);
+  for (const expected of ["origin:grid", "origin:axis-x", "origin:axis-y", "origin:axis-z", "origin:plane-xy", "origin:plane-xz", "origin:plane-yz", "plane:plane-0"]) {
+    assert(ids.includes(expected), `Origin lists ${expected}`);
+  }
+  // Compares two viewport shots and counts the pixels that differ. Counting
+  // non-background pixels cannot see an overlay drawn over pixels that are
+  // already covered: the origin XY plane and the construction plane both lie on
+  // z = 0, so toggling one of them can leave the count unchanged while the image
+  // changes.
+  const snap = async () => (await shotWithoutToast(page, () => page.locator("#app").screenshot())).toString("base64");
+  const changedPixels = (a, b) =>
+    page.evaluate(
+      ([aB64, bB64]) =>
+        new Promise((resolve, reject) => {
+          const load = (b64) =>
+            new Promise((res, rej) => {
+              const img = new Image();
+              img.onerror = () => rej(new Error("decode failed"));
+              img.onload = () => res(img);
+              img.src = `data:image/png;base64,${b64}`;
+            });
+          Promise.all([load(aB64), load(bB64)]).then(([ia, ib]) => {
+            if (ia.width !== ib.width || ia.height !== ib.height) return reject(new Error("shot sizes differ"));
+            const c = document.createElement("canvas");
+            c.width = ia.width;
+            c.height = ia.height;
+            const ctx = c.getContext("2d", { willReadFrequently: true });
+            ctx.drawImage(ia, 0, 0);
+            const da = ctx.getImageData(0, 0, c.width, c.height).data;
+            ctx.clearRect(0, 0, c.width, c.height);
+            ctx.drawImage(ib, 0, 0);
+            const db = ctx.getImageData(0, 0, c.width, c.height).data;
+            let count = 0;
+            for (let i = 0; i < da.length; i += 4) {
+              if (Math.abs(da[i] - db[i]) >= 4 || Math.abs(da[i + 1] - db[i + 1]) >= 4 || Math.abs(da[i + 2] - db[i + 2]) >= 4) count++;
+            }
+            resolve(count);
+          }, reject);
+        }),
+      [a, b]
+    );
+  // Hide the body so only Origin helpers contribute to the viewport pixels.
+  await page.click('[data-id="body:solid-0"] .tree-eye');
+  await sleep(200);
+  // Toggling Grid does not hide X axis, and keeps #grid in sync.
+  await page.click('[data-id="origin:grid"] .tree-eye');
+  await sleep(150);
+  const gridState = await page.evaluate(() => ({
+    gridEyeOff: document.querySelector('[data-id="origin:grid"] .tree-eye')?.classList.contains("hidden-off") ?? null,
+    axisXEyeOff: document.querySelector('[data-id="origin:axis-x"] .tree-eye')?.classList.contains("hidden-off") ?? null,
+    menuChecked: document.getElementById("grid")?.getAttribute("aria-checked") ?? null,
+  }));
+  assert(gridState.gridEyeOff === true && gridState.axisXEyeOff === false && gridState.menuChecked === "false", `toggling Grid leaves axes visible and updates #grid (got ${JSON.stringify(gridState)})`);
+
+  // Toggling X axis alone leaves Y/Z on and changes the canvas.
+  const withAxes = await snap();
+  await page.click('[data-id="origin:axis-x"] .tree-eye');
+  await sleep(150);
+  const withoutX = await snap();
+  const axisYOff = await page.evaluate(() => document.querySelector('[data-id="origin:axis-y"] .tree-eye')?.classList.contains("hidden-off"));
+  const xChanged = await changedPixels(withAxes, withoutX);
+  assert(axisYOff === false && xChanged > 0, `hiding X axis leaves Y axis on and changes canvas (${xChanged} px changed)`);
+
+  // Origin plane XY starts hidden; showing it draws the quad.
+  const xyStartOff = await page.evaluate(() => document.querySelector('[data-id="origin:plane-xy"] .tree-eye')?.classList.contains("hidden-off"));
+  assert(xyStartOff === true, "XY origin plane starts hidden");
+  const beforeXy = await snap();
+  await page.click('[data-id="origin:plane-xy"] .tree-eye');
+  await sleep(150);
+  const afterXy = await snap();
+  const xyChanged = await changedPixels(beforeXy, afterXy);
+  assert(xyChanged > 0, `showing XY plane renders it in the viewport (${xyChanged} px changed)`);
+
+  // Construction plane eye hides its quad without posting planesChanged.
+  await page.evaluate(() => (window.__sent.length = 0));
+  const beforePlane = await snap();
+  await page.click('[data-id="plane:plane-0"] .tree-eye');
+  await sleep(150);
+  const afterPlane = await snap();
+  const planeChanged = await changedPixels(beforePlane, afterPlane);
+  const planeOff = await page.evaluate(() => document.querySelector('[data-id="plane:plane-0"] .tree-eye')?.classList.contains("hidden-off"));
+  const planesWrites = await sentOf(page, "planesChanged");
+  assert(planeOff === true && planeChanged > 0 && planesWrites.length === 0, `hiding construction plane changes the viewport with no sidecar write (${planeChanged} px changed, writes ${planesWrites.length})`);
+});
+
+test("browser: Sketches shows per-op sketch rows, dims guide geometry and toggles visibility", async (page) => {
+  await populate(page);
+  const geom = fixture("geometry");
+  const firstFace = geom.meshes[0]?.faceId ?? "face-0";
+  const firstEdge = geom.edges[0]?.edgeId ?? "edge-0";
+  const secondEdge = geom.edges[1]?.edgeId ?? firstEdge;
+  await post(page, {
+    type: "edits",
+    ops: [
+      { op: "addCircleProfile", center: [0, 0, 0], normal: [0, 0, 1], radius: 5 },
+      { op: "addLine", start: [0, 0, 0], end: [5, 0, 0], guide: true },
+    ],
+    variables: [],
+    bakedThrough: 0,
+  });
+  await post(page, {
+    ...geom,
+    guideIds: [secondEdge],
+    sketchEntities: [
+      { op: 0, faceIds: [firstFace], edgeIds: [firstEdge] },
+      { op: 1, faceIds: [], edgeIds: [secondEdge] },
+    ],
+  });
+  await sleep(300);
+  await openBrowser(page);
+  await page.click("#browser-expand-all");
+  const rows = await page.evaluate(() => {
+    const r0 = document.querySelector('[data-id="sketch:op:0"]');
+    const r1 = document.querySelector('[data-id="sketch:op:1"]');
+    return {
+      has0: !!r0,
+      has1: !!r1,
+      muted0: r0?.classList.contains("browser-muted") ?? null,
+      muted1: r1?.classList.contains("browser-muted") ?? null,
+      label1: r1?.querySelector(".tree-label")?.textContent ?? null,
+      detail0: r0?.querySelector(".tree-badge")?.textContent ?? null,
+      detail1: r1?.querySelector(".tree-badge")?.textContent ?? null,
+    };
+  });
+  assert(rows.has0 && rows.has1, `individual sketch rows render (got ${JSON.stringify(rows)})`);
+  assert(rows.muted0 === false && rows.muted1 === true && rows.label1?.includes("(guide)"), `guide sketch row is dimmed and labelled (got ${JSON.stringify(rows)})`);
+  assert(rows.detail0 === "1 f" && rows.detail1 === "1 e", `sketch rows report face and edge counts (got ${JSON.stringify(rows)})`);
+
+  await page.click('[data-id="sketch:op:0"] .tree-eye');
+  await sleep(150);
+  const eye0Off = await page.evaluate(() => document.querySelector('[data-id="sketch:op:0"] .tree-eye')?.classList.contains("hidden-off"));
+  assert(eye0Off === true, "toggling a sketch op eye closes it");
+});
+
 // ── Pin + tolerance fields (measurement annotations) ──────────────────────
 //
 // The tolerance maths is unit-tested (`toleranceBand.test.ts`) and the
