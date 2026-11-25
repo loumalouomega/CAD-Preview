@@ -8180,31 +8180,43 @@ test("browser: Origin splits grid, X/Y/Z axes, origin planes and construction pl
   for (const expected of ["origin:grid", "origin:axis-x", "origin:axis-y", "origin:axis-z", "origin:plane-xy", "origin:plane-xz", "origin:plane-yz", "plane:plane-0"]) {
     assert(ids.includes(expected), `Origin lists ${expected}`);
   }
-  const nonBg = async () => {
-    const shot = (await shotWithoutToast(page, () => page.locator("#app").screenshot())).toString("base64");
-    return page.evaluate(
-      (b64) =>
+  // Compares two viewport shots and counts the pixels that differ. Counting
+  // non-background pixels cannot see an overlay drawn over pixels that are
+  // already covered: the origin XY plane and the construction plane both lie on
+  // z = 0, so toggling one of them can leave the count unchanged while the image
+  // changes.
+  const snap = async () => (await shotWithoutToast(page, () => page.locator("#app").screenshot())).toString("base64");
+  const changedPixels = (a, b) =>
+    page.evaluate(
+      ([aB64, bB64]) =>
         new Promise((resolve, reject) => {
-          const img = new Image();
-          img.onerror = () => reject(new Error("decode failed"));
-          img.onload = () => {
+          const load = (b64) =>
+            new Promise((res, rej) => {
+              const img = new Image();
+              img.onerror = () => rej(new Error("decode failed"));
+              img.onload = () => res(img);
+              img.src = `data:image/png;base64,${b64}`;
+            });
+          Promise.all([load(aB64), load(bB64)]).then(([ia, ib]) => {
+            if (ia.width !== ib.width || ia.height !== ib.height) return reject(new Error("shot sizes differ"));
             const c = document.createElement("canvas");
-            c.width = img.width;
-            c.height = img.height;
-            const ctx = c.getContext("2d");
-            ctx.drawImage(img, 0, 0);
-            const { data } = ctx.getImageData(0, 0, c.width, c.height);
+            c.width = ia.width;
+            c.height = ia.height;
+            const ctx = c.getContext("2d", { willReadFrequently: true });
+            ctx.drawImage(ia, 0, 0);
+            const da = ctx.getImageData(0, 0, c.width, c.height).data;
+            ctx.clearRect(0, 0, c.width, c.height);
+            ctx.drawImage(ib, 0, 0);
+            const db = ctx.getImageData(0, 0, c.width, c.height).data;
             let count = 0;
-            for (let i = 0; i < data.length; i += 4) {
-              if (Math.abs(data[i] - 0x1e) >= 4 || Math.abs(data[i + 1] - 0x1e) >= 4 || Math.abs(data[i + 2] - 0x1e) >= 4) count++;
+            for (let i = 0; i < da.length; i += 4) {
+              if (Math.abs(da[i] - db[i]) >= 4 || Math.abs(da[i + 1] - db[i + 1]) >= 4 || Math.abs(da[i + 2] - db[i + 2]) >= 4) count++;
             }
             resolve(count);
-          };
-          img.src = `data:image/png;base64,${b64}`;
+          }, reject);
         }),
-      shot
+      [a, b]
     );
-  };
   // Hide the body so only Origin helpers contribute to the viewport pixels.
   await page.click('[data-id="body:solid-0"] .tree-eye');
   await sleep(200);
@@ -8218,30 +8230,35 @@ test("browser: Origin splits grid, X/Y/Z axes, origin planes and construction pl
   }));
   assert(gridState.gridEyeOff === true && gridState.axisXEyeOff === false && gridState.menuChecked === "false", `toggling Grid leaves axes visible and updates #grid (got ${JSON.stringify(gridState)})`);
 
-  // Toggling X axis alone leaves Y/Z on and reduces rendered pixels.
-  const pxWithAxes = await nonBg();
+  // Toggling X axis alone leaves Y/Z on and changes the canvas.
+  const withAxes = await snap();
   await page.click('[data-id="origin:axis-x"] .tree-eye');
   await sleep(150);
-  const pxWithoutX = await nonBg();
+  const withoutX = await snap();
   const axisYOff = await page.evaluate(() => document.querySelector('[data-id="origin:axis-y"] .tree-eye')?.classList.contains("hidden-off"));
-  assert(axisYOff === false && pxWithoutX < pxWithAxes, `hiding X axis leaves Y axis on and changes canvas (${pxWithAxes} -> ${pxWithoutX})`);
+  const xChanged = await changedPixels(withAxes, withoutX);
+  assert(axisYOff === false && xChanged > 0, `hiding X axis leaves Y axis on and changes canvas (${xChanged} px changed)`);
 
   // Origin plane XY starts hidden; showing it draws the quad.
   const xyStartOff = await page.evaluate(() => document.querySelector('[data-id="origin:plane-xy"] .tree-eye')?.classList.contains("hidden-off"));
   assert(xyStartOff === true, "XY origin plane starts hidden");
+  const beforeXy = await snap();
   await page.click('[data-id="origin:plane-xy"] .tree-eye');
   await sleep(150);
-  const pxWithXy = await nonBg();
-  assert(pxWithXy > pxWithoutX, `showing XY plane renders it in the viewport (${pxWithoutX} -> ${pxWithXy})`);
+  const afterXy = await snap();
+  const xyChanged = await changedPixels(beforeXy, afterXy);
+  assert(xyChanged > 0, `showing XY plane renders it in the viewport (${xyChanged} px changed)`);
 
   // Construction plane eye hides its quad without posting planesChanged.
   await page.evaluate(() => (window.__sent.length = 0));
+  const beforePlane = await snap();
   await page.click('[data-id="plane:plane-0"] .tree-eye');
   await sleep(150);
-  const pxWithoutCPlane = await nonBg();
+  const afterPlane = await snap();
+  const planeChanged = await changedPixels(beforePlane, afterPlane);
   const planeOff = await page.evaluate(() => document.querySelector('[data-id="plane:plane-0"] .tree-eye')?.classList.contains("hidden-off"));
   const planesWrites = await sentOf(page, "planesChanged");
-  assert(planeOff === true && pxWithoutCPlane < pxWithXy && planesWrites.length === 0, `hiding construction plane removes it from viewport with no sidecar write (${pxWithXy} -> ${pxWithoutCPlane}, writes ${planesWrites.length})`);
+  assert(planeOff === true && planeChanged > 0 && planesWrites.length === 0, `hiding construction plane changes the viewport with no sidecar write (${planeChanged} px changed, writes ${planesWrites.length})`);
 });
 
 test("browser: Sketches shows per-op sketch rows, dims guide geometry and toggles visibility", async (page) => {
