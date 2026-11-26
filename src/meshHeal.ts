@@ -6,7 +6,7 @@
  * promoting anything. Phase 2 (`promoteMeshToBrep`) actually does it, but
  * DELIBERATELY as a one-shot EXPORT (write a brand-new `.step`/`.iges`/
  * `.brep` file) rather than reclassifying the currently-open mesh document
- * in place — see the "Mesh → B-rep promotion" section of CLAUDE.md for the
+ * in place — see the "Mesh → B-rep promotion" section of AGENTS.md for the
  * full reasoning: in-place reclassification would need two genuinely new
  * patterns this codebase has never needed before (a sidecar that persists
  * actual geometry, and a runtime override of `fileRouter.ts`'s otherwise
@@ -31,7 +31,7 @@
  * meaningless file.
  *
  * Live-WASM findings this module relies on (probed this session, see
- * CLAUDE.md for the full write-up):
+ * AGENTS.md for the full write-up):
  *   - Of `ShapeFix_Shape/Solid/Shell/Wireframe`, only `ShapeFix_Solid` is
  *     usable in this build — NOT used here, since the shell-closure check
  *     itself (via `BRepBuilderAPI_Sewing.NbFreeEdges()`) is what this report

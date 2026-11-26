@@ -26,7 +26,7 @@ async function main(): Promise<void> {
   const initMs = Date.now() - t0;
 
   // MEMFS paths stay at 10 characters or fewer — 11+ silently corrupts STEP
-  // writes in this build (see CLAUDE.md).
+  // writes in this build (see AGENTS.md).
   const memPath = "/p.step";
   oc.FS.writeFile(memPath, fs.readFileSync(fixture));
 

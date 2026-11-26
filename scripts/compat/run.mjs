@@ -295,7 +295,7 @@ try {
   console.log(
     `\n${results.length} rows: ${count("PASS")} pass, ${count("KNOWN")} known limitation, ${count("FIXED-UPSTREAM")} fixed upstream, ${count("FAIL")} fail`
   );
-  if (count("FIXED-UPSTREAM")) console.log("A FIXED-UPSTREAM row is a finding: record it in CLAUDE.md and update corpus.json.");
+  if (count("FIXED-UPSTREAM")) console.log("A FIXED-UPSTREAM row is a finding: record it in AGENTS.md and update corpus.json.");
   fs.writeFileSync(path.join(ROOT, "scripts", "compat", "last-run.json"), JSON.stringify({ versions, results }, null, 2) + "\n");
   if (count("FAIL")) exitCode = 1;
 } catch (err) {

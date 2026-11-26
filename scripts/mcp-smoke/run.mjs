@@ -154,7 +154,7 @@ async function callTolerant(name, args) {
  * message ending "...try the operation again", i.e. the product code
  * itself documents this as recoverable via a retry, not a hard failure.
  *
- * Live-WASM investigation (bisection, not guesswork — see CLAUDE.md's "Mesh
+ * Live-WASM investigation (bisection, not guesswork — see AGENTS.md's "Mesh
  * -> B-rep promotion" section for the full trail): this class of abort here
  * requires substantial ACCUMULATED WASM heap pressure from this file's own
  * large total call volume — removing either large half of the preceding
@@ -5405,7 +5405,7 @@ try {
   // `convertToStlBoundaryWithRegions`'s `extractSurface(mesh, true)` +
   // `cell_data["surface:parent_cell"]` correlation now turns those two cell
   // regions into two real, selectable Parts on first import. See
-  // CLAUDE.md's "meshio++ integration" section for the full mechanism.
+  // AGENTS.md's "meshio++ integration" section for the full mechanism.
   const medFixture = path.join(dir, "two-material-tets.med");
   fs.copyFileSync(path.join(ROOT, "examples", "MED", "two-material-tets.med"), medFixture);
   const medLoaded = await call("load_model", { path: medFixture });
@@ -6023,7 +6023,7 @@ try {
   const hostileModel = path.join(dir, "hostile.stp");
   fs.copyFileSync(path.join(ROOT, "examples", "STP", "bull.stp"), hostileModel);
   // Deep into this file's call volume, an OCCT abort from accumulated heap
-  // pressure is a real, observed outcome here (CLAUDE.md documents the class).
+  // pressure is a real, observed outcome here (AGENTS.md documents the class).
   // `wrapOcctFault`/`resetOcct` already recover; retry once from a genuinely
   // clean fixture so an aborted first attempt can never double-append its op.
   await callWithCleanRetry(
@@ -7154,7 +7154,7 @@ try {
   // bindings were probed to the exact call shape — `BRepOffsetAPI_DraftAngle_2`
   // ctor + 5-arg `Add(face, Dir, angleRad, Pln, flag)` — but this WASM build's
   // `Build()` RELIABLY throws an un-decodable OCCT failure on real geometry
-  // (probed across 3 fresh processes; see CLAUDE.md's item-10 section). The
+  // (probed across 3 fresh processes; see AGENTS.md's item-10 section). The
   // assertion pins the HONEST SKIP: applied:false with the kernel-limitation
   // diagnostic, never a silent no-op, while a neighboring op still applies.
   // Own throwaway copy — the opsModel's solid/face counts feed later asserts.
@@ -7445,7 +7445,7 @@ try {
 
   // fTetWild robust volume meshing (roadmap "Robust volumetric meshing from
   // a skin mesh", closed via a route the item never originally considered —
-  // see CLAUDE.md). engine:"ftetwild" is an opt-in alternative to Gmsh's own
+  // see AGENTS.md). engine:"ftetwild" is an opt-in alternative to Gmsh's own
   // classifySurfaces/createGeometry/addSurfaceLoop/addVolume path for
   // mesh-format 3D sources, built specifically to survive the dirty
   // boundaries (holes, self-intersections, non-manifold edges) that make
@@ -8281,7 +8281,7 @@ try {
   // item's own originally-scoped "repair, then reuse the existing mesher"
   // shape, via fTetWild instead of the item's original SDF/MMG routes).
   // check_mesh_health(holed-cube) reports 3 free edges and requiredTolerance
-  // null (this exact expectation is already pinned in CLAUDE.md's own
+  // null (this exact expectation is already pinned in AGENTS.md's own
   // description of this fixture) -> repair_mesh writes a new watertight STL
   // -> check_mesh_health on THAT reports 0 free edges and a real
   // requiredTolerance -> promote_mesh_to_brep, which previously had nothing
@@ -9116,7 +9116,7 @@ try {
     // the imported polyline spans y in [-6,0]. Inner local (3,2)-(7,4) ->
     // world (23,2)-(27,4) -> y in [-4,-2] after the flip. Outer area 60,
     // inner area 8, holed face area exactly 52 (same fixture shape as the
-    // CLAUDE.md-recorded live probe).
+    // AGENTS.md-recorded live probe).
     fs.writeFileSync(
       svgPath,
       `<svg><g transform="translate(20,0)"><rect x="0" y="0" width="10" height="6"/><rect x="3" y="2" width="4" height="2"/></g></svg>`,
@@ -9168,7 +9168,7 @@ try {
 
     // wrap() on the holed "O" face, developed onto a cylinder — the holed
     // shell's volume is exactly (outerArea - holeArea) x thickness, the
-    // same isometric-development property CLAUDE.md records for a plain
+    // same isometric-development property AGENTS.md records for a plain
     // profile, now verified for a holed one: (60-8)*2 = 104. A fresh
     // reset+re-import first, since the file was overwritten by the <text>/
     // disjoint checks above — plain `call` for the wrap step itself (not
@@ -9215,7 +9215,7 @@ try {
   // block: two circle profiles (r=10 at z=0, r=6 at z=20 — faces face-6/7 on
   // block.stp) plus a 2-segment polyline rail through (10,0,0)/(25,0,10)/
   // (6,0,20) (edges edge-14/15 after block's own 12 + the 2 circle edges).
-  // Guided ≈4139.06 vs plain ≈4105.01 (both probed live — see CLAUDE.md): the
+  // Guided ≈4139.06 vs plain ≈4105.01 (both probed live — see AGENTS.md): the
   // DELTA is the steering proof, not the absolute value — a resolver that
   // quietly ignored the rail would reproduce the plain volume exactly.
   // Corner-kink caveat: stations straddle the polyline corner (no station

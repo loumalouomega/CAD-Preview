@@ -56,7 +56,7 @@ jobs:
       # The webview and the VS Code host API used to have ZERO automated
       # coverage — every webview feature was verified by a manual F5 session or
       # not at all. These two steps are that gap's automated half; see
-      # `CLAUDE.md`'s "Webview and host-side test harnesses".
+      # `AGENTS.md`'s "Webview and host-side test harnesses".
 
       - name: Cache VS Code for integration tests
         uses: actions/cache@v6

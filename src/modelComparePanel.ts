@@ -108,7 +108,7 @@ async function resolveCompareSource(uri: vscode.Uri, decodeGltf: (bytes: Uint8Ar
  * STL/OBJ/PLY/glTF (raw file bytes — no host-side mesh edit engine to bake
  * edits with) are supported, in any combination; meshio-only formats are
  * rejected with a clear message rather than crashing, matching this
- * feature's original B-rep-only graceful-skip convention (see CLAUDE.md's
+ * feature's original B-rep-only graceful-skip convention (see AGENTS.md's
  * "Model comparison" section for why those remain out of reach headlessly).
  */
 export async function runCompareModelsCommand(

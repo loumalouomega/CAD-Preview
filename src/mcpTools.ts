@@ -794,7 +794,7 @@ async function sidecarSummary(modelPath: string) {
  * same host-side mechanism `provider.ts`'s `handleMeshio` uses for the
  * interactive extension (`src/meshioRegionParts.ts`'s `buildPartsFromMeshio
  * Regions`, over `ctx.pipeline.convertToStlBoundaryWithRegions`'s
- * correlation) — kept in sync per CLAUDE.md's "keep the MCP server in sync
+ * correlation) — kept in sync per AGENTS.md's "keep the MCP server in sync
  * with extension features" rule, so `apply_edit_ops`/`set_part` on a fresh
  * meshio import interoperate with a subsequent VS Code open (and vice
  * versa) the same way every other sidecar already does. Never overwrites an
@@ -3282,7 +3282,7 @@ export async function segmentMeshSurfaceTool(
  * where no primitive fits, sew them and check the solid against the
  * OpenCASCADE linked into the FULL WASM artifact — written as a brand-new
  * STEP file at `outputPath`. One-shot export exactly like
- * `promote_mesh_to_brep` (the source keeps its mesh identity; see CLAUDE.md's
+ * `promote_mesh_to_brep` (the source keeps its mesh identity; see AGENTS.md's
  * "Mesh → B-rep promotion"), one step further: PROMOTION sews the triangles
  * themselves, this REPLACES them with exact surfaces. Same gate as
  * `segment_mesh_surface` (mesh sources with a host-side triangle parser);
@@ -4002,7 +4002,7 @@ export async function decomposeToPrimitivesTool(
  * brand-new STEP/IGES/BREP file at `outputPath` and writes it (`meshHeal.ts`'s
  * `promoteMeshToBrep`, reusing `exportBRep`'s own writer pipeline). The
  * ORIGINAL mesh source is untouched — this is a one-shot export, not an
- * in-place reclassification of the document (see CLAUDE.md's "Mesh → B-rep
+ * in-place reclassification of the document (see AGENTS.md's "Mesh → B-rep
  * promotion" section for why). The written file is an ordinary B-rep
  * document from the moment it exists — open it with `load_model` to confirm,
  * or feed it straight into `get_mass_properties`/`measure_exact`/further
@@ -6341,7 +6341,7 @@ export async function applyMeshPreset(params: {
  * `unit` (default `"mm"`, native/no-op) mirrors `provider.ts`'s
  * `resolveMeshInput` — only `export_mesh` ever passes a real one, matching
  * the extension's own scoping (`generate_mesh`/interactive Generate always
- * stay native mm; see CLAUDE.md's meshing-unit-conversion section). B-rep
+ * stay native mm; see AGENTS.md's meshing-unit-conversion section). B-rep
  * sources get it via `exportBRep`'s existing `unit` param with
  * `labelStepUnit: false` — the intermediate STEP this produces is meshing
  * input only, never shown to the user, and MUST stay at the OCCT-native
@@ -6495,7 +6495,7 @@ export async function generateMeshTool(
   }
 
   // Gmsh's generate() has no mid-call progress hook (one opaque blocking WASM
-  // call — see CLAUDE.md's Meshing section) — this is start/done signaling
+  // call — see AGENTS.md's Meshing section) — this is start/done signaling
   // only, never a genuine percentage.
   const estimate = budgetFor(await budgetFactsForInput(ctx, input).catch(() => null), options, parts);
   const overBudget = budgetWarning(estimate, options.budgetElements);

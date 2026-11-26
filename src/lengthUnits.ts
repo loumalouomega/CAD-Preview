@@ -56,7 +56,7 @@ export function displayUnitFromUnitName(name: string | undefined): DisplayUnit |
 /**
  * The unit-name string `IGESControl_Writer`'s alternate, unit-aware
  * constructor (`IGESControl_Writer_2(unitName, modeCreation)`) expects —
- * verified against the live OCCT WASM (unlike the CLAUDE.md-documented
+ * verified against the live OCCT WASM (unlike the AGENTS.md-documented
  * original probe, which hit a false negative caused by this codebase's own
  * MEMFS path-length limit, not a real writer limitation): passing each of
  * these five strings and reading the result back through this codebase's own

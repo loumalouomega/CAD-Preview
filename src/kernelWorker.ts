@@ -1,7 +1,7 @@
 /**
  * Child-process entry point for the kernel-worker IPC boundary (roadmap
  * "OCCT in a forked child process" — Phase 0+1 wired the MCP server, Phase
- * 2+3 additionally wired the interactive extension; see CLAUDE.md). Bundled
+ * 2+3 additionally wired the interactive extension; see AGENTS.md). Bundled
  * by esbuild to `dist/kernel-worker.js` (`esbuild.mjs`'s `kernelConfig`),
  * forked by `kernelClient.ts`. Hosts the exact same 21 `Pipeline` functions
  * `mcpServer.ts` used to call directly — their internals are UNCHANGED, only

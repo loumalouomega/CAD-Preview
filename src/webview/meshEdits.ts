@@ -43,7 +43,7 @@ export function csgResultMaterial(source: THREE.Material | THREE.Material[], res
  * likely freeze the webview's main thread — degrade to a status message
  * instead. Tuned empirically against THIS codebase's `Evaluator` (not a
  * number borrowed from a different boolean engine); see the "Dense-mesh
- * boolean/hole guard" note (CLAUDE.md) on why the threshold must come from
+ * boolean/hole guard" note (AGENTS.md) on why the threshold must come from
  * local timing. */
 export const MESH_CSG_MAX_TRIANGLES = 150_000;
 

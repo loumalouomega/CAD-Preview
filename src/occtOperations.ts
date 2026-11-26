@@ -398,7 +398,7 @@ export function collectSketchOpEntities(oc: any, shape: any, entries: readonly S
  * deleted here — its lifetime belongs to the caller, which tessellates it and
  * then frees it alongside everything in `cleanup`.
  *
- * OCCT transform API, verified against the live WASM (see CLAUDE.md):
+ * OCCT transform API, verified against the live WASM (see AGENTS.md):
  *   translate → `gp_Trsf.SetTranslation_1(gp_Vec_4)`
  *   rotate    → `gp_Trsf.SetRotation_1(gp_Ax1_2(pnt, dir), angleRad)`
  *   mirror    → `gp_Trsf.SetMirror_3(gp_Ax2_3(pnt, normal))`  (plane mirror)
@@ -1065,7 +1065,7 @@ export function patternCircular(oc: any, shape: any, op: Extract<EditOp, { op: "
  * when more than one); the operands are removed from the model and replaced by the
  * single boolean result, with all untargeted solids preserved.
  *
- * OCCT boolean API, verified against the live WASM (see CLAUDE.md): the useful
+ * OCCT boolean API, verified against the live WASM (see AGENTS.md): the useful
  * overload is the `_3` constructor `new BRepAlgoAPI_{Fuse,Cut,Common}_3(s1, s2)`
  * (its 3rd `Message_ProgressRange` arg is optional and not constructible in this
  * build) → `.Shape()`. A boolean whose operands don't resolve, or that doesn't
@@ -1268,7 +1268,7 @@ export function combineSolids(oc: any, shapes: any[], cleanup: Array<{ delete():
 /**
  * Rounds (fillet) or bevels (chamfer) the selected edges of `shape`.
  *
- * OCCT fillet/chamfer API, verified against the live WASM (see CLAUDE.md):
+ * OCCT fillet/chamfer API, verified against the live WASM (see AGENTS.md):
  *   fillet  → `new BRepFilletAPI_MakeFillet(shape, ChFi3d_FilletShape.ChFi3d_Rational)`
  *   chamfer → `new BRepFilletAPI_MakeChamfer(shape)`
  * both then `.Add_2(amount, edge)` per edge (fillet with `radius2`: one
@@ -1493,7 +1493,7 @@ function isChamferWithFace(op: Extract<EditOp, { op: "chamfer" }>): boolean {
  * shape + the new solid) — non-destructive, B-rep only. A feature whose operands
  * don't resolve, or whose builder throws, is skipped so replay never hard-fails.
  *
- * OCCT feature API, verified against the live WASM (see CLAUDE.md):
+ * OCCT feature API, verified against the live WASM (see AGENTS.md):
  *   extrude → `BRepPrimAPI_MakePrism_1(face, gp_Vec_4, false, true).Shape()`
  *   revolve → `BRepPrimAPI_MakeRevol_1(face, gp_Ax1_2(pnt, dir), angleRad, false).Shape()`
  *   sweep   → `BRepOffsetAPI_MakePipe_1(spineWire, profileFace).Shape()`
@@ -3426,7 +3426,7 @@ function buildFeatureSolid(oc: any, shape: any, op: EditOp, cleanup: Array<{ del
  * `compound(existing shape + new solid)` pattern as {@link featureModel}. A
  * primitive whose builder throws is skipped so replay never hard-fails.
  *
- * OCCT primitive API, verified against the live WASM (see CLAUDE.md):
+ * OCCT primitive API, verified against the live WASM (see AGENTS.md):
  *   box      → `BRepPrimAPI_MakeBox_3(gp_Pnt_3 corner1, gp_Pnt_3 corner2)`
  *   sphere   → `BRepPrimAPI_MakeSphere_5(gp_Pnt_3 center, radius)`
  *   cylinder → `BRepPrimAPI_MakeCylinder_3(gp_Ax2_3(pnt, dir), radius, height)`
@@ -3521,7 +3521,7 @@ function buildPrimitiveSolid(oc: any, op: EditOp, cleanup: Array<{ delete(): voi
  * Builds a closed planar face from an ordered loop of points, connecting them
  * with straight edges — the shared wire/face pattern behind the N-gon prism
  * (subsequently extruded) and the flat rectangle/polygon profiles (used as-is).
- * OCCT API, verified against the live WASM (see CLAUDE.md):
+ * OCCT API, verified against the live WASM (see AGENTS.md):
  * `BRepBuilderAPI_MakeWire_1` + `.Add_1()` per `BRepBuilderAPI_MakeEdge_3(pnt,
  * pnt)` edge → `BRepBuilderAPI_MakeFace_15(wire, true)`.
  */
@@ -4809,7 +4809,7 @@ function addFreeFacesOf(oc: any, shape: any, out: any[], cleanup: Array<{ delete
  * centre by `factor` (0 = no move). Each solid is translated by
  * `(solidCentre − modelCentre) · factor`; single-solid models are returned
  * unchanged. Centres are bbox centres via `Bnd_Box`/`CornerMin`/`CornerMax`
- * (`Bnd_Box.Get()` is unbound — see CLAUDE.md).
+ * (`Bnd_Box.Get()` is unbound — see AGENTS.md).
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function explodeSolids(oc: any, shape: any, factor: number, cleanup: Array<{ delete(): void }>, fail?: OutcomeFail): any {
@@ -4840,7 +4840,7 @@ function explodeSolids(oc: any, shape: any, factor: number, cleanup: Array<{ del
 /**
  * Assembly **mate**: aligns planar face `faceA` onto planar face `faceB` (opposing
  * normals), moving the solid that owns `faceA` and leaving the rest in place.
- * Verified API (see CLAUDE.md): face plane via `BRepAdaptor_Surface_2(face, true)`
+ * Verified API (see AGENTS.md): face plane via `BRepAdaptor_Surface_2(face, true)`
  * → `GetType()===GeomAbs_Plane` → `.Plane()` (`Location()` + `Axis().Direction()`);
  * rigid motion `gp_Trsf.SetDisplacement(gp_Ax3_4(ptA, nA), gp_Ax3_4(ptB, −nB))`.
  * Non-planar faces, unresolved ids, or a failed displacement are skipped.
@@ -5008,7 +5008,7 @@ function draftFaces(oc: any, shape: any, op: Extract<EditOp, { op: "draft" }>, c
       return shape;
     }
     const angleRad = (op.angleDeg * Math.PI) / 180;
-    // VERIFIED against the live WASM (see CLAUDE.md's item-10 section for the
+    // VERIFIED against the live WASM (see AGENTS.md's item-10 section for the
     // probing trail): the plain `BRepOffsetAPI_DraftAngle` ctor is UNBOUND
     // ("no accessible constructor") and `_1` wants >1 params — `_2(shape)` is
     // the working 1-arg ctor. `Add` is a 5-arg `(face, gp_Dir, angleRad,
@@ -5048,7 +5048,7 @@ function draftFaces(oc: any, shape: any, op: Extract<EditOp, { op: "draft" }>, c
       // un-decodable OCCT failure (a Standard_Failure with no message) on real
       // geometry. Kernel-broken in this build, the same "green in the manifest
       // is necessary but not sufficient" class as ShapeFix_Shape /
-      // Interface_Static.CVal / BRepExtrema_DistanceSS-max (see CLAUDE.md).
+      // Interface_Static.CVal / BRepExtrema_DistanceSS-max (see AGENTS.md).
       // The op stays: it validates, its wiring is correct, and a future OCCT
       // build that fixes Build() needs no code change — until then this is an
       // honest graceful skip, never a silent no-op.
@@ -5120,7 +5120,7 @@ function defeatureFaces(oc: any, shape: any, op: Extract<EditOp, { op: "defeatur
  * Merges faces and edges that lie on the same underlying surface/curve — the
  * seam a boolean union leaves between coplanar faces — with
  * `ShapeUpgrade_UnifySameDomain`. VERIFIED call shape (live WASM, see
- * CLAUDE.md): `_2(shape, UnifyEdges, UnifyFaces, ConcatBSplines)` with
+ * AGENTS.md): `_2(shape, UnifyEdges, UnifyFaces, ConcatBSplines)` with
  * `(true, true, false)`, then `Build()` + `Shape()`. A model with nothing to
  * merge is returned UNCHANGED (same handle) with a "nothing to merge" fact, not
  * an error; the face count decides, since the kernel hands back a new shape
@@ -5480,7 +5480,7 @@ export function bboxCenter(oc: any, s: any, cleanup: Array<{ delete(): void }>):
  * AABB pair pre-filter (promoted from module-private to exported for that
  * caller, the same convention combineSolids/facePlane/bboxCenter each followed
  * for their own first cross-file caller). `Bnd_Box.Get()` is NOT bound in this
- * WASM build (see CLAUDE.md); `CornerMin`/`CornerMax` is the established
+ * WASM build (see AGENTS.md); `CornerMin`/`CornerMax` is the established
  * workaround every bbox reader here uses. */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function bboxExtent(oc: any, s: any, cleanup: Array<{ delete(): void }>): { min: Vec3; max: Vec3 } {

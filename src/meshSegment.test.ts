@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { segmentMeshSurface, FIT_PRIMITIVE_TYPES } from "./meshSegment";
 
-// meshio++ cannot load under vitest (see CLAUDE.md "Testing"); the live-WASM
+// meshio++ cannot load under vitest (see AGENTS.md "Testing"); the live-WASM
 // behaviour is pinned in `mcp:smoke`. These cover the option gate, which runs
 // before any WASM or mesh work.
 const bytes = new TextEncoder().encode("solid x\nendsolid x\n");

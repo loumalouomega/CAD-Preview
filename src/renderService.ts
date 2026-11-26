@@ -6,7 +6,7 @@
  * single source of truth `provider.ts` uses) but driven programmatically
  * instead of by a fixed shot list, and fed geometry directly from an
  * in-process `loadBRep()` result instead of pre-baked JSON fixture files (no
- * temp file write/re-parse needed — see CLAUDE.md's "Agent feedback tools"
+ * temp file write/re-parse needed — see AGENTS.md's "Agent feedback tools"
  * section).
  *
  * **Playwright stays a devDependency, by design — this tool degrades

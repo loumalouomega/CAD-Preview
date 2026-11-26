@@ -19,7 +19,7 @@ import { DEFAULT_MPC_VARIABLES, type MpcFacts } from "./hangingConstraints";
  * 1`) — non-functional in the gmsh-wasm build this codebase used to bundle
  * (every variant probed produced pure tetrahedra or threw), but confirmed
  * working after the 0.3.0 upgrade (see the "Meshing (GMSH-JS)" section of
- * CLAUDE.md for the wasm32-stack-overflow root cause that fix addressed, and
+ * AGENTS.md for the wasm32-stack-overflow root cause that fix addressed, and
  * "Hex-dominant FE meshing" for this option's own verification trail — a
  * mesh in this mode always contains a third gmsh element type, 140
  * ("trihedron", a tet/hex transition connector), whose node geometry cannot
@@ -856,7 +856,7 @@ export const DEFAULT_MESH_OPTIONS: MeshOptions = {
   sizeMin: 0,
   sizeMax: SIZE_MAX_SENTINEL,
   algorithm2D: 6 /* Frontal-Delaunay */,
-  algorithm3D: 1 /* Delaunay — Gmsh's own default; see the "Meshing (GMSH-JS)" section of CLAUDE.md for why this was Frontal (4) before gmsh-wasm 0.3.0 */,
+  algorithm3D: 1 /* Delaunay — Gmsh's own default; see the "Meshing (GMSH-JS)" section of AGENTS.md for why this was Frontal (4) before gmsh-wasm 0.3.0 */,
   elementOrder: 1,
   elementShape: "simplex",
   optimize: "default",
@@ -1118,7 +1118,7 @@ export function applyStlPartSizeOverride(options: MeshOptions, parts: Part[]): M
  * export (the FE Mesh panel's Export flow only — interactive **Generate**
  * always stays native mm, since its overlay is display-only and has no
  * exported file whose numbers need to mean anything to an external tool; see
- * CLAUDE.md's meshing-unit-conversion section). `factor` is
+ * AGENTS.md's meshing-unit-conversion section). `factor` is
  * `unitScaleFactor(unit)` from `lengthUnits.ts` (mm → target-unit); it must
  * be the SAME factor used to scale the geometry the caller feeds Gmsh
  * (`exportBRep`'s `unit` param for B-rep sources, `scaleStlBytes` for

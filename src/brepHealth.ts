@@ -6,7 +6,7 @@
  * report is read-only by design.
  *
  * Call shapes, verified against the live WASM (opencascade.js 1.1.1) by the
- * probe recorded in CLAUDE.md's "B-rep validity report" section:
+ * probe recorded in AGENTS.md's "B-rep validity report" section:
  * - `new oc.BRepCheck_Analyzer(shape, true)` — exactly 2 args (the 4-arg
  *   parallel/exact form is not bound); geometric controls on.
  * - `IsValid_2()` is the WHOLE-shape overload, `IsValid_1(sub)` the

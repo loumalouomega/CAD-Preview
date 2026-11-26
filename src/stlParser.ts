@@ -73,7 +73,7 @@ export function parseStl(bytes: Uint8Array): Float32Array {
 
 /**
  * Rescales every vertex coordinate by `factor` and re-serializes as ASCII
- * STL text — the host-side STL vertex scaler `CLAUDE.md`'s unit-conversion
+ * STL text — the host-side STL vertex scaler `AGENTS.md`'s unit-conversion
  * section notes this codebase never needed before item 1 (export-time unit
  * conversion for BREP/STL/OBJ/PLY/glTF export targets, which all run in the
  * webview or via OCCT) added a *second* consumer: the FE Mesh panel's

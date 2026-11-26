@@ -90,7 +90,7 @@ export interface ThinSpec { thin?: number; thinOuter?: number; }
  * encloses no area: `extrude`/`revolve` without {@link ThinSpec.thin} sweep it
  * into a **surface** (a sheet of faces with no caps and no volume), while
  * `sweep`/`loft` and any thin build **require** `thin` — the wall is what
- * gives them a cross-section. See CLAUDE.md's "Open-profile (wire) operand".
+ * gives them a cross-section. See AGENTS.md's "Open-profile (wire) operand".
  *
  * `pick` optionally narrows WHICH enclosed regions of a multi-region profile
  * are consumed (roadmap "pick + drill", closed): a face's wires enumerate to

@@ -53,7 +53,7 @@ leak-free guarantee at every scale. MMG retained 96,665,600 bytes, versus
 retain ~1.3 GB RSS; use an isolated process. `mmg-product.ts` exercises the
 **real shipped** service/client/worker (no injected API), including MED material
 Parts, a generated CAD boundary Part and the sphere. Full MCP/stdout regression
-is `npm run mcp:smoke`. See `CLAUDE.md` for measurements and validation.
+is `npm run mcp:smoke`. See `AGENTS.md` for measurements and validation.
 
 `run.mjs` bundles the entry with `scripts/nodeBundleConfig.mjs`, the same
 Node/CJS recipe `esbuild.mjs` uses for the shipped bundles. It then runs the
@@ -101,7 +101,7 @@ Every probe write-up records:
 ## Where results go
 
 - **Pass:** the item's "If admitted" phases move into the roadmap's Tier 1
-  with firm estimates, and the verified call shapes go into `CLAUDE.md`.
+  with firm estimates, and the verified call shapes go into `AGENTS.md`.
 - **Fail:** the item moves to the roadmap's Non-goals (Kernel-blocked for a
   dead binding, Rejected scope for a product judgement), with the calls that
   failed and what would change our mind.

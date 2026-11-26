@@ -35,7 +35,7 @@ export type BRepFormat = Extract<CadFormat, "step" | "iges" | "brep" | "csg">;
  * Human-readable surface classification for a `face-N`, mapped from
  * `GeomAbs_SurfaceType`. **Verified against the live WASM** (brute-force
  * probing, same convention as every other OCCT call in this codebase — see
- * CLAUDE.md): `GeomAbs_Plane=0`, `GeomAbs_Cylinder=1`, `GeomAbs_Cone=2`,
+ * AGENTS.md): `GeomAbs_Plane=0`, `GeomAbs_Cylinder=1`, `GeomAbs_Cone=2`,
  * `GeomAbs_Sphere=3`, `GeomAbs_Torus=4` (confirmed by building a box,
  * cylinder, cone, sphere, and torus via `BRepPrimAPI_Make*` and reading
  * `BRepAdaptor_Surface_2(face,true).GetType().value` off each). The
@@ -1164,7 +1164,7 @@ export interface RebindStats {
 /**
  * Best-effort entity-id rebinding across an ARBITRARY op-list change —
  * append, `remove_edit_op` at any index, undo, redo, or Clear — closes the
- * "entity-id drift" gap CLAUDE.md documents: a topology-changing op
+ * "entity-id drift" gap AGENTS.md documents: a topology-changing op
  * re-tessellates into fresh ids, so a `Part` referencing the old ones used to
  * just lose them. Originally append-only (roadmap "Entity-id drift", first
  * closed); generalized here (roadmap "Extend entity-id rebinding to
