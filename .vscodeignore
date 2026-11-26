@@ -122,5 +122,5 @@ tsconfig.json
 vitest.config.ts
 mkdocs.yml
 .gitignore
-CLAUDE.md
+AGENTS.md
 **/*.vsix

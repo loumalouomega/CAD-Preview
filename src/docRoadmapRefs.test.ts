@@ -78,7 +78,7 @@ describe("readScannedFiles + checkRoadmapCitations (fixture tree)", () => {
       fs.writeFileSync(path.join(root, "doc", "a.md"), "clean prose\n", "utf8");
       fs.writeFileSync(path.join(root, "src", "webview", "b.ts"), "clean code\n", "utf8");
       fs.writeFileSync(path.join(root, "scripts", "c.mjs"), "clean script\n", "utf8");
-      fs.writeFileSync(path.join(root, "CLAUDE.md"), "roadmap item 3\n", "utf8"); // excluded
+      fs.writeFileSync(path.join(root, "AGENTS.md"), "roadmap item 3\n", "utf8"); // excluded
       fs.writeFileSync(path.join(root, "CHANGELOG.md"), "roadmap item 3\n", "utf8"); // excluded
       fs.writeFileSync(path.join(root, "doc", "guide.md"), "with a citation: see roadmap item 3\n", "utf8");
       fs.writeFileSync(path.join(root, "scripts", "node_modules", "skip.ts"), "roadmap item 3\n", "utf8"); // excluded dir
@@ -88,7 +88,7 @@ describe("readScannedFiles + checkRoadmapCitations (fixture tree)", () => {
       expect(files.has("doc/guide.md")).toBe(true);
       expect(files.has("src/webview/b.ts")).toBe(true);
       expect(files.has("scripts/c.mjs")).toBe(true);
-      expect(files.has("CLAUDE.md")).toBe(false);
+      expect(files.has("AGENTS.md")).toBe(false);
       expect(files.has("CHANGELOG.md")).toBe(false);
       expect(files.has("scripts/node_modules/skip.ts")).toBe(false);
       expect(files.has(".vscodeignore")).toBe(true);

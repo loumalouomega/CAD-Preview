@@ -170,7 +170,7 @@ export function summaryLine(facts: EntityFacts): { id: string; descriptor: strin
  * index into the shape as it exists at that point in the op list — so the same
  * string in two ops can denote different topology once an intervening op
  * renumbers. Saying "used by" would be a claim this cannot support; see
- * CLAUDE.md's entity-id-drift discussion.
+ * AGENTS.md's entity-id-drift discussion.
  */
 export function hoverContent(entityId: string, opPositions: readonly number[] | undefined): {
   id: string;

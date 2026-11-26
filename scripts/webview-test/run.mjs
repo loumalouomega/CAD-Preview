@@ -17,7 +17,7 @@
  * is `test/integration/` (`@vscode/test-electron`).
  *
  * Every case below is tied to a REAL, documented bug or invariant from
- * `CLAUDE.md`, not to coverage for its own sake — see each case's comment.
+ * `AGENTS.md`, not to coverage for its own sake — see each case's comment.
  *
  * Run: `npm run test:webview` (chains build → fixtures → this).
  */
@@ -400,7 +400,7 @@ test("tree: a second `tree` message upgrades flat to nested without losing state
 
 /**
  * E. The FE mesh overlay and its toolbar toggle stay truthful about each other.
- * `CLAUDE.md`: the toggle "must never claim on for content that isn't shown",
+ * `AGENTS.md`: the toggle "must never claim on for content that isn't shown",
  * and showing an overlay hides the model's own shaded faces so two opaque
  * solids don't stack.
  */
@@ -424,7 +424,7 @@ test("overlays: meshingResult lights the toggle and hides model faces; Clear rev
  * E2. Hanging-node constraint links (octree `hanging` transition). The links
  * button is the only way to see them, so it must (a) stay hidden until a result
  * carries links, (b) be OFF by default, (c) toggle truthfully, and (d) retire
- * with a plain generate or Clear. `[hidden]` hazard (CLAUDE.md): assert RENDERED
+ * with a plain generate or Clear. `[hidden]` hazard (AGENTS.md): assert RENDERED
  * visibility (`offsetParent`), never the attribute.
  */
 test("overlays: hanging-node constraint links toggle is hidden until a result has links, off by default, and truthful", async (page) => {
@@ -1805,7 +1805,7 @@ test("op preview bands: switching forms clears the legend", async (page) => {
 
 /**
  * G. Dropdown menus — both of these are previously-FIXED real bugs with no
- * regression test, recorded in `CLAUDE.md`'s "Toolbar dropdown menus":
+ * regression test, recorded in `AGENTS.md`'s "Toolbar dropdown menus":
  *  1. The containment test used `e.target !== btn`, but every trigger wraps its
  *     icon in a `<span><svg>`, so clicking an open menu's own icon closed then
  *     immediately reopened it — the menu could not be dismissed by its icon.
@@ -9292,7 +9292,7 @@ test("planes P1: a stored plane renders, and Use applies it as the clip", async 
  * row's own CSS (`.meshing-part-grading { display: flex; ... }`) is an
  * unconditional author rule, which beats the `[hidden]` UA default regardless
  * of specificity — the exact "gated panel never actually hides" hazard
- * CLAUDE.md's "Collapsible sidebar sections" section already documents twice.
+ * AGENTS.md's "Collapsible sidebar sections" section already documents twice.
  * Without the `[hidden]` override this case pins, the row never actually
  * collapses, which in a real session pushes the sidebar's flex:1 panels
  * (Parts, Edits) past their squeeze point (`#side` clips overflow rather than
@@ -9756,7 +9756,7 @@ test("thumbs: a thumbnail for an unknown id is dropped silently", async (page) =
 // These six cases are the automated half of the item's "done when" list —
 // each one pinned to its documented failure class. The "feel" of a live drag
 // in a real VS Code theme at actual editor zoom stays F5-only, stated in
-// CLAUDE.md as the standing gap, as for every webview-touching feature.
+// AGENTS.md as the standing gap, as for every webview-touching feature.
 
 test("sidebar: dragging the handle clamps the width and one debounced viewChanged carries sidebarWidth", async (page) => {
   await populate(page);

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Bumps the patch version, builds, packages, and installs this extension into
-# the currently running VS Code — the workflow CLAUDE.md's "Verify a change"
+# the currently running VS Code — the workflow AGENTS.md's "Verify a change"
 # section documents for Remote/SSH: the running extension there is the
 # installed copy under ~/.vscode-server/extensions/, not the workspace dist/,
 # so a rebuild alone never reaches the editor. Safe to run locally too (falls

@@ -295,7 +295,7 @@ export function disposeBRepCache(cache: BRepCacheEntry): void {
  * Caching counterpart of `loadBRep` below — for the interactive extension's
  * per-edit hot path ONLY (`provider.ts`, one entry per open document). The
  * MCP server stays on plain `loadBRep`, deliberately stateless per call (see
- * CLAUDE.md's MCP section) — introducing cross-call state for a long-lived
+ * AGENTS.md's MCP section) — introducing cross-call state for a long-lived
  * headless process serving arbitrary/many paths over its lifetime is a
  * different, harder problem this item's own scope (`editsChanged`'s
  * per-keystroke-in-an-open-editor cost) doesn't need to solve.
@@ -898,7 +898,7 @@ const NON_FINITE_STEP_RETRIES = 3;
  * AND correctly scale the output for all five `DisplayUnit`s (round-tripped
  * through this codebase's own reader, recovering the source model's exact
  * bounding box in every case — see `igesUnitName`'s doc comment in
- * `lengthUnits.ts` for the full trail). The original CLAUDE.md write-up
+ * `lengthUnits.ts` for the full trail). The original AGENTS.md write-up
  * calling this overload's output "unconfirmed" was a false negative caused
  * by feeding it an 11+ character MEMFS path (this build's undocumented
  * path-length limit, documented above in `exportBRep`), not a real limitation

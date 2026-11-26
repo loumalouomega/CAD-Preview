@@ -1,6 +1,6 @@
 /**
  * Wire format for `kernelWorker.ts`/`kernelClient.ts`'s IPC boundary (roadmap
- * "OCCT in a forked child process", Phase 0+1 — see CLAUDE.md). Pure,
+ * "OCCT in a forked child process", Phase 0+1 — see AGENTS.md). Pure,
  * vscode/WASM-free, unit-tested.
  *
  * The 21 `Pipeline` functions (`mcpTools.ts`) only ever take/return plain

@@ -75,7 +75,7 @@ export const MESHIO_FORMATS: readonly CadFormat[] = [
  * `ansys`/`freefem`/`ansysinp`, but this codebase has no real
  * ANSYS/FreeFem-authored fixture to verify that read against, so claiming
  * support for them would be an unverified promise, not a checked one (see
- * CLAUDE.md's "verify against the live WASM, never assume" discipline). A
+ * AGENTS.md's "verify against the live WASM, never assume" discipline). A
  * consumer holding the actual bytes (`provider.ts`'s `handleMeshio`,
  * `mcpTools.ts`'s `loadModel`) surfaces this map's caveat as a warning
  * rather than silently guessing — an ANSYS `.msh` still opens, but as a
@@ -204,7 +204,7 @@ const EXTENSION_MAP: Record<string, FileRoute> = {
   // results, is discovered by stem convention (`meshioCompanions.ts`), and is
   // deliberately NOT independently openable. The `binary`/`hdf5` flavours
   // (`.post.bin`/`.post.h5`) are not registered — meshio++ reads them, but this
-  // codebase has no fixture verifying either, and CLAUDE.md's discipline is to
+  // codebase has no fixture verifying either, and AGENTS.md's discipline is to
   // claim only what was actually checked.
   "post.msh": { strategy: "meshio", format: "gid" },
   // libMesh equation-system output (meshio++ 17.2.0 write/read). Four flavours

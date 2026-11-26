@@ -217,9 +217,9 @@ Run a specific test file: `npx vitest run src/fileRouter.test.ts`
 
 ### The verification-gap gate
 
-Features that were checked only by hand are recorded in `scripts/verification-gaps/registry.json` — the single list of unverified claims; do not write prose "verification gap" paragraphs in `CLAUDE.md`. `npm test` keeps that debt from growing silently (`src/verificationGaps.test.ts`):
+Features that were checked only by hand are recorded in `scripts/verification-gaps/registry.json` — the single list of unverified claims; do not write prose "verification gap" paragraphs in `AGENTS.md`. `npm test` keeps that debt from growing silently (`src/verificationGaps.test.ts`):
 
-- A new unverified claim is a new registry entry, which raises the unresolved count and so fails the suite until the baseline is raised deliberately in the same change. If a prose gap note does appear in `CLAUDE.md` anyway, it must end in a `[vg:<id>]` marker naming a registry entry.
+- A new unverified claim is a new registry entry, which raises the unresolved count and so fails the suite until the baseline is raised deliberately in the same change. If a prose gap note does appear in `AGENTS.md` anyway, it must end in a `[vg:<id>]` marker naming a registry entry.
 - An entry becomes `closed` only by listing `closedBy` — exact `test("…")` titles from `scripts/webview-test/run.mjs` or `test/integration/suite/index.ts`. Rewording a note cannot close it, and renaming or deleting the covering test re-opens it. `test-written` means a test exists but has not yet been seen green, and still counts as unresolved.
 - `scripts/verification-gaps/baseline.json` caps the unresolved count. Closing an entry means lowering it by one in the same change; the gate fails if the count falls without the baseline following.
 
@@ -281,7 +281,7 @@ It is not in CI (it runs the WASM kernels for minutes); run it before and after 
 
 1. `npm outdated @meshioplusplus/wasm @loumalouomega/gmsh-wasm opencascade.js float-tetwild-wasm` — kernel drift is caught here, not at the next incident.
 2. `npm ci` so the checkout matches the lockfile (a stale `node_modules` silently tests a different artifact).
-3. `npm run compat` — update `corpus.json`'s `verifiedAt` when versions changed, and record any FIXED-UPSTREAM row in `CLAUDE.md`.
+3. `npm run compat` — update `corpus.json`'s `verifiedAt` when versions changed, and record any FIXED-UPSTREAM row in `AGENTS.md`.
 4. `npm run package -- --out cad-preview.vsix && npm run compat:vsix -- cad-preview.vsix`.
 5. **Never move a tag that has been pushed.** A tag push *is* the release trigger: CI builds it, publishes it to the Marketplace and creates the GitHub Release. A tag that moves afterwards leaves the in-flight run standing down (see the CI section) and the release is whatever the *new* tag points at — so amend before tagging, or cut a new version after tagging.
 
@@ -292,7 +292,7 @@ Two mechanisms keep dependencies current and non-malicious, configured in `.gith
 - **`dependabot.yml`** opens weekly PRs for outdated `npm` packages (dev-dependency minor/patch bumps grouped into one PR) and GitHub Actions versions. It also drives GitHub's native Dependabot security alerts/PRs for the `npm` ecosystem regardless of the update schedule.
 - **`dependency-review.yml`** runs `actions/dependency-review-action` on every PR to `master` and fails the check (`fail-on-severity: moderate`) if the diff introduces a package with a known moderate-or-worse vulnerability, posting a summary comment on the PR.
 
-Before adding any new **bundled** dependency (see the License section in [`CLAUDE.md`](../CLAUDE.md) — anything that ends up in the packaged `.vsix`, not just a dev/build-time tool), check its license for GPL compatibility first regardless of what these two checks report, since they scan for vulnerabilities/version currency, not license terms.
+Before adding any new **bundled** dependency (see the License section in [`AGENTS.md`](../AGENTS.md) — anything that ends up in the packaged `.vsix`, not just a dev/build-time tool), check its license for GPL compatibility first regardless of what these two checks report, since they scan for vulnerabilities/version currency, not license terms.
 
 **`docs`** (see `.github/workflows/docs.yml`, every push to `master`):
 

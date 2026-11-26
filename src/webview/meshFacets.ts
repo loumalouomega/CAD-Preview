@@ -38,7 +38,7 @@ export const MAX_FACETS = 512;
  * facets, never fewer. Used to keep a meshio++-imported document's
  * region-derived Parts referencing the same facet ids the model actually
  * displays — see `src/meshioService.ts`'s `convertToStlBoundaryWithRegions`
- * and CLAUDE.md's "meshio++ integration" section.
+ * and AGENTS.md's "meshio++ integration" section.
  */
 export function segmentCoplanarFacets(
   geometry: THREE.BufferGeometry,
@@ -180,7 +180,7 @@ export function buildMeshFacetGroup(mesh: THREE.Mesh, volumeId: string, triangle
       mesh.userData.entityType = "surface";
       mesh.userData.entityId = `${volumeId}/face-0`;
       // BVH-accelerate kept-whole meshes (the dense-scan case — closed as
-      // "BVH-accelerated raycasting for kept-whole meshes", see CLAUDE.md).
+      // "BVH-accelerated raycasting for kept-whole meshes", see AGENTS.md).
       // `indirect: true` preserves the original triangle
       // order so any index-based logic stays correct if later code keys on it.
       // The BVH lives with the geometry for the session; it is freed when the

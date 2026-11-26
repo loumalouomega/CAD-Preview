@@ -8,8 +8,8 @@
  *
  * - A **registry** (`scripts/verification-gaps/registry.json`) is the single
  *   source of truth: one entry per unverified claim, with a status. Gaps are
- *   recorded there, not as paragraphs in `CLAUDE.md`.
- * - `CLAUDE.md` is no longer required to cite every entry. If a prose gap note
+ *   recorded there, not as paragraphs in `AGENTS.md`.
+ * - `AGENTS.md` is no longer required to cite every entry. If a prose gap note
  *   is written there anyway, it must still carry a `[vg:<id>[,<id>…]]` marker
  *   that resolves to a registry entry — a note cannot sit outside the registry.
  * - An entry can only be `closed` by naming harness test titles that literally
@@ -65,7 +65,7 @@ export interface GapNote {
 const GAP_NOTE_PATTERN = /^\s*(?:-\s+)?\*\*(?:Verification gap|Still F5-only|F5-only|Remaining F5 gap)/;
 const MARKER_PATTERN = /\[vg:([a-z0-9][a-z0-9,-]*)\]/g;
 
-/** Finds every gap note in `CLAUDE.md` with its markers (possibly none). */
+/** Finds every gap note in `AGENTS.md` with its markers (possibly none). */
 export function findGapNotes(text: string): GapNote[] {
   const notes: GapNote[] = [];
   text.split("\n").forEach((line, i) => {
@@ -115,7 +115,7 @@ export function parseRegistry(json: string): GapRegistry {
 }
 
 export interface GateInput {
-  claudeMd: string;
+  agentsMd: string;
   registry: GapRegistry;
   baseline: GapBaseline;
   /** Concatenated or per-file harness sources — only their `test("…")` titles are read. */
@@ -151,14 +151,14 @@ export function checkGaps(input: GateInput): string[] {
     if (e.status === "none" && !e.note) problems.push(`"${e.id}" has status none but gives no reason (note)`);
   }
 
-  const notes = findGapNotes(input.claudeMd);
+  const notes = findGapNotes(input.agentsMd);
   for (const n of notes) {
     if (n.ids.length === 0) {
-      problems.push(`CLAUDE.md:${n.line} is a verification-gap note with no [vg:<id>] marker — register it in scripts/verification-gaps/registry.json and add the marker`);
+      problems.push(`AGENTS.md:${n.line} is a verification-gap note with no [vg:<id>] marker — register it in scripts/verification-gaps/registry.json and add the marker`);
       continue;
     }
     for (const id of n.ids) {
-      if (!seen.has(id)) problems.push(`CLAUDE.md:${n.line} cites [vg:${id}], which is not in the registry`);
+      if (!seen.has(id)) problems.push(`AGENTS.md:${n.line} cites [vg:${id}], which is not in the registry`);
     }
   }
 

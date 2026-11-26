@@ -168,7 +168,7 @@ const extensionPath = process.env.CAD_PREVIEW_ROOT ?? path.join(__dirname, "..")
 
 // Every WASM-touching pipeline call now routes through a forked child
 // process (roadmap "OCCT in a forked child process", Phase 0+1 — see
-// CLAUDE.md) rather than calling occtService.ts/gmshService.ts/etc.
+// AGENTS.md) rather than calling occtService.ts/gmshService.ts/etc.
 // directly: `createKernelClient` returns an object satisfying the exact same
 // `Pipeline` shape `mcpTools.ts` already consumes, so `mcpTools.ts` itself
 // needed zero changes. This gives the server two things it never had

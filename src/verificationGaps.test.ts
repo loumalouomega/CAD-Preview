@@ -65,7 +65,7 @@ describe("parseRegistry", () => {
 describe("checkGaps — every rule fails when it should", () => {
   const md = "- **Verification gap**: x [vg:a]\n- **F5-only**: y [vg:b]\n";
   const base = () => ({
-    claudeMd: md,
+    agentsMd: md,
     registry: reg(entry({ id: "a" }), entry({ id: "b", status: "closed", closedBy: ["alpha: does a thing"] })),
     baseline: { open: 1 },
     harnessSources: [HARNESS],
@@ -77,13 +77,13 @@ describe("checkGaps — every rule fails when it should", () => {
 
   it("a gap note with no marker fails — a new unverified feature cannot land silently", () => {
     const i = base();
-    i.claudeMd += "- **Verification gap, stated plainly**: a brand new feature, never run.\n";
+    i.agentsMd += "- **Verification gap, stated plainly**: a brand new feature, never run.\n";
     expect(checkGaps(i).join("\n")).toMatch(/no \[vg:<id>\] marker/);
   });
 
   it("a marker that names no registry entry fails", () => {
     const i = base();
-    i.claudeMd += "- **F5-only**: z [vg:ghost]\n";
+    i.agentsMd += "- **F5-only**: z [vg:ghost]\n";
     expect(checkGaps(i).join("\n")).toMatch(/\[vg:ghost\], which is not in the registry/);
   });
 
@@ -113,7 +113,7 @@ describe("checkGaps — every rule fails when it should", () => {
     expect(checkGaps(down).join("\n")).toMatch(/fell to 1 \(baseline 2\)/);
   });
 
-  it("a registry entry needs no marker in CLAUDE.md — the registry is the source of truth", () => {
+  it("a registry entry needs no marker in AGENTS.md — the registry is the source of truth", () => {
     const i = base();
     i.registry = reg(...i.registry.entries, entry({ id: "unmentioned", status: "none", note: "n/a" }));
     expect(checkGaps(i)).toEqual([]);
@@ -132,9 +132,9 @@ describe("the real tree", () => {
   const ROOT = path.resolve(__dirname, "..");
   const read = (p: string) => fs.readFileSync(path.join(ROOT, p), "utf8");
 
-  it("CLAUDE.md, the registry, the baseline and the harness test titles agree", () => {
+  it("AGENTS.md, the registry, the baseline and the harness test titles agree", () => {
     const problems = checkGaps({
-      claudeMd: read("CLAUDE.md"),
+      agentsMd: read("AGENTS.md"),
       registry: parseRegistry(read("scripts/verification-gaps/registry.json")),
       baseline: JSON.parse(read("scripts/verification-gaps/baseline.json")),
       harnessSources: [read("scripts/webview-test/run.mjs"), read("test/integration/suite/index.ts")],

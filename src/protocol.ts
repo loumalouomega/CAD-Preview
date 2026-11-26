@@ -491,7 +491,7 @@ export type HostToWebview =
        * arrays the source file declares (`src/meshioService.ts`'s
        * `readMeshioMetadata` — a cheap `readMetadata()` call, best-effort,
        * empty on any failure) — informational only, NOT auto-converted into
-       * Parts or any other geometry; see CLAUDE.md's "meshio++ integration"
+       * Parts or any other geometry; see AGENTS.md's "meshio++ integration"
        * section for why. Omitted (not just empty) when nothing was found, so
        * a status line only ever appears when there is something to say. */
       meshioMetadata?: {

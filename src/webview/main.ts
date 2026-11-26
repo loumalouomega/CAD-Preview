@@ -1180,7 +1180,7 @@ let gridSnapSize = 1;
  * individually-tagged, always-fully-populated point entities (FE-mesh
  * overlay vertices are display-only and excluded from picking already;
  * edge/face-mesh vertices were never separately tagged entities at all) —
- * see CLAUDE.md's "Bottom-up wireframe modeling" section.
+ * see AGENTS.md's "Bottom-up wireframe modeling" section.
  *
  * `traverseVisible`, not `traverse` — same load-bearing reason as
  * `picking.ts`'s collectors: a snap candidate is an implicit pick target,
@@ -5284,7 +5284,7 @@ function setPaneDividersVisible(visible: boolean): void {
  * 2025 insiders milestone). When it isn't there, fall back to the plain
  * `{type:"openFile"}` message (opens the normal dialog) rather than silently
  * doing nothing — this fallback is the realistic path on a modern install,
- * not just a defensive edge case. See CLAUDE.md for the full trail.
+ * not just a defensive edge case. See AGENTS.md for the full trail.
  */
 function setupDragAndDrop(): void {
   app.addEventListener("dragover", (e) => {
@@ -6628,7 +6628,7 @@ window.addEventListener("message", async (event: MessageEvent<HostToWebview>) =>
         }
         // Region names that correlated to boundary triangles (`regionAssignment`
         // present) became Parts host-side — see `provider.ts`'s `handleMeshio`
-        // and CLAUDE.md's "meshio++ integration" section. Point/cell data array
+        // and AGENTS.md's "meshio++ integration" section. Point/cell data array
         // names populate the "Colour by field" selector below (values fetched
         // on demand, only once picked); `fieldDataNames` (whole-mesh, not
         // spatially varying) stays purely informational — nothing to colour by.

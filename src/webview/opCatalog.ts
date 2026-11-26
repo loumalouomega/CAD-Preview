@@ -357,7 +357,7 @@ function cap(s: string): string {
  * positional (`face-12` is an index into the shape as it exists at that point
  * in the op list), so the same string in two ops can denote different topology
  * once an intervening op renumbers. Anything built on this must say "mentions",
- * never "acts on" — see CLAUDE.md's entity-id-drift discussion.
+ * never "acts on" — see AGENTS.md's entity-id-drift discussion.
  *
  * Exhaustive `switch` with no `default`, deliberately mirroring
  * {@link describeOp}'s: a new `EditOpKind` becomes a compile error here rather
