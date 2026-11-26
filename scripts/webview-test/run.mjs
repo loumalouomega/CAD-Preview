@@ -7134,24 +7134,26 @@ async function gizmoHandle(page, axis, frac = 0.75) {
   const shot = await shotWithoutToast(page, () => page.locator("#app").screenshot());
   const found = await page.evaluate(
     async ({ b64, want }) => {
+      const dpr = window.devicePixelRatio || 1;
       const bmp = await createImageBitmap(await (await fetch(`data:image/png;base64,${b64}`)).blob());
       const c = document.createElement("canvas");
       c.width = bmp.width;
       c.height = bmp.height;
       c.getContext("2d").drawImage(bmp, 0, 0);
       const { data } = c.getContext("2d").getImageData(0, 0, c.width, c.height);
+      const cubeLimit = 110 * dpr;
       let sx = 0, sy = 0, n = 0;
       const mine = [];
       for (let y = 0; y < c.height; y++) {
         for (let x = 0; x < c.width; x++) {
           // Skip the orientation cube's corner — it draws axis arrows too.
-          if (x < 110 && y < 110) continue;
+          if (x < cubeLimit && y < cubeLimit) continue;
           const i = (y * c.width + x) * 4;
           const r = data[i], g = data[i + 1], b = data[i + 2];
           const pure = (r === 255 && !g && !b) || (g === 255 && !r && !b) || (b === 255 && !r && !g);
           if (!pure) continue;
-          sx += x; sy += y; n++;
-          if (r === want[0] && g === want[1] && b === want[2]) mine.push([x, y]);
+          sx += x / dpr; sy += y / dpr; n++;
+          if (r === want[0] && g === want[1] && b === want[2]) mine.push([x / dpr, y / dpr]);
         }
       }
       return { n, cx: sx / Math.max(n, 1), cy: sy / Math.max(n, 1), mine };
@@ -11215,6 +11217,229 @@ test("mesh colours: a missing .mtl falls back to the default material and says s
   assert(stats.fraction > 0.01, `the model still renders (non-background fraction ${stats.fraction.toFixed(3)})`);
 });
 
+test("dpr: off-centre picking, pinned label anchor, and orientation cube align with CSS pixels", async (page) => {
+  await populate(page);
+  const dpr = await page.evaluate(() => window.devicePixelRatio);
+  const box = await viewportBox(page);
+
+  // 1. Orientation cube draws inside its scissored CSS viewport [10..106, 10..106]
+  //    (plus 2 px AA margin) and a click on it snaps the view.
+  await page.click("#view-menu");
+  await page.click("#grid");
+  await page.keyboard.press("Escape");
+  await sleep(300);
+
+  const cubeShot = (await shotWithoutToast(page, () => page.locator("#app").screenshot())).toString("base64");
+  const cubeStats = await page.evaluate(
+    async ({ b64, ratio }) =>
+      new Promise((resolve, reject) => {
+        const img = new Image();
+        img.onerror = () => reject(new Error("decode failed"));
+        img.onload = () => {
+          const c = document.createElement("canvas");
+          c.width = img.width;
+          c.height = img.height;
+          const ctx = c.getContext("2d");
+          ctx.drawImage(img, 0, 0);
+          const { data } = ctx.getImageData(0, 0, c.width, c.height);
+          // Cube faces are #2b6cb0 (R~43, G~108, B~176).
+          const isCubeBlue = (i) => data[i + 2] > 140 && data[i + 2] - data[i] > 80 && data[i + 2] - data[i + 1] > 35;
+          const minPx = Math.floor(8 * ratio);
+          const maxPx = Math.ceil(108 * ratio);
+          const cornerPx = Math.ceil(130 * ratio);
+          let inside = 0;
+          let outside = 0;
+          let modelLeftCss = Infinity;
+          let modelRightCss = -Infinity;
+          const midY = Math.round(c.height / 2);
+          for (let y = 0; y < c.height; y++) {
+            for (let x = 0; x < c.width; x++) {
+              const i = (y * c.width + x) * 4;
+              if (x < cornerPx && y < cornerPx && isCubeBlue(i)) {
+                if (x >= minPx && x <= maxPx && y >= minPx && y <= maxPx) inside++;
+                else outside++;
+              }
+              if (Math.abs(y - midY) <= 2) {
+                const isBg = Math.abs(data[i] - 0x1e) < 6 && Math.abs(data[i + 1] - 0x1e) < 6 && Math.abs(data[i + 2] - 0x1e) < 6;
+                if (!isBg && (x > maxPx || y > maxPx)) {
+                  const cssX = x / ratio;
+                  if (cssX < modelLeftCss) modelLeftCss = cssX;
+                  if (cssX > modelRightCss) modelRightCss = cssX;
+                }
+              }
+            }
+          }
+          resolve({ inside, outside, modelLeftCss, modelRightCss, imgW: c.width, imgH: c.height });
+        };
+        img.src = `data:image/png;base64,${b64}`;
+      }),
+    { b64: cubeShot, ratio: dpr }
+  );
+  assert(cubeStats.inside > 40 && cubeStats.outside === 0, `DPR ${dpr}: orientation cube renders inside its 96×96 CSS viewport (inside=${cubeStats.inside}, outside=${cubeStats.outside})`);
+
+  // Snap to Front ('1') first so clicking the cube corner/face changes the view.
+  await page.keyboard.press("1");
+  await sleep(250);
+  const viewBeforeCube = await sentCount(page, "viewChanged");
+  await page.mouse.click(box.x + 10 + 48, box.y + 10 + 48);
+  await sleep(250);
+  assert((await sentCount(page, "viewChanged")) > viewBeforeCube, `DPR ${dpr}: clicking the orientation cube snaps the camera`);
+
+  // 2. Off-centre picking: click near the model's right edge and left edge so
+  //    an unscaled pick coordinate (x * dpr or x / dpr) misses the model at DPR != 1.
+  await page.keyboard.press("i"); // restore iso view
+  await sleep(300);
+  await page.click("#select-menu");
+  await page.click("#sel-toggle");
+  await page.click('.sel-mode[data-mode="surface"]');
+  await page.click("#select-menu");
+  await sleep(150);
+
+  const pickAt = async (cssX, cssY) => {
+    await page.mouse.click(box.x + cssX, box.y + cssY);
+    await sleep(200);
+    await page.click("#parts-new");
+    await sleep(200);
+    await page.evaluate(() => {
+      const rows = document.querySelectorAll("#parts-body .part-row");
+      const row = rows[rows.length - 1];
+      const assign = [...row.querySelectorAll("button.part-btn")].find((b) => b.title?.startsWith("Assign"));
+      assign?.click();
+    });
+    await sleep(200);
+    const parts = await page.evaluate(() => (window.__sent ?? []).findLast((m) => m.type === "partsChanged")?.parts ?? null);
+    return parts?.at(-1)?.surfaces ?? [];
+  };
+  const rightPick = await pickAt(cubeStats.modelRightCss - 12, box.height / 2);
+  const leftPick = await pickAt(cubeStats.modelLeftCss + 12, box.height / 2);
+  assert(rightPick.length > 0 && rightPick.every((id) => /^face-\d+$/.test(id)), `DPR ${dpr}: off-centre right-edge click resolves to a face (got ${JSON.stringify(rightPick)})`);
+  assert(leftPick.length > 0 && leftPick.every((id) => /^face-\d+$/.test(id)), `DPR ${dpr}: off-centre left-edge click resolves to a face (got ${JSON.stringify(leftPick)})`);
+
+  // 3. Pinned dimension label sits on its anchor within a pixel:
+  //    Switch to orthographic so the 3D midpoint of two symmetric clicks
+  //    projects to the exact 2D midpoint (box.width/2, box.height/2).
+  await page.click("#vc-ortho");
+  await sleep(200);
+  const beforeMeasureShot = (await shotWithoutToast(page, () => page.locator("#app").screenshot())).toString("base64");
+  await page.click("#measure-menu");
+  await page.click("#measure-toggle");
+  await page.click("#measure-menu");
+  await sleep(150);
+  const cx = box.width / 2;
+  const cy = box.height / 2;
+  await page.mouse.click(box.x + cx - 40, box.y + cy);
+  await sleep(200);
+  await page.mouse.click(box.x + cx + 40, box.y + cy);
+  await sleep(250);
+  await page.click("#measure-pin-btn");
+  await sleep(250);
+
+  const labelShot = (await shotWithoutToast(page, () => page.locator("#app").screenshot())).toString("base64");
+  const labelPos = await page.evaluate(
+    async ({ b64Before, b64After, ratio, targetX, targetY }) => {
+      const load = (b64) =>
+        new Promise((resolve, reject) => {
+          const img = new Image();
+          img.onerror = () => reject(new Error("decode failed"));
+          img.onload = () => {
+            const c = document.createElement("canvas");
+            c.width = img.width;
+            c.height = img.height;
+            const ctx = c.getContext("2d");
+            ctx.drawImage(img, 0, 0);
+            resolve({ w: c.width, h: c.height, data: ctx.getImageData(0, 0, c.width, c.height).data });
+          };
+          img.src = `data:image/png;base64,${b64}`;
+        });
+      const [before, after] = await Promise.all([load(b64Before), load(b64After)]);
+      let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity, count = 0;
+      const searchR = Math.ceil(60 * ratio);
+      const tx = Math.round(targetX * ratio);
+      const ty = Math.round(targetY * ratio);
+      for (let y = Math.max(0, ty - searchR); y <= Math.min(after.h - 1, ty + searchR); y++) {
+        for (let x = Math.max(0, tx - searchR); x <= Math.min(after.w - 1, tx + searchR); x++) {
+          const i = (y * after.w + x) * 4;
+          const changed =
+            Math.abs(after.data[i] - before.data[i]) +
+            Math.abs(after.data[i + 1] - before.data[i + 1]) +
+            Math.abs(after.data[i + 2] - before.data[i + 2]);
+          // Any changed pixel within 60 CSS px of the anchor belongs to the
+          // label sprite (dark box, accent border, white text) or the
+          // symmetric dimension line between the two clicks.
+          if (changed > 40) {
+            if (x < minX) minX = x;
+            if (x > maxX) maxX = x;
+            if (y < minY) minY = y;
+            if (y > maxY) maxY = y;
+            count++;
+          }
+        }
+      }
+      const centerCssX = count > 0 ? ((minX + maxX) / 2) / ratio : null;
+      const centerCssY = count > 0 ? ((minY + maxY) / 2) / ratio : null;
+      return {
+        count,
+        centerCssX,
+        centerCssY,
+        dx: centerCssX !== null ? Math.abs(centerCssX - targetX) : null,
+        dy: centerCssY !== null ? Math.abs(centerCssY - targetY) : null,
+      };
+    },
+    { b64Before: beforeMeasureShot, b64After: labelShot, ratio: dpr, targetX: cx, targetY: cy }
+  );
+  assert(
+    labelPos.count > 20 && labelPos.dx <= 1.0 && labelPos.dy <= 1.0,
+    `DPR ${dpr}: pinned dimension label sits on its anchor within 1 CSS px (dx=${labelPos.dx?.toFixed(2)}, dy=${labelPos.dy?.toFixed(2)}, pixels=${labelPos.count})`
+  );
+});
+
+const DPR_ACCEPTANCE_NAMES = new Set([
+  "framing: the model occupies a sane fraction of the viewport",
+  "picking: a canvas click in Surf mode resolves to a real surface entity",
+  "gizmo: dragging the X arrow previews a Move along X only; Apply commits it once",
+  "clip P3: an axis-aligned clip is capped too",
+  "dpr: off-centre picking, pinned label anchor, and orientation cube align with CSS pixels",
+]);
+const DPR_RATIOS = process.env.WEBVIEW_DPR ? [Number(process.env.WEBVIEW_DPR)] : [1, 1.25, 1.5, 2];
+
+async function runCaseList(browser, base, list, dpr) {
+  const context = await browser.newContext({ viewport: { width: 1360, height: 900 }, deviceScaleFactor: dpr });
+  // Count every frame the render scheduler asks for. Installed before any page
+  // script runs, so `viewer.ts`'s injected frame source picks up the wrapper.
+  await context.addInitScript(() => {
+    window.__rafCount = 0;
+    const original = window.requestAnimationFrame.bind(window);
+    window.requestAnimationFrame = (cb) => {
+      window.__rafCount++;
+      return original(cb);
+    };
+  });
+  try {
+    for (const c of list) {
+      console.log(`\n${c.name} [DPR=${dpr}]`);
+      const page = await context.newPage();
+      // An uncaught exception in the webview is a failure even if every
+      // assertion below still happens to pass — the screenshot harness never
+      // noticed these at all.
+      page.on("pageerror", (err) => {
+        failures++;
+        console.error(`  ✗ uncaught page error: ${err.message}`);
+      });
+      try {
+        await openHarness(page, base);
+        await c.run(page);
+      } catch (err) {
+        failures++;
+        console.error(`  ✗ ${c.name}: ${err.message}`);
+      } finally {
+        await page.close();
+      }
+    }
+  } finally {
+    await context.close();
+  }
+}
+
 async function main() {
   if (!nodeSupportsPlaywright()) {
     // Not a failure: playwright-core would `process.exit(1)` at module load, so
@@ -11242,38 +11467,19 @@ async function main() {
   console.log(`Harness server: ${base}`);
 
   const browser = await chromium.launch({ headless: true, args: LAUNCH_ARGS, ...(process.env.PLAYWRIGHT_CHROMIUM_PATH ? { executablePath: process.env.PLAYWRIGHT_CHROMIUM_PATH } : {}) });
-  const context = await browser.newContext({ viewport: { width: 1360, height: 900 } });
-  // Count every frame the render scheduler asks for. Installed before any page
-  // script runs, so `viewer.ts`'s injected frame source picks up the wrapper.
-  await context.addInitScript(() => {
-    window.__rafCount = 0;
-    const original = window.requestAnimationFrame.bind(window);
-    window.requestAnimationFrame = (cb) => {
-      window.__rafCount++;
-      return original(cb);
-    };
-  });
 
   try {
     const only = process.env.WEBVIEW_TEST_ONLY; // substring filter for iterating on one case
-    for (const c of CASES.filter((x) => !only || x.name.includes(only))) {
-      console.log(`\n${c.name}`);
-      const page = await context.newPage();
-      // An uncaught exception in the webview is a failure even if every
-      // assertion below still happens to pass — the screenshot harness never
-      // noticed these at all.
-      page.on("pageerror", (err) => {
-        failures++;
-        console.error(`  ✗ uncaught page error: ${err.message}`);
-      });
-      try {
-        await openHarness(page, base);
-        await c.run(page);
-      } catch (err) {
-        failures++;
-        console.error(`  ✗ ${c.name}: ${err.message}`);
-      } finally {
-        await page.close();
+    const filtered = CASES.filter((x) => !only || x.name.includes(only));
+    if (!process.env.WEBVIEW_DPR) {
+      await runCaseList(browser, base, filtered, 1);
+    }
+    const dprCases = filtered.filter((x) => DPR_ACCEPTANCE_NAMES.has(x.name));
+    if (dprCases.length > 0) {
+      for (const dpr of DPR_RATIOS) {
+        if (!process.env.WEBVIEW_DPR && dpr === 1) continue; // already ran at DPR=1 above
+        console.log(`\n── DPR acceptance pass (devicePixelRatio = ${dpr}) ──`);
+        await runCaseList(browser, base, dprCases, dpr);
       }
     }
   } finally {
@@ -11283,8 +11489,8 @@ async function main() {
 
   console.log(
     failures
-      ? `\nWebview tests FAILED: ${failures} of ${checks} checks.`
-      : `\nWebview tests passed (${checks} checks).`
+      ? `\nWebview tests FAILED: ${failures} of ${checks} checks (DPRs tested: ${DPR_RATIOS.join(", ")}).`
+      : `\nWebview tests passed (${checks} checks, DPRs tested: ${DPR_RATIOS.join(", ")}).`
   );
   process.exit(failures ? 1 : 0);
 }

@@ -9,6 +9,17 @@ This directory holds two TikZ-drawn icon sets and an SVG application mark for CA
 | Wired into the running extension? | **Yes** — `src/webview/opIcons.ts` | **Yes** — replaces the emoji that used to be there | **Yes** — `package.json`'s `"icon"` field |
 | Theme-adaptive? | Yes (tracks VS Code light/dark via `currentColor`) | Yes (tracks VS Code light/dark via `currentColor`) | No (fixed teal-on-white/transparent) |
 
+## Contact sheet and validation
+
+Every icon across all three sets (`OP_ICONS`, `TOOLBAR_ICONS`, `UI_GLYPHS`) is rendered at 14, 16, and 24 px across Dark, Light, High Contrast Dark, and High Contrast Light into [the icon contact sheet](icon-sheet.png) without LaTeX:
+
+```bash
+npm run icons:check   # validate completeness, 14 px visibility on all 4 themes, and uniqueness
+npm run icons:sheet   # regenerate icons/icon-sheet.png and run the same checks
+```
+
+`icons/icon-sheet.mjs` exits non-zero if any `opCatalog.ts`, `ribbon.ts`, or `viewerDom.ts` id lacks an icon, if any icon rasterises blank or below the lit-pixel threshold at 14 px on any theme, or if two icons in the same set render identically. An icon touching the outer 1 px ring at 24 px is reported as a warning.
+
 ## `tikz/` — Edits panel op icons (46, SVG, wired in)
 
 One standalone TikZ file per Edits-panel operation button (`tikz/<PanelOpId>.tex`), matching the `PanelOpId` keys in [`src/webview/opCatalog.ts`](../src/webview/opCatalog.ts) and the **generated, committed** module [`../src/webview/opIcons.ts`](../src/webview/opIcons.ts) 1:1 — which is what `editsPanel.ts` actually imports and renders (via `innerHTML`, not `textContent` — an op icon is inline SVG markup, not a text glyph). This set originally shipped as flat-color PNG previews with no wiring; it now goes through the exact same `svgIconPostProcess.mjs` pipeline as `tikz-ui/` below, just into its own `svg-ops/` output directory and its own generator script (`build-op-icons.mjs`) — kept separate from `build-toolbar-icons.mjs` because `opIcons.ts`'s generated type is `Record<PanelOpId, string>` (imported from `opCatalog.ts`) rather than a self-contained union, so a missing/extra id is a `tsc` error, not just a runtime completeness check.
