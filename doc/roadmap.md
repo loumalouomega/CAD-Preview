@@ -442,22 +442,6 @@ These are outcome groupings, not release numbers. Independent small items can sh
 - **What is left (S):** a `test:webview` case that completes open, select a face, apply a fillet, undo (Ctrl+Z now exists) and export using the keyboard only, with focus visible at each step.
 - **Done when:** that case passes in the dark, light and both high-contrast themes, every interactive element has an accessible name (asserted, not sampled), and the guide lists the keyboard path. KKSS runs its own axe pass over the embedded page; this item is the extension-side half.
 
-#### 1.10 Device-pixel-ratio acceptance for the viewer {#device-pixel-ratio-acceptance}
-
-*Area: Interface, Platform. Effort: S. Added 2026-11-13 from the [ElmerStudio review](#elmerstudio-review).*
-
-- **Evidence:** `test:webview` and the screenshot harness run at one device pixel ratio each (1 and 2). Nothing exercises 1.25, 1.5 or 1.75, which are what a Windows laptop and a scaled Linux desktop use, and the code that depends on the ratio is exactly the code a user notices: picking and box selection (CSS pixels against the renderer's buffer), the label overlay and annotation leaders, the orientation cube's scissor rectangle, the clip-cap stencil and the fixed `clip` rectangles of several screenshots. The sibling extension fixed a pick offset of this kind once.
-- **What to do (S):** run the framing-invariant and picking cases of `scripts/webview-test/run.mjs` at 1, 1.25, 1.5 and 2, asserting that a click on a known face centre selects that face, that a pinned dimension's label sits on its anchor within a pixel, and that the cube and the gizmo draw inside their viewports; add the ratio to the run's report.
-- **Done when:** the cases pass at all four ratios with one injected fault (an unscaled pick coordinate) shown to fail at 1.5; anything left unverified has an entry in `scripts/verification-gaps/registry.json`.
-
-#### 1.11 Icon contact sheet and validation {#icon-contact-sheet}
-
-*Area: Interface. Effort: S. Added 2026-11-13 from the [ElmerStudio review](#elmerstudio-review); the same check is queued in VSCode-MDPA-Preview and KKSS.*
-
-- **Evidence:** two generated icon sets (`src/toolbarIcons.ts`, `src/webview/opIcons.ts`) and the hand-authored `src/uiGlyphs.ts` are checked for structure (`svgIconPostProcess.test.ts`), never for what they look like at 1em. The two-tone op icons map gray fills to opacity, so an icon can be valid SVG and nearly invisible on one theme.
-- **What to do (S):** `icons/icon-sheet.mjs` renders every icon at 14, 16 and 24 px on the dark, light and both high-contrast backgrounds into one labelled sheet (generated like the screenshots, never hand-captured), and exits non-zero when an id named by `opCatalog.ts`, the toolbar or the ribbon has no icon, when an icon rasterises blank or below a lit-pixel threshold at 14 px on any theme, or when two icons render identically. An icon touching the outer pixel ring is a warning.
-- **Done when:** the check runs in CI without LaTeX, blanking one path is shown to fail it, and the sheet is linked from `icons/README.md`.
-
 ### 2. Ready product work {#tier-1-—-ready-product-work}
 
 *Admission: no kernel unknown remains. Either a probe passed and its call shapes are in `AGENTS.md`, or the work only reuses shipped machinery. The estimate is firm.*

@@ -73,6 +73,9 @@ jobs:
       - name: Test (webview, Playwright over the real viewer bundle)
         run: xvfb-run -a npm run test:webview
 
+      - name: Check icon contact sheet (completeness + visibility across themes)
+        run: xvfb-run -a npm run icons:check
+
       # @vscode/test-electron resolves "stable" to an exact version (and, on a
       # cache miss, downloads the archive) via update.code.visualstudio.com —
       # a network call this job has no control over. A transient blip there

@@ -38,7 +38,7 @@ export const UI_GLYPHS = {
   zoomOut: g('<circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/><path d="M8 11h6"/>'),
   link: g('<path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>'),
   cube: g('<path d="M21 8 12 3 3 8v8l9 5 9-5Z"/><path d="m3 8 9 5 9-5"/><path d="M12 13v8"/>'),
-  box: g('<path d="M21 8 12 3 3 8v8l9 5 9-5Z"/><path d="M12 13v8"/><path d="m3 8 9 5 9-5"/>'),
+  box: g('<path d="M21 8 12 3 3 8l9 5 9-5Z" fill="currentColor" fill-opacity="0.25"/><path d="M21 8 12 3 3 8v8l9 5 9-5Z"/><path d="M12 13v8"/><path d="m3 8 9 5 9-5"/>'),
   plus: g('<path d="M12 5v14"/><path d="M5 12h14"/>'),
   play: g('<path d="M7 4v16l13-8Z" fill="currentColor"/>'),
   download: g('<path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/>'),
