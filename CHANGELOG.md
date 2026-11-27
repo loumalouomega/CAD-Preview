@@ -6,6 +6,19 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/); thi
 
 ## [Unreleased]
 
+## [3.44.0] - 2026-11-27
+
+### Added
+
+- **Browser sketch rows and per-helper Origin visibility.** The unified Browser tree gives each unconsumed sketch/2D op its own row (face/edge count, guide geometry dimmed and labelled `(guide)`) with an eye that hides that sketch's faces and wires and a click that selects them, and splits the Origin group into Grid, X/Y/Z axis and XY/XZ/YZ plane eyes (the origin planes start hidden). The Document group gains the tessellation-quality row, carried by a new `tessellationQuality` field on `viewerDefaults`. The host posts the produced entity ids with `geometry` (`sketchEntities`, rebased like the rest of the tree), and a sketch row's hidden state is pruned when the op disappears. This closes the 2.38 Browser tree follow-ups; `test:webview` pins the rows, the guide dimming and the toggles.
+- **Icon contact sheet validation.** `npm run icons:check` renders every toolbar, ribbon, glyph and operation icon at 14, 16 and 24 px on the dark, light and both high-contrast themes without LaTeX, and fails on an icon id with no icon, an icon that rasterises blank or below a lit-pixel threshold at 14 px on any theme, or two icons in a set that render identically. `npm run icons:sheet` regenerates `icons/icon-sheet.png` with the same checks. The check runs in CI; an icon touching the outer pixel ring at 24 px is a warning, not a failure.
+- **Device-pixel-ratio acceptance in the webview harness.** `test:webview` repeats its off-centre picking, pinned-label and orientation-cube cases at DPR 1, 1.25, 1.5 and 2 (`WEBVIEW_DPR` narrows the run), so an unscaled CSS-pixel/buffer coordinate fails at 1.5 instead of passing only at 1. The ratio is printed in the run report.
+
+### Changed
+
+- **Dependency updates.** `manifold-3d` 3.5.4 → 3.5.5, `playwright` 1.65.0 → 1.65.1 and `@vscode/vsce` 4.1.0 → 4.1.1; `@types/vscode` stays at 1.144.0 to match `engines.vscode` (vsce refuses a newer types package). The `hono` (4.13.19), `@hono/node-server` (2.1.9) and `fast-xml-parser` (5.12.1) overrides move to their patched releases, clearing the fixable Dependabot alerts; the dev-only picomatch/vite chain has no patched release yet.
+- **Contributor docs.** `CLAUDE.md` is now `AGENTS.md`, trimmed to invariants, traps and conventions; the per-feature design history remains in git (`git show eb454bc:CLAUDE.md`).
+
 ## [3.43.0] - 2026-11-15
 
 ### Added
@@ -1201,7 +1214,8 @@ This release republishes v1.9.0's full changelog (below) unchanged; v1.9.0 itsel
 
 - Initial release: read-only 3D preview for CAD and mesh files (STEP, IGES, BREP, STL, OBJ, PLY, glTF) inside a VS Code custom editor, using OpenCascade.js (OCCT WASM) in the extension host for B-rep formats and Three.js in the webview for rendering.
 
-[Unreleased]: https://github.com/loumalouomega/CAD-Preview/compare/v3.43.0...HEAD
+[Unreleased]: https://github.com/loumalouomega/CAD-Preview/compare/v3.44.0...HEAD
+[3.44.0]: https://github.com/loumalouomega/CAD-Preview/compare/v3.43.0...v3.44.0
 [3.43.0]: https://github.com/loumalouomega/CAD-Preview/compare/v3.42.0...v3.43.0
 [3.42.0]: https://github.com/loumalouomega/CAD-Preview/compare/v3.41.0...v3.42.0
 [3.41.0]: https://github.com/loumalouomega/CAD-Preview/compare/v3.40.0...v3.41.0
