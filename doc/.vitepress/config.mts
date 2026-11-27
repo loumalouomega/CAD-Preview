@@ -4,10 +4,10 @@ export default defineConfig({
   title: 'CAD Preview',
   description: 'Interactive 3D CAD and mesh previews in VS Code',
   base: '/CAD-Preview/',
-  // Links out of doc/ to repo-root files (CLAUDE.md, README.md, LICENSE) are
+  // Links out of doc/ to repo-root files (AGENTS.md, README.md, LICENSE) are
   // valid on disk/GitHub but outside VitePress's srcDir, so its dead-link
   // checker can't resolve them — ignore just those.
-  ignoreDeadLinks: [/\.\.\/(CLAUDE|README|LICENSE)/],
+  ignoreDeadLinks: [/\.\.\/(AGENTS|README|LICENSE)/],
   markdown: {
     // ```parametric blocks are JSON, and are the ones `src/docExamples.test.ts`
     // actually compiles on every `npm test` (the fence is the opt-in marker —

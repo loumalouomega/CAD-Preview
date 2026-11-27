@@ -2,14 +2,19 @@ import { describe, it, expect } from "vitest";
 import { buildBrowser, filterBrowser, splitSketches, collapseAll, expandAll, parseRowId, type BrowserInputs } from "./browserTree";
 
 const inputs = (over: Partial<BrowserInputs> = {}): BrowserInputs => ({
-  document: { name: "bracket.step", format: "STEP", unit: "mm", unsavedEdits: 0 },
+  document: { name: "bracket.step", format: "STEP", unit: "mm", unsavedEdits: 0, tessellation: "standard" },
   bookmarkNames: ["Front", "Detail"],
-  planes: [{ id: "plane-1", name: "Mid" }],
-  gridVisible: true,
+  planes: [{ id: "plane-1", name: "Mid", visible: true }],
+  origin: {
+    grid: true,
+    axes: { x: true, y: true, z: true },
+    planes: { xy: false, xz: false, yz: false },
+  },
   bodies: [
     { id: "solid-0", label: "Base", faceCount: 6, hidden: false, color: "#336699" },
     { id: "solid-1", label: "Lug", faceCount: 8, hidden: true },
   ],
+  sketchOps: [],
   sketches: { id: "solid-2", hidden: false, faceCount: 1, guide: false },
   ops: [
     { label: "Box", suppressed: false, baked: true, guide: false },
@@ -52,10 +57,15 @@ describe("buildBrowser", () => {
     expect(rows[1]).toMatchObject({ id: "op:1", eye: "off", muted: true, detail: "Finish" });
   });
 
-  it("shows unsaved edits and no Sketches row when the model has none", () => {
-    const g = buildBrowser(inputs({ sketches: null, document: { name: "", format: null, unit: "in", unsavedEdits: 3 } }));
+  it("shows unsaved edits and tessellation quality in Document, and no Sketches row when the model has none", () => {
+    const g = buildBrowser(inputs({ sketches: null, document: { name: "", format: null, unit: "in", unsavedEdits: 3, tessellation: "fine" } }));
     expect(group(g, "sketches").rows).toEqual([]);
-    expect(group(g, "document").rows.map((r) => [r.label, r.detail])).toEqual([["Untitled", undefined], ["Display unit", "in"], ["Unsaved edits", "3"]]);
+    expect(group(g, "document").rows.map((r) => [r.label, r.detail])).toEqual([
+      ["Untitled", undefined],
+      ["Display unit", "in"],
+      ["Tessellation", "fine"],
+      ["Unsaved edits", "3"],
+    ]);
   });
 
   it("dims guide-only Sketches and labels them", () => {
@@ -63,9 +73,49 @@ describe("buildBrowser", () => {
     expect(r).toMatchObject({ label: "Sketches (guide)", eye: "off", muted: true });
   });
 
-  it("Origin carries the axes/grid eye plus one row per construction plane", () => {
-    const rows = group(buildBrowser(inputs({ gridVisible: false })), "origin").rows;
-    expect(rows.map((r) => [r.id, r.eye])).toEqual([["origin:grid", "off"], ["plane:plane-1", null]]);
+  it("renders individual sketch op rows with face/edge counts and dims guide sketches", () => {
+    const rows = group(
+      buildBrowser(
+        inputs({
+          sketches: null,
+          sketchOps: [
+            { op: 0, label: "Circle", faceCount: 1, edgeCount: 1, hidden: false, guide: false },
+            { op: 1, label: "Line", faceCount: 0, edgeCount: 1, hidden: true, guide: true },
+          ],
+        })
+      ),
+      "sketches"
+    ).rows;
+    expect(rows).toEqual([
+      { id: "sketch:op:0", label: "Circle", detail: "1 f", eye: "on", muted: false },
+      { id: "sketch:op:1", label: "Line (guide)", detail: "1 e", eye: "off", muted: true },
+    ]);
+  });
+
+  it("Origin carries grid, per-axis, origin-plane and construction-plane eyes", () => {
+    const rows = group(
+      buildBrowser(
+        inputs({
+          origin: {
+            grid: false,
+            axes: { x: true, y: false, z: true },
+            planes: { xy: true, xz: false, yz: false },
+          },
+          planes: [{ id: "plane-1", name: "Mid", visible: false }],
+        })
+      ),
+      "origin"
+    ).rows;
+    expect(rows.map((r) => [r.id, r.eye])).toEqual([
+      ["origin:grid", "off"],
+      ["origin:axis-x", "on"],
+      ["origin:axis-y", "off"],
+      ["origin:axis-z", "on"],
+      ["origin:plane-xy", "on"],
+      ["origin:plane-xz", "off"],
+      ["origin:plane-yz", "off"],
+      ["plane:plane-1", "off"],
+    ]);
   });
 });
 

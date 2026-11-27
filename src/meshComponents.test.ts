@@ -133,7 +133,7 @@ describe("volumeOfTriangles", () => {
     expect(volumeOfTriangles(positions, indices, all)).toBeCloseTo(1, 5);
   });
 
-  it("computes a 2x3x4 box's volume as 24, matching CLAUDE.md's B-rep verification fixture", () => {
+  it("computes a 2x3x4 box's volume as 24, matching AGENTS.md's B-rep verification fixture", () => {
     const soup = boxSoup([0, 0, 0], [2, 3, 4]);
     const { positions, indices } = weldTriangleSoup(soup);
     const all = Array.from({ length: indices.length / 3 }, (_, i) => i);
@@ -156,7 +156,7 @@ describe("areaOfTriangles", () => {
     expect(areaOfTriangles(positions, indices, all)).toBeCloseTo(6, 5);
   });
 
-  it("computes a 2x3x4 box's surface area as 2*(2*3+2*4+3*4) = 52, matching CLAUDE.md's B-rep verification fixture", () => {
+  it("computes a 2x3x4 box's surface area as 2*(2*3+2*4+3*4) = 52, matching AGENTS.md's B-rep verification fixture", () => {
     const soup = boxSoup([0, 0, 0], [2, 3, 4]);
     const { positions, indices } = weldTriangleSoup(soup);
     const all = Array.from({ length: indices.length / 3 }, (_, i) => i);

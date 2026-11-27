@@ -106,7 +106,7 @@ To support a new file format, make changes in the following places:
 
 6. **Export (optional)** — If the format should also be an export *target*, add a writer: for a mesh format, a branch in `exportModel()` (`src/webview/meshExporters.ts`); for a B-rep format, a branch in `writeShape()` (`src/occtService.ts`). Then add it to the relevant list in `exportTargetsFor()` (`src/exportTargets.ts`) and its extension/label in `EXPORT_EXTENSION`/ `EXPORT_LABEL`. There is no writer path from a mesh format back to a B-rep format — don't add a B-rep target for a mesh source.
 
-7. **Docs** — Update `doc/file-formats.md`, the format tables in `README.md` / `doc/index.md` / `doc/getting-started.md`, and `doc/extension-host-api.md` / `doc/webview-api.md` for whichever module changed. See [CLAUDE.md](https://github.com/loumalouomega/CAD-Preview/blob/master/CLAUDE.md)'s "Keep docs in sync" section.
+7. **Docs** — Update `doc/file-formats.md`, the format tables in `README.md` / `doc/index.md` / `doc/getting-started.md`, and `doc/extension-host-api.md` / `doc/webview-api.md` for whichever module changed. See [AGENTS.md](https://github.com/loumalouomega/CAD-Preview/blob/master/AGENTS.md)'s "Keep docs in sync" section.
 
 ## Architecture Constraints
 
@@ -136,7 +136,7 @@ Use the GitHub **issue forms** — a bug report or a feature request (see `.gith
 
 Do **not** attach files containing proprietary geometry without permission from the file's owner.
 
-The PR checklist (`.github/PULL_REQUEST_TEMPLATE.md`) carries the same reminder as CLAUDE.md's "Keep docs in sync" header: docs, tests and screenshots move WITH the change, and any remaining manual verification gap is stated in the PR, not omitted.
+The PR checklist (`.github/PULL_REQUEST_TEMPLATE.md`) carries the same reminder as AGENTS.md's "Keep docs in sync" header: docs, tests and screenshots move WITH the change, and any remaining manual verification gap is stated in the PR, not omitted.
 
 ### Roadmap references: by name, never by number
 

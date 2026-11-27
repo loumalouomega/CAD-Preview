@@ -51,7 +51,7 @@ export function addConstantField(gmsh: GmshApi, tags: EntityTagsByDim, size: num
  * own entities, feeding a `Threshold` field that maps that distance to an
  * element size — `sizeAtWall` within `distNear`, growing linearly to
  * `sizeFar` at `distFar`, and staying at `sizeFar` beyond it. Verified
- * against the live gmsh-wasm 0.3.0 build (see CLAUDE.md's "Distance-graded
+ * against the live gmsh-wasm 0.3.0 build (see AGENTS.md's "Distance-graded
  * sizing" section): `Distance`'s `PointsList`/`CurvesList`/`SurfacesList` +
  * `Sampling`, then `Threshold`'s `InField`/`SizeMin`/`SizeMax`/`DistMin`/
  * `DistMax`, produces a clean, monotonic node-density gradient with no

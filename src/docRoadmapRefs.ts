@@ -78,7 +78,7 @@ const SCANNED_EXTENSIONS = new Set([".md", ".ts", ".mjs", ".css", ".yml"]);
 /**
  * The scan surface: `doc/` markdown + `src/` TypeScript/CSS + `scripts/` mjs
  * + `.github/` + the root-level files (README, esbuild, vscodeignore) and
- * `media/viewer.css` — explicitly NOT `CLAUDE.md`/`CHANGELOG.md` (both are
+ * `media/viewer.css` — explicitly NOT `AGENTS.md`/`CHANGELOG.md` (both are
  * historical records where quoted historical examples legitimately live, and
  * the cleanup's stated scope is "code, docs and scripts"), and NOT
  * `*.test.ts` (a test fixture string is definitionally a quoted example).

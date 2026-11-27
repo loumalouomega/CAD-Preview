@@ -8,7 +8,7 @@
  * canvas-drawing code: it must NEVER run at module load / import time (no
  * jsdom/canvas polyfill in this repo's vitest config — `geometryBuilder.ts`'s
  * lazily-built `dotTexture()` hit this exact trap once already, see
- * CLAUDE.md's Points section). `drawLabel` is only ever called from inside
+ * AGENTS.md's Points section). `drawLabel` is only ever called from inside
  * `Viewer.captureLabeledScreenshotBase64`, itself only reachable via a real
  * `renderViewRequest` message — never at import time.
  */

@@ -476,17 +476,17 @@ The **Browser** section at the top of the sidebar is one tree over everything th
 
 | Group | Rows | Row action / eye |
 | --- | --- | --- |
-| **Document** | file name and format, display unit, saved / unsaved-edit count | read-only |
+| **Document** | file name and format, display unit, tessellation quality, saved / unsaved-edit count | read-only |
 | **Named Views** | the saved view bookmarks | click to restore (same as **View ▾**) |
-| **Origin** | **Axes and grid**, then each saved construction plane | eye toggles axes + grid; click a plane to cut with it |
+| **Origin** | **Grid**, **X/Y/Z axis**, **XY/XZ/YZ plane** (off by default), then each saved construction plane | eye toggles each helper or construction plane individually; click a construction plane to cut with it |
 | **Bodies** | each solid, with its Part colour and face count | eye hides/shows it (same as the Components eye); click highlights it |
-| **Sketches** | the free sketch faces and wires, when there are any | eye hides/shows the group |
+| **Sketches** | each unconsumed sketch/2D op (with face/edge count; guide geometry dimmed) plus any unmapped free sketch faces | eye hides/shows the sketch's faces and wires; click selects them |
 | **Features** | the edit history, baked rows marked | eye suppresses/unsuppresses the op (not available inside the saved prefix) |
 | **Parts**, **Layers** | each Part / layer with its colour | eye hides/shows it (same as the panel) |
 
 ![The Browser with every group expanded: document facts, named views, origin, bodies, features, Parts and layers.](/screenshots/browser-panel.png)
 
-A group's own eye drives all of its rows to one state. **Expand all** / **Collapse all** and the search field in the header work across the whole tree; filtering expands the groups so matches are visible. The section is **off by default** (the sidebar column is already full): turn it on with **View ▾ ▸ Browser**. Whether it is shown is saved in the view sidecar; which of its groups are expanded is not (only **Bodies** is open by default). Not shown yet: tessellation quality in the Document group, per-axis or per-plane visibility, and individual sketch rows.
+A group's own eye drives all of its rows to one state. **Expand all** / **Collapse all** and the search field in the header work across the whole tree; filtering expands the groups so matches are visible. The section is **off by default** (the sidebar column is already full): turn it on with **View ▾ ▸ Browser**. Whether it is shown is saved in the view sidecar; which of its groups are expanded is not (only **Bodies** is open by default).
 
 For multi-solid STEP/IGES assemblies or glTF scenes with multiple meshes, the component tree panel shows the model hierarchy. Click any row to highlight that solid/mesh in the 3D view (all others are dimmed). Click the same row again or click an empty area to deselect.
 
@@ -638,7 +638,7 @@ Opening **Move**, **Rotate**, or **Scale** with a selection active also attaches
 | **Fillet / Chamfer** | Select edges (**Line** mode), enter the radius / setback, **Apply** (B-rep only). A fillet also takes an optional **End radius**: leave it blank for a constant fillet, or fill it to vary the radius from **Radius** to **End radius** along the edge — or along one connected chain of edges, interpolated by length. A radius too large for the faces next to the edge is refused (the history row shows why) rather than risking the kernel |
 | **Extrude / Revolve / Sweep / Loft** | Select a profile face (**Surf** mode; a path edge too for Sweep, 2+ faces for Loft), set parameters, **Apply** — builds a new body (B-rep only). Extrude/Revolve/Sweep also take **Regions** to narrow a multi-region profile (blank = face as modeled, `all`, or indices like `0,2`). Loft takes an optional captured **Rail** (**Set rail** on 1+ Line-mode edges): resampled intermediates steer the surface through the rail — exactly 2 closed sections, no thinning |
 | **Shell** | Select the opening face(s) (**Surf** mode), enter a wall thickness (negative = walls grow inward, the usual hollow), **Apply** — hollows the solid(s) owning those faces (B-rep only) |
-| **Draft** | Select the face(s) to taper (**Surf** mode), enter an **Angle°** (0–90), and optionally a neutral-plane **Point** + **Normal** — leave both at 0 to taper each face about its own plane — then **Apply** (B-rep only). **Known kernel limitation**: the bundled OCCT WASM build's draft engine fails on real geometry (probed — see `CLAUDE.md`), so the op currently reports a "did not apply — kernel limitation" diagnostic in the history instead of changing the model; it will work without changes once the upstream build fixes it |
+| **Draft** | Select the face(s) to taper (**Surf** mode), enter an **Angle°** (0–90), and optionally a neutral-plane **Point** + **Normal** — leave both at 0 to taper each face about its own plane — then **Apply** (B-rep only). **Known kernel limitation**: the bundled OCCT WASM build's draft engine fails on real geometry (probed — see `AGENTS.md`), so the op currently reports a "did not apply — kernel limitation" diagnostic in the history instead of changing the model; it will work without changes once the upstream build fixes it |
 | **Unify faces** | **Apply** (B-rep only; no selection needed). Merges adjacent faces and edges that lie on the same underlying surface across the whole model — the seam a boolean union leaves between coplanar faces. Face and edge ids are renumbered, so Parts and annotations are rebound or reported dropped. A model with nothing to merge is left unchanged and the history row is marked skipped. Typed form: `unifySameDomain {}` (a bare name opens this form instead) |
 | **Defeature** | Select the face(s) to remove as recognized features — fillet bands, chamfers (**Surf** mode) — then **Apply** (B-rep only). The solid heals behind the removed faces; faces that bound no removable feature are left in place |
 | **Split** | Select volumes (**Vol** mode), define the plane, choose which side(s) to **Keep**, **Apply** (B-rep only) |

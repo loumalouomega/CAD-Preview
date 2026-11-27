@@ -1090,7 +1090,7 @@ body:not(:has(#side.visible)) #toolbar {
    * flex child of #layout, so a plain `left: 50%` of the body shifted the bar
    * left by half its width — at ordinary editor widths the bar's left half
    * covered the sidebar's bottom panels and swallowed clicks there (the
-   * #mass-refresh "looked clipped" false alarm in CLAUDE.md's collapsible-
+   * #mass-refresh "looked clipped" false alarm in AGENTS.md's collapsible-
    * sections section). Adding `--side-width` (the same var `#side{width}` reads
    * — set by sidebarResizer.ts) back before halving recentres on the app
    * region: `calc((100% + W) / 2)` ≡ `50% + W/2`. While the sidebar is hidden
@@ -2373,7 +2373,7 @@ input[type="range"].meshing-slider:focus {
 /* The unconditional `display: flex` above is an AUTHOR rule and beats the
  * UA stylesheet's `[hidden] { display: none }` regardless of specificity
  * (origin is checked before specificity) — the exact "gated panel never
- * actually hides" hazard CLAUDE.md's "Collapsible sidebar sections" section
+ * actually hides" hazard AGENTS.md's "Collapsible sidebar sections" section
  * already documents twice for #mesh-health-panel/#region-fit-panel. Without
  * this override, setting `.hidden = true` on a grading row does nothing:
  * it keeps rendering at full height, which is what pushed the sidebar's

@@ -7,7 +7,7 @@ import { importRuntimePackage } from "./runtimePackage";
 // too dirty (holes, self-intersections, non-manifold edges) for Gmsh's own
 // `classifySurfaces`/`createGeometry`/`addSurfaceLoop`/`addVolume` path to
 // handle — see `gmshService.ts`'s `populateMeshedModel` for the dispatch and
-// CLAUDE.md's "fTetWild robust volume meshing" section for the full design.
+// AGENTS.md's "fTetWild robust volume meshing" section for the full design.
 //
 // UNLIKE gmsh-wasm, loaded with a DYNAMIC `await import(...)`, not a static
 // top-of-file `import` — verified against the live package

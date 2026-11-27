@@ -5,7 +5,7 @@ import type { MeshioRegionAssignment } from "./meshioService";
 // The exact 6-triangle boundary `convertToStlBoundaryWithRegions` produces
 // for `examples/MED/two-material-tets.med` (two tets sharing a face,
 // regions "MaterialA"/"MaterialB") — captured from a live probe against the
-// real WASM, see CLAUDE.md's "meshio++ integration" section. Triangles 0-2
+// real WASM, see AGENTS.md's "meshio++ integration" section. Triangles 0-2
 // belong to MaterialA (region 0), 3-5 to MaterialB (region 1); each group of
 // 3 triangles meets at 90°/dihedral angles well outside the 15° coplanarity
 // tolerance, so each stays its own facet regardless of region-awareness —

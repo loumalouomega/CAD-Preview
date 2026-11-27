@@ -112,7 +112,7 @@ const mcpConfig = {
 
 /** Kernel-worker bundle: the child-process entry for the OCCT/Gmsh/meshio++
  *  fault-isolation work (roadmap "OCCT in a forked child process", Phase
- *  0+1 — see CLAUDE.md). Same Node/CJS recipe as mcpConfig (it bundles the
+ *  0+1 — see AGENTS.md). Same Node/CJS recipe as mcpConfig (it bundles the
  *  identical pipeline modules), forked by `kernelClient.ts` rather than
  *  invoked as its own top-level process. Ships to `dist/` so `copyWasm()`'s
  *  binaries sit beside it too. */

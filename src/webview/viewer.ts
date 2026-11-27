@@ -134,7 +134,13 @@ export class Viewer {
    * material colour, because `GridHelper` bakes its two colours into a vertex
    * colour buffer at construction. */
   private grid: THREE.GridHelper;
-  private readonly axes: THREE.AxesHelper;
+  private readonly axes: THREE.Group;
+  private readonly axisLines: Record<"x" | "y" | "z", THREE.Line>;
+  private readonly originPlanesGroup: THREE.Group;
+  private readonly originPlaneMeshes: Record<"xy" | "xz" | "yz", THREE.Group>;
+  private readonly constructionPlanesGroup: THREE.Group;
+  private readonly constructionPlaneNodes = new Map<string, THREE.Group>();
+  private lastModelRadius = 1;
   private readonly hemiLight: THREE.HemisphereLight;
   private readonly keyLight: THREE.DirectionalLight;
   /** Set once the user drags the Appearance background swatch. A theme change
@@ -363,8 +369,16 @@ export class Viewer {
 
     this.grid = this.makeGrid();
     this.scene.add(this.grid);
-    this.axes = new THREE.AxesHelper(1);
+    const axisResult = this.makeAxes();
+    this.axes = axisResult.group;
+    this.axisLines = axisResult.lines;
     this.scene.add(this.axes);
+    const originPlanes = this.makeOriginPlanes();
+    this.originPlanesGroup = originPlanes.group;
+    this.originPlaneMeshes = originPlanes.planes;
+    this.scene.add(this.originPlanesGroup);
+    this.constructionPlanesGroup = new THREE.Group();
+    this.scene.add(this.constructionPlanesGroup);
 
     // Capture phase, registered BEFORE the cube's own capture listener so the
     // pane gate (focus + per-pane OrbitControls enable) has run before either
@@ -758,8 +772,11 @@ export class Viewer {
     for (const pane of this.panes) this.applyNavigationPreset(pane);
     this.scene.background = new THREE.Color(d.background);
     this.grid.visible = d.showGridAndAxes;
-    this.axes.visible = d.showGridAndAxes;
+    this.axisLines.x.visible = d.showGridAndAxes;
+    this.axisLines.y.visible = d.showGridAndAxes;
+    this.axisLines.z.visible = d.showGridAndAxes;
     this.upAxis = d.upAxis;
+    this.constructionPlanesGroup.rotation.x = this.upAxis === "z" ? -Math.PI / 2 : 0;
     this.requestRender();
   }
 
@@ -1079,9 +1096,12 @@ export class Viewer {
     const center = box.getCenter(new THREE.Vector3());
     const radius = Math.max(size.x, size.y, size.z) * 0.5 || 1;
 
-    // Scale helpers to the model so the grid/axes stay meaningful.
+    // Scale helpers to the model so the grid/axes/planes stay meaningful.
+    this.lastModelRadius = radius;
     this.grid.scale.setScalar(radius / 5);
     this.axes.scale.setScalar(radius);
+    this.originPlanesGroup.scale.setScalar(radius);
+    for (const node of this.constructionPlaneNodes.values()) node.scale.setScalar(radius);
     // Edge lines are infinitely thin; pick them within ~2% of the model radius.
     this.pickThreshold = radius * 0.02;
     // Point sprites don't share the raycaster's Line.threshold mechanism — their
@@ -2315,13 +2335,145 @@ export class Viewer {
     this.requestRender();
   }
 
-  /** Flips the grid + axis helpers, returning their new visibility so callers
+  /** Flips the grid + world axis helpers, returning their new visibility so callers
    *  (the View ▾ menu's checkable item) can reflect it without tracking it. */
   toggleGrid(): boolean {
-    this.grid.visible = !this.grid.visible;
-    this.axes.visible = this.grid.visible;
+    const next = !this.grid.visible;
+    this.grid.visible = next;
+    this.axisLines.x.visible = next;
+    this.axisLines.y.visible = next;
+    this.axisLines.z.visible = next;
     this.requestRender();
-    return this.grid.visible;
+    return next;
+  }
+
+  /** Sets only the ground grid visibility (individual Browser eye). */
+  setGridVisible(visible: boolean): void {
+    this.grid.visible = visible;
+    this.requestRender();
+  }
+
+  /** Shows or hides one world axis (`x`, `y`, `z`) individually. */
+  setAxisVisible(axis: "x" | "y" | "z", visible: boolean): void {
+    this.axisLines[axis].visible = visible;
+    this.requestRender();
+  }
+
+  isAxisVisible(axis: "x" | "y" | "z"): boolean {
+    return this.axisLines[axis].visible;
+  }
+
+  /** Shows or hides one origin plane (`xy`, `xz`, `yz`) individually. */
+  setOriginPlaneVisible(plane: "xy" | "xz" | "yz", visible: boolean): void {
+    this.originPlaneMeshes[plane].visible = visible;
+    this.requestRender();
+  }
+
+  isOriginPlaneVisible(plane: "xy" | "xz" | "yz"): boolean {
+    return this.originPlaneMeshes[plane].visible;
+  }
+
+  /** Replaces the 3D construction-plane reference quads from the current list. */
+  setConstructionPlanes(
+    planes: ReadonlyArray<{ id: string; point: readonly [number, number, number]; normal: readonly [number, number, number]; visible: boolean }>
+  ): void {
+    this.clearObjectGroup(this.constructionPlanesGroup);
+    this.constructionPlaneNodes.clear();
+    this.constructionPlanesGroup.rotation.x = this.upAxis === "z" ? -Math.PI / 2 : 0;
+    const zUnit = new THREE.Vector3(0, 0, 1);
+    for (const p of planes) {
+      const node = this.makePlaneQuad(0x38bdf8);
+      node.position.set(p.point[0], p.point[1], p.point[2]);
+      const n = new THREE.Vector3(p.normal[0], p.normal[1], p.normal[2]);
+      if (n.lengthSq() > 0) node.quaternion.setFromUnitVectors(zUnit, n.normalize());
+      node.scale.setScalar(this.lastModelRadius);
+      node.visible = p.visible;
+      this.constructionPlanesGroup.add(node);
+      this.constructionPlaneNodes.set(p.id, node);
+    }
+    this.requestRender();
+  }
+
+  /** Shows or hides one construction plane quad by id without rebuilding. */
+  setConstructionPlaneVisible(id: string, visible: boolean): void {
+    const node = this.constructionPlaneNodes.get(id);
+    if (!node) return;
+    node.visible = visible;
+    this.requestRender();
+  }
+
+  private makeAxes(): { group: THREE.Group; lines: Record<"x" | "y" | "z", THREE.Line> } {
+    const group = new THREE.Group();
+    const axis = (to: [number, number, number], color: number): THREE.Line => {
+      const geom = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0, 0, 0), new THREE.Vector3(...to)]);
+      const mat = new THREE.LineBasicMaterial({ color });
+      const line = new THREE.Line(geom, mat);
+      group.add(line);
+      return line;
+    };
+    return {
+      group,
+      lines: {
+        x: axis([1, 0, 0], 0xff0000),
+        y: axis([0, 1, 0], 0x00ff00),
+        z: axis([0, 0, 1], 0x0000ff),
+      },
+    };
+  }
+
+  private makeOriginPlanes(): { group: THREE.Group; planes: Record<"xy" | "xz" | "yz", THREE.Group> } {
+    const group = new THREE.Group();
+    const make = (color: number, rotX: number, rotY: number): THREE.Group => {
+      const quad = this.makePlaneQuad(color);
+      quad.rotation.set(rotX, rotY, 0);
+      quad.visible = false;
+      group.add(quad);
+      return quad;
+    };
+    return {
+      group,
+      planes: {
+        xy: make(0x4488ff, 0, 0),
+        xz: make(0x44cc88, -Math.PI / 2, 0),
+        yz: make(0xff6644, 0, Math.PI / 2),
+      },
+    };
+  }
+
+  private makePlaneQuad(color: number): THREE.Group {
+    const g = new THREE.Group();
+    const planeGeom = new THREE.PlaneGeometry(1.4, 1.4);
+    const fill = new THREE.Mesh(
+      planeGeom,
+      new THREE.MeshBasicMaterial({
+        color,
+        transparent: true,
+        opacity: 0.14,
+        depthWrite: false,
+        side: THREE.DoubleSide,
+        polygonOffset: true,
+        polygonOffsetFactor: 2,
+      })
+    );
+    const edgeGeom = new THREE.EdgesGeometry(planeGeom);
+    const border = new THREE.LineSegments(
+      edgeGeom,
+      new THREE.LineBasicMaterial({ color, transparent: true, opacity: 0.55 })
+    );
+    g.add(fill);
+    g.add(border);
+    return g;
+  }
+
+  private clearObjectGroup(group: THREE.Group): void {
+    group.traverse((obj) => {
+      const mesh = obj as THREE.Mesh;
+      if (mesh.geometry) mesh.geometry.dispose();
+      const mat = mesh.material as THREE.Material | THREE.Material[] | undefined;
+      if (Array.isArray(mat)) mat.forEach((m) => m.dispose());
+      else if (mat) mat.dispose();
+    });
+    group.clear();
   }
 
   /** A grid at the current palette. Separate from the constructor because a
@@ -2706,6 +2858,11 @@ export class Viewer {
     this.renderScheduler.cancel();
     this.gizmo.dispose();
     this.clearModel();
+    this.clearObjectGroup(this.axes);
+    this.clearObjectGroup(this.originPlanesGroup);
+    this.clearObjectGroup(this.constructionPlanesGroup);
+    this.grid.geometry.dispose();
+    (this.grid.material as THREE.Material).dispose();
     for (const pane of this.panes) pane.controls.dispose();
     this.transformControls.dispose();
     this.renderer.dispose();

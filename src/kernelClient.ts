@@ -2,7 +2,7 @@
  * Parent-side IPC client for the kernel-worker child process (roadmap "OCCT
  * in a forked child process", Phase 0+1 wired the MCP server; Phase 2+3 —
  * this file's `DocumentPipeline` extension, and the watchdog timeout below —
- * additionally cover the interactive extension. See CLAUDE.md.
+ * additionally cover the interactive extension. See AGENTS.md.
  * `createKernelClient(extensionPath)` returns an object satisfying the exact
  * same `Pipeline` interface `mcpTools.ts` already consumes (`mcpServer.ts`'s
  * own `Pipeline` object literal used to import the 21 functions directly
@@ -151,7 +151,7 @@ interface Job {
 /** No real operation should ever take this long — `scripts/perf/baseline.json`'s
  * xlarge fixture (2.3 MB STEP) is ~14s to load / ~27s to mesh, so 5 minutes
  * leaves enormous headroom for legitimately large files while still catching
- * the documented GMSH-3D-algorithm-hangs-indefinitely failure mode (CLAUDE.md's
+ * the documented GMSH-3D-algorithm-hangs-indefinitely failure mode (AGENTS.md's
  * Meshing section) in bounded time instead of never. */
 export const DEFAULT_TIMEOUT_MS = 5 * 60 * 1000;
 

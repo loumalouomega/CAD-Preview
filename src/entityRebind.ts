@@ -1,6 +1,6 @@
 /**
  * Pure entity-id rebinding heuristic — closes the "entity-id drift" gap
- * CLAUDE.md's Geometry editing section documents: a topology-changing op
+ * AGENTS.md's Geometry editing section documents: a topology-changing op
  * (boolean, fillet, feature modeling, a wireframe surface/volume build, …)
  * re-tessellates into fresh `face-N`/`edge-N`/`solid-N`/`point-N` ids, so a
  * `Part` referencing the OLD ids would previously drop them on the next

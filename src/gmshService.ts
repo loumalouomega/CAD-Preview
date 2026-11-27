@@ -676,7 +676,7 @@ function deriveOctreeMpc(gmsh: GmshApi, variables: string[]): OctreeMpc {
  * `exportMeshFormat`, `exportMdpa`) shares, so the fTetWild alternative
  * reuses every existing downstream read-back path (`buildIndices`/
  * `buildEdges`/`gmsh.write()`/`extractMdpaMesh`/
- * `computeQualityAndWorstElements`) completely unchanged — see CLAUDE.md's
+ * `computeQualityAndWorstElements`) completely unchanged — see AGENTS.md's
  * fTetWild section for the full design.
  *
  * `"gmsh"` is byte-for-byte the original `loadGeometryAndApplyOptions` +
@@ -1937,7 +1937,7 @@ export const MAX_WORST_ELEMENTS = 2000;
  * the same per-element type/nodeTags/quality correlation.
  *
  * **Verified against the live WASM** (brute-force probing, the usual
- * convention — see CLAUDE.md): `gmsh.model.mesh.getElements(dim, -1)` (dim,
+ * convention — see AGENTS.md): `gmsh.model.mesh.getElements(dim, -1)` (dim,
  * ALL entities) returns a plain OBJECT `{elementTypes, elementTags,
  * nodeTags}` — NOT the tuple/array shape some Gmsh JS API docs imply —
  * where `elementTags`/`nodeTags` are one array PER element type, so callers

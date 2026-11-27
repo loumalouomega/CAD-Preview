@@ -1,8 +1,9 @@
 import { loopSelfIntersects } from "./parametricCurve";
-import type { EditOp, Vec3, OpOutcome, OutcomeFail, RegionPick } from "./editOps";
+import type { EditOp, EditOpKind, Vec3, OpOutcome, OutcomeFail, RegionPick } from "./editOps";
 import { TOPOLOGY_CHANGING_OPS, COINCIDENT_CURVE_KINDS, curveEndpointSlots, getVec3Slot, setVec3Slot } from "./editOps";
 import type { OpBucket } from "./opBuckets";
 import { PRODUCED_ROLE } from "./opBuckets";
+import type { SketchOpEntities } from "./protocol";
 // TYPE-ONLY, and that is load-bearing: `entityFacts.ts` imports this module
 // at runtime, so a value import here would close a genuine require() cycle in
 // the CJS bundle.
@@ -16,6 +17,38 @@ import { signedArea2d, nestLoops } from "./loopNesting";
 const HASH_UPPER = 1 << 30;
 
 export interface GuideCollector { faces: any[]; edges: any[]; vertices: any[]; }
+
+export interface SketchHandleEntry {
+  op: number;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  faces: any[];
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  edges: any[];
+}
+
+const SKETCH_ENTITY_OPS: ReadonlySet<EditOpKind> = new Set([
+  "addLine",
+  "addArc",
+  "addPolyline",
+  "addThreePointArc",
+  "addSpline",
+  "addBezier",
+  "addEllipseArc",
+  "addHelix",
+  "addParametricCurve",
+  "addCircleProfile",
+  "addRectangleProfile",
+  "addPolygonProfile",
+  "addEllipseProfile",
+  "addRoundedRectangleProfile",
+  "addSlotProfile",
+  "addTrapezoidProfile",
+  "addSurfaceFromLines",
+  "addSurfaceFilling",
+  "addEdgeSlot",
+  "filletProfile",
+  "section",
+]);
 
 /**
  * One resolved `point-N` reference of a curve op (see `PointRef` in
@@ -211,6 +244,148 @@ export function collectGuideIds(oc: any, shape: any, collector: GuideCollector, 
   return ids;
 }
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function collectUniqueEdgeHandles(oc: any, shape: any, cleanup: Array<{ delete(): void }>): any[] {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const out: any[] = [];
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const seen = new Map<number, any[]>();
+  const exp = new oc.TopExp_Explorer_2(
+    shape,
+    oc.TopAbs_ShapeEnum.TopAbs_EDGE,
+    oc.TopAbs_ShapeEnum.TopAbs_SHAPE
+  );
+  cleanup.push(exp);
+  for (; exp.More(); exp.Next()) {
+    const edge = oc.TopoDS.Edge_1(exp.Current());
+    const h = edge.HashCode(HASH_UPPER);
+    const bucket = seen.get(h);
+    if (bucket && bucket.some((e) => e.IsSame(edge))) {
+      edge.delete();
+      continue;
+    }
+    cleanup.push(edge);
+    if (bucket) bucket.push(edge);
+    else seen.set(h, [edge]);
+    out.push(edge);
+  }
+  return out;
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function indexShapesByHash(shapes: readonly any[]): Map<number, any[]> {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const map = new Map<number, any[]>();
+  for (const s of shapes) {
+    const h = s.HashCode(HASH_UPPER);
+    let b = map.get(h);
+    if (!b) { b = []; map.set(h, b); }
+    b.push(s);
+  }
+  return map;
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function hasSameShape(map: Map<number, any[]>, target: any): boolean {
+  const bucket = map.get(target.HashCode(HASH_UPPER));
+  return !!bucket && bucket.some((s) => s.IsSame(target));
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function collectSolidOwnedSubshapes(oc: any, shape: any, cleanup: Array<{ delete(): void }>): { faces: Map<number, any[]>; edges: Map<number, any[]> } {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const faces = new Map<number, any[]>();
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const edges = new Map<number, any[]>();
+  const solidExp = new oc.TopExp_Explorer_2(
+    shape,
+    oc.TopAbs_ShapeEnum.TopAbs_SOLID,
+    oc.TopAbs_ShapeEnum.TopAbs_SHAPE
+  );
+  cleanup.push(solidExp);
+  const addSub = (solidRef: any, kind: unknown, cast: (s: any) => any, dest: Map<number, any[]>) => {
+    const exp = new oc.TopExp_Explorer_2(solidRef, kind, oc.TopAbs_ShapeEnum.TopAbs_SHAPE);
+    cleanup.push(exp);
+    for (; exp.More(); exp.Next()) {
+      const sub = cast(exp.Current());
+      cleanup.push(sub);
+      const h = sub.HashCode(HASH_UPPER);
+      let b = dest.get(h);
+      if (!b) { b = []; dest.set(h, b); }
+      b.push(sub);
+    }
+  };
+  for (; solidExp.More(); solidExp.Next()) {
+    const solid = solidExp.Current();
+    addSub(solid, oc.TopAbs_ShapeEnum.TopAbs_FACE, (s) => oc.TopoDS.Face_1(s), faces);
+    addSub(solid, oc.TopAbs_ShapeEnum.TopAbs_EDGE, (s) => oc.TopoDS.Edge_1(s), edges);
+  }
+  return { faces, edges };
+}
+
+/**
+ * Resolves per-op produced sketch handles against the final `shape`, keeping
+ * only free `face-N` and `edge-N` ids (entities not owned by a solid).
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function collectSketchOpEntities(oc: any, shape: any, entries: readonly SketchHandleEntry[], cleanup: Array<{ delete(): void }>): SketchOpEntities[] {
+  if (entries.length === 0) return [];
+  const owned = collectSolidOwnedSubshapes(oc, shape, cleanup);
+  const faces = collectFaces(oc, shape, cleanup);
+  const edges = collectEdges(oc, shape, cleanup);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const freeFacesByHash = new Map<number, Array<{ id: string; handle: any }>>();
+  for (let i = 0; i < faces.length; i++) {
+    if (hasSameShape(owned.faces, faces[i])) continue;
+    const h = faces[i].HashCode(HASH_UPPER);
+    let b = freeFacesByHash.get(h);
+    if (!b) { b = []; freeFacesByHash.set(h, b); }
+    b.push({ id: `face-${i}`, handle: faces[i] });
+  }
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const freeEdgesByHash = new Map<number, Array<{ id: string; handle: any }>>();
+  for (let i = 0; i < edges.length; i++) {
+    if (hasSameShape(owned.edges, edges[i])) continue;
+    const h = edges[i].HashCode(HASH_UPPER);
+    let b = freeEdgesByHash.get(h);
+    if (!b) { b = []; freeEdgesByHash.set(h, b); }
+    b.push({ id: `edge-${i}`, handle: edges[i] });
+  }
+  const out: SketchOpEntities[] = [];
+  for (const entry of entries) {
+    const faceIds: string[] = [];
+    const seenFaces = new Set<string>();
+    for (const fh of entry.faces) {
+      const bucket = freeFacesByHash.get(fh.HashCode(HASH_UPPER));
+      if (!bucket) continue;
+      for (const candidate of bucket) {
+        if (!seenFaces.has(candidate.id) && candidate.handle.IsSame(fh)) {
+          seenFaces.add(candidate.id);
+          faceIds.push(candidate.id);
+          break;
+        }
+      }
+    }
+    const edgeIds: string[] = [];
+    const seenEdges = new Set<string>();
+    for (const eh of entry.edges) {
+      const bucket = freeEdgesByHash.get(eh.HashCode(HASH_UPPER));
+      if (!bucket) continue;
+      for (const candidate of bucket) {
+        if (!seenEdges.has(candidate.id) && candidate.handle.IsSame(eh)) {
+          seenEdges.add(candidate.id);
+          edgeIds.push(candidate.id);
+          break;
+        }
+      }
+    }
+    if (faceIds.length > 0 || edgeIds.length > 0) {
+      out.push({ op: entry.op, faceIds, edgeIds });
+    }
+  }
+  return out;
+}
+
 /**
  * Host-side (OCCT) edit engine. Folds the replayable op-list over a freshly-read
  * base `TopoDS_Shape`, returning the edited shape to tessellate + display +
@@ -223,7 +398,7 @@ export function collectGuideIds(oc: any, shape: any, collector: GuideCollector, 
  * deleted here — its lifetime belongs to the caller, which tessellates it and
  * then frees it alongside everything in `cleanup`.
  *
- * OCCT transform API, verified against the live WASM (see CLAUDE.md):
+ * OCCT transform API, verified against the live WASM (see AGENTS.md):
  *   translate → `gp_Trsf.SetTranslation_1(gp_Vec_4)`
  *   rotate    → `gp_Trsf.SetRotation_1(gp_Ax1_2(pnt, dir), angleRad)`
  *   mirror    → `gp_Trsf.SetMirror_3(gp_Ax2_3(pnt, normal))`  (plane mirror)
@@ -232,7 +407,7 @@ export function collectGuideIds(oc: any, shape: any, collector: GuideCollector, 
  * applied via `BRepBuilderAPI_Transform_2(shape, trsf, true).Shape()`.
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-export function applyEditsBRep(oc: any, baseShape: any, ops: EditOp[], cleanup: Array<{ delete(): void }>, outcomes?: OpOutcome[], guideCollector?: GuideCollector, opBuckets?: OpBucket[], pointRefCollector?: PointRefResolution[]): any {
+export function applyEditsBRep(oc: any, baseShape: any, ops: EditOp[], cleanup: Array<{ delete(): void }>, outcomes?: OpOutcome[], guideCollector?: GuideCollector, opBuckets?: OpBucket[], pointRefCollector?: PointRefResolution[], sketchCollector?: SketchHandleEntry[]): any {
   let shape = baseShape;
   for (let index = 0; index < ops.length; index++) {
     const op = ops[index];
@@ -243,6 +418,12 @@ export function applyEditsBRep(oc: any, baseShape: any, ops: EditOp[], cleanup: 
       outcomes?.push({ index, kind: op.op, applied: false, suppressed: true, note: "suppressed" });
       continue;
     }
+    const trackSketch = sketchCollector !== undefined && SKETCH_ENTITY_OPS.has(op.op);
+    const sketchTmp: Array<{ delete(): void }> = [];
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const beforeFaceMap = trackSketch ? indexShapesByHash(collectFaces(oc, before, sketchTmp)) : null;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const beforeEdgeMap = trackSketch ? indexShapesByHash(collectUniqueEdgeHandles(oc, before, sketchTmp)) : null;
     // First `fail` call wins for this op; every helper calls it immediately
     // before returning the unmodified shape at a skip site.
     const fail: OutcomeFail = (diagnostic, hint) => {
@@ -257,6 +438,7 @@ export function applyEditsBRep(oc: any, baseShape: any, ops: EditOp[], cleanup: 
       shape = applyOneOp(oc, shape, op, cleanup, fail, guideCollector, refSink);
       if (refSink) for (const r of refSink) pointRefCollector!.push({ opIndex: index, ...r });
     } catch (err) {
+      for (let i = sketchTmp.length - 1; i >= 0; i--) { try { sketchTmp[i].delete(); } catch { /* ignore */ } }
       // A helper's own builder throws are caught internally; reaching here is
       // an unexpected fault. Record it, then re-throw to preserve the existing
       // "a hard kernel error fails the whole load" behavior.
@@ -271,6 +453,24 @@ export function applyEditsBRep(oc: any, baseShape: any, ops: EditOp[], cleanup: 
     // on purpose and records a note instead.)
     if (outcome.applied && shape === before && !outcome.note) {
       fail("returned the model unchanged");
+    }
+    if (trackSketch) {
+      const kept = new Set<unknown>();
+      if (outcome.applied && shape !== before && beforeFaceMap && beforeEdgeMap) {
+        const afterFaces = collectFaces(oc, shape, sketchTmp);
+        const afterEdges = collectUniqueEdgeHandles(oc, shape, sketchTmp);
+        const newFaces = afterFaces.filter((f) => !hasSameShape(beforeFaceMap, f));
+        const newEdges = afterEdges.filter((e) => !hasSameShape(beforeEdgeMap, e));
+        if (newFaces.length > 0 || newEdges.length > 0) {
+          for (const f of newFaces) kept.add(f);
+          for (const e of newEdges) kept.add(e);
+          sketchCollector!.push({ op: index, faces: newFaces, edges: newEdges });
+        }
+      }
+      for (let i = sketchTmp.length - 1; i >= 0; i--) {
+        if (!kept.has(sketchTmp[i])) try { sketchTmp[i].delete(); } catch { /* ignore */ }
+      }
+      for (const h of kept) cleanup.push(h as { delete(): void });
     }
     if (opBuckets !== undefined && outcome.applied && shape !== before && TOPOLOGY_CHANGING_OPS.has(op.op)) {
       const bucket = collectBucketForOp(oc, before, shape, index, op);
@@ -865,7 +1065,7 @@ export function patternCircular(oc: any, shape: any, op: Extract<EditOp, { op: "
  * when more than one); the operands are removed from the model and replaced by the
  * single boolean result, with all untargeted solids preserved.
  *
- * OCCT boolean API, verified against the live WASM (see CLAUDE.md): the useful
+ * OCCT boolean API, verified against the live WASM (see AGENTS.md): the useful
  * overload is the `_3` constructor `new BRepAlgoAPI_{Fuse,Cut,Common}_3(s1, s2)`
  * (its 3rd `Message_ProgressRange` arg is optional and not constructible in this
  * build) → `.Shape()`. A boolean whose operands don't resolve, or that doesn't
@@ -1068,7 +1268,7 @@ export function combineSolids(oc: any, shapes: any[], cleanup: Array<{ delete():
 /**
  * Rounds (fillet) or bevels (chamfer) the selected edges of `shape`.
  *
- * OCCT fillet/chamfer API, verified against the live WASM (see CLAUDE.md):
+ * OCCT fillet/chamfer API, verified against the live WASM (see AGENTS.md):
  *   fillet  → `new BRepFilletAPI_MakeFillet(shape, ChFi3d_FilletShape.ChFi3d_Rational)`
  *   chamfer → `new BRepFilletAPI_MakeChamfer(shape)`
  * both then `.Add_2(amount, edge)` per edge (fillet with `radius2`: one
@@ -1293,7 +1493,7 @@ function isChamferWithFace(op: Extract<EditOp, { op: "chamfer" }>): boolean {
  * shape + the new solid) — non-destructive, B-rep only. A feature whose operands
  * don't resolve, or whose builder throws, is skipped so replay never hard-fails.
  *
- * OCCT feature API, verified against the live WASM (see CLAUDE.md):
+ * OCCT feature API, verified against the live WASM (see AGENTS.md):
  *   extrude → `BRepPrimAPI_MakePrism_1(face, gp_Vec_4, false, true).Shape()`
  *   revolve → `BRepPrimAPI_MakeRevol_1(face, gp_Ax1_2(pnt, dir), angleRad, false).Shape()`
  *   sweep   → `BRepOffsetAPI_MakePipe_1(spineWire, profileFace).Shape()`
@@ -3226,7 +3426,7 @@ function buildFeatureSolid(oc: any, shape: any, op: EditOp, cleanup: Array<{ del
  * `compound(existing shape + new solid)` pattern as {@link featureModel}. A
  * primitive whose builder throws is skipped so replay never hard-fails.
  *
- * OCCT primitive API, verified against the live WASM (see CLAUDE.md):
+ * OCCT primitive API, verified against the live WASM (see AGENTS.md):
  *   box      → `BRepPrimAPI_MakeBox_3(gp_Pnt_3 corner1, gp_Pnt_3 corner2)`
  *   sphere   → `BRepPrimAPI_MakeSphere_5(gp_Pnt_3 center, radius)`
  *   cylinder → `BRepPrimAPI_MakeCylinder_3(gp_Ax2_3(pnt, dir), radius, height)`
@@ -3321,7 +3521,7 @@ function buildPrimitiveSolid(oc: any, op: EditOp, cleanup: Array<{ delete(): voi
  * Builds a closed planar face from an ordered loop of points, connecting them
  * with straight edges — the shared wire/face pattern behind the N-gon prism
  * (subsequently extruded) and the flat rectangle/polygon profiles (used as-is).
- * OCCT API, verified against the live WASM (see CLAUDE.md):
+ * OCCT API, verified against the live WASM (see AGENTS.md):
  * `BRepBuilderAPI_MakeWire_1` + `.Add_1()` per `BRepBuilderAPI_MakeEdge_3(pnt,
  * pnt)` edge → `BRepBuilderAPI_MakeFace_15(wire, true)`.
  */
@@ -4609,7 +4809,7 @@ function addFreeFacesOf(oc: any, shape: any, out: any[], cleanup: Array<{ delete
  * centre by `factor` (0 = no move). Each solid is translated by
  * `(solidCentre − modelCentre) · factor`; single-solid models are returned
  * unchanged. Centres are bbox centres via `Bnd_Box`/`CornerMin`/`CornerMax`
- * (`Bnd_Box.Get()` is unbound — see CLAUDE.md).
+ * (`Bnd_Box.Get()` is unbound — see AGENTS.md).
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function explodeSolids(oc: any, shape: any, factor: number, cleanup: Array<{ delete(): void }>, fail?: OutcomeFail): any {
@@ -4640,7 +4840,7 @@ function explodeSolids(oc: any, shape: any, factor: number, cleanup: Array<{ del
 /**
  * Assembly **mate**: aligns planar face `faceA` onto planar face `faceB` (opposing
  * normals), moving the solid that owns `faceA` and leaving the rest in place.
- * Verified API (see CLAUDE.md): face plane via `BRepAdaptor_Surface_2(face, true)`
+ * Verified API (see AGENTS.md): face plane via `BRepAdaptor_Surface_2(face, true)`
  * → `GetType()===GeomAbs_Plane` → `.Plane()` (`Location()` + `Axis().Direction()`);
  * rigid motion `gp_Trsf.SetDisplacement(gp_Ax3_4(ptA, nA), gp_Ax3_4(ptB, −nB))`.
  * Non-planar faces, unresolved ids, or a failed displacement are skipped.
@@ -4808,7 +5008,7 @@ function draftFaces(oc: any, shape: any, op: Extract<EditOp, { op: "draft" }>, c
       return shape;
     }
     const angleRad = (op.angleDeg * Math.PI) / 180;
-    // VERIFIED against the live WASM (see CLAUDE.md's item-10 section for the
+    // VERIFIED against the live WASM (see AGENTS.md's item-10 section for the
     // probing trail): the plain `BRepOffsetAPI_DraftAngle` ctor is UNBOUND
     // ("no accessible constructor") and `_1` wants >1 params — `_2(shape)` is
     // the working 1-arg ctor. `Add` is a 5-arg `(face, gp_Dir, angleRad,
@@ -4848,7 +5048,7 @@ function draftFaces(oc: any, shape: any, op: Extract<EditOp, { op: "draft" }>, c
       // un-decodable OCCT failure (a Standard_Failure with no message) on real
       // geometry. Kernel-broken in this build, the same "green in the manifest
       // is necessary but not sufficient" class as ShapeFix_Shape /
-      // Interface_Static.CVal / BRepExtrema_DistanceSS-max (see CLAUDE.md).
+      // Interface_Static.CVal / BRepExtrema_DistanceSS-max (see AGENTS.md).
       // The op stays: it validates, its wiring is correct, and a future OCCT
       // build that fixes Build() needs no code change — until then this is an
       // honest graceful skip, never a silent no-op.
@@ -4920,7 +5120,7 @@ function defeatureFaces(oc: any, shape: any, op: Extract<EditOp, { op: "defeatur
  * Merges faces and edges that lie on the same underlying surface/curve — the
  * seam a boolean union leaves between coplanar faces — with
  * `ShapeUpgrade_UnifySameDomain`. VERIFIED call shape (live WASM, see
- * CLAUDE.md): `_2(shape, UnifyEdges, UnifyFaces, ConcatBSplines)` with
+ * AGENTS.md): `_2(shape, UnifyEdges, UnifyFaces, ConcatBSplines)` with
  * `(true, true, false)`, then `Build()` + `Shape()`. A model with nothing to
  * merge is returned UNCHANGED (same handle) with a "nothing to merge" fact, not
  * an error; the face count decides, since the kernel hands back a new shape
@@ -5280,7 +5480,7 @@ export function bboxCenter(oc: any, s: any, cleanup: Array<{ delete(): void }>):
  * AABB pair pre-filter (promoted from module-private to exported for that
  * caller, the same convention combineSolids/facePlane/bboxCenter each followed
  * for their own first cross-file caller). `Bnd_Box.Get()` is NOT bound in this
- * WASM build (see CLAUDE.md); `CornerMin`/`CornerMax` is the established
+ * WASM build (see AGENTS.md); `CornerMin`/`CornerMax` is the established
  * workaround every bbox reader here uses. */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function bboxExtent(oc: any, s: any, cleanup: Array<{ delete(): void }>): { min: Vec3; max: Vec3 } {

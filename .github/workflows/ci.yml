@@ -56,7 +56,7 @@ jobs:
       # The webview and the VS Code host API used to have ZERO automated
       # coverage — every webview feature was verified by a manual F5 session or
       # not at all. These two steps are that gap's automated half; see
-      # `CLAUDE.md`'s "Webview and host-side test harnesses".
+      # `AGENTS.md`'s "Webview and host-side test harnesses".
 
       - name: Cache VS Code for integration tests
         uses: actions/cache@v6
@@ -72,6 +72,9 @@ jobs:
 
       - name: Test (webview, Playwright over the real viewer bundle)
         run: xvfb-run -a npm run test:webview
+
+      - name: Check icon contact sheet (completeness + visibility across themes)
+        run: xvfb-run -a npm run icons:check
 
       # @vscode/test-electron resolves "stable" to an exact version (and, on a
       # cache miss, downloads the archive) via update.code.visualstudio.com —

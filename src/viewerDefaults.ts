@@ -12,6 +12,7 @@
 export type MeshSizePreset = "coarse" | "medium" | "fine";
 export type UpAxis = "y" | "z";
 import { normalizeNavigationPreset, type NavigationPreset } from "./navigationPresets";
+import { DEFAULT_TESSELLATION_QUALITY, normalizeTessellationQuality, type TessellationQuality } from "./tessellationQuality";
 
 export interface ViewerDefaults {
   background: string; // CSS hex color
@@ -24,6 +25,8 @@ export interface ViewerDefaults {
   navigationPreset: NavigationPreset;
   /** `cadPreview.ribbon`: whether the ribbon starts visible (a per-document choice in the sidecar wins). */
   ribbon: boolean;
+  /** `cadPreview.tessellationQuality`: B-rep display tessellation density. */
+  tessellationQuality: TessellationQuality;
 }
 
 export const DEFAULT_VIEWER_DEFAULTS: ViewerDefaults = {
@@ -34,6 +37,7 @@ export const DEFAULT_VIEWER_DEFAULTS: ViewerDefaults = {
   singleKeyCommands: false,
   navigationPreset: "default",
   ribbon: true,
+  tessellationQuality: DEFAULT_TESSELLATION_QUALITY,
 };
 
 const HEX_COLOR_RE = /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/;
@@ -67,5 +71,14 @@ export function normalizeViewerDefaults(raw: unknown): ViewerDefaults {
 
   const ribbon = typeof o.ribbon === "boolean" ? o.ribbon : DEFAULT_VIEWER_DEFAULTS.ribbon;
 
-  return { background, meshSizePreset, showGridAndAxes, upAxis, singleKeyCommands, navigationPreset: normalizeNavigationPreset(o.navigationPreset), ribbon };
+  return {
+    background,
+    meshSizePreset,
+    showGridAndAxes,
+    upAxis,
+    singleKeyCommands,
+    navigationPreset: normalizeNavigationPreset(o.navigationPreset),
+    ribbon,
+    tessellationQuality: normalizeTessellationQuality(o.tessellationQuality),
+  };
 }

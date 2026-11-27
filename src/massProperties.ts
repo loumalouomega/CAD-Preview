@@ -49,7 +49,7 @@ export interface MassProperties {
  *
  * **OCCT `BRepGProp` API, verified against the live WASM** (brute-force
  * overload/arg-count probing, same convention as every other OCCT call in
- * this codebase — see CLAUDE.md): `new oc.GProp_GProps_1()` (the *only*
+ * this codebase — see AGENTS.md): `new oc.GProp_GProps_1()` (the *only*
  * accessible constructor — the unsuffixed `GProp_GProps` has none) →
  * volume/surface integration goes through `src/brepGProp.ts`'s ADAPTIVE
  * (`eps`-driven) wrappers — `VolumeProperties2(shape, props, eps,

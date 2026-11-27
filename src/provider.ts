@@ -417,7 +417,7 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
   /**
    * The one kernel-worker child process (+ its request queue) for this whole
    * extension-host instance (roadmap "OCCT in a forked child process",
-   * Phase 2+3 — see CLAUDE.md) — created once here, NOT per-document, since
+   * Phase 2+3 — see AGENTS.md) — created once here, NOT per-document, since
    * the underlying child is itself shared across every open document (same
    * "one child per parent process" design Phase 0+1 already established for
    * the MCP server). Every kernel call in this file goes through it instead
@@ -912,7 +912,7 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
     // it) can never interrupt another tab's running job.
     const docPipeline = this.docPipeline(document.uri);
     // Progress reporting and cancellation (roadmap item, closed — see
-    // CLAUDE.md's "Progress reporting and cancellation" section for the full
+    // AGENTS.md's "Progress reporting and cancellation" section for the full
     // scoping rationale). `loadModel()` can be called again (a newer edit, an
     // external reload) before a prior `handleBRep` call has finished — there
     // is no `await` chain linking them, so without this counter whichever
@@ -4067,7 +4067,7 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
       if (generation !== genHolder.current) return; // superseded or cancelled — see doc comment above
       post({ type: "status", text: "Rendering…" });
       progress?.report({ message: "Rendering…" });
-      const { groups, edges, points, tree, opOutcomes, opBuckets, guideIds, queryWarnings, warnings } = result;
+      const { groups, edges, points, tree, opOutcomes, opBuckets, guideIds, sketchEntities, queryWarnings, warnings } = result;
       // A frozen operand query replays on its cached ids — the user must know
       // the query was not honored rather than staring at unchanged geometry.
       // `.csg` parse/build warnings ride the same channel (a skipped hull()
@@ -4086,12 +4086,16 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
         : opOutcomes;
       this.lastOpOutcomes.set(uri.toString(), rebasedOutcomes);
       const rebasedBuckets = bakedThrough > 0 ? opBuckets.map((b) => ({ ...b, op: b.op + bakedThrough })) : opBuckets;
+      const rebasedSketches = bakedThrough > 0 && sketchEntities
+        ? sketchEntities.map((s) => ({ ...s, op: s.op + bakedThrough }))
+        : sketchEntities;
       post({
         type: "geometry",
         autoFit,
         opOutcomes: rebasedOutcomes,
         guideIds,
         opBuckets: rebasedBuckets,
+        ...(rebasedSketches && rebasedSketches.length > 0 ? { sketchEntities: rebasedSketches } : {}),
         meshes: groups.flatMap((g) =>
           g.faces.map((f) => ({
             positions: encodeBuffer(f.buffers.positions),
@@ -4461,6 +4465,7 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
       singleKeyCommands: cfg.get("singleKeyCommands"),
       navigationPreset: cfg.get("navigationPreset"),
       ribbon: cfg.get("ribbon"),
+      tessellationQuality: cfg.get("tessellationQuality"),
     });
     post({ type: "viewerDefaults", ...defaults });
   }
@@ -4823,7 +4828,7 @@ export class CadPreviewProvider implements vscode.CustomEditorProvider<CadDocume
    * Health panel's "Promote to B-rep…" button. Deliberately a ONE-SHOT
    * EXPORT (sew the mesh into a solid, write it as a brand-new STEP/IGES/
    * BREP file the user opens separately), not an in-place reclassification
-   * of THIS document — see CLAUDE.md's "Mesh → B-rep promotion" section for
+   * of THIS document — see AGENTS.md's "Mesh → B-rep promotion" section for
    * why. Mirrors `handleExport`'s exact structure (format quick-pick over
    * the same `BREP_FORMATS`, the existing `pickExportUnit()`, the shared
    * `promptSaveAndWrite()` for the save dialog + write + status/error

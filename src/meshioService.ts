@@ -271,7 +271,7 @@ function unstageMeshioSource(m: MeshioApi, paths: readonly string[], extra: read
  * same shape `convertFoamCaseToStlBoundary` uses. Trades away
  * format-native richness (regions, point/cell scalar data, multi-material
  * grouping) for a small, low-risk v1 — an explicit scope decision, not an
- * oversight; see CLAUDE.md's "meshio++ integration" section.
+ * oversight; see AGENTS.md's "meshio++ integration" section.
  *
  * `sourceName`/`companions` are optional, additive parameters (every
  * pre-existing call site omitting them keeps today's exact behavior —
@@ -1033,7 +1033,7 @@ function summaryFromFullRead(mesh: any) {
  * arrays. **Deliberately informational only, not (yet) wired into the import
  * pipeline**: `convertToStlBoundary()` above still funnels every meshio-only
  * import through a plain STL boundary conversion with none of this attached
- * — see CLAUDE.md's "meshio++ integration" section for the design. Region
+ * — see AGENTS.md's "meshio++ integration" section for the design. Region
  * names now auto-create real Parts on import (`convertToStlBoundaryWithRegions`
  * + `meshioRegionParts.ts`, correlated through `extractSurface(mesh, true)`'s
  * `cell_data["surface:parent_cell"]` provenance array). Never throws: a malformed or
@@ -1112,7 +1112,7 @@ export interface MeshioBoundaryResult {
  * byte-identical triangle geometry/order (meshio++'s C++ core very likely
  * shares one boundary-extraction routine under both entry points), relying
  * on that incidental match across two independently-callable APIs is
- * exactly the risk CLAUDE.md's "meshio++ integration" section already
+ * exactly the risk AGENTS.md's "meshio++ integration" section already
  * flagged. Building STL bytes from the SAME mesh object the correlation was
  * computed against makes the geometry/region-index correspondence correct
  * by construction, not by assumption.

@@ -3,7 +3,7 @@
  *
  * Binary interaction runs through committed stub scripts
  * (`src/test-fixtures/openscad-*.sh`, POSIX-only — CI is Linux-only per the
- * xvfb note in CLAUDE.md). The stubs go through the REAL `execFile`
+ * xvfb note in AGENTS.md). The stubs go through the REAL `execFile`
  * plumbing (arg shape, cwd, timeout-kill, exit-code mapping all genuinely
  * exercised). Flag fidelity was verified against a real OpenSCAD 2021.01
  * binary on 2026-09-07 (see scadService.ts header); the stubs stay
