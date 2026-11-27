@@ -65,12 +65,13 @@ Match the existing release commit message (`Release 3.43.0`). The master run is 
 ## 6. Tag and push (the release trigger)
 
 ```bash
-git tag vX.Y.Z
+git tag -a vX.Y.Z -m "Release X.Y.Z"
 git push origin vX.Y.Z
 ```
 
+- Match the previous tag's form: `git cat-file -t vLAST` prints `tag` for an annotated tag (v3.42.0 onward) and `commit` for a lightweight one. Annotated is the recent convention.
 - Tag the release commit itself: `git rev-parse HEAD` and `git rev-parse vX.Y.Z^{commit}` must agree before the push.
-- Push the tag explicitly. `git push --follow-tags` does not push lightweight tags, and these tags are lightweight.
+- Push the tag explicitly. `git push --follow-tags` only pushes annotated tags, so do not rely on it.
 - Verify the run with `gh run list --workflow=ci.yml --limit 3` (or the Actions tab), then confirm the GitHub Release and the Marketplace version.
 
 ## Failure modes
